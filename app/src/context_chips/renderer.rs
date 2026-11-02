@@ -27,7 +27,6 @@ use pathfinder_geometry::vector::vec2f;
 /// Styling consts.
 const CORNER_RADIUS_PIXELS: f32 = 4.;
 const ICON_MARGIN_RIGHT: f32 = 6.;
-const LABEL_MARGIN_BOTTOM: f32 = 6.;
 
 #[derive(Clone)]
 pub struct RendererStyles {

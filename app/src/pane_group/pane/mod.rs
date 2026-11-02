@@ -399,10 +399,6 @@ impl PaneId {
         matches!(self.0.pane_type, IPaneType::Terminal)
     }
 
-    pub fn is_notebook_pane(&self) -> bool {
-        matches!(self.0.pane_type, IPaneType::Notebook)
-    }
-
     pub fn is_code_pane(&self) -> bool {
         matches!(self.0.pane_type, IPaneType::Code)
     }
@@ -818,12 +814,6 @@ impl PaneConfiguration {
         ctx.emit(PaneConfigurationEvent::HeaderContentChanged);
     }
 
-    pub fn set_header_left_inset(&mut self, inset: f32, ctx: &mut ModelContext<Self>) {
-        if (self.header_left_inset - inset).abs() > f32::EPSILON {
-            self.header_left_inset = inset;
-            ctx.emit(PaneConfigurationEvent::HeaderContentChanged);
-        }
-    }
 }
 
 pub enum PaneConfigurationEvent {
@@ -869,11 +859,6 @@ impl<P: BackingView> Entity for PaneStack<P> {
 }
 
 impl<P: BackingView<AssociatedData = ()>> PaneStack<P> {
-    /// Pushes a new view onto the stack, making it the active view. This is a convenience wrapper
-    /// around [`Self::push`] for panes with no associated data.
-    pub fn push_view(&mut self, view: ViewHandle<P>, ctx: &mut ModelContext<Self>) {
-        self.push((), view, ctx);
-    }
 }
 
 impl<P: BackingView> PaneStack<P> {
@@ -900,11 +885,6 @@ impl<P: BackingView> PaneStack<P> {
     /// Returns the associated data for the topmost (active) view in the stack.
     pub fn active_data(&self) -> &P::AssociatedData {
         &self.children.last().0
-    }
-
-    /// Returns a mutable reference to the associated data for the topmost (active) view.
-    pub fn active_data_mut(&mut self) -> &mut P::AssociatedData {
-        &mut self.children.last_mut().0
     }
 
     /// Returns all views in the stack.

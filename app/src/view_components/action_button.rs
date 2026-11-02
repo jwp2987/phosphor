@@ -272,11 +272,6 @@ impl ActionButton {
         self
     }
 
-    pub fn with_tooltip_max_height(mut self, tooltip_max_height: f32) -> Self {
-        self.tooltip_max_height = Some(tooltip_max_height);
-        self
-    }
-
     /// Set the size class of the button.
     pub fn with_size(mut self, size: ButtonSize) -> Self {
         self.size = size;
@@ -322,12 +317,6 @@ impl ActionButton {
 
     pub fn with_menu(mut self, has_menu: bool) -> Self {
         self.has_menu = has_menu;
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_callout(mut self, callout: Callout) -> Self {
-        self.callout = Some(callout);
         self
     }
 
@@ -469,11 +458,6 @@ impl ActionButton {
                 self.cached_keystroke = None;
             }
         }
-        ctx.notify();
-    }
-
-    pub fn set_callout(&mut self, callout: Option<Callout>, ctx: &mut ViewContext<Self>) {
-        self.callout = callout;
         ctx.notify();
     }
 

@@ -54,9 +54,6 @@ impl std::fmt::Display for Platform {
 }
 
 impl Platform {
-    pub fn applies_to_current_platform(&self) -> bool {
-        *self == Platform::current_platform() || *self == Platform::Global
-    }
 }
 
 impl Platform {

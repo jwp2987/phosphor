@@ -73,7 +73,6 @@ where
     fn next(&self) -> Option<Self>;
     fn prev(&self) -> Option<Self>;
     fn display_text(&self) -> Option<&'static str>;
-    fn short_label(&self) -> &'static str;
     fn title(&self) -> &'static str;
     fn title_icon(&self) -> Option<Icon>;
     fn content(&self) -> &'static str;
@@ -91,12 +90,6 @@ where
     /// When Some, a checkbox is rendered at the bottom of the control panel.
     fn checkbox_config(&self) -> Option<CheckboxConfig> {
         None
-    }
-
-    /// Returns whether the checkbox should be shown.
-    /// This is checked in addition to checkbox_config() returning Some.
-    fn should_show_checkbox(&self, _app: &AppContext) -> bool {
-        false
     }
 
     /// Called when the modal is closed via the X button or esc or close CTA.

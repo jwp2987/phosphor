@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 use diesel::SqliteConnection;
 use parking_lot::Mutex;
@@ -30,14 +30,12 @@ use crate::{
         mcp::{
             parsing::{prettify_json, resolve_json, ParsedTemplatableMCPServerResult},
             templatable::TemplatableMCPServerObject,
-            MCPServer, TemplatableMCPServer, TemplatableMCPServerInstallation,
-            TemplatableMCPServerManager, TransportType,
-        },
+            TemplatableMCPServer, TemplatableMCPServerInstallation,
+            TemplatableMCPServerManager, },
     },
     banner::{Banner, BannerTextContent},
     cloud_object::{update_manager::InitiatedBy, Space, StoredObject},
     code::editor::view::{CodeEditorRenderOptions, CodeEditorView},
-    persistence::ModelEvent,
     server::telemetry::{MCPTemplateCreationSource, TelemetryEvent},
     settings::PrivacySettings,
     settings_view::mcp_servers::{
@@ -54,8 +52,7 @@ use crate::{
         DismissibleToast,
     },
     workspace::ToastStack,
-    GlobalResourceHandlesProvider,
-};
+    };
 
 const DEFAULT_JSON_TEXT: &str = r#"{
     "": {
@@ -588,32 +585,6 @@ impl MCPServersEditPageView {
                         });
                     ctx.notify();
                 }
-            }
-        }
-    }
-
-    pub fn save_mcp_server_env_vars(mcp_server: MCPServer, ctx: &mut ViewContext<Self>) {
-        if let TransportType::CLIServer(cli_server) = &mcp_server.transport_type {
-            let env_vars: HashMap<String, String> = cli_server
-                .static_env_vars
-                .iter()
-                .map(|env_var| (env_var.name.clone(), env_var.value.clone()))
-                .collect();
-            let Ok(env_vars_string) = serde_json::to_string(&env_vars) else {
-                log::error!("Could not serialize MCP env vars");
-                return;
-            };
-            let global_resource_handles = GlobalResourceHandlesProvider::as_ref(ctx).get().clone();
-
-            if let Some(model_event_sender) = &global_resource_handles.model_event_sender {
-                if let Err(e) =
-                    model_event_sender.send(ModelEvent::UpsertMCPServerEnvironmentVariables {
-                        mcp_server_uuid: mcp_server.uuid.as_bytes().to_vec(),
-                        environment_variables: env_vars_string,
-                    })
-                {
-                    log::error!("Error persisting MCP server env vars to database: {e:?}");
-                };
             }
         }
     }

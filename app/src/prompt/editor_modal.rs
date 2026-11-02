@@ -32,11 +32,7 @@ use crate::terminal::session_settings::SessionSettings;
 use crate::view_components::{Dropdown, DropdownItem};
 use crate::Appearance;
 use crate::{report_if_error, send_telemetry_from_ctx};
-use warpui::elements::{
-    Align, Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
-    CrossAxisAlignment, Empty, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
-    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Stack,
-};
+use warpui::elements::{Align, Border, ChildAnchor, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, Stack};
 
 const MODAL_WIDTH: f32 = 700.;
 const BORDER_WIDTH: f32 = 1.;
@@ -608,67 +604,6 @@ impl EditorModal {
     }
 
     // TODO: consider supporting SLP with the new Zap prompt.
-    #[allow(dead_code)]
-    fn render_same_line_prompt_section(&self, appearance: &Appearance) -> Box<dyn Element> {
-        let label = appearance
-            .ui_builder()
-            .span(crate::t!("prompt-editor-same-line-prompt"))
-            .with_style(UiComponentStyles {
-                font_size: Some(appearance.ui_font_subheading()),
-                ..Default::default()
-            })
-            .build()
-            .finish();
-
-        let mut checkbox = appearance
-            .ui_builder()
-            .checkbox(
-                self.mouse_state_handles
-                    .same_line_prompt_checkbox_state_handle
-                    .clone(),
-                Some(CHECKBOX_SIZE),
-            )
-            .check(self.same_line_prompt_enabled)
-            .build()
-            .on_click(move |ctx, _, _| {
-                ctx.dispatch_typed_action(EditorModalAction::ToggleSameLinePrompt);
-            });
-
-        if self.prompt_type == PromptType::PS1 {
-            checkbox = checkbox.disable();
-        }
-
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(
-                Container::new(label)
-                    .with_margin_right(CHECKBOX_MARGIN_RIGHT)
-                    .finish(),
-            )
-            .with_child(checkbox.finish())
-            .with_child(
-                Container::new(
-                    appearance
-                        .ui_builder()
-                        .span(crate::t!("prompt-editor-separator"))
-                        .with_style(UiComponentStyles {
-                            font_size: Some(appearance.ui_font_subheading()),
-                            ..Default::default()
-                        })
-                        .build()
-                        .finish(),
-                )
-                .with_margin_left(DROPDOWN_LABEL_MARGIN_LEFT)
-                .with_margin_right(DROPDOWN_LABEL_MARGIN_RIGHT)
-                .finish(),
-            )
-            .with_child(
-                Container::new(ChildView::new(&self.warp_prompt_separator_dropdown).finish())
-                    .with_margin_left(DROPDOWN_LABEL_MARGIN_RIGHT)
-                    .finish(),
-            )
-            .finish()
-    }
 
     fn render_warp_prompt_section(&self, appearance: &Appearance) -> Box<dyn Element> {
         let body = Flex::column()

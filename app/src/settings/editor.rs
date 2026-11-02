@@ -170,14 +170,6 @@ impl WarpPromptSeparator {
         }
     }
 
-    pub fn renderable_string(&self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::PercentSign => Some("%"),
-            Self::DollarSign => Some("$"),
-            Self::ChevronSymbol => Some(">"),
-        }
-    }
 }
 
 define_settings_group!(AppEditorSettings, settings: [

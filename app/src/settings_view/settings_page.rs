@@ -1502,17 +1502,6 @@ impl<V: warpui::View> PageType<V> {
         }
     }
 
-    /// Set the minimum page width for narrow panes.
-    pub fn set_min_page_width(&mut self, width: f32) {
-        match self {
-            Self::Monolith { min_page_width, .. }
-            | Self::Uncategorized { min_page_width, .. }
-            | Self::Categorized { min_page_width, .. } => {
-                *min_page_width = width;
-            }
-        }
-    }
-
     /// Apply the filter we saved from the last matching of the search query to return only the
     /// relevant results.
     pub(super) fn get_filtered(&self) -> FilteredPageType<'_, V> {

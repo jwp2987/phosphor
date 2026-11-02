@@ -4,7 +4,6 @@ use crate::pane_group::CodeSource;
 use std::sync::mpsc::SyncSender;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use warp_multi_agent_api as multi_agent_api;
 
 use warpui::{
     AppContext, EntityId, ModelHandle, SingletonEntity, ViewContext, ViewHandle, WindowId,
@@ -15,7 +14,6 @@ use crate::{
         agent::conversation::AIConversationId,
         blocklist::{agent_view::AgentViewControllerEvent, BlocklistAIHistoryModel},
         llms::LLMPreferences,
-        skills::SkillManager,
     },
     app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
     pane_group::{self, Direction, Event::OpenConversationHistory, PaneGroup},
@@ -81,31 +79,6 @@ pub struct TerminalPane {
 pub(in crate::pane_group) struct RestoredTerminalState {
     pub cwd: Option<String>,
     pub shell_launch_data: Option<ShellLaunchData>,
-}
-
-fn resolve_runtime_skills(
-    skill_references: &[ai::skills::SkillReference],
-    ctx: &AppContext,
-) -> Result<Vec<String>, Vec<String>> {
-    let skill_manager = SkillManager::as_ref(ctx);
-    let mut runtime_skills = Vec::with_capacity(skill_references.len());
-    let mut unresolved_references = Vec::new();
-
-    for reference in skill_references {
-        let Some(skill) = skill_manager.skill_by_reference(reference) else {
-            unresolved_references.push(reference.to_string());
-            continue;
-        };
-        runtime_skills.push(serialize_proto_to_base64(&multi_agent_api::Skill::from(
-            skill.clone(),
-        )));
-    }
-
-    if unresolved_references.is_empty() {
-        Ok(runtime_skills)
-    } else {
-        Err(unresolved_references)
-    }
 }
 
 fn serialize_proto_to_base64<M: prost::Message>(message: &M) -> String {

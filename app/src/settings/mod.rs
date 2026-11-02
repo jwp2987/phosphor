@@ -212,11 +212,8 @@ use warpui::{
 pub const CHANGELOG_VERSIONS: &str = "ChangelogVersions";
 pub const RESTORE_SESSION: &str = "RestoreSession";
 pub const INPUT_MODE: &str = "InputMode";
-pub const ACTIVATION_HOTKEY_ENABLED: &str = "ActivationHotkeyEnabled";
-pub const ACTIVATION_HOTKEY_KEYBINDING: &str = "ActivationHotkeyKeybinding";
 pub const DISMISSED_AI_ASSISTANT_WELCOME_KEY: &str = "DismissedWarpAIWarmWelcome";
 
-pub const TIMES_TO_SHOW_AUTOSUGGESTION_HINT: i8 = 2;
 pub const QUAKE_WINDOW_AUTOHIDE_SUPPORTED: bool = cfg!(any(target_os = "macos", windows));
 
 lazy_static! {
@@ -572,27 +569,6 @@ impl Settings {
         })
     }
 
-    pub fn mark_changelog_shown(changelog_version: &str, ctx: &mut AppContext) -> bool {
-        ctx.private_user_preferences()
-            .read_value(CHANGELOG_VERSIONS)
-            .unwrap_or_default()
-            .map_or(Ok(json!({})), |versions| {
-                serde_json::from_str::<Value>(&versions)
-            })
-            .is_ok_and(|mut versions| {
-                log::info!(
-                    "Marking changelog {changelog_version} as shown in versions {versions:?}"
-                );
-
-                versions[&changelog_version] = Value::Bool(true);
-                let _ = ctx.private_user_preferences().write_value(
-                    CHANGELOG_VERSIONS,
-                    serde_json::to_string(&versions).expect("changelog versions should serialize"),
-                );
-                true
-            })
-    }
-
     pub fn theme_for_theme_kind(theme_kind: &ThemeKind, ctx: &mut AppContext) -> WarpTheme {
         match theme_kind {
             ThemeKind::InMemory(in_memory_theme) => in_memory_theme.theme(),
@@ -650,12 +626,6 @@ impl TerminalSpacing {
             subshell_separator_height: 1.1,
         }
     }
-}
-
-/// The argument type for set_extra_meta_keys action.
-#[derive(Clone)]
-pub struct ExtraMetaKeysChangedArg {
-    pub keys: ExtraMetaKeys,
 }
 
 /// Returns the path to the user preferences file.

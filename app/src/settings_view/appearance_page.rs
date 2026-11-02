@@ -5234,17 +5234,6 @@ struct MarkdownHeadingScaleWidget {
 
 const MARKDOWN_SCALE_INPUT_BOX_WIDTH: f32 = 80.0;
 
-fn markdown_heading_scale_defaults() -> [f32; 6] {
-    [
-        MarkdownHeadingH1Scale::default_value(),
-        MarkdownHeadingH2Scale::default_value(),
-        MarkdownHeadingH3Scale::default_value(),
-        MarkdownHeadingH4Scale::default_value(),
-        MarkdownHeadingH5Scale::default_value(),
-        MarkdownHeadingH6Scale::default_value(),
-    ]
-}
-
 impl MarkdownHeadingScaleWidget {
     /// Renders a single scale-factor input box
     fn render_scale_input(

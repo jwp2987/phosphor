@@ -3484,10 +3484,6 @@ impl AISettings {
         }
     }
 
-    /// Returns whether at least one CLI agent installation scan has completed.
-    pub fn is_cli_agent_scan_completed(&self) -> bool {
-        *self.cli_agent_scan_completed.value()
-    }
 }
 
 /// Singleton model that caches compiled regexes for the `cli_agent_footer_enabled_commands`

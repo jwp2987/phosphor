@@ -513,23 +513,6 @@ impl TypedActionView for GlobalSearchView {
 }
 
 impl GlobalSearchView {
-    /// Calculate the 1-indexed column number from the first submatch.
-    /// Returns None if there are no submatches or the line is empty.
-    fn column_from_submatches(line_text: &str, submatches: &[Submatch]) -> Option<usize> {
-        if line_text.is_empty() || submatches.is_empty() {
-            return None;
-        }
-
-        let first_submatch = &submatches[0];
-        let max_byte = ByteOffset::from(line_text.len());
-        let start_b = first_submatch.byte_start.min(max_byte);
-
-        let mut char_counter = CharCounter::new(line_text);
-        let start_char = char_counter.char_offset(start_b)?;
-
-        // Return 1-indexed column number
-        Some(start_char.as_usize() + 1)
-    }
 
     /// Convert submatch byte ranges into character indices for highlighting.
     fn highlight_indices_from_submatches(line_text: &str, submatches: &[Submatch]) -> Vec<usize> {
@@ -1617,21 +1600,6 @@ impl GlobalSearchView {
     /// Gets or creates a DirectoryEntry for the given path.
     /// Returns a mutable reference to the entry and its index.
     #[allow(dead_code)] // Will be used in later PRs
-    fn get_or_create_directory_entry(
-        &mut self,
-        path: &LocalOrRemotePath,
-    ) -> (&mut DirectoryEntry, usize) {
-        if let Some(&index) = self.directory_path_to_directory_index_entry.get(path) {
-            (&mut self.directory_entries[index], index)
-        } else {
-            let index = self.directory_entries.len();
-            self.directory_entries
-                .push(DirectoryEntry::new(path.clone()));
-            self.directory_path_to_directory_index_entry
-                .insert(path.clone(), index);
-            (&mut self.directory_entries[index], index)
-        }
-    }
 
     /// Converts directory_path + file_path + optional match_index to a RowIndex.
     /// Returns None if the paths are not found

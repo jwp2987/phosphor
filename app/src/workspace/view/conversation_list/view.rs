@@ -341,16 +341,6 @@ impl ConversationListView {
         self.list_items.get(index)
     }
 
-    /// Finds the flat index of a conversation or task by ID, or None if not found.
-    fn get_index_of_conversation_id(&self, conversation_id: ConversationOrTaskId) -> Option<usize> {
-        self.list_items.iter().position(|item| match item {
-            ListItem::Conversation(entry) => entry.id == conversation_id,
-            ListItem::SectionHeader(_)
-            | ListItem::StartNewConversation
-            | ListItem::ToggleViewAllButton => false,
-        })
-    }
-
     pub fn on_left_panel_focused(&mut self, ctx: &mut ViewContext<Self>) {
         // Focus the search bar when the panel is opened.
         ctx.focus(&self.query_editor);

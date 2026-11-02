@@ -830,15 +830,6 @@ struct RightPanelUpdateParams<'a> {
     review_pane_context: Option<&'a CodeReviewPaneContext>,
 }
 
-/// Groups a modal view handle with the ID of the tab that was created to host
-/// it, so the custom tab title can be cleared on close regardless of which tab
-/// is active at that point.
-struct ModalWithTab<V> {
-    view: ViewHandle<V>,
-    /// Set when the modal opens a new tab; consumed (taken) when the modal
-    /// closes so we can clear the custom tab title.
-    tab_pane_group_id: Option<EntityId>,
-}
 /// Context saved when the session config modal triggers `open_tab_config` and
 /// the tab config has params (worktree). The params modal opens asynchronously,
 /// so we store what we need to finish the tab replacement when it completes.
@@ -6112,29 +6103,6 @@ impl Workspace {
                 );
             }
         }
-    }
-
-    /// Opens a remote file via the buffer-sync protocol (used by the server
-    /// file browser, which — unlike the remote file tree / global search —
-    /// has no viewer-choice detection of its own, so this always targets the
-    /// code editor).
-    /// Remote and local files both go through [`Self::open_code`] /
-    /// `CodePane` / `CodeView` uniformly: this way remote files follow
-    /// `open_file_layout` (new tab / split) and the multi-file grouping
-    /// toggle (multiple remote files merged into internal tabs of the same
-    /// code editor pane) just like local files.
-    /// The buffer content is still opened via `GlobalBufferModel`'s
-    /// `BufferLocation::Remote` path (sending `OpenBuffer` to the daemon,
-    /// then syncing via `BufferEdit` / `BufferUpdatedPush`); that part is
-    /// handled by `LocalCodeEditorView::new_with_remote_buffer` inside `CodeView`.
-    #[cfg(feature = "local_tty")]
-    pub fn open_remote_file(
-        &mut self,
-        remote_path: crate::code::buffer_location::RemotePath,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
-        self.open_remote_file_with_target(remote_path, FileTarget::CodeEditor(layout), None, ctx);
     }
 
     /// Opens a remote file with the given viewer `target` (buffer-sync code
@@ -13117,51 +13085,6 @@ impl Workspace {
         self.add_tab_with_pane_layout(panes_layout, Arc::new(HashMap::new()), None, ctx);
     }
 
-    pub fn add_tab_for_assisted_autoupdate<V: View>(
-        &mut self,
-        update_command_fn: impl 'static + Fn(ShellType) -> String,
-        context_block: ViewHandle<V>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.add_tab_with_pane_layout(
-            Default::default(),
-            Arc::new(HashMap::new()),
-            Some("Install Update".to_owned()),
-            ctx,
-        );
-
-        let Some(terminal_view) = self
-            .active_tab_pane_group()
-            .as_ref(ctx)
-            .active_session_view(ctx)
-        else {
-            log::error!("Could not access terminal view after creating a new tab!");
-            return;
-        };
-        terminal_view.update(ctx, |terminal_view, ctx| {
-            terminal_view.insert_rich_content(
-                None,
-                context_block,
-                None,
-                terminal::view::rich_content::RichContentInsertionPosition::Append {
-                    insert_below_long_running_block: false,
-                },
-                ctx,
-            );
-        });
-
-        // Once we know what shell is being used, update the input with the
-        // appropriate assisted auto-update command.
-        ctx.subscribe_to_view(&terminal_view, move |me, _, event, ctx| {
-            if let terminal::Event::ShellSpawned(shell_type) = event {
-                me.set_active_terminal_input_contents_and_focus_app(
-                    &(update_command_fn)(*shell_type),
-                    ctx,
-                );
-            }
-        });
-    }
-
     /// Add a tab with a code pane open for the specified file.
     pub fn add_tab_for_code_file(
         &mut self,
@@ -18478,14 +18401,6 @@ impl Workspace {
         });
 
         ctx.notify();
-    }
-
-    /// Determines if the changelog is currently being shown or if the changelog request is
-    /// in-flight
-    ///
-    fn is_changelog_open_or_pending(&self, ctx: &mut ViewContext<Self>) -> bool {
-        self.current_workspace_state.is_resource_center_open
-            || self.changelog_model.as_ref(ctx).is_check_pending()
     }
 
     pub(crate) fn focus_active_tab(&mut self, ctx: &mut ViewContext<Self>) {
@@ -25521,13 +25436,6 @@ impl Workspace {
             draggable_state,
             vertical_tabs_panel_open,
         })
-    }
-
-    pub fn get_tab_transfer_info(&self, index: usize, ctx: &AppContext) -> Option<TransferredTab> {
-        if self.tabs.len() <= 1 {
-            return None;
-        }
-        self.tab_transfer_info_at_index(index, ctx)
     }
 
     pub fn get_tab_transfer_info_for_attach(

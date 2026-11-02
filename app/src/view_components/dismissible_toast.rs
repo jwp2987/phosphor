@@ -355,11 +355,6 @@ impl<A: Action + Clone> ToastLink<A> {
         self
     }
 
-    pub fn with_keystroke(mut self, keystroke: Keystroke) -> Self {
-        self.keystroke = Some(keystroke);
-        self
-    }
-
     fn render(&self, ui_builder: &UiBuilder, font_color: ColorU) -> Box<dyn Element> {
         let action = self.action.clone();
 

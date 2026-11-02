@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use regex::Regex;
-use warp_core::features::FeatureFlag;
 use warp_core::report_if_error;
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, UpdateModel};
@@ -13,7 +12,6 @@ use crate::auth::AuthState;
 use crate::auth::AuthStateProvider;
 use crate::auth::SyncedUserSettings;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
-use crate::report_error;
 use crate::report_settings_write_error;
 // Zap Wave 3-1: the `AuthClient` trait + `MockAuthClient` were removed entirely along with
 // server_api/auth.rs; `SyncedUserSettings` moved to `crate::auth`.
@@ -189,13 +187,6 @@ impl PrivacySettingsSnapshot {
         self.is_telemetry_force_enabled
     }
 
-    pub fn should_disable_telemetry(&self) -> bool {
-        // If a user has opted in to the agent mode analytics experiment, telemetry must be enabled.
-        !self.is_telemetry_enabled
-            && !self.is_telemetry_force_enabled
-            && !FeatureFlag::AgentModeAnalytics.is_enabled()
-    }
-
     pub fn should_collect_ai_ugc_telemetry(&self) -> bool {
         self.should_collect_ai_ugc_telemetry
     }
@@ -360,51 +351,11 @@ impl PrivacySettings {
         ctx.notify();
     }
 
-    pub fn refresh_to_default(&mut self) {
-        // TODO(zach): this seems incorrect - should we also update the values on disk?
-        self.is_telemetry_enabled = true;
-        self.is_crash_reporting_enabled = true;
-        self.is_telemetry_force_enabled = false;
-        self.is_enterprise_secret_redaction_enabled = false;
-    }
-
     /// Fetch the user's privacy settings from the server if any or update the server settings.
     pub fn fetch_or_update_settings(&self, _ctx: &mut ModelContext<Self>) {
         // Zap Wave 3-1: the original call to `auth_client.get_user_settings().await` was
         // removed along with the entire AuthClient trait. After Zap's localization, privacy
         // settings are only saved locally; this entry point is a no-op.
-    }
-
-    /// Initializes state from the [`SyncedUserSettings`] fetched from the server, if any.
-    /// If there are no settings from the server, updates the server settings with local settings.
-    /// TODO: Make this a server-side db transaction.
-    fn initialize_from_fetched_settings_or_update_settings(
-        &mut self,
-        fetched_settings: Result<Option<SyncedUserSettings>>,
-        ctx: &mut ModelContext<PrivacySettings>,
-    ) {
-        match fetched_settings {
-            Ok(Some(fetched_settings)) => {
-                // Until the login experience stops hiding the telemetry settings,
-                // we assume that locally enabled telemetry is unintentional.
-                // As such, where settings differ, we respect whichever setting that is disabled.
-                self.overwrite_local_settings_if_cloud_disabled(fetched_settings, ctx);
-                // If any local setting is disabled, we have to update the server.
-                if !self.is_telemetry_enabled || !self.is_crash_reporting_enabled {
-                    self.update_server_with_local_settings(ctx);
-                }
-            }
-            Ok(None) => {
-                // This indicates the user had not logged in before.
-                log::info!("User has no synced privacy settings.");
-                self.update_server_with_local_settings(ctx);
-            }
-            Err(err) => {
-                report_error!(err.context("Failed to fetch user settings."));
-            }
-        }
-
-        self.maybe_sync_with_warp_drive_prefs(ctx);
     }
 
     fn overwrite_local_settings_if_cloud_disabled(
@@ -445,22 +396,6 @@ impl PrivacySettings {
             is_telemetry_force_enabled: false,
             is_enterprise_secret_redaction_enabled: false,
             enterprise_secret_regex_list: Vec::new(),
-        }
-    }
-
-    /// Returns a snapshot of the user's privacy settings.
-    ///
-    /// The returned snapshot is not stateful, thus its values should be used shortly after the
-    /// snapshot is returned.
-    pub fn get_snapshot(&self, app: &AppContext) -> PrivacySettingsSnapshot {
-        PrivacySettingsSnapshot {
-            is_telemetry_enabled: self.is_telemetry_enabled,
-            is_crash_reporting_enabled: self.is_crash_reporting_enabled,
-            is_telemetry_force_enabled: self.is_telemetry_force_enabled,
-            should_collect_ai_ugc_telemetry: should_collect_ai_ugc_telemetry(
-                app,
-                self.is_telemetry_enabled,
-            ),
         }
     }
 
