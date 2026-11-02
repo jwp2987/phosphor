@@ -15,7 +15,7 @@ DIST=${1:?dist dir}; OUT=${2:?out dir}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; APPCI="$HERE/../../appci"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); : > "$OUT/pids"
-CAFF=""; PYPID=""; DONE=0
+CAFF=""; PYPID=""; KTAP=""; DONE=0
 # Exact-PID cleanup, also on SIGTERM/INT/HUP (a cancelled GitLab job): python runner first (its SIGTERM handler unwinds app.stop /
 # sshd.stop), then anything still recorded in the pids files whose command line is verified to be OURS (PID reuse safe), caffeinate, DMG.
 killif() {   # killif PID SUBSTRING: signal PID only when its command line contains SUBSTRING
@@ -28,6 +28,7 @@ cleanup() {
   for f in "$OUT/pids" "$OUT/run/pids"; do [ -f "$f" ] && while read -r kind p _; do [ "$kind" = app ] && killif "$p" "${BIN:-/nonexistent}"; done < "$f"; done
   [ -f "$OUT/run/ssh/sshd.pid" ] && killif "$(cat "$OUT/run/ssh/sshd.pid" 2>/dev/null)" "$OUT/run/ssh/sshd_config"
   [ -n "$CAFF" ] && kill "$CAFF" 2>/dev/null
+  [ -n "$KTAP" ] && killif "$KTAP" "$OUT/ktap.log"
   hdiutil detach "$OUT/mnt" -quiet 2>/dev/null; true; }
 trap cleanup EXIT
 trap 'cleanup; exit 143' TERM INT HUP
@@ -43,7 +44,7 @@ command -v swiftc >/dev/null || fail3 "swiftc is missing for user $(whoami) (xco
 # compile the injection / latency / OCR tools from source (script/realapp/mac/tools/*.swift; NO binaries in git). Cached by source hash
 # in the runner's own dir, so a build only happens when a source changed.
 TSRC="$HERE/../tools"; TCACHE="$HOME/.cache/phosphor-appci-tools"; mkdir -p "$TCACHE"; TOOLS="$OUT/tools"; mkdir -p "$TOOLS"
-for t in htype2 kl3 ocr winrect tis; do
+for t in htype2 kl3 ocr winrect tis ktap; do
   h=$(shasum -a 256 "$TSRC/$t.swift" | cut -c1-16); b="$TCACHE/$t-$h"
   if [ ! -x "$b" ]; then swiftc -O "$TSRC/$t.swift" -o "$b.tmp.$$" 2> "$OUT/swiftc-$t.log" && mv "$b.tmp.$$" "$b" || { rm -f "$b.tmp.$$"; fail3 "swiftc failed for $t.swift (see swiftc-$t.log in the job artifacts)"; }; fi
   cp "$b" "$TOOLS/$t"
@@ -73,11 +74,17 @@ export APPCI_MAC_BUNDLE="$OUT/Phosphor.app" APPCI_MAC_PROCESS="$(basename "$BIN"
 export APPCI_KEY_NEWTAB="cmd+t" APPCI_KEY_NEWWIN="cmd+n"
 # editor_memory_7mb: the palette is cmd+p on macOS; cmd+w (close pane) is refused by the frontmost-app guard, so release-on-close is measured on Linux/Windows only
 export APPCI_KEY_PALETTE="cmd+p" APPCI_KEY_CLOSE=""
+# #1482: ktap observes every Return at the annotated session tap (which process macOS targets) and passes it through unchanged;
+# enter_route.py joins that with Phosphor's own mac_enter trace afterwards. Optional: a failure to start is reported, never fatal.
+"$TOOLS/ktap" "$OUT/ktap.log" > "$OUT/ktap.stdout" 2>&1 & KTAP=$!; echo "ktap $KTAP" >> "$OUT/pids"
+sleep 1; kill -0 "$KTAP" 2>/dev/null || { echo "ktap did not start: $(cat "$OUT/ktap.stdout" 2>/dev/null)"; KTAP=""; }
 python3 "$APPCI/run.py" --run "$OUT/run" --bin "$BIN" --backend mac --modes "${APPCI_MODES:-terminal,agent}" \
   --cases "${APPCI_CASES:-}" --skip "${APPCI_SKIP:-}" --platform macos --startup-timeout 120 &
 PYPID=$!
 wait "$PYPID"; RC=$?
 PYPID=""
+if [ -n "$KTAP" ]; then kill "$KTAP" 2>/dev/null; for _ in 1 2 3 4 5; do kill -0 "$KTAP" 2>/dev/null || break; sleep 1; done; KTAP=""; fi
+python3 "$HERE/enter_route.py" "$OUT" || true
 # a system dialog (Local Network / TCC) stopped the run: surface it at the top of the artifacts too
 [ "$RC" = 3 ] && [ -f "$OUT/run/NEEDS_OWNER.txt" ] && cp "$OUT/run/NEEDS_OWNER.txt" "$OUT/NEEDS_OWNER.txt"
 exit $RC

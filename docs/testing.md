@@ -498,6 +498,14 @@ default (primed, per-line) injection must lose nothing in Phosphor. The Wayland 
 tap and a 20 ms sleep (`APPCI_WL_PRIME_MS`, 0 = off; it adds that much to input-tool spawn cost, which cancels in the
 Phosphor-vs-reference latency overhead). Keep the control permanently.
 
+**Where a Return went (Mac, `ktap` + `enter_route.py`, #1482).** For the whole Mac run, `script/realapp/mac/tools/ktap.swift` (compiled at job
+start like htype2) sits at the *annotated* session event tap, where macOS has already chosen the target process, and logs each Return
+keyDown/keyUp (key code, the event's own timestamp, target and source PID; never characters), passing every event through unchanged. After the
+run `script/realapp/mac/ci/enter_route.py` joins that with Phosphor's `input_order hop=mac_enter stage=app_send_event ts=` lines by timestamp and
+writes `run/logs/enter_route.txt`: Returns targeted at Phosphor that its NSApplication never saw (lost between macOS and the app), Returns targeted
+at another process (by name), and a join check. ktap uses the Accessibility grant the job already has; if the tap cannot be created the run goes on
+without it and says so.
+
 Enter-loss control (`enter_loss_control`, terminal mode, SMOKE right after `key_loss_control`, #1482): on the Mac `fast_typing` once
 merged two lines (`...r_ft0.txtecho t28...`): the app log has no `kind=enter` for line 27, which cannot say whether the Enter reached the
 app. Two additions make the harness able to tell. (1) The Mac backend keeps every htype2 call's K-lines (htype2 overwrites its outfile per
