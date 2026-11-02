@@ -245,6 +245,7 @@ build-macos-arm64:
       [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
       mkdir -p dist && cp "$DMG" dist/
       (cd dist && shasum -a 256 * | tee SHA256SUMS)
+    - script/ci/verify_artifacts.sh macos dist   # #1515: sums + codesign/spctl (reported; UNSIGNED)
     # Keep this build on THIS machine for app-test-macos-reuse (no download); see script/ci/cache_build.sh.
     - script/ci/cache_build.sh macos
   artifacts:
@@ -292,6 +293,7 @@ build-linux-x86_64:
         b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
       done
       (cd dist && sha256sum * | tee SHA256SUMS)
+    - script/ci/verify_artifacts.sh linux dist   # #1515: sums + .deb info/contents/dpkg -x in a scratch root
     # Keep this build on THIS machine for app-test-linux-*-reuse (no download); see script/ci/cache_build.sh.
     - script/ci/cache_build.sh linux
   artifacts:
@@ -380,6 +382,8 @@ build-windows-x86_64:
       New-Item -ItemType Directory -Force dist | Out-Null
       Copy-Item $installer dist\
       Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Tee-Object -FilePath dist\SHA256SUMS
+    - .\script\ci\verify_artifacts.ps1 -Dist dist   # #1515: sums + Authenticode (reported; UNSIGNED)
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
     # Keep this build on THIS machine for app-test-windows-reuse (no download); see script/ci/cache_build.ps1.
     - .\script\ci\cache_build.ps1
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -1252,8 +1256,9 @@ release-macos-arm64:
       DMG=$(grep '^dmg_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
       [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
       mkdir -p dist && cp "$DMG" dist/
-      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
       (cd dist && shasum -a 256 * > ../manifest-macos.txt)
+      script/ci/verify_artifacts.sh macos dist manifest-macos.txt   # #1515: verify BEFORE publishing
+      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
   artifacts:
     # dist/ is here so a dry run (which does not upload) still yields the installer, as a
     # member-only job artifact.
@@ -1289,8 +1294,9 @@ release-linux-x86_64:
       for f in "$PKG"/*; do
         b=$(basename "$f"); cp "$f" "dist/$(echo "$b" | sed -E 's/^zap([_-])/phosphor\1/')"
       done
-      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
       (cd dist && sha256sum * > ../manifest-linux.txt)
+      script/ci/verify_artifacts.sh linux dist manifest-linux.txt   # #1515: verify BEFORE publishing
+      ./script/ci/upload_package "$RELEASE_VERSION" dist/*
   artifacts:
     paths: [manifest-linux.txt, dist/]
     expire_in: 3 days
@@ -1327,10 +1333,12 @@ release-windows-x86_64:
       if (-not $installer -or -not (Test-Path $installer)) { Write-Error "no installer at '$installer'"; exit 1 }
       New-Item -ItemType Directory -Force dist | Out-Null
       Copy-Item $installer "dist\Phosphor-windows-x86_64-Setup.exe"
-      & "C:\Program Files\Git\bin\bash.exe" ./script/ci/upload_package "$env:RELEASE_VERSION" dist/Phosphor-windows-x86_64-Setup.exe
-      if ($LASTEXITCODE) { exit $LASTEXITCODE }
       Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ascii manifest-windows.txt
       Get-Content manifest-windows.txt
+      .\script\ci\verify_artifacts.ps1 -Dist dist -Sums manifest-windows.txt   # #1515: verify BEFORE publishing
+      if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      & "C:\Program Files\Git\bin\bash.exe" ./script/ci/upload_package "$env:RELEASE_VERSION" dist/Phosphor-windows-x86_64-Setup.exe
+      if ($LASTEXITCODE) { exit $LASTEXITCODE }
   artifacts:
     paths: [manifest-windows.txt, dist/]
     expire_in: 3 days
