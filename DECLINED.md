@@ -2610,3 +2610,16 @@ The signal quit paths already had a 5 s watchdog; the dialog/menu/key/last-windo
 so a step that never finishes (persistence writer drain, ControlMaster stop, terminal server
 teardown) left the app alive. Every step still runs to completion in order; the timer only guards
 a step that never ends and is logged when it fires.
+
+## Dead-code cleanup, crates/* — REMOVED 2026-11 (#1467)
+
+Owner direction 2026-11-02: the project pulls concepts, not code, from upstream Warp, so "kept verbatim for a clean re-pin diff" is no longer a reason to keep dead code, and no wasm target is built anywhere. Removed (each verified by whole-repo grep before deletion), not parity debt — do not re-port:
+
+- **`crates/app-installation-detection`** and its `127.0.0.1:9277/install_detection` route (unauthenticated listener with `*.warp.dev` CORS, consumed only by the web NUX). `http_server` now starts only under the `jemalloc_pprof` feature, where `profiling::make_router` is its only route.
+- **The v2 (completions-on-js) completer stack**: `warp_completer`'s `v2` files and feature, `crates/warp_js`, `crates/command-signatures-v2` (yarn/TS build), `app/src/plugin` (plugin host), the `completions_v2` / `plugin_host` features, `WorkerCommand::PluginHost`. Never in `default`, never built by CI.
+- **Cloud settings-sync plumbing in `settings`** (`clear_cloud_settings_local_state`, `is_current_value_syncable`, the write-only `clear_fns`/`equals_fns`/`is_syncable_fns` maps). The `sync_to_cloud:` macro arguments and `Setting::sync_to_cloud` remain as a follow-up.
+- **`managed_secrets` upload path**: `create/update/delete_secret`, the envelope/`UploadKey`/HPKE module, `ActorProvider`, `managed_secrets_wasm`, the `tink-*` `[patch]` pins. The app only lists/reads secrets (`DisabledManagedSecretsClient`).
+- **`serve-wasm`**, the wasm transport modules of `warp_logging`/`websocket`/`ipc`, `script/wasm/run`.
+- **`warp_tui/src/bin/{dev,local,preview,stable}.rs`** (never compiled), the `input_classifier` `onnx_ort` backend, unused workspace deps `aes-gcm`/`argon2`/`keyring`/`parquet`, and ~50 zero-caller `pub` items across the small crates.
+
+Kept on purpose: `DOGFOOD_FLAGS`/`PREVIEW_FLAGS`/`LOCAL_FLAGS` (the schema/default-settings generators and `changelog_model` read them), `crates/warp_web_event_bus` (still imported by `app/src/platform/wasm.rs`).
