@@ -43,7 +43,7 @@ command -v swiftc >/dev/null || fail3 "swiftc is missing for user $(whoami) (xco
 # compile the injection / latency / OCR tools from source (script/realapp/mac/tools/*.swift; NO binaries in git). Cached by source hash
 # in the runner's own dir, so a build only happens when a source changed.
 TSRC="$HERE/../tools"; TCACHE="$HOME/.cache/phosphor-appci-tools"; mkdir -p "$TCACHE"; TOOLS="$OUT/tools"; mkdir -p "$TOOLS"
-for t in htype2 kl3 ocr; do
+for t in htype2 kl3 ocr winrect; do
   h=$(shasum -a 256 "$TSRC/$t.swift" | cut -c1-16); b="$TCACHE/$t-$h"
   if [ ! -x "$b" ]; then swiftc -O "$TSRC/$t.swift" -o "$b.tmp.$$" 2> "$OUT/swiftc-$t.log" && mv "$b.tmp.$$" "$b" || { rm -f "$b.tmp.$$"; fail3 "swiftc failed for $t.swift (see swiftc-$t.log in the job artifacts)"; }; fi
   cp "$b" "$TOOLS/$t"
@@ -64,7 +64,7 @@ PROBE=$(python3 -c "
 import sys; sys.path.insert(0,'$APPCI')
 import backend
 p=backend.make('mac').preflight(); print('\n'.join(p))")
-[ -z "$PROBE" ] || fail3 "$PROBE. Grant Accessibility and Screen Recording (System Settings > Privacy & Security) to the runner's process chain (gitlab-runner binary, /bin/bash, python3, the compiled htype2/kl3/ocr tools, osascript, screencapture) for user $(whoami), and keep the session unlocked."
+[ -z "$PROBE" ] || fail3 "$PROBE. Grant Accessibility and Screen Recording (System Settings > Privacy & Security) to the runner's process chain (gitlab-runner binary, /bin/bash, python3, the compiled htype2/kl3/ocr/winrect tools, osascript, screencapture) for user $(whoami), and keep the session unlocked."
 
 # latency: run.py fetches the previous successful app-test-macos results.json (build/* refs) and compares against appci/baselines/macos.json;
 # the reference terminal is Terminal.app (cases.ref_terminal), driven by the same htype2/osascript path under the frontmost-app guard.
@@ -76,4 +76,6 @@ python3 "$APPCI/run.py" --run "$OUT/run" --bin "$BIN" --backend mac --modes "${A
 PYPID=$!
 wait "$PYPID"; RC=$?
 PYPID=""
+# a system dialog (Local Network / TCC) stopped the run: surface it at the top of the artifacts too
+[ "$RC" = 3 ] && [ -f "$OUT/run/NEEDS_OWNER.txt" ] && cp "$OUT/run/NEEDS_OWNER.txt" "$OUT/NEEDS_OWNER.txt"
 exit $RC
