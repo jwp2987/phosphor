@@ -1362,9 +1362,21 @@ fn request_before_prewarm_waits_for_the_scan_instead_of_scanning() {
             .expect("rules were found");
         assert_eq!(rules.active_rules.len(), 1);
         assert_eq!(rules.active_rules[0].content, "late rules");
-        // A later request finds them cached.
+        // The scan's entry is cached with the rules.
+        model.read(&app, |model, _| {
+            let cache = model.fast_path_cache.borrow();
+            let entry = cache.get(&cwd).expect("the landed scan is cached");
+            assert_eq!(entry.rules.len(), 1);
+        });
+        // A later request finds them cached, never "no rules". The entry is stamped with the
+        // mtimes of every directory the scan walked, including ancestors such as the shared temp
+        // dir; when a concurrently running test creates a temp dir there the stamp is stale and
+        // the lookup correctly rescans (Pending) instead of serving it.
         let again = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
-        assert!(matches!(again, RulesWait::Ready(Some(_))));
+        match again {
+            RulesWait::Ready(Some(_)) | RulesWait::Pending(_) => {}
+            RulesWait::Ready(None) => panic!("a later request lost the rules"),
+        }
     });
 }
 

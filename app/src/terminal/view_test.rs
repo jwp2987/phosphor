@@ -18230,6 +18230,8 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
             });
         });
         terminal.update(&mut app, |view, ctx| {
+            // A registered session: without one the submit has nowhere to go.
+            register_local_session_for_ssh_test(view, ctx);
             view.input.update(ctx, |input, _| {
                 input.arm_ssh_handover_enter_guard("echo old".into())
             });
@@ -18238,6 +18240,18 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
             });
             editor_key(view, EditorAction::Enter, ctx);
         });
+        // The Enter's submit continues through events and the executor (the verdict wait, the
+        // pane queue's drain): let them run until the line is executed or waiting at its gate.
+        for _ in 0..64 {
+            let settled = terminal.read(&app, |view, ctx| {
+                executed.borrow().as_slice() == ["ssh other".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+            });
+            if settled {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
         terminal.update(&mut app, |view, ctx| {
             assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             // Not swallowed: the Enter went on to submit the new line, which is either already
@@ -19829,6 +19843,18 @@ fn test_after_enter_replay_drains_in_typed_order() {
             view.typed_characters_on_terminal("ho X", ctx);
             view.replay_after_deferred_enter(ctx);
         });
+        // The release is driven from the editor side, which cannot route a replayed text or Enter
+        // itself: it pokes the queue's waker and the view continues the drain on its next turn
+        // (#1353 step 3). Let the executor deliver it.
+        for _ in 0..64 {
+            let delivered = terminal.read(&app, |view, ctx| {
+                view.input.as_ref(ctx).buffer_text(ctx) == "echo X"
+            });
+            if delivered {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
         terminal.read(&app, |view, ctx| {
             let input = view.input.as_ref(ctx);
             assert!(!input.enter_queue_holds_keys(ctx));

@@ -1837,10 +1837,13 @@ fn a_signal_with_no_wait_pending_releases_nothing() {
     let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
     assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    // The signal ended the wait: the line editor is ready, so a key is written, not held.
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::WriteCounted);
+
+    // With a key held behind the wait, the first signal names the hold, the second finds no wait.
+    let mut handoff = conpty_awaiting_line_editor();
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
-    // The wait is still pending for the held key: the first signal names the hold, the second
-    // finds no wait.
     assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
     assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
 }

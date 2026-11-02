@@ -226,6 +226,9 @@ pub enum ModelCommand {
     /// Text the user typed that may turn out to be typeahead: the early-output model matches it
     /// against the characters the pty echoes (`TerminalModel::push_user_input`).
     UserInput(String),
+    /// Bytes the user typed, for a shared session this pane drives to relay to its viewers
+    /// (`TerminalModel::send_write_to_pty_events_for_shared_session`).
+    SharedSessionWrite(Vec<u8>),
 }
 
 /// The inbox of [`ModelCommand`]s: written by the main thread without the model's lock, drained by

@@ -2259,19 +2259,23 @@ impl CodeEditorView {
         if !ctx.is_self_focused() {
             return;
         }
-        for (offset, c) in text.char_indices() {
-            // A character earlier in this very input started a clipboard register read (`"+p`):
-            // the rest of the input waits behind it, in order (#1405).
-            if self.paste_gate.has_pending() {
-                self.paste_gate
-                    .hold(CodeEditorViewAction::VimUserTyped(UserInput::new(
-                        &text[offset..],
-                    )));
-                return;
-            }
-            self.vim_model.update(ctx, |vim_model, ctx| {
-                vim_model.typed_character(c, ctx);
-            });
+        // One character per step. The vim model's events (a paste that starts a clipboard read
+        // among them) reach this view only once the current update ends, so the next character
+        // cannot be told from here whether the previous one started a read. The rest of the input
+        // is queued as a deferred action: it runs after this character's events, and the paste
+        // gate holds it, in order, when one of them began a read (#1405).
+        let mut chars = text.chars();
+        let Some(c) = chars.next() else {
+            return;
+        };
+        let rest = chars.as_str();
+        self.vim_model.update(ctx, |vim_model, ctx| {
+            vim_model.typed_character(c, ctx);
+        });
+        if !rest.is_empty() {
+            ctx.dispatch_typed_action_deferred(CodeEditorViewAction::VimUserTyped(
+                UserInput::new(rest),
+            ));
         }
     }
 

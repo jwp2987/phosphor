@@ -3667,8 +3667,10 @@ fn line_editor_markers_become_terminal_events_in_order() {
 #[test]
 fn line_editor_markers_update_the_handoffs_account_in_stream_order() {
     use crate::terminal::model::typeahead_handoff::ShellActivity;
-    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    // The flag goes on after the mock is built: the mock's own bootstrap precmd would otherwise
+    // already put the hand-off's account at `Prompt`.
     let mut terminal = TerminalModel::mock(None, None);
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
     assert_eq!(
         terminal.typeahead_handoff().shell_activity(),
         ShellActivity::Unknown

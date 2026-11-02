@@ -2566,7 +2566,7 @@ fn test_vim_system_register_visual_paste_waits_for_the_read() {
         vim_user_insert(&editor, "v", &mut app);
         let reply = VimRegisters::defer_next_system_clipboard_read_for_test();
         vim_user_insert(&editor, "\"+p", &mut app);
-        vim_user_insert(&editor, "x", &mut app);
+        vim_user_insert(&editor, "0x", &mut app);
         assert_eq!(
             buffer_text(&editor, &app),
             "abc",
@@ -2574,7 +2574,8 @@ fn test_vim_system_register_visual_paste_waits_for_the_read() {
         );
 
         reply.send("Z".to_owned()).unwrap();
-        // `a` becomes `Z`; the cursor is on it and `x` deletes it.
+        // `a` becomes `Z`; the held `x` applies after it. `0` first so the result does not
+        // depend on where the cursor is left after a visual paste.
         wait_for_buffer_text(&editor, "bc", &mut app).await;
     });
 }
