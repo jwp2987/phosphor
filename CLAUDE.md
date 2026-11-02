@@ -35,8 +35,8 @@ should be able to edit anything:
 
 | type | use it for | why |
 |---|---|---|
-| `Explore` | audits, searches across many files, log and CI-trace digging, "where is X / every place that does Y" | read-only: it cannot change the tree by accident, and it returns a conclusion instead of file dumps |
-| `Plan` | design passes before a rebuild or a second patch on the same path, implementation plans | read-only; produces the plan the owner approves before code is written |
+| `Explore` | LOCATING things: searches across many files, "where is X / every place that does Y", log and CI-trace digging | read-only and fast, but it reads excerpts, not whole files, so it finds code; it does not review it |
+| `Plan` | reviews and audits that must read code in full (correctness, races, "can a key be lost"), design passes before a rebuild or a second patch on the same path | read-only, reads whole files; produces findings or the plan the owner approves before code is written |
 | `general-purpose` | fixes, harness and CI changes, tests, anything that writes or commits | the only type that should edit; give it its own worktree and branch |
 
 Writing agents never run `cargo` on the laptop (builds and tests run on the box
