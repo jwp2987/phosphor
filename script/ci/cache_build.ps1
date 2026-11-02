@@ -14,6 +14,8 @@ Copy-Item dist\* $tmp -Recurse -Force
 $final = Join-Path $root $id
 if (Test-Path $final) { Remove-Item -Recurse -Force $final }
 Move-Item $tmp $final
+if ($env:CI_PIPELINE_ID) { Set-Content (Join-Path $root "pipeline-$env:CI_PIPELINE_ID") -Value $id -Encoding ASCII }
 Get-ChildItem $root -Directory | Where-Object { $_.Name -match '^\d+$' } | Sort-Object { [int64]$_.Name } -Descending | Select-Object -Skip 3 | Remove-Item -Recurse -Force
 Get-ChildItem $root -Directory -Filter ".tmp-*" | Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-2) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem $root -File -Filter "pipeline-*" | Where-Object { -not (Test-Path (Join-Path $root (Get-Content $_.FullName -Raw).Trim())) } | Remove-Item -Force -ErrorAction SilentlyContinue
 Write-Output "cache_build: cached dist\ of job $id at $final"

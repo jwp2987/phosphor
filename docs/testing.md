@@ -484,6 +484,12 @@ default (primed, per-line) injection must lose nothing in Phosphor. The Wayland 
 tap and a 20 ms sleep (`APPCI_WL_PRIME_MS`, 0 = off; it adds that much to input-tool spawn cost, which cancels in the
 Phosphor-vs-reference latency overhead). Keep the control permanently.
 
+**Where every app test gets its build: this machine, never a download.** The plain `app-test-*` jobs `need` their build job with
+`artifacts: false` (ordering only) and their `before_script` is `script/ci/fetch_build.sh --this-pipeline` / `fetch_build.ps1 -ThisPipeline`:
+it reads the `pipeline-<CI_PIPELINE_ID>` pointer that `cache_build.sh` / `.ps1` leaves in the local build cache (below), copies that build to
+`dist/` and checks `SHA256SUMS`. A missing pointer or copy fails the job loudly (exit 2); it never downloads and never tests another build.
+(Until 2026-11-02 the plain jobs still pulled GitLab artifacts; only the `-reuse` jobs used the cache.)
+
 **Reusing a build (`app-test-*-reuse`).** When a fix round touches nothing that goes into the app, rebuilding (Mac ~20 min, Windows ~38,
 Linux ~30) tests the same bytes. The `-reuse` jobs extend the plain ones with `needs: []`; their `before_script`
 (`script/ci/fetch_build.sh` / `.ps1`) uses the build **already on the same machine**. Each platform's app test runs on the machine that built it

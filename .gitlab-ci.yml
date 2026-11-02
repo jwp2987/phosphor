@@ -866,7 +866,9 @@ app-test-linux-wayland:
   extends: .appci_linux
   needs:
     - job: build-linux-x86_64
-      artifacts: true
+      artifacts: false
+  before_script:
+    - script/ci/fetch_build.sh --this-pipeline
   script:
     - rc=0
     - script/realapp/linux/wayland_session.sh --mode wayland --dist dist --out "$CI_PROJECT_DIR/appci-out/wayland" || rc=$?
@@ -879,7 +881,9 @@ app-test-linux-x11:
   extends: .appci_linux
   needs:
     - job: build-linux-x86_64
-      artifacts: true
+      artifacts: false
+  before_script:
+    - script/ci/fetch_build.sh --this-pipeline
   script:
     - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: the x11 pass is not part of the fix tier"; exit 0; fi'
     - script/realapp/linux/wayland_session.sh --mode x11 --dist dist --out "$CI_PROJECT_DIR/appci-out/x11"
@@ -895,7 +899,9 @@ app-test-macos:
   timeout: 90m
   needs:
     - job: build-macos-arm64
-      artifacts: true
+      artifacts: false
+  before_script:
+    - script/ci/fetch_build.sh --this-pipeline
   script:
     - script/realapp/mac/ci/app_test.sh dist "$CI_PROJECT_DIR/appci-out/macos"
   artifacts:
@@ -924,7 +930,11 @@ app-test-windows:
   timeout: 90m
   needs:
     - job: build-windows-x86_64
-      artifacts: true
+      artifacts: false
+  before_script:
+    - !reference [.windows_job, before_script]
+    - .\script\ci\fetch_build.ps1 -ThisPipeline
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   script:
     - .\script\realapp\windows\ci\app_test.ps1 -Dist dist -Out appci-out\windows
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }

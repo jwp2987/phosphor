@@ -1,6 +1,8 @@
 # script/ci/fetch_build.ps1: Windows twin of fetch_build.sh (app-test-windows-reuse). Same inputs, same fail-loud rules.
+# -ThisPipeline (plain app-test-windows): copy THIS pipeline's build from the local cache via the pipeline-<id> pointer that
+# cache_build.ps1 leaves; no download (`needs` has artifacts: false); a missing copy fails loudly.
 # -Record (after_script) stamps the reused build into appci-out\windows\run\results.json and summary.md.
-param([switch]$Record)
+param([switch]$Record, [switch]$ThisPipeline)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 if ($Record) {
@@ -20,6 +22,27 @@ if ($Record) {
     exit 0
 }
 function Die($msg) { Write-Error "ERROR fetch_build: $msg"; exit 2 }
+function Copy-Checked($src) {
+    if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+    New-Item -ItemType Directory dist | Out-Null
+    Copy-Item "$src\*" dist -Recurse -Force
+    Remove-Item dist\meta.json -ErrorAction SilentlyContinue
+    foreach ($l in Get-Content dist\SHA256SUMS) {
+        if (-not $l.Trim()) { continue }
+        $h, $n = ($l -split '\s+', 2); $n = $n.TrimStart('*').Trim()
+        if ((Get-FileHash (Join-Path dist $n) -Algorithm SHA256).Hash.ToLower() -ne $h.ToLower()) { Die "dist\SHA256SUMS check failed for $n" }
+    }
+}
+if ($ThisPipeline) {
+    $root = Join-Path $env:USERPROFILE ".cache\phosphor-ci\builds\windows"
+    $ptr = Join-Path $root "pipeline-$env:CI_PIPELINE_ID"
+    if (-not (Test-Path $ptr)) { Die "no local build for pipeline $env:CI_PIPELINE_ID ($ptr missing): the build job did not run on this machine or cache_build.ps1 failed. Re-run the build job." }
+    $bid = (Get-Content $ptr -Raw).Trim(); $src = Join-Path $root $bid
+    if (-not (Test-Path (Join-Path $src "SHA256SUMS"))) { Die "local build $src is missing or pruned; re-run the build job" }
+    Write-Output "fetch_build: using this pipeline's build job $bid from this machine: $src (no download)"
+    Copy-Checked $src
+    exit 0
+}
 $id = $env:APPCI_BUILD_JOB_ID
 if (-not $id) { Die "APPCI_BUILD_JOB_ID is not set. This *-reuse job must be played with the build job id (script/ci/ci_seq.py does that); to test a fresh build play the plain app-test-* job instead." }
 if ($id -notmatch '^\d+$') { Die "APPCI_BUILD_JOB_ID='$id' is not a job id" }

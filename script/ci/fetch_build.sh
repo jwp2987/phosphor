@@ -6,12 +6,27 @@
 #   APPCI_BUILD_JOB_ID (required), APPCI_BUILD_PIPELINE_ID, APPCI_BUILD_SHA, APPCI_BUILD_JOB_NAME (recorded only).
 # Fails loudly (exit 2) on a missing variable, a failed fetch or a zip without dist/: it never tests "something else".
 # Auth: CI_JOB_TOKEN (JOB-TOKEN header, same project). If GitLab refuses it and APPCI_API_TOKEN is set, that PRIVATE-TOKEN is tried.
+#
+# `fetch_build.sh --this-pipeline` (plain app-test-* jobs): copy THIS pipeline's build, which the build job just made on this
+# machine (cache_build.sh leaves a pipeline-<id> pointer), from the local cache. No download: the job's `needs` has
+# artifacts: false. A missing copy fails loudly (exit 2); it never tests another build.
 set -eu
 die() { echo "ERROR fetch_build: $*" >&2; exit 2; }
+case "$(uname -s)" in Darwin) PLAT=macos;; *) PLAT=linux;; esac
+ROOT="${PHOSPHOR_CI_BUILD_CACHE:-$HOME/.cache/phosphor-ci/builds}/$PLAT"
+if [ "${1:-}" = --this-pipeline ]; then
+  ptr="$ROOT/pipeline-$CI_PIPELINE_ID"
+  [ -f "$ptr" ] || die "no local build for pipeline $CI_PIPELINE_ID ($ptr missing): the build job did not run on this machine or cache_build.sh failed. Re-run the build job."
+  id=$(cat "$ptr"); src="$ROOT/$id"
+  [ -f "$src/SHA256SUMS" ] || die "local build $src is missing or pruned; re-run the build job"
+  echo "fetch_build: using this pipeline's build job $id from this machine: $src (no download)"
+  rm -rf dist; mkdir dist; cp -R "$src"/. dist/; rm -f dist/meta.json
+  (cd dist && { sha256sum -c SHA256SUMS 2>/dev/null || shasum -a 256 -c SHA256SUMS; }) || die "dist/SHA256SUMS check failed"
+  exit 0
+fi
 : "${APPCI_BUILD_JOB_ID:?}" 2>/dev/null || die "APPCI_BUILD_JOB_ID is not set. This *-reuse job must be played with the build job id (script/ci/ci_seq.py does that); to test a fresh build play the plain app-test-* job instead."
 case "$APPCI_BUILD_JOB_ID" in ''|*[!0-9]*) die "APPCI_BUILD_JOB_ID='$APPCI_BUILD_JOB_ID' is not a job id";; esac
-case "$(uname -s)" in Darwin) PLAT=macos;; *) PLAT=linux;; esac
-LOCAL="${PHOSPHOR_CI_BUILD_CACHE:-$HOME/.cache/phosphor-ci/builds}/$PLAT/$APPCI_BUILD_JOB_ID"
+LOCAL="$ROOT/$APPCI_BUILD_JOB_ID"
 write_record() {
   mkdir -p appci-out
   cat > appci-out/reused_build.json <<J
