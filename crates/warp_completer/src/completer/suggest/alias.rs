@@ -153,7 +153,8 @@ async fn expand_command_aliases_internal<'a>(
                 // We use this span because it factors in complicated commands like
                 // "git commit && cd".
                 let command_line = &line[command_name_span.start()..];
-                ctx.command_registry().signature_from_line(command_line, ctx.command_case_sensitivity())
+                ctx.command_registry()
+                    .signature_from_line(command_line, ctx.command_case_sensitivity())
             })
         } else {
             match ctx
