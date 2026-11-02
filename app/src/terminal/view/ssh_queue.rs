@@ -30,6 +30,12 @@
 //! the connect gate armed by a command that Enter submitted is in place before the next held input
 //! is judged (#1421).
 //!
+//! In `PHOSPHOR_QUEUE_DESTINATION=table` (#1424 step 4) the hand-over's drain does not call the
+//! legacy chain either: `deliver_held_via_table` decides each held input once with the table and
+//! executes it with the leaf writers (`view/dest_table.rs`). A `HELD_SIGNAL` entry (a ^C typed in
+//! the setup window, OD-5) is delivered to the pty after the keys before it; the ways the segment
+//! ends without a remote shell discard it (`ssh_drop_detached`), it is never run locally.
+//!
 //! The 64 KiB bound still drops the WHOLE run and ignores the rest of that connect.
 
 use warpui::ViewContext;
@@ -38,7 +44,7 @@ use super::TerminalView;
 use super::paste_queue::PtyQueueHost;
 use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
 use crate::terminal::input_queue::{
-    Deferred, EntryKind, GateKind, GateSpec, Origin, SshDropThen, trace,
+    Deferred, EntryKind, GateKind, GateSpec, HELD_SIGNAL, Origin, SshDropThen, trace,
 };
 
 /// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
@@ -251,8 +257,13 @@ impl TerminalView {
             });
         }
         let mut held = Vec::new();
+        let mut signals_discarded = 0usize;
         for entry in removed {
             match entry.kind {
+                // A signal typed during the ssh setup window (OD-5) was meant for the REMOTE
+                // shell. When the held segment ends without one (a prompt, ^C, a connect that
+                // failed) it is never handed back as text and never delivered locally.
+                EntryKind::Held { class, .. } if class == HELD_SIGNAL => signals_discarded += 1,
                 EntryKind::Held { class, text } => held.push(HeldInput::from_parts(class, text)),
                 EntryKind::Paste { paste_id, .. } => {
                     self.paste_queue.routed_pastes.remove(&paste_id);
@@ -265,6 +276,11 @@ impl TerminalView {
                 }
                 _ => {}
             }
+        }
+        if signals_discarded > 0 {
+            log::info!(
+                "ssh hold: {signals_discarded} held signal(s) were discarded, not delivered locally"
+            );
         }
         held
     }

@@ -38,8 +38,8 @@
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
 //!
-//! DESTINATION TABLE (#1424, steps 1 and 2 of the approved design; NOT LIVE). Where an input goes
-//! is still decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
+//! DESTINATION TABLE (#1424, steps 1-4 of the approved design). Where an input goes is still
+//! decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
 //! `after_paste_stage`, `deliver_replayed_entry`, ...). The replacement is one pure function,
 //! [`table::decide`]`(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }`
 //! (`table.rs`: every hold row H1-H10, destination row D1-D13, signal row P1-P2 and origin row, the
@@ -55,19 +55,42 @@
 //!    and follow-ups, so a key judged later still has the classification it had when typed (the ssh
 //!    password rule, H4). [`SshPhase`], [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only
 //!    from the legacy fields; no refresher moved off the key path.
-//!  - PURE, NOT CALLED: `table.rs` (`decide`, the predicates, `gate_holds`, `destination_for_fixed`
-//!    which fixes B12, the inverted hidden-input branch of `destination_for`), the `Origin` rows
-//!    (Synced, Viewer, CliSubmit, ReleasedFrom), `TypeaheadHandoff::peek_user_bytes_route`, the
-//!    `HELD_SIGNAL` held class (declared, no producer or executor).
+//!  - SHADOW (step 3, `shadow.rs`, `view/dest_table.rs`): in `shadow` mode the legacy entry points
+//!    (`typed_characters_on_terminal`, `keydown_on_terminal`, `control_sequence_on_terminal`, the
+//!    replayed Enter / held key) ask the table what it would decide, with the stamp and the facts
+//!    of the same moment, BEFORE the legacy chain runs; the chain notes the destination class it
+//!    reached at its leaf; a difference is logged as `kh_dest_disagree row=.. legacy=.. table=..
+//!    flags=..` (`input_order` target, debug, counts and flags only, never text), tagged
+//!    `expected=OD1|OD5|OD7|B3|B7|B13` where the cause is a known bug or a deliberate change.
+//!    Shadow proves DESTINATIONS only and changes no behaviour. It runs when the mode is `shadow`
+//!    and `RUST_LOG=warp::input_order=debug` is on.
+//!  - DELIVERY THROUGH THE TABLE (step 4, the #1415 fix, `view/dest_table.rs`, ONLY in `table`
+//!    mode): text and Enters replayed behind an Enter that waited (`EntryKind::Text` /
+//!    `Enter`) and every ssh-held input (`EntryKind::Held`, all five classes) are no longer
+//!    delivered by calling the legacy chain (`typed_characters_on_terminal` & co., which could hold
+//!    the input again from inside the delivery). `TerminalView::deliver_via_table` runs the legacy
+//!    ssh refreshers (the lazy arming of the connect gate, the prompt discard), builds the facts of
+//!    that moment (no gate covers a delivered entry), decides ONCE with the entry's own stamp, and
+//!    executes the plan with the leaf writers legacy ended in (`write_user_bytes_to_pty_after_paste_
+//!    stage`, the editor's insert / Enter, a requeue under the `SshConnect` gate for a hold).
+//!    A `HELD_SIGNAL` entry is executed (the signal goes to the pty through the leaf, after the
+//!    keys typed before it); the H4 drop is carried (`kh_table_drop`). Live keys, the editor's
+//!    keys, paste reads and the idle path still decide with the legacy chain (steps 5-8).
+//!  - PURE, NOT CALLED: `destination_for_fixed` (fixes B12, the inverted hidden-input branch of
+//!    `destination_for`), the `Origin` rows Synced / Viewer / CliSubmit / ReleasedFrom (no producer
+//!    yet), `TypeaheadHandoff::peek_user_bytes_route`; `HELD_SIGNAL` has an executor and no
+//!    producer.
 //!  - THE SWITCH: `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`], parsed like
-//!    `PHOSPHOR_PANE_KEY`). Default `legacy`. Nothing reads `shadow` or `table` yet.
-//!  - DELIBERATE CHANGES encoded in the table but not yet effective (the owner's decisions OD-1,
-//!    OD-5, OD-7): ^Z and ^\ jump the queue like ^C with a per-gate plan; a signal typed during the
-//!    ssh setup window is HELD and delivered to the REMOTE side, never to the local shell; a key
-//!    stamped before the ssh prompt was published is dropped even if it is processed later.
-//!  - NEXT (design steps 3-8): the shadow comparison (`kh_dest_disagree`), delivery through the
-//!    table (the #1415 fix), arrival of terminal keys, editor arrival and paste, the edge-driven
-//!    `SshPhase`, then `table` as the default and the deletion of `delivering`/`requeue_request`.
+//!    `PHOSPHOR_PANE_KEY`). Default `shadow` (since step 4): legacy behaviour plus the comparison
+//!    log; `legacy` turns the table off entirely; `table` is opt-in until step 8.
+//!  - DELIBERATE CHANGES encoded in the table, effective in `table` mode for the paths above (the
+//!    owner's decisions OD-1, OD-5, OD-7): a key stamped before the ssh prompt was published is
+//!    dropped even if it is processed later (H4); a held signal is delivered to the REMOTE shell.
+//!    The ARRIVAL side (^Z and ^\ jump the queue like ^C; a signal typed in the ssh setup window is
+//!    held instead of dropped) is step 5.
+//!  - NEXT (design steps 5-8): arrival of terminal keys, editor arrival and paste, the
+//!    edge-driven `SshPhase`, then `table` as the default and the deletion of
+//!    `delivering`/`requeue_request`.
 //!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
@@ -93,12 +116,10 @@
 //! `PaneQueue::lock()` stays only for callers provably outside any operation.
 
 mod destination;
-// #1424 steps 1-2 (facts + the pure table) are not called yet: step 3 (shadow) wires them in, then remove these allows.
-#[allow(dead_code)]
 pub mod facts;
 mod gates;
 mod pane;
-#[allow(dead_code)]
+pub mod shadow;
 pub mod table;
 pub mod trace;
 
@@ -310,8 +331,9 @@ pub const HELD_SEQ: u8 = 3;
 /// A signal (^C ^D ^Z ^\) typed during the ssh setup window (#1424, OD-5): held in typed order with
 /// the keys, carried as the byte, and delivered to the REMOTE side at the hand-over by the
 /// table's `Origin::Held` + signal row. Never delivered locally: when the connect ends without a
-/// remote shell the held signal is discarded (logged, count only). Declared here; no producer or
-/// executor uses it yet (steps 1 and 2 change no behaviour).
+/// remote shell the held signal is discarded (logged, count only: `ssh_drop_detached`). Executed
+/// by the delivery in `table` mode (step 4, `view/dest_table.rs`); nothing PRODUCES it until
+/// step 5 (arrival of terminal keys) moves the ssh interrupt window onto the table.
 pub const HELD_SIGNAL: u8 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

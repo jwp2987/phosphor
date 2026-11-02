@@ -23347,3 +23347,410 @@ fn route_facts_derive_the_phases_from_the_legacy_fields_without_changing_them() 
         });
     });
 }
+
+// ---- the shadow comparison (#1424, step 3) ------------------------------------------------------
+
+/// Shadow mode changes no destination: typed text at an idle prompt lands in the editor exactly as
+/// in legacy, and the table, asked next to the legacy chain with the facts of the same moment,
+/// agrees, so nothing is logged.
+#[test]
+fn shadow_mode_changes_no_destination_and_logs_nothing_when_they_agree() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    use crate::terminal::input_queue::shadow;
+    App::test((), |mut app| async move {
+        let _mode = set_destination_mode_for_test(DestinationMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let _ = shadow::take_recorded();
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            assert_eq!(shadow::take_recorded(), Vec::<String>::new());
+        });
+    });
+}
+
+/// A legacy leaf that differs from the table's plan is reported through the view's hooks, with the
+/// row, both classes and the facts, and no content.
+#[test]
+fn shadow_reports_a_legacy_table_disagreement_through_the_views_hooks() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    use crate::terminal::input_queue::shadow::{self, DestClass};
+    App::test((), |mut app| async move {
+        let _mode = set_destination_mode_for_test(DestinationMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let _ = shadow::take_recorded();
+            // At an idle prompt the table puts typed text in the editor (D7). Pretend legacy wrote
+            // it to the pty.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            assert!(pending.is_some(), "the comparison runs in shadow mode");
+            shadow::note_leaf(DestClass::Pty);
+            view.shadow_end(pending);
+            let lines = shadow::take_recorded();
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(
+                lines[0].starts_with("row=D7 legacy=pty table=editor flags="),
+                "{}",
+                lines[0]
+            );
+            // Agreement logs nothing.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            shadow::note_leaf(DestClass::Editor);
+            view.shadow_end(pending);
+            assert!(shadow::take_recorded().is_empty());
+            // A leaf nobody noted compares nothing.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            view.shadow_end(pending);
+            assert!(shadow::take_recorded().is_empty());
+        });
+    });
+}
+
+/// Without `shadow` mode and a listener, the hooks do not even build the facts.
+#[test]
+fn the_shadow_hooks_cost_nothing_unless_wanted() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+                let _mode = set_destination_mode_for_test(mode);
+                assert!(
+                    view.shadow_begin(Class::Typed, ctx).is_none(),
+                    "{mode:?}: no comparison"
+                );
+            }
+            // The default mode is shadow, but nobody listens (`input_order` debug is off).
+            assert!(view.shadow_begin(Class::Typed, ctx).is_none());
+        });
+    });
+}
+
+// ---- delivery through the table (#1424, step 4: the #1415 fix) ----------------------------------
+//
+// These run with `PHOSPHOR_QUEUE_DESTINATION=table` forced on the test thread
+// (`set_destination_mode_for_test`, never `std::env::set_var`). The legacy-chain counter
+// (`dest_table::legacy_chain_deliveries`) is what tells the table from the chain: a delivery that
+// still re-ran `typed_characters_on_terminal` / `route_after_enter_input` / `deliver_ssh_held`
+// adds to it.
+
+/// Text typed behind an Enter that waited is delivered by the legacy chain in `legacy` and by the
+/// table in `table`; where it lands is the same.
+fn replayed_text_is_delivered_by(
+    mode: crate::terminal::input_queue::DestinationMode,
+    chain_is_used: bool,
+) {
+    App::test((), move |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let before = dest_table::legacy_chain_deliveries();
+            hold_text_behind_test_gate(view, "ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            release_test_gate(view, ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "ls",
+                "{mode:?}: at an idle prompt the replayed text is the editor's"
+            );
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            assert_eq!(
+                dest_table::legacy_chain_deliveries() > before,
+                chain_is_used,
+                "{mode:?}: the legacy chain is called exactly when the mode is not table"
+            );
+        });
+    });
+}
+
+#[test]
+fn legacy_mode_delivers_replayed_text_through_the_chain() {
+    replayed_text_is_delivered_by(crate::terminal::input_queue::DestinationMode::Legacy, true);
+}
+
+#[test]
+fn shadow_mode_delivers_replayed_text_through_the_chain() {
+    replayed_text_is_delivered_by(crate::terminal::input_queue::DestinationMode::Shadow, true);
+}
+
+#[test]
+fn table_mode_delivers_replayed_text_without_the_legacy_chain() {
+    replayed_text_is_delivered_by(crate::terminal::input_queue::DestinationMode::Table, false);
+}
+
+/// The mixed-mode ssh case (#1415): the ssh command was recognised at PREEXEC only (the warpify
+/// state names the host, the block is running) and no submit event armed the connect gate. The
+/// text typed behind its Enter reaches the delivery while the gate is still unarmed; the table's
+/// delivery runs the legacy lazy arming first (`refresh_ssh_connect_gate`), so the text is held for
+/// the connect, never written locally, and the chain is not re-run to find that out.
+#[test]
+fn table_mode_text_replayed_after_an_ssh_recognised_at_preexec_only_is_held_not_run_locally() {
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let before = dest_table::legacy_chain_deliveries();
+            // `ls` waits behind the Enter's gate.
+            hold_text_behind_test_gate(view, "ls", ctx);
+            // The Enter's command is `ssh host`, seen at preexec only: no `note_command_submitted`.
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            assert!(
+                view.ssh_connect_gate.is_none(),
+                "nothing armed the gate yet"
+            );
+            assert!(!ssh_gate_open(view));
+            release_test_gate(view, ctx);
+            assert!(
+                view.ssh_connect_gate.is_some(),
+                "the delivery armed the gate lazily from the preexec state"
+            );
+            assert!(
+                view.ssh_typeahead_holding,
+                "the replayed text is held (#1292)"
+            );
+            assert!(ssh_gate_open(view), "behind an SshConnect gate (#1415)");
+            assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
+            assert_eq!(view.ssh_held_count(), 1);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "never written locally: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(
+                dest_table::legacy_chain_deliveries(),
+                before,
+                "decided by the table, not by re-running the legacy chain"
+            );
+        });
+    });
+}
+
+/// #1415 in table mode, end to end: text replayed into a new ssh connect is held, the remote
+/// shell's first prompt delivers it once, in order, and neither the replay nor the hand-over calls
+/// the legacy chain. The whole run takes no key-path model lock.
+#[test]
+fn table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once() {
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let chain_before = dest_table::legacy_chain_deliveries();
+            let locks_before = crate::terminal::model_lock_trace::key_path_lock_count();
+            hold_text_behind_test_gate(view, "ls", ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(!ssh_gate_open(view));
+            release_test_gate(view, ctx);
+            assert!(
+                view.ssh_typeahead_holding,
+                "the replayed text is held (#1292)"
+            );
+            assert!(ssh_gate_open(view), "behind an SshConnect gate");
+            assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
+            assert_eq!(view.ssh_held_count(), 1);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            // The remote shell's first prompt delivers it, once.
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            assert!(ssh_queue_is_idle(view));
+            assert_eq!(
+                dest_table::legacy_chain_deliveries(),
+                chain_before,
+                "neither the replay nor the hand-over ran the legacy chain"
+            );
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count(),
+                locks_before,
+                "table-mode delivery took the key path's blocking model lock"
+            );
+        });
+    });
+}
+
+/// A signal typed during the ssh setup window is held with the keys (`HELD_SIGNAL`, OD-5) and, at
+/// the hand-over to the remote shell, delivered to the pty ONCE, through the leaf, after the keys
+/// typed before it.
+#[test]
+fn table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover() {
+    use crate::terminal::input_queue::{EntryKind, HELD_SIGNAL};
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo hi", ctx);
+            assert!(ssh_gate_open(view));
+            {
+                // The signal joins the held segment, behind the text, in typed order.
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().offer(
+                    &mut host,
+                    EntryKind::Held {
+                        class: HELD_SIGNAL,
+                        text: "\u{3}".to_owned(),
+                    },
+                );
+            }
+            assert_eq!(view.ssh_held_count(), 2);
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "held, not written: {:?}",
+                pty_writes.borrow()
+            );
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert!(ssh_queue_is_idle(view));
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
+            let writes = pty_writes.borrow();
+            assert_eq!(
+                writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+                1,
+                "the held ^C reached the pty exactly once: {writes:?}"
+            );
+        });
+    });
+}
+
+/// A held signal is never run locally: when the connect ends without a remote shell the held
+/// segment is handed back as text and the signal is discarded, not delivered and not shown.
+#[test]
+fn a_held_signal_is_discarded_when_the_connect_ends_without_a_remote_shell() {
+    use crate::terminal::input_queue::{EntryKind, HELD_SIGNAL};
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo hi", ctx);
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().offer(
+                    &mut host,
+                    EntryKind::Held {
+                        class: HELD_SIGNAL,
+                        text: "\u{3}".to_owned(),
+                    },
+                );
+            }
+            assert_eq!(view.ssh_held_count(), 2);
+            // The connect ended and no remote prompt was ever seen.
+            view.ssh_remote_prompt_seen = false;
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert!(ssh_queue_is_idle(view));
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "nothing reached the local shell: {:?}",
+                pty_writes.borrow()
+            );
+            assert!(
+                !view.input.as_ref(ctx).buffer_text(ctx).contains('\u{3}'),
+                "the signal is not handed back as text"
+            );
+        });
+    });
+}
+
+/// The H4 drop is executed (OD-7): a delivered input the table drops as stamped before the ssh
+/// prompt is neither written nor inserted.
+#[test]
+fn table_mode_executes_the_h4_drop_for_a_key_stamped_before_the_prompt() {
+    use crate::terminal::input_queue::QueueFacts;
+    use crate::terminal::input_queue::table::{DropWhy, Effects, OnRefused, Outcome, Plan, Row};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let facts = view.build_route_facts(QueueFacts::default(), ctx);
+            let plan = Plan {
+                outcome: Outcome::Drop(DropWhy::StaleBeforePrompt),
+                effects: Effects::NONE,
+                on_refused: OnRefused::NotApplicable,
+                row: Row::H4,
+            };
+            for input in [
+                dest_table::Replayed::Typed("hunter2"),
+                dest_table::Replayed::Key("\r"),
+                dest_table::Replayed::Seq("\u{1b}[A"),
+                dest_table::Replayed::Paste("hunter2"),
+            ] {
+                view.execute_table_plan(input, &plan, &facts, ctx);
+            }
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    });
+}
+
+/// Lock order: facts for a table decision never wait for the typeahead hand-off's lock (the
+/// model's parse takes it while holding the model lock, so a delivery that waited for it while
+/// holding anything the parse needs could deadlock). With the hand-off write-locked the build
+/// returns at once and says the hand-off value is the last known one.
+#[test]
+fn table_mode_facts_never_wait_on_the_handoff_lock() {
+    use crate::terminal::input_queue::QueueFacts;
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let held_by_the_parser = view.handoff.write();
+            let facts = view.build_route_facts(QueueFacts::default(), ctx);
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                assert!(
+                    !facts.handoff_known,
+                    "the busy hand-off is reported as unknown, not waited for"
+                );
+            }
+            drop(held_by_the_parser);
+            let free = view.build_route_facts(QueueFacts::default(), ctx);
+            assert!(free.handoff_known);
+        });
+    });
+}

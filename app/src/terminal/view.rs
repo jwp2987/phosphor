@@ -78,6 +78,8 @@ use window_footer_bar::render_window_footer_bar;
 
 use super::CLIAgent;
 use super::cli_agent;
+use super::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
+use super::input_queue::table::Class;
 use super::input_queue::{self, GateKeysThen, PowershellKeysThen};
 use super::paste_sequencer::{PasteFailure, paste_backstop};
 #[cfg(feature = "local_fs")]
@@ -10488,6 +10490,18 @@ impl TerminalView {
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
+        let class = match bytes {
+            [0x03] => Class::Signal(input_queue::SignalKind::Interrupt),
+            [0x04] => Class::Signal(input_queue::SignalKind::Eof),
+            _ => Class::Seq,
+        };
+        let shadow = self.shadow_begin(class, ctx);
+        self.control_sequence_on_terminal_legacy(bytes, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn control_sequence_on_terminal_legacy(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
         let _key_path = KeyPathScope::enter(&self.key_path_depth);
         // #1292: during an ssh connect these are held with the typed keys, in order, not written
         // into the bootstrap. Abort keys always pass.
@@ -10495,6 +10509,7 @@ impl TerminalView {
             && let Ok(sequence) = std::str::from_utf8(bytes)
             && self.hold_input_during_ssh_connect(Some(sequence), true, ctx)
         {
+            note_shadow_leaf(DestClass::Held);
             return;
         }
         // #1179: arrows, Home/End, Page keys etc. never reach an agent-driven command's pty (the
@@ -10505,16 +10520,20 @@ impl TerminalView {
                 safe: ("agent owns the command pty. ignoring control seq on terminal."),
                 full: ("agent owns the command pty. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
             );
+            note_shadow_leaf(DestClass::Dropped);
             return;
         }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(bytes))
         {
+            note_shadow_leaf(DestClass::Pty);
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_bytes(bytes)), ctx);
             self.write_user_bytes_to_pty(bytes.to_owned(), ctx);
         } else if self.apply_key_to_editor_after_handoff(bytes, ctx) {
+            note_shadow_leaf(DestClass::Editor);
         } else {
+            note_shadow_leaf(DestClass::Dropped);
             safe_warn!(
                 safe: ("command not long-running. ignoring control seq on terminal."),
                 full: ("command not long-running. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
@@ -10725,6 +10744,21 @@ impl TerminalView {
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
+        let class = match characters {
+            "\u{3}" => Class::Signal(input_queue::SignalKind::Interrupt),
+            "\u{4}" => Class::Signal(input_queue::SignalKind::Eof),
+            "\u{1a}" => Class::Signal(input_queue::SignalKind::Suspend),
+            "\u{1c}" => Class::Signal(input_queue::SignalKind::Quit),
+            "\r" | "\n" => Class::Enter,
+            _ => Class::Control,
+        };
+        let shadow = self.shadow_begin(class, ctx);
+        self.keydown_on_terminal_legacy(characters, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn keydown_on_terminal_legacy(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
         let _key_path = KeyPathScope::enter(&self.key_path_depth);
         self.reprobe_interactive_latch_on_key();
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
@@ -10736,12 +10770,19 @@ impl TerminalView {
                 || (characters == "\u{4}" && self.ssh_connect_holds_eot())
             {
                 self.note_ssh_interrupt_held(ctx);
+                // Dropped today (the toast says "held"); the table holds it (OD-5).
+                note_shadow_leaf(DestClass::Dropped);
                 return;
             }
             // The interrupt passes straight through; what was typed before it is stale, as the
             // tty's own input flush on ^C would make it.
             self.reset_ssh_typeahead();
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
+            note_shadow_leaf(if self.ssh_typeahead_holding {
+                DestClass::Held
+            } else {
+                DestClass::Swallowed
+            });
             return;
         }
         // #1353 phase 3: the same on the input queue, while an Enter's gate holds it.
@@ -10754,18 +10795,21 @@ impl TerminalView {
                     input.queue_behind_enter(AfterEnterInput::Enter, ctx)
                 });
                 if queued {
+                    note_shadow_leaf(DestClass::Held);
                     return;
                 }
             }
         }
         // #1051: a Ctrl-C during a PowerShell subshell setup has its own rules.
         if characters == "\u{3}" && self.powershell_setup_hold != PowerShellSetupHold::Off {
+            note_shadow_leaf(DestClass::Pty);
             self.ctrl_c_during_powershell_setup(ctx);
             return;
         }
         // #1048: Enter (and every other non-abort key) typed during a PowerShell subshell setup
         // joins the held keys, whatever block is active; abort keys keep their own path below.
         if !is_abort_key(characters.as_bytes()) && self.holds_keys_for_powershell_subshell_setup() {
+            note_shadow_leaf(DestClass::Held);
             self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
             return;
         }
@@ -10779,6 +10823,7 @@ impl TerminalView {
                 && self.ssh_bootstrap_interrupt_route()
                     == Some(SshBootstrapInterruptRoute::Forward))
         {
+            note_shadow_leaf(DestClass::Pty);
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
             self.highlighted_link.invalidate();
             // #1001: a Ctrl-C between the SSH hook and InitShell aborts the connect (`~.`).
@@ -10797,7 +10842,9 @@ impl TerminalView {
                 self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
             }
         } else if self.apply_key_to_editor_after_handoff(characters.as_bytes(), ctx) {
+            note_shadow_leaf(DestClass::Editor);
         } else {
+            note_shadow_leaf(DestClass::Dropped);
             // When it's not a long-running command, we want to clear the selected block
             // and focus the editor. We specifically don't want to insert
             // anything into the input box. Characters that belong there should go through
@@ -11164,21 +11211,35 @@ impl TerminalView {
     /// where the pty takes typed text (Enter included, as after a deferred Enter), else to the
     /// input editor, where Enter submits the line it holds.
     fn replay_held_key(&mut self, key: &str, ctx: &mut ViewContext<Self>) {
+        // #1424: every held key is judged with the Enter class (it goes where the text before it
+        // went, `replayed_enter_goes_to_pty`), whatever the key is.
+        let shadow = self.shadow_begin(Class::Enter, ctx);
+        self.replay_held_key_legacy(key, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn replay_held_key_legacy(&mut self, key: &str, ctx: &mut ViewContext<Self>) {
         if self.replayed_enter_goes_to_pty(ctx) {
+            note_shadow_leaf(DestClass::Pty);
             self.report_possible_typeahead(key);
             self.write_user_bytes_to_pty(key.as_bytes().to_vec(), ctx);
             return;
         }
         let action = match key {
             "\r" | "\n" | "\r\n" => {
+                note_shadow_leaf(DestClass::Editor);
                 self.input.update(ctx, |input, ctx| input.input_enter(ctx));
                 return;
             }
             "\u{7f}" | "\u{8}" => EditorAction::Backspace,
             "\u{15}" => EditorAction::DeleteAllLeft,
             "\u{17}" => EditorAction::DeleteWordLeft,
-            _ => return,
+            _ => {
+                note_shadow_leaf(DestClass::Dropped);
+                return;
+            }
         };
+        note_shadow_leaf(DestClass::Editor);
         self.input.update(ctx, |input, ctx| {
             input
                 .editor()
@@ -11836,6 +11897,17 @@ impl TerminalView {
     /// enter queue, PowerShell setup hold, approval card, agent-owned pty, pty, hidden input box)
     /// are `pane_key::route_typed`; this function acts on its answer.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
+        let shadow = self.shadow_begin(Class::Typed, ctx);
+        self.typed_characters_on_terminal_legacy(characters, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn typed_characters_on_terminal_legacy(
+        &mut self,
+        characters: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let _key_path = KeyPathScope::enter(&self.key_path_depth);
         self.reprobe_interactive_latch_on_key();
         // #1345: the terminal view received typed characters (a live key or the held ones being
@@ -11862,19 +11934,35 @@ impl TerminalView {
             // They now show the card's "choose an option first" hint. They are not buffered for
             // the session: see `SshRemoteServerChoiceView::typed_before_choice`.
             TypedRoute::SshChoiceCardHint => {
+                note_shadow_leaf(DestClass::Hint);
                 if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
                     choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
                 }
                 return;
             }
             // Held, queued or swallowed by the probe that answered yes.
-            TypedRoute::SshInterruptHeld
-            | TypedRoute::SshSetupHeld
-            | TypedRoute::QueuedBehindEnter => return,
+            TypedRoute::SshInterruptHeld => {
+                // Dropped today (the toast says "held"); the table holds it (OD-5).
+                note_shadow_leaf(DestClass::Dropped);
+                return;
+            }
+            TypedRoute::SshSetupHeld => {
+                note_shadow_leaf(if self.ssh_typeahead_holding {
+                    DestClass::Held
+                } else {
+                    DestClass::Swallowed
+                });
+                return;
+            }
+            TypedRoute::QueuedBehindEnter => {
+                note_shadow_leaf(DestClass::Held);
+                return;
+            }
             // #1048: during a PowerShell subshell setup every key joins the held keys, whatever
             // block is active (after the setup's first `Precmd` the editor would take it and drop
             // its Enter).
             TypedRoute::PowerShellHeld => {
+                note_shadow_leaf(DestClass::Held);
                 self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
                 return;
             }
@@ -11907,6 +11995,11 @@ impl TerminalView {
             };
             pane_key::after_pty_attempt(&tail, written_to_pty, &mut probes)
         };
+        note_shadow_leaf(match action {
+            TailAction::Done => DestClass::Pty,
+            TailAction::InsertIntoEditor => DestClass::Editor,
+            TailAction::DropHiddenInput => DestClass::Dropped,
+        });
         if action == TailAction::InsertIntoEditor {
             // We should only insert typed characters into the input box buffer.
             // When input_sequence is triggered on KeyDown, we should focus
@@ -11982,12 +12075,17 @@ impl TerminalView {
         match input {
             AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
             AfterEnterInput::Enter => {
+                // #1424: the shadow comparison for the replayed Enter (class Enter, origin Replay).
+                let shadow = self.shadow_begin(Class::Enter, ctx);
                 if self.replayed_enter_goes_to_pty(ctx) {
+                    note_shadow_leaf(DestClass::Pty);
                     self.report_possible_typeahead("\r");
                     self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
                 } else {
+                    note_shadow_leaf(DestClass::Editor);
                     self.input.update(ctx, |input, ctx| input.input_enter(ctx));
                 }
+                self.shadow_end(shadow);
             }
         }
     }
@@ -37135,6 +37233,7 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
         .collect();
 }
 
+mod dest_table;
 mod paste_queue;
 mod route_facts;
 mod ssh_queue;

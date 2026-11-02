@@ -18,7 +18,10 @@
 //!   the edge-driven machine exists, step 7 of the design).
 //!
 //! `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`]) is the kill switch.
-//! The default is `legacy`; as of steps 1 and 2 nothing reads `shadow` or `table`.
+//! The default is `shadow` (since step 4): legacy behaviour plus the comparison log. `shadow`
+//! compares the table with what the legacy leaf actions did (`shadow.rs`, step 3); `table` makes
+//! delivery of replayed text / Enters and ssh-held inputs decide with the table
+//! (`view/dest_table.rs`, step 4); `legacy` is the kill switch that turns the table off entirely.
 
 use std::cell::{Cell, RefCell};
 use std::sync::OnceLock;
@@ -29,22 +32,26 @@ use crate::terminal::model::key_facts::{KeyFactsCell, KeyModelCell, load_gen_con
 /// Which destination logic is in charge (`PHOSPHOR_QUEUE_DESTINATION`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DestinationMode {
-    /// The legacy chain decides (the default; the table is not consulted).
-    #[default]
+    /// The legacy chain decides; the table is not consulted.
     Legacy,
-    /// The table decides next to the legacy chain and the two are compared in the log. Not read
-    /// by anything yet.
+    /// The table decides next to the legacy chain and the two are compared in the log
+    /// (`kh_dest_disagree`, `input_order` target, debug). Behaviour is legacy's. The default
+    /// (design: legacy until step 4, then shadow, until step 8).
+    #[default]
     Shadow,
-    /// The table decides. Not read by anything yet.
+    /// The table decides, for the paths that have been moved onto it (step 4: delivery of
+    /// replayed text / Enters and of ssh-held inputs). Everything else is still legacy.
     Table,
 }
 
 impl DestinationMode {
     /// Parsed like `PHOSPHOR_PANE_KEY` (`pane_key::PaneKeyMode::parse`): `shadow` and `table`
-    /// select those modes; `legacy`, `0`, `off`, empty, unset and anything unknown are `Legacy`
-    /// (an unknown value must never switch the destination logic).
+    /// select those modes; unset and empty are the default (`Shadow`: legacy behaviour with the
+    /// comparison log); `legacy`, `0`, `off`, `false` and anything unknown are `Legacy` (an
+    /// unknown value must never switch the destination logic on).
     pub fn parse(value: Option<&str>) -> Self {
         match value.map(str::trim) {
+            None | Some("") => Self::default(),
             Some("shadow") => Self::Shadow,
             Some("table") => Self::Table,
             _ => Self::Legacy,
@@ -52,12 +59,48 @@ impl DestinationMode {
     }
 }
 
-/// The mode of this process, read once.
+/// The mode of this process, read once. Tests can override it for their own thread with
+/// [`set_destination_mode_for_test`] (never `std::env::set_var`, which races between tests).
 pub fn destination_mode() -> DestinationMode {
+    #[cfg(test)]
+    if let Some(mode) = mode_forced_for_test() {
+        return mode;
+    }
     static MODE: OnceLock<DestinationMode> = OnceLock::new();
     *MODE.get_or_init(|| {
         DestinationMode::parse(std::env::var("PHOSPHOR_QUEUE_DESTINATION").ok().as_deref())
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The mode a test forces on its own thread (the pane's code runs on the test thread).
+    static TEST_MODE: Cell<Option<DestinationMode>> = const { Cell::new(None) };
+}
+
+/// The mode this test thread forces, if any.
+#[cfg(test)]
+pub fn mode_forced_for_test() -> Option<DestinationMode> {
+    TEST_MODE.with(Cell::get)
+}
+
+/// Restores the previous forced mode when dropped.
+#[cfg(test)]
+#[must_use = "the mode is restored when the guard drops"]
+pub struct DestinationModeGuard(Option<DestinationMode>);
+
+#[cfg(test)]
+impl Drop for DestinationModeGuard {
+    fn drop(&mut self) {
+        TEST_MODE.with(|mode| mode.set(self.0));
+    }
+}
+
+/// Forces `mode` on the calling thread until the guard drops. Forcing `Shadow` also makes the
+/// shadow comparison run without `RUST_LOG=warp::input_order=debug`.
+#[cfg(test)]
+pub fn set_destination_mode_for_test(mode: DestinationMode) -> DestinationModeGuard {
+    DestinationModeGuard(TEST_MODE.with(|slot| slot.replace(Some(mode))))
 }
 
 /// What had focus when a key reached the sink (the stamped focus chain, design §2.6): the focus
@@ -364,10 +407,15 @@ impl PaneRouteState {
 
     /// The sink read the published facts at `facts_gen`. Stored as read: never a maximum (a
     /// main-thread refresh stores the gen it read from the model without changing it).
+    // Read by tests only until step 5 (terminal keys arrive through the table) calls it.
+    #[allow(dead_code)]
     pub fn note_facts_gen(&self, facts_gen: u64) {
         self.facts_gen.set(facts_gen);
     }
 
+    // Getters of the published phases: read by tests until the editor's producers (step 6) and the
+    // edge-driven `SshPhase` (step 7) read them.
+    #[allow(dead_code)]
     pub fn facts_gen(&self) -> u64 {
         self.facts_gen.get()
     }
@@ -376,6 +424,7 @@ impl PaneRouteState {
         self.focus.set(focus);
     }
 
+    #[allow(dead_code)]
     pub fn focus(&self) -> FocusSnap {
         self.focus.get()
     }
@@ -385,6 +434,7 @@ impl PaneRouteState {
         self.epoch.set(epoch);
     }
 
+    #[allow(dead_code)]
     pub fn epoch(&self) -> u64 {
         self.epoch.get()
     }
@@ -393,6 +443,7 @@ impl PaneRouteState {
         self.ssh.set(phase);
     }
 
+    #[allow(dead_code)]
     pub fn ssh(&self) -> SshPhase {
         self.ssh.get()
     }
@@ -401,6 +452,7 @@ impl PaneRouteState {
         self.subshell.set(phase);
     }
 
+    #[allow(dead_code)]
     pub fn subshell(&self) -> SubshellPhase {
         self.subshell.get()
     }
@@ -409,6 +461,7 @@ impl PaneRouteState {
         self.ps.set(phase);
     }
 
+    #[allow(dead_code)]
     pub fn ps(&self) -> PsPhase {
         self.ps.get()
     }
@@ -429,9 +482,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mode_parses_like_the_pane_key_switch_and_defaults_to_legacy() {
-        assert_eq!(DestinationMode::parse(None), DestinationMode::Legacy);
-        for legacy in ["", "legacy", "0", "off", "garbage", " LEGACY "] {
+    fn mode_parses_like_the_pane_key_switch_and_defaults_to_shadow() {
+        // Unset and empty: the default, which is legacy behaviour plus the comparison log.
+        assert_eq!(DestinationMode::parse(None), DestinationMode::Shadow);
+        assert_eq!(DestinationMode::parse(Some("")), DestinationMode::Shadow);
+        assert_eq!(DestinationMode::default(), DestinationMode::Shadow);
+        // The kill switch, and anything unknown: legacy (an unknown value never turns on more).
+        for legacy in ["legacy", "0", "off", "false", "garbage", " LEGACY "] {
             assert_eq!(
                 DestinationMode::parse(Some(legacy)),
                 DestinationMode::Legacy,

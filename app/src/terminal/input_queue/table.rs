@@ -77,11 +77,14 @@ pub enum Class {
     /// ^C, ^D, ^Z or ^\ (OD-1: all four jump the queue).
     Signal(SignalKind),
     Paste,
-    /// Passive pty bytes (mouse reports, wheel to arrows).
+    /// Passive pty bytes (mouse reports, wheel to arrows). Constructed by step 5 (arrival).
+    #[allow(dead_code)]
     Raw,
-    /// Bytes the agent writes to its command.
+    /// Bytes the agent writes to its command. Constructed by step 5 (the origin rows).
+    #[allow(dead_code)]
     AgentWrite,
-    /// A key for the input editor (text or action).
+    /// A key for the input editor (text or action). Constructed by step 6 (editor arrival).
+    #[allow(dead_code)]
     EditKey,
 }
 
@@ -144,6 +147,8 @@ impl Intent {
         self
     }
 
+    // Pointer-driven bytes arrive through the table in step 5.
+    #[allow(dead_code)]
     pub fn passive(mut self) -> Self {
         self.takes_over_agent = false;
         self
@@ -232,6 +237,8 @@ pub enum Outcome {
     Drop(DropWhy),
 }
 
+// The classification helpers are used by the arrival code of steps 5 and 6 (and the tests).
+#[allow(dead_code)]
 impl Outcome {
     /// The outcome writes to the pty.
     pub fn is_pty(&self) -> bool {
@@ -314,6 +321,7 @@ impl Effects {
         self.0 & other.0 == other.0 && other.0 != 0
     }
 
+    #[allow(dead_code)]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -442,6 +450,7 @@ impl Plan {
         self
     }
 
+    #[allow(dead_code)]
     fn with(mut self, effects: Effects) -> Self {
         self.effects = self.effects | effects;
         self
@@ -1020,6 +1029,8 @@ fn apply_pin(plan: Plan, i: &Intent, f: &RouteFacts, pin: Option<Destination>) -
 /// editor whether or not the box is visible, and drops only when the pty took the decision (it
 /// takes input), REFUSED the write, and the box is hidden (D8, which cannot be known before the
 /// write: it is [`Plan::on_refused`]).
+// Tests and the old function's retirement (step 8) only: nothing in production calls it.
+#[allow(dead_code)]
 pub fn destination_for_fixed(kind: &EntryKind, facts: &DestFacts) -> Destination {
     let old = super::destination_for(kind, facts);
     match old {

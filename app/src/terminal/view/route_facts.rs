@@ -1,4 +1,5 @@
-//! Building [`RouteFacts`] (#1424, steps 1 and 2: nothing decides on them yet).
+//! Building [`RouteFacts`] (#1424): the shadow comparison (step 3) and, in `table` mode, the
+//! delivery of replayed and ssh-held inputs (step 4) decide on them.
 //!
 //! The destination table (`input_queue/table.rs`) is pure; this is its only source of facts on the
 //! view side. The rules that make it safe to call from anywhere, including events that run outside
@@ -19,9 +20,6 @@
 //! The tests (`view_test.rs`, `route_facts_*`) hold the model's lock on the test thread while
 //! building: a build that waited for it would deadlock, and `model_lock_trace` must not count a
 //! key-path lock.
-
-// Steps 1 and 2 of #1424 build facts for the tests only: the table is not called yet.
-#![allow(dead_code)]
 
 use instant::Instant;
 
@@ -278,9 +276,14 @@ impl TerminalView {
             && gate.is_some_and(|g| {
                 self.gate_output_seen(g, snapshot) && !g.block_done && !g.managed && !g.saw_pending
             });
+        // Keys are held while a hold exists, and from the first key of a connect: the gate drops
+        // keys (silent connect, bootstrap swallow, remote setup) with nothing held yet. Legacy
+        // `hold_input_during_ssh_connect` holds on `gate_drops || holding`; the dialog swallows
+        // instead (row H2 comes first, so it never reaches the hold).
+        let gate_drops = ssh_setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
         let ssh = match unterminated {
             Some(prompt_gen) if prompt_up => SshPhase::PromptUp { prompt_gen },
-            _ if self.ssh_typeahead_holding => SshPhase::Holding,
+            _ if self.ssh_typeahead_holding || (!ssh_dialog_up && gate_drops) => SshPhase::Holding,
             _ => SshPhase::Idle,
         };
 
