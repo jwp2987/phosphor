@@ -451,6 +451,7 @@ impl Presenter {
     }
 
     /// Whether the last layout pass visited `view_id`. See issue #805.
+    #[cfg(test)]
     pub(crate) fn is_view_mounted(&self, view_id: EntityId) -> bool {
         self.mounted_views.contains(&view_id)
     }
@@ -813,10 +814,6 @@ impl Presenter {
 
     pub fn set_highlighted_view(&mut self, view_id: EntityId) {
         self.highlighted_view = Some(view_id);
-    }
-
-    pub fn clear_highlighted_view(&mut self) {
-        self.highlighted_view = None;
     }
 
     pub fn text_layout_cache(&self) -> &LayoutCache {

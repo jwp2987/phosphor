@@ -9,7 +9,6 @@ use std::{
 
 mod action_log;
 mod artifacts;
-pub mod capture_recorder;
 mod driver;
 pub mod overlay;
 mod step;

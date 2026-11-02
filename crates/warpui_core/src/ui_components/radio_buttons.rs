@@ -62,10 +62,6 @@ impl<'a> RadioButtonItem<'a> {
         Self::new(Label::Text(label.into()))
     }
 
-    pub fn rich_element(label: Box<RichLabelFn<'a>>) -> Self {
-        Self::new(Label::Rich(Box::new(label)))
-    }
-
     pub fn custom_item(label: Box<CustomItemFn<'a>>) -> Self {
         Self::new(Label::CustomItem(Box::new(label)))
     }
@@ -80,16 +76,6 @@ impl<'a> RadioButtonItem<'a> {
 struct RadioButtonState {
     selected_item: Option<usize>,
     default_selected_item: Option<usize>,
-}
-
-impl RadioButtonState {
-    #[allow(dead_code)] // This is a temporary constructor that isn't used right now but will be used as soon as radio buttons are used.
-    pub fn new(default_selected_item: Option<usize>) -> Self {
-        RadioButtonState {
-            selected_item: None,
-            default_selected_item,
-        }
-    }
 }
 
 #[derive(Clone, Default)]
@@ -439,11 +425,6 @@ impl<'a> RadioButtons<'a> {
 
     pub fn supports_unselected_state(mut self) -> Self {
         self.renderer.supports_unselected_state = true;
-        self
-    }
-
-    pub fn with_button_diameter(mut self, diameter: f32) -> Self {
-        self.renderer.button_diameter_override = Some(diameter);
         self
     }
 }

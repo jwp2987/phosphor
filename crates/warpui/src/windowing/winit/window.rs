@@ -26,7 +26,6 @@ use wgpu::{AdapterInfo, CompositeAlphaMode};
 use winit::dpi::PhysicalPosition;
 use winit::error::ExternalError;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
-#[cfg(not(target_family = "wasm"))]
 use winit::monitor::MonitorHandle;
 #[cfg(windows)]
 use winit::platform::windows::{BackdropType, WindowExtWindows};
@@ -36,7 +35,6 @@ use winit::{
     window::Fullscreen,
 };
 
-#[cfg(not(target_family = "wasm"))]
 use crate::platform::WindowBounds;
 use crate::platform::{
     self, Cursor, FullscreenState, GraphicsBackend, TerminationMode, WindowFocusBehavior,
@@ -74,11 +72,9 @@ cfg_if::cfg_if! {
         /// The window cannot be resized smaller than this.
         /// TODO(CORE-1891) Instead of being hard-coded, this should be configurable by the user via
         /// [`crate::platform::WindowOptions`].
-        #[cfg_attr(target_family = "wasm", allow(dead_code))]
         pub(in crate::windowing::winit) const MIN_WINDOW_SIZE: LogicalSize<f64> =
             LogicalSize::new(124., 34.);
     } else {
-        #[cfg_attr(target_family = "wasm", allow(dead_code))]
         pub(in crate::windowing::winit) const MIN_WINDOW_SIZE: LogicalSize<f64> =
             LogicalSize::new(480., 192.);
     }
@@ -887,21 +883,14 @@ impl Window {
         }
     }
 
-    /// Whether the window is minimized. `false` where winit cannot tell (Wayland, wasm), which
+    /// Whether the window is minimized. `false` where winit cannot tell (Wayland), which
     /// keeps the old behavior of always attempting the frame.
     pub(super) fn is_minimized(&self) -> bool {
-        #[cfg(not(target_family = "wasm"))]
-        {
-            self.inner
-                .borrow()
-                .as_ref()
-                .and_then(|inner| inner.window.is_minimized())
-                .unwrap_or(false)
-        }
-        #[cfg(target_family = "wasm")]
-        {
-            false
-        }
+        self.inner
+            .borrow()
+            .as_ref()
+            .and_then(|inner| inner.window.is_minimized())
+            .unwrap_or(false)
     }
 
     /// How long the last surface texture acquire took, for slow-frame diagnostics.
@@ -1304,21 +1293,12 @@ impl Window {
     ///
     /// See [`Self::set_visible`] for an explanation of what "visible" means in winit. For
     /// platforms where setting visibility is unsupported, e.g. Wayland, always return `true`.
-    #[cfg(not(target_family = "wasm"))]
     fn is_visible(&self) -> bool {
         self.inner
             .borrow()
             .as_ref()
             .and_then(|inner| inner.window.is_visible())
             .unwrap_or(true)
-    }
-
-    /// Intended for reading whether or not the window is visible. Always returns true.
-    ///
-    /// winit does not support is_visible on wasm. See: https://docs.rs/winit/latest/winit/window/struct.Window.html#method.is_visible
-    #[cfg(target_family = "wasm")]
-    fn is_visible(&self) -> bool {
-        true
     }
 
     fn set_bounds(&self, bounds: RectF) {
@@ -1363,7 +1343,7 @@ impl Window {
         }
         #[cfg(not(windows))]
         {
-            // No per-window opacity support (e.g. wasm); avoid unused warnings.
+            // No per-window opacity support on this platform; avoid unused warnings.
             let _ = (window, alpha);
         }
     }
@@ -1394,42 +1374,6 @@ impl Window {
     }
 }
 
-#[cfg(target_family = "wasm")]
-fn create_window(
-    window_target: &ActiveEventLoop,
-    _window_options: &WindowOptions,
-    _window_class: &Option<String>,
-    _tiling_window_manager: bool,
-) -> Result<winit::window::Window> {
-    use winit::platform::web::WindowAttributesExtWebSys;
-    use winit::platform::web::WindowExtWebSys;
-
-    use crate::platform::current::add_prevent_default_listener;
-
-    let window_attributes = winit::window::WindowAttributes::default().with_prevent_default(false);
-
-    let window = window_target.create_window(window_attributes)?;
-    let canvas = window
-        .canvas()
-        .ok_or(anyhow::anyhow!("Failed to find canvas element"))?;
-
-    if let Some(element) = gloo::utils::document().get_element_by_id("wasm-container") {
-        log::info!("Attaching canvas element \"{canvas:?}\" to the wasm-container element");
-        element.replace_children_with_node_1(&canvas);
-    } else {
-        log::info!("Attaching canvas element \"{canvas:?}\" to the document body");
-        gloo::utils::body()
-            .append_child(&canvas)
-            .map_err(|_| anyhow::anyhow!("Failed to append canvas element to <body>"))?;
-    }
-
-    add_prevent_default_listener(&canvas);
-    let _ = canvas.focus();
-
-    Ok(window)
-}
-
-#[cfg(not(target_family = "wasm"))]
 fn create_window(
     window_target: &ActiveEventLoop,
     window_options: &WindowOptions,

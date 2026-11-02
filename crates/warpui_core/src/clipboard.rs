@@ -29,7 +29,7 @@ pub trait Clipboard: 'static {
     fn reader(&mut self, kind: ReadKind) -> ClipboardReader;
 
     /// True when [`Clipboard::reader`] is a cheap in-memory snapshot (the in-process test
-    /// clipboard, the wasm saved content) that is run on the calling thread instead of a worker.
+    /// clipboard) that is run on the calling thread instead of a worker.
     /// No OS clipboard may ever answer true.
     fn reads_inline(&self) -> bool {
         false
@@ -103,9 +103,6 @@ pub trait Clipboard: 'static {
     /// Called once as the app quits, so what the user copied outlives the process: on X11 it asks
     /// the clipboard manager to take the data over (#1330). Must be bounded and must not panic.
     fn flush_on_exit(&mut self) {}
-
-    #[cfg(target_family = "wasm")]
-    fn save(&mut self, content: ClipboardContent);
 }
 
 /// What a clipboard holds, from a query that reads nothing. See [`Clipboard::availability`].
@@ -231,7 +228,6 @@ impl ReaderTracker {
 /// Signals the cancel flag of every clipboard read started so far (#1353 phase 6, INP-A4): the
 /// paste backstop gave up, so those reads' results will not be used. See
 /// [`ReaderTracker::abandon_pending`].
-#[cfg(not(target_family = "wasm"))]
 pub fn abandon_pending_reads() {
     let blocked = PASTE_READERS.abandon_pending();
     if blocked > 0 {
@@ -271,7 +267,6 @@ crate::model_static! {
 /// returns long after it started, and once [`MAX_IN_FLIGHT_READERS`] readers are still blocked a
 /// new one answers `TimedOut` at once instead of starting yet another blocked OS call. (A blocked
 /// OS clipboard call has no cancel; this is the stop for further leaks.)
-#[cfg(not(target_family = "wasm"))]
 fn tracked_reader(id: ReadRequestId, kind: ReadKind, inner: ClipboardReader) -> ClipboardReader {
     tracked_reader_with(
         &PASTE_READERS,
@@ -283,7 +278,6 @@ fn tracked_reader(id: ReadRequestId, kind: ReadKind, inner: ClipboardReader) -> 
     )
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn tracked_reader_with(
     tracker: &'static ReaderTracker,
     max: usize,
@@ -446,19 +440,10 @@ fn prepared_reader<C: Clipboard + ?Sized>(
         });
     }
     let reader = clipboard.reader(kind);
-    #[cfg(not(target_family = "wasm"))]
-    {
-        tracked_reader(id, kind, reader)
-    }
-    #[cfg(target_family = "wasm")]
-    {
-        let _ = id;
-        Box::new(move || cap_paste_size(reader(), MAX_PASTE_BYTES))
-    }
+    tracked_reader(id, kind, reader)
 }
 
 fn start_reader(inline: bool, id: ReadRequestId, reader: ClipboardReader) -> ReadStart {
-    #[cfg(not(target_family = "wasm"))]
     if !inline {
         let (tx, rx) = futures::channel::oneshot::channel();
         let spawned = std::thread::Builder::new()
@@ -489,12 +474,6 @@ fn legacy_reader<C: Clipboard + ?Sized>(
     clipboard: &mut C,
     kind: ReadKind,
 ) -> Option<BackgroundTextReader> {
-    #[cfg(target_family = "wasm")]
-    {
-        let _ = (clipboard, kind);
-        None
-    }
-    #[cfg(not(target_family = "wasm"))]
     {
         if clipboard.reads_inline() {
             return None;
@@ -642,7 +621,6 @@ impl PendingWrites {
 
     /// Blocks until no write to `target` is unfinished, or `timeout` passes (a give-up net for a
     /// wedged selection owner). Returns whether none remain. Woken by [`Self::finish`].
-    #[cfg(not(target_family = "wasm"))]
     pub fn wait_until_idle(&self, target: ClipboardTarget, timeout: std::time::Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
         let mut writes = self.writes.lock();
@@ -678,7 +656,6 @@ pub fn pending_write(target: ClipboardTarget) -> Option<std::sync::Arc<Clipboard
 
 /// Waits (up to `timeout`) for the in-flight background copies to `target` to finish; woken by the
 /// writer finishing, not by polling. Returns whether none remain.
-#[cfg(not(target_family = "wasm"))]
 pub fn wait_for_pending_writes(target: ClipboardTarget, timeout: std::time::Duration) -> bool {
     PENDING_WRITES.wait_until_idle(target, timeout)
 }
@@ -688,7 +665,6 @@ pub fn wait_for_pending_writes(target: ClipboardTarget, timeout: std::time::Dura
 /// handle is never dropped after a write: on X11 the selection data is served by the process-global
 /// context, and dropping the last handle hands the data to the clipboard manager and tears the
 /// context down (`lib/arboard/src/platform/linux/x11.rs`, `impl Drop for Clipboard`).
-#[cfg(not(target_family = "wasm"))]
 pub fn serial_writer<H: 'static>(
     open: fn() -> Option<H>,
     write: fn(&mut H, ClipboardContent, ClipboardTarget) -> bool,
@@ -730,19 +706,13 @@ pub fn serial_writer<H: 'static>(
 /// is dropped uncalled if the thread cannot be spawned). Every write takes a generation on the
 /// calling thread, so the user's copy order wins, and quit waits for them (woken, not polled) via
 /// [`wait_for_pending_writes`]. Returns the content back as `Err` only when
-/// `PHOSPHOR_SYNC_CLIPBOARD_WRITE=1` forces the synchronous path, or on wasm.
+/// `PHOSPHOR_SYNC_CLIPBOARD_WRITE=1` forces the synchronous path.
 pub fn write_in_background(
     clipboard: &mut dyn Clipboard,
     content: ClipboardContent,
     target: ClipboardTarget,
     on_done: impl FnOnce(WriteOutcome) + Send + 'static,
 ) -> Result<(), ClipboardContent> {
-    #[cfg(target_family = "wasm")]
-    {
-        let _ = (clipboard, target, on_done);
-        return Err(content);
-    }
-    #[cfg(not(target_family = "wasm"))]
     {
         if std::env::var_os("PHOSPHOR_SYNC_CLIPBOARD_WRITE").is_some() {
             return Err(content);
@@ -915,11 +885,6 @@ impl AvailabilityCache {
     }
 }
 
-/// The cached availability of `target` (see [`AvailabilityCache`]).
-pub fn cached_availability(target: ClipboardTarget) -> Availability {
-    AVAILABILITY.get(target)
-}
-
 /// Owner-change entry point for platform listeners: marks the cached answer stale and re-probes
 /// with `probe` on the CALLING thread, which must therefore be an event-listener thread.
 pub fn availability_changed(
@@ -931,18 +896,11 @@ pub fn availability_changed(
     }
 }
 
-/// Asks the platform for the current availability without waiting for it: a probe that may block
-/// runs on a worker thread; a cheap one is answered inline.
-pub fn refresh_availability(clipboard: &mut dyn Clipboard, target: ClipboardTarget) {
-    refresh_in(&AVAILABILITY, clipboard, target);
-}
-
 fn refresh_in(
     cache: &'static AvailabilityCache,
     clipboard: &mut dyn Clipboard,
     target: ClipboardTarget,
 ) {
-    #[cfg(not(target_family = "wasm"))]
     if let Some(probe) = clipboard.availability_probe() {
         if cache.invalidate(target) {
             let spawned = std::thread::Builder::new()
@@ -1134,9 +1092,6 @@ impl Clipboard for InMemoryClipboard {
             Availability::HasContent
         }
     }
-
-    #[cfg(target_family = "wasm")]
-    fn save(&mut self, _content: ClipboardContent) {}
 }
 
 /// Test support: makes this thread's in-memory clipboard answer reads like a platform whose owner

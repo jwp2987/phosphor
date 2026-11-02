@@ -62,19 +62,16 @@ impl platform::FontDB for EmWidthFontDB {
         unimplemented!()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_from_system(&mut self, _font_family: &str) -> Result<FamilyId> {
         unimplemented!()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_all_system_fonts(
         &self,
     ) -> futures::future::BoxFuture<'static, Box<dyn platform::LoadedSystemFonts>> {
         unimplemented!()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn process_loaded_system_fonts(
         &mut self,
         _loaded_system_fonts: Box<dyn platform::LoadedSystemFonts>,
@@ -191,19 +188,16 @@ impl platform::FontDB for NoGlyphFontDB {
         Ok(FamilyId(1))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_from_system(&mut self, _font_family: &str) -> Result<FamilyId> {
         Ok(FamilyId(2))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_all_system_fonts(
         &self,
     ) -> futures::future::BoxFuture<'static, Box<dyn platform::LoadedSystemFonts>> {
         unimplemented!()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn process_loaded_system_fonts(
         &mut self,
         _loaded_system_fonts: Box<dyn platform::LoadedSystemFonts>,

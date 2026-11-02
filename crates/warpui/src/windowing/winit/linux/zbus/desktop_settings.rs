@@ -199,6 +199,7 @@ impl ThemeCache {
         self.ready.notify_all();
     }
 
+    #[cfg(test)]
     fn get(&self) -> Option<SystemTheme> {
         self.value.lock().ok().and_then(|v| *v)
     }

@@ -160,11 +160,13 @@ impl Image {
         self
     }
 
+    #[cfg(test)]
     pub fn on_load_failure(mut self, element: Box<dyn Element>) -> Self {
         self.failed_to_load_element = Some(element);
         self
     }
 
+    #[cfg(test)]
     pub fn on_load_timeout(mut self, timeout: Duration, element: Box<dyn Element>) -> Self {
         self.load_timeout = Some(LoadTimeout { timeout, element });
         self

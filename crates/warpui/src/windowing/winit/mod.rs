@@ -8,8 +8,6 @@ pub mod linux;
 mod notifications;
 #[cfg(any(target_os = "linux", target_os = "freebsd", windows))]
 mod reveal;
-#[cfg(target_family = "wasm")]
-pub mod wasm;
 
 mod window;
 

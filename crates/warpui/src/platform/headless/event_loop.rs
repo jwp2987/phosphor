@@ -168,7 +168,7 @@ fn setup_signal_handler(sender: Sender<AppEvent>) {
     }
 }
 
-#[cfg(all(not(unix), not(target_family = "wasm")))]
+#[cfg(not(unix))]
 fn setup_signal_handler(sender: Sender<AppEvent>) {
     use platform::termination_signals::{ProcessHooks, ShutdownState, handle_signal};
     use std::sync::Mutex;
@@ -213,11 +213,6 @@ fn setup_signal_handler(sender: Sender<AppEvent>) {
             log::warn!("Failed to set up the console control handler: {e}");
         }
     }
-}
-
-#[cfg(target_family = "wasm")]
-fn setup_signal_handler(_sender: Sender<AppEvent>) {
-    // No signal handling on WASM
 }
 
 #[cfg(test)]

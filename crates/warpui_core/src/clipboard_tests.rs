@@ -47,8 +47,6 @@ impl Clipboard for QueryOnlyClipboard {
     fn availability(&mut self, _target: ClipboardTarget) -> Availability {
         self.0
     }
-    #[cfg(target_family = "wasm")]
-    fn save(&mut self, _content: ClipboardContent) {}
 }
 
 #[test]
@@ -242,7 +240,6 @@ fn read_right_after_copy_sees_the_pending_write() {
     assert!(pending.latest(ClipboardTarget::Clipboard).is_none());
 }
 
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn serial_writer_keeps_one_handle_and_write_order() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -268,7 +265,6 @@ fn serial_writer_keeps_one_handle_and_write_order() {
     assert_eq!(OPENED.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -322,7 +318,6 @@ fn tracked_reader_stops_starting_blocked_readers_past_the_cap() {
 
 /// #1353 phase 6 (INP-A4): a paste that gives up on its read signals the readers' cancel flag, and
 /// the count of readers still blocked in the OS is what it reports.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn abandoning_pending_reads_reports_the_blocked_readers() {
     static TRACKER: ReaderTracker = ReaderTracker::new();
@@ -409,9 +404,6 @@ impl Clipboard for WorkerClipboard {
             ReadOutcome::Content(ClipboardContent::plain_text(text))
         })
     }
-
-    #[cfg(target_family = "wasm")]
-    fn save(&mut self, _content: ClipboardContent) {}
 }
 
 #[test]
@@ -481,8 +473,6 @@ fn a_timed_out_reader_is_reported_not_hidden() {
         fn reads_inline(&self) -> bool {
             true
         }
-        #[cfg(target_family = "wasm")]
-        fn save(&mut self, _content: ClipboardContent) {}
     }
     assert!(matches!(
         read_outcome_blocking(&mut Silent, ReadKind::Full),
@@ -506,8 +496,6 @@ fn oversize_content_is_refused_by_every_read_path() {
         fn reads_inline(&self) -> bool {
             true
         }
-        #[cfg(target_family = "wasm")]
-        fn save(&mut self, _content: ClipboardContent) {}
     }
     assert!(matches!(
         read_outcome_blocking(&mut Huge, ReadKind::Full),
