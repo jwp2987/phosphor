@@ -23417,6 +23417,11 @@ fn the_panes_stamp_follows_the_models_publication_gen() {
 fn route_facts_derive_the_phases_from_the_legacy_fields_without_changing_them() {
     use crate::terminal::input_queue::{PsPhase, QueueFacts, SshPhase, SubshellPhase};
     App::test((), |mut app| async move {
+        // Legacy-field derivation is the shadow/legacy behaviour; table (the default since 2026-11-02) takes the
+        // ssh phase from the edge-driven machine (step 7), so force shadow here.
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Shadow,
+        );
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
