@@ -1,0 +1,121 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        Heading(
+            FormattedTextHeader {
+                heading_size: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "H1 title",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Heading(
+            FormattedTextHeader {
+                heading_size: 2,
+                text: [
+                    FormattedTextFragment {
+                        text: "H2 title",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Heading(
+            FormattedTextHeader {
+                heading_size: 3,
+                text: [
+                    FormattedTextFragment {
+                        text: "H3 with ",
+                        styles: PlainText,
+                    },
+                    FormattedTextFragment {
+                        text: "code",
+                        styles: InlineCode,
+                    },
+                    FormattedTextFragment {
+                        text: " and ",
+                        styles: PlainText,
+                    },
+                    FormattedTextFragment {
+                        text: "bold",
+                        styles: Bold,
+                    },
+                ],
+            },
+        ),
+        Heading(
+            FormattedTextHeader {
+                heading_size: 4,
+                text: [
+                    FormattedTextFragment {
+                        text: "H4",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Heading(
+            FormattedTextHeader {
+                heading_size: 5,
+                text: [
+                    FormattedTextFragment {
+                        text: "H5",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Heading(
+            FormattedTextHeader {
+                heading_size: 6,
+                text: [
+                    FormattedTextFragment {
+                        text: "H6",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "####### seven hashes is not a heading",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Setext one",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "==========",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Setext two",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        HorizontalRule,
+    ],
+}

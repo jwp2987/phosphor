@@ -1,0 +1,113 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        Heading(
+            FormattedTextHeader {
+                heading_size: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "Unicode 日本語 ñandú",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Emoji 🎉🚀 family 👨\u{200d}👩\u{200d}👧\u{200d}👦 flag 🇯🇵 combining é (e + U+0301).",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "RTL Arabic: مرحبا بالعالم ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "غامق",
+                    styles: Bold,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "RTL Hebrew: שלום עולם ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "קוד",
+                    styles: InlineCode,
+                },
+            ],
+        ),
+        LineBreak,
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "عنصر أول",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "项目二",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "Zalgo: z\u{338}\u{321}\u{31b}\u{34e}a\u{337}l\u{336}g\u{335}o\u{334}",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| اسم | 値 |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "|---|---|",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| مرحبا | 🎉 |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

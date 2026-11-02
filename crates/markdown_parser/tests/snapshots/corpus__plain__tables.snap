@@ -1,0 +1,122 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| Name | Qty | Note |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "|------|----:|:----:|",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| apple | 3 | fresh |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "code",
+                    styles: InlineCode,
+                },
+                FormattedTextFragment {
+                    text: " | 10 | ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "bold",
+                    styles: Bold,
+                },
+                FormattedTextFragment {
+                    text: " cell |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| pipe | escaped | 0 | |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Left | Right",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "--- | ---",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "no leading pipe | works",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| ragged | header |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "|---|---|",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| only one cell |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| three | cells | here |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

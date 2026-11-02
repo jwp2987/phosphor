@@ -1,0 +1,211 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "one",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "two",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "two-a",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "two-b",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 2,
+                text: [
+                    FormattedTextFragment {
+                        text: "two-b-i",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 3,
+                text: [
+                    FormattedTextFragment {
+                        text: "four deep",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "three",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        LineBreak,
+        OrderedList(
+            OrderedFormattedIndentTextInline {
+                number: Some(
+                    1,
+                ),
+                indented_text: FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: [
+                        FormattedTextFragment {
+                            text: "first",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            },
+        ),
+        OrderedList(
+            OrderedFormattedIndentTextInline {
+                number: None,
+                indented_text: FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: [
+                        FormattedTextFragment {
+                            text: "second",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            },
+        ),
+        OrderedList(
+            OrderedFormattedIndentTextInline {
+                number: Some(
+                    1,
+                ),
+                indented_text: FormattedIndentTextInline {
+                    indent_level: 1,
+                    text: [
+                        FormattedTextFragment {
+                            text: "second-a",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            },
+        ),
+        OrderedList(
+            OrderedFormattedIndentTextInline {
+                number: None,
+                indented_text: FormattedIndentTextInline {
+                    indent_level: 1,
+                    text: [
+                        FormattedTextFragment {
+                            text: "second-b",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            },
+        ),
+        OrderedList(
+            OrderedFormattedIndentTextInline {
+                number: None,
+                indented_text: FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: [
+                        FormattedTextFragment {
+                            text: "third",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            },
+        ),
+        LineBreak,
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "star item",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "+ plus item",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        OrderedList(
+            OrderedFormattedIndentTextInline {
+                number: Some(
+                    10,
+                ),
+                indented_text: FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: [
+                        FormattedTextFragment {
+                            text: "starts at ten",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            },
+        ),
+        OrderedList(
+            OrderedFormattedIndentTextInline {
+                number: None,
+                indented_text: FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: [
+                        FormattedTextFragment {
+                            text: "eleven",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            },
+        ),
+    ],
+}

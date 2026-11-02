@@ -1,0 +1,12 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        LineBreak,
+        LineBreak,
+        LineBreak,
+        LineBreak,
+    ],
+}

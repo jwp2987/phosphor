@@ -1,0 +1,176 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        Table(
+            FormattedTable {
+                headers: [
+                    [
+                        FormattedTextFragment {
+                            text: "Name",
+                            styles: PlainText,
+                        },
+                    ],
+                    [
+                        FormattedTextFragment {
+                            text: "Qty",
+                            styles: PlainText,
+                        },
+                    ],
+                    [
+                        FormattedTextFragment {
+                            text: "Note",
+                            styles: PlainText,
+                        },
+                    ],
+                ],
+                alignments: [
+                    Left,
+                    Right,
+                    Center,
+                ],
+                rows: [
+                    [
+                        [
+                            FormattedTextFragment {
+                                text: "apple",
+                                styles: PlainText,
+                            },
+                        ],
+                        [
+                            FormattedTextFragment {
+                                text: "3",
+                                styles: PlainText,
+                            },
+                        ],
+                        [
+                            FormattedTextFragment {
+                                text: "fresh",
+                                styles: PlainText,
+                            },
+                        ],
+                    ],
+                    [
+                        [
+                            FormattedTextFragment {
+                                text: "code",
+                                styles: InlineCode,
+                            },
+                        ],
+                        [
+                            FormattedTextFragment {
+                                text: "10",
+                                styles: PlainText,
+                            },
+                        ],
+                        [
+                            FormattedTextFragment {
+                                text: "bold",
+                                styles: Bold,
+                            },
+                            FormattedTextFragment {
+                                text: " cell",
+                                styles: PlainText,
+                            },
+                        ],
+                    ],
+                    [
+                        [
+                            FormattedTextFragment {
+                                text: "pipe | escaped",
+                                styles: PlainText,
+                            },
+                        ],
+                        [
+                            FormattedTextFragment {
+                                text: "0",
+                                styles: PlainText,
+                            },
+                        ],
+                        [],
+                    ],
+                ],
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Left | Right",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "--- | ---",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "no leading pipe | works",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Table(
+            FormattedTable {
+                headers: [
+                    [
+                        FormattedTextFragment {
+                            text: "ragged",
+                            styles: PlainText,
+                        },
+                    ],
+                    [
+                        FormattedTextFragment {
+                            text: "header",
+                            styles: PlainText,
+                        },
+                    ],
+                ],
+                alignments: [
+                    Left,
+                    Left,
+                ],
+                rows: [
+                    [
+                        [
+                            FormattedTextFragment {
+                                text: "only one cell",
+                                styles: PlainText,
+                            },
+                        ],
+                    ],
+                    [
+                        [
+                            FormattedTextFragment {
+                                text: "three",
+                                styles: PlainText,
+                            },
+                        ],
+                        [
+                            FormattedTextFragment {
+                                text: "cells",
+                                styles: PlainText,
+                            },
+                        ],
+                        [
+                            FormattedTextFragment {
+                                text: "here",
+                                styles: PlainText,
+                            },
+                        ],
+                    ],
+                ],
+            },
+        ),
+    ],
+}

@@ -1,0 +1,94 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "line one",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Heading(
+            FormattedTextHeader {
+                heading_size: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "CRLF heading",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        LineBreak,
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "item a",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "item b",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "nested",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "rust",
+                code: "let x = 1;\n",
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| a | b |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "|---|---|",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| 1 | 2 |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

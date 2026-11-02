@@ -1,0 +1,16 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "café \0 nul byte and \u{1b}[31m escape",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

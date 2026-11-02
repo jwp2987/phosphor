@@ -1,0 +1,168 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| header only, no delimiter row |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "| a | b |",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "```",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "fence with text after ``` on same line",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        TaskList(
+            FormattedTaskList {
+                complete: false,
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "[x] [ ]",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: ">>> >> >",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "#no space heading",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Heading(
+            FormattedTextHeader {
+                heading_size: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "leading-space heading",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "*",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "-",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "1.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[](",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "![](",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        HorizontalRule,
+        HorizontalRule,
+        Table(
+            FormattedTable {
+                headers: [
+                    [],
+                    [],
+                ],
+                alignments: [
+                    Left,
+                    Left,
+                ],
+                rows: [],
+            },
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "<",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "<>",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "& 😀 &bogus;",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "\\",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

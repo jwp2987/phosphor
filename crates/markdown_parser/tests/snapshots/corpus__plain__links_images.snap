@@ -1,0 +1,148 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "A ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "link",
+                    styles: Hyperlink(Url("https://example.com")),
+                },
+                FormattedTextFragment {
+                    text: " and [titled](",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "https://example.com",
+                    styles: Hyperlink(Url("https://example.com")),
+                },
+                FormattedTextFragment {
+                    text: " \"Title\") and ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "empty",
+                    styles: Hyperlink(Url("")),
+                },
+                FormattedTextFragment {
+                    text: ".",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Autolink <https://example.com/auto> and bare ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "https://example.com/bare",
+                    styles: Hyperlink(Url("https://example.com/bare")),
+                },
+                FormattedTextFragment {
+                    text: " text.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Email <someone@example.com>.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Image(
+            FormattedImage {
+                alt_text: "alt text",
+                source: "https://example.com/img.png",
+                title: None,
+            },
+        ),
+        LineBreak,
+        Image(
+            FormattedImage {
+                alt_text: "alt",
+                source: "./relative/path.png",
+                title: Some(
+                    "title",
+                ),
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[!",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "badge",
+                    styles: Hyperlink(Url("https://example.com/b.svg")),
+                },
+                FormattedTextFragment {
+                    text: "](",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "https://example.com)",
+                    styles: Hyperlink(Url("https://example.com)")),
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[ref link][ref]",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[ref]: ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "https://example.com/ref",
+                    styles: Hyperlink(Url("https://example.com/ref")),
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[broken](",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "https://example.com",
+                    styles: Hyperlink(Url("https://example.com")),
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[unclosed link text",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

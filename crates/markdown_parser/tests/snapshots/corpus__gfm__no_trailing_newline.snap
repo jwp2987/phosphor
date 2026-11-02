@@ -1,0 +1,16 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "no trailing newline",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

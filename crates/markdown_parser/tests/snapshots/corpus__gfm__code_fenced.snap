@@ -1,0 +1,83 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        CodeBlock(
+            CodeBlockText {
+                lang: "rust",
+                code: "fn main() {\n    println!(\"hello\");\n}\n",
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "~~~python",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "print(\"tilde fence\")",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "~~~",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "warp-runnable-command",
+                code: "no language\n",
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "bash {title=\"x\"}",
+                code: "echo info string\n",
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "`md",
+                code: "```nested\ninner\n",
+            },
+        ),
+        CodeBlock(
+            CodeBlockText {
+                lang: "`",
+                code: "\n```mermaid\ngraph TD\nA[Start] --> B[Finish]\n",
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "```unterminated",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "this fence never closes",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}
