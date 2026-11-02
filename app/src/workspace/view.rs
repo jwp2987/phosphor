@@ -182,7 +182,6 @@ use crate::env_vars::{
     EnvVarCollectionObject,
     manager::{EnvVarCollectionManager, EnvVarCollectionSource},
 };
-use crate::settings::cloud_preferences::PreferencesSettings;
 
 use crate::ai::agent_providers::wire_inspector::{WireInspectorModal, WireInspectorModalEvent};
 use crate::appearance::{Appearance, AppearanceManager};
@@ -21415,11 +21414,6 @@ impl Workspace {
 
         if privacy_settings.is_telemetry_enabled {
             context.set.insert(flags::TELEMETRY_FLAG);
-        }
-
-        let cloud_preferences_settings = PreferencesSettings::as_ref(app);
-        if *cloud_preferences_settings.settings_sync_enabled.value() {
-            context.set.insert(flags::SETTINGS_SYNC_FLAG);
         }
 
         if *block_list_settings

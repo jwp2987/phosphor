@@ -726,7 +726,6 @@ settings-keybindings-press-new-shortcut = 新しいキーボードショート�
 settings-keybindings-description = 既存のアクションに独自のキーバインドを追加できます。
 settings-keybindings-use-prefix = 使用
 settings-keybindings-use-suffix = でいつでもサイドペインからこれらのキーバインドを参照できます。
-settings-keybindings-not-synced-tooltip = キーボードショートカットはローカルに保存されます
 settings-keybindings-subheader = キーボードショートカットを設定
 settings-keybindings-command-column = コマンド
 

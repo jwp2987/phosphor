@@ -102,7 +102,6 @@ use crate::persistence::model::{
 use crate::server::ids::{ClientId, HashableId, ServerId, SyncId, ToServerId};
 use crate::server::telemetry::TelemetryEvent;
 use crate::server_time::ServerTimestamp;
-use crate::settings::cloud_preferences::{PreferenceObject, PreferenceObjectModel};
 use crate::settings_view::SettingsSection;
 use crate::suggestions::ignored_suggestions_model::SuggestionType;
 use crate::tab::SelectedTabColor;
@@ -5696,19 +5695,9 @@ fn read_sqlite_data_counting(
                             .try_into()
                             .ok()?;
                         object_id.and_then(|server_id| match json_object_type {
-                            JsonObjectType::Preference => {
-                                let model = PreferenceObjectModel::deserialize_owned(&object.data);
-                                model.ok().map(|model| {
-                                    let boxed: Box<dyn StoredObject> =
-                                        Box::new(PreferenceObject::new(
-                                            server_id,
-                                            model,
-                                            to_cloud_object_metadata(metadata),
-                                            cloud_object_permissions,
-                                        ));
-                                    boxed
-                                })
-                            }
+                            // Cloud-synced preference objects no longer exist in this fork; rows
+                            // written by older builds are ignored.
+                            JsonObjectType::Preference => None,
                             JsonObjectType::EnvVarCollection => {
                                 let model =
                                     EnvVarCollectionObjectModel::deserialize_owned(&object.data);

@@ -26,7 +26,6 @@ use crate::{
     persistence::ModelEvent,
     server::ids::{ClientId, HashableId, ObjectUid, ServerId, SyncId, ToServerId},
     server_time::ServerTimestamp,
-    settings::cloud_preferences::Preference,
     workflows::{
         workflow::Workflow,
         workflow_enum::{WorkflowEnum, WorkflowEnumObject, WorkflowEnumObjectModel},
@@ -86,7 +85,6 @@ pub struct ObjectOperationResult {
 #[derive(Debug)]
 pub enum UpdateManagerEvent {
     ObjectOperationComplete { result: ObjectOperationResult },
-    PreferencesUpdated { updated: Vec<Preference> },
     AmbientTaskUpdated { timestamp: DateTime<Utc> },
 }
 

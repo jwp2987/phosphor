@@ -774,7 +774,6 @@ settings-keybindings-press-new-shortcut = 按下新的快捷键
 settings-keybindings-description = 在下方为已有操作添加你自己的自定义快捷键。
 settings-keybindings-use-prefix = 使用
 settings-keybindings-use-suffix = 可随时在侧边栏中参考这些快捷键。
-settings-keybindings-not-synced-tooltip = 快捷键仅保存在本机
 settings-keybindings-subheader = 配置键盘快捷键
 settings-keybindings-command-column = 命令
 

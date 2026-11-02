@@ -368,7 +368,6 @@ impl SettingsWidget for LocalControlModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 LocalControlModeSetting::storage_key(),
-                LocalControlModeSetting::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),

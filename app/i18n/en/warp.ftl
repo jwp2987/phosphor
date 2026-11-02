@@ -830,7 +830,6 @@ settings-keybindings-press-new-shortcut = Press new keyboard shortcut
 settings-keybindings-description = Add your own custom keybindings to existing actions below.
 settings-keybindings-use-prefix = Use
 settings-keybindings-use-suffix = to reference these keybindings in a side pane at anytime.
-settings-keybindings-not-synced-tooltip = Keyboard shortcuts are stored locally on this machine
 settings-keybindings-subheader = Configure keyboard shortcuts
 settings-keybindings-command-column = Command
 

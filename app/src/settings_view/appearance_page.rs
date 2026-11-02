@@ -3649,7 +3649,6 @@ impl SettingsWidget for ThemeSelectWidget {
                 None,
                 LocalOnlyIconState::for_setting(
                     UseSystemTheme::storage_key(),
-                    UseSystemTheme::sync_to_cloud(),
                     &mut view.local_only_icon_tooltip_states.borrow_mut(),
                     app,
                 ),
@@ -3827,7 +3826,6 @@ impl SettingsWidget for CustomWindowSizeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 OpenWindowsAtCustomSize::storage_key(),
-                OpenWindowsAtCustomSize::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -3983,7 +3981,6 @@ impl SettingsWidget for WindowOpacityWidget {
             None,
             LocalOnlyIconState::for_setting(
                 BackgroundOpacity::storage_key(),
-                BackgroundOpacity::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4090,7 +4087,6 @@ impl SettingsWidget for WindowBlurWidget {
                 Some(label_info),
                 LocalOnlyIconState::for_setting(
                     BackgroundBlurRadius::storage_key(),
-                    BackgroundBlurRadius::sync_to_cloud(),
                     &mut view.local_only_icon_tooltip_states.borrow_mut(),
                     app,
                 ),
@@ -4147,7 +4143,6 @@ impl SettingsWidget for WindowBlurTextureWidget {
             None,
             LocalOnlyIconState::for_setting(
                 BackgroundBlurTexture::storage_key(),
-                BackgroundBlurTexture::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4211,7 +4206,6 @@ impl SettingsWidget for ToolsPanelStateScopeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 LeftPanelVisibilityAcrossTabs::storage_key(),
-                LeftPanelVisibilityAcrossTabs::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4318,7 +4312,6 @@ impl SettingsWidget for InputModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 InputModeState::storage_key(),
-                InputModeState::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4439,7 +4432,6 @@ impl SettingsWidget for DimInactivePanesWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShouldDimInactivePanes::storage_key(),
-                ShouldDimInactivePanes::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4482,7 +4474,6 @@ impl SettingsWidget for FocusFollowsMouseWidget {
             None,
             LocalOnlyIconState::for_setting(
                 FocusPaneOnHover::storage_key(),
-                FocusPaneOnHover::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4530,7 +4521,6 @@ impl SettingsWidget for CompactModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 Spacing::storage_key(),
-                Spacing::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4577,7 +4567,6 @@ impl SettingsWidget for JumpToBottomOfBlockWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowJumpToBottomOfBlockButton::storage_key(),
-                ShowJumpToBottomOfBlockButton::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4624,7 +4613,6 @@ impl SettingsWidget for ShowBlockDividersWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowBlockDividers::storage_key(),
-                ShowBlockDividers::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4671,7 +4659,6 @@ impl SettingsWidget for ShowBlockDurationWithShellPromptWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowBlockDurationWithShellPrompt::storage_key(),
-                ShowBlockDurationWithShellPrompt::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4720,7 +4707,6 @@ impl SettingsWidget for AIFontWidget {
             None,
             LocalOnlyIconState::for_setting(
                 AIFontName::storage_key(),
-                AIFontName::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4977,7 +4963,6 @@ impl SettingsWidget for TerminalFontWidget {
             None,
             LocalOnlyIconState::for_setting(
                 MonospaceFontName::storage_key(),
-                MonospaceFontName::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -4996,7 +4981,6 @@ impl SettingsWidget for TerminalFontWidget {
             None,
             LocalOnlyIconState::for_setting(
                 MonospaceFallbackFontName::storage_key(),
-                MonospaceFallbackFontName::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5407,7 +5391,6 @@ impl SettingsWidget for ThinStrokesWidget {
             None,
             LocalOnlyIconState::for_setting(
                 UseThinStrokes::storage_key(),
-                UseThinStrokes::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5441,7 +5424,6 @@ impl SettingsWidget for MinimumContrastWidget {
             None,
             LocalOnlyIconState::for_setting(
                 crate::settings::font::EnforceMinimumContrast::storage_key(),
-                crate::settings::font::EnforceMinimumContrast::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5485,7 +5467,6 @@ impl SettingsWidget for LigaturesWidget {
             }),
             LocalOnlyIconState::for_setting(
                 LigatureRenderingEnabled::storage_key(),
-                LigatureRenderingEnabled::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5545,7 +5526,6 @@ impl SettingsWidget for CursorTypeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 CursorBlinkEnabled::storage_key(),
-                CursorBlinkEnabled::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5614,7 +5594,6 @@ impl SettingsWidget for BlinkingCursorWidget {
             None,
             LocalOnlyIconState::for_setting(
                 CursorBlinkEnabled::storage_key(),
-                CursorBlinkEnabled::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5658,7 +5637,6 @@ impl SettingsWidget for TabCloseButtonPositionWidget {
             None,
             LocalOnlyIconState::for_setting(
                 TabCloseButtonPosition::storage_key(),
-                TabCloseButtonPosition::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5693,7 +5671,6 @@ impl SettingsWidget for TabIndicatorWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowIndicatorsButton::storage_key(),
-                ShowIndicatorsButton::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5738,7 +5715,6 @@ impl SettingsWidget for TabGroupsWidget {
             None,
             LocalOnlyIconState::for_setting(
                 EnableTabGroups::storage_key(),
-                EnableTabGroups::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5783,7 +5759,6 @@ impl SettingsWidget for PreserveActiveTabColorWidget {
             None,
             LocalOnlyIconState::for_setting(
                 PreserveActiveTabColor::storage_key(),
-                PreserveActiveTabColor::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5828,7 +5803,6 @@ impl SettingsWidget for VerticalTabsWidget {
             None,
             LocalOnlyIconState::for_setting(
                 UseVerticalTabs::storage_key(),
-                UseVerticalTabs::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5873,7 +5847,6 @@ impl SettingsWidget for ShowVerticalTabPanelInRestoredWindowsWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowVerticalTabPanelInRestoredWindows::storage_key(),
-                ShowVerticalTabPanelInRestoredWindows::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5922,7 +5895,6 @@ impl SettingsWidget for ShowTitleBarSearchBarWidget {
             None,
             LocalOnlyIconState::for_setting(
                 ShowTitleBarSearchBar::storage_key(),
-                ShowTitleBarSearchBar::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -5969,7 +5941,6 @@ impl SettingsWidget for UseLatestUserPromptAsConversationTitleInTabNamesWidget {
             None,
             LocalOnlyIconState::for_setting(
                 UseLatestUserPromptAsConversationTitleInTabNames::storage_key(),
-                UseLatestUserPromptAsConversationTitleInTabNames::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -6723,7 +6694,6 @@ impl SettingsWidget for ZenModeWidget {
             None,
             LocalOnlyIconState::for_setting(
                 WorkspaceDecorationVisibility::storage_key(),
-                WorkspaceDecorationVisibility::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -6766,7 +6736,6 @@ impl SettingsWidget for AltScreenPaddingWidget {
             }),
             LocalOnlyIconState::for_setting(
                 AltScreenPadding::storage_key(),
-                AltScreenPadding::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
@@ -6881,7 +6850,6 @@ impl SettingsWidget for ZoomLevelWidget {
             Some(reset_button),
             LocalOnlyIconState::for_setting(
                 crate::window_settings::ZoomLevel::storage_key(),
-                crate::window_settings::ZoomLevel::sync_to_cloud(),
                 &mut view.local_only_icon_tooltip_states.borrow_mut(),
                 app,
             ),
