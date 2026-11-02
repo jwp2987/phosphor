@@ -525,7 +525,7 @@ budget, previous build, baseline, verdict, n).
   Cmd-Q/W/Tab/Space, focus returned to Phosphor). The reference is a `.command` file opened with `open -a Terminal` (no Apple Events, no Terminal preference changes). At harness start the harness records whether Terminal.app was already running (exact PID from `ps -A -o pid=,comm=`, `appci/refterm_mac.py`); if not, the Terminal.app the run launched is recorded as `terminal <pid>` in `<run>/pids` and quit at the end of the run by that PID (SIGTERM, then SIGKILL), which closes every reference window (#1485); `teardown.sh` does the same for a cancelled job, only if that PID started after the run dir was created. An already-running Terminal.app is never quit: the case result carries a note "reference windows left open: Terminal was already running (pid N)"; Windows = `powershell.exe` in conhost, same SendKeys path.
 - **Samples.** n >= 30 per measurement (`ctx.count`, so `APPCI_SCALE` smoke runs are marked "indicative only"), the first
   `APPCI_WARMUP` (3) samples discarded, median and p95 reported.
-- **Regression rule.** The Phosphor median is compared with (a) the previous successful run of the same job on a `build/*` ref
+- **Regression rule.** The Phosphor median is compared with (a) the previous finished run (success or failed, #1513) of the same job on a `build/*` ref
   (fetched by `appci/prev.py` / `app_test.ps1` from the GitLab jobs API with `CI_JOB_TOKEN`, artifact `appci-out/<x>/run/results.json`) and
   (b) the committed `script/realapp/appci/baselines/<platform>.json` (`linux-wayland`, `linux-x11`, `macos`, `windows`). `FAIL` when the
   median is worse by more than `APPCI_REGRESS_PCT` (5 %) **and** `APPCI_REGRESS_MS` (0.5 ms); `WARN` between `APPCI_WARN_PCT` (2 %) and
