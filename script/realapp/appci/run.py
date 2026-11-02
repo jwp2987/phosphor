@@ -275,8 +275,10 @@ def main():
                     exit_fail = True
                     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)   # the relaunch overwrites phosphor.log (#1457)
                     instance += 1
+                    nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
                     app.start()          # relaunch so the remaining cases still run
-                    await_shell(ctx, app, prof, win, a.startup_timeout)
+                    if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                        time.sleep(4)      # the same first-run settle as the first launch
                     if win:
                         be.guard()
                         proved = False       # a relaunched Windows pane needs its keys proven again (and its cwd set)
@@ -298,8 +300,10 @@ def main():
                         keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
                         instance += 1
                         app.stop()
+                        nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
                         app.start()
-                        await_shell(ctx, app, prof, win, a.startup_timeout)
+                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                            time.sleep(4)      # the same first-run settle as the first launch
                         if win:
                             be.guard()
                             proved = False
@@ -317,8 +321,10 @@ def main():
                         keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
                         instance += 1
                         app.stop()
+                        nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
                         app.start()
-                        await_shell(ctx, app, prof, win, a.startup_timeout)
+                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                            time.sleep(4)      # the same first-run settle as the first launch
                         if win:
                             be.guard()
                             proved = False
@@ -339,8 +345,10 @@ def main():
                     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
                     instance += 1
                     app.stop()
+                    nb = prof.prompts()      # prompt.log is never cleared: count only a prompt the NEW instance logs (r18cz: the relaunch awaited an OLD prompt, Ctrl-C hit the bootstrap)
                     app.start()
-                    await_shell(ctx, app, prof, win, a.startup_timeout)
+                    if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                        time.sleep(4)      # the same first-run settle as the first launch
                     be.guard()
                     proved = False
         except backend.NeedsOwner as e:
@@ -422,15 +430,15 @@ def log_src(prof, backend_name, app=None):
     return prof.home + ("/Library/Logs/phosphor.log" if backend_name == "mac" else "/.local/state/phosphor/phosphor.log")
 
 
-def await_shell(ctx, app, prof, win, timeout):
+def await_shell(ctx, app, prof, win, timeout, base=0):
     """True once the pane's shell is up. POSIX / Git Bash pane: the first prompt.log line from the scratch rc. Windows PowerShell pane (no rc hook):
     the app's main window exists, then a fixed settle for PowerShell + the app's bootstrap (12 s, as the PowerShell harness)."""
     if not win:
-        return ctx.until(lambda: prof.prompts() > 0, timeout, step=0.5)
+        return ctx.until(lambda: prof.prompts() > base, timeout, step=0.5)
     if not app.wait_window(60):
         return False
     if prof.local_prompts:
-        return ctx.until(lambda: prof.prompts() > 0, timeout, step=0.5)
+        return ctx.until(lambda: prof.prompts() > base, timeout, step=0.5)
     time.sleep(12)
     return app.alive()
 

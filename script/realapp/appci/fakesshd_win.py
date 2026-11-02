@@ -257,8 +257,22 @@ def handle(ch, srv):
                     except Exception:
                         break
                 log("conpty output ended: %d bytes sent to the client in total" % sent)
+                # r18cz: EOF alone leaves the channel open (the main loop below blocks in recv until the CLIENT closes), so ssh.exe stayed in front for ~40 s
+                # after the remote `exit` and the next trial's `ssh fake` was typed into the dead client. A real sshd sends the exit status and closes.
                 try:
                     ch.shutdown_write()
+                except Exception:
+                    pass
+                try:
+                    for _ in range(25):          # the exit code is available a moment after the pseudo console closes
+                        if cp.exited():
+                            break
+                        time.sleep(0.1)
+                    ch.send_exit_status(cp.exit_code() if cp.exited() else 0)
+                except Exception:
+                    pass
+                try:
+                    ch.close()
                 except Exception:
                     pass
 
