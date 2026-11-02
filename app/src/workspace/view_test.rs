@@ -301,7 +301,6 @@ async fn wait_for_tab_count(workspace: &ViewHandle<Workspace>, app: &mut App, ex
 
 /// Polls until the active tab holds `expected` code panes (the size guard checks the file off
 /// the UI thread, so the pane opens a few ticks after the call).
-#[allow(dead_code)]
 async fn wait_for_code_panes(workspace: &ViewHandle<Workspace>, app: &mut App, expected: usize) {
     for _ in 0..1000 {
         let count = workspace.read(app, |workspace, ctx| {
@@ -320,7 +319,6 @@ async fn wait_for_code_panes(workspace: &ViewHandle<Workspace>, app: &mut App, e
 
 /// For "nothing should open" assertions there is no condition to poll for; give the off-thread
 /// size check ample time to have (wrongly) opened a pane before the caller asserts none did.
-#[allow(dead_code)]
 async fn settle_background_tasks() {
     warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
 }

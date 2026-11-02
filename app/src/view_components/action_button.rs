@@ -373,7 +373,6 @@ impl ActionButton {
     }
 
     // TODO: Remove when we have use cases for with_height outside find bar (not compiled for WASM)
-    #[allow(dead_code)]
     pub fn with_height(mut self, height: f32) -> Self {
         self.custom_height = Some(height);
         self

@@ -225,7 +225,6 @@ where
         ctx.notify();
     }
 
-    #[allow(dead_code)]
     pub fn set_style(&mut self, style: DropdownStyle, ctx: &mut ViewContext<Self>) {
         self.style = style;
         ctx.notify();

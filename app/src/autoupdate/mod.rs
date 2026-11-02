@@ -909,7 +909,6 @@ impl Entity for AutoupdateState {
 impl SingletonEntity for AutoupdateState {}
 
 /// Set of results from an update check.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdateReady {
     /// An update is available and has been downloaded.

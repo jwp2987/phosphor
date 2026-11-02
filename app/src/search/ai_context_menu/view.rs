@@ -1669,7 +1669,6 @@ impl AIContextMenu {
         }
     }
 
-    #[allow(dead_code)]
     fn render_search_bar(&self) -> Box<dyn Element> {
         ChildView::new(&self.search_bar).finish()
     }
