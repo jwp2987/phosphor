@@ -1315,8 +1315,9 @@ impl ImageCache {
     /// cache key inside `image()` (i.e., after any `max_dimension`
     /// adjustment), not only the originally requested bounds.
     ///
-    /// Test-only: the debounce eviction pass that would call this was never wired up
-    /// (TODO(APP-3877)).
+    /// Only tests call this directly: production eviction is driven by `insert_rendered` (the
+    /// per-asset size cap and the global byte-budget LRU, #880), which removes entries through the
+    /// same `remove_size_entry`, so rendered sizes never accumulate without bound (#1473).
     #[cfg(test)]
     fn evict_size(
         &self,
@@ -1336,14 +1337,23 @@ impl ImageCache {
         };
 
         let mut cache = self.images.write();
-        if let Some(inner_map) = cache.get_mut(&cache_key) {
-            inner_map.remove(&rendered_key);
-            if inner_map.is_empty() {
-                cache.remove(&cache_key);
-            }
-        }
+        Self::remove_size_entry(&mut cache, (cache_key, rendered_key));
         drop(cache);
         self.forget_used((cache_key, rendered_key));
+    }
+
+    /// Removes one rendered size from the image map, dropping the asset's map when it empties.
+    /// Callers also `forget_used` the key.
+    fn remove_size_entry(
+        cache: &mut HashMap<u64, HashMap<RenderedImageCacheKey, Rc<Image>>>,
+        key: RenderedKey,
+    ) {
+        if let Some(inner) = cache.get_mut(&key.0) {
+            inner.remove(&key.1);
+            if inner.is_empty() {
+                cache.remove(&key.0);
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1516,12 +1526,7 @@ impl ImageCache {
             }
         }
         for victim in victims {
-            if let Some(inner) = cache.get_mut(&victim.0) {
-                inner.remove(&victim.1);
-                if inner.is_empty() {
-                    cache.remove(&victim.0);
-                }
-            }
+            Self::remove_size_entry(&mut cache, victim);
             self.forget_used(victim);
         }
     }
