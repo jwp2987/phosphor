@@ -576,6 +576,26 @@ code-refuter agents.
   `dscl . -authonly <user>`, never by reading the attribute. Each Mac build's DMG step briefly opens a Finder window on
   that desktop (the bundler lays out the installer window); that is expected.
 
+- **Local Network prompt and the CI harness (macharness2, 2026-11-02).** A fresh ad-hoc-signed build asks "Allow "Phosphor" to
+  find devices on local networks?" the first time it talks to a LAN address (CI Ollama). The prompt is owned by a system
+  process, is NOT the frontmost app (the menu bar still says Phosphor, `lsappinfo front` cannot see it), covers the window
+  and eats keys. **The owner clicked Allow once in gitrunner's session on 2026-11-02**, but every new ad-hoc-signed build
+  may re-trigger it (the grant is keyed to the code signature). The harness therefore checks, before the first key and in
+  `MacBackend.guard()` before every burst, for a system dialog (`winrect list`: an on-screen window of
+  UserNotificationCenter / CoreServicesUIAgent / universalAccessAuthWarn / SecurityAgent; plus a Vision OCR for
+  "Don't Allow" + "local network" once before the first key). On a hit it STOPS: exit 3 and `NEEDS_OWNER.txt` (in the artifacts
+  root and in `run/`) naming the dialog; the owner answers it once in gitrunner's session (Screen Sharing / console), then the
+  job is re-run. The harness never clicks it. Idea, NOT implemented: a loopback forwarder (a tiny tcp relay started by the job on
+  127.0.0.1:PORT forwarding to the Ollama host, with the profile's endpoint pointing at it) so the app only talks to 127.0.0.1,
+  which needs no Local Network permission and would make the prompt impossible; the relay process (not the app) would then
+  own the LAN connection, and it is a plain CLI child of the runner, which is not prompt-gated.
+- **Mac harness PID/ref notes.** The app PID is resolved by the exact private bundle path inside the job dir (never by name),
+  kept while verified (`kill -0` + command prefix), re-resolved on demand; "APP DIED" is only claimed when that PID is gone AND
+  no process of the bundle exists, otherwise "PID lookup failed". One instance per pass is enforced. The window rect comes
+  from `winrect` (CGWindowList; no System Events). The latency_enter reference is Terminal.app launched with
+  `open -a Terminal x.command` (no Apple Events, no Automation grant), closed by typing `exit`; if it cannot be reached the
+  verdict is "no-reference" with the reason. mode_proof reads the PRE-key screenshot (Escape leaves a fresh agent view).
+
 ### 3.4 Windows
 
 - VM: Windows 10 22H2 x64, standard user (installs go through a separate admin account), also the GitLab Windows

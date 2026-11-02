@@ -95,6 +95,8 @@ class MacApp:
         self.run, self.home, self.bundle, self.bin = run, home, app_bundle, binary
         self.settings = os.path.join(home, ".phosphor", "settings.toml")
         self._pid = None
+        self.last_pid = None
+        self.warn = None
         self.log_path = os.path.join(home, "Library", "Logs", "phosphor.log")
 
     def _install_settings(self):
@@ -113,11 +115,16 @@ class MacApp:
                      ("RUST_LOG", "warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]
+        # exactly ONE instance per pass: refuse to launch over a leftover of this job's bundle (it would share the window/dialog state)
+        left = self._instances()
+        if left:
+            raise RuntimeError("an instance of this job's bundle is already running (pids %s): refusing a second launch" % [p for p, _ in left])
         subprocess.run(["open", "-n"] + env_args + [self.bundle], check=True)
         self._pid = None
         t = time.time()
         while time.time() - t < 30 and not self.pid():
             time.sleep(0.5)
+        self.last_pid = self._pid
         with open(os.path.join(self.run, "pids"), "a") as f:
             f.write("app %s\n" % self._pid)
         self.focus()
@@ -130,32 +137,70 @@ class MacApp:
                            capture_output=True, timeout=30)
             time.sleep(1.0)
 
-    def pid(self):
+    def _instances(self):
+        """[(pid, command)] of every process whose executable lives inside THIS job's private bundle path. Matching is by the
+        exact bundle path (inside the job dir), never by bare process name: the owner's own Phosphor/Warp apps cannot match."""
         out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+        pre = self.bundle.rstrip("/") + "/Contents/MacOS/"
+        res = []
         for l in out.splitlines():
             p = l.strip().split(None, 1)
-            if len(p) == 2 and p[1] == self.bin:        # argv0 is exactly the bundle executable, no extra args
-                self._pid = int(p[0])
-                return self._pid
-        self._pid = None
+            if len(p) == 2 and p[1].startswith(pre):
+                res.append((int(p[0]), p[1]))
+        return res
+
+    def _verified(self, p):
+        """p is alive (kill -0) and its command line is in our bundle (PID-reuse safe)"""
+        try:
+            os.kill(p, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        c = subprocess.run(["ps", "-o", "command=", "-p", str(p)], capture_output=True, text=True).stdout.strip()
+        return c.startswith(self.bundle.rstrip("/") + "/Contents/MacOS/")
+
+    def pid(self):
+        """The PID of the one instance under test; re-resolved on demand. The last known PID is kept while verified (a transient
+        ps miss cannot lose it); otherwise the lowest PID inside the bundle path (the `open` launch; helpers come later)."""
+        if self._pid and self._verified(self._pid):
+            return self._pid
+        inst = self._instances()
+        if inst:
+            self._pid = self.last_pid = min(p for p, _ in inst)
+            if len(inst) > 1:
+                self.warn = "%d processes inside %s: %s" % (len(inst), self.bundle, [p for p, _ in inst])
+            return self._pid
         return None
+
+    def instance_count(self):
+        return len(self._instances())
 
     def alive(self):
         return self.pid() is not None
 
+    def death(self):
+        """None while the app is fine. 'APP DIED' is claimed ONLY when the last known PID is verified gone (kill -0) AND no process of
+        this job's bundle exists; a PID we never resolved, or a lookup that failed while the app is up, is reported as a lookup failure."""
+        if self.pid():
+            return None
+        if self.last_pid is None and self._pid is None:
+            return "PID lookup failed: no process inside %s was ever resolved (launch problem, not a crash)" % self.bundle
+        return "APP DIED: pid %s is gone (kill -0 fails) and no process of %s exists" % (self.last_pid or self._pid, self.bundle)
+
     def stop(self):
-        p = self.pid()
-        if p:
+        for p in sorted({p for p, _ in self._instances()}):
             for sig, wait in ((signal.SIGTERM, 6), (signal.SIGKILL, 3)):
                 try:
                     os.kill(p, sig)
                 except ProcessLookupError:
                     break
                 t = time.time()
-                while time.time() - t < wait and self.pid():
+                while time.time() - t < wait and self._verified(p):
                     time.sleep(0.3)
-                if not self.pid():
+                if not self._verified(p):
                     break
+        self._pid = None
 
     def cpu_ticks(self):
         p = self.pid()

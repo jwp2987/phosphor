@@ -42,6 +42,7 @@ final class G: NSObject, SCStreamOutput {
 let src = CGEventSource(stateID: .hidSystemState)
 func ev(_ key: CGKeyCode, _ s: String?, _ down: Bool) {
   let e = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down)!
+  e.flags = []   // CI: explicit empty modifier set, so a Control flag from an earlier k: op can never leak into typed text
   if let s = s { var u = Array(s.utf16); e.keyboardSetUnicodeString(stringLength: u.count, unicodeString: &u) }
   e.post(tap: .cghidEventTap)
 }

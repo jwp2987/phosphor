@@ -264,6 +264,11 @@ class X11Backend(Backend):
         return [{"id": w} for w in r.stdout.decode().split()]
 
 
+class NeedsOwner(RuntimeError):
+    """a macOS system dialog (Local Network / TCC / authorization) is in front: keys would go into it. run.py stops the run
+    with exit 3 and NEEDS_OWNER.txt. We NEVER click such a dialog ourselves."""
+
+
 class MacBackend(Backend):
     """Keys are injected by htype2 (CGEvent posting with real key codes at an exact cadence; source in
     script/realapp/mac/tools, compiled by the job), key->paint latency by kl3 (ScreenCaptureKit). cliclick is no longer
@@ -295,7 +300,7 @@ class MacBackend(Backend):
 
     def preflight(self):
         p = []
-        for t in ("htype2", "kl3"):
+        for t in ("htype2", "kl3", "winrect"):
             if not os.access(self._tool(t), os.X_OK):
                 p.append("missing compiled tool %s (APPCI_MAC_TOOLS=%r; app_test.sh compiles script/realapp/mac/tools/*.swift)" % (t, self.TOOLS))
         t = "/tmp/appci_pf_%d.png" % os.getpid()
@@ -328,7 +333,47 @@ class MacBackend(Backend):
                        capture_output=True, timeout=30)
         time.sleep(0.6)
 
+    # processes that own system prompts (Local Network, TCC, authorization). Any on-screen window of one of these means keys could be eaten.
+    DIALOG_OWNERS = ("usernotificationcenter", "coreservicesuiagent", "universalaccessauthwarn", "securityagent", "tccd", "localnetworkprompt")
+
+    def system_dialog(self, ocr=False):
+        """description of a system dialog that is on screen, else None. Cheap path: WindowServer window list (the Local Network
+        prompt is NOT frontmost per lsappinfo: the menu bar still says Phosphor, so the front-app check alone cannot see it).
+        ocr=True adds a Vision pass over a screenshot for 'Allow' + 'local network' (used once before the first key)."""
+        try:
+            r = subprocess.run([self._tool("winrect"), "list"], capture_output=True, timeout=15)
+            for l in r.stdout.decode(errors="replace").splitlines():
+                f = l.split("\t")
+                if len(f) >= 2 and f[1].lower().replace(" ", "") in self.DIALOG_OWNERS:
+                    return "window of %s (pid %s) on screen: %s" % (f[1], f[0], l[:160])
+        except Exception:
+            pass
+        name, _ = self._front()
+        if name.lower().replace(" ", "") in self.DIALOG_OWNERS:
+            return "frontmost process is %s" % name
+        if ocr and os.access(self._tool("ocr"), os.X_OK):
+            t = "/tmp/appci_dlg_%d.png" % os.getpid()
+            _run(["screencapture", "-x", t])
+            try:
+                txt = " ".join(subprocess.run([self._tool("ocr"), t], capture_output=True, timeout=60).stdout.decode(errors="replace").lower().split())
+            except Exception:
+                txt = ""
+            if os.path.exists(t):
+                os.remove(t)
+            if ("don't allow" in txt or "dont allow" in txt) and ("local network" in txt or "devices on" in txt):
+                return "OCR sees an 'Allow / Don't Allow' prompt about local networks"
+        return None
+
+    def needs_owner(self, what):
+        return NeedsOwner(
+            "a macOS system dialog is in front and would take our keys: %s. The owner must click ALLOW once, in the gitrunner GUI session "
+            "(Screen Sharing / the console as user gitrunner): the dialog reads 'Allow \"Phosphor\" to find devices on local networks?'. "
+            "A new ad-hoc-signed build can re-trigger it (docs/testing.md 3.3). The harness never clicks it. Then re-run the job." % what)
+
     def guard(self):
+        d = self.system_dialog()
+        if d:
+            raise self.needs_owner(d)
         name, pid = self._front()
         if name.lower() == "loginwindow":
             raise RuntimeError("loginwindow is frontmost (locked screen?): refusing to send keys")
@@ -420,12 +465,11 @@ class MacBackend(Backend):
         return os.path.exists(path) and os.path.getsize(path) > 5000
 
     def window_rect(self):
-        """(x, y, w, h) of Phosphor's first window in points, or None"""
+        """(x, y, w, h) of Phosphor's main window in points, or None. CGWindowList via the winrect helper: no System Events / Apple Events."""
         ph = self.pid_fn() if self.pid_fn else None
         if not ph:
             return None
-        r = subprocess.run(["osascript", "-e", 'tell application "System Events" to set w to window 1 of (first process whose unix id is %d)\nreturn (item 1 of (position of w)) & "," & (item 2 of (position of w)) & "," & (item 1 of (size of w)) & "," & (item 2 of (size of w))' % ph],
-                           capture_output=True, timeout=30)
+        r = subprocess.run([self._tool("winrect"), "rect", str(ph)], capture_output=True, timeout=15)
         try:
             return tuple(float(x) for x in r.stdout.decode().strip().split(","))
         except ValueError:

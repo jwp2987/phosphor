@@ -95,6 +95,12 @@ def main():
                     exit_fail = True
                     continue
                 time.sleep(4)   # let the first-run overlay settle; mode_proof sends Escape
+                if a.backend == "mac":
+                    d = be.system_dialog(ocr=True)       # BEFORE the first key: a Local Network / TCC prompt would take it
+                    if d:
+                        raise be.needs_owner(d)
+                    if app.instance_count() != 1:
+                        raise RuntimeError("expected exactly ONE app instance for this job's bundle, found %d: %s" % (app.instance_count(), app.warn))
                 be.calibrate()
             else:
                 ctx.until(lambda: prof.prompts() > 0, 10)
@@ -113,6 +119,8 @@ def main():
                         ctx.reset()
                     c["fn"](ctx, r)
                     status = "fail" if r.fails else "pass"
+                except backend.NeedsOwner:
+                    raise
                 except cases.Skip as e:
                     status = "skip"
                     r.notes.insert(0, str(e))
@@ -121,9 +129,10 @@ def main():
                     r.fails.append("harness exception: %r" % e)
                     traceback.print_exc()
                 shot = None if sim else ctx.shot(c["name"] + ("_FAIL" if status == "fail" else ""))
-                if app is not None and not app.alive():
+                dead = app.death() if hasattr(app, "death") else (None if app is None or app.alive() else "APP DIED during/after this case (crash): see logs/app.stdout")
+                if dead:
                     status = "fail"
-                    r.fails.append("APP DIED during/after this case (crash): see logs/app.stdout")
+                    r.fails.append(dead)
                     emit(dict(name=c["name"], mode=mode, status=status, seconds=round(time.time() - t0, 1),
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
@@ -134,6 +143,19 @@ def main():
                     exit_fail = True
                 emit(dict(name=c["name"], mode=mode, status=status, seconds=round(time.time() - t0, 1),
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
+        except backend.NeedsOwner as e:
+            msg = "NEEDS OWNER: %s" % e
+            print(msg, flush=True)
+            emit(dict(name="needs_owner", mode=mode, status="fail", seconds=0, detail=[msg]))
+            for d in {run, os.path.dirname(os.path.abspath(run))}:
+                try:
+                    open(os.path.join(d, "NEEDS_OWNER.txt"), "w").write(msg + "\n")
+                except OSError:
+                    pass
+            if app:
+                app.stop()
+            sshd.stop(ssh_info)
+            return finish(run, a, 3)
         finally:
             if app:
                 app.stop()

@@ -182,12 +182,18 @@ def c_mode_proof(ctx, r):
     """screenshot proof of the session mode before any key is typed (shots/<mode>_proof.png is the evidence), plus OCR when an engine exists.
     Agent mode = header 'New Phosphor Agent conversation' + 'Ask anything' placeholder (+ model chip with the CI model).
     The hint 'new /agent conversation' under a prompt means a TERMINAL session: it must not count as an agent marker."""
-    ctx.shot("proof_prekey")           # taken before ANY key is sent
+    # The proof is read from the PRE-KEY screenshot (shots/<mode>_proof_prekey.png): Escape in a fresh agent view LEAVES agent mode
+    # (macOS CI run 3015802940 showed 'New terminal session' after the Escape in the agent pass), so the Escape is sent only after.
+    if ctx.be.name == "mac":
+        d = ctx.be.system_dialog(ocr=True)
+        if d:
+            raise ctx.be.needs_owner(d)
+    txt = ctx.ocr("proof_prekey")      # taken before ANY key is sent
     ctx.be.key("Escape")
     time.sleep(0.8)
-    txt = ctx.ocr("proof")
+    ctx.shot("proof")
     if txt is None:
-        r.note("no OCR engine: screenshot only (shots/%s_proof.png), mode not machine-verified" % ctx.mode)
+        r.note("no OCR engine: screenshot only (shots/%s_proof_prekey.png), mode not machine-verified" % ctx.mode)
         return
     low = " ".join(txt.lower().split())
     hint = "/agent" in low and "conversation" in low                       # terminal-mode hint line
@@ -612,20 +618,41 @@ def ref_terminal(ctx):
     macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
     home = ctx.prof.home
     if ctx.be.name == "mac":
-        sh = "cd '%s'; exec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i" % (ctx.W, home, home, ctx.prof.ctl)
-        scr = 'tell application "Terminal"\nactivate\ndo script "%s"\nreturn id of front window\nend tell' % sh.replace('"', '\\"')
-        rr = subprocess.run(["osascript", "-e", scr], capture_output=True, timeout=30)
-        wid = rr.stdout.decode().strip()
-        if rr.returncode != 0 or not wid:
+        # NO Apple Events: `tell application "Terminal" ... do script` needs an Automation grant (a TCC prompt nobody answers in CI; it hung
+        # 30 s per sample in run 3015802940). A .command file opened with LaunchServices needs none. Driven by htype2 under the frontmost guard.
+        ctx.ref_reason = None
+        cmdf = os.path.join(ctx.prof.home, "ref_terminal.command")
+        with open(cmdf, "w") as f:
+            f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, home, ctx.prof.ctl))
+        os.chmod(cmdf, 0o755)
+        subprocess.run(["xattr", "-c", cmdf], capture_output=True)
+        rr = subprocess.run(["open", "-a", "Terminal", cmdf], capture_output=True, timeout=20)
+        if rr.returncode != 0:
+            ctx.ref_reason = "open -a Terminal failed: %s" % rr.stderr.decode().strip()[:120]
             return None
+        for _ in range(16):             # <= 8 s for Terminal to become frontmost
+            if ctx.be._front()[0].lower() == "terminal":
+                break
+            time.sleep(0.5)
+        else:
+            ctx.ref_reason = "Terminal.app did not become frontmost within 8 s"
+            return None
+        d = ctx.be.system_dialog()
+        if d:
+            raise ctx.be.needs_owner(d)
+        time.sleep(1.5)
         ctx.be.guard_override = "Terminal"
 
         def close():
-            # never Cmd-W/Q: close exactly our window by id; the shell is a plain zsh so Terminal does not prompt
-            subprocess.run(["osascript", "-e", 'tell application "Terminal" to close (every window whose id is %s) saving no' % wid], capture_output=True, timeout=30)
+            # never Cmd-W/Q: the shell exits cleanly, and Terminal's default profile closes the window of a cleanly exited shell
+            try:
+                ctx.be.type("exit", 12, enter=True)
+            except Exception:
+                pass
+            time.sleep(0.8)
             ctx.be.guard_override = None
             ctx.be.refocus()
-        return RefTerm("Terminal.app", close=close)
+        return RefTerm("Terminal.app (.command via open)", close=close)
     disp, wl = os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY")
     env = dict(os.environ, HOME=home)
     if wl and shutil.which("foot") and ctx.be.name == "wayland":
@@ -638,9 +665,12 @@ def ref_terminal(ctx):
     return RefTerm(name, proc=subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
 
 
-def enter_to_start(ctx, n):
+def enter_to_start(ctx, n, budget_s=None):
     ds = []
+    t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
+        if t_end and time.time() > t_end:
+            break
         f = os.path.join(ctx.W, "lat_%d" % i)
         if os.path.exists(f):
             os.remove(f)
@@ -673,7 +703,7 @@ def c_lat_enter(ctx, r):
     if ref:
         try:
             time.sleep(2.5)
-            rs = enter_to_start(ctx, n + warm)[warm:]
+            rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5))[warm:]      # overall cap: a dead reference cannot hang the case
             ctx.reset()
         finally:
             ref.close()
@@ -681,7 +711,7 @@ def c_lat_enter(ctx, r):
         r.metric("reference_enter_to_start_ms", stats(rs))
         r.metric("reference", ref.name)
     else:
-        r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)")
+        r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.mode, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
@@ -731,7 +761,11 @@ def c_lat_key(ctx, r):
     ds, slow = run_keys(n + warm)
     r.metric("key_to_frame_ms", stats(ds))
     if len(ds) < n * 0.5:
-        r.check(False, "only %d key->frame pairs in the app log (expected ~%d); input_order logging not on or the log path is wrong (%s)" % (len(ds), n, ctx.log_path))
+        allt = ctx.log_since(0)
+        r.check(False, "only %d key->frame pairs in the app log (expected ~%d); log %s has %d input_order keydown lines (%d with ctrl=false) and %d input_order frame lines "
+                "(0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)"
+                % (len(ds), n, ctx.log_path, allt.count("input_order keydown"), allt.count("input_order keydown") - allt.count("ctrl=true"),
+                   allt.count("input_order frame")))
         return
     # Phosphor-side clock only (keydown -> first frame after the echo); there is no paint read-back for a reference terminal through
     # Wayland / ScreenCaptureKit at this resolution, so the 2 ms overhead budget cannot be judged: verdict 'no-reference'.
