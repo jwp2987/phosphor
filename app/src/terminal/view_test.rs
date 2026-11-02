@@ -18295,6 +18295,25 @@ fn ssh_handover_enter_guard_does_not_swallow_a_new_line_after_clear() {
     })
 }
 
+/// #1447: outside the key path (an event / timer callback) the prompt look never waits for the
+/// pty reader either: with the model locked (a parse in progress) it answers from the last look.
+#[test]
+fn prompt_look_outside_key_path_does_not_block_on_a_busy_model() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            assert!(!view.in_key_path());
+            view.unterminated_text_at_last_look.set(true);
+            view.setup_echo_mid_line_at_last_look.set(true);
+            let busy = view.model.lock();
+            assert!(view.active_output_ends_in_unterminated_text());
+            assert!(!view.active_output_awaits_an_answer());
+            drop(busy);
+        });
+    })
+}
+
 /// Sends `action` to the input editor the way a key typed into it does.
 fn editor_key(view: &mut TerminalView, action: EditorAction, ctx: &mut ViewContext<TerminalView>) {
     view.input.update(ctx, |input, ctx| {

@@ -11496,11 +11496,11 @@ impl TerminalView {
     }
 
     /// Whether the setup script's tty echo stops mid-line. While a user key is being handled this
-    /// never waits for the pty reader (#1440): a busy model answers with the last look.
+    /// never waits for the pty reader (#1440), and neither does an event or timer callback
+    /// (#1447): a busy model answers with the last look, and the wakeup the parse ends with
+    /// judges again on the exact state.
     fn setup_echo_is_mid_line(&self) -> bool {
-        let mid_line = if self.in_key_path()
-            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
-        {
+        let mid_line = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
             match self.model.try_lock() {
                 Some(model) => model.is_setup_echo_mid_line(),
                 None => return self.setup_echo_mid_line_at_last_look.get(),
@@ -11515,12 +11515,11 @@ impl TerminalView {
     /// True when the active block's output has visible text and the cursor sits after text on
     /// its row (no trailing newline): the shape of a prompt, as opposed to banner output.
     fn active_output_ends_in_unterminated_text(&self) -> bool {
-        // While a user key is being handled this never waits for the pty reader (#1440): when
-        // the model is busy parsing, the answer given at the last output wakeup stands. The
+        // This never waits for the pty reader, for a user key (#1440) or an event / timer
+        // callback (#1447): when the model is busy parsing, the answer given at the last output
+        // wakeup stands (the deferred re-check is the wakeup the parse ends with). The
         // wakeup that follows the parse judges the held keys again on the exact state.
-        let model = if self.in_key_path()
-            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
-        {
+        let model = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
             match self.model.try_lock() {
                 Some(model) => model,
                 None => return self.unterminated_text_at_last_look.get(),
