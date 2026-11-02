@@ -218,6 +218,38 @@ class Ctx:
         now = self.shell_count()
         return base is not None and now is not None and now < base
 
+    def where_now(self, timeout=8):
+        """Which shell is in front, proven by an effect: a fresh token written to ~/.appci_where lands in the REMOTE home ("remote"), the local
+        scratch home ("local"), or nowhere ("none")."""
+        probe = "w" + self.tok(8)
+        self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
+        def local_where():
+            try:
+                return open(os.path.join(self.prof.home, ".appci_where"), errors="replace").read().split()
+            except OSError:
+                return []
+        self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout)
+        if probe in self.lines(".appci_where", remote=True):
+            return "remote"
+        return "local" if probe in local_where() else "none"
+
+    def return_to_local(self, max_levels=3):
+        """After an ssh case, pass or fail: leave every remote level until a probe lands in the LOCAL home. `exit` is typed only while the
+        probe proves a remote shell is in front (never at the local shell). Returns "local", "remote" (still remote after max_levels) or
+        "none" (no shell answered, even after Ctrl-C/Ctrl-U)."""
+        for _ in range(max_levels + 1):
+            where = self.where_now()
+            if where == "none":
+                self.reset()
+                where = self.where_now()
+            if where != "remote":
+                return where
+            before = self.prof.prompts()
+            self.be.type("exit", 12, enter=True)
+            self.until(lambda: self.prof.prompts() > before, 10)
+            time.sleep(0.5)
+        return "remote"
+
     def leave_remote(self, r, label, rfile, tok, base, timeout=10, level=False):
         """Type `exit` ONLY if a remote shell is provably in front (tok reached the REMOTE file rfile). Otherwise `exit` would end the
         LOCAL shell and every later key would go to the agent (#1481): record the miss, reset the pane, and return False so the caller stops

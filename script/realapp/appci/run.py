@@ -287,6 +287,23 @@ def main():
                         save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
                 emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1),
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
+                if c["name"].startswith(("ssh_", "remote_")):
+                    # r18ct: a failed nested-ssh case left the pane inside the remote shell, and the next case (latency_enter) typed a zsh-only
+                    # `print` into the remote bash, which agent mode routed to the agent. Every ssh case ends with the pane provably LOCAL.
+                    where = ctx.return_to_local()
+                    if where != "local":
+                        emit(dict(name="pane_not_local_after_" + c["name"], mode=label, status="fail", seconds=0,
+                                  shots=[ctx.shot("not_local_after_" + c["name"]) or ""],
+                                  detail=["after %s the pane could not be proven back in the local shell (%s); the app is relaunched so later cases start clean" % (c["name"], where)]))
+                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+                        instance += 1
+                        app.stop()
+                        app.start()
+                        await_shell(ctx, app, prof, win, a.startup_timeout)
+                        if win:
+                            be.guard()
+                            proved = False
+                        continue
                 alive = ctx.pane_responsive() if (win and (status == "fail" or c["name"] in ("ctrl_c_d", "cadence"))) else 0
                 if alive == 1:
                     # typing took effect only after the retry's Ctrl-C x3: not wedged, but the NEXT case would have typed into a pane that eats Enter (r18co Git Bash
