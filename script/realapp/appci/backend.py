@@ -295,8 +295,18 @@ class MacBackend(Backend):
 
     def guard(self):
         f = self._front()
-        if self.APP.lower() not in f.lower() and "phosphor" not in f.lower():
+        want = getattr(self, "guard_override", None)      # set while the Terminal.app reference window is being driven
+        if want:
+            if want.lower() not in f.lower():
+                raise RuntimeError("frontmost app is %r, not %s: refusing to send keys" % (f, want))
+        elif self.APP.lower() not in f.lower() and "phosphor" not in f.lower():
             raise RuntimeError("frontmost app is %r, not Phosphor: refusing to send keys" % f)
+
+    def refocus(self):
+        """bring Phosphor back to the front after the reference window closed (System Events frontmost; no keys sent)"""
+        subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of first process whose name is "%s" to true' % self.APP],
+                       capture_output=True, timeout=30)
+        time.sleep(0.5)
 
     def type(self, text, delay_ms=15, enter=False):
         self.guard()
