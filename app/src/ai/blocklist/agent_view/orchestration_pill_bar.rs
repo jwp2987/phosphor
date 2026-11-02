@@ -15,12 +15,11 @@ use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::{Fill, WarpTheme};
 use warpui::elements::new_scrollable::{NewScrollable, ScrollableAppearance, SingleAxisConfig};
 use warpui::elements::{
-    Align, AnchorPair, ChildAnchor, ChildView, ClippedScrollStateHandle, ConstrainedBox, Container,
-    CornerRadius, CrossAxisAlignment, DEFAULT_UI_LINE_HEIGHT_RATIO, Element, Empty,
-    Fill as ElementFill, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
-    OffsetPositioning, OffsetType, ParentAnchor, ParentElement, ParentOffsetBounds,
-    PositionedElementOffsetBounds, PositioningAxis, Radius, SavePosition, ScrollbarWidth, Stack,
-    Text, XAxisAnchor, YAxisAnchor,
+    Align, AnchorPair, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, DEFAULT_UI_LINE_HEIGHT_RATIO, Element, Empty, Fill as ElementFill, Flex,
+    Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, OffsetType,
+    ParentAnchor, ParentElement, ParentOffsetBounds, PositionedElementOffsetBounds,
+    PositioningAxis, Radius, SavePosition, ScrollbarWidth, Stack, Text, XAxisAnchor, YAxisAnchor,
 };
 use warpui::fonts::{Properties, Weight};
 use warpui::platform::{Cursor, LineStyle};
@@ -56,7 +55,6 @@ use crate::ai::blocklist::telemetry::{
 };
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::ai::harness_display;
-use crate::features::FeatureFlag;
 use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields};
 use crate::pane_group::pane::view::PaneHeaderAction;
 use crate::terminal::view::TerminalAction;
@@ -87,8 +85,6 @@ const PILL_HORIZONTAL_PADDING_RIGHT: f32 = 6.;
 const PILL_ICON_BUTTON_SIZE: f32 = 16.;
 const PILL_ICON_SIZE: f32 = 12.;
 const PILL_OVERFLOW_BUTTON_RIGHT_OFFSET: f32 = 4.;
-const STATIC_PILL_LABEL_MAX_WIDTH: f32 = 110.;
-const STATIC_PILL_HORIZONTAL_PADDING_RIGHT: f32 = 10.;
 /// Width of the overlaid horizontal scrollbar; thin hairline by design.
 const PILL_BAR_SCROLLBAR_WIDTH: f32 = 4.;
 /// Desired gap between the pills and the scrollbar thumb.
@@ -609,44 +605,6 @@ fn drill_down_anchor_id(
     } else {
         active_id
     }
-}
-
-/// Renders a non-interactive agent pill using the same deterministic-color
-/// + initial-letter avatar as the live pill bar.
-pub fn render_static_agent_pill(name: &str, app: &AppContext) -> Box<dyn Element> {
-    let appearance = Appearance::as_ref(app);
-    let theme = appearance.theme();
-    let avatar = render_agent_avatar_disc(name, AVATAR_SIZE, theme, appearance);
-    let text_color = theme.ansi_fg_magenta();
-    let bg_color = coloru_with_opacity(text_color, 10);
-    let label_text = Text::new(name.to_string(), appearance.ui_font_family(), 12.)
-        .with_color(text_color)
-        .soft_wrap(false)
-        .with_clip(ClipConfig::ellipsis())
-        .finish();
-
-    let row = Flex::row()
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_spacing(6.)
-        .with_child(avatar)
-        .with_child(
-            ConstrainedBox::new(label_text)
-                .with_max_width(STATIC_PILL_LABEL_MAX_WIDTH)
-                .finish(),
-        )
-        .finish();
-
-    ConstrainedBox::new(
-        Container::new(row)
-            .with_padding_left(PILL_HORIZONTAL_PADDING_LEFT)
-            .with_padding_right(STATIC_PILL_HORIZONTAL_PADDING_RIGHT)
-            .with_background_color(bg_color)
-            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(PILL_RADIUS)))
-            .finish(),
-    )
-    .with_height(PILL_HEIGHT)
-    .finish()
 }
 
 /// Returns the label to use for the orchestrator pill. Prefers the explicitly
@@ -2250,267 +2208,6 @@ struct PillBarContents {
     /// the root); rendered after the root breadcrumb.
     breadcrumb_parent_id: Option<AIConversationId>,
     specs: Vec<PillSpec>,
-}
-
-/// Pre-computed data for a single breadcrumb in the orchestration breadcrumb row.
-struct CrumbSpec {
-    conversation_id: AIConversationId,
-    label: String,
-    avatar_color: ColorU,
-    avatar_glyph: AvatarGlyph,
-    /// `true` for the trailing crumb (the conversation currently being
-    /// viewed). The trailing crumb is rendered with a brighter text color
-    /// and is non-interactive.
-    is_active: bool,
-}
-
-const CRUMB_HEIGHT: f32 = 24.;
-const CRUMB_RADIUS: f32 = 4.;
-const CRUMB_HORIZONTAL_PADDING: f32 = 6.;
-
-/// Renders a `[Parent Avatar] [Parent Title] > [Child Avatar] [Child Name]`
-/// breadcrumb row when the active conversation is a child agent under an
-/// orchestrator that has been split off into another pane/tab. Returns
-/// `None` for same-pane child views — those render the pill bar with the
-/// active child highlighted instead.
-pub fn render_orchestration_breadcrumbs(
-    agent_view_controller: &AgentViewController,
-    parent_crumb_mouse_state: MouseStateHandle,
-    horizontal_scroll_state: ClippedScrollStateHandle,
-    app: &AppContext,
-) -> Option<Box<dyn Element>> {
-    if !FeatureFlag::AgentView.is_enabled() {
-        return None;
-    }
-    if !agent_view_controller.is_fullscreen() {
-        return None;
-    }
-    let active_id = agent_view_controller
-        .agent_view_state()
-        .active_conversation_id()?;
-    let history = BlocklistAIHistoryModel::as_ref(app);
-    let active = history.conversation(&active_id)?;
-    let parent_id = parent_conversation_id(active, app)?;
-    let parent = history.conversation(&parent_id);
-
-    let appearance = Appearance::as_ref(app);
-    let theme = appearance.theme();
-
-    let parent_label = parent
-        .and_then(|p| {
-            p.title()
-                .filter(|t| !t.is_empty())
-                .or_else(|| p.agent_name().map(str::to_string))
-        })
-        .unwrap_or_else(|| "Orchestrator".to_string());
-
-    let child_name = active
-        .agent_name()
-        .filter(|n| !n.is_empty())
-        .unwrap_or("Agent");
-    let child_label = child_name.to_string();
-
-    let parent_spec = CrumbSpec {
-        conversation_id: parent_id,
-        label: parent_label,
-        avatar_color: theme.ansi_fg_cyan(),
-        avatar_glyph: AvatarGlyph::Icon(Icon::Agent),
-        is_active: false,
-    };
-
-    let child_spec = CrumbSpec {
-        conversation_id: active_id,
-        label: child_label,
-        avatar_color: pill_avatar_color(child_name, theme),
-        avatar_glyph: AvatarGlyph::Letter(pill_initial(child_name)),
-        is_active: true,
-    };
-
-    let chevron_color = internal_colors::text_sub(theme, theme.background());
-    let chevron = ConstrainedBox::new(
-        Icon::ChevronRight
-            .to_warpui_icon(chevron_color.into())
-            .finish(),
-    )
-    .with_width(16.)
-    .with_height(16.)
-    .finish();
-
-    let mut row = Flex::row()
-        .with_main_axis_alignment(MainAxisAlignment::Start)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_spacing(4.);
-    let self_terminal_view_id = agent_view_controller.terminal_view_id();
-    row.add_child(render_crumb(
-        parent_spec,
-        Some(parent_crumb_mouse_state),
-        self_terminal_view_id,
-        theme,
-        appearance,
-    ));
-    row.add_child(chevron);
-    row.add_child(render_crumb(
-        child_spec,
-        None,
-        self_terminal_view_id,
-        theme,
-        appearance,
-    ));
-
-    let scrollable = NewScrollable::horizontal(
-        SingleAxisConfig::Clipped {
-            handle: horizontal_scroll_state,
-            child: row.finish(),
-        },
-        theme.nonactive_ui_detail().into(),
-        theme.active_ui_detail().into(),
-        ElementFill::None,
-    )
-    .with_horizontal_scrollbar(ScrollableAppearance::new(ScrollbarWidth::Custom(4.), true))
-    .with_propagate_mousewheel_if_not_handled(true)
-    .finish();
-
-    Some(
-        Container::new(
-            Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_main_axis_alignment(MainAxisAlignment::Center)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(scrollable)
-                .finish(),
-        )
-        .with_padding_left(4.)
-        .finish(),
-    )
-}
-
-fn render_crumb(
-    spec: CrumbSpec,
-    mouse_state: Option<MouseStateHandle>,
-    self_terminal_view_id: EntityId,
-    theme: &WarpTheme,
-    appearance: &Appearance,
-) -> Box<dyn Element> {
-    let conversation_id = spec.conversation_id;
-    let is_active = spec.is_active;
-    let label = spec.label;
-    let avatar_color = spec.avatar_color;
-    let avatar_glyph = spec.avatar_glyph;
-
-    if is_active {
-        let inner = build_crumb_inner(
-            label,
-            avatar_color,
-            avatar_glyph,
-            true,  /* is_active */
-            false, /* is_hovered */
-            theme,
-            appearance,
-        );
-        return ConstrainedBox::new(inner)
-            .with_height(CRUMB_HEIGHT)
-            .finish();
-    }
-
-    let mouse_state = mouse_state.unwrap_or_default();
-    Hoverable::new(mouse_state, move |hover_state| {
-        let inner = build_crumb_inner(
-            label,
-            avatar_color,
-            avatar_glyph,
-            false, /* is_active */
-            hover_state.is_hovered() || hover_state.is_clicked(),
-            theme,
-            appearance,
-        );
-        ConstrainedBox::new(inner)
-            .with_height(CRUMB_HEIGHT)
-            .finish()
-    })
-    .with_cursor(Cursor::PointingHand)
-    .on_click(move |ctx, app, _| {
-        if let Some(conversation_view_id) =
-            BlocklistAIHistoryModel::as_ref(app).terminal_view_id_for_conversation(&conversation_id)
-        {
-            let self_pane_group_id =
-                pane_group_id_containing_terminal_view(self_terminal_view_id, app);
-            let conversation_pane_group_id =
-                pane_group_id_containing_terminal_view(conversation_view_id, app);
-            if conversation_pane_group_id.is_some()
-                && conversation_pane_group_id == self_pane_group_id
-            {
-                ctx.dispatch_typed_action(
-                    PaneHeaderAction::<TerminalAction, TerminalAction>::CustomAction(
-                        TerminalAction::RevealChildAgent { conversation_id },
-                    ),
-                );
-                return;
-            }
-            ctx.dispatch_typed_action(WorkspaceAction::FocusTerminalViewInWorkspace {
-                terminal_view_id: conversation_view_id,
-            });
-            return;
-        }
-        ctx.dispatch_typed_action(
-            PaneHeaderAction::<TerminalAction, TerminalAction>::CustomAction(
-                TerminalAction::SwitchAgentViewToConversation { conversation_id },
-            ),
-        );
-    })
-    .finish()
-}
-
-/// Builds the inner content (background + padding + avatar + label row) for a
-/// single crumb.
-fn build_crumb_inner(
-    label: String,
-    avatar_color: ColorU,
-    avatar_glyph: AvatarGlyph,
-    is_active: bool,
-    is_hovered: bool,
-    theme: &WarpTheme,
-    appearance: &Appearance,
-) -> Box<dyn Element> {
-    let text_color = if is_active || is_hovered {
-        internal_colors::text_main(theme, theme.background())
-    } else {
-        internal_colors::text_sub(theme, theme.background())
-    };
-
-    let label_text = Text::new(
-        label,
-        appearance.ui_font_family(),
-        appearance.monospace_font_size(),
-    )
-    .with_color(text_color)
-    .soft_wrap(false)
-    .with_clip(ClipConfig::ellipsis())
-    .finish();
-
-    let avatar = render_avatar_disc(avatar_color, avatar_glyph, AVATAR_SIZE, theme, appearance);
-
-    let row = Flex::row()
-        .with_main_axis_alignment(MainAxisAlignment::Center)
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .with_main_axis_size(MainAxisSize::Min)
-        .with_spacing(6.)
-        .with_child(avatar)
-        .with_child(
-            ConstrainedBox::new(label_text)
-                .with_max_width(220.)
-                .finish(),
-        )
-        .finish();
-
-    let mut container = Container::new(row)
-        .with_padding_left(CRUMB_HORIZONTAL_PADDING)
-        .with_padding_right(CRUMB_HORIZONTAL_PADDING)
-        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(CRUMB_RADIUS)));
-    if is_hovered && !is_active {
-        container = container.with_background_color(internal_colors::neutral_2(theme));
-    }
-    container.finish()
 }
 
 #[cfg(test)]
