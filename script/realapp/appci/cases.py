@@ -571,6 +571,60 @@ def c_ssh(ctx, r):
     ctx.reset()
 
 
+@case("ssh_enter_then_immediate_command", order=30)
+def c_ssh_enter_immediate(ctx, r):
+    """#1415: `ssh <host>` Enter immediately followed by `echo <tok>` Enter, no pause at all. The
+    second line is typed while the first Enter still waits at its gate; released into the new
+    connect it must be held for the remote shell (it used to be dropped with a log line)."""
+    if not ctx.ssh:
+        r.skip("no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+    trials = int(os.environ.get("APPCI_SSH_TRIALS", "3"))
+    try:
+        os.remove(os.path.join(ctx.prof.rhome, "rh.txt"))
+    except FileNotFoundError:
+        pass
+    ctx.rm("rh.txt")
+    exp = []
+    for _ in range(trials):
+        tok = ctx.tok(6)
+        exp.append(tok)
+        ctx.be.type("ssh fake", 12, enter=True)
+        ctx.be.type("echo %s >> ~/rh.txt" % tok, 12, enter=True)
+        ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20)
+        before = ctx.prompts()
+        ctx.be.type("exit", 12, enter=True)
+        ctx.until(lambda: ctx.prompts() > before, 10)
+        time.sleep(0.5)
+    got = ctx.lines("rh.txt", remote=True)
+    r.check(got == exp, "remote shell received %d/%d immediately-typed commands exactly: %r" % (sum(1 for t in exp if t in got), len(exp), got))
+    r.check(not ctx.lines("rh.txt"), "immediately-typed command ran LOCALLY: %r" % ctx.lines("rh.txt"))
+    ctx.reset()
+
+
+@case("ssh_nested_typeahead", order=30)
+def c_ssh_nested(ctx, r):
+    """#1421: `ssh fake` Enter, then `ssh fake` Enter and `echo <tok>` Enter typed during that first
+    connect. At the hand-over the nested ssh is submitted; the echo behind it is held for the
+    SECOND connect, so it runs exactly once, remotely, and never locally."""
+    if not ctx.ssh:
+        r.skip("no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
+    try:
+        os.remove(os.path.join(ctx.prof.rhome, "rn.txt"))
+    except FileNotFoundError:
+        pass
+    ctx.rm("rn.txt")
+    tok = ctx.tok(6)
+    ctx.be.type("ssh fake", 12, enter=True)
+    ctx.be.type("ssh fake", 12, enter=True)
+    ctx.be.type("echo %s >> ~/rn.txt" % tok, 12, enter=True)
+    ctx.until(lambda: tok in ctx.lines("rn.txt", remote=True), 30)
+    time.sleep(1.0)
+    got = ctx.lines("rn.txt", remote=True)
+    r.check(got == [tok], "the line typed behind a nested ssh ran exactly once remotely: %r" % got)
+    r.check(not ctx.lines("rn.txt"), "the line typed behind a nested ssh ran LOCALLY: %r" % ctx.lines("rn.txt"))
+    ctx.reset()
+
+
 @case("ssh_failing_not_local", order=31, gui=True)
 def c_ssh_fail(ctx, r):
     ctx.rm("sf.txt")

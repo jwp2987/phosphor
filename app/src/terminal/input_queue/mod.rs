@@ -366,6 +366,14 @@ pub trait Host {
         true
     }
 
+    /// Whether the drain should hand control back to the event loop after delivering `entry`,
+    /// when more is queued behind it: the entry's effects (an Enter that submitted a command)
+    /// are processed as events after this call returns, and what follows must be judged with
+    /// them applied (#1421). The drain stops as a foreign stop does and the waker continues it.
+    fn yield_after(&mut self, _entry: &InputEntry) -> bool {
+        false
+    }
+
     /// What goes back to the front of the queue after [`DeliverOutcome::Requeue`]: by default the
     /// entry that was delivered (a key or a paste whose bytes a later stage took into a hold). A
     /// host whose delivery had other effects (it wrote part of the entry, or delivered an entry
@@ -951,6 +959,13 @@ impl InputQueue {
                 break;
             };
             self.deliver_entry(host, &entry);
+            if !self.entries.is_empty() && host.yield_after(&entry) {
+                self.foreign_stop = true;
+                if let Some(waker) = &self.foreign_waker {
+                    let _ = waker.try_send(());
+                }
+                break;
+            }
         }
     }
 

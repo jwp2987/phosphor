@@ -95,6 +95,19 @@ pub(super) struct RequeueRequest {
     bytes: Vec<u8>,
     /// Whether the bytes take agent control, for an entry made of them.
     takes_over_agent_control: bool,
+    /// What goes back instead of an entry made of `bytes`: an ssh-held input (#1415) goes back as
+    /// the `Held` entry it will be delivered as, routed again when its gate opens.
+    replacement: Option<EntryKind>,
+}
+
+impl RequeueRequest {
+    /// The entry that goes back to the front of the queue.
+    fn into_entry(self) -> EntryKind {
+        self.replacement.unwrap_or(EntryKind::PtyBytes {
+            bytes: self.bytes,
+            takes_over_agent_control: self.takes_over_agent_control,
+        })
+    }
 }
 
 /// How a queued prompt hold ended.
@@ -131,6 +144,39 @@ impl PasteQueueState {
             requeue_request: None,
             requeue_replacement: None,
             line_stamp: None,
+        }
+    }
+
+    /// Asks the host to put `held` back at the front of the queue under `spec` when the delivery
+    /// in progress returns. A second input of the same class in one delivery joins the first, in
+    /// typed order. False when the delivery already asked for something that cannot join it.
+    pub(super) fn request_requeue_held(&mut self, spec: GateSpec, held: EntryKind) -> bool {
+        match self.requeue_request.as_mut() {
+            None => {
+                self.requeue_request = Some(RequeueRequest {
+                    spec,
+                    bytes: Vec::new(),
+                    takes_over_agent_control: false,
+                    replacement: Some(held),
+                });
+                true
+            }
+            Some(RequeueRequest {
+                spec: existing,
+                replacement:
+                    Some(EntryKind::Held {
+                        class: have,
+                        text: have_text,
+                    }),
+                ..
+            }) if existing.kind == spec.kind && existing.key == spec.key => match held {
+                EntryKind::Held { class, text } if class == *have => {
+                    have_text.push_str(&text);
+                    true
+                }
+                _ => false,
+            },
+            Some(_) => false,
         }
     }
 
@@ -204,11 +250,9 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
             .note_replayed_after_enter(&input);
         self.view.route_after_enter_input(&input, self.ctx);
         if let Some(request) = self.view.paste_queue.requeue_request.take() {
-            self.view.paste_queue.requeue_replacement = Some(EntryKind::PtyBytes {
-                bytes: request.bytes,
-                takes_over_agent_control: request.takes_over_agent_control,
-            });
-            return DeliverOutcome::Requeue(request.spec);
+            let spec = request.spec;
+            self.view.paste_queue.requeue_replacement = Some(request.into_entry());
+            return DeliverOutcome::Requeue(spec);
         }
         match self
             .view
@@ -295,7 +339,8 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
         // entry goes back to the front of the queue under the hold's gate, to be taken out again
         // when the line editor signals.
         if let Some(request) = self.view.paste_queue.requeue_request.take() {
-            if requeues_itself {
+            let spec = request.spec;
+            if requeues_itself && request.replacement.is_none() {
                 if let EntryKind::Paste { paste_id, .. } = &entry.kind {
                     self.view
                         .paste_queue
@@ -305,12 +350,9 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
             } else {
                 // Another kind of entry (a routed paste, an ssh-held text) wrote the key that was
                 // held: what goes back under the gate is that key, not the entry that wrote it.
-                self.view.paste_queue.requeue_replacement = Some(EntryKind::PtyBytes {
-                    bytes: request.bytes,
-                    takes_over_agent_control: request.takes_over_agent_control,
-                });
+                self.view.paste_queue.requeue_replacement = Some(request.into_entry());
             }
-            return DeliverOutcome::Requeue(request.spec);
+            return DeliverOutcome::Requeue(spec);
         }
         DeliverOutcome::Delivered
     }
@@ -350,6 +392,13 @@ impl Host for PtyQueueHost<'_, '_> {
     /// (^C cancels the deferred Enter first, `cancel_deferred_enter`).
     fn signal_must_wait(&self, gate: GateKind) -> bool {
         gate == GateKind::HandoffReport
+    }
+
+    /// An Enter delivered from the ssh hand-over may have submitted a command (a second `ssh`)
+    /// whose connect gate is armed by the event that submit emits, after this call returns: the
+    /// held input behind it is judged on a later update, with that gate in place (#1421).
+    fn yield_after(&mut self, entry: &InputEntry) -> bool {
+        matches!(&entry.kind, EntryKind::Held { class, .. } if *class == crate::terminal::input_queue::HELD_KEY)
     }
 
     fn requeued_entry(&mut self, entry: &InputEntry) -> InputEntry {
@@ -754,6 +803,7 @@ impl TerminalView {
                         spec,
                         bytes,
                         takes_over_agent_control,
+                        replacement: None,
                     });
                 }
             }

@@ -328,7 +328,7 @@ up), `expert_fuzz` (seeded typos fixed with BackSpace / Left+insert / Ctrl-W), `
 `big_paste` (`APPCI_BIG_MB`, default 1, byte-exact), `tab_enter` (gaps 0/50/150 ms, no stray uncompleted file), `ctrl_c_d` (Ctrl-C
 delivery latency, Ctrl-D in `cat` and in a nested bash), `read_x`, `subshells` (bash twice incl. typing during setup, zsh, fish, nu where
 installed), `alt_screen` (less, vim), `ssh_connect_typing` (0/100/200/300 ms after Enter, `APPCI_SSH_TRIALS` per gap, exact remote
-command, nothing local), `ssh_failing_not_local`, `idle_cpu`, `latency_enter` (vs a reference terminal in the same session),
+command, nothing local), `ssh_enter_then_immediate_command` (#1415: `ssh fake` Enter and the next command with no pause), `ssh_nested_typeahead` (#1421: a nested ssh and the line behind it, typed during the first connect; runs once, remotely), `ssh_failing_not_local`, `idle_cpu`, `latency_enter` (vs a reference terminal in the same session),
 `latency_key_log` (key to first frame from the app's own `input_order` log), `approval_card_pause` (agent, needs a provider),
 `tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
 (`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).

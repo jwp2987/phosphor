@@ -22254,3 +22254,165 @@ fn bootstrap_gate_cap_outlasts_every_line_waiting_out_the_marker_give_up() {
         );
     }
 }
+
+/// Opens a `PromptSeen` gate (key 77) on the pane queue and offers `text` behind it, the way keys
+/// typed behind an Enter that waits are held; `release_test_gate` is the event that closes it.
+fn hold_text_behind_test_gate(
+    view: &mut TerminalView,
+    text: &str,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let queue = view.paste_queue.queue.clone();
+    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+    let mut guard = queue.lock();
+    guard.open_gate(
+        &mut host,
+        input_queue::GateSpec::new(input_queue::GateKind::PromptSeen, 77).with_cap(None),
+    );
+    guard.offer(&mut host, input_queue::EntryKind::Text(text.to_owned()));
+}
+
+fn release_test_gate(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    let queue = view.paste_queue.queue.clone();
+    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+    queue
+        .lock()
+        .on_gate_event(&mut host, input_queue::GateKind::PromptSeen, 77);
+}
+
+/// The text of every entry the pane queue still holds (typed text and ssh-held inputs).
+fn queued_texts(view: &TerminalView) -> Vec<String> {
+    view.paste_queue
+        .queue
+        .peek()
+        .entries()
+        .filter_map(|entry| match &entry.kind {
+            input_queue::EntryKind::Text(text) => Some(text.clone()),
+            input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// #1415: text typed behind an Enter that waited, released AFTER the Enter's command opened an ssh
+/// connect, must join the connect hold. The probe runs inside the drain that delivers it, where
+/// the queue cannot take a new entry: it used to log "a key was not held" and drop the text.
+#[test]
+fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
+    with_ssh_hold_path(true, move |view, ctx, pty_writes| {
+        // `ls` waits behind the Enter's gate; the Enter's command is `ssh host`.
+        hold_text_behind_test_gate(view, "ls", ctx);
+        submit_command(view, "ssh host", ctx);
+        assert!(!ssh_gate_open(view));
+        release_test_gate(view, ctx);
+        assert!(
+            view.ssh_typeahead_holding,
+            "the replayed text is held (#1292)"
+        );
+        assert!(ssh_gate_open(view), "behind an SshConnect gate");
+        assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
+        assert_eq!(view.ssh_held_count(), 1);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        // The remote shell's first prompt delivers it, once.
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        assert!(ssh_queue_is_idle(view));
+    });
+}
+
+/// #1421: `ssh other` + Enter typed during a connect, then `rm -rf x` + Enter. At the hand-over
+/// the first Enter submits the nested ssh; the text after it must be judged only once that
+/// command's connect gate is armed (the submit's event runs after the delivery returns), so it is
+/// held for the second connect and never reaches the first host (or the local shell).
+#[test]
+fn ssh_handover_holds_the_text_after_a_nested_ssh_for_the_second_connect() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("ssh other", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("rm -rf x", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.ssh_held_count(), 4);
+            // The first remote prompt: the hand-over.
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        });
+        // The Enter's submit and the drain's continuation run on later turns.
+        for _ in 0..64 {
+            futures_lite::future::yield_now().await;
+        }
+        terminal.read(&app, |view, _| {
+            let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            assert!(
+                !writes.contains("rm -rf x"),
+                "the text after the nested ssh must not be written: {writes:?}"
+            );
+            assert!(
+                !executed.borrow().iter().any(|c| c.contains("rm -rf x")),
+                "nor run: {:?}",
+                executed.borrow()
+            );
+            assert!(
+                queued_texts(view).iter().any(|t| t.contains("rm -rf x")),
+                "it is held for the second connect, not lost: {:?}",
+                queued_texts(view)
+            );
+        });
+    })
+}
+
+/// #1437: a clipboard read the platform answered inline joins the pane queue like a background
+/// one: with something held ahead of it (an Enter's gate, a pending read) it waits its turn
+/// instead of being inserted at once.
+#[test]
+fn an_inline_clipboard_read_waits_behind_what_the_queue_holds() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().open_gate(
+                    &mut host,
+                    input_queue::GateSpec::new(input_queue::GateKind::PromptSeen, 77)
+                        .with_cap(None),
+                );
+            }
+            view.insert_read_into_input(
+                warpui::clipboard::ReadOutcome::Content(ClipboardContent::plain_text(
+                    "P".to_owned(),
+                )),
+                ctx,
+            );
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "queued behind the gate, not inserted past it"
+            );
+            release_test_gate(view, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "P");
+        });
+    })
+}
