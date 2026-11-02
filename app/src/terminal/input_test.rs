@@ -11776,6 +11776,66 @@ fn typeahead_report_goes_in_front_of_editor_text_and_keeps_the_cursor() {
     });
 }
 
+/// #1569 (r18cz Windows): a second hand-off report replaced the first nine characters of the
+/// editor ("echo t91_") with another line's text ("echo t94_... >> "), and the editor ran
+/// `echo t91_echo t94_... >> 8hr_ft0.txt`. A report that replaces the front of the buffer must
+/// extend it; one that does not is refused (logged) and the buffer stays as it is. A real second
+/// report of the same line still replaces.
+#[test]
+fn a_handoff_report_that_does_not_extend_the_editors_typeahead_is_refused() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.replace_buffer_content("", ctx);
+            input.insert_handoff_typeahead_text(CharOffset::from(0), "echo t91_", ctx);
+            input.system_insert("8h", ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "echo t91_8h");
+        });
+        // Another line's text claiming to replace the nine characters of the first report.
+        input.update(&mut app, |input, ctx| {
+            input.insert_handoff_typeahead_text(
+                CharOffset::from("echo t91_".chars().count()),
+                "echo t94_r3rx4vy3h4 >> ",
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "echo t91_8h",
+                "another line's text is never spliced in"
+            );
+        });
+        // A report shorter than the front it would replace is not an extension either.
+        input.update(&mut app, |input, ctx| {
+            input.insert_handoff_typeahead_text(
+                CharOffset::from("echo t91_".chars().count()),
+                "echo",
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "echo t91_8h");
+        });
+        // The same line, reported further: replaces the front and keeps the user's text.
+        input.update(&mut app, |input, ctx| {
+            input.insert_handoff_typeahead_text(
+                CharOffset::from("echo t91_".chars().count()),
+                "echo t91_ab",
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "echo t91_ab8h");
+        });
+    });
+}
+
 #[test]
 fn hint_inputs_changed_skips_unchanged_streaming_deltas() {
     use crate::ai::agent::conversation::ConversationStatus;

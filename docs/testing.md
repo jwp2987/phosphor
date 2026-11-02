@@ -697,6 +697,28 @@ fixture/seed, fix the code.
 **Not covered yet**: pixel-level rendering of the diagram block (`crates/editor/src/render/element/mermaid.rs`), the notebook
 `mermaid_render_offsets`, `render_mermaid_diagram_section` and the `ai_document` view beyond the real-app OCR check above.
 
+### 2.11 ConPTY held keys across the prompt (#1569)
+
+The enter window (#1490, on with the table mode) holds every key typed while a command runs, from its Enter to the next prompt's
+line-editor signal (about 0.5 s, a burst of dozens of keys with whole lines and their Enters). The hand-off keeps no bytes for those
+keys, so they are not counted until the signal releases them. `try_commit_at_prompt` (the precmd) used to see an empty shell line and
+hand input to the editor: keys typed next went to the editor while the held ones were written raw to the pty, the shell's report then
+merged another line into the editor, and the wrong command ran (Git Bash fast_typing 19/30; also tab_enter, ctrl_c_d line integrity).
+Fixed: no commit while a prompt hold is queued (the release asks for the decision again with true counts), and a hand-off report that
+replaces the editor's front but does not extend it is refused and logged (`hop=handoff_insert_refused`).
+
+| layer | test | asserts |
+|---|---|---|
+| model | `typeahead_handoff_tests.rs`: `the_prompt_does_not_commit_to_the_editor_over_keys_held_for_the_shell`, `the_prompt_commits_to_the_editor_when_no_keys_are_held` | precmd with a queued hold leaves the pty owning input; release counts the keys; no `Legacy`/`Committed` decision over an unreported line |
+| view, Legacy and Table | `view_test.rs`: `keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty` | a full line + Enter + the next line's start held in the enter window, precmd before the signal, one more key, signal: the pty gets `echo A\recx` once, byte-exact, one write per key, and the editor buffer stays empty throughout |
+| editor | `input_test.rs`: `a_handoff_report_that_does_not_extend_the_editors_typeahead_is_refused` | a report replacing 9 characters with another line's text (or a shorter one) leaves the buffer alone; a real extension still replaces |
+| real app | Windows `fast_typing` (instant Enter), `tab_enter`, `ctrl_c_d` line integrity, Git Bash pane, terminal and agent mode | the shell's `rec.log` has every typed line exactly once; the log has no `handoff_insert replaced_prefix_chars>0` against a different line and no `handoff_insert_refused` in a passing run |
+
+Evidence to look for in a Windows app log: `kh_iq_release ... chunks=N` with N in the dozens is the enter window working as designed;
+it is correct only if `hop=commit_deferred_prompt_hold` appears when a `precmd_seen` lands while the gate is open, and no `kh_pane_key
+... target=Editor` follows that precmd until the release. `PHOSPHOR_CONPTY_ENTER_HOLD=0` and `PHOSPHOR_QUEUE_DESTINATION=legacy` are the
+kill switches to compare against.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate

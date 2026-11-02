@@ -8405,6 +8405,33 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         let text_before = warpui::input_order::enabled().then(|| self.buffer_text(ctx));
+        // #1569: a report that replaces the front of the buffer must extend what is there (a
+        // second report of the same line). One that does not is another line's text; splicing it
+        // in made the editor run `echo t91_echo t94... >> 8hr_...`. Refused and logged, the
+        // buffer is left exactly as the user's keys built it.
+        if num_typeahead_chars_inserted.as_usize() > 0
+            && !typeahead_extends_buffer_prefix(
+                &self.buffer_text(ctx),
+                num_typeahead_chars_inserted.as_usize(),
+                typeahead,
+            )
+        {
+            log::warn!(
+                "typeahead hand-off: a report that does not extend the editor's own typeahead \
+                 was refused (replaced_prefix_chars={}, report_chars={})",
+                num_typeahead_chars_inserted.as_usize(),
+                typeahead.chars().count()
+            );
+            warpui::input_order::log_hop("handoff_insert_refused", || {
+                format!(
+                    "replaced_prefix_chars={} report={} before={}",
+                    num_typeahead_chars_inserted.as_usize(),
+                    warpui::input_order::describe_text(typeahead),
+                    warpui::input_order::describe_text(&text_before.unwrap_or_default())
+                )
+            });
+            return;
+        }
         self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         // #1393: the report's insertion into the editor, before and after, with the count of
         // characters of an earlier report it replaced.
@@ -17351,6 +17378,23 @@ pub(crate) fn typeahead_prefix_byte_len(buffer: &str, chars: usize) -> usize {
         .char_indices()
         .nth(chars)
         .map_or(buffer.len(), |(index, _)| index)
+}
+
+/// Whether `typeahead` extends the first `chars` characters of `buffer`, the front an earlier
+/// report put there (#1569): every one of those characters is also the report's, in place. A
+/// buffer shorter than `chars` (the user deleted some) is compared as far as it goes. A report
+/// shorter than the front it would replace, or one that differs inside it, is another line.
+pub(crate) fn typeahead_extends_buffer_prefix(buffer: &str, chars: usize, typeahead: &str) -> bool {
+    let mut buffer = buffer.chars();
+    let mut report = typeahead.chars();
+    for _ in 0..chars {
+        match (buffer.next(), report.next()) {
+            (Some(held), Some(reported)) if held == reported => {}
+            (Some(_), _) => return false,
+            (None, _) => return true,
+        }
+    }
+    true
 }
 
 /// Where a single cursor at byte `cursor` belongs after the first `replaced_bytes` bytes of the

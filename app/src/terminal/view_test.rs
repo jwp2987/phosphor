@@ -22642,6 +22642,121 @@ fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() 
     })
 }
 
+/// A ConPTY session whose command (written by the app just now) is running, with the enter window
+/// open (#1490): keys typed from here are held until the next prompt's line editor signals.
+fn conpty_enter_window_running_command(view: &mut TerminalView) {
+    let mut model = view.model.lock();
+    model.start_command_execution();
+    let mut handoff = model.typeahead_handoff_mut();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
+    handoff.set_conpty_enter_window_hold(true);
+    handoff.on_precmd();
+    let _ = handoff.release_queued_prompt_hold_on_signal();
+    handoff.on_command_written();
+}
+
+/// #1569 (r18cz Windows Git Bash, fast_typing 19/30): a whole line, its Enter and the start of the
+/// next line are typed while a command runs, so the enter window holds them; the command's prompt
+/// (precmd) arrives BEFORE the line editor's signal. The prompt used to hand input to the editor
+/// (the held keys are not counted, so the shell's line looked empty): the key typed next went to
+/// the editor while the held keys were written raw to the pty on the signal, and the shell's report
+/// then merged another line into the editor ("echo t91_echo t94_... >> 8hr_ft0.txt" ran).
+///
+/// Each key has exactly one delivery route: the held keys and the key typed after the precmd all
+/// reach the pty, once, in typed order, byte-exact; the editor never holds a character of them.
+/// Legacy and Table.
+#[test]
+fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_enter_window_running_command(view);
+                // A line, its Enter and the start of the next line, one key event each.
+                for key in b"echo A" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                for key in b"ec" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing is written ahead of the line editor"
+                );
+                assert!(prompt_gate_open(view), "{mode:?}");
+                assert_eq!(view.paste_queue.queue.borrow().queued_len(), 9, "{mode:?}");
+
+                // The command finished: its precmd arrives while the keys are still held.
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                {
+                    let model = view.model.lock();
+                    let handoff = model.typeahead_handoff();
+                    assert!(
+                        handoff.is_pty_owned() && !handoff.editor_owns_input(),
+                        "{mode:?}: the prompt must not hand input to the editor over held keys"
+                    );
+                }
+                // A key typed after the precmd, before the signal: behind the held keys.
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: still nothing written"
+                );
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: the editor took none of it"
+                );
+                assert_eq!(view.paste_queue.queue.borrow().queued_len(), 10, "{mode:?}");
+
+                // The line editor's signal releases everything, in typed order.
+                line_editor_signal(view, ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: the editor holds none of the line the pty received"
+                );
+
+                // The line was answered by the next prompt: the keys are in the shell's line, so
+                // the editor still does not take over without the shell's report.
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                assert!(
+                    view.model.lock().typeahead_handoff().is_pty_owned(),
+                    "{mode:?}: the shell's line holds `ecx`"
+                );
+            });
+            let writes = pty_writes.borrow().clone();
+            let all: Vec<u8> = writes.concat();
+            assert_eq!(
+                all,
+                b"echo A\recx".to_vec(),
+                "{mode:?}: exactly once, byte-exact"
+            );
+            assert_eq!(
+                all.iter().filter(|b| **b == b'\r').count(),
+                1,
+                "{mode:?}: the Enter reached the pty once"
+            );
+            assert!(
+                writes.iter().all(|chunk| chunk.len() == 1),
+                "{mode:?}: one write per key event (ConPTY): {writes:?}"
+            );
+        })
+    }
+}
+
 // ---- busy queue = deferred operation (#1416-#1419, #1426-#1428) -----------------------------
 
 /// #1416: editor keys that sit in a hand-off gate's segment (the queue is shared with the editor)
