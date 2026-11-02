@@ -15,7 +15,6 @@ pub mod view_impl;
 
 pub use pending_user_query_block::{PendingUserQueryBlock, PendingUserQueryBlockEvent};
 
-#[cfg(feature = "agent_mode_debug")]
 use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::PassiveSuggestionTrigger;
