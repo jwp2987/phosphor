@@ -1533,13 +1533,27 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             pre: "",
             exit_fails: false,
         },
-        // The connection failed: ssh's own error and status come back, nothing else runs.
+        // #1551: the master step failed (ssh already printed why; -N, so no remote command ever
+        // ran). The user's own plain ssh runs instead -- once, with exactly the user's arguments
+        // -- and its status is the helper's status. Nothing else (no probe, no -O exit) runs.
         Case {
             name: "auth-failure",
             master: "fail255",
             probe: "",
-            session: "none",
-            status: 255,
+            session: "fallback",
+            status: 0,
+            extra: &[],
+            pre: "",
+            exit_fails: false,
+        },
+        // #1551: Git Bash / MSYS2 (WARP_IN_MSYS2=true): no master at all, just the plain ssh.
+        // Bash only (the zsh/fish wrappers do not run in Git Bash).
+        Case {
+            name: "msys2",
+            master: "fail255",
+            probe: "",
+            session: "plainonly",
+            status: 0,
             extra: &[],
             pre: "",
             exit_fails: false,
@@ -1653,6 +1667,9 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
         // find the master's socket (`-S` test), so the probe and the single-connection session
         // happen; it passes the tilde path on to ssh unexpanded, as ssh expands it itself.
         for (case, tilde) in cases.iter().flat_map(|c| [(c, false), (c, true)]) {
+            if case.name == "msys2" && kind != 0 {
+                continue;
+            }
             let dir = std::env::temp_dir().join(format!(
                 "p1035-{name}-{}-{}{}",
                 cases.iter().position(|c| c.name == case.name).unwrap(),
@@ -1671,13 +1688,18 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             } else {
                 socks.display().to_string()
             };
+            let msys2 = if case.name == "msys2" {
+                "WARP_IN_MSYS2=true;"
+            } else {
+                ""
+            };
             let prelude = match kind {
                 2 => format!(
                     "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR '{}'; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;",
                     socket_dir_literal
                 ),
                 _ => format!(
-                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;",
+                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1; {msys2}",
                     socket_dir_literal
                 ),
             };
@@ -1909,6 +1931,13 @@ exit 0
                 std::fs::remove_dir_all(&dir).ok();
                 continue;
             }
+            if case.session == "plainonly" {
+                // #1551: no master, no probe, no session options: only the user's own ssh.
+                assert_eq!(calls.len(), 1, "{name}/{}: {recorded:?}", case.name);
+                assert_eq!(calls[0], user_args, "{name}/{}: {recorded:?}", case.name);
+                std::fs::remove_dir_all(&dir).ok();
+                continue;
+            }
             let is_master = |call: &&str| call.contains("-N\n") && call.contains("-f\n");
             let masters = calls.iter().filter(|call| is_master(*call)).count();
             assert_eq!(
@@ -1929,6 +1958,18 @@ exit 0
                 .filter(|c| c.contains("-t\n") && !is_master(c))
                 .collect();
             match case.session {
+                "fallback" => {
+                    // #1551: the failed master, then the user's plain ssh and nothing else.
+                    assert_eq!(calls.len(), 2, "{name}/{}: {recorded:?}", case.name);
+                    assert_eq!(calls[1], user_args, "{name}/{}: {recorded:?}", case.name);
+                    assert_eq!(
+                        (probes, exits),
+                        (0, 0),
+                        "{name}/{}: {recorded:?}",
+                        case.name
+                    );
+                    continue;
+                }
                 "none" => {
                     assert_eq!(
                         (calls.len(), probes, exits),

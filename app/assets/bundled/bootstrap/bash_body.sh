@@ -1467,6 +1467,14 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 return
             fi
 
+            # #1551: Git Bash / MSYS2: Git for Windows' ssh.exe cannot multiplex (the ControlMaster
+            # step fails with "Failed to connect to new control master"), and the managed session
+            # below depends on a control socket. Run the user's plain ssh, untouched.
+            if [ "${WARP_IN_MSYS2:-}" = true ]; then
+                command ssh "${@:1}"
+                return
+            fi
+
             # If the user's SSH config sets a RemoteCommand for this destination,
             # OpenSSH refuses to also run our bootstrap as a command-line remote
             # command, aborting with "Cannot execute command-line and remote
@@ -1589,8 +1597,16 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                 command ssh ${warp_ipqos_args[@]+"${warp_ipqos_args[@]}"} -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f "${@:1}"
                 local warp_master_rc=$?
                 if [[ $warp_master_rc -ne 0 ]]; then
-                    # The connection failed (ssh already printed why) or was interrupted.
-                    return $warp_master_rc
+                    # #1551: the master step failed. It ran with -N, so no remote command (and no session) ever
+                    # existed: ssh only authenticates, then forks. Re-running as a plain ssh therefore cannot
+                    # execute anything twice. An interrupt (rc > 128 other than ssh's own 255) is the
+                    # user's Ctrl-C and is respected; any other failure (e.g. a ssh that cannot multiplex,
+                    # as Git for Windows' ssh.exe) falls back to the user's plain ssh, which reports its own errors.
+                    if [[ $warp_master_rc -gt 128 && $warp_master_rc -ne 255 ]]; then
+                        return $warp_master_rc
+                    fi
+                    command ssh "${@:1}"
+                    return
                 fi
                 # Own it only if a master really answers there: a file at the path is not proof.
                 if warp_ssh_mux_command check "$control_path"; then

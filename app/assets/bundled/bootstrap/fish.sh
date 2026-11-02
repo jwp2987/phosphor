@@ -991,8 +991,13 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             command ssh $warp_ipqos_args -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f $argv
             set -l warp_master_rc $status
             if test $warp_master_rc -ne 0
-                # The connection failed (ssh already printed why) or was interrupted.
-                return $warp_master_rc
+                # #1551: the master (-N, authenticate-only) failed, so no remote command ever ran and a
+                # plain ssh cannot double-execute. A Ctrl-C (rc > 128, not ssh's own 255) is respected.
+                if test $warp_master_rc -gt 128; and test $warp_master_rc -ne 255
+                    return $warp_master_rc
+                end
+                command ssh $argv
+                return
             end
             # Own it only if a master really answers there: a file at the path is not proof.
             if warp_ssh_mux_command check "$control_path"
