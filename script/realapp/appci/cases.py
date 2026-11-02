@@ -31,6 +31,7 @@ class Result:
     def __init__(self, name, mode):
         self.name, self.mode = name, mode
         self.fails, self.notes, self.metrics, self.shots, self.skipped = [], [], {}, [], None
+        self.noref = []      # reasons this case could not be judged against a reference terminal: status becomes "noref" (NOT a pass) unless a check failed
 
     def check(self, ok, msg):
         if not ok:
@@ -39,6 +40,10 @@ class Result:
 
     def note(self, msg):
         self.notes.append(msg)
+
+    def no_reference(self, msg):
+        self.noref.append(msg)
+        self.notes.append("NO-REFERENCE: " + msg)
 
     def metric(self, k, v):
         self.metrics[k] = round(v, 3) if isinstance(v, float) else v
@@ -62,7 +67,7 @@ def plat():
 
 
 def lat_checks(r, rec, label):
-    """turn a latency record's verdicts into case failures (FAIL only; warn/no-reference stay visible in the table + notes)"""
+    """turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
     if rec["budget_verdict"] == "fail":
         if rec["budget_kind"] == "overhead":
             r.check(False, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["reference_name"], rec["budget_ms"]))
@@ -79,7 +84,7 @@ def lat_checks(r, rec, label):
             else:
                 r.note("WARN " + msg)
     if rec["verdict"] == "no-reference":
-        r.note("%s: no reference terminal measured in this session, overhead verdict 'no-reference' (absolute numbers recorded)" % label)
+        r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
     for n_ in rec.get("notes", []):
         r.note("%s: %s" % (label, n_))
 
@@ -766,6 +771,7 @@ def ctrlc_samples(ctx, n, fname, budget_s=None):
         if t_end and time.time() > t_end:
             break
         typed.append(ctrlc_line(ctx, fname, i))
+        ctx.be.guard_ref()
         ctx.be.type(typed[-1], 10, enter=True)
         time.sleep(1.5 if pw else 1.2)
         t0 = time.time()
@@ -1205,14 +1211,35 @@ def ref_terminal(ctx):
         return RefTerm("Terminal.app (.command via open)", close=close)
     disp, wl = os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY")
     env = dict(os.environ, HOME=home)
+    # its OWN rc and ctl dir (#1500): the reference logs to refctl/rec.log, never the app pane's ctl/rec.log, so a burst that reached the wrong
+    # window can never be read back as reference data
+    rc = ctx.prof.ref_rc
     if wl and shutil.which("foot") and ctx.be.name == "wayland":
-        argv, name = ["foot", "-e", "bash", "--rcfile", home + "/.bashrc", "-i"], "foot"
+        argv, name, names = ["foot", "-e", "bash", "--rcfile", rc, "-i"], "foot", {"foot"}
     elif shutil.which("xterm") and disp:
-        argv = ["xterm", "-geometry", "120x30+0+0", "-e", "bash", "--rcfile", home + "/.bashrc", "-i"]
+        argv = ["xterm", "-geometry", "120x30+0+0", "-e", "bash", "--rcfile", rc, "-i"]
         name = "xterm (via XWayland)" if wl and ctx.be.name == "wayland" else "xterm"
+        names = {"xterm"}
     else:
         return None
-    return RefTerm(name, proc=subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    proc = subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ctx.prof.ref_active = True
+    ctx.be.guard_override = dict(pids={proc.pid}, names=names)
+
+    def close():
+        ctx.be.guard_override = None
+        ctx.prof.ref_active = False
+        try:
+            os.killpg(proc.pid, 15)
+        except Exception:
+            pass
+    try:
+        ctx.be.guard()          # refuse up front when the reference never took the focus
+    except RuntimeError as e:
+        close()
+        ctx.ref_reason = str(e)
+        return None
+    return RefTerm(name, proc=proc, close=close)
 
 
 @case("key_loss_control", modes=("terminal",), order=3, gui=True)
@@ -1238,10 +1265,12 @@ def c_key_loss(ctx, r):
         for _ in range(n):
             want.append("echo %s >> %s" % (ctx.tok(10).lower(), fname))
         try:
+            ctx.be.guard_ref()
             if inject.startswith("oneshot"):
                 ctx.be.type_lines(want, 12, 350)
             else:
                 for l in want:
+                    ctx.be.guard_ref()
                     ctx.be.type(l, 12, enter=True)
                     time.sleep(0.35)
         finally:
@@ -1293,6 +1322,7 @@ def c_key_loss(ctx, r):
         if q is None:
             continue
         bad_q = q["lost_first"] + q["other_bad"] + q["missing"]
+        r.check(q["missing"] < q["n"], "the reference terminal's own log recorded NONE of the %d lines typed at it (%s): the keys did not reach it, so it is no control (#1500)" % (q["n"], inj))
         r.check(bad_p <= bad_q, "Phosphor lost keys the reference keeps with the SAME injection (%s): Phosphor %d/%d bad lines (first char lost %d), %s %d/%d -- a Phosphor-side drop (#1414)"
                 % (inj, bad_p, n, p["lost_first"], ref.name, bad_q, n))
         if bad_q > bad_p:
@@ -1329,6 +1359,7 @@ def run_enter_control(ctx, r, n):
             for _ in range(n):
                 tok = ctx.tok(10).lower()
                 exp.append(tok)
+                ctx.be.guard_ref()
                 ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, fname), ctx.rng.randint(10, 25), enter=True)
                 if gap:
                     time.sleep(gap)
@@ -1389,6 +1420,7 @@ def enter_to_start(ctx, n, budget_s=None):
         stamp = "print -r -- $EPOCHREALTIME > lat_%d" if ctx.be.name == "mac" else "date +%%s.%%N > lat_%d"   # BSD date has no %N
         if ctx.pane == "powershell":
             stamp = "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
+        ctx.be.guard_ref()
         ctx.be.type(stamp % i, 12)
         time.sleep(0.3)
         t0 = time.time()

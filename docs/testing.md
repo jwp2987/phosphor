@@ -135,7 +135,7 @@ Hard rules:
 ### 2.4 Shell-script harnesses (`script/test_*`, no cargo; run by `precheck`)
 
 They run the REAL bundled bootstrap text (cut out of `app/assets/bundled/bootstrap/*`) in real shells and
-pin protocol behaviour. Skips are reported as SKIPPED, never silent.
+pin protocol behaviour. Skips are reported as SKIPPED, never silent. A Skip raised AFTER a failed check keeps the FAIL (noted "ALSO SKIPPED"); `python3 script/realapp/appci/run.py --self-test` covers that rule.
 
 | script | checks |
 |---|---|
@@ -309,7 +309,7 @@ By hand on the VM: `$py = "$env:LOCALAPPDATA\phosphor-ci\python312\python.exe"; 
 | screenshots | `grim` / `import` / `ffmpeg` | `screencapture` | `PIL.ImageGrab` |
 | clipboard | `wl-copy` / `xsel` | `pbcopy` | user32 `CF_UNICODETEXT` |
 | injector record (#1482) | none | `htype2` per-call K lines | per call: events asked / accepted by `SendInput`, wall time of each posted Return; `<run>/inject.log` |
-| reference terminal | foot / xterm | Terminal.app (`.command`) | the same shell in a plain console (conhost: `powershell.exe -NoLogo` or Git Bash), `APPCI_WIN_REF=wt` for Windows Terminal; guard accepts only that window |
+| reference terminal | foot / xterm (own rc `.refrc` and own `refctl/` log dir, never the app pane's `ctl/rec.log`; keys are refused unless the reference window has the focus: sway `get_tree` focused pid/app_id on Wayland, X input focus on the PID's windows on X11, checked before every timed burst) | Terminal.app (`.command`) | the same shell in a plain console (conhost: `powershell.exe -NoLogo` or Git Bash), `APPCI_WIN_REF=wt` for Windows Terminal; guard accepts only that window |
 | key -> paint (`latency_paint`) | skip (no read-back) | `kl3` ScreenCaptureKit | skip (no read-back) |
 | app launch | `dbus-run-session` | `open -n` bundle, private HOME | the side-by-side test build started by the harness; data under the known folders `%LOCALAPPDATA%\phosphor`, `%APPDATA%\phosphor` (wiped per pass; backed up and restored by `app_test.ps1`) |
 | local ssh server | system `sshd` / `fakesshd.py` | system `sshd` | `fakesshd_win.py` (paramiko) on 127.0.0.1; remote shell = Git Bash in a real ConPTY; no OpenSSH Server service |
@@ -482,7 +482,7 @@ budget, previous build, baseline, verdict, n).
   was in every absolute number; Linux: `date +%s.%N`), `latency_paint` runs the same kl3 post/capture against Terminal.app's window
   (macOS only; elsewhere the case skips, there is no read-back to compare). The absolute Phosphor number stays in `metrics`
   (`ctrl_c_ms`, `key_to_paint_ms`) and includes the input-tool spawn. With no reference the case notes `no reference: absolute only`
-  and the verdict is `NO-REFERENCE`, never pass. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
+  and the verdict is `NO-REFERENCE`, never pass: the CASE status is `noref` (its own count in `results.json`/`summary.md`/the collected INDEX as `+N no-ref`, a JUnit `<skipped message="NO-REFERENCE ...">`, never a pass; it does not fail the job, but no latency budget was judged). The CI sanity bounds (Enter 80 ms, paint 120 ms) still FAIL independently. A real failed check wins over `noref`. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
   while typing and `WARN` means >= 16 ms (a dropped frame); the 4 ms line itself cannot be seen from the log.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
@@ -574,7 +574,8 @@ WARNING and fall back to downloading the GitLab artifacts: `GET $CI_API_V4_URL/p
 refused, or a zip without `dist/`), plus `APPCI_BUILD_PIPELINE_ID`, `APPCI_BUILD_SHA`, `APPCI_BUILD_JOB_NAME` (recorded). On the fallback, a masked CI
 variable `APPCI_API_TOKEN` (read_api) is used as `PRIVATE-TOKEN` if the job token is refused. The tested build is written to
 `appci-out/reused_build.json`, to `reused_build` in every `results.json` and to the
-first line of `summary.md` (`record_reuse.py` / `fetch_build.ps1 -Record`, as `after_script`). The job-token fetch itself could not be
+first line of `summary.md` (`record_reuse.py` / `fetch_build.ps1 -Record`, as `after_script`).
+**Identity is verified before anything is stamped (#1501).** A cached copy's `meta.json` (job id, commit, and for `--this-pipeline` also the pipeline) must equal what `ci_seq.py` asked for (`APPCI_BUILD_JOB_ID` / `APPCI_BUILD_SHA`), else exit 2. A downloaded build is checked against GitLab's own record of the job (commit, name, status `success`; the by-ref fallback must also be the latest successful pipeline's job of that name) via `script/ci/verify_build_identity.py` / the `fetch_build.ps1` equivalent; that needs `read_api` (`CI_JOB_TOKEN` or `APPCI_API_TOKEN`), and a build that cannot be verified is refused, never tested. `APPCI_BUILD_SHA` is required. The job-token fetch itself could not be
 exercised outside a running job when this was written: the first real reuse run is its test.
 
 ### 2.9 Test tiers (what a push costs)
@@ -582,7 +583,10 @@ exercised outside a running job when this was written: the first real reuse run 
 One driver, three sizes: `python3 script/ci/ci_seq.py build/<ref> --tier fix|candidate|release [--platforms linux,macos,windows]
 [--tests '<nextest filterset>'] [--skip job ...] [--no-reuse] [--dry-run]` (default tier `fix`; bare job names after the ref still mean `--skip`).
 It plays only manual jobs that have not run yet (never a re-run), passes per-job variables (`TEST_FILTER`, `APPCI_TIER`) through the
-play API, and ends with a table of job, status and minutes. Heavy jobs stay manual: the script is how you start them, after asking.
+play API, and ends with a table of job, status, VERDICT (PASS / FAIL / SKIPPED / INFO) and minutes, plus an `overall:` line. The exit code is non-zero when ANY
+played job fails, app tests included (they are `allow_failure` in GitLab, so the pipeline is green regardless; the ci_seq verdict is the one that is not). An app
+test that never ran because its build failed counts as FAIL. `skipped by tier` (smoke tier x11) is the only neutral status; the x11 job itself exits 77
+(allowed failure code) in smoke so it can never be recorded as a success that tested nothing. bench/mutants/fuzz are INFO. Heavy jobs stay manual: the script is how you start them, after asking.
 
 | tier | runs | target | when |
 |---|---|---|---|
@@ -604,7 +608,7 @@ is everything EXCEPT the list `APP_NONAFFECTING` in `script/ci/ci_seq.py`: `docs
 prepare_*}` and any new unlisted path rebuild (fail safe). Each platform prints its decision (`macos: reusing build job N from pipeline P
 (commit C), app unchanged` or `macos: building, app changed in: <paths>`); `--no-reuse` forces builds. `candidate` and `release` NEVER reuse.
 Reused platforms start their app test right after `check-linux` (no build to wait for); the smoke tier does not play `app-test-linux-x11-reuse` (it
-would only exit).
+would only exit; the summary shows it as `skipped by tier`).
 
 **Fix-tier filter derivation.** Without `--tests`, `ci_seq.py` runs `git diff --name-only <base>..<ref>` (base = merge-base with the
 newest other `build/*` ref, else `origin/main`; `--base` overrides) and maps paths: `crates/<name>/` -> `package(<name>)` (`warpui_core`

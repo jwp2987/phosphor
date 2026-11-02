@@ -145,11 +145,11 @@ def lat_summary(metrics):
     return out
 
 
-CASE_LINE = re.compile(r"^\[(terminal|agent)\]\s+(\S+)\s+(PASS|FAIL|SKIP)\s*(.*)$")
+CASE_LINE = re.compile(r"^\[(terminal|agent)\]\s+(\S+)\s+(PASS|FAIL|SKIP|NOREF)\s*(.*)$")
 
 
 def cases_from_trace(job, plat, names, base):
-    cases, cnt = [], {"pass": 0, "fail": 0, "skip": 0}
+    cases, cnt = [], {"pass": 0, "fail": 0, "skip": 0, "noref": 0}
     for l in trace(job["id"]):
         m = CASE_LINE.match(l)
         if m:
@@ -251,7 +251,7 @@ def app_cases(m):
 def app_totals(m):
     out = {}
     for p, i in m.get("app", {}).items():
-        s = {"pass": 0, "fail": 0, "skip": 0}
+        s = {"pass": 0, "fail": 0, "skip": 0, "noref": 0}
         for c in i["cases"]:
             s[c["status"]] = s.get(c["status"], 0) + 1
         out[p] = s
@@ -319,7 +319,7 @@ def diff(hist, cur):
 
 def fmt_app(m):
     t = app_totals(m)
-    return "; ".join("%s %d/%d/%d" % (p, s["pass"], s["fail"], s["skip"]) for p, s in sorted(t.items())) or "-"
+    return "; ".join("%s %d/%d/%d%s" % (p, s["pass"], s["fail"], s["skip"], (" +%d no-ref" % s["noref"]) if s.get("noref") else "") for p, s in sorted(t.items())) or "-"
 
 
 HEAD = ("key_to_frame", "enter", "ctrl_c")

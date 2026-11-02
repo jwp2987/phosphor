@@ -76,6 +76,11 @@ class Backend:
     def guard(self):
         """raise RuntimeError when keys must not be sent now (wrong foreground app)"""
 
+    def guard_ref(self):
+        """Linux only (#1500): while a reference terminal is the injection target, refuse (RuntimeError) unless IT has the focus. Called by the
+        sampling loops BEFORE a timed burst, never inside one, so it adds nothing to either terminal's measurement. No-op elsewhere
+        (macOS and Windows verify the frontmost process inside every injection)."""
+
     def calibrate(self, n=15):
         ts = []
         for _ in range(n):
@@ -88,6 +93,16 @@ class Backend:
 
     def noop(self):
         pass
+
+
+def focus_matches(want, got):
+    """want = dict(pids=set of int, names=set of lowercase app_id/class); got = dict(pid, app_id, class) of the focused window or None.
+    True only when the focused window is the reference: its PID, or (for a client that reports no PID) its app_id / X11 class."""
+    if not got:
+        return False
+    if got.get("pid") in want.get("pids", ()):
+        return True
+    return (got.get("app_id") or got.get("class") or "").lower() in want.get("names", ())
 
 
 def _run(argv, **kw):
@@ -117,6 +132,45 @@ class WaylandBackend(Backend):
             if not os.environ.get(v):
                 p.append("env not set: " + v)
         return p
+
+    guard_override = None     # dict(pids=..., names=...) while a reference terminal is driven (#1500)
+
+    def _focused(self):
+        """the focused leaf of sway's tree: dict(pid, app_id, class, name) or None"""
+        try:
+            tree = json.loads(subprocess.run(["swaymsg", "-t", "get_tree"], capture_output=True, timeout=10).stdout)
+        except Exception:
+            return None
+        found = []
+
+        def walk(n):
+            if n.get("focused") and not n.get("nodes"):
+                found.append(dict(pid=n.get("pid"), app_id=n.get("app_id"), **{"class": (n.get("window_properties") or {}).get("class")}, name=n.get("name")))
+            for c in n.get("nodes", []) + n.get("floating_nodes", []):
+                walk(c)
+        walk(tree)
+        return found[0] if found else None
+
+    def guard(self):
+        ov = self.guard_override
+        if not ov:
+            return
+        got = None
+        for i in range(30):          # the window is mapped asynchronously after launch: wait for it to take focus, then refuse
+            got = self._focused()
+            if focus_matches(ov, got):
+                return
+            if i == 0 and ov.get("pids"):
+                try:
+                    _run(["swaymsg", "[pid=%d] focus" % min(ov["pids"])])
+                except OSError:
+                    pass
+            time.sleep(0.1)
+        raise RuntimeError("reference terminal does not have focus (focused: %s): refusing to type, keys would reach the wrong window" % (got,))
+
+    def guard_ref(self):
+        if self.guard_override:
+            self.guard()
 
     def _wtype(self, args, prime=True):
         if prime and self.prime_ms > 0:
@@ -233,6 +287,12 @@ class X11Backend(Backend):
             p.append("env not set: DISPLAY")
         return p
 
+    guard_override = None     # dict(pids=...) while a reference terminal is driven (#1500)
+
+    def guard_ref(self):
+        if self.guard_override:
+            self.guard()
+
     def type(self, text, delay_ms=15, enter=False):
         _run(["xdotool", "type", "--delay", str(int(delay_ms)), "--", text])
         if enter:
@@ -265,7 +325,20 @@ class X11Backend(Backend):
         _run(["xdotool", "keyup", "shift"])
 
     def guard(self):
-        """no window manager in Xvfb: focus (and point at) the newest visible Phosphor window before keys go out"""
+        """no window manager in Xvfb: focus (and point at) the newest visible Phosphor window before keys go out. While a reference terminal is
+        the target (guard_override), focus ITS window and verify the X input focus really is one of that PID's windows, else refuse (#1500)."""
+        ov = self.guard_override
+        if ov:
+            ids = []
+            for pid in sorted(ov.get("pids", ())):
+                ids += subprocess.run(["xdotool", "search", "--onlyvisible", "--pid", str(pid)], capture_output=True).stdout.decode().split()
+            if not ids:
+                raise RuntimeError("no visible window of the reference terminal on " + os.environ.get("DISPLAY", "?"))
+            _run(["xdotool", "windowfocus", ids[-1]])
+            have = subprocess.run(["xdotool", "getwindowfocus"], capture_output=True).stdout.decode().strip()
+            if have not in ids:
+                raise RuntimeError("reference terminal does not have the X input focus (focus %r, its windows %s): refusing to type" % (have, ids))
+            return
         r = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "phosphor"], capture_output=True)
         ids = r.stdout.decode().split()
         if not ids:

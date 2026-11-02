@@ -14,7 +14,69 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import backend, cases, profile, sshd, app as appmod  # noqa: E402
 
 
+def skip_status(r, why):
+    """Status for a case that raised Skip. A failed check recorded before the Skip is NEVER downgraded: the FAIL stands and says it was also skipped (#1498)."""
+    if r.fails:
+        r.notes.insert(0, "ALSO SKIPPED after the failed check(s) above: %s" % why)
+        return "fail"
+    r.notes.insert(0, str(why))
+    return "skip"
+
+
+def self_test():
+    """`run.py --self-test`: harness-level checks that need no app, display or backend."""
+    r = cases.Result("t", "terminal")
+    assert skip_status(r, "no card") == "skip" and r.notes == ["no card"], (r.notes, r.fails)
+    r = cases.Result("t", "terminal")
+    r.check(False, "approve half lost the command")
+    assert skip_status(r, "no card within 120 s") == "fail", "a Skip after a failed check must stay FAIL"
+    assert r.fails == ["approve half lost the command"] and "ALSO SKIPPED" in r.notes[0], (r.fails, r.notes)
+    r = cases.Result("t", "terminal")
+    r.check(True, "fine")
+    assert skip_status(r, "x") == "skip"
+    r = cases.Result("lat", "terminal")
+    cases.lat_checks(r, {"budget_verdict": "no-reference", "budget_kind": "overhead", "verdict": "no-reference"}, "Enter")
+    assert not r.fails and r.noref and "NO-REFERENCE" in r.notes[0], (r.fails, r.noref)     # not a pass, not a failure (#1499)
+    # #1500: the reference-terminal focus guard refuses unless the REFERENCE window has focus
+    import backend as _b
+    want = dict(pids={4242}, names={"foot"})
+    assert _b.focus_matches(want, dict(pid=4242, app_id="foot"))
+    assert _b.focus_matches(want, dict(pid=None, app_id="Foot"))
+    assert not _b.focus_matches(want, dict(pid=7, app_id="phosphor")) and not _b.focus_matches(want, None)
+    be = _b.WaylandBackend()
+    be.guard_ref()                       # no override: no-op, never queries sway
+    be.guard_override = want
+    be._focused = lambda: dict(pid=7, app_id="phosphor")
+    _sleep, _b.time.sleep = _b.time.sleep, lambda s: None
+    try:
+        be.guard()
+        raise AssertionError("guard let keys through to the wrong window")
+    except RuntimeError as e:
+        assert "does not have focus" in str(e)
+    finally:
+        _b.time.sleep = _sleep
+    be._focused = lambda: dict(pid=4242, app_id="foot")
+    be.guard_ref()
+    # the reference has its own ctl dir: its log is never the app pane's
+    import profile as _p, tempfile
+    d = tempfile.mkdtemp()
+    pr = _p.Profile(d)
+    for dd in (pr.ctl, pr.refctl):
+        os.makedirs(dd, exist_ok=True)
+    open(os.path.join(pr.ctl, "rec.log"), "w").write("C\t1.0\tapp cmd\n")
+    open(os.path.join(pr.refctl, "rec.log"), "w").write("C\t2.0\tref cmd\n")
+    assert pr.refctl != pr.ctl and [c for _, c in pr.commands()] == ["app cmd"]
+    pr.ref_active = True
+    assert [c for _, c in pr.commands()] == ["ref cmd"], "while the reference is the target its OWN log is read"
+    pr.ref_active = False
+    shutil.rmtree(d)
+    print("self-test ok")
+    return 0
+
+
 def main():
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
     ap.add_argument("--bin", default="")
@@ -172,12 +234,11 @@ def main():
                     if c["name"] not in ("mode_proof",):
                         ctx.reset()
                     c["fn"](ctx, r)
-                    status = "fail" if r.fails else "pass"
+                    status = "fail" if r.fails else ("noref" if r.noref else "pass")
                 except backend.NeedsOwner:
                     raise
                 except cases.Skip as e:
-                    status = "skip"
-                    r.notes.insert(0, str(e))
+                    status = skip_status(r, e)
                 except Exception as e:
                     status = "fail"
                     r.fails.append("harness exception: %r" % e)

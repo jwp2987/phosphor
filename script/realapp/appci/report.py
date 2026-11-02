@@ -17,24 +17,26 @@ if os.path.exists(p):
                 rows.append(json.loads(l))
             except ValueError:
                 pass
-cnt = {"pass": 0, "fail": 0, "skip": 0}
+cnt = {"pass": 0, "fail": 0, "skip": 0, "noref": 0}   # noref = a latency case with no reference terminal: NOT a pass, not a failure (#1499)
 for r in rows:
     cnt[r["status"]] = cnt.get(r["status"], 0) + 1
 doc = {"meta": meta, "generated": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "summary": cnt, "cases": rows}
 json.dump(doc, open(os.path.join(run, "results.json"), "w"), indent=1)
 x = ['<?xml version="1.0" encoding="UTF-8"?>',
-     '<testsuite name=%s tests="%d" failures="%d" skipped="%d">' % (quoteattr("appci-" + meta.get("platform", "?")), len(rows), cnt["fail"], cnt["skip"])]
+     '<testsuite name=%s tests="%d" failures="%d" skipped="%d">' % (quoteattr("appci-" + meta.get("platform", "?")), len(rows), cnt["fail"], cnt["skip"] + cnt["noref"])]
 for r in rows:
     x.append('<testcase classname=%s name=%s time="%.2f">' % (quoteattr(r.get("mode", "")), quoteattr(r["name"]), r.get("seconds", 0)))
     d = escape("\n".join(r.get("detail", [])))
     if r["status"] == "fail":
         x.append("<failure message=%s>%s</failure>" % (quoteattr((r.get("detail") or ["failed"])[0][:200]), d))
+    elif r["status"] == "noref":
+        x.append("<skipped message=%s/>" % quoteattr("NO-REFERENCE (not a pass): " + (r.get("detail") or [""])[0][:180]))
     elif r["status"] == "skip":
         x.append("<skipped message=%s/>" % quoteattr((r.get("detail") or [""])[0][:200]))
     x.append("</testcase>")
 x.append("</testsuite>")
 open(os.path.join(run, "junit.xml"), "w").write("\n".join(x))
-m = ["# App test results (%s)" % ", ".join("%s=%s" % kv for kv in meta.items()), "", "pass %(pass)d, fail %(fail)d, skip %(skip)d" % cnt, "",
+m = ["# App test results (%s)" % ", ".join("%s=%s" % kv for kv in meta.items()), "", "pass %(pass)d, fail %(fail)d, skip %(skip)d, no-reference %(noref)d (not passes)" % cnt, "",
      "| mode | case | status | detail |", "|---|---|---|---|"]
 for r in rows:
     m.append("| %s | %s | %s | %s |" % (r.get("mode", ""), r["name"], r["status"].upper(), "; ".join(r.get("detail", []))[:160].replace("|", "/")))

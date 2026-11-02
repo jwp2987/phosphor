@@ -881,13 +881,15 @@ app-test-linux-wayland:
 # Private Xvfb (software GL), xdotool: the original X11 path.
 app-test-linux-x11:
   extends: .appci_linux
+  allow_failure:
+    exit_codes: 77   # 77 = skipped by tier: shown as failed-but-allowed, never as a success that tested nothing
   needs:
     - job: build-linux-x86_64
       artifacts: false
   before_script:
     - script/ci/fetch_build.sh --this-pipeline
   script:
-    - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: the x11 pass is not part of the fix tier"; exit 0; fi'
+    - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: the x11 pass is not part of the fix tier; SKIPPED BY TIER, nothing was tested"; exit 77; fi'
     - script/realapp/linux/wayland_session.sh --mode x11 --dist dist --out "$CI_PROJECT_DIR/appci-out/x11"
   after_script:
     - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
