@@ -136,6 +136,8 @@ function C-Tabs($mode) {
 $Cases = @(
   @{ n = "fast_typing"; f = ${function:C-Fast} }, @{ n = "paste_instant_enter"; f = ${function:C-PasteEnter} }, @{ n = "ctrl_c"; f = ${function:C-CtrlC} },
   @{ n = "latency_enter"; f = ${function:C-EnterLatency} }, @{ n = "idle_cpu"; f = ${function:C-Idle} }, @{ n = "tabs_streaming"; f = ${function:C-Tabs} })
+# APPCI_TIER=smoke: the input-path subset (fix tier); empty/full: every case.
+if ($env:APPCI_TIER -eq "smoke") { $Cases = @($Cases | Where-Object { @("fast_typing", "paste_instant_enter", "ctrl_c", "latency_enter") -contains $_.n }) }
 
 # ---- lock ----
 $t = Get-Date

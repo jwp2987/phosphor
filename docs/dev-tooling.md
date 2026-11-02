@@ -99,15 +99,18 @@ has a few random byte seeds. A crash lands in `fuzz/artifacts/<target>/`; reprod
 
 ## cargo-mutants
 
-`.cargo/mutants.toml` (the location cargo-mutants reads) sets the test command
-(`nextest ... -p warp_tui --lib --features warp/gui`, since `-p warp_tui` alone does not
-compile), generous timeouts and the excludes (tests, generated code, platform-only files,
-vendored crates, logging). Always narrow the run:
+`.cargo/mutants.toml` (the location cargo-mutants reads) sets nextest, generous timeouts and the
+excludes (tests, generated code, platform-only files, vendored crates, logging). The per-package
+test args are NOT in the file: for `warp` pass `--cargo-test-arg=-p --cargo-test-arg=warp_tui
+--cargo-test-arg=--lib --cargo-test-arg=--features --cargo-test-arg=warp/gui` (`-p warp_tui` alone
+does not compile), for `warpui_core` pass `--cargo-test-arg=--features --cargo-test-arg=tui`.
+Always narrow the run:
 
 ```
-cargo mutants -p warp --file app/src/terminal/pane_key.rs
-cargo mutants -p warp --file app/src/terminal/model/key_facts.rs --file app/src/terminal/model/typeahead_handoff.rs
-cargo mutants -p warpui_core --file crates/warpui_core/src/clipboard.rs   # use the warpui_core tests
+A=(--cargo-test-arg=-p --cargo-test-arg=warp_tui --cargo-test-arg=--lib --cargo-test-arg=--features --cargo-test-arg=warp/gui)
+cargo mutants -p warp "${A[@]}" --file app/src/terminal/pane_key.rs
+cargo mutants -p warp "${A[@]}" --file app/src/terminal/model/key_facts.rs --file app/src/terminal/model/typeahead_handoff.rs
+cargo mutants -p warpui_core --cargo-test-arg=--features --cargo-test-arg=tui --file crates/warpui_core/src/clipboard.rs
 cargo mutants --list --file app/src/terminal/pane_key.rs                  # preview, runs nothing
 ```
 
@@ -126,7 +129,8 @@ the default pipeline. Start them from the pipeline page of a protected ref (`mai
 |---|---|---|
 | `test-shuttle-loom` | the `model_tests::` tests of `warpui_core` and `warp` under `--cfg shuttle`, then `--cfg loom` | none |
 | `fuzz-smoke` | each fuzz target for `FUZZ_SECONDS` (180) from the committed corpus; `RUSTC_BOOTSTRAP=1` so the pinned stable toolchain is used | `fuzz/artifacts/` (crashes) |
-| `mutants` | cargo-mutants on `MUTANTS_FILES` of `MUTANTS_PACKAGE` (set both as pipeline variables to change the subset) | `mutants.out/` |
+| `mutants` | cargo-mutants on `MUTANTS_FILES` of `MUTANTS_PACKAGE`, tests limited by `MUTANTS_TEST_FILTER`, optional `MUTANTS_SHARD=k/n` (default scope: pane_key, key_facts, input_queue gates+destination) | `mutants.out/` |
+| `mutants-warpui-core` | cargo-mutants on the warpui_core clipboard with warpui_core's own tests | `mutants.out/` |
 | `bench` | both criterion benches | `bench-results/criterion/` (HTML reports, estimates) |
 
 `fuzz-smoke` and `mutants` fetch `cargo-fuzz` / `cargo-mutants` with `cargo binstall` into the

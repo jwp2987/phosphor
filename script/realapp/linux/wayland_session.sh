@@ -19,6 +19,7 @@
 # Environment: APPCI_OLLAMA_URL (optional provider endpoint; without it provider-dependent agent cases skip), APPCI_SCALE,
 # APPCI_TABS, APPCI_BIG_MB, APPCI_SSH_TRIALS, APPCI_SEED, APPCI_WL_KEY_MODE=batch|perkey, APPCI_IDLE_CPU_MAX.
 # usage: wayland_session.sh --mode M --dist DIR_WITH_deb_or_AppImage [--bin PATH] [--out DIR] [--modes terminal,agent] [--cases a,b] [--skip a,b]
+# APPCI_TIER=smoke runs only the smoke case list (appci/cases.py SMOKE); the xwayland and x11 CI passes are skipped by the jobs.
 # Exit: 0 all pass/skip, 1 a case failed, 2 prerequisites/session could not start.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

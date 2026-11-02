@@ -44,6 +44,8 @@ def main():
             for m in a.modes.split(","):
                 emit(dict(name="preflight", mode=m, status="fail", detail=problems, seconds=0))
             return finish(run, a, 2)
+    if not a.cases and os.environ.get("APPCI_TIER") == "smoke":
+        a.cases = ",".join(cases.SMOKE)
     sel = [c for c in cases.CASES if (not a.cases or c["name"] in a.cases.split(",")) and c["name"] not in a.skip.split(",")]
     sel.sort(key=lambda c: c["order"])
     exit_fail = False
