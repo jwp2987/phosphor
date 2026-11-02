@@ -43,8 +43,9 @@ use warpui::{SingletonEntity as _, ViewContext};
 use super::{AfterEnterInput, Event, TerminalView};
 use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input_queue::{
-    DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateSpec, GateToken, Host, InputEntry, PaneQueue, PasteOwner, SignalKind, is_pty_entry, trace,
+    Deferred, DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps,
+    GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue, PasteOwner, SignalKind,
+    is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
@@ -149,35 +150,37 @@ impl PasteQueueState {
 
     /// Asks the host to put `held` back at the front of the queue under `spec` when the delivery
     /// in progress returns. A second input of the same class in one delivery joins the first, in
-    /// typed order. False when the delivery already asked for something that cannot join it.
-    pub(super) fn request_requeue_held(&mut self, spec: GateSpec, held: EntryKind) -> bool {
-        match self.requeue_request.as_mut() {
-            None => {
-                self.requeue_request = Some(RequeueRequest {
-                    spec,
-                    bytes: Vec::new(),
-                    takes_over_agent_control: false,
-                    replacement: Some(held),
-                });
-                true
+    /// typed order. `Err(held)` hands the input back when it cannot join (another class, another
+    /// kind of request): the caller defers it behind the same gate (`Deferred::OfferGated`).
+    pub(super) fn request_requeue_held(
+        &mut self,
+        spec: GateSpec,
+        held: EntryKind,
+    ) -> Result<(), EntryKind> {
+        let Some(request) = self.requeue_request.as_mut() else {
+            self.requeue_request = Some(RequeueRequest {
+                spec,
+                bytes: Vec::new(),
+                takes_over_agent_control: false,
+                replacement: Some(held),
+            });
+            return Ok(());
+        };
+        if request.spec.kind == spec.kind && request.spec.key == spec.key {
+            if let (
+                Some(EntryKind::Held {
+                    class: have,
+                    text: have_text,
+                }),
+                EntryKind::Held { class, text },
+            ) = (request.replacement.as_mut(), &held)
+                && *class == *have
+            {
+                have_text.push_str(text);
+                return Ok(());
             }
-            Some(RequeueRequest {
-                spec: existing,
-                replacement:
-                    Some(EntryKind::Held {
-                        class: have,
-                        text: have_text,
-                    }),
-                ..
-            }) if existing.kind == spec.kind && existing.key == spec.key => match held {
-                EntryKind::Held { class, text } if class == *have => {
-                    have_text.push_str(&text);
-                    true
-                }
-                _ => false,
-            },
-            Some(_) => false,
         }
+        Err(held)
     }
 
     /// The next paste id of this pane (one counter, shared with the editor's pastes).
@@ -279,7 +282,21 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
         // destinations, so an entry that belongs to the editor side (an editor key, an editor
         // paste) is delivered through the input's own host.
         if !is_pty_entry(&entry.kind) && !matches!(entry.kind, EntryKind::Signal(_)) {
-            return self.view.deliver_editor_entry(entry, follow, self.ctx);
+            let outcome = self.view.deliver_editor_entry(entry, follow, self.ctx);
+            // An editor delivery (an Enter that submits and writes the command) can write a key
+            // the hand-off holds (#1418): what goes back under the gate is that key, not the
+            // editor entry that was applied.
+            if let Some(request) = self.view.paste_queue.requeue_request.take() {
+                if outcome != DeliverOutcome::Delivered {
+                    log::warn!(
+                        "input queue: an editor delivery both held a key and asked for {outcome:?}; the held key wins"
+                    );
+                }
+                let spec = request.spec;
+                self.view.paste_queue.requeue_replacement = Some(request.into_entry());
+                return DeliverOutcome::Requeue(spec);
+            }
+            return outcome;
         }
         // Whether the entry delivered is itself what a hold of its bytes puts back (a key or a
         // paste written as one piece); any other kind is replaced by a key of the held bytes.
@@ -375,13 +392,10 @@ impl Host for PtyQueueHost<'_, '_> {
         dest: Destination,
         follow: &mut FollowUps,
     ) -> DeliverOutcome {
-        // Only a pty entry, a signal or text routed here can write a key that the hand-off holds;
-        // an editor entry is delivered by the input's own host.
-        self.view.paste_queue.delivering = is_pty_entry(&entry.kind)
-            || matches!(
-                entry.kind,
-                EntryKind::Signal(_) | EntryKind::Text(_) | EntryKind::Enter
-            );
+        // EVERY delivery can write a key that the hand-off holds (an editor Enter writes the
+        // command it submitted, #1418): the key goes back under its gate when this returns, never
+        // "as typed" because the queue is held by this very drain.
+        self.view.paste_queue.delivering = true;
         let outcome = self.deliver_entry(entry, dest, follow);
         self.view.paste_queue.delivering = false;
         outcome
@@ -481,6 +495,8 @@ impl TerminalView {
         abort_as_entry: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Option<bool> {
+        // Operations that found the queue busy come before this key (typed order).
+        self.flush_deferred_queue_ops(ctx);
         // Nothing holds keys: the queue is idle (or mid-drain: this write is part of delivering an
         // entry). Every gate holds every key, whichever route typed it.
         if self
@@ -541,8 +557,16 @@ impl TerminalView {
             }
         };
         let queue = self.paste_queue.queue.clone();
+        let Some(mut guard) = queue.try_lock() else {
+            // Became busy since the checks above: the key waits its turn, in order.
+            queue.defer(Deferred::Offer {
+                kind,
+                origin: Origin::Keyboard,
+            });
+            return Some(false);
+        };
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.lock().offer(&mut host, kind);
+        guard.offer(&mut host, kind);
         Some(host.written)
     }
 
@@ -575,15 +599,23 @@ impl TerminalView {
     /// key, a pty paste) and poked the queue's waker (#1353 step 3). Continues the drain here,
     /// where both destinations are reachable. Idempotent: nothing pending, nothing to do.
     pub(super) fn on_pane_queue_needs_drain(&mut self, ctx: &mut ViewContext<Self>) {
+        // The deferred operations first (the same wake serves both), then a stopped drain.
+        self.flush_deferred_queue_ops(ctx);
         let queue = self.paste_queue.queue.clone();
-        if !queue
-            .try_peek()
-            .is_some_and(|queue| queue.pending_foreign())
-        {
+        let pending = match queue.try_peek() {
+            Some(queue) => queue.pending_foreign(),
+            None => {
+                // Busy right now (#1428): the wake must not be lost. Look again once free.
+                log::warn!("input queue: pane drain requested while the queue was busy; deferred");
+                queue.defer(Deferred::Poke);
+                return;
+            }
+        };
+        if !pending {
             return;
         }
         let Some(mut guard) = queue.try_lock() else {
-            log::warn!("input queue: pane drain requested while the queue was busy");
+            queue.defer(Deferred::Poke);
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
@@ -601,29 +633,34 @@ impl TerminalView {
         }
         self.paste_queue.next_cli_submit_key += 1;
         let key = self.paste_queue.next_cli_submit_key;
+        self.flush_deferred_queue_ops(ctx);
         let queue = self.paste_queue.queue.clone();
+        let spec = GateSpec::new(GateKind::CliSubmit, key).with_cap(Some(CLI_SUBMIT_LEAK_NET));
+        // The submit owns the gate from here on, whether the queue is free or busy.
+        self.paste_queue.cli_submit_gate = Some(key);
         let Some(mut queue) = queue.try_lock() else {
-            log::warn!("input queue: CLI-agent submit gate not opened, the queue was busy");
+            // Opened by the next operation, in order with the end below (#1419).
+            queue_defer_open_gate(&self.paste_queue.queue, spec);
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.open_gate(
-            &mut host,
-            GateSpec::new(GateKind::CliSubmit, key).with_cap(Some(CLI_SUBMIT_LEAK_NET)),
-        );
-        self.paste_queue.cli_submit_gate = Some(key);
+        queue.open_gate(&mut host, spec);
     }
 
     /// The paced submit has written its last piece: the keys typed behind it follow, in order.
     pub(super) fn end_cli_submit_gate(&mut self, ctx: &mut ViewContext<Self>) {
+        self.flush_deferred_queue_ops(ctx);
         let Some(key) = self.paste_queue.cli_submit_gate.take() else {
             return;
         };
         let queue = self.paste_queue.queue.clone();
         let Some(mut queue) = queue.try_lock() else {
-            log::warn!(
-                "input queue: CLI-agent submit gate could not be closed, the queue was busy"
-            );
+            // The close is recorded, never lost (#1419): the keys typed behind the submit follow
+            // as soon as the queue is free, not at the 20 s leak net.
+            queue.defer(Deferred::GateEvent {
+                kind: GateKind::CliSubmit,
+                key,
+            });
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
@@ -650,6 +687,13 @@ impl TerminalView {
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     pub(super) fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = self.paste_queue.queue.clone();
+        // A cap is one-shot: firing while the queue is busy must not consume it (#1417). It runs
+        // again, whole, once the queue is free (the handler is token-guarded).
+        if queue.try_peek().is_none() {
+            queue.defer(Deferred::GiveUpCap(token));
+            return;
+        }
+        self.flush_deferred_queue_ops(ctx);
         let kind = queue
             .try_peek()
             .and_then(|queue| {
@@ -717,6 +761,15 @@ impl TerminalView {
                 "input queue: bootstrap-write gate cap passed with lines still to write; \
                  the held keys wait for the last line"
             );
+            // Re-armed for what is left (#1427): the same token stays valid while the gate is open.
+            let lines = self
+                .subshell_bootstrap_in_flight
+                .as_ref()
+                .map_or(1, |flight| flight.remaining_lines);
+            let after = super::subshell_bootstrap_gate_cap(lines);
+            ctx.spawn(Timer::after(after), move |me, _, ctx| {
+                me.on_paste_queue_give_up(token, ctx)
+            });
             return;
         }
         if kind == Some(GateKind::SubshellSetup) {
@@ -726,8 +779,12 @@ impl TerminalView {
             self.dismiss_subshell_setup_waiting_toast(ctx);
         }
         {
+            let Some(mut guard) = queue.try_lock() else {
+                queue.defer(Deferred::GiveUpCap(token));
+                return;
+            };
             let mut host = PtyQueueHost::new(self, ctx);
-            queue.lock().give_up(&mut host, token);
+            guard.give_up(&mut host, token);
         }
         if kind == Some(GateKind::SubshellBootstrapWrite) {
             self.send_pending_subshell_aborts(ctx);
@@ -809,20 +866,18 @@ impl TerminalView {
             }
             return;
         }
+        self.flush_deferred_queue_ops(ctx);
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
-            // Nothing delivers from this queue and yet it is borrowed: the key cannot be put
-            // behind its gate. It is written as typed, counted by the hand-off, never lost.
-            log::warn!("input queue: a held key found the queue busy; writing it as typed");
-            {
-                let mut handoff = self.handoff.write();
-                if !handoff.route_released_chunk(&bytes) {
-                    // Absorbed by a deferred Enter: there is no gate to put it behind either.
-                    handoff.take_deferred_key_started();
-                }
-            }
-            ctx.emit(Event::WriteHandoffUserBytesToPty {
-                bytes: Cow::Owned(bytes),
+            // The queue is held by something that is not delivering this key (a peek, an
+            // operation above us): the key is recorded to go behind its gate, in order, when the
+            // queue is free. Never written ahead of the line editor (lost on ConPTY, #1162).
+            queue.defer(Deferred::OfferGated {
+                kind: EntryKind::PtyBytes {
+                    bytes,
+                    takes_over_agent_control,
+                },
+                spec,
             });
             return;
         };
@@ -869,6 +924,12 @@ impl TerminalView {
         let queue = self.paste_queue.queue.clone();
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
+                // The hold was already taken from the hand-off: its keys are released by the
+                // next operation instead of waiting for the cap.
+                queue.defer(Deferred::ReleasePromptHold {
+                    hold_id,
+                    gave_up: false,
+                });
                 return bytes;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -915,6 +976,7 @@ impl TerminalView {
                 self.handoff
                     .write()
                     .restore_young_hold_end(hold_id, YoungHoldEnd::Dropped);
+                queue.defer(Deferred::ApplyYoungHoldEnds);
                 return bytes;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -969,6 +1031,7 @@ impl TerminalView {
                 // Mid-drain: keep the end for the next attempt (the gate's give-up finds it too).
                 self.handoff.write().restore_young_hold_end(hold_id, end);
                 log::warn!("input queue: young hold {hold_id} end deferred, the queue was busy");
+                queue.defer(Deferred::ApplyYoungHoldEnds);
                 return;
             };
             if let YoungHoldEnd::SubmitOnReport { deferred_gate } = end {
@@ -1038,7 +1101,7 @@ impl TerminalView {
         };
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
-            log::warn!("input queue: the deferred Enter's gate was not opened, the queue was busy");
+            queue_defer_open_gate(&queue, handoff_report_spec(id));
             return;
         };
         if guard.has_gate(GateKind::HandoffReport, id) {
@@ -1177,6 +1240,7 @@ impl TerminalView {
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
                 log::warn!("input queue: young hold {hold_id} not released, the queue was busy");
+                queue.defer(Deferred::ReleaseYoungHoldKeys { hold_id, routed });
                 return;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -1223,7 +1287,16 @@ impl TerminalView {
             // An entry of the editor side that ended up in this gate's segment (the queue is
             // shared with the editor): never lost, delivered to the editor.
             if !is_pty_entry(&entry.kind) {
-                self.deliver_editor_entry(&entry, &mut FollowUps::default(), ctx);
+                // The gate this entry waited behind is gone, so it must not wait for anything
+                // else either: `flushing_now` applies a key that reads the display map at once
+                // instead of answering `Requeue` for a gate that does not exist (#1416).
+                let outcome =
+                    self.deliver_editor_entry(&entry, &mut FollowUps::flushing_now(), ctx);
+                if outcome != DeliverOutcome::Delivered {
+                    log::warn!(
+                        "input queue: an editor entry taken out of a gate answered {outcome:?}"
+                    );
+                }
                 continue;
             }
             match entry.kind {
@@ -1260,8 +1333,15 @@ impl TerminalView {
         let queue = self.paste_queue.queue.clone();
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
-                // Mid-drain: the gate's own give-up cap releases the keys.
-                log::warn!("input queue: prompt hold {hold_id} not released, the queue was busy");
+                // Mid-drain: released by the next operation, in order (#1417). The gate's cap is
+                // only the net behind this.
+                log::warn!(
+                    "input queue: prompt hold {hold_id} release deferred, the queue was busy"
+                );
+                queue.defer(Deferred::ReleasePromptHold {
+                    hold_id,
+                    gave_up: how == PromptHoldEnd::GaveUp,
+                });
                 return;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -1317,8 +1397,10 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let queue = self.paste_queue.queue.clone();
-        if queue.peek().has_gate(GateKind::PasteReading, id) {
-            let (entries, held_bytes) = queue.peek().queued_summary();
+        if let Some(held) = queue.try_peek()
+            && held.has_gate(GateKind::PasteReading, id)
+        {
+            let (entries, held_bytes) = held.queued_summary();
             // The paste itself is one of the queued entries.
             trace::release(
                 trace::legacy::PASTE_PTY,
@@ -1346,21 +1428,43 @@ impl TerminalView {
                 Err(())
             }
         };
+        let ok = result.is_ok();
+        if !self.complete_queued_paste_read(id, ok, ctx) {
+            // Busy: the result (its bytes are stored) is applied by the next operation.
+            queue.defer(Deferred::PasteRead { id, ok });
+        }
+    }
+
+    /// Applies the reader's result for paste `id` to the queue. False (nothing done) if the queue
+    /// is busy.
+    fn complete_queued_paste_read(
+        &mut self,
+        id: u64,
+        ok: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let queue = self.paste_queue.queue.clone();
         {
+            let Some(mut guard) = queue.try_lock() else {
+                return false;
+            };
             let mut host = PtyQueueHost::new(self, ctx);
-            queue.lock().on_paste_read(&mut host, id, result);
+            guard.on_paste_read(&mut host, id, if ok { Ok(Vec::new()) } else { Err(()) });
         }
         // A result that arrived after its paste was cancelled or given up has no entry to claim it.
         // A paste that is still queued (its own gate is closed but another gate, such as the
         // subshell bootstrap's, still holds it) keeps its bytes until it is delivered; dropping
-        // them here lost the paste.
-        let still_queued = queue.peek().entries().any(
-            |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
-        );
+        // them here lost the paste. Unreadable queue: assume it is still queued.
+        let still_queued = queue.try_peek().is_none_or(|held| {
+            held.entries().any(
+                |entry| matches!(&entry.kind, EntryKind::Paste { paste_id, .. } if *paste_id == id),
+            )
+        });
         if !still_queued {
             self.paste_queue.payloads.remove(&id);
             self.paste_queue.refused.remove(&id);
         }
+        true
     }
 
     /// Whether the PowerShell setup gate is open (#1048: its keys are entries of the queue).
@@ -1383,7 +1487,14 @@ impl TerminalView {
         if !self.paste_queue.requeueable_delivery && self.powershell_gate_open() {
             let queue = self.paste_queue.queue.clone();
             let Some(mut guard) = queue.try_lock() else {
-                log::warn!("input queue: PowerShell setup key not held, the queue was busy");
+                // Held behind the gate by the next operation, in typed order (#1426).
+                queue.defer(Deferred::Offer {
+                    kind: EntryKind::PtyBytes {
+                        bytes,
+                        takes_over_agent_control,
+                    },
+                    origin: Origin::Keyboard,
+                });
                 return;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -1423,6 +1534,10 @@ impl TerminalView {
     pub(super) fn close_powershell_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
+            queue.defer(Deferred::GateEvent {
+                kind: GateKind::PowershellSetup,
+                key: 0,
+            });
             return;
         };
         if !guard.has_gate_kind(GateKind::PowershellSetup) {
@@ -1525,21 +1640,27 @@ impl TerminalView {
                     super::SUBSHELL_SETUP_TYPED_HOLD_LIMIT.saturating_sub(age)
                 })
                 .max(Duration::from_millis(100));
-            let mut host = PtyQueueHost::new(self, ctx);
-            queue.lock().open_gate(
-                &mut host,
-                GateSpec::new(GateKind::SubshellSetup, 0).with_cap(Some(left)),
-            );
+            let spec = GateSpec::new(GateKind::SubshellSetup, 0).with_cap(Some(left));
+            match queue.try_lock() {
+                Some(mut guard) => {
+                    let mut host = PtyQueueHost::new(self, ctx);
+                    guard.open_gate(&mut host, spec);
+                }
+                None => queue_defer_open_gate(&queue, spec),
+            }
         }
         if let Some(lines) = in_flight
             && !bootstrap_gate
         {
             let cap = super::subshell_bootstrap_gate_cap(lines);
-            let mut host = PtyQueueHost::new(self, ctx);
-            queue.lock().open_gate(
-                &mut host,
-                GateSpec::new(GateKind::SubshellBootstrapWrite, 0).with_cap(Some(cap)),
-            );
+            let spec = GateSpec::new(GateKind::SubshellBootstrapWrite, 0).with_cap(Some(cap));
+            match queue.try_lock() {
+                Some(mut guard) => {
+                    let mut host = PtyQueueHost::new(self, ctx);
+                    guard.open_gate(&mut host, spec);
+                }
+                None => queue_defer_open_gate(&queue, spec),
+            }
         }
         if abort && in_flight.is_some() {
             // No setup to skip: the abort waits for the last line in typed order, like any key.
@@ -1553,6 +1674,10 @@ impl TerminalView {
     pub(super) fn close_subshell_setup_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
+            queue.defer(Deferred::GateEvent {
+                kind: GateKind::SubshellSetup,
+                key: 0,
+            });
             return;
         };
         if !guard.has_gate_kind(GateKind::SubshellSetup) {
@@ -1570,6 +1695,10 @@ impl TerminalView {
         self.send_pending_subshell_aborts(ctx);
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
+            queue.defer(Deferred::GateEvent {
+                kind: GateKind::SubshellBootstrapWrite,
+                key: 0,
+            });
             return;
         };
         if !guard.has_gate_kind(GateKind::SubshellBootstrapWrite) {
@@ -1594,6 +1723,10 @@ impl TerminalView {
             }
             let queue = self.paste_queue.queue.clone();
             let Some(mut guard) = queue.try_lock() else {
+                queue.defer(Deferred::Offer {
+                    kind: EntryKind::Signal(signal),
+                    origin: Origin::Keyboard,
+                });
                 continue;
             };
             let mut host = PtyQueueHost::new(self, ctx);
@@ -1615,6 +1748,119 @@ pub(super) enum SubshellPrep {
     /// An abort typed during the bootstrap lines with no setup to skip: an ordinary entry, so it
     /// reaches the pty at its place in what was typed.
     HeldInOrder,
+}
+
+/// Records the opening of gate `spec` for the next operation (a gate that is open already, with
+/// the same kind and key, is left alone when it is applied).
+fn queue_defer_open_gate(queue: &PaneQueue, spec: GateSpec) {
+    queue.defer(Deferred::OpenGate(spec));
+}
+
+impl TerminalView {
+    /// Applies, in the order they were recorded, the operations that found the queue busy
+    /// ([`Deferred`], the design note in `input_queue/mod.rs`). A no-op when nothing waits. While
+    /// the queue is held (this runs under a drain, or a peek is out) nothing is applied: the
+    /// view is woken again, so the mailbox is never stranded.
+    pub(super) fn flush_deferred_queue_ops(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.paste_queue.queue.clone();
+        if !queue.has_deferred() {
+            return;
+        }
+        if queue.try_peek().is_none() {
+            queue.poke_defer_waker();
+            return;
+        }
+        if !queue.begin_deferred_flush() {
+            return;
+        }
+        while let Some(op) = queue.pop_deferred() {
+            if queue.try_peek().is_none() {
+                queue.unpop_deferred(op);
+                queue.poke_defer_waker();
+                break;
+            }
+            if let Err(op) = self.apply_deferred_op(op, ctx) {
+                queue.unpop_deferred(op);
+                queue.poke_defer_waker();
+                break;
+            }
+        }
+        queue.end_deferred_flush();
+    }
+
+    /// Applies one deferred operation; gives it back if the queue could not be locked.
+    fn apply_deferred_op(
+        &mut self,
+        op: Deferred,
+        ctx: &mut ViewContext<Self>,
+    ) -> Result<(), Deferred> {
+        let queue = self.paste_queue.queue.clone();
+        match op {
+            Deferred::Offer { kind, origin } => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::Offer { kind, origin });
+                };
+                let mut host = PtyQueueHost::new(self, ctx);
+                guard.offer_with_origin(&mut host, kind, origin);
+            }
+            Deferred::OfferGated { kind, spec } => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::OfferGated { kind, spec });
+                };
+                let mut host = PtyQueueHost::new(self, ctx);
+                if guard.has_gate(spec.kind, spec.key) {
+                    // The gate is open already: the key joins what it holds, in arrival order.
+                    guard.offer(&mut host, kind);
+                } else {
+                    guard.offer_gated(&mut host, kind, spec);
+                }
+            }
+            Deferred::OpenGate(spec) => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::OpenGate(spec));
+                };
+                if !guard.has_gate(spec.kind, spec.key) {
+                    let mut host = PtyQueueHost::new(self, ctx);
+                    guard.open_gate(&mut host, spec);
+                }
+            }
+            Deferred::GateEvent { kind, key } => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::GateEvent { kind, key });
+                };
+                let mut host = PtyQueueHost::new(self, ctx);
+                guard.on_gate_event(&mut host, kind, key);
+            }
+            Deferred::GiveUpCap(token) => self.on_paste_queue_give_up(token, ctx),
+            Deferred::PasteRead { id, ok } => {
+                if !self.complete_queued_paste_read(id, ok, ctx) {
+                    return Err(Deferred::PasteRead { id, ok });
+                }
+            }
+            Deferred::ReleasePromptHold { hold_id, gave_up } => {
+                let how = if gave_up {
+                    PromptHoldEnd::GaveUp
+                } else {
+                    PromptHoldEnd::Signal
+                };
+                self.release_queued_prompt_hold(hold_id, how, ctx);
+            }
+            Deferred::ReleaseYoungHoldKeys { hold_id, routed } => {
+                self.release_young_hold_keys(hold_id, routed, ctx);
+            }
+            Deferred::ApplyYoungHoldEnds => self.drain_young_hold_ends(ctx),
+            Deferred::Poke => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::Poke);
+                };
+                if guard.pending_foreign() {
+                    let mut host = PtyQueueHost::new(self, ctx);
+                    guard.poke(&mut host);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1666,15 +1912,18 @@ impl TerminalView {
         self.prepare_subshell_gates(&[], ctx);
         let queue = self.paste_queue.queue.clone();
         {
-            let mut host = PtyQueueHost::new(self, ctx);
-            queue.lock().offer_gated(
-                &mut host,
-                EntryKind::Paste {
-                    paste_id: id,
-                    payload: None,
-                },
-                GateSpec::new(GateKind::PasteReading, id).with_cap(backstop),
-            );
+            let kind = EntryKind::Paste {
+                paste_id: id,
+                payload: None,
+            };
+            let spec = GateSpec::new(GateKind::PasteReading, id).with_cap(backstop);
+            match queue.try_lock() {
+                Some(mut guard) => {
+                    let mut host = PtyQueueHost::new(self, ctx);
+                    guard.offer_gated(&mut host, kind, spec);
+                }
+                None => queue.defer(Deferred::OfferGated { kind, spec }),
+            }
         }
         // Say what is happening when the read takes noticeable time (a big paste). Time is the
         // requirement here (user feedback), not correctness.
@@ -1684,8 +1933,8 @@ impl TerminalView {
                 if me
                     .paste_queue
                     .queue
-                    .peek()
-                    .has_gate(GateKind::PasteReading, id)
+                    .try_peek()
+                    .is_some_and(|queue| queue.has_gate(GateKind::PasteReading, id))
                 {
                     if !ctx.has_singleton_model::<crate::workspace::ToastStack>() {
                         return;

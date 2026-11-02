@@ -37,7 +37,7 @@ use warpui::ViewContext;
 use super::TerminalView;
 use super::paste_queue::PtyQueueHost;
 use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
-use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec, trace};
+use crate::terminal::input_queue::{Deferred, EntryKind, GateKind, GateSpec, Origin, trace};
 
 /// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
 /// from the queue (entries of both origins).
@@ -84,17 +84,29 @@ impl TerminalView {
     pub(super) fn ssh_hold_ensure_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let queue = self.paste_queue.queue.clone();
         let gate_alive = self.ssh_iq.gate.is_some_and(|key| {
-            queue
-                .try_peek()
-                .is_some_and(|queue| queue.has_gate(GateKind::SshConnect, key))
+            // A gate whose opening waits in the mailbox is alive too.
+            queue.has_deferred()
+                || queue
+                    .try_peek()
+                    .is_some_and(|queue| queue.has_gate(GateKind::SshConnect, key))
         });
         if gate_alive {
             return;
         }
         self.ssh_iq.next_conn += 1;
         let key = self.ssh_iq.next_conn;
+        let Some(mut guard) = queue.try_lock() else {
+            // Only reachable if a caller skipped the busy check `ssh_hold_push` makes first; the
+            // gate then opens with the next operation and the entry that follows it is deferred
+            // behind it, in order. The token is learnt then (the gate is looked up by key).
+            queue.defer(Deferred::OpenGate(
+                GateSpec::new(GateKind::SshConnect, key).with_cap(None),
+            ));
+            self.ssh_iq.gate = Some(key);
+            return;
+        };
         let mut host = PtyQueueHost::new(self, ctx);
-        queue.lock().open_gate(
+        guard.open_gate(
             &mut host,
             GateSpec::new(GateKind::SshConnect, key).with_cap(None),
         );
@@ -130,10 +142,17 @@ impl TerminalView {
         let queue = self.paste_queue.queue.clone();
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, len);
+        let kind = EntryKind::Held { class, text };
+        let Some(mut guard) = queue.try_lock() else {
+            // Held in order by the next operation (never dropped, never written as typed).
+            queue.defer(Deferred::Offer {
+                kind,
+                origin: Origin::Keyboard,
+            });
+            return SshTypeaheadPush::Held;
+        };
         let mut host = PtyQueueHost::new(self, ctx);
-        queue
-            .lock()
-            .offer(&mut host, EntryKind::Held { class, text });
+        guard.offer(&mut host, kind);
         SshTypeaheadPush::Held
     }
 
@@ -153,12 +172,15 @@ impl TerminalView {
         };
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, text.len());
-        if !self.paste_queue.request_requeue_held(
-            GateSpec::new(GateKind::SshConnect, key).with_cap(None),
-            EntryKind::Held { class, text },
-        ) {
-            log::error!("ssh hold: a second input was held by one delivery; it was not kept");
-            return SshTypeaheadPush::Ignored;
+        let spec = GateSpec::new(GateKind::SshConnect, key).with_cap(None);
+        let held = EntryKind::Held { class, text };
+        if let Err(held) = self.paste_queue.request_requeue_held(spec, held) {
+            // A second input of another class in one delivery cannot join the first: it is
+            // recorded to go behind the same gate right after the requeue, in typed order (the
+            // busy-queue mailbox), instead of being dropped.
+            self.paste_queue
+                .queue
+                .defer(Deferred::OfferGated { kind: held, spec });
         }
         SshTypeaheadPush::Held
     }
@@ -266,7 +288,11 @@ impl TerminalView {
         trace::release(trace::legacy::SSH, items, bytes, "remote");
         let queue = self.paste_queue.queue.clone();
         let Some(mut guard) = queue.try_lock() else {
-            log::error!("ssh hold: input queue busy at the hand-over; held keys stay queued");
+            // The hand-over happens with the next operation (the gate event is recorded, not lost).
+            queue.defer(Deferred::GateEvent {
+                kind: GateKind::SshConnect,
+                key,
+            });
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);

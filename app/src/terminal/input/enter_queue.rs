@@ -124,12 +124,14 @@ impl Input {
             // entries already queued behind the Enter.
             self.stashed_gate = Some(spec);
         } else {
-            let Some(mut queue) = queue.try_lock() else {
-                log::warn!("input queue: Enter gate not opened, the queue was busy");
-                return;
-            };
-            let mut host = InputQueueHost::new(self, ctx);
-            queue.open_gate(&mut host, spec);
+            match queue.try_lock() {
+                Some(mut guard) => {
+                    let mut host = InputQueueHost::new(self, ctx);
+                    guard.open_gate(&mut host, spec);
+                }
+                // Opened by the next operation, in order (the busy-queue mailbox).
+                None => queue.defer(crate::terminal::input_queue::Deferred::OpenGate(spec)),
+            }
         }
         self.enter_gate = Some(EnterGate {
             key: id,
@@ -166,15 +168,19 @@ impl Input {
             return false;
         }
         let queue = self.enter_queue_handle(ctx);
-        let Some(mut queue) = queue.try_lock() else {
-            return false;
-        };
         let kind = match input {
             AfterEnterInput::Text(text) => EntryKind::Text(text),
             AfterEnterInput::Enter => EntryKind::Enter,
         };
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+            });
+            return true;
+        };
         let mut host = InputQueueHost::new(self, ctx);
-        queue.offer(&mut host, kind);
+        guard.offer(&mut host, kind);
         true
     }
 
@@ -191,12 +197,15 @@ impl Input {
             log::warn!("input queue: an Enter typed behind a deferred Enter found no gate");
             return;
         }
-        let Some(mut queue) = queue.try_lock() else {
-            log::warn!("input queue: an Enter typed behind a deferred Enter found the queue busy");
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind: EntryKind::Enter,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+            });
             return;
         };
         let mut host = InputQueueHost::new(self, ctx);
-        queue.offer(&mut host, EntryKind::Enter);
+        guard.offer(&mut host, EntryKind::Enter);
     }
 
     /// An Enter typed behind the one that waits, on the queue behind the Enter's gate. The queue
@@ -267,12 +276,15 @@ impl Input {
             return;
         };
         let queue = self.enter_queue_handle(ctx);
-        let Some(mut queue) = queue.try_lock() else {
-            log::warn!("input queue: Enter gate could not be released, the queue was busy");
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            queue.defer(crate::terminal::input_queue::Deferred::GateEvent {
+                kind: gate.kind,
+                key: gate.key,
+            });
             return;
         };
         let mut host = InputQueueHost::new(self, ctx);
-        queue.on_gate_event(&mut host, gate.kind, gate.key);
+        guard.on_gate_event(&mut host, gate.kind, gate.key);
     }
 
     /// The route-settle give-up of gate `key` fired: the event that should have opened it (the pty
@@ -296,14 +308,16 @@ impl Input {
             return;
         }
         let queue = self.enter_queue_handle(ctx);
-        let Some(mut queue) = queue.try_lock() else {
+        let kind = EntryKind::Signal(crate::terminal::input_queue::SignalKind::Interrupt);
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+            });
             return;
         };
         let mut host = InputQueueHost::new(self, ctx);
-        queue.offer(
-            &mut host,
-            EntryKind::Signal(crate::terminal::input_queue::SignalKind::Interrupt),
-        );
+        guard.offer(&mut host, kind);
     }
 
     /// A submitted shell-command Enter whose gate holds one key and waits for the pty to take its
