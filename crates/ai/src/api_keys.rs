@@ -26,6 +26,7 @@ pub struct ApiKeys {
 }
 
 impl ApiKeys {
+    #[cfg(test)]
     pub fn has_any_key(&self) -> bool {
         self.openai.is_some()
             || self.anthropic.is_some()
@@ -125,38 +126,12 @@ impl ApiKeyManager {
         &self.keys
     }
 
-    pub fn set_google_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
-        if self.loading {
-            self.pending.google = Some(key.clone());
-        }
-        self.keys.google = key;
-        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
-        self.write_keys_to_secure_storage(ctx);
-    }
-
+    #[cfg(test)]
     pub fn set_anthropic_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
         if self.loading {
             self.pending.anthropic = Some(key.clone());
         }
         self.keys.anthropic = key;
-        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
-        self.write_keys_to_secure_storage(ctx);
-    }
-
-    pub fn set_openai_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
-        if self.loading {
-            self.pending.openai = Some(key.clone());
-        }
-        self.keys.openai = key;
-        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
-        self.write_keys_to_secure_storage(ctx);
-    }
-
-    pub fn set_open_router_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
-        if self.loading {
-            self.pending.open_router = Some(key.clone());
-        }
-        self.keys.open_router = key;
         ctx.emit(ApiKeyManagerEvent::KeysUpdated);
         self.write_keys_to_secure_storage(ctx);
     }
