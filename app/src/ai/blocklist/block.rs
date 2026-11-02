@@ -16,7 +16,6 @@ pub mod view_impl;
 pub use pending_user_query_block::{PendingUserQueryBlock, PendingUserQueryBlockEvent};
 
 #[cfg(feature = "agent_mode_debug")]
-use crate::ai::agent::redaction::redact_secrets;
 use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::PassiveSuggestionTrigger;
@@ -203,7 +202,6 @@ use crate::code_review::comments::{
     CommentId, CommentOrigin,
 };
 use crate::code_review::CodeReviewTelemetryEvent;
-use crate::PrivacySettings;
 use crate::{
     ai::agent::{AIAgentInput, ServerOutputId},
     send_telemetry_from_ctx,
@@ -219,7 +217,6 @@ use super::{
     inline_action::code_diff_view::{CodeDiffState, CodeDiffView, CodeDiffViewEvent},
     inline_action::requested_command_attribution::is_command_copied_from_document,
     permissions::is_agent_mode_autonomy_allowed,
-    telemetry_banner::should_collect_ai_ugc_telemetry,
     BlocklistAIActionModel, BlocklistAIController, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, BlocklistAIPermissions,
 };
@@ -3987,21 +3984,12 @@ impl AIBlock {
         });
 
         let identifiers = view.as_ref(ctx).identifiers().clone();
-        let query = view.as_ref(ctx).query().unwrap_or_default();
 
-        let should_collect_ugc =
-            should_collect_ai_ugc_telemetry(ctx, PrivacySettings::as_ref(ctx).is_telemetry_enabled);
-        let redacted_query = if should_collect_ugc {
-            let mut redacted_query = query.clone();
-            redact_secrets(&mut redacted_query);
-            Some(redacted_query)
-        } else {
-            None
-        };
+        // The query text is never attached to telemetry (no UGC collection).
         send_telemetry_from_ctx!(
             TelemetryEvent::UnitTestSuggestionAccepted {
                 identifiers,
-                query: redacted_query,
+                query: None,
                 interaction_source,
             },
             ctx
