@@ -358,7 +358,7 @@ the local shell is usable afterwards), `ssh_password_prompt` (the owner's rule: 
 so ssh stops at `Enter passphrase for key` on the tty, `NumberOfPasswordPrompts 1`. A junk burst typed BEFORE the prompt must be discarded and not
 reach any shell; the passphrase typed AFTER it must reach the prompt and log in; neither appears in any `rec.log`; a wrong passphrase returns to the
 local shell where the next command runs locally. Needs the system OpenSSH sshd; fakesshd.py cannot prompt, so it skips there),
-`shell_zsh`, `shell_fish`, `shell_nu`, `shell_pwsh` (each shell as a subshell of the pane's bash: a probe line proves readiness, 12 typed lines, pasted
+`shell_zsh`, `shell_fish`, `shell_nu`, `shell_pwsh` (`shell_fish` and `shell_nu` are also in SMOKE; binaries are looked up on PATH then ~/.local/bin, /home/gitlab-runner/.local/bin, /opt/homebrew/bin and added to the pane PATH; fish adds autosuggestion-does-not-steal-keys, `fish -c` and a `fish_postexec` log, nu adds `nu -c` and a nested nu; each shell as a subshell of the pane's bash: a probe line proves readiness, 12 typed lines, pasted
 lines + instant Enter, Ctrl-C of a 30 s sleep then the next line, `exit` and the pane's bash runs the next command). A missing shell SKIPS with the
 package: `apt install zsh`, `apt install fish`, PowerShell 7 from the Microsoft apt repo (`packages-microsoft-prod.deb`, then `apt install powershell`),
 nushell is not in the Ubuntu repos (release tarball from github.com/nushell/nushell or `cargo install nu --locked`). The pane's own primary shell is

@@ -15,7 +15,7 @@ __pa_rec() {
   h=$(HISTTIMEFORMAT= history 1)
   if [[ $h =~ ^[[:space:]]*([0-9]+)[[:space:]]+(.*)$ ]]; then
     n=${BASH_REMATCH[1]}; c=${BASH_REMATCH[2]}; c=${c//$'\n'/\\n}
-    if [ "$n" != "$__pa_n" ]; then __pa_n=$n; printf 'C\t%%s\t%%s\n' "$EPOCHREALTIME" "$c" >> "$PA_CTL/rec.log"; fi
+    if [ "$n" != "$__pa_n" ]; then __pa_n=$n; printf 'C\\t%%s\\t%%s\\n' "$EPOCHREALTIME" "$c" >> "$PA_CTL/rec.log"; fi
   fi
   printf 'P\t%%s\n' "$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
 }
@@ -42,6 +42,8 @@ if [[ -n $APPCI_W ]]; then cd $APPCI_W; elif [[ $PWD == $HOME ]]; then cd $HOME/
 FISH = '''# appci scratch config (fish)
 set -gx PA_CTL "%(ctl)s"
 function fish_prompt; echo -n "fish> "; end
+# fish_postexec marker: the exact line fish executed, in its own log (fish_rec.log) so the bash rec.log counts stay untouched
+function __pa_postexec --on-event fish_postexec; printf 'C\\t%%s\\t%%s\\n' (date +%%s) "$argv[1]" >> $PA_CTL/fish_rec.log; end
 '''
 
 
@@ -86,6 +88,9 @@ class Profile:
         open(h + "/.zshrc", "w").write(ZSHRC % {"ctl": self.ctl})
         os.makedirs(h + "/.config/fish", exist_ok=True)
         open(h + "/.config/fish/config.fish", "w").write(FISH % {"ctl": self.ctl})
+        os.makedirs(h + "/.config/nushell", exist_ok=True)       # empty configs: nu's first-run "create config files?" question never appears
+        for nf in ("config.nu", "env.nu"):
+            open(h + "/.config/nushell/" + nf, "a").close()
         hist = history_lines()
         open(h + "/.bash_history", "w").write("\n".join(hist) + "\n")
         open(h + "/.zsh_history", "w").write("\n".join(hist) + "\n")

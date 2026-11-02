@@ -10,7 +10,7 @@ import lat  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
-SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "latency_enter", "latency_key_log", "latency_paint")
+SMOKE = ("mode_proof", "key_loss_control", "cadence", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "shell_fish", "shell_nu", "latency_enter", "latency_key_log", "latency_paint")
 
 
 def case(name, modes=("terminal", "agent"), gui=False, order=50):

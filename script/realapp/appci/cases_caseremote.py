@@ -357,11 +357,28 @@ def c_ssh_password(ctx, r):
 SHELLS = {
     "zsh": ("zsh", "zsh (apt install zsh)", 2.5, lambda t, f: "echo %s >> %s" % (t, f), "sleep 30", "exit"),
     "fish": ("fish", "fish (apt install fish)", 3.0, lambda t, f: "echo %s >> %s" % (t, f), "sleep 30", "exit"),
-    "nu": ("nu", "nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`)", 4.0,
+    "nu": ("nu", "nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell)", 4.0,
            lambda t, f: '"%s" | save --append %s' % (t, f), "sleep 30sec", "exit"),
     "pwsh": ("pwsh", "PowerShell 7 (Microsoft apt repo: packages-microsoft-prod.deb, then apt install powershell)", 7.0,
              lambda t, f: "Add-Content %s %s" % (f, t), "Start-Sleep 30", "exit"),
 }
+
+
+EXTRA_DIRS = ("~/.local/bin", "/home/gitlab-runner/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "~/.cargo/bin", "/snap/bin")
+
+
+def find_bin(name):
+    """(path, dir-to-add-to-PATH or None): PATH first, then the places the CI users keep shells (gitlab-runner ~/.local/bin for nu on the box,
+    /opt/homebrew/bin on the Mac, whose gitrunner PATH lacks it)"""
+    p = shutil.which(name)
+    if p:
+        return p, None
+    for d in EXTRA_DIRS:
+        d = os.path.expanduser(d)
+        c = os.path.join(d, name)
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c, d
+    return None, None
 
 
 def make_shell_case(key):
@@ -371,12 +388,19 @@ def make_shell_case(key):
     def run(ctx, r):
         """the core typing / subshell path with <shell> as a subshell of the pane's bash: it starts (readiness proven by a probe line, not a
         fixed sleep), 12 lines typed at 10-25 ms with instant Enter arrive exactly, a pasted line + instant Enter arrives, Ctrl-C ends a long
-        command and the shell takes the next line, and `exit` returns to the pane's bash where the next command runs."""
-        if not shutil.which(binary):
-            r.skip("package %s not installed" % pkg)
+        command and the shell takes the next line, a nested `<shell> -c` / nested shell works, and `exit` returns to the pane's bash where the
+        next command runs. fish adds: autosuggestions never steal keys, fish_postexec saw the exact lines; nu adds: its own hooks/bootstrap
+        (plain `nu` with the scratch config, so Phosphor's nushell bootstrap path runs) and `nu -c`."""
+        path, adddir = find_bin(binary)
+        if not path:
+            r.skip("package %s not installed (looked on PATH and in %s)" % (pkg, ", ".join(EXTRA_DIRS)))
         p, f, g, h = "sh_%s_probe.txt" % key, "sh_%s_ft.txt" % key, "sh_%s_pe.txt" % key, "sh_%s_cc.txt" % key
-        ctx.rm(p, f, g, h, "sh_%s_back.txt" % key)
-        cmd = "pwsh -NoLogo -NoProfile" if key == "pwsh" else ("nu --no-config-file" if key == "nu" else binary)
+        ctx.rm(p, f, g, h, "sh_%s_back.txt" % key, "sh_%s_x.txt" % key, "sh_%s_log.txt" % key)
+        if adddir:
+            ctx.be.type('export PATH="%s:$PATH"' % adddir, 12, enter=True)
+            time.sleep(0.5)
+            r.note("%s found at %s (not on the pane's PATH): its directory was added to PATH in the pane" % (key, path))
+        cmd = "pwsh -NoLogo -NoProfile" if key == "pwsh" else binary
         ctx.be.type(cmd, 12, enter=True)
         time.sleep(wait)
         ready = False
@@ -409,6 +433,46 @@ def make_shell_case(key):
             time.sleep(0.9)
         ctx.until(lambda: len(ctx.lines(g)) >= len(pexp), 12)
         exact(r, "%s: pasted lines + instant Enter" % key, pexp, ctx.lines(g))
+        x = "sh_%s_x.txt" % key
+        if key == "fish":
+            # autosuggestions must not steal keys: run a long command, then type a command sharing its prefix but ending differently
+            t1, t2 = ctx.tok(8).lower(), ctx.tok(8).lower()
+            ctx.be.type("echo AUTOSUGG_alpha_%s >> %s" % (t1, x), 12, enter=True)
+            ctx.until(lambda: ctx.lines(x), 5)
+            ctx.be.type("echo AUTOSUGG_beta_%s >> %s" % (t2, x), 25, enter=True)
+            ctx.until(lambda: len(ctx.lines(x)) >= 2, 5)
+            exact(r, "fish: autosuggestion (a history line sharing the typed prefix) did not change the executed line", ["AUTOSUGG_alpha_" + t1, "AUTOSUGG_beta_" + t2], ctx.lines(x))
+            t3 = ctx.tok(8).lower()
+            ctx.be.type("fish -c 'echo %s >> %s'" % (t3, x), 12, enter=True)
+            ctx.until(lambda: len(ctx.lines(x)) >= 3, 6)
+            exact(r, "fish: nested `fish -c`", ["AUTOSUGG_alpha_" + t1, "AUTOSUGG_beta_" + t2, t3], ctx.lines(x))
+            lg = os.path.join(ctx.prof.ctl, "fish_rec.log")
+            rec = open(lg, errors="replace").read() if os.path.exists(lg) else ""
+            if rec:
+                r.check(("echo AUTOSUGG_beta_%s >> %s" % (t2, x)) in [l.split("\t", 2)[-1] for l in rec.splitlines()],
+                        "fish_postexec log (fish_rec.log) lacks the exact typed line `echo AUTOSUGG_beta_%s ...`" % t2)
+            else:
+                r.note("fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)")
+        if key == "nu":
+            t1 = ctx.tok(8).lower()
+            ctx.be.type("nu -c '\"%s\" | save --append %s'" % (t1, x), 12, enter=True)
+            ctx.until(lambda: ctx.lines(x), 8)
+            exact(r, "nu: nested `nu -c`", [t1], ctx.lines(x))
+            ctx.be.type("nu", 12, enter=True)             # nested nushell
+            time.sleep(wait)
+            t2 = ctx.tok(8).lower()
+            ctx.be.type(app(t2, x), 12, enter=True)
+            ctx.until(lambda: len(ctx.lines(x)) >= 2, 8)
+            ctx.be.type("exit", 12, enter=True)
+            time.sleep(1.5)
+            t3 = ctx.tok(8).lower()
+            ctx.be.type(app(t3, x), 12, enter=True)
+            ctx.until(lambda: len(ctx.lines(x)) >= 3, 8)
+            exact(r, "nu: nested nu, exit to the outer nu, next line", [t1, t2, t3], ctx.lines(x))
+            hits = [l for l in ctx.log_since(0).splitlines() if re.search(r"nu(shell)?\b.*(bootstrap|subshell|warpif)|(bootstrap|subshell|warpif).*nu(shell)?\b", l, re.I)]
+            r.metric("app_log_nu_bootstrap_lines", len(hits))
+            for l in hits[:4]:
+                r.note("nu app log: " + l[:200])
         # Ctrl-C
         ctx.be.type(slp, 12, enter=True)
         time.sleep(1.5)
