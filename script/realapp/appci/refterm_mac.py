@@ -6,7 +6,7 @@ import atexit, os, signal, subprocess, time
 
 TERMINAL_PATH = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
 
-_state = {"snapshotted": False, "was_running": False, "pre_pid": None, "pid": None, "run": None}
+_state = {"snapshotted": False, "was_running": False, "pre_pid": None, "pid": None, "run": None, "t0": None}
 
 
 def terminal_pids():
@@ -28,7 +28,7 @@ def snapshot(run):
     if _state["snapshotted"]:
         return
     pre = terminal_pids()
-    _state.update(snapshotted=True, was_running=bool(pre), pre_pid=pre[0] if pre else None, run=run)
+    _state.update(snapshotted=True, was_running=bool(pre), pre_pid=pre[0] if pre else None, run=run, t0=time.time())
     atexit.register(quit_if_ours)
 
 
@@ -55,9 +55,24 @@ def note_launched(run):
             f.write("terminal %d\n" % pids[0])
 
 
+def _started_epoch(pid):
+    """process start time (epoch s) from `ps -o lstart=`, or None"""
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5,
+                             env=dict(os.environ, LC_ALL="C")).stdout.strip()
+        return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y")) if out else None
+    except Exception:
+        return None
+
+
 def quit_if_ours():
     pid = _state["pid"]
-    if _state["was_running"] or not pid:
+    if not pid and _state["t0"] is not None and (not _state["was_running"] or _state["pre_pid"] not in terminal_pids()):
+        # `open -a Terminal` returns before the process exists, so note_launched can miss it (r18ck left one running): any Terminal.app
+        # that STARTED after this harness did was launched by this run's reference (lstart has 1 s resolution: allow it)
+        late = [p for p in terminal_pids() if (_started_epoch(p) or 0) >= _state["t0"] - 1 and p != _state["pre_pid"]]
+        pid = late[0] if len(late) == 1 else None
+    if not pid:
         return
     _state["pid"] = None
     if pid not in terminal_pids():          # gone already, or the PID now belongs to something else

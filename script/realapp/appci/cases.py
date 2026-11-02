@@ -139,7 +139,7 @@ class Ctx:
 
     def append_cmd(self, shell, tok, fname):
         if shell == "nu":
-            return '"%s" | save --append %s' % (tok, fname)
+            return '"%s\\n" | save --append %s' % (tok, fname)     # nu's save --append adds no newline: give each line one
         if shell == "pwsh":      # PowerShell: `>>` would write UTF-16 in 5.1; Add-Content writes ASCII lines
             return "Add-Content %s %s" % (fname, tok)
         return "echo %s >> %s" % (tok, fname)
@@ -214,6 +214,22 @@ class Ctx:
         dropped below `base`. Returns True after a clean exit."""
         if tok not in self.lines(rfile, remote=True):
             r.check(False, "%s: %s never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)" % (label, tok))
+            self.reset()
+            return False
+        # #1481 follow-up (r18ck): `tok` proves a remote shell was in front at SOME point, not that one still is (a nested ssh that failed
+        # left one level, and the second `exit` closed the last LOCAL pane, quitting the app). Prove it again, now, before EVERY exit:
+        # a fresh token must land in the REMOTE home, never the local one.
+        probe = "w" + self.tok(8)
+        self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
+        def local_where():          # `~` in the LOCAL shell is the scratch home, not the work dir that lines() reads
+            try:
+                return open(os.path.join(self.prof.home, ".appci_where"), errors="replace").read().split()
+            except OSError:
+                return []
+        self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout)
+        if probe not in self.lines(".appci_where", remote=True):
+            where = "the LOCAL shell" if probe in local_where() else "no shell"
+            r.check(False, "%s: before `exit`, a fresh probe ran in %s, not the remote one: `exit` NOT typed; stopping" % (label, where))
             self.reset()
             return False
         count = (lambda: self.prof.prompts(remote=True)) if level else self.prompts
