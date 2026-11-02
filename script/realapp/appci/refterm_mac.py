@@ -1,14 +1,12 @@
-"""macOS reference terminal plumbing (#1485): the per-run .terminal window-settings document and Terminal.app lifecycle.
-
-The reference window must close itself when its shell exits (shellExitAction = 0), and a Terminal.app that THIS run launched is quit at
-teardown by its exact PID (SIGTERM, then SIGKILL). A Terminal.app that was already running (someone's windows) is never quit.
-No Apple Events, no change to com.apple.Terminal's preferences by the harness itself, no pgrep/pkill: PIDs come from `ps -A -o pid=,comm=`."""
-import atexit, os, plistlib, shlex, signal, subprocess, time
+"""macOS reference terminal lifecycle (#1485): a Terminal.app that THIS run launched is quit at the end by its exact PID (SIGTERM, then
+SIGKILL), which closes every reference window (the account has no saved state). A Terminal.app that was already running (someone's
+windows) is never quit. No Apple Events, no Terminal preference changes (no .terminal profile import), no pgrep/pkill: PIDs come from
+`ps -A -o pid=,comm=`."""
+import atexit, os, signal, subprocess, time
 
 TERMINAL_PATH = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
-SHELL_EXIT_CLOSE = 0        # Terminal's shellExitAction: 0 = close the window, 1 = close only if the shell exited cleanly, 2 = keep it
 
-_state = {"snapshotted": False, "was_running": False, "pid": None, "run": None}
+_state = {"snapshotted": False, "was_running": False, "pre_pid": None, "pid": None, "run": None}
 
 
 def terminal_pids():
@@ -29,18 +27,15 @@ def snapshot(run):
     """call once at harness start, BEFORE any reference launch: was Terminal.app already running?"""
     if _state["snapshotted"]:
         return
-    _state.update(snapshotted=True, was_running=bool(terminal_pids()), run=run)
+    pre = terminal_pids()
+    _state.update(snapshotted=True, was_running=bool(pre), pre_pid=pre[0] if pre else None, run=run)
     atexit.register(quit_if_ours)
 
 
-def write_settings(path, name, cwd, home, ctl, cols=120, rows=30):
-    """a Window Settings document: Terminal opens it (`open -a Terminal file.terminal`) as a window running CommandString under the
-    login shell, and closes that window when the shell exits."""
-    cmd = "cd %s && exec env HOME=%s ZDOTDIR=%s PA_CTL=%s zsh -i" % tuple(shlex.quote(x) for x in (cwd, home, home, ctl))
-    doc = {"name": name, "type": "Window Settings", "ProfileCurrentVersion": 2.09, "CommandString": cmd,
-           "RunCommandAsShell": True, "shellExitAction": SHELL_EXIT_CLOSE, "columnCount": cols, "rowCount": rows}
-    with open(path, "wb") as f:
-        plistlib.dump(doc, f, fmt=plistlib.FMT_XML)
+def left_open_note():
+    if _state["was_running"]:
+        return "reference windows left open: Terminal was already running (pid %s)" % _state["pre_pid"]
+    return None
 
 
 def note_launched(run):

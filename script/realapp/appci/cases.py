@@ -771,20 +771,30 @@ class RefTerm:
                 pass
 
 
+def ref_note(ctx, r):
+    """#1485: when Terminal.app was already running, its reference windows are left open (never quit someone's Terminal)"""
+    import refterm_mac
+    n = refterm_mac.left_open_note()
+    if n:
+        r.note(n)
+
+
 def ref_terminal(ctx):
     """Linux: foot (Wayland) when installed, else xterm (via XWayland under the Wayland session, native under X11).
     macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
     home = ctx.prof.home
     if ctx.be.name == "mac":
         # NO Apple Events: `tell application "Terminal" ... do script` needs an Automation grant (a TCC prompt nobody answers in CI; it hung
-        # 30 s per sample in run 3015802940). A .terminal window-settings document opened with LaunchServices needs none, and carries
-        # shellExitAction=close so the window goes away with its shell (#1485: bare .command windows piled up as "[Process completed]").
-        # Driven by htype2 under the frontmost guard.
+        # 30 s per sample in run 3015802940). A .command file opened with LaunchServices needs none (and a .terminal document would import
+        # a profile into com.apple.Terminal's prefs: not allowed). Driven by htype2 under the frontmost guard. Windows are cleaned up by
+        # quitting a Terminal.app this run launched, by exact PID (#1485, refterm_mac).
         import refterm_mac
         ctx.ref_reason = None
         refterm_mac.snapshot(ctx.run)   # normally already done at harness start; idempotent
-        cmdf = os.path.join(ctx.prof.home, "ref_terminal.terminal")
-        refterm_mac.write_settings(cmdf, "phosphor-ref-%d" % os.getpid(), ctx.W, home, ctx.prof.ctl)
+        cmdf = os.path.join(ctx.prof.home, "ref_terminal.command")
+        with open(cmdf, "w") as f:
+            f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, home, ctx.prof.ctl))
+        os.chmod(cmdf, 0o755)
         subprocess.run(["xattr", "-c", cmdf], capture_output=True)
         rr = subprocess.run(["open", "-a", "Terminal", cmdf], capture_output=True, timeout=20)
         if rr.returncode != 0:
@@ -805,8 +815,8 @@ def ref_terminal(ctx):
         ctx.be.guard_override = "Terminal"
 
         def close():
-            # never Cmd-W/Q: typing `exit` ends the shell and the .terminal document's shellExitAction closes the window. If the exit were
-            # lost the shell stays live; a Terminal.app this run launched is quit by exact PID at the end of the run (refterm_mac)
+            # never Cmd-W/Q: `exit` ends the shell; the window itself goes when a Terminal.app this run launched is quit by exact PID at
+            # the end of the run (refterm_mac), which also removes a shell whose exit was lost
             try:
                 ctx.be.type("exit", 12, enter=True)
             except Exception:
@@ -814,7 +824,7 @@ def ref_terminal(ctx):
             time.sleep(0.8)
             ctx.be.guard_override = None
             ctx.be.refocus()
-        return RefTerm("Terminal.app (.terminal via open)", close=close)
+        return RefTerm("Terminal.app (.command via open)", close=close)
     disp, wl = os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY")
     env = dict(os.environ, HOME=home)
     if wl and shutil.which("foot") and ctx.be.name == "wayland":
@@ -883,6 +893,8 @@ def c_key_loss(ctx, r):
         ctx.reset()
     ref = ref_terminal(ctx)
     if ref:
+        ref_note(ctx, r)
+    if ref:
         try:
             time.sleep(2.5)
             for inj in injections:
@@ -921,6 +933,8 @@ def run_enter_control(ctx, r, n):
     if ctx.enter_control is not None:
         return ctx.enter_control or None
     ref = ref_terminal(ctx)
+    if ref:
+        ref_note(ctx, r)
     if not ref:
         ctx.enter_control = {}
         r.note("enter control: no reference terminal (%s): a lost Enter in Phosphor cannot be attributed" % (getattr(ctx, "ref_reason", None) or "unavailable"))
@@ -1011,6 +1025,8 @@ def c_lat_enter(ctx, r):
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))
     ctx.reset()
     rs, ref = [], ref_terminal(ctx)
+    if ref:
+        ref_note(ctx, r)
     if ref:
         try:
             time.sleep(2.5)
