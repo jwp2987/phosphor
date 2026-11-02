@@ -461,33 +461,9 @@ impl ShellType {
             .collect()
     }
 
-    /// Returns the syntax to use to run a second command only if the first one succeeds.
-    /// NOTE: Guarded with `cfg(unix)` b/c PowerShell didn't have the `&&` operator until v7. On
-    /// Unix, we can safely assume v7, but Windows comes with PowerShell v5 out of the box.
-    #[cfg(unix)]
-    pub fn and_combiner(self) -> &'static str {
-        match self {
-            ShellType::Bash | ShellType::Zsh | ShellType::PowerShell => " && ",
-            ShellType::Fish => "; and ",
-            // nushell has no `&&`, so there is no string that short-circuits. `;` runs the second
-            // command regardless, which is NOT the same: nothing calls this today, and a caller
-            // that needs real short-circuiting for nushell must build an `if` block instead.
-            ShellType::Nu => " ; ",
-        }
-    }
-
     /// Returns whether the current shell supports native shell completions.
     fn supports_native_shell_completions(&self) -> bool {
         matches!(self, ShellType::Zsh)
-    }
-
-    /// Returns the syntax to run a second command regardless if the first one succeeds.
-    pub fn or_combiner(self) -> &'static str {
-        match self {
-            ShellType::Bash | ShellType::Zsh | ShellType::PowerShell => " ; ",
-            ShellType::Fish => "; or ",
-            ShellType::Nu => " ; ",
-        }
     }
 
     /// Given the output of the `alias` command, returns a map of alias keys to values.

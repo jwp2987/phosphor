@@ -49,18 +49,6 @@ pub struct JsonOutput {
     pub filter: Option<JqFilter>,
 }
 
-impl JsonOutput {
-    /// Returns true if this argument bundle requires JSON output regardless
-    /// of the user-selected `--output-format`.
-    ///
-    /// For example, `--jq` runs against JSON, so setting it implies the
-    /// command must fetch and process JSON even when the user asked for
-    /// pretty/text output.
-    pub fn force_json_output(&self) -> bool {
-        self.filter.is_some()
-    }
-}
-
 /// Parse and compile a jq filter source string.
 ///
 /// Used as a clap `value_parser` so invalid filters (syntax errors, unknown

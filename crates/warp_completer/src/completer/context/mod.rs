@@ -160,13 +160,6 @@ impl PathSeparators {
             all: Self::UNIX_SEPARATORS,
         }
     }
-
-    pub fn for_windows() -> Self {
-        Self {
-            main: '\\',
-            all: Self::WINDOWS_SEPARATORS,
-        }
-    }
 }
 
 #[async_trait]

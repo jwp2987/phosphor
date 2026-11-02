@@ -184,20 +184,7 @@ pub struct ThemeNameParams {
     pub theme_name: String,
 }
 
-pub type KeybindingGetParams = BindingNameParams;
-pub type KeybindingListParams = EmptyParams;
-pub type SettingGetParams = KeyParams;
 pub type SettingListParams = NamespaceParams;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActionListResult {
-    pub actions: Vec<ActionMetadata>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActionInspectResult {
-    pub action: ActionMetadata,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveTargetChain {
@@ -298,15 +285,6 @@ pub struct SurfaceSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceListResult {
     pub surfaces: Vec<SurfaceSummary>,
-}
-
-/// Typed success payloads for catalog actions that need stable structured data.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ControlResult {
-    Acknowledgement { action: ActionKind },
-    Metadata { data: serde_json::Value },
-    Content { data: serde_json::Value },
 }
 
 /// Top-level request sent by a local-control client to a Zap instance.

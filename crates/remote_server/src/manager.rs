@@ -2755,24 +2755,6 @@ impl RemoteServerManager {
         )
     }
 
-    /// Sends an incremental `ResyncCodebase` to the daemon owning `repo_path`.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn trigger_codebase_incremental_sync(
-        &mut self,
-        host_id: HostId,
-        repo_path: String,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
-        self.mutate_codebase_index(
-            host_id,
-            repo_path,
-            RemoteCodebaseIndexUpdateOperation::Sync {
-                is_full_sync: false,
-            },
-            ctx,
-        )
-    }
-
     /// Drops the daemon's index for `repo_path`.
     #[cfg(not(target_family = "wasm"))]
     pub fn drop_codebase_index(

@@ -13,7 +13,6 @@ use crate::agent::OutputFormat;
 #[cfg(windows)]
 mod process_handle;
 
-pub mod scope;
 pub mod skill;
 
 pub mod agent;
@@ -243,11 +242,6 @@ impl Args {
     /// The requested subcommand, if any.
     pub fn command(&self) -> Option<&Command> {
         self.command.as_ref()
-    }
-
-    /// Args for the main Zap application, if not running a subcommand.
-    pub fn app_args(&self) -> &AppArgs {
-        &self.args
     }
 
     /// Extract the main Zap application args.

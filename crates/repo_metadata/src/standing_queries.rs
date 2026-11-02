@@ -258,10 +258,6 @@ impl StandingQueryResultsDelta {
     pub fn project_skills_changed(&self) -> bool {
         !self.upserted_project_skills.is_empty() || !self.removed_project_skills.is_empty()
     }
-
-    pub fn project_rules_changed(&self) -> bool {
-        !self.upserted_project_rules.is_empty() || !self.removed_project_rules.is_empty()
-    }
 }
 
 #[cfg(test)]
