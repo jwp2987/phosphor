@@ -636,7 +636,6 @@ fn wrapper_forwards_branches_received_from_the_local_backend() {
 
         let local = wrapper.read(&app, |model, _| match model {
             DiffStateModel::Local(handle) => handle.clone(),
-            #[cfg(not(target_family = "wasm"))]
             DiffStateModel::Remote(_) => {
                 panic!("DiffStateModel::new should build a local backend")
             }

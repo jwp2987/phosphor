@@ -84,9 +84,6 @@ pub(crate) fn layout_mermaid_block_for_test(
 /// - URLs: `http://` or `https://` prefixed paths
 /// - Absolute paths: paths starting with `/`
 /// - Relative paths: all other paths, resolved relative to the document location
-///
-/// Note: Path canonicalization is not available on WASM targets.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_asset_source_relative_to_directory(
     source: &str,
     base_directory: Option<&Path>,
@@ -119,21 +116,6 @@ fn resolve_asset_source(source: &str, base_path: Option<&Path>) -> AssetSource {
     let base_directory = base_path.map(|base| base.parent().unwrap_or(base));
     resolve_asset_source_relative_to_directory(source, base_directory)
         .with_local_file_content_version()
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn resolve_asset_source_relative_to_directory(
-    source: &str,
-    _base_directory: Option<&Path>,
-) -> AssetSource {
-    if source.starts_with("http://") || source.starts_with("https://") {
-        asset_cache::url_source(source)
-    } else {
-        AssetSource::LocalFile {
-            path: source.to_string(),
-            content_version: None,
-        }
-    }
 }
 
 /// Default height multiplier for images when no dimensions are specified.

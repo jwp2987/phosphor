@@ -1,5 +1,13 @@
 # `#[allow(dead_code)]` audit (#207)
 
+> **Update (#1467, 2026-11):** the project now pulls concepts, not code, from upstream and builds no
+> wasm target, so "kept for re-pin parity" and wasm-only entries below are superseded. Removed since:
+> `code/file_tree/snapshot*` (#536), the wasm-only `code/wasm.rs` and `local_code_editor_wasm.rs`,
+> `crates/lsp` `server_repo_watcher*` (with `FeatureFlag::LSPAsATool`), `code/editor/embedded_comment*`
+> (with `FeatureFlag::EmbeddedCodeReviewComments`), the code footer's never-constructed Workspace mode,
+> and the `cfg(target_family = "wasm")` / `cfg(target_arch = "wasm32")` branches in `app/src/code*`,
+> `app/src/editor`, `app/src/notebooks`, `crates/lsp` and `crates/editor` (outside `render/model`).
+
 This is the full inventory #207 asked for: every `#![allow(dead_code)]` /
 `#[allow(dead_code)]` site in the tree at the time of this audit, classified
 as **LEGITIMATE** (genuinely unused on purpose), **HIDES-UNWIRED-PORT** (real

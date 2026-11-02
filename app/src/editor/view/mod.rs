@@ -4899,7 +4899,6 @@ impl EditorView {
 
         // The primary selection's owner can stall a read for seconds, so an editor whose owner
         // reads the clipboard off the UI thread (the terminal input) gets a request, not a read.
-        #[cfg(not(target_family = "wasm"))]
         if self.delegate_paste_handling {
             ctx.emit(Event::MiddleClickPasteRequested);
             ctx.focus_self();

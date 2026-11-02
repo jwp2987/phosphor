@@ -7,9 +7,6 @@ use std::{sync::Arc, time::Duration};
 use url::Url;
 use warp_core::context_flag::ContextFlag;
 
-#[cfg(target_family = "wasm")]
-use crate::uri::web_intent_parser::open_url_on_desktop;
-
 use warp_editor::{
     editor::NavigationKey,
     model::{CoreEditorModel, RichTextEditorModel},
@@ -73,10 +70,7 @@ use crate::{
     report_if_error, safe_info, send_telemetry_from_ctx,
     server::{
         ids::{ClientId, ServerId, SyncId},
-        telemetry::{
-            NotebookActionEvent, NotebookTelemetryMetadata, ObjectTelemetryMetadata,
-            TelemetryEvent, TelemetryObjectType,
-        },
+        telemetry::{NotebookActionEvent, NotebookTelemetryMetadata, TelemetryEvent},
     },
     settings::{
         app_installation_detection::{UserAppInstallDetectionSettings, UserAppInstallStatus},
@@ -1017,17 +1011,6 @@ impl NotebookView {
                 .as_ref(ctx)
                 .markdown_table_count(ctx),
         )
-    }
-
-    #[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
-    fn generic_telemetry_metadata(&self, ctx: &ViewContext<Self>) -> ObjectTelemetryMetadata {
-        let notebook_data = self.active_notebook_data.as_ref(ctx);
-        ObjectTelemetryMetadata {
-            object_type: TelemetryObjectType::Notebook,
-            object_uid: notebook_data.id().and_then(SyncId::into_server),
-            space: notebook_data.space(ctx).map(Into::into),
-            team_uid: notebook_data.owner(ctx).and_then(Into::into),
-        }
     }
 
     /// Send a [`NotebookTelemetryAction`] telemetry event.
@@ -2282,19 +2265,8 @@ impl TypedActionView for NotebookView {
                 object_type_and_id,
                 new_space,
             } => self.move_to_team_owner(*object_type_and_id, *new_space, ctx),
-            #[cfg(target_family = "wasm")]
-            NotebookAction::OpenLinkOnDesktop(url) => {
-                send_telemetry_from_ctx!(
-                    TelemetryEvent::WebObjectOpenedOnDesktop {
-                        object_metadata: self.generic_telemetry_metadata(ctx)
-                    },
-                    ctx
-                );
-                open_url_on_desktop(url);
-            }
-            #[cfg(not(target_family = "wasm"))]
             NotebookAction::OpenLinkOnDesktop(_) => {
-                // No-op when not on wasm
+                // Handled by the web build only; a no-op on native.
             }
             NotebookAction::Export => self.export(ctx),
             NotebookAction::AttachPlanAsContext(id) => {

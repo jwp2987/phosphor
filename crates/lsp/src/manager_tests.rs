@@ -6,7 +6,6 @@ use super::*;
 // jwp2987/phosphor#680: quitting waits for language servers to shut down, but
 // that wait must be bounded so a wedged server cannot hang the app's exit.
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn shutdown_wait_returns_as_soon_as_every_server_is_done() {
     let (tx, rx) = mpsc::channel();
@@ -23,7 +22,6 @@ fn shutdown_wait_returns_as_soon_as_every_server_is_done() {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn shutdown_wait_is_bounded_by_the_grace_period_when_a_server_hangs() {
     let (tx, rx) = mpsc::channel();
@@ -48,7 +46,6 @@ fn shutdown_wait_is_bounded_by_the_grace_period_when_a_server_hangs() {
     drop(tx);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn shutdown_wait_stops_early_when_every_sender_is_gone() {
     let (tx, rx) = mpsc::channel::<()>();

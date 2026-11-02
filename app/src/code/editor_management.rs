@@ -255,7 +255,6 @@ struct CodePaneData {
     locator: PaneViewLocator,
 }
 
-// Allow dead_code here for wasm compilation
 #[allow(dead_code)]
 pub enum CodeManagerEvent {
     EditCompleted { action_id: AIAgentActionId },

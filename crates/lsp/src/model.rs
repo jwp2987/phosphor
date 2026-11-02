@@ -12,12 +12,8 @@ use lsp_types::{
     FormattingOptions, NumberOrString, ProgressParams, ProgressParamsValue,
     PublishDiagnosticsParams, WorkDoneProgress,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use simple_logger::manager::LogManager;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 use warp_core::report_error;
-#[cfg(not(target_arch = "wasm32"))]
 use warpui_core::SingletonEntity;
 use warpui_core::r#async::executor::Background;
 use warpui_core::{Entity, ModelContext};
@@ -29,7 +25,6 @@ use crate::types::{
     TextDocumentContentChangeEvent, TextEdit, WatchedFileChangeEvent,
 };
 use crate::{LspServerConfig, LspServerLogLevel, LspService};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::{LspServiceInitializationResult, spawn_lsp_service};
 
 static NEXT_LANGUAGE_SERVER_ID: AtomicUsize = AtomicUsize::new(0);
@@ -52,7 +47,6 @@ impl Default for LanguageServerId {
     }
 }
 
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub enum LspState {
     Stopped {
         manually_stopped: bool,
@@ -71,7 +65,6 @@ pub enum LspState {
 }
 
 impl LspState {
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn name(&self) -> &str {
         match self {
             Self::Stopped { .. } => "stopped",
@@ -243,7 +236,6 @@ impl LspServerModel {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start(&mut self, ctx: &mut ModelContext<Self>) -> Result<()> {
         match &self.server_state {
             LspState::Stopped { .. } => {
@@ -314,7 +306,6 @@ impl LspServerModel {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn stop(&mut self, manually_stopped: bool, ctx: &mut ModelContext<Self>) -> Result<()> {
         match &self.server_state {
             LspState::Available { service, .. } => {
@@ -341,7 +332,6 @@ impl LspServerModel {
 
     /// Manually starts the server and clears the manually_stopped flag.
     /// This should be called when the user explicitly wants to start the server.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn manual_start(&mut self, ctx: &mut ModelContext<Self>) -> Result<()> {
         match &self.server_state {
             LspState::Stopped { .. } | LspState::Failed { .. } => {
@@ -372,17 +362,8 @@ impl LspServerModel {
         }
     }
 
-    /// Manually starts the server (WASM stub).
-    #[cfg(target_arch = "wasm32")]
-    pub fn manual_start(&mut self, _ctx: &mut ModelContext<Self>) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Start is not supported in WASM environments"
-        ))
-    }
-
     /// Restarts the LSP server by stopping it and starting it again.
     /// The server will emit `LspEvent::Stopped` followed by `LspEvent::Started` on success.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn restart(&mut self, ctx: &mut ModelContext<Self>) {
         log::info!("Restarting LSP server: {}", self.config.server_name());
 
@@ -420,9 +401,6 @@ impl LspServerModel {
             }
         }
     }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn restart(&mut self, _ctx: &mut ModelContext<Self>) {}
 
     /// Different from stop -- on terminate, we won't update the server state and emit events based on server response.
     fn terminate(&mut self) {
@@ -468,18 +446,6 @@ impl LspServerModel {
                 false
             }
         }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn start(&mut self, _ctx: &mut ModelContext<Self>) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Start is not supported in WASM environments"
-        ))
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn stop(&mut self, _manually_stopped: bool, _ctx: &mut ModelContext<Self>) -> Result<()> {
-        Ok(())
     }
 
     pub fn document_is_open(&self, path: &PathBuf) -> Result<bool> {
@@ -554,7 +520,6 @@ impl LspServerModel {
         })
     }
 
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn handle_server_notification(
         &mut self,
         notification: ServerNotificationEvent,
@@ -579,7 +544,6 @@ impl LspServerModel {
         }
     }
 
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn handle_progress_update(
         &mut self,
         progress_params: ProgressParams,

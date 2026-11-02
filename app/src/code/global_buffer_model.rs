@@ -466,14 +466,11 @@ impl GlobalBufferModel {
     ) {
         ctx.spawn(async {}, move |me, _, ctx| {
             me.remove_deallocated_buffers(ctx);
-            #[cfg(not(target_family = "wasm"))]
             if trim {
                 ctx.background_executor()
                     .spawn(async { crate::alloc::trim_free_memory() })
                     .detach();
             }
-            #[cfg(target_family = "wasm")]
-            let _ = trim;
         });
     }
 

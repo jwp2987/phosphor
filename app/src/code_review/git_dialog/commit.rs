@@ -38,7 +38,6 @@ use crate::{
     view_components::action_button::{ActionButton, ButtonSize, SecondaryTheme},
 };
 
-#[cfg(not(target_family = "wasm"))]
 use crate::code::buffer_location::RemotePath;
 
 /// What should happen after a successful commit.
@@ -426,7 +425,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 
     // Remote repos run the whole commit chain on the daemon over one RPC
     // instead of executing git against a (nonexistent) local path (#116).
-    #[cfg(not(target_family = "wasm"))]
     if let Some(remote) = me.remote().cloned() {
         start_confirm_remote(remote, message, intent, include_unstaged, branch_name, ctx);
         return;
@@ -479,7 +477,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 /// Sends the commit chain to the remote host's daemon and surfaces the same
 /// toasts as the local path. Mirrors `start_confirm`'s local branch; the daemon
 /// runs the equivalent `run_commit_chain` host-local.
-#[cfg(not(target_family = "wasm"))]
 fn start_confirm_remote(
     remote: RemotePath,
     message: String,

@@ -27,7 +27,6 @@ use serde::{Deserialize, Serialize};
 
 /// The source from which the user enabled an LSP server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub enum LspEnablementSource {
     #[serde(rename = "init_flow")]
     InitFlow,
@@ -39,7 +38,6 @@ pub enum LspEnablementSource {
 
 /// The control action the user performed on an LSP server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub enum LspControlActionType {
     #[serde(rename = "open_logs")]
     OpenLogs,
@@ -59,7 +57,6 @@ pub enum LspControlActionType {
 /// module docs — so the variants exist purely as the shape the call sites pass
 /// to `send_telemetry_from_ctx!`.
 #[derive(Debug)]
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[allow(dead_code)]
 pub enum LspTelemetryEvent {
     /// User enabled an LSP server for a workspace.

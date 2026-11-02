@@ -1,24 +1,17 @@
-#[cfg(not(target_family = "wasm"))]
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::blocklist::inline_action::code_diff_view::DiffSessionType;
 use ai::diff_validation::DiffType;
-#[cfg(not(target_family = "wasm"))]
 use warp_files::{ExpectedDiskState, FileModel, FileModelEvent};
-#[cfg(not(target_family = "wasm"))]
 use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
-#[cfg(not(target_family = "wasm"))]
 use warp_util::file::FileSaveError;
 use warp_util::standardized_path::StandardizedPath;
 use warpui::elements::ChildView;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
-#[cfg(not(target_family = "wasm"))]
 use warpui::{ModelContext, SingletonEntity};
 
 use super::DiffResult;
@@ -31,17 +24,10 @@ use crate::editor::InteractionState;
 
 pub enum InlineDiffViewEvent {
     DiffStatusUpdated,
-    #[cfg(not(target_family = "wasm"))]
     FileLoaded,
-    #[cfg(not(target_family = "wasm"))]
     FileSaved,
-    #[cfg(not(target_family = "wasm"))]
-    FailedToSave {
-        error: Rc<FileSaveError>,
-    },
-    DiffAccepted {
-        diff: Rc<DiffResult>,
-    },
+    FailedToSave { error: Rc<FileSaveError> },
+    DiffAccepted { diff: Rc<DiffResult> },
     UserEdited,
 }
 
@@ -71,10 +57,8 @@ pub struct InlineDiffView {
     /// [`Self::register_file`]. `None` (WASM, or before registration) is
     /// treated the same as `Local` by [`Self::write_action`]: there is no
     /// backing file either way, so nothing is ever dispatched.
-    #[cfg(not(target_family = "wasm"))]
     session_type: Option<DiffSessionType>,
     /// Whether the diff is a new file creation (for revert: delete instead of restore).
-    #[cfg(not(target_family = "wasm"))]
     is_new_file: bool,
     /// What the accept actually did to the file, recorded at accept time.
     /// This is the pre-image a revert asserts: a revert undoes the accept, so
@@ -84,12 +68,10 @@ pub struct InlineDiffView {
     ///
     /// A `RefCell` because the accept path (`DiffViewer::accept_and_save_diff`)
     /// takes `&self`.
-    #[cfg(not(target_family = "wasm"))]
     accepted_action: RefCell<Option<AcceptedAction>>,
     /// Set once a revert has dispatched its write, so that the write's
     /// asynchronous refusal is reported as a failed *revert* rather than as a
     /// failed save of the accept.
-    #[cfg(not(target_family = "wasm"))]
     revert_dispatched: bool,
     /// Swallows the *next* `FileSaved`/`FailedToSave` event for
     /// [`Self::backing_file_id`] instead of forwarding it as
@@ -103,7 +85,6 @@ pub struct InlineDiffView {
     /// (and left `false`) by the very next event for this file, whichever it
     /// is. `finish_rename_revert` reports the real, combined outcome once both
     /// writes have resolved.
-    #[cfg(not(target_family = "wasm"))]
     suppress_next_backing_file_event: Cell<bool>,
     /// The file's text exactly as the edit was proposed against — raw, with
     /// its own line endings — which is what a revert puts back. Set with
@@ -115,14 +96,12 @@ pub struct InlineDiffView {
     /// endings — every revert of a CRLF file was refused (#672). For a file
     /// with mixed endings it would also have rewritten the minority lines.
     /// The TUI's `revert_plan` restores `diff.base.content` the same way.
-    #[cfg(not(target_family = "wasm"))]
     original_content: Option<String>,
 }
 
 /// What an accept actually did to the file, recorded so a later revert knows
 /// both the pre-image to assert and the inverse write(s) to make. See
 /// [`InlineDiffView::accepted_action`].
-#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, Debug)]
 enum AcceptedAction {
     /// The accept wrote `content` at the registered path: a creation, or an
@@ -155,7 +134,6 @@ impl InlineDiffView {
         file_path: Option<StandardizedPath>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
-        #[cfg(not(target_family = "wasm"))]
         let is_new_file = matches!(diff_type, Some(DiffType::Create { .. }));
 
         ctx.subscribe_to_view(&editor, |me, _view, event, ctx| match event {
@@ -180,17 +158,11 @@ impl InlineDiffView {
             file_path,
             was_edited: false,
             backing_file_id: None,
-            #[cfg(not(target_family = "wasm"))]
             session_type: None,
-            #[cfg(not(target_family = "wasm"))]
             is_new_file,
-            #[cfg(not(target_family = "wasm"))]
             accepted_action: RefCell::new(None),
-            #[cfg(not(target_family = "wasm"))]
             revert_dispatched: false,
-            #[cfg(not(target_family = "wasm"))]
             suppress_next_backing_file_event: Cell::new(false),
-            #[cfg(not(target_family = "wasm"))]
             original_content: None,
         };
 
@@ -211,7 +183,6 @@ impl InlineDiffView {
     /// `RemoteServerClient`.
     ///
     /// This must be called after construction for non-WASM environments.
-    #[cfg(not(target_family = "wasm"))]
     pub fn register_file(&mut self, session_type: &DiffSessionType, ctx: &mut ViewContext<Self>) {
         let Some(file_path) = &self.file_path else {
             return;
@@ -261,26 +232,17 @@ impl InlineDiffView {
     /// Whether [`Self::restore_diff_base`] could write anything: a file is
     /// registered and the accept recorded what it did there.
     pub fn can_revert(&self) -> bool {
-        #[cfg(not(target_family = "wasm"))]
-        {
-            self.backing_file_id.is_some() && self.accepted_action.borrow().is_some()
-        }
-        #[cfg(target_family = "wasm")]
-        {
-            false
-        }
+        self.backing_file_id.is_some() && self.accepted_action.borrow().is_some()
     }
 
     /// Records the file's raw text as the edit was proposed against it (the
     /// diff base before LF normalisation): what a revert restores.
-    #[cfg(not(target_family = "wasm"))]
     pub fn set_original_content(&mut self, content: String) {
         self.original_content = Some(content);
     }
 
     /// Common registration logic: subscribes to events and sets the
     /// backing file ID after a file has been registered with `FileModel`.
-    #[cfg(not(target_family = "wasm"))]
     fn finish_file_registration(&mut self, file_id: FileId, ctx: &mut ViewContext<Self>) {
         let file_model = FileModel::handle(ctx);
 
@@ -359,7 +321,6 @@ impl InlineDiffView {
     /// [`pre_image_for_diff`], which needs no `AppContext` and is therefore the
     /// part that can be tested. What is left here is the plumbing: two handle
     /// dereferences and a clone.
-    #[cfg(not(target_family = "wasm"))]
     fn expected_disk_state(&self, ctx: &AppContext) -> Result<ExpectedDiskState, String> {
         // The diff base is the file's text as it was read when the edit was
         // proposed — LF-normalised by `CodeEditorModel::set_base`, which is why
@@ -390,20 +351,11 @@ impl InlineDiffView {
     /// than a move — and callers that report what happened (not just what the
     /// diff describes) must ask this, not [`DiffViewer::diff`], to get the
     /// remote case right.
-    #[cfg(not(target_family = "wasm"))]
     pub fn write_action(&self) -> FileWriteAction {
         let is_remote = matches!(self.session_type, Some(DiffSessionType::Remote(_)));
         resolve_write_action(self.diff_type.as_ref(), is_remote, self.file_path.as_ref())
     }
 
-    /// WASM never registers a backing file, so nothing is ever written; kept
-    /// only so callers outside this module do not need to `cfg`-gate the call.
-    #[cfg(target_family = "wasm")]
-    pub fn write_action(&self) -> FileWriteAction {
-        resolve_write_action(self.diff_type.as_ref(), false, self.file_path.as_ref())
-    }
-
-    #[cfg(not(target_family = "wasm"))]
     fn save_content(&self, ctx: &mut ViewContext<Self>) {
         let Some(file_id) = self.backing_file_id else {
             return;
@@ -438,7 +390,6 @@ impl InlineDiffView {
 
     /// The ordinary case: overwrite the registered path in place (a creation
     /// or an in-place update).
-    #[cfg(not(target_family = "wasm"))]
     fn dispatch_accept_write(
         &self,
         file_id: FileId,
@@ -477,7 +428,6 @@ impl InlineDiffView {
 
     /// A `DiffType::Delete`: remove the file, guarded against the content the
     /// diff was based on (the same pre-image an in-place write would assert).
-    #[cfg(not(target_family = "wasm"))]
     fn dispatch_accept_delete(
         &self,
         file_id: FileId,
@@ -513,7 +463,6 @@ impl InlineDiffView {
     /// deletion + update — see `diff_application::apply_v4a_update` — which
     /// never reaches this arm). Mirrors `PersistAction::Rename` in
     /// `tui_diff_storage`.
-    #[cfg(not(target_family = "wasm"))]
     fn dispatch_accept_rename(
         &self,
         file_id: FileId,
@@ -602,7 +551,6 @@ fn resolve_write_action(
 /// relationship to the file on disk is unknown, and writing it would be the very
 /// overwrite this guard exists to prevent. The caller surfaces the message
 /// instead of writing.
-#[cfg(not(target_family = "wasm"))]
 fn pre_image_for_diff(
     is_new_file: bool,
     base: Option<String>,
@@ -697,7 +645,6 @@ impl DiffViewer for InlineDiffView {
             });
         }
         // Save the current editor content to disk.
-        #[cfg(not(target_family = "wasm"))]
         self.save_content(ctx);
     }
 }
@@ -712,7 +659,6 @@ fn no_backing_file_message(path: &str) -> String {
 /// What [`InlineDiffView::restore_diff_base`] did. A revert is not done when
 /// this returns: callers must not record one until its outcome arrives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum RevertDispatch {
     /// A guarded write is in flight. Its outcome arrives later, exactly once, as
     /// [`InlineDiffViewEvent::FileSaved`] (the file was reverted) or
@@ -748,18 +694,6 @@ impl InlineDiffView {
         self.dispatch_guarded_revert(file_id, ctx)
     }
 
-    /// Nothing is ever registered on WASM, so `restore_diff_base` never gets
-    /// here; this only keeps the signature total.
-    #[cfg(target_family = "wasm")]
-    fn dispatch_guarded_revert(
-        &mut self,
-        _file_id: FileId,
-        _ctx: &mut ViewContext<Self>,
-    ) -> Result<RevertDispatch, String> {
-        Ok(RevertDispatch::NoBackingFile)
-    }
-
-    #[cfg(not(target_family = "wasm"))]
     fn dispatch_guarded_revert(
         &mut self,
         file_id: FileId,
@@ -879,7 +813,6 @@ impl InlineDiffView {
     /// *nothing* happened, when in fact the restore already did) but that the
     /// original was restored *and* the destination could not be removed, so
     /// both files now exist.
-    #[cfg(not(target_family = "wasm"))]
     fn finish_rename_revert(
         &mut self,
         restore_result: Result<(), Arc<FileSaveError>>,
@@ -959,7 +892,6 @@ impl InlineDiffView {
 }
 
 /// The single guarded write that undoes an accepted diff at one path.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, PartialEq, Eq)]
 enum RevertWrite {
     /// The accept created the file (or moved a file away from here); remove
@@ -974,7 +906,6 @@ enum RevertWrite {
 }
 
 /// The write(s) that undo an accept, in the order they must be applied.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, PartialEq, Eq)]
 enum RevertPlan {
     /// One guarded write at the registered path: undoes a creation, an
@@ -1038,7 +969,6 @@ enum RevertPlan {
 /// did to every CRLF file.
 ///
 /// `Err` is a refusal with a user-facing message; nothing is written.
-#[cfg(not(target_family = "wasm"))]
 fn revert_plan(
     is_new_file: bool,
     accepted: Option<AcceptedAction>,
@@ -1118,7 +1048,6 @@ fn revert_plan(
 /// Dispatches `write` through `FileModel`'s guarded operations. Its outcome —
 /// including a refusal because the file changed — arrives asynchronously as
 /// `FileModelEvent::FileSaved` / `FileModelEvent::FailedToSave`.
-#[cfg(not(target_family = "wasm"))]
 fn dispatch_revert_write(
     file_model: &mut FileModel,
     file_id: FileId,
@@ -1143,7 +1072,6 @@ fn dispatch_revert_write(
 /// both), or the error's own text otherwise. Shared by [`revert_failure`] and
 /// [`partial_rename_revert_failure`], which each wrap it in a different
 /// sentence.
-#[cfg(not(target_family = "wasm"))]
 fn failure_reason(error: &FileSaveError) -> String {
     match error {
         FileSaveError::Other(message) => message.clone(),
@@ -1159,7 +1087,6 @@ fn failure_reason(error: &FileSaveError) -> String {
 /// A guarded refusal (`FileSaveError::Other`) is a full sentence that already
 /// names the file and says it was left alone, so it is prefixed rather than
 /// wrapped in a second path. Anything else keeps its reason.
-#[cfg(not(target_family = "wasm"))]
 fn revert_failure(error: &FileSaveError) -> FileSaveError {
     FileSaveError::Other(format!(
         "Did not revert the agent's edit. {}",
@@ -1175,7 +1102,6 @@ fn revert_failure(error: &FileSaveError) -> FileSaveError {
 /// because it changed since the accept (or could not be removed for some
 /// other reason `error` names). A retry only has `destination` left to deal
 /// with; see [`AcceptedAction::PartiallyRevertedRename`].
-#[cfg(not(target_family = "wasm"))]
 fn partial_rename_revert_failure(
     original_path: &str,
     destination: &std::path::Path,
@@ -1207,7 +1133,7 @@ impl TypedActionView for InlineDiffView {
     type Action = ();
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
