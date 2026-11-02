@@ -369,7 +369,13 @@ class Profile:
         for l in self.read("rec.log", remote):
             p = l.split("\t", 2)
             if len(p) == 3 and p[0] == "C":
-                out.append((float(p[1]), p[2]))
+                try:
+                    ts = float(p[1])
+                except ValueError:
+                    # macOS /bin/bash 3.2 (the ssh test sshd's remote shell, force.sh) has no $EPOCHREALTIME: the rc logs an empty timestamp
+                    # (r18ct: "could not convert string to float: ''" killed ssh_connect_typing). Callers use order and text, never the epoch.
+                    ts = 0.0
+                out.append((ts, p[2]))
         return out
 
     def prompts(self, remote=False):
