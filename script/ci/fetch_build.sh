@@ -12,12 +12,22 @@ URL="$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/$APPCI_BUILD_JOB_ID/artifacts"
 Z="$(mktemp -t appci-build.XXXXXX)"; trap 'rm -f "$Z"' EXIT
 echo "fetch_build: downloading artifacts of build job $APPCI_BUILD_JOB_ID (pipeline ${APPCI_BUILD_PIPELINE_ID:-?}, commit ${APPCI_BUILD_SHA:-?})"
 code=$(curl -sS -L -o "$Z" -w '%{http_code}' --header "JOB-TOKEN: $CI_JOB_TOKEN" "$URL") || die "curl failed for $URL"
+# GitLab answers 404 to a JOB-TOKEN asking for another pipeline's job by id (first CI run, 2026-11-02: the build had
+# artifacts). The job token IS allowed the by-ref endpoint (latest successful pipeline of a ref + job name), so try
+# that next, then check below that what arrived is the job we were told to test.
+if [ "$code" != 200 ] && [ -n "${APPCI_BUILD_REF:-}" ] && [ -n "${APPCI_BUILD_JOB_NAME:-}" ]; then
+  REF_ENC=$(printf '%s' "$APPCI_BUILD_REF" | sed 's#/#%2F#g')
+  URL="$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/artifacts/$REF_ENC/download?job=$APPCI_BUILD_JOB_NAME"
+  echo "fetch_build: by-id fetch refused (HTTP $code); trying latest successful $APPCI_BUILD_JOB_NAME on $APPCI_BUILD_REF"
+  code=$(curl -sS -L -o "$Z" -w '%{http_code}' --header "JOB-TOKEN: $CI_JOB_TOKEN" "$URL") || die "curl failed for $URL"
+  BY_REF=1
+fi
 if [ "$code" != 200 ] && [ -n "${APPCI_API_TOKEN:-}" ]; then
   code=$(curl -sS -L -o "$Z" -w '%{http_code}' --header "PRIVATE-TOKEN: $APPCI_API_TOKEN" "$URL") || die "curl failed for $URL"
 fi
 if [ "$code" != 200 ]; then
   case "$code" in
-    404) die "HTTP 404: job $APPCI_BUILD_JOB_ID has no artifacts (expired after 3 days, or erased). Rebuild: play the plain app-test-* job's build.";;
+    404) die "HTTP 404 for $URL: no artifacts reachable with the job token (expired after 3 days, erased, or not readable by CI_JOB_TOKEN; pass APPCI_BUILD_REF + APPCI_BUILD_JOB_NAME for the by-ref fetch). Rebuild: play the plain app-test-* job's build.";;
     401|403) die "HTTP $code: CI_JOB_TOKEN may not read job $APPCI_BUILD_JOB_ID's artifacts (set a masked APPCI_API_TOKEN with read_api, or build instead).";;
     *) die "HTTP $code from $URL";;
   esac
@@ -26,7 +36,7 @@ rm -rf dist; unzip -q -o "$Z" || die "downloaded file is not a valid artifacts z
 [ -d dist ] && [ -n "$(ls -A dist)" ] || die "artifacts of job $APPCI_BUILD_JOB_ID contain no dist/"
 mkdir -p appci-out
 cat > appci-out/reused_build.json <<J
-{"reused_build": {"job_id": $APPCI_BUILD_JOB_ID, "job_name": "${APPCI_BUILD_JOB_NAME:-}", "pipeline_id": "${APPCI_BUILD_PIPELINE_ID:-}", "commit": "${APPCI_BUILD_SHA:-}", "this_pipeline": "$CI_PIPELINE_ID", "this_commit": "$CI_COMMIT_SHA"}}
+{"reused_build": {"job_id": $APPCI_BUILD_JOB_ID, "job_name": "${APPCI_BUILD_JOB_NAME:-}", "pipeline_id": "${APPCI_BUILD_PIPELINE_ID:-}", "commit": "${APPCI_BUILD_SHA:-}", "this_pipeline": "$CI_PIPELINE_ID", "this_commit": "$CI_COMMIT_SHA", "fetched": "${BY_REF:+by-ref latest successful on $APPCI_BUILD_REF}${BY_REF:-by job id}"}}
 J
 echo "fetch_build: OK. Testing build job $APPCI_BUILD_JOB_ID from pipeline ${APPCI_BUILD_PIPELINE_ID:-?} (commit ${APPCI_BUILD_SHA:-?}), NOT a build of this pipeline's commit $CI_COMMIT_SHA (app-identical by ci_seq.py)."
 (cd dist && ls -l && { sha256sum -c SHA256SUMS 2>/dev/null || shasum -a 256 -c SHA256SUMS; }) || die "dist/SHA256SUMS check failed"

@@ -204,7 +204,7 @@ def find_reusable(plat, head, cur_pid):
         ch = app_diff(sha, head, build)
         if not ch:
             return ("%s: reusing build job %d from pipeline %d (commit %s), app unchanged" % (plat, jb["id"], p["id"], sha[:10]),
-                    {"job": jb["id"], "pipeline": p["id"], "sha": sha})
+                    {"job": jb["id"], "pipeline": p["id"], "sha": sha, "ref": p.get("ref", "")})
         if first_diff is None:
             first_diff = (p["id"], sha, ch)
         if seen >= 6:
@@ -319,7 +319,7 @@ def main():
     builds = [BUILD[p] for p in plats if BUILD[p] not in SKIP and p not in reuse]
     reuse_started = []
     for p, r in reuse.items():          # no build to wait for: start these now (resource groups serialize them per machine)
-        rv = dict(appvars, APPCI_BUILD_JOB_ID=str(r["job"]), APPCI_BUILD_PIPELINE_ID=str(r["pipeline"]), APPCI_BUILD_SHA=r["sha"], APPCI_BUILD_JOB_NAME=BUILD[p])
+        rv = dict(appvars, APPCI_BUILD_JOB_ID=str(r["job"]), APPCI_BUILD_PIPELINE_ID=str(r["pipeline"]), APPCI_BUILD_SHA=r["sha"], APPCI_BUILD_JOB_NAME=BUILD[p], APPCI_BUILD_REF=r.get("ref", ""))
         for n in APP[p]:
             if n in SKIP or n + "-reuse" not in jobs():
                 continue
