@@ -162,10 +162,6 @@ impl ChannelState {
         CHANNEL_STATE.lock().config.logfile_name.clone()
     }
 
-    pub fn telemetry_file_name() -> Cow<'static, str> {
-        Cow::default()
-    }
-
     pub fn is_telemetry_available() -> bool {
         false
     }

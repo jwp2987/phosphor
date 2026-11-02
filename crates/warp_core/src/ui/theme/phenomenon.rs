@@ -135,24 +135,4 @@ impl PhenomenonStyle {
     pub fn segmented_control_background() -> Fill {
         Fill::Solid(Self::foreground()).with_opacity(8)
     }
-
-    pub fn selected_chip_background() -> Fill {
-        Fill::Solid(Self::foreground())
-    }
-
-    pub fn selected_chip_text() -> ColorU {
-        Self::background()
-    }
-
-    pub fn selected_chip_border() -> Fill {
-        Fill::Solid(Self::accent())
-    }
-
-    pub fn unselected_chip_background() -> Fill {
-        Fill::Solid(Self::foreground()).with_opacity(8)
-    }
-
-    pub fn unselected_chip_text() -> ColorU {
-        Self::body_text()
-    }
 }
