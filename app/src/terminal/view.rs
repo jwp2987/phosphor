@@ -11474,7 +11474,7 @@ impl TerminalView {
     /// Arms the ssh connect gate when `command` is an interactive ssh command the user just
     /// submitted (#983). Runs at submission, so the window before the shell's preexec hook (and
     /// the 50 ms before the block counts as long running) is covered too.
-    fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
+    fn note_command_submitted_for_ssh_gate(&mut self, command: &str, user_submitted: bool) {
         self.reset_ssh_typeahead();
         self.ssh_remote_prompt_seen = false;
         self.ssh_interrupt_held_gate_notified = false;
@@ -11482,6 +11482,7 @@ impl TerminalView {
             let block_id = self.model.lock().active_block_id().clone();
             let mut gate = SshConnectGate::new(Instant::now());
             gate.block_id = Some(block_id);
+            gate.user_submitted = user_submitted;
             self.ssh_connect_gate = Some(gate);
         } else {
             // A different command now owns the pty: a stale gate must not eat its typing.
@@ -11909,7 +11910,14 @@ impl TerminalView {
             in_text_field: !editor_focused && (in_own_text_view || key_ctx.leaf_takes_typed_text),
             editor_focused,
             terminal_focused: key_ctx.is_focused_exactly(self.view_id),
-            ssh_hold_active: self.paste_queue.queue.ssh_hold_active(),
+            // #1565: an armed connect gate is the event that starts the hold. Keyed on the hold
+            // alone, a key typed with the agent-view editor focused went to the editor before
+            // anything had armed the hold, so the first key of the connect was never held.
+            ssh_hold_active: self.paste_queue.queue.ssh_hold_active()
+                || self
+                    .ssh_connect_gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.user_submitted),
         }
     }
 
@@ -17122,6 +17130,10 @@ impl TerminalView {
                                 // (and its give-up deadline) in `table` mode, not the next key.
                                 if Self::ssh_events_own_the_gate() {
                                     self.ssh_arm_gate_at_event(ctx);
+                                } else {
+                                    // #1565: `legacy` arms it here too, by the event, not on the
+                                    // first terminal-routed key (the agent-view editor has none).
+                                    self.refresh_ssh_connect_gate();
                                 }
                                 ctx.emit(Event::TerminalViewStateChanged);
                                 // A pending SSH target just appeared (host resolved
@@ -28892,7 +28904,10 @@ impl TerminalView {
             InputEvent::PageUp => self.page_up(ctx),
             InputEvent::PageDown => self.page_down(ctx),
             InputEvent::ExecuteCommand(event) => {
-                self.note_command_submitted_for_ssh_gate(&event.command);
+                self.note_command_submitted_for_ssh_gate(
+                    &event.command,
+                    matches!(event.source, CommandExecutionSource::User),
+                );
                 self.update_scroll_position_locking(
                     ScrollPositionUpdate::AfterCommandExecutionStarted,
                     ctx,
@@ -37106,6 +37121,11 @@ struct SshConnectGate {
     bootstrap_done_at: Option<Instant>,
     /// The first prompt (precmd) after the bootstrap ended has been handled (#1085).
     first_prompt_seen: bool,
+    /// #1565: the USER submitted the ssh command from this pane's input. Only then do keys typed
+    /// in the focused input editor belong to the connect hold; an agent-run ssh leaves them to
+    /// the editor (the next agent prompt), and a gate armed without a submit (preexec only) has
+    /// no known origin.
+    user_submitted: bool,
 }
 
 impl SshConnectGate {
@@ -37121,6 +37141,7 @@ impl SshConnectGate {
             block_id: None,
             bootstrap_done_at: None,
             first_prompt_seen: false,
+            user_submitted: false,
         }
     }
 

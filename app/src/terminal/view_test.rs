@@ -18751,6 +18751,151 @@ fn ssh_password_prompt_still_discards_the_held_keys_in_both_modes() {
     }
 }
 
+/// #1565: with the agent-view editor focused (the default mode), the keys typed while an ssh
+/// connects must be held for the remote shell like in terminal mode. The hold used to be armed
+/// only by the first terminal-routed key, and `key_target` sent a typed key to the terminal only
+/// when the hold was already active, so every key went to the editor and the connect gate
+/// was never used. Both destination modes: the held line reaches the pty exactly once, after the
+/// remote shell's prompt, and nothing is left in the editor.
+#[test]
+fn ssh_keys_typed_in_the_agent_view_editor_during_connect_are_held_and_handed_over_once() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+                submit_command(view, "ssh fake", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                assert!(
+                    view.ssh_connect_gate.is_some(),
+                    "{mode:?}: armed by the submit"
+                );
+                // The editor has focus (agent view): the keys of the connect are the pane's and
+                // are held, not inserted into the editor.
+                for c in "echo T".chars() {
+                    let outcome = pane_typed(view, &c.to_string(), true, ctx);
+                    assert_eq!(outcome, PaneKeyOutcome::Consumed, "{mode:?}");
+                }
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing reached the agent view's editor"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing written yet"
+                );
+                // The remote shell shows its first prompt.
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T").count(),
+                1,
+                "{mode:?}: the typed line reaches the remote shell exactly once: {written:?}"
+            );
+        })
+    }
+}
+
+/// #1565 control: an ssh the AGENT runs (an agent-requested command) is not the user's connect.
+/// Keys typed in the agent-view editor meanwhile are the next agent prompt: they stay in the
+/// editor, are not held, and nothing reaches the pty. Legacy and Table.
+#[test]
+fn ssh_run_by_the_agent_does_not_take_the_agent_view_editor_keys() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                let conversation_id =
+                    view.agent_view_controller().update(ctx, |controller, ctx| {
+                        controller
+                            .try_enter_agent_view(
+                                None,
+                                AgentViewEntryOrigin::Input {
+                                    was_prompt_autodetected: false,
+                                },
+                                ctx,
+                            )
+                            .expect("Should be able to enter agent view")
+                    });
+                let session_id = view
+                    .active_block_session_id()
+                    .unwrap_or_else(|| SessionId::from(9001));
+                view.handle_input_event(
+                    &InputEvent::ExecuteCommand(Box::new(ExecuteCommandEvent {
+                        command: "ssh fake".to_owned(),
+                        session_id,
+                        workflow_id: None,
+                        workflow_command: None,
+                        should_add_command_to_history: false,
+                        source: CommandExecutionSource::AI {
+                            metadata: AgentInteractionMetadata::new_hidden(
+                                AIAgentActionId::from("agent-ssh".to_owned()),
+                                conversation_id,
+                            ),
+                        },
+                    })),
+                    ctx,
+                );
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                for c in "next prompt".chars() {
+                    pane_typed(view, &c.to_string(), true, ctx);
+                }
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: not held");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "next prompt",
+                    "{mode:?}: the keys stay in the editor"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing to the pty"
+                );
+            });
+        })
+    }
+}
+
 /// #1348: no timing. Keys held when a password / host-key prompt appears are discarded; keys typed
 /// after it (even the very next instant, which the old 200 ms burst rule dropped as a "tail")
 /// go straight to the prompt, like plain ssh. Replaces `ssh_prompt_mid_burst_discards_the_tail_too`.
