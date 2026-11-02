@@ -139,6 +139,7 @@ pub mod facts;
 mod gates;
 mod pane;
 pub mod shadow;
+pub mod ssh_phase;
 pub mod table;
 pub mod trace;
 
@@ -168,6 +169,7 @@ pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
 };
+pub use ssh_phase::{SshEdge, SshObservation, SshPhaseMachine, SshRelease};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

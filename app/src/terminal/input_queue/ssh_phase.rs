@@ -1,0 +1,310 @@
+//! The edge-driven ssh phase (#1424, design step 7; owner decision OD-6).
+//!
+//! Steps 1-6 DERIVE [`SshPhase`] at the moment a key is decided, from the legacy view fields,
+//! after running the legacy refreshers (`refresh_ssh_connect_gate`, the swallow clock, the
+//! "visible text seen" scan) on the key path. This machine replaces that derivation: it is fed
+//! EDGES, each by the event that is the edge, and a key reads its phase without refreshing
+//! anything. It is pure (no view, no clock, no lock), so every transition is a unit test.
+//!
+//! The edges, and who sends them (`view/ssh_edges.rs`):
+//!
+//! | edge | event |
+//! |---|---|
+//! | [`SshEdge::Submitted`] | the user submitted a command (an interactive `ssh ...` arms the window) |
+//! | [`SshEdge::ConnectStart`] | the shell's preexec showed an ssh command running that nothing armed |
+//! | [`SshEdge::Observed`] | the published facts at a model event or output wakeup: a remote session announced (InitShell) or gone (Bootstrapped / exit), the ssh hook, visible text, the prompt's unterminated text, the setup dialog and the remote-setup state (`SessionsEvent`) |
+//! | [`SshEdge::BlockCompleted`] | the ssh block ended (the remote shell's first precmd, or a failed connect) |
+//! | [`SshEdge::BootstrapFailed`] | the bootstrap-failed timer of the pending session (#1494's path) |
+//! | [`SshEdge::SwallowGiveUp`] | the give-up of the bootstrap swallow window |
+//! | [`SshEdge::HoldStarted`] / [`SshEdge::HoldEnded`] | the first key held / the hold over (delivered, discarded, handed back) |
+//! | [`SshEdge::Released`] | the window ended: by an event ([`SshRelease::FirstPrompt`], [`SshRelease::Failed`], [`SshRelease::OtherCommand`]) or by a logged GIVE-UP ([`SshRelease::is_give_up`]) |
+//!
+//! Focus changes are not an ssh edge: the phase does not depend on focus. They reach the queue
+//! (`InputQueue::on_focus_changed`), which clears the line pin.
+//!
+//! The legacy fields stay (they are removed in step 8). Until then the machine runs next to
+//! them: in `shadow` mode `kh_ssh_phase_disagree` reports a difference between the two phases; in
+//! `table` mode the machine's phase is the one the facts carry and the key path no longer
+//! refreshes the gate.
+
+use super::facts::SshPhase;
+
+/// How an ssh connect window ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshRelease {
+    /// The remote shell showed its first prompt after its bootstrap: the event that hands over.
+    FirstPrompt,
+    /// The ssh block ended and nothing more is coming (a failed connect, a clean end of an
+    /// unmanaged session): an event.
+    Failed,
+    /// A command that is not ssh started: the window is stale. An event.
+    OtherCommand,
+    /// GIVE-UP: the window passed its ceiling with none of the events above.
+    GiveUpCeiling,
+    /// GIVE-UP: the announced remote session finished its bootstrap and no first prompt came.
+    GiveUpFirstPromptGrace,
+    /// GIVE-UP: the ssh block ended cleanly, no remote session ever registered, and the grace ran
+    /// out.
+    GiveUpPostBlockGrace,
+}
+
+impl SshRelease {
+    /// Whether this is a safety-net release (a timer), as opposed to the event that defines the
+    /// end of the window. Every give-up is logged where it happens.
+    pub fn is_give_up(self) -> bool {
+        matches!(
+            self,
+            SshRelease::GiveUpCeiling
+                | SshRelease::GiveUpFirstPromptGrace
+                | SshRelease::GiveUpPostBlockGrace
+        )
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SshRelease::FirstPrompt => "first_prompt",
+            SshRelease::Failed => "failed",
+            SshRelease::OtherCommand => "other_command",
+            SshRelease::GiveUpCeiling => "give_up_ceiling",
+            SshRelease::GiveUpFirstPromptGrace => "give_up_first_prompt_grace",
+            SshRelease::GiveUpPostBlockGrace => "give_up_post_block_grace",
+        }
+    }
+}
+
+/// What the published facts and the view's rich content say at an event. Idempotent: the machine
+/// derives the edges (a session announced, a session gone, text first seen) by comparing it with
+/// what it remembers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SshObservation {
+    /// A remote or subshell session is announced and not bootstrapped (`pending_session_id`).
+    pub pending_session: bool,
+    /// The ssh hook was seen for the pending connect (`has_pending_ssh_session`).
+    pub hook_seen: bool,
+    /// The active block's output has had visible text (sticky for the block).
+    pub visible_text: bool,
+    /// The gen at which the output last became unterminated text (a prompt's shape), if it is.
+    pub unterminated_since: Option<u64>,
+    /// The remote-setup choice dialog is up for the pending session.
+    pub dialog_up: bool,
+    /// The pending session's remote-server setup is in flight (`SessionsEvent` state).
+    pub setup_in_flight: bool,
+}
+
+/// One edge of the ssh connect window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshEdge {
+    /// A command was submitted. `ssh` is whether it is an interactive ssh connect. Whatever the
+    /// previous window held is over.
+    Submitted { ssh: bool },
+    /// Preexec showed an ssh command running that nothing armed (recognised at preexec only).
+    ConnectStart,
+    /// The facts at an event.
+    Observed(SshObservation),
+    /// The armed ssh block completed. `clean` is whether it exited 0.
+    BlockCompleted { clean: bool },
+    /// The pending session's bootstrap-failed timer fired: it no longer swallows keys.
+    BootstrapFailed,
+    /// The bootstrap swallow window passed its ceiling (a logged give-up).
+    SwallowGiveUp,
+    /// The first key of the connect was held.
+    HoldStarted,
+    /// The hold is over.
+    HoldEnded,
+    /// The window ended.
+    Released(SshRelease),
+}
+
+/// The edge-driven ssh state. `Default` is idle.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SshPhaseMachine {
+    /// The connect window is open (the legacy `ssh_connect_gate.is_some()`).
+    armed: bool,
+    /// Keys are being held (the legacy `ssh_typeahead_holding`).
+    holding: bool,
+    /// A remote session is announced and not bootstrapped.
+    pending: bool,
+    /// A remote session was announced at some point in this window.
+    saw_pending: bool,
+    /// The remote is plausibly Phosphor-managed (a session was announced, or the ssh hook seen).
+    managed: bool,
+    /// Visible text has been printed in this window (sticky).
+    output_seen: bool,
+    /// The ssh block ended cleanly on a managed remote; the bootstrap is expected to follow.
+    block_done: bool,
+    /// The ssh block ended and nothing more is coming.
+    failed: bool,
+    /// The announced session came up (or exited): the remote bootstrap is finishing.
+    bootstrap_done: bool,
+    /// The pending session's bootstrap-failed timer fired.
+    bootstrap_failed: bool,
+    /// The bootstrap swallow window gave up.
+    swallow_expired: bool,
+    dialog_up: bool,
+    setup_in_flight: bool,
+    unterminated_since: Option<u64>,
+    /// How the last window ended (for the log and the tests).
+    last_release: Option<SshRelease>,
+}
+
+impl SshPhaseMachine {
+    /// Applies one edge.
+    pub fn apply(&mut self, edge: SshEdge) {
+        match edge {
+            SshEdge::Submitted { ssh } => {
+                // Whatever the previous window held is over (`reset_ssh_typeahead`), and a new
+                // ssh command opens a new one.
+                *self = Self {
+                    armed: ssh,
+                    ..self.carried_observations()
+                };
+            }
+            SshEdge::ConnectStart => {
+                if !self.armed {
+                    *self = Self {
+                        armed: true,
+                        holding: self.holding,
+                        ..self.carried_observations()
+                    };
+                }
+            }
+            SshEdge::Observed(observed) => {
+                self.dialog_up = observed.dialog_up;
+                self.setup_in_flight = observed.setup_in_flight;
+                self.unterminated_since = observed.unterminated_since;
+                if observed.hook_seen {
+                    self.managed = true;
+                }
+                if self.armed {
+                    if observed.visible_text && !self.block_done {
+                        self.output_seen = true;
+                    }
+                    if observed.pending_session {
+                        // The remote shell announced itself (InitShell).
+                        if !self.pending {
+                            self.bootstrap_failed = false;
+                            self.swallow_expired = false;
+                        }
+                        self.saw_pending = true;
+                        self.managed = true;
+                    } else if self.saw_pending {
+                        // Bootstrapped, or the session exited: the remote bootstrap is
+                        // finishing, and the first prompt after it hands over.
+                        self.bootstrap_done = true;
+                    }
+                }
+                self.pending = observed.pending_session;
+            }
+            SshEdge::BlockCompleted { clean } => {
+                if self.armed {
+                    if clean && (self.managed || self.saw_pending) {
+                        self.block_done = true;
+                    } else {
+                        self.failed = true;
+                    }
+                }
+            }
+            SshEdge::BootstrapFailed => self.bootstrap_failed = true,
+            SshEdge::SwallowGiveUp => self.swallow_expired = true,
+            SshEdge::HoldStarted => self.holding = true,
+            SshEdge::HoldEnded => self.holding = false,
+            SshEdge::Released(how) => {
+                *self = Self {
+                    holding: self.holding,
+                    last_release: Some(how),
+                    ..self.carried_observations()
+                };
+            }
+        }
+    }
+
+    /// A fresh machine that keeps only what the facts say (the session, the dialog, the setup
+    /// state, the prompt's text): they are observations, not part of a window.
+    fn carried_observations(&self) -> Self {
+        Self {
+            pending: self.pending,
+            dialog_up: self.dialog_up,
+            setup_in_flight: self.setup_in_flight,
+            unterminated_since: self.unterminated_since,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the machine has anything to do on an event: a window is open, keys are held, or a
+    /// session is pending. Idle machines are not fed observations (the common case costs a
+    /// branch).
+    pub fn is_active(&self) -> bool {
+        self.armed || self.holding || self.pending
+    }
+
+    pub fn armed(&self) -> bool {
+        self.armed
+    }
+
+    pub fn holding(&self) -> bool {
+        self.holding
+    }
+
+    /// The remote bootstrap ended and the first prompt has not been seen.
+    #[cfg(test)]
+    pub fn bootstrap_done(&self) -> bool {
+        self.bootstrap_done
+    }
+
+    pub fn last_release(&self) -> Option<SshRelease> {
+        self.last_release
+    }
+
+    /// The pre-session half of the gate: no visible text yet, or the post-block bootstrap wait, or
+    /// the stretch from the end of the remote bootstrap to its first prompt. Full-screen programs
+    /// never hold. (The legacy `SshConnectGate::drops_keys`.)
+    fn drops_keys(&self, alt_screen: bool) -> bool {
+        self.armed
+            && !alt_screen
+            && !self.failed
+            && (self.block_done || !self.output_seen || self.bootstrap_done)
+    }
+
+    /// Typing is held for the pending session's bootstrap (until its failure timer or the swallow
+    /// give-up).
+    fn bootstrapping(&self) -> bool {
+        self.armed && self.pending && !self.bootstrap_failed && !self.swallow_expired
+    }
+
+    /// Keys are dropped by the gate with nothing held yet: the setup is in flight, the remote
+    /// bootstrap runs, or the connect is silent.
+    fn gate_drops(&self, alt_screen: bool) -> bool {
+        (self.pending && self.setup_in_flight)
+            || self.bootstrapping()
+            || (!self.pending && self.drops_keys(alt_screen))
+    }
+
+    /// A host-key / password prompt is up: visible text on an unmanaged connect, before any remote
+    /// session. (The legacy `ssh_prompt_has_arrived`.)
+    fn prompt_up(&self, alt_screen: bool) -> bool {
+        self.armed
+            && !self.drops_keys(alt_screen)
+            && self.output_seen
+            && !self.block_done
+            && !self.managed
+            && !self.saw_pending
+    }
+
+    /// The phase a key is decided on. `alt_screen` is the model's fact at the decision (a
+    /// full-screen program never holds).
+    pub fn phase(&self, alt_screen: bool) -> SshPhase {
+        if self.prompt_up(alt_screen)
+            && let Some(prompt_gen) = self.unterminated_since
+        {
+            return SshPhase::PromptUp { prompt_gen };
+        }
+        if self.holding || (!self.dialog_up && self.gate_drops(alt_screen)) {
+            return SshPhase::Holding;
+        }
+        SshPhase::Idle
+    }
+}
+
+#[cfg(test)]
+#[path = "ssh_phase_tests.rs"]
+mod tests;
