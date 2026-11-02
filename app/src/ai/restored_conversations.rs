@@ -66,6 +66,7 @@ impl RestoredAgentConversations {
 
     /// Backs the store with an explicit connection instead of the on-disk
     /// database. Only used by tests.
+    #[cfg(test)]
     #[cfg(all(test, feature = "local_fs"))]
     pub(crate) fn with_db_connection(conn: SqliteConnection) -> Self {
         Self {

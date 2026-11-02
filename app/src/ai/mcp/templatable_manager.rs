@@ -411,10 +411,7 @@ impl TemplatableMCPServerManager {
 #[derive(Debug)]
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum TemplatableMCPServerManagerEvent {
-    StateChanged {
-        uuid: Uuid,
-        state: MCPServerState,
-    },
+    StateChanged { uuid: Uuid, state: MCPServerState },
     // TODO(aeybel) Right now most of the app doesn't use these events to communicate
     // We should change them so this manager is source of truth and all communication goes through here
     ServerInstallationAdded(Uuid),

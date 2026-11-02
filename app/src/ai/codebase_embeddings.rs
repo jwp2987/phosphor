@@ -55,8 +55,7 @@ use diesel::SqliteConnection;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::ai::agent_providers::embeddings::{
-    EmbeddingEndpoints, HttpEmbeddingProvider, HttpRerankProvider,
-    resolve_configured_embedding_model, resolve_embedding_endpoints,
+    EmbeddingEndpoints, HttpEmbeddingProvider, HttpRerankProvider, resolve_embedding_endpoints,
 };
 use crate::persistence::{
     ModelEvent, codebase_index_children, codebase_index_has_embeddings,
@@ -794,12 +793,6 @@ pub fn subscribe_to_codebase_indexing_configuration(
             refresh_codebase_indexing_configuration(&client, ctx);
         },
     );
-}
-
-/// The embedding model the index will use, for callers that need to know before
-/// building a client.
-pub fn active_embedding_config(app: &AppContext) -> EmbeddingConfig {
-    resolve_configured_embedding_model(app).unwrap_or_default()
 }
 
 /// The header *names* (never values -- see the caller) to mention in the

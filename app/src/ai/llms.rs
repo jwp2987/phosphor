@@ -1232,6 +1232,7 @@ impl LLMPreferences {
         }
     }
 
+    #[cfg(test)]
     pub fn update_feature_model_choices(
         &mut self,
         choices_result: Result<ModelsByFeature, anyhow::Error>,

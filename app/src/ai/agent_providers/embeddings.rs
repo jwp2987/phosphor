@@ -54,7 +54,7 @@
 //! `http://` endpoint posted every code fragment in the clear with nothing
 //! checked at all.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use ai::index::full_source_code_embedding::EmbeddingConfig;
 use ai::index::full_source_code_embedding::Error as IndexError;
@@ -376,6 +376,7 @@ impl HttpEmbeddingProvider {
     }
 
     /// Points every model at one endpoint, e.g. the one a remote client sent.
+    #[cfg(test)]
     pub fn set_endpoint(&self, endpoint: Option<EmbeddingEndpoint>) {
         self.set(EndpointResolution::AnyModel(endpoint));
     }
@@ -668,11 +669,6 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
 
         Ok(data.into_iter().map(|datum| datum.embedding).collect())
     }
-}
-
-/// Convenience alias for the shape the index wants.
-pub fn shared_provider(provider: HttpEmbeddingProvider) -> Arc<dyn EmbeddingProvider> {
-    Arc::new(provider)
 }
 
 /// Every reranking model this fork knows how to call, in preference order.
