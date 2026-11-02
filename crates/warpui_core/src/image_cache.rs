@@ -683,15 +683,6 @@ pub enum FitType {
     Stretch,
 }
 
-impl FitType {
-    pub fn should_retain_aspect_ratio(&self) -> bool {
-        match self {
-            FitType::Cover | FitType::Contain => true,
-            FitType::Stretch => false,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub enum ImageType {
     Svg { svg: Arc<usvg::Tree> },
@@ -1323,9 +1314,10 @@ impl ImageCache {
     /// `bounds` and `fit_type` must match the resolved values used as the
     /// cache key inside `image()` (i.e., after any `max_dimension`
     /// adjustment), not only the originally requested bounds.
-    // Called by the debounce eviction pass added in the main changeset.
-    /// TODO(APP-3877): remove `#[allow(dead_code)]` once the debounce eviction pass wires this up.
-    #[allow(dead_code)]
+    ///
+    /// Test-only: the debounce eviction pass that would call this was never wired up
+    /// (TODO(APP-3877)).
+    #[cfg(test)]
     fn evict_size(
         &self,
         asset_source: &AssetSource,

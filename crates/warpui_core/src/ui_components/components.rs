@@ -119,10 +119,6 @@ impl UiComponentStyles {
         self.border_width = Some(border_width);
         self
     }
-    pub fn set_border_style(mut self, border_style: BorderStyle) -> Self {
-        self.border_style = Some(border_style);
-        self
-    }
     pub fn set_border_radius(mut self, border_radius: CornerRadius) -> Self {
         self.border_radius = Some(border_radius);
         self

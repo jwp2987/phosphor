@@ -83,13 +83,6 @@ impl Weight {
             Weight::Black => Some(CustomWeight::Black),
         }
     }
-
-    pub fn matches_custom_weight(&self, custom_weight: Option<CustomWeight>) -> bool {
-        match custom_weight {
-            Some(custom_weight) => custom_weight.is_weight(*self),
-            None => self.is_normal(),
-        }
-    }
 }
 
 impl std::fmt::Display for Weight {

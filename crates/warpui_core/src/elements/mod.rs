@@ -518,16 +518,6 @@ impl Border {
         self
     }
 
-    pub fn with_horizontal_border_gradient(mut self, gradient: Gradient) -> Self {
-        self.color = Fill::Gradient {
-            start: vec2f(0.0, 0.0),
-            end: vec2f(1.0, 0.0),
-            start_color: gradient.start,
-            end_color: gradient.end,
-        };
-        self
-    }
-
     pub fn with_border_gradient(
         mut self,
         start: Vector2F,
@@ -693,10 +683,6 @@ impl RectFExt for RectF {
             Axis::Vertical => self.max_y(),
         }
     }
-}
-
-pub fn try_rect(origin: Option<Vector2F>, size: Option<Vector2F>) -> Option<RectF> {
-    origin.and_then(|origin| size.map(|size| RectF::new(origin, size)))
 }
 
 pub fn try_rect_with_z(origin: Option<Point>, size: Option<Vector2F>) -> Option<RectF> {
