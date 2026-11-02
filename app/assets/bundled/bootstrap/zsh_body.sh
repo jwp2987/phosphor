@@ -1378,8 +1378,13 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
               command ssh "${warp_ipqos_args[@]}" -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f "${@:1}"
               local warp_master_rc=$?
               if [[ $warp_master_rc -ne 0 ]]; then
-                  # The connection failed (ssh already printed why) or was interrupted.
-                  return $warp_master_rc
+                  # #1551: the master (-N, authenticate-only) failed, so no remote command ever ran
+                  # and a plain ssh cannot double-execute. A Ctrl-C (rc > 128, not ssh's own 255) is respected.
+                  if [[ $warp_master_rc -gt 128 && $warp_master_rc -ne 255 ]]; then
+                      return $warp_master_rc
+                  fi
+                  command ssh "${@:1}"
+                  return
               fi
               # Own it only if a master really answers there: a file at the path is not proof.
               if warp_ssh_mux_command check "$control_path"; then
