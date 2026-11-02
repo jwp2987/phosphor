@@ -272,3 +272,60 @@ fn user_input_left_in_the_inbox_is_applied_in_order_with_the_rest() {
         "applied, in order, before the next parse"
     );
 }
+
+/// #1442: an inbox nobody drains stops at its cap; data commands past it are dropped and counted
+/// (the view tells the user), the kept ones stay in posting order.
+#[test]
+fn a_full_inbox_drops_data_commands_and_reports_them_once() {
+    let inbox = ModelInbox::with_capacity(3);
+    for n in 0u8..3 {
+        assert!(inbox.post(ModelCommand::TypedAhead(vec![n])));
+    }
+    assert!(!inbox.post(ModelCommand::TypedAhead(vec![9])));
+    assert!(!inbox.post(ModelCommand::UserInput("x".to_owned())));
+    assert!(!inbox.post(ModelCommand::SharedSessionWrite(vec![1])));
+    assert_eq!(inbox.take_overflow_report(), 3);
+    assert_eq!(inbox.take_overflow_report(), 0, "reported once");
+    assert_eq!(
+        inbox.take(),
+        vec![
+            ModelCommand::TypedAhead(vec![0]),
+            ModelCommand::TypedAhead(vec![1]),
+            ModelCommand::TypedAhead(vec![2]),
+        ]
+    );
+    // Drained: room again.
+    assert!(inbox.post(ModelCommand::TypedAhead(vec![7])));
+}
+
+/// A ^C and the first input are flags, never dropped: past the cap they merge into the newest
+/// `UserWrote`.
+#[test]
+fn a_full_inbox_never_loses_a_ctrl_c_or_the_first_input() {
+    let inbox = ModelInbox::with_capacity(2);
+    assert!(inbox.post(ModelCommand::TypedAhead(vec![1])));
+    assert!(inbox.post(ModelCommand::TypedAhead(vec![2])));
+    assert!(inbox.post(ModelCommand::UserWrote {
+        first_input: true,
+        ctrl_c: false,
+    }));
+    assert!(inbox.post(ModelCommand::UserWrote {
+        first_input: false,
+        ctrl_c: true,
+    }));
+    let taken = inbox.take();
+    assert_eq!(taken.len(), 3, "the second UserWrote merged into the first");
+    assert_eq!(
+        taken[2],
+        ModelCommand::UserWrote {
+            first_input: true,
+            ctrl_c: true,
+        }
+    );
+    assert_eq!(inbox.take_overflow_report(), 0, "no data was dropped");
+}
+
+#[test]
+fn the_default_inbox_cap_is_far_above_a_long_gate_at_key_repeat_rate() {
+    assert!(MAX_INBOX_COMMANDS >= 180 * 60 * 3 * 4);
+}

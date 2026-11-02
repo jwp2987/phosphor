@@ -25,6 +25,8 @@ struct MockHost {
     discarded: Vec<(EntryId, DiscardReason)>,
     armed: Vec<(GateToken, GateKind, Duration)>,
     warns: Vec<String>,
+    /// `(first, dropped)` of every `Host::overflowed` call (#1442).
+    overflows: Vec<(bool, u64)>,
     /// Enter opens a `HandoffReport` gate keyed by its id while set.
     enter_opens_gate: bool,
     ssh_signal_waits: bool,
@@ -124,6 +126,13 @@ impl Host for MockHost {
 
     fn warn(&mut self, line: &str) {
         self.warns.push(line.to_owned());
+    }
+
+    fn overflowed(&mut self, first: bool, dropped: u64, queued: usize) {
+        self.overflows.push((first, dropped));
+        if first {
+            self.warn(&format!("input queue full ({queued} entries waiting)"));
+        }
     }
 }
 
@@ -1515,6 +1524,89 @@ fn retagging_a_gate_that_is_not_open_changes_nothing() {
     ));
     assert!(q.has_gate(GateKind::SshConnect, 3));
     assert!(!q.has_gate(GateKind::HandoffReport, 4));
+}
+
+// ---- the cap on queued entries (#1442) ------------------------------------------------------
+
+/// A gate that stays shut while keys keep arriving: the queue stops growing at its cap, drops the
+/// NEWEST arrivals (the older ones keep their order), and tells the host once.
+#[test]
+fn a_full_queue_drops_the_newest_arrivals_and_tells_the_host_once() {
+    let mut q = InputQueue::new();
+    q.set_max_entries(4);
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 1).with_cap(None),
+    );
+    for key in [b"a", b"b", b"c", b"d", b"e", b"f", b"g"] {
+        q.offer(&mut h, pty_bytes(key));
+    }
+    assert_eq!(q.queued_len(), 4, "bounded at the cap");
+    assert_eq!(q.overflow_dropped(), 3);
+    assert_eq!(h.overflows, vec![(true, 1), (false, 2), (false, 3)]);
+    assert!(
+        h.warns.iter().any(|w| w.contains("input queue full")),
+        "the first refusal is logged as a warning: {:?}",
+        h.warns
+    );
+    // What was kept is the OLDEST four, in typed order.
+    let kept = q.close_gate_taking(&mut h, GateKind::SshConnect, 1);
+    assert_eq!(
+        held_bytes(&kept),
+        vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+    );
+}
+
+/// A signal is never dropped for the cap: ^C must always get through.
+#[test]
+fn a_full_queue_still_takes_a_signal() {
+    let mut q = InputQueue::new();
+    q.set_max_entries(2);
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 1).with_cap(None),
+    );
+    for key in ["a", "b", "c"] {
+        q.offer(&mut h, text(key));
+    }
+    assert_eq!(q.overflow_dropped(), 1);
+    q.offer(&mut h, EntryKind::Signal(SignalKind::Interrupt));
+    assert_eq!(q.overflow_dropped(), 1, "the signal was not refused");
+}
+
+/// The episode ends when the queue goes idle: the next overflow is `first` again (the user is told
+/// again), and the count restarts.
+#[test]
+fn the_overflow_episode_resets_when_the_queue_is_idle() {
+    let mut q = InputQueue::new();
+    q.set_max_entries(1);
+    let mut h = MockHost::new();
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 1).with_cap(None),
+    );
+    q.offer(&mut h, text("a"));
+    q.offer(&mut h, text("b"));
+    assert_eq!(h.overflows, vec![(true, 1)]);
+    q.close_gate_taking(&mut h, GateKind::SshConnect, 1);
+    // Idle again: an offer delivers inline and the episode count restarts.
+    q.offer(&mut h, text("c"));
+    assert_eq!(q.overflow_dropped(), 0);
+    q.open_gate(
+        &mut h,
+        GateSpec::new(GateKind::SshConnect, 2).with_cap(None),
+    );
+    q.offer(&mut h, text("d"));
+    q.offer(&mut h, text("e"));
+    assert_eq!(h.overflows.last(), Some(&(true, 1)));
+}
+
+/// The real default bound: 180 s of the fastest key repeat (about 60 Hz) is far below it.
+#[test]
+fn the_default_cap_is_far_above_a_long_gate_at_key_repeat_rate() {
+    assert!(MAX_QUEUED_ENTRIES >= 180 * 60 * 5);
 }
 
 #[cfg(test)]

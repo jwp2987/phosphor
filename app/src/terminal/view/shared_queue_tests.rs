@@ -197,3 +197,40 @@ fn an_input_drain_hands_a_pty_key_to_the_view_and_nothing_overtakes() {
         });
     })
 }
+
+/// #1441: closing a pane that still holds input is not silent. The summary the view's `Drop` logs
+/// is `None` for an idle pane and names counts (never content) for one that holds keys behind a
+/// gate or a paste being read.
+#[test]
+fn a_pane_closed_with_held_input_has_a_drop_summary() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                super::paste_queue::dropped_input_summary(
+                    &view.paste_queue.queue.peek(),
+                    view.paste_queue.payloads.len()
+                ),
+                None,
+                "an idle pane drops nothing"
+            );
+            let queue = view.paste_queue.queue.clone();
+            let mut host = PtyQueueHost::new(view, ctx);
+            queue.lock().open_gate(
+                &mut host,
+                GateSpec::new(GateKind::PasteReading, 77).with_cap(None),
+            );
+            assert!(view.write_user_bytes_to_pty(b"secret".to_vec(), ctx));
+            let line = super::paste_queue::dropped_input_summary(
+                &view.paste_queue.queue.peek(),
+                view.paste_queue.payloads.len(),
+            )
+            .expect("a held key and a paste being read are reported");
+            assert!(line.contains("queued_entries=1"), "{line}");
+            assert!(line.contains("queued_bytes=6"), "{line}");
+            assert!(line.contains("paste_being_read=true"), "{line}");
+            assert!(!line.contains("secret"), "counts only: {line}");
+        });
+    })
+}

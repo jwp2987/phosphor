@@ -421,6 +421,17 @@ pub trait Host {
     /// A give-up cap fired for a gate whose event never came; always logged, at warning level.
     fn warn(&mut self, line: &str);
 
+    /// The queue is full ([`MAX_QUEUED_ENTRIES`]) and refused an arrival (#1442). `first` is true
+    /// for the first refusal since the queue was last idle: tell the user then (once), and log
+    /// the running `dropped` count sparingly. The default logs the first and every 4096th.
+    fn overflowed(&mut self, first: bool, dropped: u64, queued: usize) {
+        if first || dropped % 4096 == 0 {
+            self.warn(&format!(
+                "input queue full ({queued} entries waiting): dropped {dropped} newest arrival(s)"
+            ));
+        }
+    }
+
     /// Cheap check so the queue only formats trace lines when someone listens.
     fn log_enabled(&self) -> bool {
         false
@@ -430,8 +441,20 @@ pub trait Host {
     fn log(&mut self, _line: &str) {}
 }
 
+/// The most entries a pane's queue keeps waiting (#1442). Reached only by a gate that stays shut
+/// while keys keep arriving: the longest is the PowerShell connect net of 180 s, and 180 s of the
+/// fastest key repeat (about 60 Hz, one entry per key) is ~11,000 entries, so the bound is six
+/// times that; it equals the ssh hold's 64 KiB (one byte per key at the very least). Past it the
+/// NEWEST non-signal arrival is dropped, logged as a warning and reported to the host
+/// ([`Host::overflowed`]) so the user is told; a signal (^C) is never dropped.
+pub const MAX_QUEUED_ENTRIES: usize = 64 * 1024;
+
 #[derive(Debug)]
 pub struct InputQueue {
+    /// The cap on `entries` ([`MAX_QUEUED_ENTRIES`]; tests lower it).
+    max_entries: usize,
+    /// Arrivals dropped for the cap since the queue last went idle.
+    overflow_dropped: u64,
     next_id: u64,
     next_token: u64,
     focus_epoch: u64,
@@ -460,6 +483,8 @@ impl Default for InputQueue {
 impl InputQueue {
     pub fn new() -> Self {
         Self {
+            max_entries: MAX_QUEUED_ENTRIES,
+            overflow_dropped: 0,
             next_id: 1,
             next_token: 1,
             focus_epoch: 0,
@@ -474,6 +499,16 @@ impl InputQueue {
     }
 
     // ---- inspection -------------------------------------------------------------------------
+
+    /// Lowers (or raises) the cap on queued entries; for tests of the overflow behaviour.
+    pub fn set_max_entries(&mut self, max_entries: usize) {
+        self.max_entries = max_entries;
+    }
+
+    /// Arrivals dropped for the cap since the queue last went idle.
+    pub fn overflow_dropped(&self) -> u64 {
+        self.overflow_dropped
+    }
 
     pub fn queued_len(&self) -> usize {
         self.entries.len()
@@ -699,9 +734,19 @@ impl InputQueue {
             // Fast path: nothing held, nothing queued; deliver inline without touching the deque.
             self.deliver_entry(host, &entry);
             self.drain(host);
+        } else if self.entries.len() >= self.max_entries {
+            // #1442: nothing drains and keys keep coming. Refuse the newest instead of growing
+            // without bound; the host logs it and tells the user. The first drop of an episode
+            // is `first`; the count restarts when the queue goes idle.
+            self.overflow_dropped += 1;
+            let first = self.overflow_dropped == 1;
+            host.overflowed(first, self.overflow_dropped, self.entries.len());
         } else {
             self.entries.push_back(entry);
             self.drain(host);
+        }
+        if self.is_idle() {
+            self.overflow_dropped = 0;
         }
         id
     }

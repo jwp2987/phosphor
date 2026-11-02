@@ -4,6 +4,8 @@ mod key_events;
 #[cfg(test)]
 mod drag_drop_tests;
 #[cfg(test)]
+mod focus_modifiers_tests;
+#[cfg(test)]
 mod touch_long_press_tests;
 
 use std::collections::HashMap;
@@ -226,6 +228,21 @@ impl WindowState {
             #[cfg(target_family = "wasm")]
             pending_soft_keyboard_request: false,
         }
+    }
+
+    /// Forgets every held modifier (and the per-side Alt flags) when the window loses or regains
+    /// focus (#1443). A key-up delivered to another window, or dropped across the focus change,
+    /// would otherwise leave Ctrl/Cmd/Alt believed held, turning every following keystroke into a
+    /// chord. After a focus-in the platform sends `ModifiersChanged` with what is really held (a
+    /// key still down comes back), so resetting is never wrong for long. Returns whether anything
+    /// was held, i.e. whether the app must be told the modifiers changed.
+    fn reset_modifiers_for_focus_change(&mut self) -> bool {
+        let was_held =
+            !self.modifiers.is_empty() || self.left_alt_pressed || self.right_alt_pressed;
+        self.modifiers = Default::default();
+        self.left_alt_pressed = false;
+        self.right_alt_pressed = false;
+        was_held
     }
 
     /// Cancels ongoing momentum scroll, clearing both the animation timer and velocity state.
@@ -1772,10 +1789,10 @@ impl EventLoop {
                 // Clear tracked per-side Alt state when we lose focus so that a release
                 // event dropped while another window had focus can't leave us believing a
                 // side is still held.
-                if !is_focused {
-                    window_state.left_alt_pressed = false;
-                    window_state.right_alt_pressed = false;
-                }
+                // The same for every modifier (#1443), on loss and on regain: the held state
+                // may have changed while another window had the keyboard. The app is told when
+                // something was held so nothing keeps showing a held modifier.
+                let modifiers_reset = window_state.reset_modifiers_for_focus_change();
 
                 // On the next tick of the event loop, notify the ui_app that focus has
                 // transferred, but only if there isn't already one of these
@@ -1790,7 +1807,13 @@ impl EventLoop {
                 } else {
                     self.state.pending_active_window_change = Some(ActiveWindowChange::FocusOut);
                 }
-                None
+                modifiers_reset.then(|| {
+                    ConvertedEvent::Event(crate::event::Event::ModifierStateChanged {
+                        mouse_position: window_state.last_cursor_position.to_vec2f(),
+                        modifiers: from_winit_modifiers_state(window_state.modifiers),
+                        key_code: None,
+                    })
+                })
             }
             WindowEvent::DroppedFile(path_buf) => {
                 let Some(path) = path_buf.as_os_str().to_str() else {

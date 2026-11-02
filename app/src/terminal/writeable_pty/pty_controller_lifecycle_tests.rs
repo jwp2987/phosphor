@@ -193,3 +193,68 @@ fn shutdown_pty_sends_shutdown_to_event_loop() {
         ));
     });
 }
+
+/// #1442: input held while tmux control mode waits for its primary pane is bounded; past the cap
+/// whole writes are dropped (never part of one), the surface is told once, and what was kept is
+/// flushed in order when the pane is ready.
+#[test]
+fn tmux_pending_input_is_bounded_and_the_overflow_is_reported_once() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+        let overflow_events = Arc::new(Mutex::new(0usize));
+        let counter = overflow_events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&controller, move |_, event, _| {
+                if matches!(event, PtyControllerEvent::InputBufferOverflow) {
+                    *counter.lock() += 1;
+                }
+            });
+        });
+        let chunk = vec![b'k'; 4096];
+        controller.update(&mut app, |controller, ctx| {
+            controller.tmux_control_mode = Some(TmuxControlMode::Pending {
+                buffer: Vec::new(),
+                overflowed: false,
+            });
+            for _ in 0..(MAX_TMUX_PENDING_BYTES / chunk.len() + 8) {
+                controller.send_write_to_event_loop(
+                    PtyWrite::Bytes {
+                        bytes: chunk.clone().into(),
+                    },
+                    ctx,
+                );
+            }
+            let Some(TmuxControlMode::Pending { buffer, .. }) = &controller.tmux_control_mode
+            else {
+                panic!("still pending");
+            };
+            assert_eq!(
+                buffer.len(),
+                MAX_TMUX_PENDING_BYTES,
+                "bounded, whole writes only"
+            );
+        });
+        assert_eq!(*overflow_events.lock(), 1, "told once");
+        assert!(sender.messages.lock().is_empty(), "nothing reached the pty yet");
+        drop(model_events_tx);
+    });
+}

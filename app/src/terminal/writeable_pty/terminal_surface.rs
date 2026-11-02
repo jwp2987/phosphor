@@ -129,6 +129,10 @@ where
     /// controller (#1353 phase 5b): the surface takes or drops the gate's entries.
     fn on_young_hold_ended(&mut self, _ctx: &mut ViewContext<Self>) {}
 
+    /// Called when input was dropped because a buffer on the way to the pty was full (#1442):
+    /// the surface tells the user.
+    fn on_input_buffer_overflow(&mut self, _ctx: &mut ViewContext<Self>) {}
+
     /// Called when `command` was not run because another one is already waiting to start
     /// (`FeatureFlag::TypeaheadHandoff`), so the surface can say so.
     fn on_command_coalesced(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}

@@ -495,7 +495,8 @@ use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::key_facts::{
-    KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand, ModelInbox, block_id_hash,
+    InputBoxFacts, KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand,
+    ModelInbox, block_id_hash,
 };
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
@@ -2884,6 +2885,14 @@ pub struct TerminalView {
     key_model: KeyModelCell,
     /// Depth of user-key handling on this thread; see [`KeyPathScope`].
     key_path_depth: Rc<Cell<u32>>,
+    /// The last answer of `active_output_ends_in_unterminated_text`, given to a key that finds the
+    /// model busy parsing (#1440).
+    unterminated_text_at_last_look: Cell<bool>,
+    /// The same for `setup_echo_is_mid_line`.
+    setup_echo_mid_line_at_last_look: Cell<bool>,
+    /// Scroll updates a key wanted while the model was busy parsing, applied in order by the
+    /// next scroll update or output wakeup that holds the model (#1440).
+    deferred_scroll_updates: Vec<ScrollPositionUpdate>,
     /// Where the key path leaves what it used to write into the model under its lock.
     model_inbox: ModelInbox,
     view_handle: WeakViewHandle<Self>,
@@ -5040,6 +5049,9 @@ impl TerminalView {
             key_facts,
             key_model,
             key_path_depth: Rc::new(Cell::new(0)),
+            unterminated_text_at_last_look: Cell::new(false),
+            setup_echo_mid_line_at_last_look: Cell::new(false),
+            deferred_scroll_updates: Vec::new(),
             model_inbox,
             subshell_bootstrap_announced: None,
             powershell_setup_hold: PowerShellSetupHold::Off,
@@ -9155,20 +9167,24 @@ impl TerminalView {
     }
 
     pub fn is_input_box_visible(&self, model: &TerminalModel, app: &AppContext) -> bool {
-        if model.is_read_only() {
+        self.is_input_box_visible_with(&InputBoxFacts::from_model(model), app)
+    }
+
+    /// [`Self::is_input_box_visible`] from the model facts it reads (#1440): the key path answers
+    /// it from the published snapshot when the pty reader holds the model, instead of waiting.
+    pub fn is_input_box_visible_with(&self, model: &InputBoxFacts, app: &AppContext) -> bool {
+        if model.read_only {
             return false;
         }
         if self.has_active_cli_agent_input_session(app) {
             return true;
         }
-        if model.is_alt_screen_active()
-            && !model.block_list().active_block().is_agent_in_control()
-            && !model.block_list().active_block().is_agent_tagged_in()
+        if model.alt_screen_active && !model.block_agent_in_control && !model.block_agent_tagged_in
         {
             return false;
         }
 
-        if model.shared_session_status().is_view_pending()
+        if model.shared_session_view_pending
             && !self.ambient_agent_view_model.as_ref(app).is_ambient_agent()
         {
             return false;
@@ -9187,7 +9203,7 @@ impl TerminalView {
         // Hide the input box during the entire remote-server setup flow.
         // The loading footer renders instead.
         if FeatureFlag::SshRemoteServer.is_enabled() {
-            if let Some(pending_sid) = model.pending_session_id() {
+            if let Some(pending_sid) = model.pending_session_id {
                 if self
                     .sessions
                     .as_ref(app)
@@ -9207,25 +9223,22 @@ impl TerminalView {
             return false;
         }
 
-        let active_command_block = model.block_list().active_block();
-        let is_active_and_long_running = active_command_block.is_active_and_long_running();
-        let is_running_in_band_command =
-            model.block_list().is_writing_or_executing_in_band_command();
+        let is_active_and_long_running = model.block_active_and_long_running;
+        let is_running_in_band_command = model.writing_or_executing_in_band_command;
 
         let has_active_long_running_agent_interaction =
-            active_command_block.is_agent_monitoring() || active_command_block.is_agent_tagged_in();
+            model.block_agent_monitoring || model.block_agent_tagged_in;
 
         if (active_ai_block.is_none() || has_active_long_running_agent_interaction)
             && is_active_and_long_running
             && !is_running_in_band_command
-            && model.block_list().is_bootstrapped()
+            && model.bootstrapped
         {
             // Show the input if:
             // * The agent is control of the active, long running block, so long as the agent is not blocked.
             // * OR the user has 'tagged in' the agent.
-            return (active_command_block.is_agent_in_control()
-                && !active_command_block.is_agent_blocked())
-                || active_command_block.is_agent_tagged_in();
+            return (model.block_agent_in_control && !model.block_agent_blocked)
+                || model.block_agent_tagged_in;
         }
 
         true
@@ -10559,7 +10572,7 @@ impl TerminalView {
     }
 
     fn user_input_sequence(&mut self, code: &[u8], ctx: &mut ViewContext<Self>) {
-        let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), code);
+        let sequence = self.build_cursor_key_sequence(code);
         self.control_sequence_on_terminal(&sequence, ctx);
     }
 
@@ -10579,7 +10592,7 @@ impl TerminalView {
         if !is_abort_key(bytes) && self.agent_owns_command_pty() {
             safe_warn!(
                 safe: ("agent owns the command pty. ignoring control seq on terminal."),
-                full: ("agent owns the command pty. ignoring control seq on terminal: {:?}", bytes)
+                full: ("agent owns the command pty. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
             );
             return;
         }
@@ -10593,7 +10606,7 @@ impl TerminalView {
         } else {
             safe_warn!(
                 safe: ("command not long-running. ignoring control seq on terminal."),
-                full: ("command not long-running. ignoring control seq on terminal: {:?}", bytes)
+                full: ("command not long-running. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
             )
         }
     }
@@ -10652,7 +10665,44 @@ impl TerminalView {
         ) {
             self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::All, ctx);
         }
-        let mut model = self.model.lock();
+        // A key being handled never waits for the pty reader (#1440): when the model is busy
+        // parsing, the update is kept (in order, coalesced with an identical neighbour) and
+        // applied by the next update that holds the model or by the output wakeup that ends the
+        // parse.
+        let model_handle = self.model.clone();
+        let mut model = if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+        {
+            match model_handle.try_lock() {
+                Some(model) => model,
+                None => {
+                    self.defer_scroll_update(update);
+                    return;
+                }
+            }
+        } else {
+            model_handle.lock()
+        };
+        let pending = std::mem::take(&mut self.deferred_scroll_updates);
+        let mut changed = false;
+        for update in pending.into_iter().chain(std::iter::once(update)) {
+            changed |= self.apply_scroll_update(&mut model, update, ctx);
+        }
+        if changed {
+            // Dismiss any visible tooltips when the scroll position changes
+            drop(model);
+            self.dismiss_tooltips(ctx);
+        }
+    }
+
+    /// Applies one scroll update to the locked model. Returns whether the position changed (the
+    /// view is already notified).
+    fn apply_scroll_update(
+        &mut self,
+        model: &mut TerminalModel,
+        update: ScrollPositionUpdate,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         // Clear the cached pre-filter scroll position if a non-filter user
         // event is detected.
         if !matches!(
@@ -10665,7 +10715,42 @@ impl TerminalView {
         let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
         if self.scroll_position.update(viewport, update, ctx) {
             ctx.notify();
-            // Dismiss any visible tooltips when the scroll position changes
+            return true;
+        }
+        false
+    }
+
+    /// Keeps a scroll update a key wanted while the model was busy. Only the updates a key
+    /// produces get here, and an update identical to the newest kept one adds nothing.
+    fn defer_scroll_update(&mut self, update: ScrollPositionUpdate) {
+        let same_as_newest = self
+            .deferred_scroll_updates
+            .last()
+            .is_some_and(|last| std::mem::discriminant(last) == std::mem::discriminant(&update));
+        let is_plain = matches!(
+            update,
+            ScrollPositionUpdate::AfterKeydownOnTerminal
+                | ScrollPositionUpdate::AfterTypedCharacters
+                | ScrollPositionUpdate::AfterWriteUserBytesToPty
+        );
+        if !(is_plain && same_as_newest) {
+            self.deferred_scroll_updates.push(update);
+        }
+    }
+
+    /// Applies the scroll updates keys left while the model was busy. Called when the model has
+    /// just finished a parse (the output wakeup), so waiting for its lock is the normal wait.
+    fn flush_deferred_scroll_updates(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.deferred_scroll_updates.is_empty() {
+            return;
+        }
+        let model_handle = self.model.clone();
+        let mut model = model_handle.lock();
+        let mut changed = false;
+        for update in std::mem::take(&mut self.deferred_scroll_updates) {
+            changed |= self.apply_scroll_update(&mut model, update, ctx);
+        }
+        if changed {
             drop(model);
             self.dismiss_tooltips(ctx);
         }
@@ -11147,7 +11232,8 @@ impl TerminalView {
     /// firing it runs the same hand-over as any event does.
     fn schedule_ssh_typeahead_give_up(&mut self, ctx: &mut ViewContext<Self>) {
         let now = Instant::now();
-        let pending = self.model.lock().pending_session_id().is_some();
+        // `model_facts`: the key snapshot while a key is being handled (this runs per held key).
+        let pending = self.model_facts().pending_session_id.is_some();
         let deadline = match self.ssh_connect_gate.as_ref() {
             Some(gate) => gate.give_up_deadline(pending),
             None => {
@@ -11371,19 +11457,49 @@ impl TerminalView {
     /// echo stops mid-line for as long as the shell is not reading (the tty input queue is full),
     /// and keys passed through on the strength of it ran inside the hidden setup block.
     fn active_output_awaits_an_answer(&self) -> bool {
-        self.active_output_ends_in_unterminated_text()
-            && !self.model.lock().is_setup_echo_mid_line()
+        self.active_output_ends_in_unterminated_text() && !self.setup_echo_is_mid_line()
+    }
+
+    /// Whether the setup script's tty echo stops mid-line. While a user key is being handled this
+    /// never waits for the pty reader (#1440): a busy model answers with the last look.
+    fn setup_echo_is_mid_line(&self) -> bool {
+        let mid_line = if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+        {
+            match self.model.try_lock() {
+                Some(model) => model.is_setup_echo_mid_line(),
+                None => return self.setup_echo_mid_line_at_last_look.get(),
+            }
+        } else {
+            self.model.lock().is_setup_echo_mid_line()
+        };
+        self.setup_echo_mid_line_at_last_look.set(mid_line);
+        mid_line
     }
 
     /// True when the active block's output has visible text and the cursor sits after text on
     /// its row (no trailing newline): the shape of a prompt, as opposed to banner output.
     fn active_output_ends_in_unterminated_text(&self) -> bool {
-        let model = self.model.lock();
+        // While a user key is being handled this never waits for the pty reader (#1440): when
+        // the model is busy parsing, the answer given at the last output wakeup stands. The
+        // wakeup that follows the parse judges the held keys again on the exact state.
+        let model = if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+        {
+            match self.model.try_lock() {
+                Some(model) => model,
+                None => return self.unterminated_text_at_last_look.get(),
+            }
+        } else {
+            self.model.lock()
+        };
         let grid = model.block_list().active_block().output_grid();
         // The visible-text test needs only the end of the output (#1354): this runs on every
         // output wakeup while a setup is deferred, and used to copy all of it each time.
-        grid.grid_handler().cursor_point().col > 0
-            && output_has_visible_text(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)))
+        let ends_in_text = grid.grid_handler().cursor_point().col > 0
+            && output_has_visible_text(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)));
+        self.unterminated_text_at_last_look.set(ends_in_text);
+        ends_in_text
     }
 
     /// #1001: whether an interrupt falls into the connect window before the remote session is
@@ -12233,6 +12349,19 @@ impl TerminalView {
             }
             None => self.key_model.load(),
         }
+    }
+
+    /// An escape sequence for a cursor key (`code` after the C1 introducer), introduced by SS3
+    /// when the program set application cursor keys mode, else CSI. Reads the mode from the key
+    /// snapshot: the exact state when the model is free, else the copy published after its last
+    /// parse; never waits for the pty reader (#1440).
+    fn build_cursor_key_sequence(&self, code: &[u8]) -> Vec<u8> {
+        let c1 = if self.read_key_snapshot().app_cursor {
+            C1::SS3
+        } else {
+            C1::CSI
+        };
+        EscCodes::build_escape_sequence_with_c1(c1, code)
     }
 
     /// Whether a user key is being handled on this thread right now (`KeyPathScope`).
@@ -13415,6 +13544,13 @@ impl TerminalView {
     /// This function is invoked every time there is some form of view event
     /// such as a state change or terminal wakeup to update the view context.
     fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
+        // #1442: bookkeeping the key path left for the model was dropped because the inbox was
+        // full (the pty reader sat in the model's lock for a very long time): tell the user.
+        if self.model_inbox.take_overflow_report() > 0 {
+            self.on_input_buffer_overflow(ctx);
+        }
+        // #1440: scroll updates keys left while the model was parsing.
+        self.flush_deferred_scroll_updates(ctx);
         // #1384 P5: the first output after the alt screen was entered re-sends the window size.
         #[cfg(feature = "local_tty")]
         if self.alt_screen_resend_pending {
@@ -17305,6 +17441,7 @@ impl TerminalView {
             ModelEvent::SSHControlMasterError => {
                 self.handle_control_master_error(ctx);
             }
+            ModelEvent::InputBufferOverflow => self.on_input_buffer_overflow(ctx),
             ModelEvent::BlockMetadataReceived(block_metadata_received_event) => {
                 self.apply_block_metadata_update(
                     &block_metadata_received_event.block_metadata,
@@ -29387,8 +29524,7 @@ impl TerminalView {
             }
         } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
             self.on_ssh_warpification_key_event(None, ctx);
-            let sequence =
-                EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_UP]);
+            let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_UP]);
             self.write_passive_input_to_pty(sequence, ctx);
         }
     }
@@ -29544,8 +29680,7 @@ impl TerminalView {
                 }
             }
         } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
-            let sequence =
-                EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_DOWN]);
+            let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_DOWN]);
             self.write_passive_input_to_pty(sequence, ctx);
         }
     }
@@ -29576,7 +29711,7 @@ impl TerminalView {
         if (self.is_long_running() && !self.agent_owns_command_pty())
             || self.typeahead_handoff_routes_keys_to_pty()
         {
-            let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"H");
+            let sequence = self.build_cursor_key_sequence(b"H");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterHome, ctx);
@@ -29587,7 +29722,7 @@ impl TerminalView {
         if (self.is_long_running() && !self.agent_owns_command_pty())
             || self.typeahead_handoff_routes_keys_to_pty()
         {
-            let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"F");
+            let sequence = self.build_cursor_key_sequence(b"F");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterEnd, ctx);
@@ -33377,6 +33512,13 @@ impl TerminalSurface for TerminalView {
         self.drain_young_hold_ends(ctx);
     }
 
+    fn on_input_buffer_overflow(&mut self, ctx: &mut ViewContext<Self>) {
+        self.show_ssh_typing_toast(
+            "Too much input is waiting to be sent to this terminal; the newest keys were discarded, not run",
+            ctx,
+        );
+    }
+
     fn on_command_coalesced(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
         const MAX_COMMAND_LENGTH: usize = 43;
         let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
@@ -35182,8 +35324,10 @@ impl pane_key::TypedRouteProbes for TypedKeyProbes<'_, '_> {
     }
 
     fn input_box_visible(&mut self) -> bool {
-        let model = self.view.model.lock();
-        self.view.is_input_box_visible(&model, self.ctx)
+        // From the key snapshot: the exact state when the model is free, else the copy the model
+        // published after its last parse. A key never waits for the pty reader (#1440).
+        let facts = self.view.read_key_snapshot().input_box;
+        self.view.is_input_box_visible_with(&facts, self.ctx)
     }
 }
 
@@ -36163,6 +36307,14 @@ impl MenuPositioningProvider for TerminalViewMenuPositioningProvider {
 
 impl Drop for TerminalView {
     fn drop(&mut self) {
+        // #1441: closing a pane drops whatever it still holds (typed keys behind a gate, ssh-held
+        // typeahead, an in-flight paste). Never silent; counts only.
+        if let Some(queue) = self.paste_queue.queue.try_peek()
+            && let Some(line) =
+                paste_queue::dropped_input_summary(&queue, self.paste_queue.payloads.len())
+        {
+            log::warn!("{line}");
+        }
         if let Some((is_bootstrapped, pending_shell, has_pending_ssh_session)) =
             self.model.try_lock().map(|model| {
                 (

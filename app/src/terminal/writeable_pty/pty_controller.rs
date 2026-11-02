@@ -186,9 +186,13 @@ impl NativeShellCompletionsState {
     }
 }
 
+/// The most input held while tmux control mode waits for its primary pane (#1442): the ssh hold's
+/// 64 KiB. Control mode is ready within a round trip; this is only reached when it never is.
+pub(crate) const MAX_TMUX_PENDING_BYTES: usize = 64 * 1024;
+
 enum TmuxControlMode {
     /// Tmux control mode is started, but we don't have the primary pane yet.
-    Pending { buffer: Vec<u8> },
+    Pending { buffer: Vec<u8>, overflowed: bool },
     /// Tmux control mode is active.
     Active { primary_pane: u32 },
 }
@@ -371,6 +375,7 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
                     buffer: Default::default(),
+                    overflowed: false,
                 });
             }
             ModelEvent::Handler(AnsiHandlerEvent::RunTmuxCommand(command)) => {
@@ -400,7 +405,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 let previous_control_mode_state = me.tmux_control_mode.replace(TmuxControlMode::Active {
                         primary_pane: *primary_pane,
                     });
-                if let Some(TmuxControlMode::Pending { buffer }) = previous_control_mode_state {
+                if let Some(TmuxControlMode::Pending { buffer, .. }) = previous_control_mode_state {
                     me.send_write_to_event_loop(
                         PtyWrite::Bytes {
                             bytes: Cow::Owned(buffer),
@@ -2182,7 +2187,21 @@ impl<T: EventLoopSender> PtyController<T> {
         let bytes_to_write = match &mut self.tmux_control_mode {
             None => bytes_to_write,
             Some(_) if raw_tmux_command => bytes_to_write,
-            Some(TmuxControlMode::Pending { buffer }) => {
+            Some(TmuxControlMode::Pending { buffer, overflowed }) => {
+                // #1442: held until the primary pane is known, which may never come; bounded
+                // like the ssh hold. Past the cap the new bytes are dropped (never a prefix of a
+                // line: whole writes only), logged once, and the user is told.
+                if buffer.len() + bytes_to_write.len() > MAX_TMUX_PENDING_BYTES {
+                    if !*overflowed {
+                        *overflowed = true;
+                        log::warn!(
+                            "tmux control mode: pending input buffer full ({} bytes), dropping further input until the session is ready",
+                            buffer.len()
+                        );
+                        ctx.emit(PtyControllerEvent::InputBufferOverflow);
+                    }
+                    return false;
+                }
                 buffer.extend_from_slice(&bytes_to_write);
                 return false;
             }
@@ -2318,6 +2337,9 @@ pub enum PtyControllerEvent {
     /// hold, and the hand-off ended that hold (#1353 phase 5b): the view takes or drops the
     /// gate's entries.
     YoungHoldEnded,
+    /// Input was dropped because a buffer on the way to the pty was full (#1442): the surface
+    /// tells the user.
+    InputBufferOverflow,
 }
 
 impl<T: EventLoopSender> Entity for PtyController<T> {

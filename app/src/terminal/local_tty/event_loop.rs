@@ -173,6 +173,10 @@ pub struct State {
     /// A pty write error met while writing in the middle of a read pass (#1408); reported when
     /// the pass returns.
     mid_read_write_error: Option<io::Error>,
+    /// Inputs dropped for [`MAX_QUEUED_WRITES`] since the surface was last told (#1442).
+    input_overflow_dropped: u64,
+    /// The surface has not been told about `input_overflow_dropped` yet.
+    input_overflow_unreported: bool,
 }
 
 /// `PHOSPHOR_PTY_COALESCE=0` turns key-write coalescing off.
@@ -237,6 +241,13 @@ const REPLY_GATE_SLOW_AFTER: Duration = Duration::from_secs(1);
 /// replies dropped; nobody can read them from a cooked tty anyway.
 const MAX_GATED_REPLIES: usize = 1024;
 
+/// Most writes the pty's FIFO keeps (#1442). It only grows while the child does not read its tty
+/// (a hung program) and keys keep coming: 180 s of the fastest key repeat is ~11,000 writes, the
+/// bound is six times that. Past it the newest user input is dropped, logged once and reported
+/// to the surface ([`State::take_input_overflow_report`]); a signal byte (^C ^D ^Z ^\\) is never
+/// dropped, and replies have their own bound ([`MAX_GATED_REPLIES`]).
+const MAX_QUEUED_WRITES: usize = 64 * 1024;
+
 /// A queued pty write. `produced_while_executing` is `Some(block id)` for a reply to a
 /// terminal query (DA, OSC colors, ...) that was generated while that block was
 /// executing a command; such a reply still unwritten after the command finished is
@@ -281,6 +292,8 @@ impl Default for State {
             coalesce_keys: false,
             terminate_requested: None,
             mid_read_write_error: None,
+            input_overflow_dropped: 0,
+            input_overflow_unreported: false,
         }
     }
 }
@@ -570,8 +583,35 @@ impl State {
         }
     }
 
-    /// Queues user input; never dropped.
+    /// Whether `bytes` of user input may join the FIFO (#1442). Refused (counted, logged once, to
+    /// be reported to the surface) only when the FIFO is at [`MAX_QUEUED_WRITES`]; a signal byte
+    /// always gets in.
+    fn user_input_has_room(&mut self, bytes: &[u8]) -> bool {
+        if self.write_list.len() < MAX_QUEUED_WRITES || is_signal_byte(bytes) {
+            return true;
+        }
+        self.input_overflow_dropped += 1;
+        if !self.input_overflow_unreported {
+            self.input_overflow_unreported = true;
+            log::warn!(
+                "pty write queue full ({} writes waiting, the child is not reading): dropping the newest user input",
+                self.write_list.len()
+            );
+        }
+        false
+    }
+
+    /// Whether input was dropped since the last call (the surface is told once per episode).
+    fn take_input_overflow_report(&mut self) -> bool {
+        std::mem::take(&mut self.input_overflow_unreported)
+    }
+
+    /// Queues user input. Dropped only past [`MAX_QUEUED_WRITES`] (#1442), see
+    /// [`Self::user_input_has_room`].
     fn queue_input(&mut self, bytes: Cow<'static, [u8]>) {
+        if !self.user_input_has_room(&bytes) {
+            return;
+        }
         let id = self.alloc_job_id();
         self.write_list.push_back(QueuedWrite {
             id,
@@ -616,6 +656,9 @@ impl State {
     }
 
     fn queue_classed(&mut self, bytes: Cow<'static, [u8]>, class: JobClass) {
+        if !self.user_input_has_room(&bytes) {
+            return;
+        }
         let id = self.alloc_job_id();
         self.write_list.push_back(QueuedWrite {
             id,
@@ -1117,6 +1160,10 @@ where
         }
         if let Some(size) = pending_resize {
             self.pty.on_resize(&size);
+        }
+        if state.take_input_overflow_report() {
+            self.event_listener
+                .send_terminal_event(crate::terminal::event::Event::InputBufferOverflow);
         }
 
         ChannelResult::Continue

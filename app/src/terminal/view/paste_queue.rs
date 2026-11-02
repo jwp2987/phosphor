@@ -50,6 +50,24 @@ use crate::terminal::input_queue::{
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
 
+/// A warning line for a pane closed while it still held input (#1441): entries and bytes queued
+/// or held (typed keys, ssh-held typeahead, pastes), pastes still being read from the clipboard
+/// and pastes read but not delivered. Counts only, never content. `None` when nothing was lost.
+pub(super) fn dropped_input_summary(
+    queue: &crate::terminal::input_queue::InputQueue,
+    unsent_paste_payloads: usize,
+) -> Option<String> {
+    let (entries, bytes) = queue.queued_summary();
+    let paste_reading = queue.has_pty_paste_reading() || queue.has_editor_paste_reading();
+    if entries == 0 && !paste_reading && unsent_paste_payloads == 0 {
+        return None;
+    }
+    Some(format!(
+        "pane closed with input not delivered: queued_entries={entries} queued_bytes={bytes} paste_being_read={paste_reading} pastes_read_not_delivered={unsent_paste_payloads} gates={}",
+        queue.gates().len()
+    ))
+}
+
 /// What the pane's paste ordering needs: the queue, the paste bytes waiting for their turn, and
 /// the id counter.
 pub(super) struct PasteQueueState {
@@ -463,6 +481,20 @@ impl Host for PtyQueueHost<'_, '_> {
 
     fn warn(&mut self, line: &str) {
         log::warn!("{line}");
+    }
+
+    fn overflowed(&mut self, first: bool, dropped: u64, queued: usize) {
+        if first || dropped % 4096 == 0 {
+            log::warn!(
+                "input queue full ({queued} entries waiting): dropped {dropped} newest arrival(s)"
+            );
+        }
+        if first {
+            self.view.show_ssh_typing_toast(
+                "Too much input is waiting to be sent to this terminal; the newest keys were discarded, not run",
+                self.ctx,
+            );
+        }
     }
 
     fn log_enabled(&self) -> bool {
