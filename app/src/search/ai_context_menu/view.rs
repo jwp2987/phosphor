@@ -73,15 +73,6 @@ const SEARCH_DEBOUNCE_PERIOD: Duration = Duration::from_millis(60);
 const DETAILS_PANEL_MARGIN: f32 = 4.0;
 const PANEL_POSITION_ID: &str = "AIContextMenuPanel";
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AIContextMenuPosition {
-    /// The user clicked the AI Context Menu button.
-    AtButton,
-    /// If this is at the user's cursor, then we don't need to show a
-    /// text input field.
-    AtCursor,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AIContextMenuCategory {
     CurrentFolderFiles,

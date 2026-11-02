@@ -31,10 +31,7 @@ pub use ::ai::agent::ask_user_question_session::{
     QuestionDraft,
 };
 pub use repo_metadata::repositories::RepoDetectionSource;
-use warp_completer::completer::{
-    CompleterOptions, CompletionContext as _, EngineFileType, TopLevelCommandCaseSensitivity,
-    suggestions as completer_suggestions,
-};
+use warp_completer::completer::{CompletionContext as _, TopLevelCommandCaseSensitivity};
 use warp_completer::signatures::CommandRegistry;
 
 pub use crate::ai::agent::api::ServerConversationToken;
@@ -305,49 +302,6 @@ pub struct TuiCompletionCandidate {
 pub struct TuiCompletionResults {
     pub candidates: Vec<TuiCompletionCandidate>,
     pub replacement_span: std::ops::Range<usize>,
-}
-
-/// Fetches shell command/path completion candidates from the shared completer
-/// engine for `line` at byte offset `pos`. Async and potentially I/O-bound (it
-/// may hit the filesystem / shell), so callers must run it off the UI thread.
-///
-/// Mirrors the GUI's completion fetch: the engine already matches candidates
-/// against the token under the cursor, so the returned list is ready to display.
-pub async fn tui_fetch_completions(
-    line: String,
-    pos: usize,
-    completion_context: SessionContext,
-) -> Option<TuiCompletionResults> {
-    let results = completer_suggestions(
-        &line,
-        pos,
-        None,
-        CompleterOptions::default(),
-        &completion_context,
-    )
-    .await?;
-    if results.suggestions.is_empty() {
-        return None;
-    }
-    let replacement_span: std::ops::Range<usize> = results.replacement_span.into();
-    let candidates = results
-        .suggestions
-        .into_iter()
-        .filter(|matched| !matched.suggestion.is_hidden)
-        .map(|matched| TuiCompletionCandidate {
-            display: matched.display().to_string(),
-            replacement: matched.replacement().to_string(),
-            description: matched.description(),
-            is_directory: matched.suggestion.file_type == Some(EngineFileType::Directory),
-        })
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return None;
-    }
-    Some(TuiCompletionResults {
-        candidates,
-        replacement_span,
-    })
 }
 
 pub use crate::ai::execution_profiles::profiles::ClientProfileId;

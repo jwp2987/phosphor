@@ -63,15 +63,6 @@ impl PricingInfoModel {
         ctx.emit(PricingInfoModelEvent::PricingInfoUpdated);
     }
 
-    /// Returns the pricing for a specific plan.
-    pub fn plan_pricing(&self, plan: &StripeSubscriptionPlan) -> Option<&PlanPricing> {
-        self.pricing_info
-            .as_ref()?
-            .plans
-            .iter()
-            .find(|p| &p.plan == plan)
-    }
-
     pub fn addon_credits_options(&self) -> Option<&[AddonCreditsOption]> {
         self.pricing_info
             .as_ref()

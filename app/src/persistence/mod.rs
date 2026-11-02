@@ -590,10 +590,6 @@ pub(crate) struct SendablePersistedData {
 
 #[allow(dead_code)]
 fn assert_send<T: Send>() {}
-#[allow(dead_code)]
-fn sendable_persisted_data_is_send() {
-    assert_send::<SendablePersistedData>();
-}
 
 impl SendablePersistedData {
     /// `None` when `data` holds cloud objects, which cannot be moved. The destructuring names

@@ -38,7 +38,7 @@ use crate::terminal::keys_settings::KeysSettings;
 use crate::terminal::shell::ShellType;
 use crate::terminal::view::cell_size_and_padding;
 use crate::themes::onboarding_theme_picker_themes;
-use crate::themes::theme::{AnsiColorIdentifier, Blend, Fill, ThemeKind, WarpThemeConfig};
+use crate::themes::theme::{AnsiColorIdentifier, Blend, ThemeKind, WarpThemeConfig};
 use crate::uri::OpenMCPSettingsArgs;
 use crate::util::bindings::{self, is_binding_pty_compliant};
 use crate::util::traffic_lights::{traffic_light_data, TrafficLightData, TrafficLightMouseStates};
@@ -84,9 +84,7 @@ use warpui::windowing::WindowManager;
 use crate::ai::llms::{LLMPreferences, LLMPreferencesEvent};
 use crate::ai::onboarding::build_onboarding_models;
 
-use warpui::elements::{
-    Border, ChildAnchor, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack,
-};
+use warpui::elements::{ChildAnchor, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack};
 use warpui::rendering::OnGPUDeviceSelected;
 use warpui::{id, AddWindowOptions, DisplayId, SingletonEntity};
 use warpui::{
@@ -116,21 +114,6 @@ fn window_title() -> String {
 lazy_static! {
     static ref FALLBACK_WINDOW_SIZE: Vector2F = vec2f(800.0, 600.0);
     static ref QUAKE_STATE: Arc<Mutex<Option<QuakeModeState>>> = Arc::new(Mutex::new(None));
-}
-
-/// This is the color of the border wrapping the whole window.
-///
-/// On MacOS, this is drawn for us by the OS. On other platforms, we must draw it ourselves. Note
-/// that this is hard-coded for the default Dark theme. This is because it is only used by the
-/// AuthView and OnboardingSurveyModal which do not respect the chosen theme. So, do not use this for Views
-/// which respect themes.
-pub(crate) fn unthemed_window_border() -> Border {
-    if cfg!(all(not(target_os = "macos"), not(target_family = "wasm"))) {
-        // The 15% blend of fg into bg is the "ui surface" color.
-        Border::all(1.).with_border_fill(Fill::black().blend(&Fill::white().with_opacity(15)))
-    } else {
-        Border::all(1.).with_border_fill(Fill::black().with_opacity(0))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1066,11 +1049,6 @@ pub fn quake_mode_window_id() -> Option<WindowId> {
     let quake_mode_state = QUAKE_STATE.lock();
 
     quake_mode_state.as_ref().map(|state| state.window_id)
-}
-
-pub fn set_quake_mode(new_state: Option<QuakeModeState>) {
-    let mut quake_mode_state = QUAKE_STATE.lock();
-    *quake_mode_state = new_state;
 }
 
 fn move_quake_mode_window_from_screen_change(settings: &QuakeModeSettings, ctx: &mut AppContext) {

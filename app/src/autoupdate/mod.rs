@@ -367,12 +367,6 @@ impl AutoupdateState {
         )
     }
 
-    /// Trigger the update check to /client_version/daily, but only go through with sending the
-    /// request if we haven't done that today.
-    pub fn maybe_daily_check_for_update(&mut self, ctx: &mut ModelContext<Self>) {
-        self.enqueue_request(RequestType::DailyCheck, ctx)
-    }
-
     /// Check if an update is available.
     ///
     /// The caller is responsible for checking that we _should_ check for an update. Generally, the

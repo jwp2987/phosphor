@@ -527,39 +527,6 @@ impl<A: Action + Clone> MenuItemFields<A> {
         }
     }
 
-    /// Creates a new menu item with vertically stacked primary and secondary text.
-    /// This is useful for items that need both a title and description/subtitle,
-    /// such as slash commands with their descriptions.
-    pub fn new_with_stacked_label<T: Into<String>>(title: T, subtitle: T) -> Self {
-        MenuItemFields {
-            element: MenuItemLabel::StackedText {
-                primary_text: title.into(),
-                secondary_text: subtitle.into(),
-            },
-            timestamp: None,
-            on_select_action: None,
-            key_shortcut_label: None,
-            disabled: false,
-            mouse_state: Default::default(),
-            icon: None,
-            override_icon_color: None,
-            override_font_family: None,
-            override_font_size: None,
-            override_text_color: None,
-            highlight_on_hover: true,
-            indent: false,
-            no_interaction_on_hover: false,
-            vertical_padding_override: None,
-            horizontal_padding_override: None,
-            has_submenu: false,
-            tooltip: None,
-            tooltip_position: MenuTooltipPosition::default(),
-            right_side_label: None,
-            override_hover_background_color: None,
-            icon_size_override: None,
-        }
-    }
-
     pub fn new_with_icon(icon_path: &'static str, icon_color: Fill, icon_label: String) -> Self {
         MenuItemFields {
             element: MenuItemLabel::Icon {
@@ -2214,10 +2181,6 @@ impl<A: Action + Clone> Menu<A> {
         self.border = border;
     }
 
-    pub fn set_flatten_bottom_corners(&mut self, flatten: bool) {
-        self.flatten_bottom_corners = flatten;
-    }
-
     /// Set a pinned footer element
     /// **inside** the `Dismiss`, so clicks on it never trigger the dismiss handler.
     /// Use `on_click` (not `on_mouse_down`) on interactive elements in the footer.
@@ -2230,15 +2193,6 @@ impl<A: Action + Clone> Menu<A> {
 
     pub fn clear_pinned_footer_builder(&mut self) {
         self.pinned_footer_builder = None;
-    }
-
-    /// Set a pinned header element rendered above the scrollable items
-    /// **inside** the `Dismiss`, so clicks on it never trigger the dismiss handler.
-    pub fn set_pinned_header_builder<F>(&mut self, builder: F)
-    where
-        F: Fn(&AppContext) -> Box<dyn Element> + 'static,
-    {
-        self.pinned_header_builder = Some(Box::new(builder));
     }
 
     pub fn clear_pinned_header_builder(&mut self) {
@@ -2256,13 +2210,6 @@ impl<A: Action + Clone> Menu<A> {
 
     pub fn set_height(&mut self, height: f32) {
         self.menu.with_height(height);
-    }
-
-    /// Switches the menu variant at runtime (e.g. temporarily switching the
-    /// same `Menu` instance to `Scrollable` for the OneKey password
-    /// candidate popup, then switching back to `Fixed` after it closes).
-    pub fn set_menu_variant(&mut self, menu_variant: MenuVariant) {
-        self.menu.with_menu_variant(menu_variant);
     }
 
     pub fn set_items(
@@ -2899,37 +2846,9 @@ impl<A: Action + Clone> MenuItem<A> {
         matches!(self, MenuItem::Separator)
     }
 
-    /// Returns true iff a and b are "approximately" equal. By "approximately", we mean:
-    /// - they are either both separators
-    /// - or, they are both single items with the same label
-    /// - or, they are both item rows with items whose labels match pairwise
-    pub fn is_approximately_same_item_as(&self, other: &MenuItem<A>) -> bool {
-        match (self, other) {
-            (MenuItem::Separator, MenuItem::Separator) => true,
-            (MenuItem::Item(self_fields), MenuItem::Item(other_fields)) => {
-                self_fields.label() == other_fields.label()
-            }
-            (
-                MenuItem::ItemsRow { items: self_items },
-                MenuItem::ItemsRow { items: other_items },
-            ) => {
-                self_items.len() == other_items.len()
-                    && self_items
-                        .iter()
-                        .zip(other_items)
-                        .all(|(self_fields, other_fields)| {
-                            self_fields.label() == other_fields.label()
-                        })
-            }
-            _ => false,
-        }
-    }
 }
 
 impl<A: Action + Clone> Menu<A> {
-    pub fn submenu_row_save_position_id(&self, row_index: usize) -> String {
-        SubMenu::<A>::save_position_id(self.submenu_position_namespace, 0, row_index)
-    }
 }
 
 #[cfg(test)]

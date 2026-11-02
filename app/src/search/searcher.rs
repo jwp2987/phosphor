@@ -1055,10 +1055,6 @@ impl<C: SearchSchemaConfig> FullTextSearchSchema<C> {
         self.weighted_search_fields.insert(field_name, weight);
     }
 
-    #[allow(unused)]
-    pub fn add_id_field(&mut self, field_name: String, field_type: FullTextSearchFieldTypes) {
-        self.id_fields.insert(field_name, field_type);
-    }
 }
 
 pub trait SearchDocumentEntry: FullTextSearchMatchValues {
