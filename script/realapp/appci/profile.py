@@ -171,8 +171,9 @@ class Profile:
     WIN_OPENSSH = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH")
 
     def write_ssh_windows(self, port, ident):
-        """Windows: the client is the built-in Win32-OpenSSH (System32\\OpenSSH\\ssh.exe), which reads the user config from the PROFILE
-        directory, not %HOME%: so `ssh fake` is resolved through wrappers in <home>/bin (first on the app's PATH) that pass `-F <home>/.ssh/config`:
+        """Windows: the PowerShell pane's client is the built-in Win32-OpenSSH (System32\\OpenSSH\\ssh.exe), which reads the user config from the PROFILE
+        directory, not %HOME%; the Git Bash pane's is Git for Windows' own ssh (win_client). Either way `ssh fake` is resolved through wrappers in
+        <home>/bin (first on the app's PATH) that pass `-F <home>/.ssh/config`:
         `ssh` (sh, written for the Git Bash pane) or `ssh.cmd` (PowerShell pane; found before System32\\OpenSSH\\ssh.exe).
         Win32-OpenSSH refuses key files other users can read, so the scratch key and config get an owner-only ACL (icacls, our own files only)."""
         h = self.home
@@ -185,14 +186,40 @@ class Profile:
         for f in (cfg, ident):
             subprocess.run(["icacls", f, "/inheritance:r", "/grant:r", "%s:F" % user], capture_output=True)
         for t in self.TOOLS:
-            real = os.path.join(self.WIN_OPENSSH, t + ".exe")
-            if not os.path.isfile(real):
-                continue
             if self.pane == "gitbash":
-                _wr(os.path.join(h, "bin", t), '#!/bin/sh\n# appci: Win32-OpenSSH reads the profile dir, not HOME (#1481)\nexec "%s" -F "%s" "$@"\n' % (_fwd(real), _fwd(cfg)))
+                real = self.win_client(t, True)
+                if real:
+                    _wr(os.path.join(h, "bin", t), '#!/bin/sh\n# appci: the ssh a Git Bash user gets (Git for Windows\' own), config from the scratch home (#1481)\nexec "%s" -F "%s" "$@"\n' % (_fwd(real), _fwd(cfg)))
             else:       # PowerShell resolves `ssh` to ssh.cmd (never an extensionless file: it would be "opened" through a file association)
-                with open(os.path.join(h, "bin", t + ".cmd"), "w", newline="\r\n") as f:
-                    f.write('@echo off\n"%s" -F "%s" %%*\n' % (real, cfg.replace("/", "\\")))
+                real = self.win_client(t, False)
+                if real:
+                    with open(os.path.join(h, "bin", t + ".cmd"), "w", newline="\r\n") as f:
+                        f.write('@echo off\n"%s" -F "%s" %%*\n' % (real, cfg.replace("/", "\\")))
+        # The REMOTE shell is always Git Bash (fakesshd_win.py), so a nested `ssh fake` typed there needs the same host entry and an sh wrapper in
+        # the remote home (ssh_nested_typeahead; the Mac fix of 907e1171e, same cause): config copy + <rhome>/bin/ssh -F <rhome>/.ssh/config.
+        rh = self.rhome
+        os.makedirs(rh + "/.ssh", exist_ok=True)
+        os.makedirs(rh + "/bin", exist_ok=True)
+        shutil.copyfile(cfg, rh + "/.ssh/config")
+        for f in (rh + "/.ssh/config",):
+            subprocess.run(["icacls", f, "/inheritance:r", "/grant:r", "%s:F" % user], capture_output=True)
+        for t in self.TOOLS:
+            real = self.win_client(t, True)
+            if real:
+                _wr(os.path.join(rh, "bin", t), '#!/bin/sh\n# appci: nested ssh from the remote shell (the remote home is a different HOME)\nexec "%s" -F "%s" "$@"\n' % (_fwd(real), _fwd(rh + "/.ssh/config")))
+
+    def win_client(self, tool, bash):
+        """the ssh-family client a pane's shell would really run: Git for Windows' own (usr/bin) for Git Bash (it comes first on a Git Bash user's PATH, and
+        unlike Win32-OpenSSH it supports the ControlMaster options Phosphor's ssh wrapper adds: r18cj showed `getsockname failed: Not a socket` from
+        System32\\OpenSSH\\ssh.exe in the Git Bash pane), else System32\\OpenSSH; the PowerShell pane (no wrapper) uses the Win32-OpenSSH it has."""
+        if bash:
+            import winapi
+            for d in reversed(winapi.git_dirs()):
+                p = os.path.join(d, tool + ".exe")
+                if os.path.isfile(p):
+                    return p
+        p = os.path.join(self.WIN_OPENSSH, tool + ".exe")
+        return p if os.path.isfile(p) else None
 
     def write_ssh_wrappers(self, home=None):
         """OpenSSH reads ~/.ssh/config from the PASSWD home, not $HOME (#1481): on a runner whose passwd home differs from the scratch HOME,
@@ -214,8 +241,11 @@ class Profile:
         (BatchMode is in the config) must succeed. Returns None when it does, else a skip reason carrying ssh's stderr."""
         env = dict(os.environ, HOME=self.home, PATH=os.path.join(self.home, "bin") + os.pathsep + os.environ.get("PATH", os.defpath))
         argv = ["ssh", "fake", "true"]
-        if self.win:        # run the real client with the config, as the wrapper does (the .cmd is for the shells)
-            argv = [os.path.join(self.WIN_OPENSSH, "ssh.exe"), "-F", self.home + "/.ssh/config", "fake", "true"]
+        if self.win:        # run the pane's real client with the config, as the wrapper does (the .cmd/sh wrappers are for the shells)
+            client = self.win_client("ssh", self.pane == "gitbash")
+            if not client:
+                return "ssh test host unusable: no ssh client found (Git for Windows usr\\bin\\ssh.exe or System32\\OpenSSH\\ssh.exe)"
+            argv = [client, "-F", self.home + "/.ssh/config", "fake", "true"]
         try:
             p = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
@@ -224,6 +254,21 @@ class Profile:
             return "ssh test host unusable: cannot run ssh (%s)" % e
         if p.returncode != 0:
             return "ssh test host unusable: `ssh fake true` exited %d: %s" % (p.returncode, (p.stderr or "").strip()[:300])
+        if self.win and self.pane == "gitbash":
+            # Phosphor's bash ssh wrapper starts a ControlMaster (-o ControlMaster=yes -o ControlPath=...) on every ssh. A plain probe passed in r18cj while the pane's
+            # ssh died in ~1 s with `getsockname failed: Not a socket` (Win32-OpenSSH has no multiplexing), so the ssh cases blamed the app for a client that cannot work.
+            # Probe the same option set; a client that fails it SKIPS the ssh cases with its own error as the reason.
+            import tempfile
+            d = tempfile.mkdtemp(prefix="pcm")
+            try:
+                a2 = [client, "-F", self.home + "/.ssh/config", "-o", "ControlMaster=yes", "-o", "ControlPath=" + _fwd(os.path.join(d, "cm")), "-o", "ControlPersist=3", "fake", "true"]
+                p = subprocess.run(a2, env=env, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                if p.returncode != 0:
+                    return "ssh test host unusable for Phosphor's ssh wrapper: %s cannot start a ControlMaster (exit %d): %s" % (client, p.returncode, (p.stderr or "").strip()[:300])
+            except (subprocess.TimeoutExpired, OSError) as e:
+                return "ssh test host unusable for Phosphor's ssh wrapper: ControlMaster probe failed (%s)" % e
+            finally:
+                shutil.rmtree(d, ignore_errors=True)
         return None
 
     OWNER_SEED = os.path.join(os.path.expanduser("~"), ".config", "phosphor-ci", "owner-settings.toml")

@@ -956,6 +956,7 @@ app-test-windows:
       - appci-out/windows/run/junit.xml
       - appci-out/windows/run/shots/
       - appci-out/windows/run/logs/
+      - appci-out/windows/run/inject.log
       - appci-out/windows/install.log
       - appci-out/reused_build.json
     reports:

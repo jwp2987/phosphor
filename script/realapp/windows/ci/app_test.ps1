@@ -104,7 +104,9 @@ finally {
 # ---- report: results.json / junit.xml / summary.md again, now including the wrapper's rows (restore, preflight) ----
 $rrc = 1
 if (Test-Path $Py) {
-  if (Test-Path (Join-Path $Run "report_meta.json")) { & $Py (Join-Path $AppciDir "run.py") --run $Run --report-only; $rrc = $LASTEXITCODE }
+  # --backend/--platform are passed although report_meta.json carries them: run.py's parser used to REQUIRE --backend, died with a usage error here, and the
+  # restore row never reached results.json or summary.md (r18cj; the restore itself had passed). run.py no longer requires it with --report-only.
+  if (Test-Path (Join-Path $Run "report_meta.json")) { & $Py (Join-Path $AppciDir "run.py") --run $Run --report-only --backend windows --platform windows; $rrc = $LASTEXITCODE }
   else { & $Py (Join-Path $AppciDir "report.py") $Run "platform=windows" "backend=windows" "commit=$env:CI_COMMIT_SHORT_SHA"; $rrc = $LASTEXITCODE }
 } else { "no Python: no report could be generated" }
 if ($rrc -ne 0 -or $script:Fail -gt 0 -or ($pyrc -ne 0)) { exit 1 } else { exit 0 }

@@ -156,7 +156,9 @@ class Srv(paramiko.ServerInterface):
         return "publickey,password"
 
     def check_auth_publickey(s, u, key):
-        return paramiko.AUTH_SUCCESSFUL if key == CK else paramiko.AUTH_FAILED
+        ok = key == CK
+        log("auth publickey user=%s key=%s %s -> %s" % (u, key.get_name(), key.get_fingerprint().hex(), "ok" if ok else "REJECTED (not the scratch client key)"))
+        return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
 
     def check_auth_password(s, u, p):
         log("password attempt rejected (len %d)" % len(p))
@@ -188,6 +190,13 @@ class Srv(paramiko.ServerInterface):
 
 
 def serve(sock):
+    # every connection is logged (r18cj: a connection that fails authentication used to leave NO line, so "ssh never connected" and "ssh was refused" looked the same)
+    try:
+        peer = sock.getpeername()
+    except Exception:
+        peer = "?"
+    log("connect from", peer)
+    chans = 0
     try:
         t = paramiko.Transport(sock)
         t.add_server_key(HK)
@@ -201,7 +210,9 @@ def serve(sock):
                 if not t.is_active():
                     break
                 continue
+            chans += 1
             threading.Thread(target=handle, args=(ch, srv), daemon=True).start()
+        log("connection closed: authenticated=%s channels=%d" % (t.is_authenticated(), chans))
     except Exception as e:
         log("serve err", repr(e))
 

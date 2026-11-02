@@ -18,7 +18,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
     ap.add_argument("--bin", default="")
-    ap.add_argument("--backend", required=True)
+    ap.add_argument("--backend", default="")      # required unless --report-only (checked below); the wrapper's report-only call used to die on "--backend is required" and the restore row never reached results.json (r18cj)
     ap.add_argument("--modes", default="terminal,agent")
     ap.add_argument("--cases", default="")
     ap.add_argument("--skip", default="")
@@ -28,6 +28,8 @@ def main():
     ap.add_argument("--startup-timeout", type=int, default=90)
     ap.add_argument("--report-only", action="store_true", help="only (re)generate results.json / junit.xml / summary.md from results.jsonl")
     a = ap.parse_args()
+    if not a.report_only and not a.backend:
+        ap.error("the following arguments are required: --backend")
     import signal
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))     # cancelled job: unwind through the finally blocks (app.stop, sshd.stop)
     if hasattr(signal, "SIGBREAK"):
@@ -198,8 +200,23 @@ def main():
                     continue
                 if status == "fail":
                     exit_fail = True
+                    if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
+                        save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
                 emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1),
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
+                if win and (status == "fail" or c["name"] == "ctrl_c_d") and not ctx.pane_responsive():
+                    # a wedged pane makes every later case fail for a reason that is not theirs (r18cj: PowerShell pane stuck after ctrl_c_d, so ssh_* and
+                    # latency_enter measured nothing). Say so in its own row, relaunch the app, and prove the keys again.
+                    emit(dict(name="pane_wedged_after_" + c["name"], mode=label, status="fail", seconds=0, shots=[ctx.shot("wedged_after_" + c["name"]) or ""],
+                              detail=["the %s pane did not run a marker command after %s (no prompt came back): the app is relaunched so the remaining cases measure something" % (pane or "default", c["name"])]))
+                    exit_fail = True
+                    keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+                    instance += 1
+                    app.stop()
+                    app.start()
+                    await_shell(ctx, app, prof, win, a.startup_timeout)
+                    be.guard()
+                    proved = False
         except backend.NeedsOwner as e:
             msg = "NEEDS OWNER: %s" % e
             print(msg, flush=True)
@@ -230,13 +247,36 @@ def main():
                 except Exception:
                     pass
             for src, dst in ((log_src(prof, a.backend, app), "phosphor.log"), (run + "/app.stdout", "app.stdout"),
-                             (run + "/ssh/sshd.log", "sshd.log")):
+                             (run + "/ssh/sshd.log", "sshd.log"), (run + "/ssh/fakesshd.stderr", "fakesshd.stderr")):
                 if os.path.exists(src):
                     t = ci_env.redact(app_log_text(src) if dst == "phosphor.log" else open(src, errors="replace").read(), ollama_url)   # the endpoint never reaches an artifact
                     open(os.path.join(logs, dst), "w").write(t)
             if os.path.exists(run + "/app.stdout"):
                 os.remove(run + "/app.stdout")
     return finish(run, a, 1 if exit_fail else 0)
+
+
+def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None):
+    """Windows: after a FAILED case, write the app-log lines since the case began (the log rotates and keeps only its newest part, so the
+    failing case's key trace was gone by the end of the pass), plus the ssh server's log, to logs/<label>/case_<case>.log (#1488, r18cj)."""
+    import ci_env
+    try:
+        src = log_src(prof, "windows", app)
+        keep = []
+        if src and os.path.exists(src):
+            cut = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 - 1))
+            for l in app_log_text(src).splitlines():
+                if l[:20] >= cut or not l[:2] == "20":       # non-timestamped continuation lines ride with their neighbour
+                    keep.append(l)
+        txt = "\n".join(keep)[:12_000_000]
+        sl = os.path.join(run, "ssh", "sshd.log")
+        if os.path.exists(sl):
+            txt += "\n=== ssh/sshd.log ===\n" + open(sl, errors="replace").read()[-200_000:]
+        logs = os.path.join(run, "logs", label)
+        os.makedirs(logs, exist_ok=True)
+        open(os.path.join(logs, "case_%s.log" % case), "w").write(ci_env.redact(txt, ollama_url))
+    except Exception as e:          # evidence capture must never fail the run
+        print("save_case_log: %r" % (e,), flush=True)
 
 
 def app_log_text(src):
