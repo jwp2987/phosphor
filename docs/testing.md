@@ -489,6 +489,10 @@ INSTA_UPDATE=always script/agent-cargo <name> nextest run -p warp_editor --test 
 cargo insta review          # or just read `git diff -- '*.snap'`; commit the .snap files
 ```
 
+In CI: play the manual `insta-snapshots` job (`.gitlab-ci.yml`) on a `build/*` pipeline. It runs every package with insta
+snapshot tests under `INSTA_UPDATE=always` and uploads every `snapshots/*.snap` and `*.snap.new` as an artifact; review and
+commit them, then the normal test jobs compare against them.
+
 A missing snapshot FAILS the test in CI (insta never writes there); the first box run of a new fixture therefore needs the
 `INSTA_UPDATE=always` pass above. Review every diff: a snapshot change is a changed reading of the document, not noise. Do not
 accept a diff to make a red test green without understanding it (`AGENTS.md` 5.6).

@@ -589,6 +589,29 @@ test-warpui-core:
   script:
     - ./script/check_test_failures -p warpui_core --features tui ${TEST_FILTER:+-E "$TEST_FILTER"}
 
+# insta snapshots: run every package that has `insta` snapshot tests with INSTA_UPDATE=always so
+# new/changed snapshots are WRITTEN (never fails on a snapshot diff), and upload them. A human
+# reviews the uploaded .snap files and commits them; the normal test jobs then compare against
+# them. Manual, never part of a tier (docs/testing.md 2.7 / 2.10).
+insta-snapshots:
+  extends: [.box_job]
+  when: manual
+  allow_failure: true
+  timeout: 90m
+  variables:
+    INSTA_UPDATE: "always"
+    INSTA_FORCE_PASS: "1"
+  script:
+    - ./script/agent-cargo ci-test test -p markdown_parser -p warp_editor -p warpui_core --tests
+    - ./script/agent-cargo ci-test test -p warp --features gui --lib -- snapshot
+  artifacts:
+    name: insta-snapshots
+    when: always
+    expire_in: 7 days
+    paths:
+      - "**/snapshots/*.snap"
+      - "**/snapshots/*.snap.new"
+
 # The rest of the workspace: one invocation listing every package, exactly as
 # script/precheck does. Do not split it: check_test_failures treats a known failure
 # that did not run as "fixed", and splitting thrashes the shared target dir.
