@@ -184,9 +184,9 @@ def app_diff(a, b, build):
 
 
 def find_reusable(plat, head, cur_pid):
-    """Newest earlier build/* pipeline whose build job for plat SUCCEEDED, has unexpired artifacts and an app-identical commit.
+    """Newest earlier build/* pipeline whose build job for plat SUCCEEDED, and an app-identical commit (its pipeline may still be running).
     -> (decision text, reuse dict or None)."""
-    build, now, first_diff, seen = BUILD[plat], time.time(), None, 0
+    build, first_diff, seen = BUILD[plat], None, 0
     for p in api("projects/%s/pipelines?per_page=60&order_by=id&sort=desc" % PROJECT) or []:
         if p.get("id") == cur_pid or not str(p.get("ref", "")).startswith("build/"):
             continue
@@ -194,16 +194,14 @@ def find_reusable(plat, head, cur_pid):
         if not jb or jb.get("status") != "success":
             continue
         seen += 1
-        exp = jb.get("artifacts_expire_at")
-        if not jb.get("artifacts") or (exp and time.strptime(exp[:19], "%Y-%m-%dT%H:%M:%S") < time.gmtime(now)):
-            print("  %s: pipeline %s build job %s succeeded but its artifacts expired/absent; skipped" % (plat, p["id"], jb["id"]))
-            continue
+        # No artifact-expiry check: the reuse job takes the copy the build job cached on the test machine (the same machine);
+        # GitLab artifacts are only its fallback. The pipeline need not be finished, only that build job.
         sha = p["sha"]
         if subprocess.run(["git", "cat-file", "-e", sha + "^{commit}"], capture_output=True).returncode:
             print("  %s: pipeline %s commit %s is not in the local clone; skipped" % (plat, p["id"], sha[:10])); continue
         ch = app_diff(sha, head, build)
         if not ch:
-            return ("%s: reusing build job %d from pipeline %d (commit %s), app unchanged" % (plat, jb["id"], p["id"], sha[:10]),
+            return ("%s: reusing build job %d from pipeline %d (commit %s), app unchanged; the %s test machine should have it in its local build cache" % (plat, jb["id"], p["id"], sha[:10], plat),
                     {"job": jb["id"], "pipeline": p["id"], "sha": sha, "ref": p.get("ref", "")})
         if first_diff is None:
             first_diff = (p["id"], sha, ch)

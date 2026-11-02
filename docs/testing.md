@@ -187,7 +187,7 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `build-linux-x86_64`, `build-macos-arm64`, `build-windows-x86_64` | build | manual | AppImage+deb (launches `--version`), ad-hoc signed DMG, unsigned Inno installer; `dist/` artifacts, 3 days |
 | `build-{linux,macos,windows}-profiling` | build | manual | unstripped `profiling` profile binary (`docs/profiling.md`) |
 | `app-test-linux-wayland`, `app-test-linux-x11`, `app-test-macos`, `app-test-windows` | apptest | manual, allow_failure, played by `ci_seq.py` after each build | real-app matrix on the built artifact, section 2.8 |
-| `app-test-{linux-wayland,linux-x11,macos,windows}-reuse` | apptest | manual, allow_failure, played by `ci_seq.py` (fix tier) only | the same job on an EARLIER pipeline's build of an app-identical commit (no `needs`; artifacts fetched by job id), section 2.9 |
+| `app-test-{linux-wayland,linux-x11,macos,windows}-reuse` | apptest | manual, allow_failure, played by `ci_seq.py` (fix tier) only | the same job on an EARLIER pipeline's build of an app-identical commit (no `needs`; uses the build cached on the same machine, GitLab download only as a fallback), section 2.9 |
 | `release-*`, `cli-*`, `release-publish` | build/publish | `v*` tag (manual dry run on main) | release pipeline, never run end to end on all platforms |
 
 Kick off a build: `git push origin <branch>:build/<name>`, then `glab ci status -b build/<name>` or
@@ -376,12 +376,19 @@ test the harness itself.
 
 **Reusing a build (`app-test-*-reuse`).** When a fix round touches nothing that goes into the app, rebuilding (Mac ~20 min, Windows ~38,
 Linux ~30) tests the same bytes. The `-reuse` jobs extend the plain ones with `needs: []`; their `before_script`
-(`script/ci/fetch_build.sh` / `.ps1`) downloads `GET $CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/$APPCI_BUILD_JOB_ID/artifacts` with the
-`CI_JOB_TOKEN` header into `dist/` and checks `SHA256SUMS`. Why not `needs:pipeline:job`: it takes a pipeline id fixed when the pipeline is
-created, not a play-time value. Play-time variables: `APPCI_BUILD_JOB_ID` (required; the job fails with a clear message without it, on 404
-= artifacts expired after 3 days, on 401/403 = token refused, or if the zip has no `dist/`), plus `APPCI_BUILD_PIPELINE_ID`,
-`APPCI_BUILD_SHA`, `APPCI_BUILD_JOB_NAME` (recorded). If GitLab refuses the job token, a masked CI variable `APPCI_API_TOKEN` (read_api) is
-used as `PRIVATE-TOKEN`. The tested build is written to `appci-out/reused_build.json`, to `reused_build` in every `results.json` and to the
+(`script/ci/fetch_build.sh` / `.ps1`) uses the build **already on the same machine**. Each platform's app test runs on the machine that built it
+(box runner, Mac runner, Windows VM runner), so every successful `build-*` job ends with `script/ci/cache_build.sh <platform>` /
+`cache_build.ps1`, which copies `dist/` (with `SHA256SUMS`) plus a `meta.json` (job, pipeline, sha, ref, created) into
+`$HOME/.cache/phosphor-ci/builds/<linux|macos>/<CI_JOB_ID>/` (Windows: `%USERPROFILE%\.cache\phosphor-ci\builds\windows\<CI_JOB_ID>\`), owned by the
+runner user and outside the job's build dir (so the `git clean` / "Removing dist/" never touches it). The copy is atomic (tmp dir, then
+rename) and only the newest 3 builds per platform are kept. The reuse job copies that directory to `dist/`, verifies `SHA256SUMS` and records
+`"fetched": "local cache (<path>)"`; nothing is downloaded. **Only if the local copy is missing** (pruned, or built on another machine) does it log a
+WARNING and fall back to downloading the GitLab artifacts: `GET $CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/$APPCI_BUILD_JOB_ID/artifacts` with the
+`CI_JOB_TOKEN` header (then the by-ref endpoint, `APPCI_BUILD_REF` + `APPCI_BUILD_JOB_NAME`, on Linux/Mac). Play-time variables: `APPCI_BUILD_JOB_ID`
+(required; the job fails with a clear message without it, or, on the fallback, on 404 = artifacts expired after 3 days, 401/403 = token
+refused, or a zip without `dist/`), plus `APPCI_BUILD_PIPELINE_ID`, `APPCI_BUILD_SHA`, `APPCI_BUILD_JOB_NAME` (recorded). On the fallback, a masked CI
+variable `APPCI_API_TOKEN` (read_api) is used as `PRIVATE-TOKEN` if the job token is refused. The tested build is written to
+`appci-out/reused_build.json`, to `reused_build` in every `results.json` and to the
 first line of `summary.md` (`record_reuse.py` / `fetch_build.ps1 -Record`, as `after_script`). The job-token fetch itself could not be
 exercised outside a running job when this was written: the first real reuse run is its test.
 
@@ -404,7 +411,7 @@ timed yet; the tier targets above are estimates built from the numbers that are.
 Windows runners are separate machines), so a fix push is bounded by `check-linux` + the filtered `test-linux`/builds + smoke.
 
 **Build reuse in the fix tier.** Before playing `build-X`, `ci_seq.py` looks at the newest `build/*` pipelines (at most 6 with a succeeded
-`build-X`) and reuses one when its artifacts are unexpired and `git diff --name-only <its commit> HEAD` is empty over the app-affecting
+`build-X`) and reuses one when its `build-X` job succeeded (its pipeline may still be running; the build is taken from the test machine's local cache, 2.8) and `git diff --name-only <its commit> HEAD` is empty over the app-affecting
 path set AND the `build-X` job block (plus `.shim_github_env` / `.windows_job`) in `.gitlab-ci.yml` is textually identical. App-affecting
 is everything EXCEPT the list `APP_NONAFFECTING` in `script/ci/ci_seq.py`: `docs/`, `*.md`, `.gitlab*`, `specs/`, `fuzz/`, `script/ci/`,
 `script/realapp/`, `script/check_*`, `script/test_*`, `precheck`/`presubmit`/`state`, agent/editor files. So `app/`, `crates/`, `lib/`,

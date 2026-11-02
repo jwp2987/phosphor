@@ -23,6 +23,28 @@ function Die($msg) { Write-Error "ERROR fetch_build: $msg"; exit 2 }
 $id = $env:APPCI_BUILD_JOB_ID
 if (-not $id) { Die "APPCI_BUILD_JOB_ID is not set. This *-reuse job must be played with the build job id (script/ci/ci_seq.py does that); to test a fresh build play the plain app-test-* job instead." }
 if ($id -notmatch '^\d+$') { Die "APPCI_BUILD_JOB_ID='$id' is not a job id" }
+$local = Join-Path $env:USERPROFILE ".cache\phosphor-ci\builds\windows\$id"
+function Write-Record($how) {
+    New-Item -ItemType Directory -Force appci-out | Out-Null
+    @{ reused_build = @{ job_id = [int64]$id; job_name = "$env:APPCI_BUILD_JOB_NAME"; pipeline_id = "$env:APPCI_BUILD_PIPELINE_ID"; commit = "$env:APPCI_BUILD_SHA"; this_pipeline = "$env:CI_PIPELINE_ID"; this_commit = "$env:CI_COMMIT_SHA"; fetched = $how } } | ConvertTo-Json | Set-Content appci-out\reused_build.json -Encoding UTF8
+    Get-ChildItem dist | Format-Table Name, Length
+    Write-Output "fetch_build: OK. Testing build job $id from pipeline $env:APPCI_BUILD_PIPELINE_ID (commit $env:APPCI_BUILD_SHA), NOT a build of this pipeline's commit $env:CI_COMMIT_SHA (app-identical by ci_seq.py)."
+}
+if (Test-Path (Join-Path $local "SHA256SUMS")) {
+    Write-Output "fetch_build: using the build job $id already on this machine: $local (no download)"
+    if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+    New-Item -ItemType Directory dist | Out-Null
+    Copy-Item "$local\*" dist -Recurse -Force
+    Remove-Item dist\meta.json -ErrorAction SilentlyContinue
+    foreach ($l in Get-Content dist\SHA256SUMS) {
+        if (-not $l.Trim()) { continue }
+        $h, $n = ($l -split '\s+', 2); $n = $n.TrimStart('*').Trim()
+        if ((Get-FileHash (Join-Path dist $n) -Algorithm SHA256).Hash.ToLower() -ne $h.ToLower()) { Die "dist\SHA256SUMS check failed for $n" }
+    }
+    Write-Record "local cache ($local)"
+    exit 0
+}
+Write-Output "fetch_build: WARNING the local copy of build job $id is MISSING ($local; pruned, or built on another machine). Falling back to downloading its GitLab artifacts."
 $url = "$env:CI_API_V4_URL/projects/$env:CI_PROJECT_ID/jobs/$id/artifacts"
 $zip = Join-Path $env:TEMP "appci-build-$id.zip"
 Write-Output "fetch_build: downloading artifacts of build job $id (pipeline $env:APPCI_BUILD_PIPELINE_ID, commit $env:APPCI_BUILD_SHA)"
@@ -39,7 +61,4 @@ if (Test-Path dist) { Remove-Item -Recurse -Force dist }
 Expand-Archive -Path $zip -DestinationPath . -Force
 Remove-Item $zip -Force
 if (-not (Test-Path dist) -or -not (Get-ChildItem dist)) { Die "artifacts of job $id contain no dist/" }
-New-Item -ItemType Directory -Force appci-out | Out-Null
-@{ reused_build = @{ job_id = [int64]$id; job_name = "$env:APPCI_BUILD_JOB_NAME"; pipeline_id = "$env:APPCI_BUILD_PIPELINE_ID"; commit = "$env:APPCI_BUILD_SHA"; this_pipeline = "$env:CI_PIPELINE_ID"; this_commit = "$env:CI_COMMIT_SHA" } } | ConvertTo-Json | Set-Content appci-out\reused_build.json -Encoding UTF8
-Get-ChildItem dist | Format-Table Name, Length
-Write-Output "fetch_build: OK. Testing build job $id from pipeline $env:APPCI_BUILD_PIPELINE_ID (commit $env:APPCI_BUILD_SHA), NOT a build of this pipeline's commit $env:CI_COMMIT_SHA (app-identical by ci_seq.py)."
+Write-Record "GitLab download (local copy missing)"
