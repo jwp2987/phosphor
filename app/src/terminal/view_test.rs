@@ -16200,6 +16200,8 @@ fn input_prompt_detection_and_deferred_setup_readiness() {
         "bash-5.1$ ",
         "me@host ~ % ",
         "~/src \u{276f} ",
+        "user@fake:~$ ",
+        "root@fake:/# ",
         "banner line\n",
     ] {
         assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
@@ -18648,6 +18650,84 @@ fn ssh_prompt_arrival_discards_held_keys_and_answers_pass() {
             "the blind text must never reach ssh: {writes:?}"
         );
     })
+}
+
+/// #1561: typeahead held for a NESTED ssh whose inner shell is not bootstrapped. The first thing
+/// the inner host shows is its shell's own prompt (unterminated text, no remote session), which
+/// the #1113 rule read as a password prompt: the whole held line was discarded at the first
+/// prompt. A shell prompt is not a credential prompt; plain ssh has that shell read the keys, so
+/// they are delivered to the pty, once, in order (legacy chain and table alike).
+#[test]
+fn ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh fake", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.typed_characters_on_terminal("echo TOKEN >> ~/rn.txt", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo TOKEN >> ~/rn.txt").count(),
+                1,
+                "{mode:?}: the typed line reaches the inner shell exactly once: {written:?}"
+            );
+        })
+    }
+}
+
+/// #1561: the control for the test above: a password prompt still discards what was typed blind,
+/// in both modes, and nothing of it reaches the pty.
+#[test]
+fn ssh_password_prompt_still_discards_the_held_keys_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh fake", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.typed_characters_on_terminal("hunter2", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                view.model.lock().process_bytes("user@fake's password: ");
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: the blind text is gone");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert!(
+                !String::from_utf8_lossy(&written).contains("hunter2"),
+                "{mode:?}: the blind text must never reach ssh"
+            );
+        })
+    }
 }
 
 /// #1348: no timing. Keys held when a password / host-key prompt appears are discarded; keys typed

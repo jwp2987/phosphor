@@ -11109,10 +11109,46 @@ impl TerminalView {
         true
     }
 
-    /// The discard itself, once a prompt is known to be up (the legacy probe above, or the edge
-    /// machine's `PromptUp` in `table` mode).
+    /// What happens to the held keys once a prompt is known to be up (the legacy probe above, or
+    /// the edge machine's `PromptUp` in `table` mode) (#1348, #1561).
+    ///
+    /// A credential prompt (password, passphrase, host-key question, a request for a code): what
+    /// was typed before it existed may be a password typed blind, so it is discarded, never shown
+    /// or delivered, as ssh's own tty flush would. Anything else that is up in front of the
+    /// keys is a shell's prompt (a nested `ssh` into a host that is not bootstrapped): plain ssh
+    /// would have the keys read by that shell, so they are delivered to the pty, in order, exactly
+    /// once (hold, don't drop). When delivery is impossible right now (the queue is mid-drain)
+    /// they are handed back to the editor as text instead. Neither path is silent.
     fn discard_held_ssh_typeahead_for_prompt(&mut self, ctx: &mut ViewContext<Self>) {
         let had_keys = !self.ssh_held_is_empty();
+        if had_keys && !self.ssh_prompt_is_credential_prompt() {
+            if self.paste_queue.queue.is_draining() {
+                log::warn!(
+                    "ssh typeahead: a shell prompt is up but the input queue is mid-drain; handing \
+                     {} held input(s) back to the editor as text (#1561)",
+                    self.ssh_held_count()
+                );
+                self.ssh_remote_prompt_seen = false;
+            } else {
+                log::info!(
+                    "ssh typeahead: a shell prompt (not a credential prompt) is up; delivering {} \
+                     held input(s), {} byte(s), to it like plain ssh (#1561)",
+                    self.ssh_held_count(),
+                    self.ssh_held_bytes()
+                );
+                self.ssh_remote_prompt_seen = true;
+            }
+            self.finish_ssh_typeahead(ctx);
+            return;
+        }
+        if had_keys {
+            log::info!(
+                "ssh typeahead: a credential prompt is up; discarding {} held input(s), {} byte(s) \
+                 (#1113)",
+                self.ssh_held_count(),
+                self.ssh_held_bytes()
+            );
+        }
         // #1348: an event rule, no timing. Everything held when the prompt appeared goes; the hold
         // ends here, so every key typed afterwards passes straight to the prompt, as in plain ssh.
         self.reset_ssh_typeahead();
@@ -11122,6 +11158,26 @@ impl TerminalView {
                 ctx,
             );
         }
+    }
+
+    /// Whether the unterminated line in front of the keys asks for input that may be a secret
+    /// (`output_tail_is_input_prompt`). Never waits for the pty reader (#1440): a busy model, or
+    /// no readable tail, answers yes, the conservative side (the keys are discarded, as before).
+    fn ssh_prompt_is_credential_prompt(&self) -> bool {
+        let model = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            match self.model.try_lock() {
+                Some(model) => model,
+                None => return true,
+            }
+        } else {
+            self.model.lock()
+        };
+        let tail = model
+            .block_list()
+            .active_block()
+            .output_grid()
+            .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
+        output_tail_is_input_prompt(&tail)
     }
 
     fn set_ssh_typeahead_holding(&mut self, holding: bool) {

@@ -345,7 +345,10 @@ impl TerminalView {
         } else if !queue.has_deferred() && queue.try_peek().is_some() {
             // Discarding needs no view context.
             debug_assert_eq!(then, SshDropThen::Discard);
-            let _ = self.ssh_drop_detached(gate, &paste_ids);
+            let dropped = self.ssh_drop_detached(gate, &paste_ids);
+            if !dropped.is_empty() {
+                log::info!("ssh hold: discarded {} held input(s)", dropped.len());
+            }
             return;
         }
         queue.defer(Deferred::DropSshGate {
@@ -364,7 +367,11 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         match then {
-            SshDropThen::Discard => {}
+            SshDropThen::Discard => {
+                if !held.is_empty() {
+                    log::info!("ssh hold: discarded {} held input(s)", held.len());
+                }
+            }
             SshDropThen::HandBackText => {
                 // Adjacent printable runs are one input.
                 let mut merged = SshTypeahead::default();
