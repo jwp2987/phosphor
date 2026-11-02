@@ -33,14 +33,24 @@ def sh(*a, check=False):
     return r.stdout.strip()
 
 
+def gitref(r):
+    """A build/* name is usually only on the remote: resolve r, else origin/r. Fail loudly: an
+    unresolvable ref used to give an empty diff, i.e. 'nothing changed, run no tests'."""
+    for cand in (r, "origin/" + r):
+        if subprocess.run(["git", "rev-parse", "--verify", "-q", cand + "^{commit}"], capture_output=True).returncode == 0:
+            return cand
+    sys.exit("ci_seq: cannot resolve git ref %r (nor origin/%s); run git fetch origin" % (r, r))
+
+
 def changed_files(base, ref):
-    return [l for l in sh("git", "diff", "--name-only", "%s..%s" % (base, ref)).splitlines() if l]
+    return [l for l in sh("git", "diff", "--name-only", "%s..%s" % (base, gitref(ref)), check=True).splitlines() if l]
 
 
 def resolve_base(ref, explicit):
     """merge-base of ref with the previous build/* ref (newest other build/* branch that is an ancestor), else origin/main."""
+    ref = gitref(ref)
     if explicit:
-        return sh("git", "merge-base", explicit, ref) or explicit
+        return sh("git", "merge-base", gitref(explicit), ref, check=True)
     for cand in sh("git", "for-each-ref", "--sort=-creatordate", "--format=%(refname:short)", "refs/remotes/*/build/*", "refs/heads/build/*").splitlines():
         if cand.endswith("/" + ref) or cand == ref:
             continue
@@ -163,6 +173,7 @@ def main():
     ref, tier = a.ref, a.tier
     SKIP = set(a.skip_pos) | set(a.skip)
 
+    sh("git", "fetch", "-q", "origin", check=True)
     base = resolve_base(ref, a.base)
     files = changed_files(base, ref) if tier == "fix" or a.dry_run else []
     filt, suites, plats = "", {"linux", "core", "rest"}, [LINUX, MAC, WIN]
