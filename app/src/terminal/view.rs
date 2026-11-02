@@ -1321,14 +1321,12 @@ pub enum InlineBannerType {
     NotificationsDiscovery,
     NotificationsError,
     Ssh,
-    PromptSuggestions,
     AliasExpansion,
     SharedSessionStart,
     SharedSessionEnd,
     ShellProcessTerminated,
     OpenInWarp,
     VimMode,
-    AgentModeSetup,
     AwsBedrockLogin,
     AwsCliNotInstalled,
 }
@@ -1339,10 +1337,7 @@ impl InlineBannerType {
     pub fn is_visible_in_agent_view(&self) -> bool {
         match self {
             // Agent-related banners: visible in agent view
-            Self::PromptSuggestions
-            | Self::AgentModeSetup
-            | Self::AwsBedrockLogin
-            | Self::AwsCliNotInstalled => true,
+            Self::AwsBedrockLogin | Self::AwsCliNotInstalled => true,
             // Terminal-context banners: hidden in agent view
             Self::NotificationsDiscovery
             | Self::NotificationsError
