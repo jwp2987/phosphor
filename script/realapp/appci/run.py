@@ -34,6 +34,9 @@ def self_test():
     r = cases.Result("t", "terminal")
     r.check(True, "fine")
     assert skip_status(r, "x") == "skip"
+    r = cases.Result("lat", "terminal")
+    cases.lat_checks(r, {"budget_verdict": "no-reference", "budget_kind": "overhead", "verdict": "no-reference"}, "Enter")
+    assert not r.fails and r.noref and "NO-REFERENCE" in r.notes[0], (r.fails, r.noref)     # not a pass, not a failure (#1499)
     print("self-test ok")
     return 0
 
@@ -198,7 +201,7 @@ def main():
                     if c["name"] not in ("mode_proof",):
                         ctx.reset()
                     c["fn"](ctx, r)
-                    status = "fail" if r.fails else "pass"
+                    status = "fail" if r.fails else ("noref" if r.noref else "pass")
                 except backend.NeedsOwner:
                     raise
                 except cases.Skip as e:

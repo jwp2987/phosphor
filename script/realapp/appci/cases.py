@@ -31,6 +31,7 @@ class Result:
     def __init__(self, name, mode):
         self.name, self.mode = name, mode
         self.fails, self.notes, self.metrics, self.shots, self.skipped = [], [], {}, [], None
+        self.noref = []      # reasons this case could not be judged against a reference terminal: status becomes "noref" (NOT a pass) unless a check failed
 
     def check(self, ok, msg):
         if not ok:
@@ -39,6 +40,10 @@ class Result:
 
     def note(self, msg):
         self.notes.append(msg)
+
+    def no_reference(self, msg):
+        self.noref.append(msg)
+        self.notes.append("NO-REFERENCE: " + msg)
 
     def metric(self, k, v):
         self.metrics[k] = round(v, 3) if isinstance(v, float) else v
@@ -62,7 +67,7 @@ def plat():
 
 
 def lat_checks(r, rec, label):
-    """turn a latency record's verdicts into case failures (FAIL only; warn/no-reference stay visible in the table + notes)"""
+    """turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
     if rec["budget_verdict"] == "fail":
         if rec["budget_kind"] == "overhead":
             r.check(False, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["reference_name"], rec["budget_ms"]))
@@ -79,7 +84,7 @@ def lat_checks(r, rec, label):
             else:
                 r.note("WARN " + msg)
     if rec["verdict"] == "no-reference":
-        r.note("%s: no reference terminal measured in this session, overhead verdict 'no-reference' (absolute numbers recorded)" % label)
+        r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
     for n_ in rec.get("notes", []):
         r.note("%s: %s" % (label, n_))
 

@@ -482,7 +482,7 @@ budget, previous build, baseline, verdict, n).
   was in every absolute number; Linux: `date +%s.%N`), `latency_paint` runs the same kl3 post/capture against Terminal.app's window
   (macOS only; elsewhere the case skips, there is no read-back to compare). The absolute Phosphor number stays in `metrics`
   (`ctrl_c_ms`, `key_to_paint_ms`) and includes the input-tool spawn. With no reference the case notes `no reference: absolute only`
-  and the verdict is `NO-REFERENCE`, never pass. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
+  and the verdict is `NO-REFERENCE`, never pass: the CASE status is `noref` (its own count in `results.json`/`summary.md`/the collected INDEX as `+N no-ref`, a JUnit `<skipped message="NO-REFERENCE ...">`, never a pass; it does not fail the job, but no latency budget was judged). The CI sanity bounds (Enter 80 ms, paint 120 ms) still FAIL independently. A real failed check wins over `noref`. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
   while typing and `WARN` means >= 16 ms (a dropped frame); the 4 ms line itself cannot be seen from the log.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
