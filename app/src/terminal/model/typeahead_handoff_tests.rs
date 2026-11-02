@@ -3119,3 +3119,74 @@ fn a_peek_predicts_the_commit() {
         }
     }
 }
+
+// ---- #1569: the prompt does not hand input to the editor over keys held for the shell's line ----
+
+/// A ConPTY hand-off whose command was written just now by the app, with the enter window open:
+/// the keys typed from here are held until the next prompt's line editor signals.
+fn conpty_command_running_in_the_enter_window() -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
+    handoff.set_conpty_enter_window_hold(true);
+    handoff.on_precmd();
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    handoff.on_command_written();
+    handoff
+}
+
+/// r18cz Windows Git Bash: a line typed while a command runs is held by the enter window; the
+/// command's prompt (precmd) arrived while the keys were still held. The held keys are not counted
+/// (the hand-off keeps no bytes), so the shell's line looked empty and the prompt handed input to
+/// the editor: the keys typed next went to the editor while the held ones were written raw to the
+/// pty, and the report merged the two lines. The pty keeps the line until the release has counted
+/// what it holds.
+#[test]
+fn the_prompt_does_not_commit_to_the_editor_over_keys_held_for_the_shell() {
+    let mut handoff = conpty_command_running_in_the_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
+    // The command finished: its precmd arrives before the line editor's signal.
+    handoff.on_precmd();
+    assert!(
+        !handoff.try_commit_at_prompt(),
+        "keys are held for the shell's line: the editor must not take over"
+    );
+    assert!(handoff.is_pty_owned());
+    assert!(!handoff.editor_owns_input());
+    assert!(
+        handoff.routes_keys_to_pty(),
+        "the next key is still the pty's, behind the held ones"
+    );
+    // Nothing is decided until the release has counted the keys.
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    // The line editor's signal releases the keys, a whole line and the start of the next.
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    let keys: [&[u8]; 3] = [b"a", b"\r", b"b"];
+    for key in keys {
+        assert!(handoff.route_released_chunk(key));
+    }
+    handoff.finish_queued_prompt_hold(id);
+    // The release counted them: an Enter is unanswered and the line holds `b`, so neither the
+    // prompt nor the line editor hands input to the editor with the shell's line unreported.
+    assert!(!handoff.try_commit_at_prompt());
+    assert!(handoff.is_pty_owned());
+    assert!(matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Wait { .. }
+    ));
+    assert!(!handoff.editor_owns_input());
+}
+
+/// The commit at the prompt is back as soon as no hold is live: nothing typed can be in the line.
+#[test]
+fn the_prompt_commits_to_the_editor_when_no_keys_are_held() {
+    let mut handoff = conpty_command_running_in_the_enter_window();
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}

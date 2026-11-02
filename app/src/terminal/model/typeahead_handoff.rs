@@ -1700,6 +1700,17 @@ impl TypeaheadHandoff {
     /// the shell's line. Called on the main thread once a prompt was seen, after the editor has
     /// been reinitialized for the new block. Returns whether the editor took over.
     pub fn try_commit_at_prompt(&mut self) -> bool {
+        // #1569: keys the view's queue holds for the shell's line are not counted yet (the hand-off
+        // keeps no bytes; `route_released_chunk` counts them when the line editor's signal releases
+        // them), so the line looks empty and the editor would take over -- and the keys typed next
+        // would go to the editor, apart from and ahead of the held ones, which are then written raw
+        // to the pty. The enter window (#1490) holds keys across this very precmd. The pty keeps
+        // the line until the release has counted what it holds; the release asks for the decision
+        // again (`RetryTypeaheadHandoffRequest`), which commits or requests with the true counts.
+        if self.prompt_hold_queued {
+            warpui::input_order::log_hop("commit_deferred_prompt_hold", String::new);
+            return false;
+        }
         match self.owner() {
             Owner::Pty {
                 wrote_user_bytes: false,
