@@ -289,10 +289,13 @@ impl EditorPasteHold {
     /// or entries still queued. Every gate holds every key. False while the queue is mid-drain: a
     /// key applied by a delivery is part of that delivery and must not be held again.
     pub fn queue_is_busy(&self) -> bool {
-        self.pane_queue
-            .borrow()
+        let queue = self.pane_queue.borrow();
+        // Operations waiting in the queue's mailbox come first: a key typed now is queued behind
+        // them (deferred like them), not applied ahead of them.
+        let busy = queue
             .try_peek()
-            .is_some_and(|queue| queue.holds_keys())
+            .is_some_and(|held| held.holds_keys() || queue.has_deferred());
+        busy
     }
 
     /// Starts a paste; keys are held from now until it completes or is cancelled. A paste already

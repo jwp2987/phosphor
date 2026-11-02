@@ -3213,10 +3213,17 @@ impl EditorView {
             // (an ssh connect, a subshell setup, ...) are ended by their own events and the
             // terminal's interrupt handling, not by an interrupt typed in the editor.
             if editor_interrupt_meets_gate(&queue) {
-                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
-                queue
-                    .lock()
-                    .offer(&mut host, EntryKind::Signal(SignalKind::Interrupt));
+                let kind = EntryKind::Signal(SignalKind::Interrupt);
+                match queue.try_lock_ordered() {
+                    Some(mut guard) => {
+                        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                        guard.offer(&mut host, kind);
+                    }
+                    None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                        kind,
+                        origin: crate::terminal::input_queue::Origin::Keyboard,
+                    }),
+                }
                 self.flush_held_replay_now(ctx);
             }
             return false;
@@ -3228,8 +3235,10 @@ impl EditorView {
         }
         // An ssh connect holds the pane's keys as content to route at the hand-over (#1292).
         if queue
-            .peek()
-            .has_gate_kind(crate::terminal::input_queue::GateKind::SshConnect)
+            .try_peek()
+            .is_some_and(|held| {
+                held.has_gate_kind(crate::terminal::input_queue::GateKind::SshConnect)
+            })
         {
             return self.offer_ssh_held_key(action, &queue, ctx);
         }
@@ -3241,19 +3250,27 @@ impl EditorView {
         // it are the editor keys below.)
         {
             use crate::terminal::input_queue::GateKind;
-            let held = queue.peek();
-            if (held.has_gate_kind(GateKind::EnterVerdict)
-                || held.has_gate_kind(GateKind::TabCompletion))
-                && !held.has_editor_paste_reading()
-            {
-                drop(held);
+            let behind_enter = queue.try_peek().is_some_and(|held| {
+                (held.has_gate_kind(GateKind::EnterVerdict)
+                    || held.has_gate_kind(GateKind::TabCompletion))
+                    && !held.has_editor_paste_reading()
+            });
+            if behind_enter {
                 let kind = match action {
                     EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
                     EditorAction::Enter => EntryKind::Enter,
                     _ => return false,
                 };
-                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
-                queue.lock().offer(&mut host, kind);
+                match queue.try_lock_ordered() {
+                    Some(mut guard) => {
+                        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                        guard.offer(&mut host, kind);
+                    }
+                    None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                        kind,
+                        origin: crate::terminal::input_queue::Origin::Keyboard,
+                    }),
+                }
                 return true;
             }
         }
@@ -3267,10 +3284,17 @@ impl EditorView {
         if !paste_hold::key_submits_or_completes(action) && queue.peek().editor_keys_pass_gates() {
             return false;
         }
-        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
-        queue
-            .lock()
-            .offer(&mut host, EntryKind::EditorKey(EditorKeyPayload::new(key)));
+        let kind = EntryKind::EditorKey(EditorKeyPayload::new(key));
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                guard.offer(&mut host, kind);
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+            }),
+        }
         true
     }
 
@@ -3328,10 +3352,17 @@ impl EditorView {
             EditorAction::Left => (HELD_SEQ, "\u{1b}[D".to_owned()),
             _ => return false,
         };
-        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
-        queue
-            .lock()
-            .offer_with_origin(&mut host, EntryKind::Held { class, text }, Origin::Editor);
+        let kind = EntryKind::Held { class, text };
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                guard.offer_with_origin(&mut host, kind, Origin::Editor);
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: Origin::Editor,
+            }),
+        }
         warpui::input_order::log_key_hop("kh_editor_held", || {
             "queued_for_terminal=true".to_owned()
         });
@@ -9585,13 +9616,16 @@ pub fn position_id_for_first_cursor(editor_view_id: EntityId) -> String {
 /// Whether an interrupt typed in the editor meets a gate that waits on the editor's own input.
 fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) -> bool {
     use crate::terminal::input_queue::{GateKind, is_editor_paste_id};
-    queue.peek().gates().iter().any(|gate| match gate.kind {
-        GateKind::PasteReading => is_editor_paste_id(gate.key),
-        GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::EditorDisplayMap => true,
-        // Not `HandoffReport`: an interrupt meeting an Enter deferred for the shell's report
-        // cancels that Enter and voids the keys behind its gate (`TerminalView::ctrl_c`, through
-        // the editor's own event), which a signal offered to the queue would flush to the pty.
-        _ => false,
+    queue.try_peek().is_some_and(|held| {
+        held.gates().iter().any(|gate| match gate.kind {
+            GateKind::PasteReading => is_editor_paste_id(gate.key),
+            GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::EditorDisplayMap => true,
+            // Not `HandoffReport`: an interrupt meeting an Enter deferred for the shell's report
+            // cancels that Enter and voids the keys behind its gate (`TerminalView::ctrl_c`,
+            // through the editor's own event), which a signal offered to the queue would flush
+            // to the pty.
+            _ => false,
+        })
     })
 }
 

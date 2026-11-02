@@ -4477,6 +4477,8 @@ impl TerminalView {
         };
         {
             let (drain_tx, drain_rx) = async_channel::bounded::<()>(1);
+            // Operations that find the queue busy wake the same receiver (the mailbox, #1416 ff).
+            paste_queue.queue.set_defer_waker(Some(drain_tx.clone()));
             if let Some(mut queue) = paste_queue.queue.try_lock() {
                 queue.set_foreign_waker(Some(drain_tx));
             }
@@ -22393,16 +22395,19 @@ impl TerminalView {
         self.prepare_subshell_gates(&[], ctx);
         let queue = self.paste_queue.queue.clone();
         {
-            let mut host = paste_queue::PtyQueueHost::new(self, ctx);
-            queue.lock().offer_gated(
-                &mut host,
-                input_queue::EntryKind::Paste {
-                    paste_id: id,
-                    payload: None,
-                },
-                input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id)
-                    .with_cap(backstop),
-            );
+            let kind = input_queue::EntryKind::Paste {
+                paste_id: id,
+                payload: None,
+            };
+            let spec = input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id)
+                .with_cap(backstop);
+            match queue.try_lock() {
+                Some(mut guard) => {
+                    let mut host = paste_queue::PtyQueueHost::new(self, ctx);
+                    guard.offer_gated(&mut host, kind, spec);
+                }
+                None => queue.defer(input_queue::Deferred::OfferGated { kind, spec }),
+            }
         }
         match request.start {
             // The platform reads inline: the answer is known already, the gate opens at once (no
@@ -22433,11 +22438,12 @@ impl TerminalView {
     ) {
         use warpui::clipboard::ReadOutcome;
         // Cancelled (^C, a reset hold) or given up: no entry claims the answer.
-        if !self
+        // (A queue that is busy right now still holds the paste: do not treat it as gone.)
+        if self
             .paste_queue
             .queue
-            .peek()
-            .has_gate(input_queue::GateKind::PasteReading, id)
+            .try_peek()
+            .is_some_and(|queue| !queue.has_gate(input_queue::GateKind::PasteReading, id))
         {
             self.paste_queue.routed_pastes.remove(&id);
             self.paste_queue.ssh_pastes.remove(&id);

@@ -18,13 +18,19 @@
 //!   an id (`has_gate(PasteReading, id)` would alias). The high bit tags the owner; see
 //!   [`PasteOwner`].
 //!
+//! * the DEFERRED-OPERATION mailbox ([`Deferred`], see the design note in `input_queue/mod.rs`):
+//!   an operation that needs the queue while it is busy (a drain is delivering, or a peek is
+//!   held) records itself here instead of being dropped, written as typed or left half done. The
+//!   terminal view applies the mailbox, in order, as soon as it is outside any operation.
+//!
 //! Nothing here delivers, times or decides anything: it is the shape of access, not behaviour.
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use super::InputQueue;
+use super::{EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin};
 
 /// Paste ids owned by the input editor have this bit set; the pty's do not. One counter hands out
 /// both (the low bits), the tag only says who delivers the paste.
@@ -37,6 +43,36 @@ pub enum PasteOwner {
     Editor,
     /// The pty (a terminal-bound paste, read by the terminal view).
     Pty,
+}
+
+/// An operation that needed the queue while it was busy, recorded as plain data and applied by
+/// the terminal view (`TerminalView::flush_deferred_queue_ops`) in the order it was recorded,
+/// the next time the queue is free. One mechanism for every "busy" branch: never a dropped key,
+/// never a key written as typed, never a one-shot cap consumed for nothing.
+#[derive(Debug)]
+pub enum Deferred {
+    /// `InputQueue::offer_with_origin`.
+    Offer { kind: EntryKind, origin: Origin },
+    /// A key held behind `spec`: joins the gate if it is open already, else opens it with the
+    /// entry (`offer_gated`).
+    OfferGated { kind: EntryKind, spec: GateSpec },
+    /// `InputQueue::open_gate`.
+    OpenGate(GateSpec),
+    /// `InputQueue::on_gate_event`.
+    GateEvent { kind: GateKind, key: u64 },
+    /// A give-up cap fired for `token` while the queue was busy: run the cap's handler again
+    /// (it is token-guarded and idempotent).
+    GiveUpCap(GateToken),
+    /// The reader's result for paste `id` (the payload is already stored by the caller).
+    PasteRead { id: u64, ok: bool },
+    /// The line editor signalled (or the hold gave up) while the queue was busy.
+    ReleasePromptHold { hold_id: u64, gave_up: bool },
+    /// A young hold's keys are to be written (its give-up found the queue busy).
+    ReleaseYoungHoldKeys { hold_id: u64, routed: bool },
+    /// The hand-off recorded young-hold ends that could not be applied while the queue was busy.
+    ApplyYoungHoldEnds,
+    /// A drain stopped at an entry only the view can deliver, and the view was busy.
+    Poke,
 }
 
 /// Whether paste `id` belongs to the input editor.
@@ -54,6 +90,12 @@ struct Inner {
     /// The view is holding the keys typed during an ssh connect (set by the view, read by the
     /// pane's key sink).
     ssh_hold_active: Cell<bool>,
+    /// Operations that found the queue busy, in the order they were recorded.
+    deferred: RefCell<VecDeque<Deferred>>,
+    /// Wakes the terminal view to apply [`Self::deferred`] (a bounded channel of one).
+    defer_waker: RefCell<Option<async_channel::Sender<()>>>,
+    /// The view is applying the deferred operations (no nested flush).
+    flushing_deferred: Cell<bool>,
 }
 
 /// A cheap, clonable handle on the pane's queue (clones share the queue).
@@ -76,6 +118,9 @@ impl PaneQueue {
                 draining: Cell::new(false),
                 next_paste_id: Cell::new(0),
                 ssh_hold_active: Cell::new(false),
+                deferred: RefCell::new(VecDeque::new()),
+                defer_waker: RefCell::new(None),
+                flushing_deferred: Cell::new(false),
             }),
         }
     }
@@ -100,6 +145,49 @@ impl PaneQueue {
         self.inner.draining.get()
     }
 
+    /// Where [`Self::defer`] pokes: the terminal view's drain receiver.
+    pub fn set_defer_waker(&self, waker: Option<async_channel::Sender<()>>) {
+        *self.inner.defer_waker.borrow_mut() = waker;
+    }
+
+    /// Records `op` for the next time the queue is free and wakes the view to apply it. Always
+    /// available (it never touches the queue itself), so a busy branch can call it.
+    pub fn defer(&self, op: Deferred) {
+        self.inner.deferred.borrow_mut().push_back(op);
+        self.poke_defer_waker();
+    }
+
+    /// Asks the view to look at the deferred operations again (idempotent).
+    pub fn poke_defer_waker(&self) {
+        if let Some(waker) = self.inner.defer_waker.borrow().as_ref() {
+            let _ = waker.try_send(());
+        }
+    }
+
+    /// Whether an operation waits for the queue.
+    pub fn has_deferred(&self) -> bool {
+        !self.inner.deferred.borrow().is_empty()
+    }
+
+    /// The oldest deferred operation.
+    pub fn pop_deferred(&self) -> Option<Deferred> {
+        self.inner.deferred.borrow_mut().pop_front()
+    }
+
+    /// Puts an operation back at the FRONT (it could not run yet; order is kept).
+    pub fn unpop_deferred(&self, op: Deferred) {
+        self.inner.deferred.borrow_mut().push_front(op);
+    }
+
+    /// Claims the right to apply the deferred operations; false if that is already going on.
+    pub fn begin_deferred_flush(&self) -> bool {
+        !self.inner.flushing_deferred.replace(true)
+    }
+
+    pub fn end_deferred_flush(&self) {
+        self.inner.flushing_deferred.set(false);
+    }
+
     /// The next paste id of this pane. One counter for both owners.
     pub fn next_paste_id(&self, owner: PasteOwner) -> u64 {
         let id = self.inner.next_paste_id.get() + 1;
@@ -110,8 +198,11 @@ impl PaneQueue {
         }
     }
 
-    /// Mutable access, for the operations that arrive, close a gate or drain. Panics if the queue
-    /// is already held (a delivery must hand follow-ups to `FollowUps`, never re-enter).
+    /// Mutable access, for callers that are PROVABLY outside any operation (a test, a top-level
+    /// event handler that checked [`Self::try_peek`] a line before). Anything reachable from a
+    /// delivery uses [`Self::try_lock`] and [`Self::defer`]s on `None`. Panics in debug builds if
+    /// the queue is held; in release it also panics (a re-entrant lock is a logic error), which is
+    /// why production code does not call it.
     pub fn lock(&self) -> QueueGuard<'_> {
         match self.try_lock() {
             Some(guard) => guard,
@@ -131,6 +222,16 @@ impl PaneQueue {
             guard,
             draining: &self.inner.draining,
         })
+    }
+
+    /// As [`Self::try_lock`], but `None` as well while earlier operations wait in the mailbox:
+    /// an arrival that took the lock then would overtake them. For the callers that cannot apply
+    /// the mailbox themselves (the input editor); they [`Self::defer`] on `None`.
+    pub fn try_lock_ordered(&self) -> Option<QueueGuard<'_>> {
+        if self.has_deferred() {
+            return None;
+        }
+        self.try_lock()
     }
 
     /// Shared access for inspection. Only for callers that know no operation is running; the
@@ -215,6 +316,31 @@ mod tests {
         assert!(pane.ssh_hold_active());
         pane.set_ssh_hold_active(false);
         assert!(!pane.ssh_hold_active());
+    }
+
+    #[test]
+    fn deferred_operations_keep_their_order_and_wake_the_view() {
+        let pane = PaneQueue::new();
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        pane.set_defer_waker(Some(tx));
+        assert!(!pane.has_deferred());
+        let _held = pane.lock();
+        pane.defer(Deferred::Poke);
+        pane.defer(Deferred::ApplyYoungHoldEnds);
+        assert!(rx.try_recv().is_ok(), "the view is woken");
+        assert!(pane.has_deferred());
+        assert!(matches!(pane.pop_deferred(), Some(Deferred::Poke)));
+        pane.unpop_deferred(Deferred::Poke);
+        assert!(matches!(pane.pop_deferred(), Some(Deferred::Poke)));
+        assert!(matches!(
+            pane.pop_deferred(),
+            Some(Deferred::ApplyYoungHoldEnds)
+        ));
+        assert!(pane.pop_deferred().is_none());
+        assert!(pane.begin_deferred_flush());
+        assert!(!pane.begin_deferred_flush(), "no nested flush");
+        pane.end_deferred_flush();
+        assert!(pane.begin_deferred_flush());
     }
 
     #[test]

@@ -169,6 +169,9 @@ impl Host for InputQueueHost<'_, '_> {
             DiscardReason::SignalDiscard(GateKind::EnterVerdict | GateKind::TabCompletion) => {}
             other => log::warn!("input queue: editor paste entry discarded: {other:?}"),
         }
+        if let EntryKind::Paste { paste_id, .. } = &entry.kind {
+            self.input.paste_refused.remove(paste_id);
+        }
     }
 
     fn arm_give_up(&mut self, token: GateToken, _kind: GateKind, after: Duration) {
@@ -242,7 +245,11 @@ impl Input {
         hold.set_layout_wait(None);
         let queue = hold.queue();
         let Some(mut guard) = queue.try_lock() else {
-            log::warn!("input queue: display-map replay step found the queue busy");
+            // The gate stays and the step runs again (the editor's own waker), instead of the
+            // taken gate key being lost with the gate open.
+            log::warn!("input queue: display-map replay step found the queue busy; retrying");
+            hold.restore_display_gate(key);
+            hold.request_display_step();
             return;
         };
         hold.set_map_fresh(true);
@@ -293,12 +300,16 @@ impl Input {
                 warpui::clipboard::abandon_pending_reads();
             }
         }
+        let Some(mut guard) = queue.try_lock() else {
+            queue.defer(crate::terminal::input_queue::Deferred::GiveUpCap(token));
+            return;
+        };
         let mut host = InputQueueHost {
             input: self,
             ctx,
             held_behind: 0,
         };
-        queue.lock().give_up(&mut host, token);
+        guard.give_up(&mut host, token);
     }
 
     /// Offers a paste whose text is already read (a platform that reads inline, #1405) to the
@@ -355,19 +366,24 @@ impl Input {
         });
         let queue = hold.queue();
         {
-            let mut host = InputQueueHost {
-                input: self,
-                ctx,
-                held_behind: 0,
+            let kind = EntryKind::Paste {
+                paste_id: id,
+                payload: None,
             };
-            queue.lock().offer_gated(
-                &mut host,
-                EntryKind::Paste {
-                    paste_id: id,
-                    payload: None,
-                },
-                GateSpec::new(GateKind::PasteReading, id).with_cap(backstop),
-            );
+            let spec = GateSpec::new(GateKind::PasteReading, id).with_cap(backstop);
+            match queue.try_lock_ordered() {
+                Some(mut guard) => {
+                    let mut host = InputQueueHost {
+                        input: self,
+                        ctx,
+                        held_behind: 0,
+                    };
+                    guard.offer_gated(&mut host, kind, spec);
+                }
+                None => {
+                    queue.defer(crate::terminal::input_queue::Deferred::OfferGated { kind, spec })
+                }
+            }
         }
         // Say what is happening when the read takes noticeable time. Time is the requirement
         // here (user feedback), not correctness.
@@ -419,14 +435,13 @@ impl Input {
     ) {
         let queue = self.editor.as_ref(ctx).paste_hold().queue();
         // The paste itself is one of the queued entries; the rest are the keys behind it.
-        let held_behind = if queue
-            .peek()
-            .has_gate(crate::terminal::input_queue::GateKind::PasteReading, id)
-        {
-            queue.peek().queued_summary().0.saturating_sub(1)
-        } else {
-            0
-        };
+        let held_behind = queue.try_peek().map_or(0, |held| {
+            if held.has_gate(crate::terminal::input_queue::GateKind::PasteReading, id) {
+                held.queued_summary().0.saturating_sub(1)
+            } else {
+                0
+            }
+        });
         let result = match read {
             Some(warpui::clipboard::BackgroundTextRead::Content(content)) => {
                 self.paste_payloads.insert(id, (source, content));
@@ -442,14 +457,22 @@ impl Input {
             }
             Some(warpui::clipboard::BackgroundTextRead::TimedOut) | None => Err(()),
         };
+        let ok = result.is_ok();
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            // Busy: the result is applied by the next operation. The content stays in
+            // `paste_payloads` until the entry is delivered (or discarded).
+            queue.defer(crate::terminal::input_queue::Deferred::PasteRead { id, ok });
+            return;
+        };
         {
             let mut host = InputQueueHost {
                 input: self,
                 ctx,
                 held_behind,
             };
-            queue.lock().on_paste_read(&mut host, id, result);
+            guard.on_paste_read(&mut host, id, result);
         }
+        drop(guard);
         self.paste_payloads.remove(&id);
         self.paste_refused.remove(&id);
     }

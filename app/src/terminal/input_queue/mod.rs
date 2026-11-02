@@ -37,6 +37,25 @@
 //! which a young hold's gate becomes in place with [`InputQueue::retag_gate`]); see
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
+//!
+//! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
+//! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
+//! never be dropped, written "as typed", left half done, or consume a one-shot cap for nothing.
+//! Every such branch does `PaneQueue::try_lock()`, and on `None` records a [`Deferred`] value
+//! (plain data: an offer, a gate open / event, a give-up cap, a paste result, a prompt-hold
+//! release, ...) with `PaneQueue::defer`, which also wakes the terminal view. The view applies
+//! the mailbox, in recorded order, the moment it is outside any operation
+//! (`TerminalView::flush_deferred_queue_ops`), and every top-level entry that would otherwise
+//! overtake it (a typed key, the next gate operation) applies it first. Consequences:
+//!  - arrival order of keys is the order of the operations that carried them;
+//!  - a give-up cap that fires mid-delivery is re-run after it (the handlers are token-guarded and
+//!    idempotent), so the gate is still given up or re-armed;
+//!  - entries taken out of a gate with `close_gate_taking` are never re-queued: an editor entry in
+//!    the taken segment is applied to the editor at once (`FollowUps::flushing_now` skips the
+//!    display-map wait), because the gate it would wait behind no longer exists;
+//!  - `PtyQueueHost::deliver` marks EVERY delivery (editor entries too) so a key a later stage
+//!    wants held is requeued by the drain instead of finding the queue busy.
+//! `PaneQueue::lock()` stays only for callers provably outside any operation.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
 #![allow(dead_code)]
@@ -64,7 +83,7 @@ pub use destination::{
     pin_still_valid,
 };
 pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
-pub use pane::{PaneQueue, PasteOwner, QueueGuard, is_editor_paste_id};
+pub use pane::{Deferred, PaneQueue, PasteOwner, QueueGuard, is_editor_paste_id};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -313,6 +332,16 @@ enum Follow {
 }
 
 impl FollowUps {
+    /// Follow-ups for a delivery made OUTSIDE a drain that must apply at once (a key taken out of
+    /// a gate that is being voided: hosts that would wait, like the editor's display-map gate,
+    /// do not).
+    pub fn flushing_now() -> Self {
+        Self {
+            items: Vec::new(),
+            flushing: true,
+        }
+    }
+
     /// Whether this delivery is part of a signal's flush.
     pub fn flushing(&self) -> bool {
         self.flushing
