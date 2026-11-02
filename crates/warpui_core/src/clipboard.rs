@@ -915,11 +915,6 @@ impl AvailabilityCache {
     }
 }
 
-/// The cached availability of `target` (see [`AvailabilityCache`]).
-pub fn cached_availability(target: ClipboardTarget) -> Availability {
-    AVAILABILITY.get(target)
-}
-
 /// Owner-change entry point for platform listeners: marks the cached answer stale and re-probes
 /// with `probe` on the CALLING thread, which must therefore be an event-listener thread.
 pub fn availability_changed(
@@ -929,12 +924,6 @@ pub fn availability_changed(
     if AVAILABILITY.invalidate(target) {
         AVAILABILITY.refresh_blocking(target, probe);
     }
-}
-
-/// Asks the platform for the current availability without waiting for it: a probe that may block
-/// runs on a worker thread; a cheap one is answered inline.
-pub fn refresh_availability(clipboard: &mut dyn Clipboard, target: ClipboardTarget) {
-    refresh_in(&AVAILABILITY, clipboard, target);
 }
 
 fn refresh_in(
