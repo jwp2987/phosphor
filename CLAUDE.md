@@ -27,6 +27,22 @@ Two CI guards enforce what the compiler cannot: `script/check_cloud_boundary`
 tests against gutted no-op stubs). Read their header comments before changing
 them — earlier versions were wrong in instructive ways.
 
+## Subagents: pick the type by what the task may change
+
+Every subagent runs on **Sonnet** (`model: "sonnet"`) unless the owner approves
+another model for a specific task. Choose the agent type by whether the task
+should be able to edit anything:
+
+| type | use it for | why |
+|---|---|---|
+| `Explore` | audits, searches across many files, log and CI-trace digging, "where is X / every place that does Y" | read-only: it cannot change the tree by accident, and it returns a conclusion instead of file dumps |
+| `Plan` | design passes before a rebuild or a second patch on the same path, implementation plans | read-only; produces the plan the owner approves before code is written |
+| `general-purpose` | fixes, harness and CI changes, tests, anything that writes or commits | the only type that should edit; give it its own worktree and branch |
+
+Writing agents never run `cargo` on the laptop (builds and tests run on the box
+through CI). Any change to tests, harnesses, CI jobs or test machines updates
+`docs/testing.md` in the same merge.
+
 <!--
 This project is Phosphor — a BYOP terminal, forked from Warp via Zap/OpenWarp
 and evolving independently. See specs/phosphor-rebrand/SCOPE.md for the layered
