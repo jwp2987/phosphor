@@ -467,6 +467,13 @@ impl Input {
         guard.offer(&mut host, kind);
     }
 
+    /// The gate of an Enter that waits for its input-type verdict (nothing submitted, nothing
+    /// queued behind it yet), for tests of what must wait for it.
+    #[cfg(test)]
+    pub(crate) fn open_waiting_enter_gate_for_test(&mut self, ctx: &mut ViewContext<Self>) {
+        self.open_enter_gate(1, GateKind::EnterVerdict, ctx);
+    }
+
     /// A submitted shell-command Enter whose gate holds one key and waits for the pty to take its
     /// command, for tests of the events that release it.
     #[cfg(test)]
