@@ -1,5 +1,3 @@
-#[cfg(target_family = "wasm")]
-use crate::uri::web_intent_parser::open_url_on_desktop;
 use crate::{
     ai::{
         document::ai_document_model::AIDocumentId,
@@ -4918,7 +4916,6 @@ impl TypedActionView for DriveIndex {
             DriveIndexAction::OpenObjectLinkOnDesktop(url) => {
                 open_url_on_desktop(url);
             }
-            #[cfg(not(target_family = "wasm"))]
             DriveIndexAction::OpenObjectLinkOnDesktop(_) => {
                 // No-op when not on wasm
             }

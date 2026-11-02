@@ -1,6 +1,5 @@
 use pathfinder_geometry::vector::vec2f;
 use warp_core::{features::FeatureFlag, ui::appearance::Appearance};
-#[cfg(not(target_family = "wasm"))]
 use warpui::SingletonEntity;
 use warpui::{
     elements::{
@@ -29,7 +28,7 @@ use crate::{
     },
     ui_components::icons::Icon,
 };
-#[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+#[cfg(feature = "local_tty")]
 use crate::{
     terminal::local_shell::{probe_path_env_var, LocalShellState},
     view_components::{DismissibleToast, ToastLink},
@@ -75,13 +74,12 @@ impl EnvVarCollectionView {
         ctx.notify();
     }
 
-    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     pub(super) fn fetch_secret(
         &mut self,
         secret_manager: SecretManager,
         ctx: &mut ViewContext<Self>,
     ) {
-        #[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+        #[cfg(feature = "local_tty")]
         {
             let window_id = ctx.window_id();
             let local_shell = LocalShellState::as_ref(ctx);

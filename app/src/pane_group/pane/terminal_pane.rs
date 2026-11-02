@@ -34,9 +34,7 @@ use crate::{
 #[cfg(feature = "local_fs")]
 use crate::ai::blocklist::BlocklistAIHistoryEvent;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
-#[cfg(not(target_family = "wasm"))]
 use warp_cli::agent::Harness;
 
 use warp_core::execution_mode::AppExecutionMode;
@@ -806,7 +804,6 @@ fn handle_terminal_view_event(
             Event::OpenSettings(section) => {
                 ctx.emit(pane_group::Event::OpenSettings(*section));
             }
-            #[cfg(not(target_family = "wasm"))]
             Event::OpenPluginInstructionsPane(agent, kind) => {
                 ctx.emit(pane_group::Event::OpenPluginInstructionsPane(*agent, *kind));
             }
@@ -1150,13 +1147,7 @@ fn handle_terminal_view_event(
                 parent_conversation_id,
                 argument,
             } => {
-                #[cfg(not(target_family = "wasm"))]
                 spawn_local_child_agents(group, pane_id, *parent_conversation_id, argument, ctx);
-                #[cfg(target_family = "wasm")]
-                {
-                    let _ = (parent_conversation_id, argument);
-                    log::warn!("SpawnLocalChildAgents is not supported on wasm");
-                }
             }
             Event::OpenChildAgentInNewPane { conversation_id } => {
                 // Reveals the hidden child pane as a visible sibling rather
@@ -1372,7 +1363,6 @@ fn kill_agent_conversation(
 /// each is ready, materializes it via `finish_spawning_local_child_agent`.
 /// User-invoked only -- see `TerminalAction::SpawnLocalChildAgents`'s doc
 /// comment.
-#[cfg(not(target_family = "wasm"))]
 fn spawn_local_child_agents(
     group: &mut PaneGroup,
     base_pane_id: PaneId,
@@ -1454,7 +1444,6 @@ fn spawn_local_child_agents(
 /// child up through the same `BlocklistAIHistoryModel`/`PaneGroup` state
 /// they already render restored children from -- nothing downstream needs
 /// to know a child was spawned by `/orchestrate` specifically.
-#[cfg(not(target_family = "wasm"))]
 fn finish_spawning_local_child_agent(
     group: &mut PaneGroup,
     base_pane_id: PaneId,
@@ -1689,7 +1678,7 @@ fn handle_ai_history_event(
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
 #[path = "terminal_pane_tests.rs"]
 mod tests;
 

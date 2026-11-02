@@ -976,7 +976,6 @@ pub trait StoredObjectMetadataExt {
     fn semantic_editing_history(&self, app: &AppContext) -> Option<String>;
 
     /// Returns a semantic summary of the object's creator. For example, "Alice" or "joan@warp.dev".
-    #[cfg_attr(target_family = "wasm", expect(dead_code))]
     fn semantic_creator(&self, app: &AppContext) -> Option<String>;
 
     /// Returns semantic summary of countdown of days until permadeletion.

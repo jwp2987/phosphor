@@ -44,8 +44,6 @@ mod dynamic_libraries;
 mod env_vars;
 mod experiments;
 mod external_secrets;
-#[cfg(target_family = "wasm")]
-mod font_fallback;
 mod global_resource_handles;
 mod gpu_state;
 pub mod i18n;
@@ -104,8 +102,6 @@ mod vim_registers;
 mod voice;
 mod voltron;
 mod warp_managed_paths_watcher;
-#[cfg(target_family = "wasm")]
-mod wasm_nux_dialog;
 mod window_close_policy;
 mod window_settings;
 mod workspaces;
@@ -164,11 +160,9 @@ pub mod tui;
 #[cfg(feature = "tui")]
 pub use crate::tui::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase, log_out_tui};
 pub mod themes;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
 use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::FileMCPWatcher;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::tui_api_keys::TuiApiKeyRefresher as _;
 use crate::uri::link_policy::is_openable_url_scheme;
 use crate::uri::web_intent_parser::maybe_rewrite_web_url_to_intent;
@@ -211,7 +205,7 @@ use watcher::HomeDirectoryWatcher;
 use settings_view::pane_manager::SettingsPaneManager;
 use terminal::general_settings::GeneralSettings;
 use terminal::keys_settings::KeysSettings;
-#[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+#[cfg(feature = "local_tty")]
 use terminal::local_shell::LocalShellState;
 pub use util::bindings::cmd_or_ctrl_shift;
 pub mod workflows;
@@ -353,7 +347,6 @@ use warpui::{AppContext, OpenUrlDecision, SingletonEntity, WindowId};
 #[folder = "assets"]
 #[include = "bundled/**"] // Should be kept in sync with BUNDLED_ASSETS_DIR.
 #[include = "async/**"] // Should be kept in sync with ASYNC_ASSETS_DIR.
-#[cfg_attr(target_family = "wasm", exclude = "async/**")]
 // Excludes take precedence.
 // Standalone CLI builds (the `oz` tarball) are headless and never render the
 // onboarding/theme imagery in `async/`, so we exclude those bytes from the
@@ -518,7 +511,6 @@ impl LaunchMode {
     ///   `FeatureFlag::RemoteCodebaseIndexing` check in a second place, where
     ///   the two could drift.
     /// * The `Tui` arm keeps the pin's `false` and the pin's reason verbatim.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn supports_indexing(&self) -> bool {
         match self {
             LaunchMode::CommandLine { command, .. } => {
@@ -813,7 +805,6 @@ pub fn run() -> Result<()> {
             warp_cli::Command::DumpDebugInfo => {
                 return debug_dump::run();
             }
-            #[cfg(not(target_family = "wasm"))]
             warp_cli::Command::DumpSettingsSchema {
                 channel,
                 output_path,
@@ -880,17 +871,14 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
                 }
             }
         }
-        #[cfg(not(target_family = "wasm"))]
         warp_cli::WorkerCommand::RemoteServerProxy(args) => {
             init_common(&LaunchMode::RemoteServerProxy, None)?;
             crate::remote_server::run_proxy(args.identity_key.clone())
         }
-        #[cfg(not(target_family = "wasm"))]
         warp_cli::WorkerCommand::RemoteServerDaemon(args) => {
             init_common(&LaunchMode::RemoteServerDaemon, None)?;
             crate::remote_server::run_daemon(args.identity_key.clone())
         }
-        #[cfg(not(target_family = "wasm"))]
         warp_cli::WorkerCommand::RipgrepSearch {
             parent,
             ignore_case,
@@ -1027,7 +1015,6 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
     // Configure rustls to use its default crypto provider.  This MUST be called
     // before making any network requests that use TLS, otherwise rustls will
     // panic.
-    #[cfg(not(target_family = "wasm"))]
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("must be able to initialize crypto provider for TLS support");
@@ -1068,14 +1055,6 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
 
     // For wasm builds we have this special case to parse out the intent
     // from the url that is used to visite the app on web.
-    #[cfg(target_family = "wasm")]
-    {
-        use uri::web_intent_parser;
-        if let Some(intent) = web_intent_parser::parse_web_intent_from_current_url() {
-            launch_mode.add_url(intent);
-        }
-        web_intent_parser::set_context_flags_from_current_url();
-    }
 
     // Collect run_internal() errors that occur before app initialization; log them once local crash reporting has been initialized.
     #[cfg_attr(
@@ -1280,7 +1259,6 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     );
 
     app_builder.run(move |ctx| {
-        #[cfg(not(target_family = "wasm"))]
         // Rotate the log files in the background.
         ctx.background_executor()
             .spawn(warp_logging::rotate_log_files())
@@ -1551,7 +1529,6 @@ fn initialize_app(
 
     // Initialize ApiKeyManager after UserWorkspaces so it can subscribe to workspace/settings changes
     ctx.add_singleton_model(|ctx| {
-        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut manager = ::ai::api_keys::ApiKeyManager::new(ctx);
         // Reload keys when another process writes them (see
         // `ai::tui_api_keys`). Safe here because `WarpManagedPathsWatcher` is
@@ -1559,9 +1536,7 @@ fn initialize_app(
         // this is not gated on `LaunchMode::Tui`: the GUI and TUI share one
         // app id and therefore one keyring namespace, so a GUI process goes
         // stale on a TUI-side write exactly as a TUI process does.
-        #[cfg(not(target_family = "wasm"))]
         manager.subscribe_to_tui_api_key_changes(ctx);
-        #[cfg(not(target_family = "wasm"))]
         manager.subscribe_to_settings_changes(ctx);
         manager
     });
@@ -1569,13 +1544,11 @@ fn initialize_app(
     // The API key for custom Agent Providers is stored in secure storage via its own
     // singleton, decoupled from ApiKeyManager (which forwards BYOK to warp-server).
     ctx.add_singleton_model(|ctx| {
-        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut secrets = crate::ai::agent_providers::AgentProviderSecrets::new(ctx);
         // This -- not `ApiKeyManager` -- is the store both of this fork's key
         // editors write (GUI Settings > AI, and the TUI's `/api-keys` picker),
         // and they share one keyring namespace, so it needs the same
         // cross-process reload as `ApiKeyManager` above.
-        #[cfg(not(target_family = "wasm"))]
         secrets.subscribe_to_tui_api_key_changes(ctx);
         secrets
     });
@@ -1688,7 +1661,6 @@ fn initialize_app(
     // Without this registration the daemon leg is inert on the client: nothing
     // consumes `CodebaseIndexStatusesSnapshot` and nothing ever asks a daemon
     // to index.
-    #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(remote_server::codebase_index_model::RemoteCodebaseIndexModel::new);
     // Zap Wave 6-1: the `remote_server::wire_auth_token_rotation(ctx)` call was physically
     // removed along with the server API token rotation event and the
@@ -1852,7 +1824,6 @@ fn initialize_app(
         });
     }
 
-    #[cfg(not(target_family = "wasm"))]
     {
         ctx.add_singleton_model(DirectoryWatcher::new);
         // Register the skill provider directories as force-included paths so
@@ -1951,7 +1922,6 @@ fn initialize_app(
     ai::init(ctx);
     app_services::init(ctx);
     // // TODO: Temporarily disabling keybindings for WASM builds. Will be implemented in future WASM support.
-    #[cfg(not(target_family = "wasm"))]
     code::editor::find::view::init(ctx);
     workspace::init(ctx);
     pane_group::init(ctx);
@@ -2201,7 +2171,7 @@ fn initialize_app(
     // RemoteAgentContext reconciles connected SSH hosts' `RemoteAgentContextSnapshot`
     // pushes into SkillManager's per-host bundled/home-skill catalogs (#487). Registered
     // after both SkillManager and RemoteServerManager, which it subscribes to and updates.
-    #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+    #[cfg(feature = "local_fs")]
     ctx.add_singleton_model(crate::ai::remote_agent_context::RemoteAgentContext::new);
 
     // ObjectStoreViewModel subscribes to UpdateManager so that it can be notified when objects are
@@ -2228,7 +2198,7 @@ fn initialize_app(
     // cloud_objects RTC WebSocket. After 2b-1, `start_listener` was already a no-op, so
     // this pass physically removed the entire file along with the singleton registration.
 
-    #[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+    #[cfg(feature = "local_tty")]
     {
         ctx.add_singleton_model(LocalShellState::new);
         ctx.add_singleton_model(system::SystemInfo::new);
@@ -2410,7 +2380,6 @@ fn initialize_app(
     });
 
     // When running natively, add the http server singleton to the application.
-    #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(move |ctx| {
         let routers = vec![
             app_installation_detection::make_router(),
@@ -2613,7 +2582,6 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
 struct AppExitServerShutdown {
     deadline: instant::Instant,
     lsp: Option<lsp::LspAppExitShutdown>,
-    #[cfg(not(target_family = "wasm"))]
     mcp: Option<crate::ai::mcp::app_exit::McpAppExitShutdown>,
 }
 
@@ -2624,7 +2592,6 @@ fn begin_servers_shutdown_for_app_exit(ctx: &mut AppContext) -> AppExitServerShu
     let deadline = instant::Instant::now() + APP_EXIT_SHUTDOWN_GRACE;
     AppExitServerShutdown {
         deadline,
-        #[cfg(not(target_family = "wasm"))]
         mcp: begin_mcp_servers_shutdown_for_app_exit(ctx),
         lsp: begin_language_servers_shutdown_for_app_exit(ctx),
     }
@@ -2641,7 +2608,6 @@ impl AppExitServerShutdown {
                     .saturating_duration_since(instant::Instant::now()),
             );
         }
-        #[cfg(not(target_family = "wasm"))]
         if let Some(mcp) = self.mcp {
             let outcome = mcp.finish(self.deadline);
             log::info!("MCP servers at app exit: {outcome:?}");
@@ -2682,7 +2648,6 @@ fn begin_language_servers_shutdown_for_app_exit(
 /// Returns `None`, doing nothing, when `TemplatableMCPServerManager` was never registered
 /// (the remote-server daemon shares these callbacks; so do test apps that skip it), since
 /// `handle` panics on an unregistered singleton. The pin stops no MCP server on exit.
-#[cfg(not(target_family = "wasm"))]
 fn begin_mcp_servers_shutdown_for_app_exit(
     ctx: &mut AppContext,
 ) -> Option<crate::ai::mcp::app_exit::McpAppExitShutdown> {
@@ -2763,7 +2728,6 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             // steps run in this order.
             // A give-up for a step that never finishes (#1410). Every quit path, not only the
             // signal ones that already have a 5 s watchdog, can now end the process.
-            #[cfg(not(target_family = "wasm"))]
             warpui::platform::shutdown_progress::arm_quit_give_up();
             run_will_terminate_steps(&mut AppWillTerminate { ctx, servers: None });
         })),
@@ -3114,8 +3078,6 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
     });
 
     // For now, we only specify application-level fallback fonts on web.
-    #[cfg(target_family = "wasm")]
-    ctx.set_fallback_font_fn(font_fallback::fallback_font_fn);
 
     match &launch_mode {
         LaunchMode::App { .. } | LaunchMode::Test { .. } => {
@@ -3153,7 +3115,6 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
                 maybe_register_app_as_login_item(ctx);
             }
         }
-        #[cfg_attr(target_family = "wasm", allow(unused_variables))]
         LaunchMode::CommandLine {
             command,
             global_options,

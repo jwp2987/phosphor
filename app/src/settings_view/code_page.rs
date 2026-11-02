@@ -72,15 +72,11 @@ use warpui::{
 // The remote codebase-index section. Gated exactly as its model is: `app/src/remote_server/mod.rs`
 // declares `codebase_index_model` under `not(target_family = "wasm")`, and `app/src/lib.rs:1599`
 // registers the singleton under the same cfg, so nothing below can exist on wasm.
-#[cfg(not(target_family = "wasm"))]
 use crate::remote_server::codebase_index_model::{
     RemoteCodebaseIndexModel, RemoteCodebaseIndexModelEvent,
 };
-#[cfg(not(target_family = "wasm"))]
 use remote_server::codebase_index_proto::{RemoteCodebaseIndexState, RemoteCodebaseIndexStatus};
-#[cfg(not(target_family = "wasm"))]
 use warp_core::ui::theme::Fill as ThemeFill;
-#[cfg(not(target_family = "wasm"))]
 use warpui::elements::ConstrainedBox;
 
 /// Vertical rhythm between the language-server section's stacked pieces. Both
@@ -89,7 +85,6 @@ const MAIN_SECTION_MARGIN: f32 = 12.;
 const SUB_SECTION_MARGIN: f32 = 8.;
 const LSP_STATUS_INDICATOR_SIZE: f32 = 8.;
 /// Size of the status glyph on a remote index row. The pin's `STATUS_ICON_SIZE`.
-#[cfg(not(target_family = "wasm"))]
 const STATUS_ICON_SIZE: f32 = 16.;
 
 /// The substring an SSH daemon puts in `failure_message` when it refuses to index because the
@@ -101,7 +96,6 @@ const STATUS_ICON_SIZE: f32 = 16.;
 /// reached." A daemon may be older or newer than the client that talks to it, so the client
 /// matches the stable middle of the sentence rather than the whole of it. Value and predicate
 /// are the pin's (`42effe840:app/src/settings_view/code_page.rs:92`).
-#[cfg(not(target_family = "wasm"))]
 const REMOTE_CODEBASE_INDEX_LIMIT_REACHED_FAILURE: &str =
     "maximum number of codebase indexes has been reached";
 
@@ -111,7 +105,6 @@ const REMOTE_CODEBASE_INDEX_LIMIT_REACHED_FAILURE: &str =
 /// different colours: hitting the index limit is a quota the user can act on by deleting an
 /// index, whereas every other unavailability ("indexing did not start", a disconnected host)
 /// is a fault. See [`remote_indexing_status_presentation`], its only caller.
-#[cfg(not(target_family = "wasm"))]
 fn remote_codebase_index_limit_reached(status: &RemoteCodebaseIndexStatus) -> bool {
     status
         .failure_message
@@ -239,7 +232,6 @@ impl CodeSettingsPageView {
         // user leaves the page and comes back. Same singleton guard as above and for the same
         // reason: `RemoteCodebaseIndexModel` is registered by `app/src/lib.rs`, and page-level
         // tests build this view without it, where `handle()` would panic.
-        #[cfg(not(target_family = "wasm"))]
         if ctx.has_singleton_model::<RemoteCodebaseIndexModel>() {
             ctx.subscribe_to_model(
                 &RemoteCodebaseIndexModel::handle(ctx),
@@ -330,7 +322,6 @@ impl CodeSettingsPageView {
         ctx: &mut ViewContext<Self>,
     ) -> (PageType<Self>, Option<ViewHandle<ExternalEditorView>>) {
         let editor_view = ctx.add_typed_action_view(ExternalEditorView::new);
-        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
             Box::new(ExternalEditorCodeWidget),
             Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
@@ -348,7 +339,6 @@ impl CodeSettingsPageView {
         ];
         // Last, below the local indexing controls, mirroring the pin's order: the pin's
         // Initialized-Folders section walks local workspaces first and remote entries after.
-        #[cfg(not(target_family = "wasm"))]
         widgets.push(Box::new(RemoteIndexedFoldersWidget));
         (
             PageType::new_uncategorized(widgets, None),
@@ -362,7 +352,6 @@ impl CodeSettingsPageView {
     fn build_page(
         _ctx: &mut ViewContext<Self>,
     ) -> (PageType<Self>, Option<ViewHandle<ExternalEditorView>>) {
-        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
             Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
             Box::new(CodeReviewPanelToggleWidget::default()),
@@ -377,7 +366,6 @@ impl CodeSettingsPageView {
             Box::new(AutoIndexingToggleWidget::default()),
             Box::new(CodebaseEmbeddingModelWidget),
         ];
-        #[cfg(not(target_family = "wasm"))]
         widgets.push(Box::new(RemoteIndexedFoldersWidget));
         (PageType::new_uncategorized(widgets, None), None)
     }
@@ -1836,7 +1824,6 @@ impl SettingsWidget for CodebaseEmbeddingModelWidget {
 /// this fork shows no remote index controls today either, so a status-only row is strictly
 /// more than the page rendered before. When the folder section is ported, restore both fields
 /// and the `IndexingRefreshAction` enum with it rather than inventing a different shape.
-#[cfg(not(target_family = "wasm"))]
 struct IndexingStatusPresentation {
     text: String,
     color: ColorU,
@@ -1849,7 +1836,6 @@ struct IndexingStatusPresentation {
 /// All eight `RemoteCodebaseIndexState` variants are covered explicitly, with the pin's words
 /// and the pin's colour for each -- a catch-all arm here would silently render a new daemon
 /// state as whatever the fallback said.
-#[cfg(not(target_family = "wasm"))]
 fn remote_indexing_status_presentation(
     status: &RemoteCodebaseIndexStatus,
     appearance: &Appearance,
@@ -1943,7 +1929,6 @@ fn remote_indexing_status_presentation(
 
 /// The right-hand side of a remote index row: status glyph, then status text, both in the
 /// presentation's colour.
-#[cfg(not(target_family = "wasm"))]
 fn render_remote_index_status(
     presentation: IndexingStatusPresentation,
     appearance: &Appearance,
@@ -1999,10 +1984,8 @@ fn render_remote_index_status(
 ///
 /// The row is a `render_body_item`, which is what every other control on this flat page is; the
 /// pin's card-with-buttons shape belongs to the folder section and should arrive with it.
-#[cfg(not(target_family = "wasm"))]
 struct RemoteIndexedFoldersWidget;
 
-#[cfg(not(target_family = "wasm"))]
 impl SettingsWidget for RemoteIndexedFoldersWidget {
     type View = CodeSettingsPageView;
 

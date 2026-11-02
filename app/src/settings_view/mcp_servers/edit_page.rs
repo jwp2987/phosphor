@@ -1,10 +1,7 @@
-#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
 
-#[cfg(not(target_family = "wasm"))]
 use diesel::SqliteConnection;
-#[cfg(not(target_family = "wasm"))]
 use parking_lot::Mutex;
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting;
@@ -122,7 +119,6 @@ pub struct MCPServersEditPageView {
     log_out_icon_button_mouse_handle: MouseStateHandle,
     editing_disabled_banner: ViewHandle<Banner<()>>,
 
-    #[cfg(not(target_family = "wasm"))]
     #[allow(dead_code)]
     database_connection: Option<Arc<Mutex<SqliteConnection>>>,
 }
@@ -154,7 +150,6 @@ impl MCPServersEditPageView {
         });
 
         let json_editor = ctx.add_typed_action_view(|ctx| {
-            #[cfg_attr(target_family = "wasm", allow(unused_mut))]
             let mut editor = CodeEditorView::new(
                 None,
                 None,
@@ -184,7 +179,6 @@ impl MCPServersEditPageView {
             .with_icon(Icon::Warning)
         });
 
-        #[cfg(not(target_family = "wasm"))]
         let database_connection =
             crate::persistence::database_file_path()
                 .to_str()
@@ -206,7 +200,6 @@ impl MCPServersEditPageView {
             log_out_icon_button_mouse_handle: Default::default(),
             editing_disabled_banner,
 
-            #[cfg(not(target_family = "wasm"))]
             database_connection,
         }
     }

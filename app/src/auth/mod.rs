@@ -273,7 +273,6 @@ impl AuthState {
     /// Initializes AuthState. The `api_key` parameter is faithfully kept (the
     /// BYOP entry point may still pass one in), but every other external-account
     /// check path is a no-op.
-    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     pub fn initialize(_ctx: &AppContext, api_key: Option<String>) -> Self {
         let state = Self::new();
         if let Some(api_key_value) = api_key {

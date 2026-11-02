@@ -1,4 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_providers::prompt_renderer;
 use crate::ai::aws_credentials::refresh_aws_credentials;
 use crate::ai::blocklist::agent_view::agent_input_footer::editor::{
@@ -3710,7 +3709,6 @@ impl TypedActionView for AISettingsPageView {
                 ctx.notify();
             }
             AISettingsPageAction::RefreshAwsBedrockCredentials => {
-                #[cfg(not(target_family = "wasm"))]
                 ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
                     drop(refresh_aws_credentials(manager, ctx));
                 });
@@ -7223,7 +7221,6 @@ impl SettingsWidget for OtherAIWidget {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub fn cli_agent_settings_widget_id() -> &'static str {
     CLIAgentWidget::static_widget_id()
 }

@@ -16,9 +16,9 @@ use repo_metadata::repositories::RepoDetectionSource;
 use warp_core::SessionId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::AppContext;
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 use repo_metadata::repositories::DetectedRepositories;
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 use warpui::SingletonEntity;
 
 /// Describes whether the active session is local or remote.
@@ -32,7 +32,7 @@ pub enum RepoDetectionSessionType {
 
 /// Detects the git repository root for the given working directory, delegating
 /// to [`DetectedRepositories::detect_possible_git_repo`] for local sessions.
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 pub fn detect_possible_git_repo(
     session_type: RepoDetectionSessionType,
     active_directory: &str,

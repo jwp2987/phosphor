@@ -106,9 +106,6 @@ use super::{
     WorkflowSource, WorkflowType, WorkflowViewMode,
 };
 
-#[cfg(target_family = "wasm")]
-use crate::uri::web_intent_parser::open_url_on_desktop;
-
 mod alias_argument_selector;
 mod alias_bar;
 mod argument_editor;
@@ -159,7 +156,6 @@ const COMMAND_MARGIN_TOP: f32 = 20.;
 // Padding for text_input
 const VERTICAL_TEXT_INPUT_PADDING: f32 = 5.;
 const HORIZONTAL_TEXT_INPUT_PADDING: f32 = 10.;
-
 
 pub(super) const EDITOR_FONT_SIZE: f32 = 14.;
 const BUTTON_PADDING: f32 = 12.;
@@ -3124,7 +3120,6 @@ impl TypedActionView for WorkflowView {
                 );
                 open_url_on_desktop(url);
             }
-            #[cfg(not(target_family = "wasm"))]
             WorkflowAction::OpenLinkOnDesktop(_) => {
                 // No-op when not on wasm
             }

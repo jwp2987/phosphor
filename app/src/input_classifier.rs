@@ -62,8 +62,7 @@ impl DeferredClassifier {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[async_trait]
 impl InputClassifier for DeferredClassifier {
     async fn detect_input_type(
         &self,
@@ -98,7 +97,6 @@ impl InputClassifierModel {
 
         // Warm it up off the UI thread so it is ready long before the first keystroke. On wasm
         // there are no threads, so the first classification loads it.
-        #[cfg(not(target_family = "wasm"))]
         {
             let warm_up = deferred.clone();
             if let Err(e) = std::thread::Builder::new()

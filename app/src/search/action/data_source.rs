@@ -20,7 +20,6 @@ pub struct CommandBindingDataSource {
 }
 
 impl CommandBindingDataSource {
-    #[cfg(not(target_family = "wasm"))]
     pub fn new(binding_source: ModelHandle<BindingSource>, ctx: &mut ModelContext<Self>) -> Self {
         // Zap: command palette actions always use character-level fuzzy
         // matching (SkimMatcherV2). Tantivy's default tokenizer doesn't
@@ -33,12 +32,6 @@ impl CommandBindingDataSource {
         Self::new_fuzzy(binding_source, ctx)
     }
 
-    #[cfg(target_family = "wasm")]
-    pub fn new(binding_source: ModelHandle<BindingSource>, ctx: &mut ModelContext<Self>) -> Self {
-        Self::new_fuzzy(binding_source, ctx)
-    }
-
-    #[cfg(not(target_family = "wasm"))]
     fn new_full_text(
         binding_source: ModelHandle<BindingSource>,
         ctx: &mut ModelContext<Self>,
@@ -246,7 +239,6 @@ impl ActionSearcher for FuzzyActionSearcher {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 mod full_text_searcher {
     use crate::define_search_schema;
     use crate::search::action::{

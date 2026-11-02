@@ -15,8 +15,6 @@ use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDo
 use crate::ai::execution_profiles::profiles::{AIExecutionProfilesModel, ClientProfileId};
 use crate::ai::llms::{LLMId, LLMPreferences};
 use crate::ai::restored_conversations::RestoredAgentConversations;
-#[cfg(target_family = "wasm")]
-use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::Space;
 use crate::code::buffer_location::BufferLocation;
 #[cfg(feature = "local_fs")]
@@ -35,7 +33,6 @@ use crate::settings::{AISettings, DefaultSessionMode, PaneSettings, SshSettings}
 use crate::settings_view::SettingsSection;
 use crate::shell_indicator::ShellIndicatorType;
 use crate::terminal::available_shells::{AvailableShell, AvailableShells};
-#[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::PluginModalKind;
 use crate::terminal::view::inline_banner::{
     ZeroStatePromptSuggestionTriggeredFrom, ZeroStatePromptSuggestionType,
@@ -45,8 +42,6 @@ use crate::terminal::view::load_ai_conversation::{
 };
 use crate::undo_close::UndoCloseStack;
 use crate::undo_close::UndoCloseStackEvent;
-#[cfg(target_family = "wasm")]
-use crate::uri::browser_url_handler::update_browser_url;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::FileTarget;
 use crate::view_components::ToastFlavor;
@@ -724,11 +719,9 @@ pub enum Event {
     RunTabConfigSkill {
         path: PathBuf,
     },
-    #[cfg(not(target_family = "wasm"))]
     OpenLspLogs {
         log_path: PathBuf,
     },
-    #[cfg(not(target_family = "wasm"))]
     OpenPluginInstructionsPane(crate::terminal::CLIAgent, PluginModalKind),
 }
 
@@ -6610,46 +6603,12 @@ impl PaneGroup {
             pane.focus(ctx);
         }
 
-        #[cfg(target_family = "wasm")]
-        {
-            if ContextFlag::DynamicBrowserUrl.is_enabled() {
-                self.update_browser_url(ctx);
-            }
-        }
     }
 
     fn handle_pane_link_updated(&self, pane_id: PaneId, url: Option<Url>, ctx: &AppContext) {
         log::debug!("Url for pane should be updated pane_id: {pane_id:?}, url: {url:?}");
-        #[cfg(target_family = "wasm")]
-        if pane_id == self.focused_pane_id(ctx) {
-            update_browser_url(url, false);
-        }
 
         let _ = ctx;
-    }
-
-    #[cfg(target_family = "wasm")]
-    fn update_browser_url(&self, ctx: &mut ViewContext<Self>) {
-        // We need to wait for the app to be loaded before we attempt to get the
-        // shareable links. This is because the links come from ObjectStoreModel objects
-
-        let initial_load_complete = ObjectStoreModel::as_ref(ctx).initial_load_complete();
-        ctx.spawn(initial_load_complete, move |me, _, ctx| {
-            if let Some(pane) = me.focused_pane_content(ctx) {
-                match pane.shareable_link(ctx) {
-                    Ok(crate::pane_group::pane::ShareableLink::Base) => {
-                        update_browser_url(None, false)
-                    }
-                    Ok(crate::pane_group::pane::ShareableLink::Pane { url }) => {
-                        update_browser_url(Some(url), false)
-                    }
-                    Err(crate::pane_group::pane::ShareableLinkError::Expected) => {}
-                    Err(crate::pane_group::pane::ShareableLinkError::Unexpected(message)) => {
-                        log::error!("Failed to updated browser url. {message}")
-                    }
-                }
-            }
-        });
     }
 
     /// Focus the active terminal session, if there is one.

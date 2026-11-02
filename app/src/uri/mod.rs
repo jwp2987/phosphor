@@ -3,9 +3,6 @@ pub mod link_policy;
 pub mod parse_url_paths;
 pub mod web_intent_parser;
 
-#[cfg(target_family = "wasm")]
-pub mod browser_url_handler;
-
 use crate::ai::agent::api::ServerConversationToken;
 use crate::drive::ZapDriveObjectSettings;
 use crate::features::FeatureFlag;
@@ -359,7 +356,6 @@ impl UriHost {
                 ctx.dispatch_global_action("root_view::open_new", &());
             }
             UriHost::Mcp => {
-                #[cfg(not(target_family = "wasm"))]
                 {
                     let result = crate::ai::mcp::TemplatableMCPServerManager::handle(ctx)
                         .update(ctx, |manager, _ctx| manager.handle_oauth_callback(url));

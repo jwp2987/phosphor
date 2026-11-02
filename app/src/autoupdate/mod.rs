@@ -948,7 +948,6 @@ pub enum UpdateReady {
 }
 
 /// Set of results from downloading an update.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum DownloadReady {
     /// The update was downloaded successfully.
     Yes,
@@ -968,7 +967,6 @@ pub enum DownloadReady {
 /// update via their package manager.  After the update completes, we send
 /// ourselves a signal (via a DCS hook) that the update has completed and we're
 /// ready to relaunch.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum ReadyForRelaunch {
     Yes,
     #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
@@ -1097,7 +1095,6 @@ async fn fetch_version(
 }
 
 // This method is unimplemented on wasm, so we allow unused variables.
-#[cfg_attr(target_family = "wasm", allow(unused_variables))]
 async fn download_update(
     version_info: VersionInfo,
     update_id: String,

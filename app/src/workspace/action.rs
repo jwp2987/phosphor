@@ -334,12 +334,10 @@ pub enum WorkspaceAction {
     ViewPrivacyPolicy,
     SendFeedback,
     /// Open the log directory in the system file explorer with the current log file selected.
-    #[cfg(not(target_family = "wasm"))]
     ViewLogs,
     /// Prompt the user with a native save-file dialog and write the log
     /// bundle (recent logs + MCP / update logs + diagnostic manifest) to
     /// the chosen path. Used by the "Export logs" link on the About page.
-    #[cfg(not(target_family = "wasm"))]
     ExportLogsToPath,
     ChangeCursor(Cursor),
     ToggleBlockSnackbar,
@@ -611,7 +609,6 @@ pub enum WorkspaceAction {
     },
     /// Fork an existing AI conversation into a new pane and prefill the input with a local
     /// continuation command (selecting all text).
-    #[cfg(not(target_family = "wasm"))]
     ContinueConversationLocally {
         conversation_id: AIConversationId,
     },
@@ -813,7 +810,6 @@ impl WorkspaceAction {
     pub fn should_save_app_state_on_action(&self) -> bool {
         use WorkspaceAction::*;
         match self {
-            #[cfg(not(target_family = "wasm"))]
             ContinueConversationLocally { .. } => true,
             ActivateTab(_)
             | ActivateTabByNumber(_)
@@ -1078,9 +1074,7 @@ impl WorkspaceAction {
             | ResetZapLaunchModalState
             | InstallOpenCodeWarpPlugin
             | UseLocalOpenCodeWarpPlugin => false,
-            #[cfg(not(target_family = "wasm"))]
             ViewLogs => false,
-            #[cfg(not(target_family = "wasm"))]
             ExportLogsToPath => false,
             #[cfg(target_os = "macos")]
             SampleProcess => false,

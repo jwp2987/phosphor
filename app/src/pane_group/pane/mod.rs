@@ -20,7 +20,6 @@ pub(super) mod file_pane;
 pub(super) mod get_started_pane;
 pub(super) mod get_started_view;
 pub(super) mod image_pane;
-#[cfg(not(target_family = "wasm"))]
 pub(super) mod local_harness_launch;
 pub(super) mod notebook_pane;
 pub(super) mod settings_pane;
@@ -1139,7 +1138,6 @@ pub enum PaneEvent {
 // `local_harness_launch`'s own visibility is untouched by this -- nothing
 // outside `pane_group::pane` gained access to it; only this narrow new
 // surface did.
-#[cfg(not(target_family = "wasm"))]
 pub struct TuiPreparedChildAgentLaunch {
     pub command: String,
     pub env_vars: std::collections::HashMap<std::ffi::OsString, std::ffi::OsString>,
@@ -1148,13 +1146,11 @@ pub struct TuiPreparedChildAgentLaunch {
 }
 
 /// TUI counterpart of [`local_harness_launch::split_orchestrate_tasks`].
-#[cfg(not(target_family = "wasm"))]
 pub fn tui_split_orchestrate_tasks(argument: &str) -> Vec<String> {
     local_harness_launch::split_orchestrate_tasks(argument)
 }
 
 /// TUI counterpart of [`local_harness_launch::compose_child_agent_prompt`].
-#[cfg(not(target_family = "wasm"))]
 pub fn tui_compose_child_agent_prompt(task: &str) -> String {
     local_harness_launch::compose_child_agent_prompt(task)
 }
@@ -1163,7 +1159,6 @@ pub fn tui_compose_child_agent_prompt(task: &str) -> String {
 /// fixed to the same Claude-only default harness `/orchestrate` uses
 /// (`local_harness_launch::ORCHESTRATE_DEFAULT_HARNESS`) since the TUI has no
 /// model/harness-selection UI for child agents either.
-#[cfg(not(target_family = "wasm"))]
 pub async fn prepare_tui_child_agent_launch(
     prompt: String,
     parent_run_id: Option<String>,

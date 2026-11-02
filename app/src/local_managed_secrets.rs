@@ -17,8 +17,7 @@ use warp_managed_secrets::{ManagedSecret, ManagedSecretType, ManagedSecretValue}
 
 pub(crate) struct DisabledManagedSecretsClient;
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[async_trait]
 impl ManagedSecretsClient for DisabledManagedSecretsClient {
     async fn get_managed_secret_configs(&self) -> Result<ManagedSecretConfigs> {
         Ok(ManagedSecretConfigs {

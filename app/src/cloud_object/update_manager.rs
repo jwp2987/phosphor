@@ -1,4 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::templatable::{TemplatableMCPServer, TemplatableMCPServerObjectModel};
 use crate::{
     ai::{
@@ -309,7 +308,6 @@ impl UpdateManager {
         );
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn update_templatable_mcp_server(
         &mut self,
         templatable_mcp_server: TemplatableMCPServer,
@@ -801,7 +799,6 @@ impl UpdateManager {
         );
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn create_templatable_mcp_server(
         &mut self,
         templatable_mcp_server: TemplatableMCPServer,

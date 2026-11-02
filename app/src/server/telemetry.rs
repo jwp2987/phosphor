@@ -332,7 +332,6 @@ pub enum MCPServerTelemetryError {
     TransportError(String),
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl From<rmcp::RmcpError> for MCPServerTelemetryError {
     fn from(err: rmcp::RmcpError) -> Self {
         match err {

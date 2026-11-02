@@ -29,7 +29,6 @@ pub mod network_secrets;
 mod onboarding;
 mod pane;
 mod privacy;
-#[cfg(not(target_family = "wasm"))]
 pub(crate) mod schema_generation;
 mod scroll;
 mod select;
