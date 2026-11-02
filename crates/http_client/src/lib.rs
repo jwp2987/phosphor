@@ -156,14 +156,6 @@ impl Client {
         })
     }
 
-    pub fn set_before_request_fn(&mut self, hook_fn: RequestHookFn) {
-        self.before_request_sent = Some(hook_fn);
-    }
-
-    pub fn set_after_response_fn(&mut self, hook_fn: ResponseHookFn) {
-        self.after_response_received = Some(hook_fn);
-    }
-
     fn builder(&self, wrapped: reqwest::RequestBuilder) -> RequestBuilder<'_> {
         Self::add_integration_extra_headers(RequestBuilder {
             wrapped,

@@ -13,7 +13,6 @@ use crate::agent::OutputFormat;
 #[cfg(windows)]
 mod process_handle;
 
-pub mod scope;
 pub mod skill;
 
 pub mod agent;
@@ -245,11 +244,6 @@ impl Args {
         self.command.as_ref()
     }
 
-    /// Args for the main Zap application, if not running a subcommand.
-    pub fn app_args(&self) -> &AppArgs {
-        &self.args
-    }
-
     /// Extract the main Zap application args.
     pub fn into_app_args(self) -> AppArgs {
         self.args
@@ -285,14 +279,6 @@ pub enum WorkerCommand {
     #[clap(hide = true)]
     #[cfg(unix)]
     TerminalServer(TerminalServerArgs),
-
-    /// Run this process as the plugin host rather than the main app.
-    #[cfg(feature = "plugin_host")]
-    #[clap(long_flag = "plugin-host")]
-    PluginHost {
-        #[clap(flatten)]
-        parent: ParentOpts,
-    },
 
     /// Run the minidump server.
     #[clap(hide = true)]
@@ -483,15 +469,6 @@ pub fn terminal_server_subcommand() -> String {
     <Args as CommandFactory>::command()
         .find_subcommand("terminal-server")
         .expect("terminal-server subcommand not found")
-        .get_name()
-        .to_string()
-}
-
-/// Returns the subcommand name to use for starting the installation detection server.
-pub fn installation_detection_server_subcommand() -> String {
-    <Args as CommandFactory>::command()
-        .find_subcommand("installation-detection-server")
-        .expect("installation-detection-server subcommand not found")
         .get_name()
         .to_string()
 }

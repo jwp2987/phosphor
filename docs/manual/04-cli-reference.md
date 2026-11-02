@@ -128,9 +128,7 @@ phosphor-oss
 
 Not shown, because they are hidden worker modes Phosphor re-executes itself as
 and are not for interactive use: `terminal-server`, `minidump-server`,
-`remote-server-proxy`, `remote-server-daemon`, `ripgrep-search`, and (only in
-builds compiled with the `plugin_host` feature, which the default build is not)
-`plugin-host`. They are documented here as internal and are omitted from the
+`remote-server-proxy`, `remote-server-daemon` and `ripgrep-search`. They are documented here as internal and are omitted from the
 reference tables below.
 
 There is also a hidden `--warpctrl` flag that switches the binary to an entirely
@@ -734,8 +732,7 @@ Global options
 Subcommand inventory
 - crates/warp_cli/src/lib.rs:352-368 — CliCommand: Agent, MCP, Model, Whoami, Provider
 - crates/warp_cli/src/lib.rs:376-410 — Command: Worker(flatten), CommandLine(flatten), Completions, DumpDebugInfo
-- crates/warp_cli/src/lib.rs:282-336 — WorkerCommand: TerminalServer, PluginHost, MinidumpServer, RemoteServerProxy, RemoteServerDaemon, RipgrepSearch (all hide=true or feature-gated)
-- app/Cargo.toml:469-473, 766 — plugin_host is only pulled in by completions_v2; neither is in `default`
+- crates/warp_cli/src/lib.rs:282-336 — WorkerCommand: TerminalServer, MinidumpServer, RemoteServerProxy, RemoteServerDaemon, RipgrepSearch (all hide=true or feature-gated)
 - app/src/lib.rs:735-742 — the hidden --warpctrl flag selects a separate parser
 - crates/warp_cli/src/local_control/mod.rs:71-97 — CONTROL_MODE_FLAG stripping / warpctrl parser
 - crates/warp_features/src/lib.rs — FeatureFlag::WarpControlCli is dogfood-only; app/src/lib.rs:3429 gives it a ZAP_UNSTABLE_FEATURES path only

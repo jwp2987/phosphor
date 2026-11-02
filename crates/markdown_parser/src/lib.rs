@@ -273,10 +273,6 @@ impl FormattedTextLine {
         }
         hyperlinks
     }
-
-    pub fn is_empty_line(&self) -> bool {
-        matches!(self, Self::Line(line) if line.iter().all(|fragment| fragment.text.is_empty()))
-    }
 }
 
 impl LineCount for FormattedTextLine {

@@ -25,10 +25,6 @@ const LEFT_COLUMN_WIDTH: f32 = 580.;
 const LEFT_COLUMN_CONTENT_MAX_WIDTH: f32 = 800.;
 const MIN_RIGHT_COLUMN_WIDTH: f32 = 540.;
 
-/// The minimum window width at which the two-column layout is shown (left content + right panel).
-/// Below this width, `static_left` collapses to a single left-only column.
-pub const TWO_COLUMN_MIN_WIDTH: f32 = LEFT_COLUMN_WIDTH + MIN_RIGHT_COLUMN_WIDTH;
-
 /// Creates a two-column layout with a fixed-width left column and flexible right column.
 ///
 /// The left column's *content* is constrained to [`LEFT_COLUMN_CONTENT_MAX_WIDTH`] and is always

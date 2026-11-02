@@ -10,7 +10,6 @@ publish.workspace = true
 # warp_errors + search-engine-only deps (sha2/string-offset/instant/strum) along
 # with the searcher/macros modules. See specs/warp-oss-sync/SCOPE.md.
 [dependencies]
-anyhow.workspace = true
 async-channel.workspace = true
 async-trait.workspace = true
 enum-iterator.workspace = true
@@ -22,11 +21,9 @@ pin-project.workspace = true
 lazy_static.workspace = true
 log.workspace = true
 ordered-float.workspace = true
-parking_lot.workspace = true
 pathfinder_color.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-strum_macros.workspace = true
 warp_core.workspace = true
 warpui_core.workspace = true
 

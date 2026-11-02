@@ -270,20 +270,10 @@ pub fn tui_completion_context_has_exact_command(
         return true;
     }
 
-    #[cfg(feature = "completions_v2")]
-    {
-        completion_context
-            .command_registry()
-            .get_signature(command)
-            .is_some()
-    }
-    #[cfg(not(feature = "completions_v2"))]
-    {
-        completion_context
-            .command_registry()
-            .signature_from_line(command, case_sensitivity)
-            .is_some()
-    }
+    completion_context
+        .command_registry()
+        .signature_from_line(command, case_sensitivity)
+        .is_some()
 }
 
 /// One shell command/path completion candidate for the TUI Tab-completion popup.

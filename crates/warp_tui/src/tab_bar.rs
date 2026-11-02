@@ -109,12 +109,6 @@ impl TuiTab {
         self.label = label.into();
         self
     }
-
-    /// Drops the trailing adornment.
-    pub fn without_trailing(mut self) -> Self {
-        self.trailing = None;
-        self
-    }
 }
 
 /// Caller-supplied styles for the tab bar and its semantic states.

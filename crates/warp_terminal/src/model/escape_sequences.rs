@@ -115,8 +115,6 @@ pub mod C1 {
     pub const EPA: &[u8] = &[ESC, b'W'];
     /// Start of String
     pub const SOS: &[u8] = &[ESC, b'X'];
-    /// Return Terminal ID
-    pub const DECID: &[u8] = &[ESC, b'Z']; //obsolete form of CSI c
     /// Control Sequence Introducer
     pub const CSI: &[u8] = &[ESC, b'['];
     /// String Terminator
@@ -197,11 +195,6 @@ pub mod EscCodes {
         sequence.extend_from_slice(c1);
         sequence.extend_from_slice(c);
         sequence
-    }
-
-    pub fn build_escape_sequence(mode_provider: &impl ModeProvider, c: &[u8]) -> Vec<u8> {
-        let c1 = get_c1_sequence(mode_provider);
-        build_escape_sequence_with_c1(c1, c)
     }
 
     /// Returns the C1 code that should be used to start an escape sequence based on terminal's

@@ -814,7 +814,7 @@ impl LocalRepoMetadataModel {
     /// Blocking: does `read_dir` + `canonicalize` inline. Production callers on the UI thread
     /// use [`Self::schedule_symlink_refresh`] instead (#1322); this stays for tests and as the
     /// single apply path.
-    #[cfg(feature = "local_fs")]
+    #[cfg(all(test, feature = "local_fs"))]
     fn refresh_symlink_targets(
         &mut self,
         repo_path: &StandardizedPath,

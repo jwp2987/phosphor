@@ -110,20 +110,6 @@ impl TuiTerminalSessionStateModel {
             },
         }
     }
-    #[cfg(test)]
-    pub(crate) fn new_for_input(
-        input_mode: &ModelHandle<BlocklistAIInputModel>,
-        suggestions_mode: &ModelHandle<TuiInputSuggestionsModeModel>,
-        orchestration_tabs_available: impl Fn(&AppContext) -> bool + 'static,
-    ) -> Self {
-        Self {
-            source: TuiTerminalSessionStateSource::InputTest {
-                input_mode: input_mode.downgrade(),
-                suggestions_mode: suggestions_mode.downgrade(),
-                orchestration_tabs_available: Rc::new(orchestration_tabs_available),
-            },
-        }
-    }
 
     pub(crate) fn resolve(
         &self,
@@ -366,13 +352,6 @@ pub(crate) struct TuiShortcutSection {
 }
 
 impl TuiTerminalSessionState {
-    pub(super) fn with_blocking_input_source(mut self, source: BlockingInputSource) -> Self {
-        let state = match &mut self {
-            Self::AltScreen { state, .. } | Self::Block(state) => state,
-        };
-        state.interaction = TuiInteractionState::Blocking(source);
-        self
-    }
     fn state(&self) -> &TuiBlockSessionState {
         match self {
             Self::AltScreen { state, .. } | Self::Block(state) => state,
@@ -385,22 +364,6 @@ impl TuiTerminalSessionState {
 
     pub(crate) fn is_alt_screen(&self) -> bool {
         matches!(self, Self::AltScreen { .. })
-    }
-
-    pub(crate) fn has_blocking_interaction(&self) -> bool {
-        matches!(
-            self.interaction(),
-            TuiInteractionState::Blocking(source) if source.is_interactive()
-        )
-    }
-
-    pub(super) fn blocking_input_source(&self) -> Option<&BlockingInputSource> {
-        match self.interaction() {
-            TuiInteractionState::Blocking(source) => Some(source),
-            TuiInteractionState::StartingShell
-            | TuiInteractionState::AgentEditor(_)
-            | TuiInteractionState::Pty(_) => None,
-        }
     }
 
     #[cfg(test)]

@@ -147,19 +147,6 @@ impl RemoteRepoMetadataModel {
         }
     }
 
-    /// Replaces the file tree entry within an existing remote repository's state.
-    pub fn update_file_tree_entry(
-        &mut self,
-        id: &RemoteRepositoryIdentifier,
-        entry: FileTreeEntry,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(IndexedRepoState::Indexed(state)) = self.repositories.get_mut(id) {
-            state.entry = entry;
-            ctx.emit(RemoteRepositoryMetadataEvent::FileTreeEntryUpdated { id: id.clone() });
-        }
-    }
-
     /// Inserts or replaces a remote repository from a snapshot update.
     ///
     /// Creates a `FileTreeEntry` from the update by starting with an empty

@@ -7,9 +7,7 @@ resolver = "2"
 # Vendored crates that declare their own [workspace] (#864), and the dev-only cargo-fuzz crate.
 exclude = ["lib/cosmic-text", "lib/arboard", "fuzz"]
 
-# Include all members except serve-wasm (since it's a helper helper for serving
-# wasm binaries and not something we want to regularly compile or run
-# tests against) and integration (since it is only used for testing).
+# Include all members except integration (since it is only used for testing).
 default-members = [
   "app",
   "crates/channel_versions",
@@ -31,12 +29,10 @@ publish = false
 [workspace.dependencies]
 # Local workspace crates. This lets us reference them in other crates without specifying a path.
 ai = { path = "crates/ai" }
-app-installation-detection = { path = "crates/app-installation-detection" }
 asset_cache = { path = "crates/asset_cache" }
 asset_macro = { path = "crates/asset_macro" }
 channel_versions = { path = "crates/channel_versions", default-features = false }
 command = { path = "crates/command" }
-command-signatures-v2 = { path = "crates/command-signatures-v2" }
 computer_use = { path = "crates/computer_use" }
 field_mask = { path = "crates/field_mask" }
 fuzzy_match = { path = "crates/fuzzy_match" }
@@ -78,7 +74,6 @@ warp_features = { path = "crates/warp_features" }
 remote_server = { path = "crates/remote_server" }
 warp_files = { path = "crates/warp_files" }
 warp_isolation_platform = { path = "crates/isolation_platform" }
-warp_js = { path = "crates/warp_js" }
 warp_logging = { path = "crates/warp_logging" }
 warp_managed_secrets = { path = "crates/managed_secrets" }
 warp_ripgrep = { path = "crates/warp_ripgrep" }
@@ -178,24 +173,6 @@ jaq-json = { version = "2.0", features = ["serde"] }
 # The long-term fix is https://github.com/01mf02/jaq/issues/431.
 jaq-all = { version = "0.1", default-features = false }
 jsonschema = { version = "0.45", default-features = false }
-keyring = { version = "3.6", features = [
-    "apple-native",
-    "windows-native",
-    "sync-secret-service",
-    "linux-native",
-    "linux-native-sync-persistent",
-    "crypto-rust",
-    # vendored: makes dbus-secret-service → dbus → libdbus-sys build dbus from
-    # C source, no longer depending on the system `libdbus-1-dev` + pkg-config.
-    # This means:
-    #   1. When cross-compiling warp to x86_64-unknown-linux-musl (dev's
-    #      auto-uploaded remote-server, and release CI's musl CLI artifact),
-    #      libdbus-sys won't fail because pkg-config doesn't support cross;
-    #   2. Regular Linux builds no longer need the dbus dev package preinstalled.
-    # The cost is one extra small C library compiled per clean build (cacheable),
-    # in exchange for a self-contained build.
-    "vendored",
-] }
 lasso = { version = "0.7.3", features = ["multi-threaded"] }
 lazy_static = "1.4.0"
 libc = "0.2.81"
@@ -423,11 +400,8 @@ memo-map = "0.3.1"
 async-recursion = "1.0.0"
 getset = "0.1.1"
 regex = "1.11.1"
-rquickjs = { version = "0.3.1" }
 dirs = "6.0.0"
 rayon = "1.10.0"
-aes-gcm = "0.10"
-argon2 = "0.5"
 sha2 = "0.10"
 shell-escape = "0.1.5"
 shellexpand = "3.1.1"
@@ -469,7 +443,6 @@ winreg = "0.55.0"
 typed-path = "0.10.0"
 streaming-iterator = "0.1.0"
 derivative = "2.2.0"
-parquet = { version = "55.0.0", features = ["arrow"] }
 rmcp = { version = "2.2" }
 
 [profile.release]
@@ -642,22 +615,6 @@ core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844c
 objc = { git = "https://github.com/warpdotdev/rust-objc.git", rev = "5b656827fa9f863ef0eb22e444a3fedac009e78a" }
 pathfinder_simd = { git = "https://github.com/warpdotdev/pathfinder.git", rev = "34128a129ca6aee168fbc5060a4f21b4f7e486a9" }
 yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "51684719d0102ca85ff4b21cec39877a0c669e19" }
-
-# Pinned to a rev, not `branch = "warpdotdev/main"`: a branch pin is a
-# non-reproducible build input that `cargo update` can move silently with no CI
-# gate noticing (#715). This is the commit the branch already resolved to
-# (unchanged since 2025-12-09), so pinning it changes nothing about what
-# builds. The pin's own Cargo.toml (`4111d08f9`) instead pins
-# `54b9ac9af93b0c08b446a7bc0582836c9403a71b`, but that's the tip of the
-# unrelated `warpdotdev/v0.3.0-eecf54c` branch (a rebase onto tink-rust v0.3.0)
-# and its 16 commits ahead of this rev touch none of tink-core/tink-proto/
-# tink-hybrid's own sources -- only aead/, integration/{awskms,gcpkms}, prf/,
-# testing/, tests/, which this fork does not consume. Moving to it would
-# change the Cargo.lock resolution (and adopt a different upstream base) for
-# no behavioral benefit; do that as its own deliberate bump if ever needed.
-tink-core = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
-tink-proto = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
-tink-hybrid = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
 
 tikv-jemallocator = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
 tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
