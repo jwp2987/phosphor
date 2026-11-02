@@ -4,8 +4,8 @@
 #   cargo mutants -p warp --file app/src/terminal/pane_key.rs --file app/src/terminal/model/key_facts.rs
 #
 # A full-crate run is hours long: always narrow with --file / --re, or --in-diff <patch>. CI scope
-# (release tier, docs/testing.md "Test tiers"): job `mutants` = pane_key, key_facts, input_queue/{gates,destination}
-# in `warp` with a test filter (MUTANTS_FILES / MUTANTS_TEST_FILTER / MUTANTS_SHARD widen or split it), and job
+# (release tier, docs/testing.md "Test tiers"): job `mutants` = pane_key, key_facts, input_queue/{gates,table,facts,mod,pane,shadow}
+# + view/dest_table.rs (the #1424 table; the legacy destination.rs is out of scope) in `warp` with a test filter (MUTANTS_FILES / MUTANTS_TEST_FILTER / MUTANTS_SHARD widen or split it), and job
 # `mutants-warpui-core` = the warpui_core clipboard with its own tests.
 
 # The app's tests are only meaningful as `-p warp -p warp_tui --lib --features warp/gui`

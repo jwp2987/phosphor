@@ -189,13 +189,13 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 |---|---|---|---|
 | `guards` | test | automatic | oracle pin fetch + all guards of 2.3 + `macos/test_create_warpctrl_wrapper` + `test_warpctrl_early_dispatch` |
 | `check-linux` | test | automatic (~10 min warm) | `cargo check -p warp --features gui --lib --tests`, feature-unified multi-package check, `--features tui`, `-p warp_tui` |
-| `test-linux` | test | manual (auto on tags) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule) |
-| `test-warpui-core` | test | manual (auto on tags) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
+| `test-linux` | test | manual (auto on tags and on pushes to `main`, with the filter derived from the pushed diff by `ci_seq.py --derive-env`; skipped when nothing in its scope changed) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule) |
+| `test-warpui-core` | test | manual (auto on tags and on `main` pushes that touch warpui_core) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
 | `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation (honours `$TEST_FILTER`) |
 | `integration-linux` | test | manual, allow_failure | `crates/integration` under xvfb, 3 shards, `--profile ci` |
 | `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh` |
 | `usage-test-linux` / `usage-test-macos` | test | manual | `script/usage-test --surface both` (Linux, xvfb) / `--surface tui` (Mac has no WindowServer for the daemon) |
-| `licenses`, `advisories` | test | on box | `cargo deny check licenses sources`, `check advisories` |
+| `licenses`, `advisories` | test | on box | `cargo deny check licenses sources`, `check advisories`; `retry: max 2` on script/runner-system failure (network-dependent: ci_seq reports a fetch outage as NETWORK-FAIL, separate from code failures; a real `error[...]` finding stays FAIL) |
 | `check-macos`, `check-windows` | test | manual | cargo check of OS-only paths (`script/windows/bundle.ps1 -CHECK_ONLY`) |
 | `diag-mac`, `diag-windows` | test | manual | read-only environment reports |
 | `build-linux-x86_64`, `build-macos-arm64`, `build-windows-x86_64` | build | manual | AppImage+deb (launches `--version`), ad-hoc signed DMG, unsigned Inno installer; `dist/` artifacts, 3 days |
@@ -290,7 +290,7 @@ All dev-only (nothing ships). Exact commands, flags and caveats: **`docs/dev-too
 | shuttle / loom | `warpui_core::sync_shim`; `model_tests::*` in `clipboard_model_tests.rs`, `key_facts_model_tests.rs`, `typeahead_handoff_model_tests.rs` | thread interleavings of the clipboard write queue, KeyFacts, PaneHandoff, the reader cap; the two-cell publication gen (`model_the_reader_retry_never_combines_gens`, `model_the_gen_is_monotonic_across_loads`, `model_a_stamp_taken_after_seeing_the_prompt_is_not_before_it`: a consistent read never mixes publications, a stamp is never from the future, a stamp taken after the prompt was seen is never classed before it) | `test-shuttle-loom` job (release tier) |
 | criterion | `app/benches/key_path_bench.rs`, `ansi_bench.rs` (`--features dev-support`) | per-key cost (idle, behind a gate), routing, hand-off, 1 MB ANSI parse | `bench` job (release tier) |
 | cargo-fuzz | `fuzz/` (own workspace; targets `ansi_parser`, `hook_parsers`, `input_queue`) | crashes on hostile terminal output, hook frames, queue op sequences | `fuzz-smoke` job (release tier) |
-| cargo-mutants | `.cargo/mutants.toml`; jobs `mutants` (pane_key, key_facts, input_queue gates/destination) and `mutants-warpui-core` (clipboard) | lines the tests do not actually check | release tier only; widen with `MUTANTS_FILES` / shard with `MUTANTS_SHARD` |
+| cargo-mutants | `.cargo/mutants.toml`; jobs `mutants` (pane_key, key_facts, the #1424 destination table: input_queue gates/table/facts/mod/pane/shadow and view/dest_table.rs) and `mutants-warpui-core` (clipboard) | lines the tests do not actually check | release tier only; widen with `MUTANTS_FILES` / shard with `MUTANTS_SHARD` |
 
 ### 2.8 Real-app tests in CI (`app-test-*`, stage `apptest`)
 
@@ -622,12 +622,14 @@ suites. Docs-only and CI-only diffs run nothing but `check-linux`. The derived f
 before anything is played (`--dry-run` stops there): read it, and override with `--tests` when the mapping is too narrow (a change in
 shared code that other modules' tests exercise) or too wide. Dependents of a changed non-app crate inside `warp` are not added
 automatically. Platforms: a diff of only Windows (or macOS, Linux) paths builds only that platform; any shared code builds all three;
-`--platforms` overrides. A filtered `check_test_failures` run still fails on any new failure but does not judge listed known failures
+`--platforms` overrides. `ci_seq.py --self-test` checks the filter mapping (`--dry-run --files a,b` prints the filter for a fake file list); a job pending with no runner for `--pending-timeout` minutes (default 20) is reported RUNNER-OFFLINE, the rest continue and the exit status is non-zero. A filtered `check_test_failures` run still fails on any new failure but does not judge listed known failures
 that did not run (that stale-entry rule needs a full run, which candidate does).
 
 **Scoped mutation testing (release tier).** `.cargo/mutants.toml` + the `mutants` job: `pane_key.rs`, `model/key_facts.rs`,
-`input_queue/gates.rs`, `input_queue/destination.rs` (about 900 lines, an estimated 80-110 mutants) with the tests limited to those modules
-(`MUTANTS_TEST_FILTER`), each mutant costing one incremental `warp` rebuild: estimated 3-6 h, UNMEASURED (the first run records the
+`input_queue/{gates,table,facts,mod,pane,shadow}.rs` and `view/dest_table.rs` (the #1424 destination table and its plumbing, about 4,000 lines;
+the legacy `input_queue/destination.rs` is deliberately out of scope, it is the function the table replaces) with the tests limited to those
+modules and the table-mode view tests (`MUTANTS_TEST_FILTER`), each mutant costing one incremental `warp` rebuild: several hundred mutants,
+so shard it (`MUTANTS_SHARD=k/n`); time UNMEASURED (the first run records the
 real number in `mutants.out/outcomes.json`). `mutants-warpui-core` mutates the clipboard (`clipboard.rs`, `clipboard_utils.rs`) against
 warpui_core's tests only: estimated 25-40 mutants, under an hour. Widen by playing `mutants` with `MUTANTS_FILES` (space separated) and
 `MUTANTS_TEST_FILTER` set, and split a wide run with `MUTANTS_SHARD=k/n` over several jobs; `cargo mutants --list --file ...` counts
