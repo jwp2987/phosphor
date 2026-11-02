@@ -1331,9 +1331,10 @@ def ref_terminal(ctx):
             import pwd
             login = os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell or "/bin/zsh"
             if os.path.basename(login) == "bash":
-                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' PA_CTL='%s' '%s' -i\n" % (ctx.W, home, ctx.prof.ctl, login))
+                # its OWN rc + ctl dir (#1550, as Linux #1500): the reference logs to refctl/rec.log, never the app pane's ctl/rec.log
+                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' PA_CTL='%s' '%s' --rcfile '%s' -i\n" % (ctx.W, home, ctx.prof.refctl, login, ctx.prof.ref_rc))
             else:
-                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, home, ctx.prof.ctl))
+                f.write("#!/bin/zsh\ncd '%s'\nexec env HOME='%s' ZDOTDIR='%s' PA_CTL='%s' zsh -i\n" % (ctx.W, home, ctx.prof.ref_zdot, ctx.prof.refctl))
             ctx.ref_shell = login
         os.chmod(cmdf, 0o755)
         subprocess.run(["xattr", "-c", cmdf], capture_output=True)
@@ -1354,8 +1355,10 @@ def ref_terminal(ctx):
             raise ctx.be.needs_owner(d)
         time.sleep(1.5)
         ctx.be.guard_override = "Terminal"
+        ctx.prof.ref_active = True          # commands()/read() now read refctl (#1550)
 
         def close():
+            ctx.prof.ref_active = False
             # never Cmd-W/Q: `exit` ends the shell; the window itself goes when a Terminal.app this run launched is quit by exact PID at
             # the end of the run (refterm_mac), which also removes a shell whose exit was lost
             try:

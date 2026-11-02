@@ -130,6 +130,8 @@ class Profile:
         _wr(h + "/.bash_profile", BASH_PROFILE)
         _wr(self.ref_rc, BASHRC % {"ctl": self._c(self.refctl)})
         _wr(h + "/.zshrc", ZSHRC % {"ctl": self._c(self.ctl)})
+        self.ref_zdot = os.path.join(h, ".refzdot")       # macOS reference zsh: its own ZDOTDIR so its hook writes refctl (#1550)
+        _wr(os.path.join(self.ref_zdot, ".zshrc"), ZSHRC % {"ctl": self._c(self.refctl)})
         os.makedirs(h + "/.config/fish", exist_ok=True)
         _wr(h + "/.config/fish/config.fish", FISH % {"ctl": self._c(self.ctl)})
         os.makedirs(h + "/.config/nushell", exist_ok=True)       # empty configs: nu's first-run "create config files?" question never appears
