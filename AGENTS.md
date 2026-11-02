@@ -242,7 +242,7 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 - `palette.rs`, `notification.rs`, `resource_center/` (10)
 - `view_components/` (20), `ui_components/` (14)
 - `workspace/` (54), `workspaces/` (10), `voltron.rs` (multi-window/multi-workspace coordination)
-- `session_management.rs`, `undo_close/` (3), `word_block_editor.rs`
+- `session_management.rs`, `undo_close/` (3)
 - `suggestions/` (2), `input_suggestions.rs` / `input_suggestions_test.rs`
 - `plugin/` (21) — plugin system integration.
 - `uri/` (7) — `warp://` URL handling.

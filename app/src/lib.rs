@@ -108,7 +108,6 @@ mod warp_managed_paths_watcher;
 mod wasm_nux_dialog;
 mod window_close_policy;
 mod window_settings;
-mod word_block_editor;
 mod workspaces;
 
 // PLEASE DO NOT ADD MORE PUBLIC MODULES!
