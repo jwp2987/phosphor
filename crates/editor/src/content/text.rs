@@ -1127,6 +1127,7 @@ impl TextStylesWithMetadata {
         }
     }
 
+    #[cfg(test)]
     pub fn colliding_style(&self, style: &BufferTextStyle) -> bool {
         match style {
             BufferTextStyle::Italic => self.italic,
@@ -1367,6 +1368,7 @@ impl TextStyles {
         }
     }
 
+    #[cfg(test)]
     pub fn colliding_style(&self, style: &BufferTextStyle) -> bool {
         match style {
             BufferTextStyle::Italic => self.italic,

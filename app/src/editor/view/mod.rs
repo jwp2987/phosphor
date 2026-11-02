@@ -3407,6 +3407,7 @@ impl EditorView {
         }
     }
 
+    #[cfg(test)]
     pub fn set_shell_family(&mut self, shell_family: ShellFamily) {
         self.shell_dialect = Some(shell_family.into());
     }
@@ -4296,6 +4297,7 @@ impl EditorView {
         self.handle_action(&EditorAction::ClearMarkedText, ctx);
     }
 
+    #[cfg(test)]
     pub fn set_autocomplete_symbols_allowed(&mut self, enable: bool) {
         self.autocomplete_symbols_allowed = enable;
     }

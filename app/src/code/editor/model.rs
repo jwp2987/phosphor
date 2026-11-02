@@ -2082,6 +2082,7 @@ impl CodeEditorModel {
     }
 
     /// Whether [`Self::release_memory`] ran.
+    #[cfg(test)]
     pub fn is_released(&self) -> bool {
         self.released
     }

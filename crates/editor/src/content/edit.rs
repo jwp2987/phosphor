@@ -177,6 +177,7 @@ pub struct PreciseDelta {
 
 impl PreciseDelta {
     /// The length of the resolved content range in the final buffer.
+    #[cfg(test)]
     pub fn resolved_length(&self) -> CharOffset {
         self.resolved_range
             .end

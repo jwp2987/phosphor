@@ -1303,6 +1303,7 @@ impl Buffer {
     }
 
     /// Get an iterator of subword starting points forward from the given offset
+    #[cfg(test)]
     pub fn subword_starts_from_offset<T: BufferIndex>(
         &self,
         position: T,
