@@ -175,14 +175,9 @@ fn profile_output_dir() -> std::path::PathBuf {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "jemalloc_pprof"))]
 pub fn make_router() -> axum::Router {
-    let router = axum::Router::new();
-
-    #[cfg(feature = "jemalloc_pprof")]
-    let router = router.route("/debug/pprof/heap", axum::routing::get(handle_get_heap));
-
-    router
+    axum::Router::new().route("/debug/pprof/heap", axum::routing::get(handle_get_heap))
 }
 
 #[cfg(feature = "jemalloc_pprof")]

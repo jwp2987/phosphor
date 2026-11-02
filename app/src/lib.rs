@@ -2419,14 +2419,12 @@ fn initialize_app(
         aliases.connect(ctx);
     });
 
-    // When running natively, add the http server singleton to the application.
-    #[cfg(not(target_family = "wasm"))]
+    // The local HTTP server only hosts the heap-profiling endpoint, so it is only started in
+    // builds that have one. (It used to also serve an unauthenticated `/install_detection`
+    // route with `*.warp.dev` CORS for the web NUX; that was removed.)
+    #[cfg(all(not(target_family = "wasm"), feature = "jemalloc_pprof"))]
     ctx.add_singleton_model(move |ctx| {
-        let routers = vec![
-            app_installation_detection::make_router(),
-            profiling::make_router(),
-        ];
-        http_server::HttpServer::new(routers, ctx)
+        http_server::HttpServer::new(vec![profiling::make_router()], ctx)
     });
 
     #[cfg(feature = "local_fs")]

@@ -150,7 +150,7 @@ check-linux:
     # Single-package checks miss feature-unified code (#230): `warp`'s
     # `integration_tests` feature only turns on when `warp` is checked in the SAME
     # invocation as `integration`.
-    - ./script/agent-cargo ci-check-linux check -p warp -p warp_completer -p integration -p app-installation-detection -p warp_ripgrep --features gui
+    - ./script/agent-cargo ci-check-linux check -p warp -p warp_completer -p integration -p warp_ripgrep --features gui
     # The app crate carries the TUI via its own `tui` feature.
     - ./script/agent-cargo ci-check-linux check -p warp --features tui
     # warp_tui is not in default-members; check it explicitly.

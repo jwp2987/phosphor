@@ -149,7 +149,6 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 
 | Crate | Responsibility |
 |-------|------|
-| `app-installation-detection` | Detects apps already installed on the system (used for launcher integration) |
 | `prevent_sleep` | Suppresses sleep (during long tasks/AI Agent runs) |
 | `isolation_platform` | Compatibility layer for running inside sandboxes such as Docker / GitHub Actions |
 | `node_runtime` | Automatically installs/manages Node.js and npm (macOS/Linux/Windows × multiple architectures) |

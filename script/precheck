@@ -365,7 +365,7 @@ fi
 # through this blind spot -- the required single-package check cannot see them.
 step "cargo check (feature-unified, multi-package)"
 if "${CARGO_RUN[@]}" check -p warp -p warp_completer -p integration \
-        -p app-installation-detection -p warp_ripgrep --features gui \
+        -p warp_ripgrep --features gui \
         >/tmp/precheck-unified.$$ 2>&1; then
     ok "compiles under feature unification"
 else

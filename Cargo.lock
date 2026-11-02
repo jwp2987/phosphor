@@ -396,24 +396,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "app-installation-detection"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-extra",
- "command",
- "nix 0.26.4",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "warp_cli",
- "win32job",
-]
-
-[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6864,7 +6846,6 @@ name = "integration"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "app-installation-detection",
  "backtrace",
  "cfg-if",
  "chrono",
@@ -14916,7 +14897,6 @@ dependencies = [
  "ai",
  "alphanumeric-sort",
  "anyhow",
- "app-installation-detection",
  "arrayvec",
  "asset_cache",
  "asset_macro",
