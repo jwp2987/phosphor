@@ -346,6 +346,21 @@ command, nothing local), `ssh_enter_then_immediate_command` (#1415: `ssh fake` E
 `tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
 (`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
 
+**UI cases (`script/realapp/appci/cases_ui.py`, #1462; all full-tier, none in SMOKE, Linux + macOS python harness only).**
+Keys: Linux ctrl-shift-X, macOS cmd-X (`app/src/util/bindings.rs`). Every case verifies the shell's own `rec.log` and an effect file.
+- `ui_tab_menu`: Tab on an ambiguous path opens the menu; plain accept and Down+accept each make the shell receive exactly one of the two candidates' full command, token in that file only, no file named like the uncompleted prefix.
+- `ui_ghost_accept`: type a prefix of an earlier command, Right (default binding) + instant Enter, fast and slow: the shell gets the full earlier command. End is probed and recorded (`end_key_accepts_ghost`), not failed.
+- `ui_ctrl_r`: Ctrl-R, a unique fragment, accept: the shell receives exactly the earlier command (one extra Enter allowed, both flows handled), effect file shows it ran twice.
+- `ui_palette`: palette opens ('Search for a command'), nonsense filter shows 'No results', 'split pane right' + Enter makes a new pane (new shell prompt in `prompt.log`), typing there is exact, `exit` closes it.
+- `ui_mouse_select_copy`: print a token absent from the command line, find it by tesseract word box, double-click then copy: the PRIVATE clipboard (wl-paste / xsel of the job's display, pre-set to a sentinel) holds exactly the token; a drag selection contains it. Skips on macOS (no pointer tool) and without tesseract.
+- `ui_right_click_paste` (terminal mode only): right-click in the input, click 'Paste' (OCR), Enter: the shell receives exactly the clipboard command.
+- `ui_drag_drop_file` (terminal only): file name with a space dropped onto the terminal; the shell must see ONE argument equal to the path. Skips unless X11 with `dragon-drop` installed (no tool synthesizes a drag source on Wayland/macOS).
+- `ui_resize_typing`: window small, large, back (xdotool windowsize / sway floating resize / System Events); typing exact at each size, a wrapping 150-char command byte-exact; skips if the screenshot does not change (resize ignored).
+- `ui_split_panes`: split right and down by key, new shell per pane, focus moved with next/prev pane keys, typing exact in both panes, `exit` closes the new pane.
+- `ui_startup_time`: launch to first prompt (metrics `cold_s` with state dirs wiped, `warm_s` three relaunches; OS page cache is not dropped, that needs root); fails at no prompt in 90 s or warm median over `APPCI_STARTUP_MAX` (20 s); typing exact after each launch.
+- `ui_settings_live`: theme, font size, `appearance.vertical_tabs.enabled` changed by writing the settings file (hot reload); each must visibly change the screen (Pillow diff, else hash) and typing stays exact; the original file is restored. The settings page is not clicked.
+Packages the box needs for the full set: `tesseract-ocr` (positions), `python3-pil` (optional, stronger diff), `dragon-drop` (DnD only). The panes/palette/mouse/settings cases are not run in the sim backend.
+
 #### Latency budgets and regression checks (`latency_enter`, `latency_key_log`, `ctrl_c_d`; Windows `latency_enter`)
 
 The latency cases are pass/fail on the owner's budgets (3.6, `perf-budgets`), not CI-sized bounds. Every record is in
