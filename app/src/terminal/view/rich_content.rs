@@ -14,7 +14,6 @@ use crate::{
         },
         ssh::{error::SshErrorBlock, install_tmux::SshInstallTmuxBlock, warpify::SshWarpifyBlock},
         view::{
-            ambient_agent::AmbientAgentEntryBlock,
             block_onboarding::onboarding_agentic_suggestions_block::OnboardingAgenticSuggestionsBlock,
             ssh_remote_server_choice_view::SshRemoteServerChoiceView,
             ssh_remote_server_failed_banner::SshRemoteServerFailedBanner,
@@ -222,9 +221,6 @@ pub enum RichContentMetadata {
         bootstrap_success_block_handle: ViewHandle<WarpifySuccessBlock>,
     },
     AgentViewEntry(AgentViewEntryMetadata),
-    AmbientAgentBlock {
-        block_handle: ViewHandle<AmbientAgentEntryBlock>,
-    },
     InlineAgentViewHeader,
     AgentViewZeroState,
     TerminalViewZeroState,

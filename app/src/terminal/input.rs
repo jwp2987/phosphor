@@ -117,8 +117,6 @@ use crate::ASSETS;
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 
-use crate::ai::ambient_agents::AttachmentInput;
-use crate::ai::attachment_utils::MAX_ATTACHMENT_SIZE_BYTES;
 use crate::ai::block_context::BlockContext;
 use crate::ai::blocklist::AttachmentType;
 use crate::ai::mcp::TemplatableMCPServerManager;
@@ -242,7 +240,6 @@ use crate::{
 
 use crate::terminal::shared_session::protocol::ParticipantId;
 use ai::skills::SkillReference;
-use base64::Engine as _;
 #[cfg(feature = "local_fs")]
 use diesel::SqliteConnection;
 use futures::FutureExt as _;
@@ -13666,95 +13663,6 @@ impl Input {
                     },
                     ctx
                 );
-            }
-
-            // Check if we're configuring an ambient agent and spawn it instead of submitting a regular AI query.
-            if self
-                .ambient_agent_view_model
-                .as_ref(ctx)
-                .is_configuring_ambient_agent()
-            {
-                let prompt = command.trim().to_owned();
-                if prompt.is_empty() {
-                    return;
-                }
-
-                // Collect pending files for the spawn request. Cloud mode image attachments are disabled in Zap.
-                let attachments: Vec<AttachmentInput> = if false {
-                    let mut inputs: Vec<AttachmentInput> = self
-                        .ai_context_model
-                        .as_ref(ctx)
-                        .pending_images()
-                        .iter()
-                        .map(|image| AttachmentInput {
-                            file_name: image.file_name.clone(),
-                            mime_type: image.mime_type.clone(),
-                            data: image.data.clone(),
-                        })
-                        .collect();
-
-                    let mut skipped_files: Vec<String> = Vec::new();
-                    for file in self.ai_context_model.as_ref(ctx).pending_files() {
-                        match std::fs::read(&file.file_path) {
-                            Ok(bytes) => {
-                                if bytes.len() > MAX_ATTACHMENT_SIZE_BYTES {
-                                    skipped_files.push(file.file_name.clone());
-                                    continue;
-                                }
-                                inputs.push(AttachmentInput {
-                                    file_name: file.file_name.clone(),
-                                    mime_type: file.mime_type.clone(),
-                                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                                });
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to read file {}: {e}",
-                                    file.file_path.display()
-                                );
-                            }
-                        }
-                    }
-
-                    if !skipped_files.is_empty() {
-                        let window_id = ctx.window_id();
-                        let message = if skipped_files.len() == 1 {
-                            format!(
-                                "{} was not attached — exceeds 10MB limit.",
-                                skipped_files[0]
-                            )
-                        } else {
-                            format!(
-                                "{} files were not attached — exceed 10MB limit.",
-                                skipped_files.len()
-                            )
-                        };
-                        ToastStack::handle(ctx).update(ctx, |ts, ctx| {
-                            ts.add_ephemeral_toast(
-                                DismissibleToast::error(message),
-                                window_id,
-                                ctx,
-                            );
-                        });
-                    }
-
-                    inputs
-                } else {
-                    vec![]
-                };
-
-                // Clear the buffer and pending attachments after collecting them.
-                self.editor.update(ctx, |editor, ctx| {
-                    editor.clear_buffer(ctx);
-                });
-                self.ai_context_model.update(ctx, |context_model, ctx| {
-                    context_model.clear_pending_attachments(ctx);
-                });
-
-                self.ambient_agent_view_model.update(ctx, |state, ctx| {
-                    state.spawn_agent(prompt, attachments, ctx);
-                });
-                return;
             }
 
             self.submit_ai_query(None, ctx);

@@ -3484,9 +3484,6 @@ pub struct TerminalView {
 
     ambient_agent_view_model: ModelHandle<ambient_agent::AmbientAgentViewModel>,
 
-    /// Mouse state handle for the ambient agent cancel button in the pane header.
-    ambient_agent_cancel_mouse_state: warpui::elements::MouseStateHandle,
-
     /// Weak handle to the [`PaneStack`] this view is part of, allowing push/pop operations.
     pane_stack: Option<WeakModelHandle<crate::pane_group::pane::PaneStack<Self>>>,
 
@@ -3785,10 +3782,6 @@ impl TerminalView {
                 ephemeral_message_model.clone(),
                 ctx,
             )
-        });
-
-        ctx.subscribe_to_model(&ambient_agent_view_model, |me, _, event, ctx| {
-            me.handle_ambient_agent_event(event, ctx);
         });
 
         // Prompts queued for a conversation that is then removed, deleted, or cleared come back
@@ -5112,7 +5105,6 @@ impl TerminalView {
             ambient_agent_view_model,
             selection_copy_seq: 0,
             selection_render_cancel: None,
-            ambient_agent_cancel_mouse_state: Default::default(),
 
             is_pending_aws_login: false,
             aws_login_requested: None,
@@ -34206,7 +34198,6 @@ impl TypedActionView for TerminalView {
             | OpenConversationsPalette
             | ExitAgentView
             | StartNewAgentConversation
-            | CancelAmbientAgentTask
             | OpenInlineHistoryMenu
             | OpenModelSelector
             | ResolvePromptSuggestion(..)
@@ -35251,12 +35242,6 @@ impl TypedActionView for TerminalView {
             AwsCliNotInstalledBanner(action) => {
                 self.handle_aws_cli_not_installed_banner_action(*action, ctx);
             }
-            CancelAmbientAgentTask => {
-                self.ambient_agent_view_model.update(ctx, |model, ctx| {
-                    model.cancel_task(ctx);
-                });
-                ctx.notify();
-            }
             ToggleUsageFooter => {
                 self.toggle_usage_footer(ctx);
             }
@@ -35556,16 +35541,6 @@ impl View for TerminalView {
 
         if self.is_any_tooltip_open() {
             self.render_grid_tooltip(&mut stack, &model, appearance, app);
-        }
-
-        // Show progress steps while waiting for an ambient agent to start.
-        if self
-            .ambient_agent_view_model
-            .as_ref(app)
-            .agent_progress()
-            .is_some()
-        {
-            stack.add_child(self.render_ambient_agent_progress(appearance, app));
         }
 
         self.maybe_render_onboarding_callout(
