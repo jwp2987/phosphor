@@ -139,7 +139,10 @@ class Profile:
         _wr(h + "/.bash_history", "\n".join(hist) + "\n")
         _wr(h + "/.zsh_history", "\n".join(hist) + "\n")
         # remote side
-        _wr(self.rhome + "/.bashrc", BASHRC % {"ctl": self._c(self.rctl)})
+        # Windows (r18ct): the ConPTY Git Bash behind fakesshd_win wrote its prompt, line-editor echo and "cannot set terminal process group" to fakesshd's inherited
+        # STDERR FILE (fakesshd.stderr), not to the pseudo console, so ssh.exe printed nothing and the app saw zero bytes from the session. Rebinding fd 2 to the
+        # pty's stdout first thing in the remote rc puts the prompt and echo back where the client can see them (no effect where fd 2 already is the pty).
+        _wr(self.rhome + "/.bashrc", ("exec 2>&1\n" if self.win else "") + BASHRC % {"ctl": self._c(self.rctl)})
         _wr(self.rhome + "/.bash_profile", BASH_PROFILE)
         _wr(self.rhome + "/.bash_history", "\n".join(history_lines(2200, 2)) + "\n")
         # test tree for Tab completion
