@@ -7,7 +7,10 @@
 #
 #   fix       (~1 h)   check-linux; test-linux with a nextest filter (--tests, or derived from the git diff);
 #                      test-warpui-core / test-workspace-rest only when their crates changed; builds for --platforms
-#                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke).
+#                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke). A platform whose
+#                      app-affecting paths (APP_NONAFFECTING below, inverted) equal those of the newest earlier build/*
+#                      pipeline with a SUCCESSFUL, unexpired build job REUSES that build (app-test-*-reuse, job id passed as
+#                      APPCI_BUILD_JOB_ID) instead of building. --no-reuse forces builds. candidate/release ALWAYS build.
 #   candidate (~3 h)   check-linux; all three test suites unfiltered; all three builds; the FULL app matrix everywhere.
 #   release   (~8 h)   candidate + test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core.
 #
@@ -23,6 +26,14 @@ APP_CORE_FILES = re.compile(r"^(app/|crates/|Cargo\.(toml|lock)|\.cargo/|script/
 WIN_ONLY = re.compile(r"(^|/)(windows|win)(/|_|\.)|_windows\.rs$|^script/realapp/windows/|^script/windows/|\.ps1$|^wix/|^installer/windows")
 MAC_ONLY = re.compile(r"(^|/)(macos|mac)(/|_|\.)|_macos\.rs$|^script/realapp/mac/|^script/mac/|^app/macos|\.plist$|\.entitlements$")
 LINUX_ONLY = re.compile(r"(^|/)linux(/|_|\.)|_linux\.rs$|^script/realapp/linux/|^script/linux/|\.desktop$")
+# Paths that never end up in the built app or in how a build job builds it. Everything NOT listed here is app-affecting, so a new
+# top-level directory or script fails safe (rebuild). Also compared: the build-X job block and its templates in .gitlab-ci.yml.
+APP_NONAFFECTING = ["docs", ".gitlab", ".gitlab-ci.yml", "specs", "fuzz", ".agents", ".zed", ".mcp.json", "issues.md", "stale-r13.pids",
+                    "script/ci", "script/realapp", "script/precheck", "script/presubmit", "script/state", "script/keylat", "script/lint_powershell",
+                    "script/_cloud_boundary_scan.py", "script/cloud_boundary_allowlist.txt", "script/known_test_failures.txt",
+                    "script/large_deletion_allowlist.txt", "script/extract_sweep_ledger.py", "script/repro_subshell_relay_deadlock.py",
+                    "script/test-fixtures", "script/agent-cargo", "script/agent-worktree", "script/setup-merge-drivers.sh"]
+APP_NONAFFECTING_GLOBS = ["**/*.md", "script/check_*", "script/test_*"]
 DOC_ONLY = re.compile(r"^(docs/|.*\.md$|TODO|issues\.md|DECLINED|ORACLE)")
 
 
@@ -146,6 +157,64 @@ def platforms_from(files):
     return [LINUX, MAC, WIN]
 
 
+def app_pathspec():
+    return ["--", "."] + [":(exclude)" + x for x in APP_NONAFFECTING] + [":(exclude,glob)" + x for x in APP_NONAFFECTING_GLOBS]
+
+
+def ci_blocks(sha, build):
+    """The text of build job `build` and the templates it extends in .gitlab-ci.yml at sha ('' if unreadable)."""
+    txt = sh("git", "show", "%s:.gitlab-ci.yml" % sha)
+    out = []
+    for name in (build, ".shim_github_env", ".windows_job"):
+        m = re.search(r"^%s:\n(?:[ \t].*\n|\n)*" % re.escape(name), txt, re.M)
+        out.append(m.group(0) if m else "")
+    return out
+
+
+def app_diff(a, b, build):
+    """-> list of app-affecting paths that differ between commits a and b (plus a '.gitlab-ci.yml:<job>' marker if the build job's
+    definition changed). Empty = the build of a is the build of b."""
+    r = subprocess.run(["git", "diff", "--name-only", a, b] + app_pathspec(), capture_output=True, text=True)
+    if r.returncode:
+        return ["<git diff failed: %s>" % r.stderr.strip()]
+    ch = [l for l in r.stdout.splitlines() if l]
+    if ci_blocks(a, build) != ci_blocks(b, build):
+        ch.append(".gitlab-ci.yml:%s" % build)
+    return ch
+
+
+def find_reusable(plat, head, cur_pid):
+    """Newest earlier build/* pipeline whose build job for plat SUCCEEDED, has unexpired artifacts and an app-identical commit.
+    -> (decision text, reuse dict or None)."""
+    build, now, first_diff, seen = BUILD[plat], time.time(), None, 0
+    for p in api("projects/%s/pipelines?per_page=60&order_by=id&sort=desc" % PROJECT) or []:
+        if p.get("id") == cur_pid or not str(p.get("ref", "")).startswith("build/"):
+            continue
+        jb = next((j for j in (api("projects/%s/pipelines/%d/jobs?per_page=100" % (PROJECT, p["id"])) or []) if j.get("name") == build), None)
+        if not jb or jb.get("status") != "success":
+            continue
+        seen += 1
+        exp = jb.get("artifacts_expire_at")
+        if not jb.get("artifacts") or (exp and time.strptime(exp[:19], "%Y-%m-%dT%H:%M:%S") < time.gmtime(now)):
+            print("  %s: pipeline %s build job %s succeeded but its artifacts expired/absent; skipped" % (plat, p["id"], jb["id"]))
+            continue
+        sha = p["sha"]
+        if subprocess.run(["git", "cat-file", "-e", sha + "^{commit}"], capture_output=True).returncode:
+            print("  %s: pipeline %s commit %s is not in the local clone; skipped" % (plat, p["id"], sha[:10])); continue
+        ch = app_diff(sha, head, build)
+        if not ch:
+            return ("%s: reusing build job %d from pipeline %d (commit %s), app unchanged" % (plat, jb["id"], p["id"], sha[:10]),
+                    {"job": jb["id"], "pipeline": p["id"], "sha": sha})
+        if first_diff is None:
+            first_diff = (p["id"], sha, ch)
+        if seen >= 6:
+            break
+    if first_diff:
+        pid, sha, ch = first_diff
+        return ("%s: building, app changed in: %s (vs newest successful build, pipeline %d commit %s)" % (plat, ", ".join(ch[:8]) + (" ..." if len(ch) > 8 else ""), pid, sha[:10]), None)
+    return ("%s: building, no earlier build/* pipeline has a successful, unexpired %s" % (plat, build), None)
+
+
 def api(path, method="GET", variables=None):
     a = ["glab", "api", path] + (["-X", method] if method != "GET" else [])
     body = None
@@ -168,6 +237,7 @@ def main():
     ap.add_argument("--tests", default="")
     ap.add_argument("--base", default="")
     ap.add_argument("--skip", nargs="*", default=[])
+    ap.add_argument("--no-reuse", action="store_true", help="fix tier: always build, never reuse an earlier app-identical build")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (filter, suites, platforms) and exit")
     a = ap.parse_args()
     ref, tier = a.ref, a.tier
@@ -191,6 +261,22 @@ def main():
             print("note: test-linux requested but no filter derived; it would run the FULL ~50 min suite. Pass --tests to narrow it.", flush=True)
     elif a.platforms:
         plats = [p for p in a.platforms.split(",") if p]
+    reuse = {}
+    if tier == "fix":
+        if a.no_reuse:
+            print("reuse: disabled (--no-reuse); building every platform")
+        else:
+            head = sh("git", "rev-parse", gitref(ref) + "^{commit}", check=True)
+            cur = (api("projects/%s/pipelines?ref=%s&per_page=1" % (PROJECT, ref.replace("/", "%2F"))) or [{}])[0].get("id")
+            for p in plats:
+                if BUILD[p] in SKIP:
+                    continue
+                msg, r = find_reusable(p, head, cur)
+                print(msg, flush=True)
+                if r:
+                    reuse[p] = r
+    else:
+        print("reuse: never in the %s tier; every platform builds" % tier)
     if a.dry_run:
         return 0
     fvars = {"TEST_FILTER": filt} if (tier == "fix" and filt) else None
@@ -230,7 +316,17 @@ def main():
         summary(timeline, t_start); return 1
 
     # builds first (they are the long pole: macos ~21 min, windows ~38 min), tests alongside on the box
-    builds = [BUILD[p] for p in plats if BUILD[p] not in SKIP]
+    builds = [BUILD[p] for p in plats if BUILD[p] not in SKIP and p not in reuse]
+    reuse_started = []
+    for p, r in reuse.items():          # no build to wait for: start these now (resource groups serialize them per machine)
+        rv = dict(appvars, APPCI_BUILD_JOB_ID=str(r["job"]), APPCI_BUILD_PIPELINE_ID=str(r["pipeline"]), APPCI_BUILD_SHA=r["sha"], APPCI_BUILD_JOB_NAME=BUILD[p])
+        for n in APP[p]:
+            if n in SKIP or n + "-reuse" not in jobs():
+                continue
+            if n == "app-test-linux-x11":
+                print("%s: smoke tier skips the x11 pass; not played" % n); continue
+            if play(n + "-reuse", rv):
+                reuse_started.append(n + "-reuse")
     for n in builds:
         play(n)
     if tier == "fix":
@@ -253,7 +349,7 @@ def main():
         for n in [t for t in APP[p_of[b]] if t not in SKIP and t in jobs()]:
             if play(n, appvars):
                 started.append(n)
-    for n in started: print(n, wait(n), flush=True)
+    for n in started + reuse_started: print(n, wait(n), flush=True)
     if tier == "release":
         for n in ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]:
             if n not in SKIP and jobs().get(n, {}).get("status") not in (None, "manual"): print(n, wait(n), flush=True)
