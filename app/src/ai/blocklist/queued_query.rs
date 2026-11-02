@@ -776,6 +776,7 @@ impl QueuedQueryModel {
     }
 
     /// Toggles the auto-queue state for the duration of the eligible long-running command.
+    #[cfg(test)]
     pub fn toggle_queue_next_prompt_during_lrc(
         &mut self,
         conversation_id: AIConversationId,
@@ -868,6 +869,7 @@ impl QueuedQueryModel {
 
     /// Removes all `PendingLrcAutoQueue` rows for `conversation_id` so stale locked
     /// rows do not linger.
+    #[cfg(test)]
     pub fn remove_pending_lrc_rows(
         &mut self,
         conversation_id: AIConversationId,
@@ -1005,6 +1007,7 @@ impl QueuedQueryModel {
     }
 
     /// Restores a fired row when submission fails after the row was removed.
+    #[cfg(test)]
     pub(crate) fn restore_fired_row(
         &mut self,
         conversation_id: AIConversationId,

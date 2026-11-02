@@ -494,16 +494,6 @@ impl AIAgentOutput {
             })
     }
 
-    /// Returns only the text from reasoning messages in the output.
-    pub fn text_from_agent_reasoning(&self) -> impl Iterator<Item = &AIAgentText> {
-        self.messages
-            .iter()
-            .filter_map(|message| match &message.message {
-                AIAgentOutputMessageType::Reasoning { text, .. } => Some(text),
-                _ => None,
-            })
-    }
-
     /// Returns all of the text contained in the output, including agent output, reasoning,
     /// and conversation summaries.
     ///
@@ -696,23 +686,6 @@ impl AIAgentOutput {
             .collect();
         self.citations.extend(new_citations);
     }
-
-    /// Calculate the action index for a given action_id by counting preceding actions in the output.
-    /// Returns the 0-based index of the action, or None if the action is not found.
-    pub fn calculate_action_index(&self, target_action_id: &AIAgentActionId) -> Option<usize> {
-        let mut action_index = 0;
-        for output_message in &self.messages {
-            if let AIAgentOutputMessageType::Action(AIAgentAction { id, .. }) =
-                &output_message.message
-            {
-                if id == target_action_id {
-                    return Some(action_index);
-                }
-                action_index += 1;
-            }
-        }
-        None // Fallback if action_id not found
-    }
 }
 
 /// Represents user visible errors.
@@ -796,10 +769,6 @@ impl RenderableAIError {
 
     pub fn is_invalid_api_key(&self) -> bool {
         matches!(self, Self::InvalidApiKey { .. })
-    }
-
-    pub fn is_aws_bedrock_credentials_error(&self) -> bool {
-        matches!(self, Self::AwsBedrockCredentialsExpiredOrInvalid { .. })
     }
 
     /// Returns true if an automatic resume will be attempted for this error.
@@ -1108,22 +1077,8 @@ impl Display for AIAgentAction {
 }
 
 impl AIAgentAction {
-    pub fn is_request_file_edit(&self) -> bool {
-        matches!(self.action, AIAgentActionType::RequestFileEdits { .. })
-    }
-
     pub fn is_request_command_output(&self) -> bool {
         self.action.is_request_command_output()
-    }
-
-    pub fn is_agent_monitored_request_command_output(&self) -> bool {
-        matches!(
-            self.action,
-            AIAgentActionType::RequestCommandOutput {
-                wait_until_completion: false,
-                ..
-            }
-        )
     }
 
     pub fn is_get_specific_files(&self) -> bool {
@@ -1404,28 +1359,6 @@ impl Display for AIAgentActionResult {
     }
 }
 
-impl AIAgentActionResult {
-    /// Returns `true` if this action was explicitly rejected by the user.
-    pub fn is_rejected(&self) -> bool {
-        matches!(
-            self.result,
-            AIAgentActionResultType::RequestFileEdits(RequestFileEditsResult::Cancelled)
-                | AIAgentActionResultType::RequestCommandOutput(
-                    RequestCommandOutputResult::CancelledBeforeExecution
-                )
-                | AIAgentActionResultType::ReadFiles(ReadFilesResult::Cancelled)
-                | AIAgentActionResultType::Grep(GrepResult::Cancelled)
-                | AIAgentActionResultType::FileGlob(FileGlobResult::Cancelled)
-                | AIAgentActionResultType::ReadMCPResource(ReadMCPResourceResult::Cancelled)
-                | AIAgentActionResultType::CallMCPTool(CallMCPToolResult::Cancelled)
-                | AIAgentActionResultType::SuggestNewConversation(
-                    SuggestNewConversationResult::Cancelled,
-                )
-                | AIAgentActionResultType::SuggestPrompt(SuggestPromptResult::Cancelled),
-        )
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct FormattedTextLineWrapper {
     /// The raw text with the Markdown formatting syntax stripped.
@@ -1554,16 +1487,6 @@ impl AgentOutputText {
         self.formatted_lines
             .as_ref()
             .map(FormattedTextWrapper::formatted_text_arc)
-    }
-
-    /// Note that mutating the returned string will not automatically reparse the text and update `formatted_lines`.
-    pub fn mut_text(&mut self) -> &mut String {
-        &mut self.markdown_text
-    }
-
-    pub fn reparse_markdown(&mut self) {
-        let parsed_result = parse_agent_markdown(self.markdown_text.as_str());
-        self.formatted_lines = parsed_result.map(|formatted| formatted.into()).ok();
     }
 }
 
@@ -2271,14 +2194,6 @@ impl AIAgentOutputMessage {
 
     pub fn with_citations(self, citations: Vec<AIAgentCitation>) -> Self {
         Self { citations, ..self }
-    }
-
-    pub fn skill_invoked(id: MessageId, invoked_skill: InvokedSkill) -> Self {
-        Self {
-            id,
-            message: AIAgentOutputMessageType::SkillInvoked(invoked_skill),
-            citations: vec![],
-        }
     }
 
     pub fn messages_received_from_agents(

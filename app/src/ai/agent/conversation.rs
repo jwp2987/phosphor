@@ -6,7 +6,6 @@ use crate::ai::blocklist::block::cli_controller::LongRunningCommandControlState;
 use crate::ai::blocklist::{RequestInput, ResponseStreamId, SerializedBlockListItem};
 use crate::ai::byop_readiness::RepairStateStatus;
 use crate::code_review::CodeReviewTelemetryEvent;
-use crate::notebooks::NotebookId;
 use crate::persistence::model::{ConversationUsageMetadata, ModelTokenUsage, ToolUsageMetadata};
 use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::model::block::{
@@ -17,7 +16,6 @@ use crate::ai::agent::api::convert_conversation::{
     compute_time_to_first_token_ms_from_messages, proto_timestamp_to_local_datetime,
     ConvertToExchanges,
 };
-use ai::document::AIDocumentId;
 use ai::skills::SkillPathOrigin;
 use chrono::{DateTime, Local, TimeZone};
 use itertools::Itertools as _;
@@ -71,7 +69,7 @@ use super::{
         Task, TaskId,
     },
     AIAgentAction, AIAgentActionId, AIAgentContext, AIAgentExchange, AIAgentExchangeId,
-    AIAgentInput, AIAgentOutputStatus, AIAgentTodo, AIAgentTodoId, FinishedAIAgentOutput,
+    AIAgentInput, AIAgentOutputStatus, AIAgentTodoId, FinishedAIAgentOutput,
     MessageId, RenderableAIError, RequestCost,
 };
 use super::{
@@ -1407,16 +1405,6 @@ impl AIConversation {
         has_passive_exchange
     }
 
-    /// True if the conversation consists of just one exchange
-    /// and that exchange is a passive suggestion.
-    pub fn is_single_passive_exchange(&self) -> bool {
-        self.task_store.task_count() == 1
-            && self.is_entirely_passive()
-            && self
-                .get_root_task()
-                .is_some_and(|task| task.exchanges_len() == 1)
-    }
-
     /// True if the conversation started with a CLI subagent and was never continued.
     /// These conversations only have CLI subagent exchanges with no user queries,
     /// meaning they never hit the primary agent.
@@ -1680,39 +1668,6 @@ impl AIConversation {
         });
     }
 
-    /// Updates the notebook_uid for a plan artifact when it's synced to Zap Drive.
-    pub fn update_plan_notebook_uid(
-        &mut self,
-        document_uid: AIDocumentId,
-        notebook_uid: NotebookId,
-        terminal_view_id: Option<EntityId>,
-        ctx: &mut ModelContext<BlocklistAIHistoryModel>,
-    ) {
-        let document_uid = document_uid.to_string();
-        for artifact in &mut self.artifacts {
-            if let Artifact::Plan {
-                document_uid: doc_uid,
-                notebook_uid: nb_uid,
-                ..
-            } = artifact
-            {
-                if doc_uid == &document_uid {
-                    *nb_uid = Some(notebook_uid);
-                    let updated_artifact = artifact.clone();
-                    self.write_updated_conversation_state(ctx);
-                    if let Some(terminal_view_id) = terminal_view_id {
-                        ctx.emit(BlocklistAIHistoryEvent::UpdatedConversationArtifacts {
-                            terminal_view_id,
-                            conversation_id: self.id,
-                            artifact: updated_artifact,
-                        });
-                    }
-                    return;
-                }
-            }
-        }
-    }
-
     pub fn initial_query(&self) -> Option<String> {
         self.root_task_exchanges()
             .flat_map(|exchange| exchange.input.iter())
@@ -1743,12 +1698,6 @@ impl AIConversation {
             }
         }
         result.join("\n\n")
-    }
-
-    pub fn has_auto_code_diff_query(&self) -> bool {
-        self.root_task_exchanges()
-            .flat_map(|exchange| exchange.input.iter())
-            .any(|input| input.is_auto_code_diff_query())
     }
 
     pub fn latest_user_query(&self) -> Option<String> {
@@ -1879,24 +1828,6 @@ impl AIConversation {
                 })
             })
         })
-    }
-
-    /// Returns the exchange ID that contains the given action ID, if any.
-    pub fn exchange_id_for_action(&self, action_id: &AIAgentActionId) -> Option<AIAgentExchangeId> {
-        for task in self.task_store.tasks() {
-            for exchange in task.exchanges() {
-                let Some(output) = exchange.output_status.output() else {
-                    continue;
-                };
-                let contains_action = output.get().messages.iter().any(|step| {
-                    matches!(step, AIAgentOutputMessage{ message: AIAgentOutputMessageType::Action(AIAgentAction { id, .. }), .. } if id == action_id)
-                });
-                if contains_action {
-                    return Some(exchange.id);
-                }
-            }
-        }
-        None
     }
 
     /// Returns the `AIAgentContext` objects attached to the exchange with the given ID, if any.
@@ -3583,11 +3514,6 @@ impl AIConversation {
 
     pub fn active_todo_list(&self) -> Option<&AIAgentTodoList> {
         self.todo_lists.last()
-    }
-
-    pub fn active_todo(&self) -> Option<&AIAgentTodo> {
-        self.active_todo_list()
-            .and_then(|todo_list| todo_list.in_progress_item())
     }
 
     pub fn todo_status(&self, todo_id: &AIAgentTodoId) -> Option<TodoStatus> {
