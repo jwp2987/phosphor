@@ -15344,13 +15344,11 @@ impl Input {
     }
 
     /// The queued prompts panel, when [`FeatureFlag::QueueSlashCommand`] is enabled.
-    #[allow(dead_code)] // consumed by the panel render + focus wiring in a follow-up increment
     pub(crate) fn queued_prompts_panel(&self) -> Option<&ViewHandle<QueuedPromptsPanelView>> {
         self.queued_prompts_panel.as_ref()
     }
 
     /// Whether this input's queued-prompt inline editor is currently focused.
-    #[allow(dead_code)] // consumed by the focus wiring in a follow-up increment
     pub(crate) fn is_queued_prompt_inline_editor_focused(&self, ctx: &AppContext) -> bool {
         self.queued_prompts_panel
             .as_ref()

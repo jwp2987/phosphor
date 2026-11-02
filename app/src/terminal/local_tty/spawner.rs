@@ -14,7 +14,7 @@ use super::{PtyOptions, PtySpawnResult};
 use {
     crate::report_error,
     crate::terminal::local_tty::server::TerminalServer,
-    anyhow::{bail, Context},
+    anyhow::Context,
     std::process::Child,
 };
 /// A handle that can be used to interact with a pty process.

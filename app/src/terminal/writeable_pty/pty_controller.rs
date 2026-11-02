@@ -745,7 +745,7 @@ impl<T: EventLoopSender> PtyController<T> {
         // lines the counts consider queued, so they are answered; no waiting for a quiet period.
         let (seq_mode, program_consumed_them) = {
             let mut model = self.terminal_model.lock();
-            let mut handoff = model.typeahead_handoff_mut();
+            let handoff = model.typeahead_handoff_mut();
             let seq_mode = handoff.prompt_seq_mode();
             let program = seq_mode
                 && handoff.counts_diverged()

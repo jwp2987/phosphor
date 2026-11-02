@@ -88,7 +88,7 @@ pub use destination::{
 };
 pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
 pub use pane::{
-    Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, QueueGuard, SshDropThen,
+    Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
 };
 

@@ -53,7 +53,6 @@ pub enum CLIAgentEventSource {
 }
 
 /// Event-specific fields that vary by event type.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct CLIAgentEventPayload {
     pub query: Option<String>,
@@ -71,7 +70,6 @@ pub struct CLIAgentEventPayload {
 }
 
 /// A parsed event from a CLI agent plugin.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CLIAgentEvent {
     pub v: u32,
