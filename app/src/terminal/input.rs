@@ -9647,7 +9647,21 @@ impl Input {
         ))
     }
 
+    /// Times the editor-event handler's synchronous work for a typed edit (#1491), at the
+    /// `warp::input_order` debug target only: `hop=kh_edit_sync us=N` per edit, so a Mac run can
+    /// say how much of key->paint is spent here versus in the render of the views it dirties.
     fn handle_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
+        let started = (warpui::input_order::enabled() && matches!(event, EditorEvent::Edited(_)))
+            .then(Instant::now);
+        self.handle_editor_event_inner(event, ctx);
+        if let Some(started) = started {
+            warpui::input_order::log_key_hop("kh_edit_sync", || {
+                format!("us={}", started.elapsed().as_micros())
+            });
+        }
+    }
+
+    fn handle_editor_event_inner(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
         // We want to clear the token description hover on any editor action
         self.hide_x_ray(ctx);
 

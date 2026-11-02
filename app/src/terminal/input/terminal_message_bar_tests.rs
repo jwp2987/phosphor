@@ -14,3 +14,41 @@ fn autodetected_requires_other_conditions() {
     assert!(!is_ai_detected(true, false, false, true));
     assert!(!is_ai_detected(true, true, true, true));
 }
+
+#[test]
+fn typing_that_keeps_the_bar_the_same_does_not_rerender() {
+    use super::{buffer_event_needs_render, BufferSignature};
+    let ls = BufferSignature::of("ls");
+    let lsa = BufferSignature::of("ls -a");
+    // The first event always renders; then more of the same kind of text does not.
+    assert!(buffer_event_needs_render(None, ls, true));
+    assert!(!buffer_event_needs_render(Some(ls), lsa, true));
+    // Emptiness and the command prefixes the bar reads still render.
+    assert!(buffer_event_needs_render(
+        Some(BufferSignature::of("")),
+        ls,
+        true
+    ));
+    assert!(buffer_event_needs_render(
+        Some(ls),
+        BufferSignature::of(""),
+        true
+    ));
+    assert!(buffer_event_needs_render(
+        Some(ls),
+        BufferSignature::of("/agent"),
+        true
+    ));
+    assert!(buffer_event_needs_render(
+        Some(ls),
+        BufferSignature::of(" /plan x"),
+        true
+    ));
+    assert!(buffer_event_needs_render(
+        Some(ls),
+        BufferSignature::of("/new"),
+        true
+    ));
+    // Kill switch off: every event renders.
+    assert!(buffer_event_needs_render(Some(ls), lsa, false));
+}
