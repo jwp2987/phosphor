@@ -4,7 +4,10 @@
 #   Linux        : intl_compose_linux   (xkb dead keys / Multi_key via wtype or xdotool key names; nothing may reach the pty before the commit)
 #   macOS        : intl_ime_japanese, intl_ime_pinyin, intl_deadkey_option   (REAL key codes through the input method, source switched with
 #                  mac/tools/tis.swift = TISSelectInputSource; the original source is restored in a finally block)
-# Windows has the equivalents in windows/ci/cases_caseintl.ps1 (AltGr on a German layout, wide chars).
+# Windows (#1488, the old windows/ci/cases_caseintl.ps1 is gone): the wide-character cases run in both panes (PowerShell writes the file itself
+#   with UTF8Encoding($false): `echo >>` is UTF-16 there), plus intl_altgr_ps / intl_altgr_bash: AltGr on a German layout (KLID 00000407) loaded for the
+#   Phosphor window only (WM_INPUTLANGCHANGEREQUEST; nothing system-wide changes; the user's language list + Preload are snapshotted to
+#   APPCI_WIN_BAK/kbd_pre.json first and restore.ps1 step "keyboard-layout" re-verifies them).
 # Every check is against bytes: effect files written by the typed commands (opened in binary) and the shell's own rec.log; for the
 # marked-text rule a raw-tty reader (bytes_reader.py) running in the pane logs every byte that reaches the pty with a timestamp.
 # Non-ASCII literals are written as \u escapes so a mangled locale of the editor/CI cannot change what the case expects.
@@ -23,6 +26,15 @@ WIDE = [
     ("zwj", "\U0001F468‍\U0001F469‍\U0001F467"),
     ("mixed", "a日b\U0001F600c"),
 ]
+
+
+def wide_parts(ctx, fname):
+    """(prefix, suffix) of a command that appends  <text> + LF  to fname as UTF-8; bash: `echo text >> f`. A Windows PowerShell pane writes the
+    bytes itself ([IO.File]::AppendAllText, UTF-8 without BOM): `>>` / Add-Content would re-encode them."""
+    if ctx.pane == "powershell":
+        return ("[IO.File]::AppendAllText('%s', '" % os.path.join(ctx.W, fname),
+                "' + \"`n\", (New-Object Text.UTF8Encoding $false))")
+    return "echo ", " >> " + fname
 
 
 def fbytes(ctx, name):
@@ -63,7 +75,8 @@ def c_wide_type(ctx, r):
         f = "iw_%s.txt" % tag
         ctx.rm(f)
         mark = ctx.cmd_mark()
-        cmd = "echo %s >> %s" % (text, f)
+        pre, post = wide_parts(ctx, f)
+        cmd = pre + text + post
         try:
             ctx.be.type(cmd, ctx.rng.randint(10, 25), enter=True)
         except Exception as e:      # e.g. an input tool that cannot send this character
@@ -71,7 +84,7 @@ def c_wide_type(ctx, r):
             continue
         check_file(ctx, r, f, text, "typed " + tag)
         check_cmd(ctx, r, mark, cmd, "typed " + tag)
-    ctx.be.type("echo INTL_SHOWN 日本語 \U0001F600 é", 12, enter=True)
+    ctx.be.type(("Write-Output" if ctx.pane == "powershell" else "echo") + " INTL_SHOWN 日本語 \U0001F600 é", 12, enter=True)
     time.sleep(0.8)
     ctx.shot("wide_rendered")
 
@@ -91,12 +104,14 @@ def c_wide_paste(ctx, r):
             r.check(False, "%s: harness clipboard round-trip altered the text (got %s, expected %s): cannot judge the app" % (tag, back.hex(), text.encode("utf-8").hex()))
             continue
         mark = ctx.cmd_mark()
-        ctx.be.type("echo ", 12)
+        pre, post = wide_parts(ctx, f)
+        ctx.be.type(pre, 12)
         ctx.be.paste()
-        ctx.be.type(" >> " + f, 12, enter=True)
+        ctx.be.type(post, 12, enter=True)
         check_file(ctx, r, f, text, "paste inside typed " + tag)
-        check_cmd(ctx, r, mark, "echo %s >> %s" % (text, f), "paste inside typed " + tag)
-        ctx.be.clip_set("echo %s >> %s" % (text, f2))
+        check_cmd(ctx, r, mark, pre + text + post, "paste inside typed " + tag)
+        pre2, post2 = wide_parts(ctx, f2)
+        ctx.be.clip_set(pre2 + text + post2)
         ctx.be.paste(enter=True)
         check_file(ctx, r, f2, text, "paste + instant Enter " + tag)
     ctx.shot("wide_pasted")
@@ -120,14 +135,15 @@ def c_wide_edit(ctx, r):
         f = "ie_%d.txt" % i
         ctx.rm(f)
         mark = ctx.cmd_mark()
-        ctx.be.type(head, 12)
+        pre, post = wide_parts(ctx, f)
+        ctx.be.type(pre + head[len("echo "):], 12)
         ctx.be.keys(keys, delay_ms=20)
         if tail:
             ctx.be.type(tail, 12)
         ctx.be.key("End")
-        ctx.be.type(" >> " + f, 12, enter=True)
+        ctx.be.type(post, 12, enter=True)
         check_file(ctx, r, f, want, "edit %d (%s)" % (i, "+".join(keys)))
-        check_cmd(ctx, r, mark, "echo %s >> %s" % (want, f), "edit %d" % i)
+        check_cmd(ctx, r, mark, pre + want + post, "edit %d" % i)
     ctx.shot("wide_edit")
 
 
@@ -415,3 +431,191 @@ def c_deadkey(ctx, r):
         # Option letters that are not dead keys: direct characters
         for tag, key, out in (("alt_s", "alt+s", "\u00df"), ("alt_o", "alt+o", "\u00f8"), ("alt_c", "alt+c", "\u00e7")):
             compose_editor(ctx, r, "dk_" + tag, lambda k=key: ctx.be.key(k), lambda: None, out, pre_check=False)
+
+
+# ---------------------------------------------------------------- Windows: AltGr on a German layout (#1466, ported from cases_caseintl.ps1 in #1488)
+# (virtual key on the German layout, the character AltGr+key must give): Q @, E EUR, 7 {, 8 [, 9 ], 0 }, sz \, < |, + ~, 2 sq, 3 cu, M micro; the plain Y key gives z
+ALTGR = [(0x51, 0x40), (0x45, 0x20AC), (0x37, 0x7B), (0x38, 0x5B), (0x39, 0x5D), (0x30, 0x7D), (0xDB, 0x5C), (0xE2, 0x7C), (0xBB, 0x7E), (0x32, 0xB2), (0x33, 0xB3), (0x4D, 0xB5)]
+_kbd_snapped = []
+
+
+def altgr_expected():
+    return "".join(chr(c) for _, c in ALTGR) + "z"
+
+
+def kbd_snapshot(ctx):
+    """save the user's keyboard configuration BEFORE any layout is loaded: HKCU\\Keyboard Layout\\Preload and the language list (read-only), to
+    $APPCI_WIN_BAK\\kbd_pre.json, the file restore.ps1's "keyboard-layout" step verifies and repairs from"""
+    if _kbd_snapped:
+        return
+    import json
+    import winreg
+    pre = {"preload": {}, "langs": []}
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Keyboard Layout\Preload")
+        i = 0
+        while True:
+            try:
+                n, v, _ = winreg.EnumValue(k, i)
+            except OSError:
+                break
+            pre["preload"][n] = str(v)
+            i += 1
+    except OSError:
+        pass
+    try:
+        ps = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                             "Get-WinUserLanguageList | ForEach-Object { @{ tag = $_.LanguageTag; tips = @($_.InputMethodTips) } } | ConvertTo-Json -Depth 4 -Compress"],
+                            capture_output=True, text=True, timeout=60)
+        j = json.loads(ps.stdout)
+        pre["langs"] = j if isinstance(j, list) else [j]
+    except Exception:
+        pass
+    d = os.environ.get("APPCI_WIN_BAK") or ctx.run
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "kbd_pre.json"), "w") as f:
+        json.dump(pre, f)
+    _kbd_snapped.append(1)
+
+
+class German:
+    """the Phosphor window's keyboard layout switched to German (KLID 00000407) for that window's thread only, and back in off()"""
+    def __init__(self, ctx):
+        import ctypes
+        import winapi
+        self.w, self.ct, self.ctx = winapi, ctypes, ctx
+        self.hwnd = winapi.main_window(ctx.app.pid())
+        self.u = winapi.user32
+        self.u.LoadKeyboardLayoutW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+        self.u.LoadKeyboardLayoutW.restype = ctypes.c_void_p
+        self.u.GetKeyboardLayout.argtypes = [ctypes.c_uint]
+        self.u.GetKeyboardLayout.restype = ctypes.c_void_p
+        self.u.UnloadKeyboardLayout.argtypes = [ctypes.c_void_p]
+        self.tid = self.u.GetWindowThreadProcessId(self.hwnd, None)
+        self.orig = self.hkl = None
+
+    def on(self):
+        """(ok, reason)"""
+        kbd_snapshot(self.ctx)
+        self.orig = self.u.GetKeyboardLayout(self.tid)
+        self.hkl = self.u.LoadKeyboardLayoutW("00000407", 0)
+        if not self.hkl:
+            return False, "LoadKeyboardLayout(00000407, German) failed: the layout is not available on this VM"
+        self.u.PostMessageW(self.hwnd, 0x50, 0, self.hkl)          # WM_INPUTLANGCHANGEREQUEST
+        cur = self.orig
+        t = time.time()
+        while time.time() - t < 5:
+            cur = self.u.GetKeyboardLayout(self.tid)
+            if (cur or 0) & 0xFFFF == 0x0407:
+                break
+            time.sleep(0.2)
+        if (cur or 0) & 0xFFFF != 0x0407:
+            return False, "the Phosphor window's layout did not change to German (is 0x%x, was 0x%x): the VM did not apply WM_INPUTLANGCHANGEREQUEST" % (cur or 0, self.orig or 0)
+        time.sleep(0.4)
+        return True, ""
+
+    def off(self):
+        try:
+            if self.orig and self.ctx.app.alive():
+                self.u.PostMessageW(self.hwnd, 0x50, 0, self.orig)
+                time.sleep(0.6)
+            if self.hkl and self.hkl != self.orig:
+                self.u.UnloadKeyboardLayout(self.hkl)
+        except Exception:
+            pass
+
+
+def altgr_string(ctx):
+    for vk, _ in ALTGR:
+        ctx.be.altgr(vk)
+        time.sleep(ctx.rng.randint(10, 25) / 1000)
+    ctx.be.plain_vk(0x59)             # the Y key on a German layout types z
+    time.sleep(0.02)
+
+
+class unicode_keys:
+    """printable characters as KEYEVENTF_UNICODE packets for the block (they do not depend on the target's layout)"""
+    def __init__(self, ctx):
+        self.be = ctx.be
+
+    def __enter__(self):
+        self.old = self.be.key_method
+        self.be.key_method = "unicode"
+
+    def __exit__(self, *a):
+        self.be.key_method = self.old
+
+
+def altgr_check(ctx, r, label, f, got_wait=12):
+    want = altgr_expected().encode("utf-8")
+    ctx.until(lambda: len(fbytes(ctx, f) or b"") >= len(want), got_wait)
+    time.sleep(0.3)
+    got = fbytes(ctx, f)
+    return r.check(got == want, "%s: file bytes %s, expected %s" % (label, hexs(got), want.hex()))
+
+
+def altgr_need_windows(ctx, r):
+    if not ctx.win:
+        r.skip("Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)")
+
+
+@case("intl_altgr_ps", order=68, gui=True)
+def c_altgr_ps(ctx, r):
+    altgr_need_windows(ctx, r)
+    if ctx.pane != "powershell":
+        r.skip("PowerShell variant: runs in the PowerShell pane pass (intl_altgr_bash covers the Git Bash pane)")
+    g = German(ctx)
+    ok, why = g.on()
+    if not ok:
+        g.off()
+        r.skip("German layout unavailable: " + why)
+    try:
+        f = "ag_ps.txt"
+        ctx.rm(f)
+        with unicode_keys(ctx):
+            ctx.be.type("[IO.File]::WriteAllText('%s', '" % os.path.join(ctx.W, f), 12)
+            altgr_string(ctx)
+            ctx.be.type("', (New-Object Text.UTF8Encoding $false))", 12, enter=True)
+        altgr_check(ctx, r, "AltGr string in PowerShell", f)
+        r.metric("layout", "German 00000407, per-window")
+    finally:
+        g.off()
+
+
+@case("intl_altgr_bash", order=69, gui=True)
+def c_altgr_bash(ctx, r):
+    altgr_need_windows(ctx, r)
+    import winapi
+    bash = winapi.git_bash()
+    if not bash:
+        r.skip("Git for Windows (Git Bash) is not installed on this VM: no bash.exe under Program Files\\Git\\bin")
+    g = German(ctx)
+    ok, why = g.on()
+    if not ok:
+        g.off()
+        r.skip("German layout unavailable: " + why)
+    try:
+        f = "ag_bash.txt"
+        ctx.rm(f)
+        with unicode_keys(ctx):
+            if ctx.pane == "powershell":      # Git Bash from the pane, as a user would start it
+                ctx.be.type("$env:CHERE_INVOKING = '1'; $env:LC_ALL = 'C.UTF-8'; & '%s' --login -i" % bash.replace("\\", "/"), 12, enter=True)
+                time.sleep(4)
+            else:
+                ctx.be.type("export LC_ALL=C.UTF-8", 12, enter=True)
+                time.sleep(0.5)
+            ctx.be.type("printf '%s' '", 12)
+            altgr_string(ctx)
+            ctx.be.type("' > " + f, 12, enter=True)
+            time.sleep(0.8)
+        altgr_check(ctx, r, "AltGr string in Git Bash (LC_ALL=C.UTF-8)", f)
+        with unicode_keys(ctx):
+            if ctx.pane == "powershell":
+                ctx.be.type("exit", 12, enter=True)
+                time.sleep(1)
+                ctx.be.type("Remove-Item Env:LC_ALL, Env:CHERE_INVOKING -ErrorAction SilentlyContinue", 12, enter=True)
+            else:
+                ctx.be.type("unset LC_ALL", 12, enter=True)
+        r.metric("layout", "German 00000407, per-window")
+    finally:
+        g.off()

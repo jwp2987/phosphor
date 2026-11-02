@@ -4,7 +4,10 @@
 # its environment; this program owns the scratch HOME, the app process (exact PID/process-group teardown), the local
 # ssh server and the result files:  RUN/results.jsonl (appended per case), results.json, junit.xml, summary.md,
 # shots/*.png, logs/ (app log, stdout, rec logs, sshd log).
-# usage: run.py --run DIR --bin PATH --backend wayland|x11|mac|sim [--modes terminal,agent] [--cases a,b] [--app-display wayland|x11]
+# usage: run.py --run DIR --bin PATH --backend wayland|x11|mac|windows|sim [--modes terminal,agent] [--cases a,b] [--app-display wayland|x11]
+# Windows (--backend windows --platform windows; windows/ci/app_test.ps1 does the VM safety work and calls this with the private Python):
+#   --bin is the exe of the side-by-side TEST build; each session mode runs once per pane shell (APPCI_WIN_SHELLS, default "powershell,gitbash"),
+#   cases a pane cannot run SKIP with the reason from winmap.py; `--report-only` regenerates results.json/junit/summary after the wrapper added its rows.
 import argparse, json, os, shutil, subprocess, sys, time, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,14 +26,24 @@ def main():
     ap.add_argument("--seed", type=int, default=int(os.environ.get("APPCI_SEED", "1")))
     ap.add_argument("--platform", default="linux")
     ap.add_argument("--startup-timeout", type=int, default=90)
+    ap.add_argument("--report-only", action="store_true", help="only (re)generate results.json / junit.xml / summary.md from results.jsonl")
     a = ap.parse_args()
     import signal
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))     # cancelled job: unwind through the finally blocks (app.stop, sshd.stop)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, lambda *_: sys.exit(143))    # Windows: how a cancelled runner job stops us
     run = os.path.abspath(a.run)
     os.makedirs(run, exist_ok=True)
+    if a.report_only:
+        meta = json.load(open(os.path.join(run, "report_meta.json")))
+        return finish(run, argparse.Namespace(**meta), 0, write_meta=False)
     resf = os.path.join(run, "results.jsonl")
     open(resf, "w").close()
+    win = a.backend == "windows"
     prof = profile.Profile(run)
+    panes = [p for p in os.environ.get("APPCI_WIN_SHELLS", "powershell,gitbash").replace(" ", "").split(",") if p] if win else [None]
+    if win:
+        import winmap
     if a.backend == "mac":
         import refterm_mac
         refterm_mac.snapshot(run)       # #1485: was Terminal.app already running? (if not, a reference launch is quit by PID at exit)
@@ -65,8 +78,11 @@ def main():
     sel = [c for c in cases.CASES if (not a.cases or c["name"] in a.cases.split(",")) and c["name"] not in a.skip.split(",")]
     sel.sort(key=lambda c: c["order"])
     exit_fail = False
-    for mode in a.modes.split(","):
-        # per-mode fresh profile + app: settings differ (default_session_mode)
+    passes = [(m, p) for m in a.modes.split(",") for p in panes]
+    for mode, pane in passes:
+        # per-mode fresh profile + app: settings differ (default_session_mode). Windows: once per pane shell too (label = terminal | terminal@gitbash)
+        label = mode if pane in (None, "powershell") else "%s@%s" % (mode, pane)
+        prof.pane = pane or prof.pane
         ssh_info = None
         ssh_why = None       # why the ssh cases skip when there is no usable ssh test host
         app = None
@@ -74,6 +90,9 @@ def main():
         try:
             prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b')
             ssh_info = None if sim else sshd.start(prof, run)
+            if ssh_info is None and win and sshd.WHY:
+                ssh_why = sshd.WHY
+                print("no ssh test host on Windows, ssh cases will skip: %s" % ssh_why, flush=True)
             if ssh_info:
                 prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b', ssh_port=ssh_info["port"], ssh_ident=ssh_info["ident"])
                 ssh_why = prof.ssh_probe()
@@ -83,6 +102,8 @@ def main():
                     ssh_info = None
             print("owner settings: %s" % profile.Profile.owner_note, flush=True)
             log_path = os.environ.get("APPCI_APP_LOG") or (prof.home + "/.local/state/phosphor/phosphor.log" if a.backend != "mac" else prof.home + "/Library/Logs/phosphor.log")
+            if win:
+                log_path = os.environ.get("APPCI_APP_LOG") or None       # the log is under the app's known-folder data dir: found after the launch
             if sim:
                 be = backend.make("sim", rcfile=prof.home + "/.bashrc", home=prof.home, env={"HOME": prof.home, "PA_CTL": prof.ctl, "ZDOTDIR": prof.home})
                 app = None
@@ -90,21 +111,26 @@ def main():
                 if a.backend == "mac":
                     bundle = os.environ["APPCI_MAC_BUNDLE"]
                     app = appmod.MacApp(run, prof.home, bundle, a.bin)
+                elif win:
+                    app = appmod.WindowsApp(run, prof.home, a.bin, pane, prof.ctl)
+                    app.prepare()       # wipes %LOCALAPPDATA%\\phosphor and %APPDATA%\\phosphor (backed up + md5-restored by windows/ci/app_test.ps1)
                 else:
                     app = appmod.App(run, prof.home, a.bin, a.app_display)
                 app.start()
-                if a.backend == "mac":
+                if a.backend in ("mac", "windows"):
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
-            ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why)
+            ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane)
             if not sim:
-                up = ctx.until(lambda: prof.prompts() > 0, a.startup_timeout, step=0.5)
+                up = await_shell(ctx, app, prof, win, a.startup_timeout)
                 if not up:
-                    emit(dict(name="launch", mode=mode, status="fail", seconds=a.startup_timeout,
-                              detail=["no shell prompt within %ds (see logs/app.stdout; GPU/Wayland init or keyring?)" % a.startup_timeout]))
+                    emit(dict(name="launch", mode=label, status="fail", seconds=a.startup_timeout,
+                              detail=["no shell prompt within %ds (see logs/app.stdout; GPU/Wayland init or keyring?%s)" % (a.startup_timeout, "; Windows: no main window of pid %s, or the %s pane's shell never started" % (app.pid(), pane) if win else "")]))
                     ctx.shot("launch_fail")
                     exit_fail = True
                     continue
                 time.sleep(4)   # let the first-run overlay settle; mode_proof sends Escape
+                if win:
+                    ctx.log_path = os.environ.get("APPCI_APP_LOG") or app.find_log() or ""      # now that the app has written one
                 if a.backend == "mac":
                     d = be.system_dialog(ocr=True)       # BEFORE the first key: a Local Network / TCC prompt would take it
                     if d:
@@ -114,11 +140,27 @@ def main():
                 be.calibrate()
             else:
                 ctx.until(lambda: prof.prompts() > 0, 10)
+            proved = not win
             for c in sel:
                 if mode not in c["modes"]:
                     continue
+                if win:
+                    why = winmap.skip_reason(c["name"], pane)
+                    if why:          # explicit, per pane: never a silent omission
+                        emit(dict(name=c["name"], mode=label, status="skip", seconds=0, detail=[why], metrics={}, shots=[]))
+                        continue
+                    if not proved and c["name"] != "mode_proof":
+                        proved = True
+                        bad = prove_keys(ctx, be, pane, label)       # the key-delivery proof of the PowerShell harness (after mode_proof's pre-key screenshot)
+                        if bad:
+                            emit(dict(name="key_delivery", mode=label, status="fail", seconds=0, detail=[bad], metrics={}, shots=[ctx.shot("keys_not_delivered") or ""]))
+                            exit_fail = True
+                            break
+                        emit(dict(name="key_delivery", mode=label, status="pass", seconds=0, detail=["marker typed and received via SendInput %s" % be.key_method],
+                                  metrics={"method": be.key_method}, shots=[]))
                 r = cases.Result(c["name"], mode)
                 t0 = time.time()
+                ctx.t_case0 = t0
                 status = "pass"
                 try:
                     if sim and c["gui"]:
@@ -143,22 +185,25 @@ def main():
                 if dead:
                     status = "fail"
                     r.fails.append(dead)
-                    emit(dict(name=c["name"], mode=mode, status=status, seconds=round(time.time() - t0, 1),
+                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1),
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
-                    keep_instance_log(run, mode, prof, a.backend, ollama_url, instance)   # the relaunch overwrites phosphor.log (#1457)
+                    keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)   # the relaunch overwrites phosphor.log (#1457)
                     instance += 1
                     app.start()          # relaunch so the remaining cases still run
-                    ctx.until(lambda: prof.prompts() > 0, a.startup_timeout, step=0.5)
+                    await_shell(ctx, app, prof, win, a.startup_timeout)
+                    if win:
+                        be.guard()
+                        proved = False       # a relaunched Windows pane needs its keys proven again (and its cwd set)
                     continue
                 if status == "fail":
                     exit_fail = True
-                emit(dict(name=c["name"], mode=mode, status=status, seconds=round(time.time() - t0, 1),
+                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1),
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
         except backend.NeedsOwner as e:
             msg = "NEEDS OWNER: %s" % e
             print(msg, flush=True)
-            emit(dict(name="needs_owner", mode=mode, status="fail", seconds=0, detail=[msg]))
+            emit(dict(name="needs_owner", mode=label, status="fail", seconds=0, detail=[msg]))
             for d in {run, os.path.dirname(os.path.abspath(run))}:
                 try:
                     open(os.path.join(d, "NEEDS_OWNER.txt"), "w").write(msg + "\n")
@@ -174,12 +219,17 @@ def main():
             sshd.stop(ssh_info)
             if sim and be:
                 be.close()
-            logs = os.path.join(run, "logs", mode)
+            logs = os.path.join(run, "logs", label)
             os.makedirs(logs, exist_ok=True)
             for src in (prof.ctl, prof.rctl):
                 if os.path.isdir(src):
                     shutil.copytree(src, os.path.join(logs, os.path.basename(src)), dirs_exist_ok=True)
-            for src, dst in (((prof.home + ("/Library/Logs/phosphor.log" if a.backend == "mac" else "/.local/state/phosphor/phosphor.log")), "phosphor.log"), (run + "/app.stdout", "app.stdout"),
+            if win:      # the app's data + log dirs (known folders) go next to the other artifacts before app_test.ps1 restores the owner's copy
+                try:
+                    shutil.copytree(os.path.join(os.environ["LOCALAPPDATA"], "phosphor"), os.path.join(run, "data_" + label.replace("@", "_")), dirs_exist_ok=True)
+                except Exception:
+                    pass
+            for src, dst in ((log_src(prof, a.backend, app), "phosphor.log"), (run + "/app.stdout", "app.stdout"),
                              (run + "/ssh/sshd.log", "sshd.log")):
                 if os.path.exists(src):
                     t = ci_env.redact(open(src, errors="replace").read(), ollama_url)   # the endpoint never reaches an artifact
@@ -189,12 +239,67 @@ def main():
     return finish(run, a, 1 if exit_fail else 0)
 
 
-def keep_instance_log(run, mode, prof, backend_name, ollama_url, n):
+def log_src(prof, backend_name, app=None):
+    if backend_name == "windows":
+        return (app.find_log() if app and hasattr(app, "find_log") else None) or ""
+    return prof.home + ("/Library/Logs/phosphor.log" if backend_name == "mac" else "/.local/state/phosphor/phosphor.log")
+
+
+def await_shell(ctx, app, prof, win, timeout):
+    """True once the pane's shell is up. POSIX / Git Bash pane: the first prompt.log line from the scratch rc. Windows PowerShell pane (no rc hook):
+    the app's main window exists, then a fixed settle for PowerShell + the app's bootstrap (12 s, as the PowerShell harness)."""
+    if not win:
+        return ctx.until(lambda: prof.prompts() > 0, timeout, step=0.5)
+    if not app.wait_window(60):
+        return False
+    if prof.local_prompts:
+        return ctx.until(lambda: prof.prompts() > 0, timeout, step=0.5)
+    time.sleep(12)
+    return app.alive()
+
+
+def prove_keys(ctx, be, pane, label):
+    """Windows key-delivery proof (Prove-Keys of the PowerShell harness): type a marker command with an ABSOLUTE path and confirm the file got it,
+    with SendInput virtual keys first, then KEYEVENTF_UNICODE packets. None on success (be.key_method is the method that worked; a PowerShell pane is
+    cd'ed into the case dir), else the 'keys not delivered: <reason>' text with the session/foreground diagnostics."""
+    import winapi
+    log = []
+    for method in ("vk", "unicode"):
+        be.key_method = method
+        tok = ctx.tok(10).lower()
+        f = os.path.join(ctx.W, "proof_%s.txt" % label.replace("@", "_"))
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+        fp = f.replace("\\", "/")
+        try:
+            be.guard()
+            be.key("ctrl+c")
+            time.sleep(0.3)
+            be.key("ctrl+u")
+            be.type(("Add-Content -LiteralPath '%s' %s" if pane == "powershell" else "echo %s >> '%s'") % ((fp, tok) if pane == "powershell" else (tok, fp)), 8, enter=True)
+        except Exception as e:
+            log.append("%s threw: %s" % (method, e))
+            continue
+        if ctx.until(lambda: tok in ctx.lines(os.path.basename(f)), 8):
+            if pane == "powershell":
+                be.key("ctrl+u")
+                be.type("Set-Location -LiteralPath '%s'" % ctx.W.replace("\\", "/"), 8, enter=True)
+                time.sleep(0.8)
+            print("keys: delivered via SendInput %s" % method, flush=True)
+            return None
+        log.append("%s: marker not in the file" % method)
+    h, fp_ = winapi.foreground()
+    return "keys not delivered: %s; foreground=%s(pid %s) app-pid=%s SendInput-failures=%d" % ("; ".join(log), winapi.proc_name(fp_), fp_, ctx.app.pid(), be.fails)
+
+
+def keep_instance_log(run, mode, prof, backend_name, ollama_url, n, app=None):
     """Copy the dying instance's phosphor.log to logs/<mode>/phosphor.<n>.log BEFORE a relaunch overwrites it, so the failing cases'
     key traces survive (#1457). The final instance's log is still written as phosphor.log by the cleanup below."""
     import ci_env
-    src = prof.home + ("/Library/Logs/phosphor.log" if backend_name == "mac" else "/.local/state/phosphor/phosphor.log")
-    if not os.path.exists(src):
+    src = log_src(prof, backend_name, app)
+    if not src or not os.path.exists(src):
         return
     logs = os.path.join(run, "logs", mode)
     os.makedirs(logs, exist_ok=True)
@@ -202,11 +307,20 @@ def keep_instance_log(run, mode, prof, backend_name, ollama_url, n):
     open(os.path.join(logs, "phosphor.%d.log" % n), "w").write(t)
 
 
-def finish(run, a, code):
+def finish(run, a, code, write_meta=True):
     here = os.path.dirname(os.path.abspath(__file__))
+    note = str(profile.Profile.owner_note)
+    if write_meta and a.backend == "windows":      # windows/ci/app_test.ps1 adds its restore row afterwards and calls `run.py --report-only`, which needs the same meta
+        try:
+            json.dump(dict(platform=a.platform, backend=a.backend, app_display=a.app_display, seed=a.seed, owner_note=note, run=run,
+                           bin="", report_only=False), open(os.path.join(run, "report_meta.json"), "w"))
+        except OSError:
+            pass
+    else:
+        note = getattr(a, "owner_note", note)
     rc = subprocess.run([sys.executable, os.path.join(here, "report.py"), run, "platform=" + a.platform, "backend=" + a.backend,
                          "app_display=" + a.app_display, "seed=%d" % a.seed, "commit=" + os.environ.get("CI_COMMIT_SHORT_SHA", "local"),
-                         "owner_settings=" + str(profile.Profile.owner_note)]).returncode
+                         "owner_settings=" + note]).returncode
     return max(code, rc)
 
 
