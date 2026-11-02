@@ -417,6 +417,12 @@ impl GlobalBufferModel {
             })
             .collect();
 
+        log::debug!(
+            target: "code::buffer_lifecycle",
+            "sweep: registered={} dead={}",
+            self.buffers.len(),
+            ids_to_remove.len()
+        );
         if ids_to_remove.is_empty() {
             return;
         }
@@ -440,6 +446,11 @@ impl GlobalBufferModel {
 
         for id in ids_to_remove {
             self.buffers.remove(&id);
+            log::debug!(
+                target: "code::buffer_lifecycle",
+                "unregister (swept): registered={}",
+                self.buffers.len()
+            );
 
             #[cfg(feature = "local_fs")]
             {
@@ -474,6 +485,28 @@ impl GlobalBufferModel {
         });
     }
 
+    /// Prunes the registry when `buffer` is actually dropped. The buffer carries a channel sender
+    /// that closes with it, so the sweep runs on the drop event itself. The idle sweep a closing
+    /// pane requests can run before the editors are freed (#1478), leaving the weak entry
+    /// registered. Event-driven; no timer.
+    fn watch_buffer_drop(&mut self, buffer: &ModelHandle<Buffer>, ctx: &mut ModelContext<Self>) {
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        buffer.update(ctx, |buffer, _| buffer.set_drop_notifier(tx));
+        log::debug!(
+            target: "code::buffer_lifecycle",
+            "register: registered={}",
+            self.buffers.len()
+        );
+        ctx.spawn_stream_local(
+            rx,
+            |_, _, _| {},
+            |me, ctx| {
+                log::debug!(target: "code::buffer_lifecycle", "buffer dropped; pruning");
+                me.remove_deallocated_buffers(ctx);
+            },
+        );
+    }
+
     /// How many buffers are registered (for tests).
     #[cfg(test)]
     pub(crate) fn buffer_count(&self) -> usize {
@@ -496,6 +529,11 @@ impl GlobalBufferModel {
         }
 
         self.buffers.remove(&file_id);
+        log::debug!(
+            target: "code::buffer_lifecycle",
+            "unregister (cleanup): registered={}",
+            self.buffers.len()
+        );
 
         #[cfg(feature = "local_fs")]
         {
@@ -1088,6 +1126,7 @@ impl GlobalBufferModel {
                 },
             },
         );
+        self.watch_buffer_drop(&buffer, ctx);
 
         // Unsubscribe any existing buffer subscription (e.g. from a previous path)
         // before subscribing with the new path.
@@ -1336,6 +1375,7 @@ impl GlobalBufferModel {
                 source,
             },
         );
+        self.watch_buffer_drop(&buffer, ctx);
 
         BufferState::new(file_id, buffer)
     }
@@ -1711,6 +1751,7 @@ impl GlobalBufferModel {
                 },
             },
         );
+        self.watch_buffer_drop(&buffer, ctx);
 
         #[cfg(feature = "local_tty")]
         {

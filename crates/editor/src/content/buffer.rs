@@ -571,6 +571,10 @@ pub struct Buffer {
     /// The session platform, used as a fallback when inferring line endings from content that
     /// has no line endings (e.g. single-line text).
     session_platform: Option<SessionPlatform>,
+    /// Dropped with the buffer; closing the channel tells the owner of a `Weak` registry entry
+    /// that the buffer is gone (#1478), so it can prune on the drop event instead of a sweep that
+    /// may have run before the drop.
+    drop_notifier: Option<async_channel::Sender<()>>,
 }
 
 impl Default for Buffer {
@@ -594,6 +598,7 @@ impl Default for Buffer {
             version: BufferVersion::new(),
             line_ending_mode: LineEnding::LF,
             session_platform: None,
+            drop_notifier: None,
         }
     }
 }
@@ -762,7 +767,13 @@ impl Buffer {
             version: BufferVersion::new(),
             line_ending_mode: LineEnding::LF,
             session_platform: None,
+            drop_notifier: None,
         }
+    }
+
+    /// Holds `notifier` until this buffer is dropped; its receiver then sees the channel close.
+    pub fn set_drop_notifier(&mut self, notifier: async_channel::Sender<()>) {
+        self.drop_notifier = Some(notifier);
     }
 
     pub fn reset_undo_stack(&mut self) {
