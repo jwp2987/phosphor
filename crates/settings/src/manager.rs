@@ -8,6 +8,7 @@ use warpui_extras::user_preferences::UserPreferences;
 
 use super::PrivatePreferences;
 
+use super::SupportedPlatforms;
 use super::SyncToCloud;
 
 type UpdateFn = Box<dyn FnMut(String, bool, &mut AppContext) -> Result<()>>;
@@ -53,6 +54,8 @@ struct SettingsInfo {
     max_table_depth: Option<u32>,
     /// Whether this setting is private (not shown in the user-visible settings file).
     is_private: bool,
+    /// The platforms where this setting has an effect (reload/report gating).
+    supported_platforms: SupportedPlatforms,
 }
 
 /// Provides an interface for listening for settings events based on
@@ -93,6 +96,7 @@ impl SettingsManager {
     pub fn register_setting(
         &mut self,
         storage_key: &str,
+        supported_platforms: SupportedPlatforms,
         serialized_default_value: String,
         file_serialized_default_value: String,
         hierarchy: Option<&'static str>,
@@ -118,6 +122,7 @@ impl SettingsManager {
                 toml_key,
                 max_table_depth,
                 is_private,
+                supported_platforms,
             },
         );
     }

@@ -880,6 +880,7 @@ macro_rules! generate_settings_event_fn {
                     };
                     manager.register_setting(
                         $setting::storage_key(),
+                        $setting::supported_platforms(),
                         serialized_default_value,
                         file_serialized_default_value,
                         $setting::hierarchy(),

@@ -1,0 +1,15 @@
+{
+ "warning_count": 3,
+ "warnings_by_crate": {
+  "arboard (lib)": 2,
+  "settings (lib)": 1
+ },
+ "warning_lines_by_kind": {
+  "use of deprecated type alias": 2,
+  "unused import": 1,
+  "build failed, waiting for other jobs to finish...": 1
+ },
+ "errors": 2,
+ "status": "failed",
+ "duration": 68.195525
+}
