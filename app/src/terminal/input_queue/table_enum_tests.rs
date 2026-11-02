@@ -410,6 +410,50 @@ fn for_each_sample(mut visit: impl FnMut(&Intent, &RouteFacts, Option<Destinatio
         }
     }
 
+    // 4. The rows the products above cannot reach (a random sweep reaches them too rarely to
+    //    count on): H10 (an editor key that reads the display map, behind no gate), D1 (the
+    //    approval card or a confirming AI block had focus at the sink), D11 (a replayed or held
+    //    Enter), and the pin (a line pinned to the editor). No gate is open and the subshell is
+    //    idle, so the holds before the destination rows do not take the sample.
+    let at_approval_card = Stamp {
+        facts_gen: 0,
+        focus: FocusSnap::ApprovalCard,
+        epoch: 0,
+    };
+    let content_origins = [
+        Origin::Keyboard,
+        Origin::Editor,
+        Origin::Replay(EntryId(1)),
+        Origin::Held,
+    ];
+    for bits in 0..(1u32 << 11) {
+        for ssh in 0..3 {
+            let facts = facts_from(bits, ssh, 0, 0, GateMask::EMPTY);
+            for class in [Class::Typed, Class::Paste, Class::Enter, Class::EditKey] {
+                // The three display-map flags only matter for an editor key.
+                let flag_sets = if class == Class::EditKey { 8 } else { 1 };
+                for origin in content_origins {
+                    for flags in 0..flag_sets {
+                        for stamp in [Stamp::UNSTAMPED, at_approval_card] {
+                            let mut intent = Intent::new(class, origin).stamped(stamp);
+                            intent.needs_display_map = flags & 1 != 0;
+                            intent.display_map_fresh = flags & 2 != 0;
+                            intent.flushing = flags & 4 != 0;
+                            visit(&intent, &facts, None);
+                        }
+                    }
+                }
+            }
+            for class in [Class::Typed, Class::Paste, Class::Control, Class::Seq] {
+                visit(
+                    &Intent::new(class, Origin::Keyboard),
+                    &facts,
+                    Some(Destination::Editor),
+                );
+            }
+        }
+    }
+
     // 3. The sweep over everything, including pins and every intent flag.
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     for _ in 0..300_000 {
@@ -431,9 +475,15 @@ fn decide_is_total_and_consistent_over_the_enumerated_facts() {
     assert!(samples > 800_000, "the enumeration shrank: {samples}");
 }
 
-/// Every row of the table is decided by some sample. A row nothing can reach is dead: either the
-/// row is unreachable by construction (remove it) or the facts that should reach it are never
-/// built (a bug in what feeds the table).
+/// The rows of the matrix that are effects or bypasses on another row's plan, never the row of a
+/// plan themselves (the table's own doc comment and `table_tests.rs` say so): `H3b` and `H7b` are
+/// skipped holds, `P1b` an effect of the interrupt rows, `D4` the take-over effect of D5/D6.
+const EFFECT_ONLY_ROWS: [Row; 4] = [Row::H3b, Row::H7b, Row::P1b, Row::D4];
+
+/// Every row of the table is decided by some sample, except the effect-only rows, which no sample
+/// may ever decide. A row nothing can reach is dead: either the row is unreachable by
+/// construction (remove it) or the facts that should reach it are never built (a bug in what
+/// feeds the table).
 #[test]
 fn every_row_of_the_table_is_reachable() {
     let mut seen: Vec<Row> = Vec::new();
@@ -445,13 +495,22 @@ fn every_row_of_the_table_is_reachable() {
     });
     let missing: Vec<&'static str> = ALL_ROWS
         .iter()
-        .filter(|row| !seen.contains(row))
+        .filter(|row| !EFFECT_ONLY_ROWS.contains(row) && !seen.contains(row))
         .map(|row| row.name())
         .collect();
     assert!(
         missing.is_empty(),
         "rows no sample reaches: {missing:?} (see {} rows)",
         ALL_ROWS.len()
+    );
+    let decided: Vec<&'static str> = EFFECT_ONLY_ROWS
+        .iter()
+        .filter(|row| seen.contains(row))
+        .map(|row| row.name())
+        .collect();
+    assert!(
+        decided.is_empty(),
+        "effect-only rows that a plan names as its row: {decided:?}"
     );
 }
 
