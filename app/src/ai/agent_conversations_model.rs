@@ -4,11 +4,11 @@ use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::ambient_agents::{AgentSource, AmbientAgentTask, AmbientAgentTaskState};
 use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::{
-    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate, format_credits,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate,
 };
 use crate::ai::conversation_entry::{
     AgentConversationDisplayData, AgentConversationEntry, AgentConversationEntryId,
-    AgentConversationIdentity, AgentConversationNavigationSubject,
+    AgentConversationIdentity,
 };
 use crate::ai::conversation_navigation::ConversationNavigationData;
 use crate::auth::{AuthStateProvider, UserUid};
@@ -474,11 +474,6 @@ impl ConversationOrTask<'_> {
                     })
             }
         }
-    }
-
-    /// Formats the request usage for display.
-    pub fn display_request_usage(&self, app: &AppContext) -> Option<String> {
-        self.request_usage(app).map(format_credits)
     }
 
     pub fn last_updated(&self) -> DateTime<Utc> {
@@ -1204,55 +1199,6 @@ impl AgentConversationsModel {
                 })
             }
         }
-    }
-
-    /// Resolves a navigation subject to the `WorkspaceAction` that opens it, or `None`
-    /// if the underlying conversation/task is not currently in memory.
-    pub fn resolve_open_action(
-        subject: AgentConversationNavigationSubject,
-        restore_layout: Option<RestoreConversationLayout>,
-        app: &AppContext,
-    ) -> Option<WorkspaceAction> {
-        let model = Self::as_ref(app);
-        let AgentConversationNavigationSubject::Entry(id) = subject;
-        match &id {
-            AgentConversationEntryId::Conversation(conversation_id) => {
-                let metadata = model.conversations.get(conversation_id)?;
-                ConversationOrTask::Conversation(metadata).get_open_action(restore_layout)
-            }
-            AgentConversationEntryId::AmbientRun(task_id) => {
-                let task = model.tasks.get(task_id)?;
-                ConversationOrTask::Task(task).get_open_action(restore_layout)
-            }
-        }
-    }
-
-    /// Returns all (name, uid) pairs for creators of tasks in the model.
-    ///
-    /// We use this function to populate the available creator filter list
-    /// based on the tasks we have.
-    pub fn get_all_creators(&self, app: &AppContext) -> Vec<(String, String)> {
-        let mut creators: Vec<(String, String)> = self
-            .tasks
-            .values()
-            .filter_map(|t| {
-                let wrapper = ConversationOrTask::Task(t);
-                let name = wrapper.creator_name(app)?;
-                let uid = wrapper.creator_uid(app)?;
-                Some((name, uid))
-            })
-            .collect();
-
-        // Include the current user since they may have local conversations
-        let auth_state = AuthStateProvider::as_ref(app).get();
-        if let (Some(name), Some(uid)) = (auth_state.display_name(), auth_state.user_id()) {
-            creators.push((name, uid.to_string()));
-        }
-
-        creators.sort_by(|a, b| a.0.cmp(&b.0));
-        creators.dedup_by(|a, b| a.0 == b.0);
-
-        creators
     }
 
     pub fn mark_task_as_manually_opened(
