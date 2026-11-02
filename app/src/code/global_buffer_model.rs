@@ -2205,11 +2205,13 @@ impl GlobalBufferModel {
             return false;
         }
 
-        sync_clock.client_version = new_client_version;
-
         let Some(buffer) = state.buffer.upgrade(ctx) else {
             return false;
         };
+
+        // Only advance the client version once the edit can actually be applied;
+        // a dropped buffer rejects the edit, so the clock must stay untouched.
+        sync_clock.client_version = new_client_version;
 
         // Wire offsets are 1-indexed (matching CharOffset), so no conversion needed.
         // Apply each edit sequentially: the offsets are in sequential

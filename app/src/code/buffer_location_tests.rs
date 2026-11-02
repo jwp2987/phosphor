@@ -189,6 +189,64 @@ fn apply_client_edit_rejected_when_version_stale() {
     })
 }
 
+/// A dropped buffer rejects the edit, and must not advance the server-local
+/// `client_version` as a side effect.
+#[test]
+fn apply_client_edit_on_dropped_buffer_does_not_advance_client_version() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            let state = gbm.open_server_local("/tmp/test_dropped.txt".into(), ctx);
+            gbm.populate_buffer_with_read_content(
+                state.file_id,
+                "hello",
+                ContentVersion::new(),
+                ContentVersion::new(),
+                true,
+                ctx,
+            );
+            state
+        });
+        let file_id = buffer_state.file_id;
+        let sv = server_version(&app, file_id);
+        let handle = gbm(&app);
+        let before = app.read(|ctx| {
+            handle
+                .as_ref(ctx)
+                .sync_clock_for_server_local(file_id)
+                .unwrap()
+                .client_version
+        });
+
+        // Drop the only strong handle without running `remove_deallocated_buffers`, so the
+        // model still tracks the file but its weak buffer handle can no longer be upgraded.
+        drop(buffer_state);
+
+        let new_client_version = ContentVersion::new();
+        let accepted = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.apply_client_edit(
+                file_id,
+                &[text_edit(6, 6, " there")],
+                sv,
+                new_client_version,
+                ctx,
+            )
+        });
+        assert!(!accepted);
+
+        let after = app.read(|ctx| {
+            handle
+                .as_ref(ctx)
+                .sync_clock_for_server_local(file_id)
+                .unwrap()
+                .client_version
+        });
+        assert!(after == before, "client_version advanced for a rejected edit");
+    })
+}
+
 #[test]
 fn apply_client_edit_replaces_range() {
     App::test((), |mut app| async move {
