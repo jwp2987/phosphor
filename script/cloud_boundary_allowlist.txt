@@ -727,16 +727,6 @@ app/src/search/notebooks/fuzzy_match.rs crate::server::ids::SyncId
 app/src/search/welcome_palette/view.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/search/welcome_palette/view.rs crate::server::ids::SyncId
 app/src/search/welcome_palette/view.rs crate::server::telemetry::TelemetryEvent
-app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStoredObject
-app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStringObjectFormat
-app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStringObjectUniqueKey
-app/src/settings/cloud_preferences.rs crate::cloud_object::JsonObjectType
-app/src/settings/cloud_preferences.rs crate::cloud_object::UniquePer
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::GenericStringModel
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::StringModel
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::json_model::JsonModel
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::json_model::JsonSerializer
 app/src/settings/onboarding_tests.rs crate::cloud_object::StoredObjectMetadata
 app/src/settings/onboarding_tests.rs crate::cloud_object::StoredObjectPermissions
 app/src/settings/onboarding_tests.rs crate::cloud_object::model::persistence::ObjectStoreEvent
