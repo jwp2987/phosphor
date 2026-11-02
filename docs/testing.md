@@ -107,7 +107,10 @@ Hard rules:
 - Real-shell tests inside `warp` (`real_shells::*`, bootstrap tests in `app/src/terminal/bootstrap_test.rs`)
   start actual bash/zsh/fish/pwsh/nu where installed; they skip a shell that is missing.
 
-### 2.3 Guards (`script/check_*`, run by `guards` in CI and by `precheck`)
+### 2.3 Guards (`script/check_*`)
+
+Every guard in this table runs in `precheck`. In CI the `guards` job runs all of them except those the row says otherwise:
+`check_license_config_sync` runs in `licenses`, `check_test_failures` in the test jobs, and `check_workspace_clean` nowhere.
 
 | script | fails when |
 |---|---|
@@ -126,11 +129,11 @@ Hard rules:
 | `check_queue_access` | the pane input queue is reached other than through `PaneQueue` (#1353) |
 | `check_pty_doors` | a raw `write_to_pty(` / `clear_line_editor_and_write_to_pty(` / `write_end_of_transmission_char` / `emit(Event::WriteBytesToPty` outside the reasoned allowlist in the script (#1429-#1436). Allowlisted doors, each with its reason in the script: FOCUS_IN / FOCUS_OUT reports (protocol answers), the raw emit and its wrapper (definitions), the sink `write_user_bytes_to_pty_after_paste_stage` (what the pane queue delivers into), `release_held_keys` (keys the hand-off held, released in typed order), the OSC 52 clipboard-read reply, the subshell bootstrap writers (`write_init_subshell_bytes_to_pty`, `write_subshell_bootstrap_line`: the setup that owns the SubshellSetup gate), the PowerShell StopProfiles ^C (`ctrl_c_during_powershell_setup`), the `PtyIntent` dispatcher and the pty controller. Door tests: the `*_door`-style cases at the end of `terminal/view_test.rs` (aws login is a command, synced input honours gates, agent writes refused during setup, editor Ctrl-D through the queue, CLI-agent text held by a gate, ssh warpify payload paced, programmatic insert waits for a waiting Enter, local-child harness command waits as a pending command). `check_queue_access` also runs in the CI `guards` job (#1448). Enter/paste coverage from the Mac run (#1452, #1453): `an_inline_editor_paste_then_an_immediate_enter_are_queued_in_order` (`terminal/view_test.rs`: the editor's inline-read paste is a pane-queue entry via `offer_answered_paste`, with the Enter behind it), `test_enter_behind_an_unhandled_edit_does_not_accept_the_stale_as_you_type_menu` and `test_enter_with_an_as_you_type_menu_and_no_selection_submits` (`terminal/input_test.rs`: Enter never accepts an as-you-type menu that answers older text or has nothing selected; it submits). #1459: in terminal mode the slash menu never swallows Enter unless it lists current rows for the typed text (`test_terminal_mode_slash_path_enter_runs_the_line_1459`; control `test_agent_mode_slash_menu_still_takes_enter_1459`, `terminal/input_test.rs`). appci keeps one `phosphor.<n>.log` per app instance in `logs/<mode>/` (#1457), and `ctrl_c_d` sends a Ctrl-D only after proving the cat / nested bash it ends is running (#1458). Pending-command coverage (`terminal/input_test.rs`): text typed into a pending command is handed back with `TypeaheadHandoff` off too (#1451); `is_pending_aws_login` is set when the login starts, not when requested (#1450, `aws_login_is_a_command_that_waits_for_the_running_program`); the prompt look never takes the blocking model lock on event/timer paths (#1447, `prompt_look_outside_key_path_does_not_block_on_a_busy_model`); the ssh held-back Enter guard only holds the handed-back line (#1396, `ssh_handover_enter_guard_*`). Agent writes during an ssh connect's remote-setup window / subshell / PowerShell setup are REFUSED (logged), not held: the answer belongs to the prompt it was computed for |
 | `check_outbound_redaction` | a model-provider wire call (`exec_chat`, `exec_chat_stream`, embeddings/Exa `.post(`) appears outside the files that route through `agent_providers/outbound_redaction.rs`, or one of them stops calling it (#1469). Tests: `agent_providers/outbound_redaction_tests.rs` (every content kind, on and off), `chat_stream` request-builder tests, `oneshot` and embeddings tests |
-| `check_dangling_modules` | `mod foo;` with no file (untracked file lost in a patch) |
-| `check_pwsh_parse` | a bundled `.ps1` does not parse in real PowerShell (#1161); skipped without pwsh, which `precheck` shows as a warning |
+| `check_dangling_modules` | `mod foo;` with no file (untracked file lost in a patch); also in the CI `guards` job (#1521) |
+| `check_pwsh_parse` | a bundled `.ps1` does not parse in real PowerShell (#1161); skipped without pwsh, which `precheck` shows as a warning; also in the CI `guards` job (#1521), where a runner without pwsh logs `SKIPPED` and passes |
 | `check_license_config_sync` | `deny.toml` and `about.toml` license lists differ (job `licenses`) |
 | `check_test_failures` | see 2.1 |
-| `check_workspace_clean` | NOT wired anywhere (recorded gap): refuses to build a checkout holding another author's uncommitted work |
+| `check_workspace_clean` | NOT wired anywhere, deliberately: it expects a hand-managed shared checkout (branch `main`/`working`, no uncommitted work), which a CI clone on a `build/*` branch is not. It refuses to build a checkout holding another author's uncommitted work |
 
 ### 2.4 Shell-script harnesses (`script/test_*`, no cargo; run by `precheck`)
 
@@ -163,7 +166,7 @@ PowerShell 5.1). Project `winters-phosphor/phosphor` (id 88085499), use `glab`; 
 
 Play-time job variables (`TEST_FILTER`, `APPCI_TIER`, `APPCI_CASES`, ...): the project setting "Minimum role to use
 pipeline variables" is **Maintainer** (changed 2026-11-02; it was "No one allowed", which made every play with variables
-fail with 403). There are no project-level CI variables: personal values never go into GitLab.
+fail with 403). Project-level CI variables: only the masked `APPCI_API_TOKEN` (read_api, used by the reuse fetch when the job token is refused, section 2.8); personal values never go into GitLab. Signing credentials do not exist yet (`docs/release-signing.md`).
 
 Machine-local test settings (owner-provided, NOT in the repo or GitLab), per runner user, mode 600, in
 `~/.config/phosphor-ci/` (Windows: `%USERPROFILE%\.config\phosphor-ci\`): `ci.env` (`APPCI_OLLAMA_URL`,
@@ -182,7 +185,7 @@ are shared by every `build/*` branch and used to grow unbounded (2026-11: `ci-te
 deletes `incremental/` of release/LTO profiles, drops nextest/junit output older than a day; (2) if the filesystem
 has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 60 GB, others 60 GB) deletes all
 `incremental/`, then files unmodified and unaccessed for 7 days, and if still over, wipes the dir. Plain
-`find`/`du`/`df`, no cargo-sweep; the cargo registry is untouched. Tunables: `PRUNE_MIN_FREE_GB`,
+`find`/`du`/`df`, no cargo-sweep; the cargo registry is untouched. `script/agent-cargo` writes an in-use marker (`<root>/.inuse/<label>.<pid>`) while a cargo process compiles into a label; prune skips a label with a live marker and re-checks before the stale pass and before the whole-dir wipe (#1523). The few ms between the last check and `rm -rf` remain; the `resource_group`s serialise the box jobs. Tunables: `PRUNE_MIN_FREE_GB`,
 `PRUNE_STALE_DAYS`, `PRUNE_CAP_GB_<LABEL>`, `PRUNE_DRY_RUN=1`.
 
 | job | stage | trigger | what |
@@ -287,7 +290,7 @@ All dev-only (nothing ships). Exact commands, flags and caveats: **`docs/dev-too
 | unit (busy queue, operations that RETURN bytes, #1446) | `terminal/view_test.rs` (`a_powershell_take_under_a_busy_queue_*`, `a_deferred_enter_gate_take_under_a_busy_queue_*`, `an_ssh_gate_drop_under_a_busy_queue_is_not_lost`) | the take (deferred Enter gate keys, PowerShell held bytes, ssh gate drop, void Enter text) and the caller's continuation are one `Deferred` variant: nothing returns empty when busy, the ssh gate is not left set | every test run |
 | insta | `.snap` files under `app/src/terminal/snapshots/`, `crates/warpui_core/src/snapshots/` | per-shell bootstrap lines, pane-key routing tables, input_order trace shapes | every test run; review diffs with `cargo insta review` on the box |
 | expectrl | `app/tests/real_shell_markers.rs` | real bash through a pty: marker order (Preexec, Precmd, LineEditorReading with the same seq) | every test run of `-p warp` (skips without bash) |
-| shuttle / loom | `warpui_core::sync_shim`; `model_tests::*` in `clipboard_model_tests.rs`, `key_facts_model_tests.rs`, `typeahead_handoff_model_tests.rs` | thread interleavings of the clipboard write queue, KeyFacts, PaneHandoff, the reader cap; the two-cell publication gen (`model_the_reader_retry_never_combines_gens`, `model_the_gen_is_monotonic_across_loads`, `model_a_stamp_taken_after_seeing_the_prompt_is_not_before_it`: a consistent read never mixes publications, a stamp is never from the future, a stamp taken after the prompt was seen is never classed before it) | `test-shuttle-loom` job (release tier) |
+| shuttle / loom | `warpui_core::sync_shim`; `model_tests::*` in `clipboard_model_tests.rs`, `key_facts_model_tests.rs`, `typeahead_handoff_model_tests.rs` | thread interleavings of the clipboard write queue, KeyFacts, PaneHandoff, the reader cap; the two-cell publication gen (`model_the_reader_retry_never_combines_gens`, `model_the_gen_is_monotonic_across_loads`, `model_a_stamp_taken_after_seeing_the_prompt_is_not_before_it`: a consistent read never mixes publications, a stamp is never from the future, a stamp taken after the prompt was seen is never classed before it) | `test-shuttle-loom` job (release tier; this job has not run yet, so its pass/fail history is empty) |
 | criterion | `app/benches/key_path_bench.rs`, `ansi_bench.rs` (`--features dev-support`) | per-key cost (idle, behind a gate), routing, hand-off, 1 MB ANSI parse | `bench` job (release tier) |
 | cargo-fuzz | `fuzz/` (own workspace; targets `ansi_parser`, `hook_parsers`, `input_queue`) | crashes on hostile terminal output, hook frames, queue op sequences | `fuzz-smoke` job (release tier) |
 | cargo-mutants | `.cargo/mutants.toml`; jobs `mutants` (pane_key, key_facts, input_queue gates/destination) and `mutants-warpui-core` (clipboard) | lines the tests do not actually check | release tier only; widen with `MUTANTS_FILES` / shard with `MUTANTS_SHARD` |
@@ -558,7 +561,7 @@ the injector log says it did not post an Enter. Linux backends keep no injector 
 
 **Where every app test gets its build: this machine, never a download.** The plain `app-test-*` jobs `need` their build job with
 `artifacts: false` (ordering only) and their `before_script` is `script/ci/fetch_build.sh --this-pipeline` / `fetch_build.ps1 -ThisPipeline`:
-it reads the `pipeline-<CI_PIPELINE_ID>` pointer that `cache_build.sh` / `.ps1` leaves in the local build cache (below), copies that build to
+it reads the `pipeline-<CI_PIPELINE_ID>` pointer (`pipeline-<platform>-<id>` since #1524; the lookup and the writer share one lock) that `cache_build.sh` / `.ps1` leaves in the local build cache (below), copies that build to
 `dist/` and checks `SHA256SUMS`. A missing pointer or copy fails the job loudly (exit 2); it never downloads and never tests another build.
 (Until 2026-11-02 the plain jobs still pulled GitLab artifacts; only the `-reuse` jobs used the cache.)
 

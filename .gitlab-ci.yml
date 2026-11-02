@@ -95,6 +95,9 @@ guards:
     - ./script/check_pty_doors
     - ./script/check_outbound_redaction
     - ./script/check_queue_access
+    # #1521: both were precheck-only. check_workspace_clean is deliberately not here (it expects a hand-managed checkout, see docs/testing.md 2.3).
+    - ./script/check_dangling_modules
+    - ./script/check_pwsh_parse
     - ./script/check_test_results
     # Large deletions. There are no pull requests here, so the base is the
     # previous tip of this branch (push), or the merge-base with main for a new
@@ -159,8 +162,8 @@ check-linux:
     - ./script/agent-cargo ci-check-linux check -p warp_tui
 
 # ---------------------------------------------------------------------------
-# macOS (runner tag `Mac`, darwin arm64). The runner is the maintainer's own
-# laptop, so these jobs are MANUAL: nothing compiles there until someone starts it.
+# macOS (runner tag `Mac`, darwin arm64). The runner is a dedicated M1 Pro Mac, not the owner's laptop.
+# These jobs are MANUAL: nothing compiles there until someone starts it.
 # ---------------------------------------------------------------------------
 
 # Read-only environment report: what the runner user can see and what is
@@ -227,7 +230,7 @@ build-macos-arm64:
   timeout: 3h
   variables:
     CHANNEL: oss
-    # The maintainer's laptop: cap parallelism so the build does not push it into
+    # 16 GB Mac: cap parallelism so the build does not push it into
     # heavy swap (8 jobs measured: load 20, ~0.1 GB free, 3.5 GB swap).
     CARGO_BUILD_JOBS: "4"
     PHOSPHOR_DMG_SKIP_JENKINS: "1"
@@ -934,7 +937,7 @@ app-test-macos:
     reports:
       junit: appci-out/macos/run/junit.xml
 
-# Windows VM: the runner is on the console desktop, so the script drives the app directly (SendKeys + screenshots),
+# Windows VM: the runner is on the console desktop, so the script drives the app directly (SendInput via the Python harness + screenshots),
 # side-by-side install, backup/restore of app data, uninstall key, PATH, shortcuts and phosphor:// handler (md5-verified).
 app-test-windows:
   extends: .windows_job
@@ -1246,7 +1249,8 @@ release-macos-arm64:
   variables:
     CARGO_BUILD_JOBS: "4"
     GIT_DEPTH: "0"
-    # The runner has no GUI session, so create-dmg's Finder AppleScript fails (-10810).
+    # create-dmg's Finder AppleScript fails (-10810) here (the release job is not run from an Aqua login session), so skip it;
+    # app-test-macos, unlike this job, DOES need an Aqua session.
     PHOSPHOR_DMG_SKIP_JENKINS: "1"
   script:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:$PATH"
