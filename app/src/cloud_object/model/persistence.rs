@@ -1,24 +1,17 @@
-use crate::ai::execution_profiles::AIExecutionProfileObject;
-use crate::auth::AuthStateProvider;
 use crate::cloud_object::{
     GenericStoredObject, GenericStringObjectFormat, JsonObjectType, ObjectIdType, ObjectType,
     Owner, Revision, Space, StoredObjectLocation, StoredObjectModel,
 };
 use crate::drive::folders::{FolderObject, FolderObjectModel};
-use crate::drive::{
-    should_auto_open_welcome_folder, write_has_auto_opened_welcome_folder_to_user_defaults,
-    DriveIndexVariant, ObjectTypeAndId,
-};
-use crate::env_vars::{EnvVarCollection, EnvVarCollectionObject, EnvVarCollectionObjectModel};
+use crate::drive::{DriveIndexVariant, ObjectTypeAndId};
+use crate::env_vars::{EnvVarCollection, EnvVarCollectionObject};
 use crate::notebooks::NotebookObject;
 use crate::persistence::ModelEvent;
 use crate::server::ids::{HashableId, ObjectUid, SyncId, ToServerId};
-use crate::server_time::ServerTimestamp;
 use crate::settings::cloud_preferences::{PreferenceObject, PreferenceObjectModel};
 use crate::workflows::workflow::Workflow;
-use crate::workflows::workflow_enum::{WorkflowEnum, WorkflowEnumObject, WorkflowEnumObjectModel};
-use crate::workflows::{WorkflowObject, WorkflowObjectModel};
-use crate::workspaces::user_workspaces::UserWorkspaces;
+use crate::workflows::workflow_enum::WorkflowEnumObject;
+use crate::workflows::WorkflowObject;
 
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
@@ -29,7 +22,7 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::cloud_object::StoredObject;
 use crate::util::sync::Condition;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use rand::Rng;
 use warp_core::features::FeatureFlag;
 
@@ -138,14 +131,6 @@ impl ObjectStoreModel {
         self.initial_load_complete.wait()
     }
 
-    pub fn initial_load_completed(&self) -> bool {
-        self.initial_load_complete.is_set()
-    }
-
-    pub fn mark_initial_load_complete(&self) {
-        self.initial_load_complete.set();
-    }
-
     /// Determines whether or not the given object_id can be moved to the given location, based on
     /// what we currently support from an API perspective.
     ///
@@ -232,10 +217,6 @@ impl ObjectStoreModel {
         self.objects_by_id.values()
     }
 
-    pub fn cloud_objects_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn StoredObject>> {
-        self.objects_by_id.values_mut()
-    }
-
     pub fn create_object(
         &mut self,
         id: SyncId,
@@ -281,17 +262,6 @@ impl ObjectStoreModel {
         (sync_ids_and_types, count)
     }
 
-    /// Remove an object and all its descendants from `ObjectStoreModel` recursively.
-    pub fn delete_object_and_descendants(
-        &mut self,
-        uid: ObjectUid,
-        ctx: &mut ModelContext<Self>,
-    ) -> Vec<(SyncId, ObjectIdType)> {
-        let mut accumulator = Vec::new();
-        self.delete_object_and_descendants_internal(uid, &mut accumulator, ctx);
-        accumulator
-    }
-
     fn delete_object_and_descendants_internal(
         &mut self,
         uid: ObjectUid,
@@ -330,10 +300,6 @@ impl ObjectStoreModel {
                 }
             }
         }
-    }
-
-    pub fn check_if_object_is_in_cloudmodel(&mut self, uid: ObjectUid) -> bool {
-        self.objects_by_id.contains_key(&uid)
     }
 
     /// Update an object's location (folder and owner). This is an implementation detail of
@@ -378,56 +344,6 @@ impl ObjectStoreModel {
         }
     }
 
-    pub fn update_notebook_current_editor(
-        &mut self,
-        notebook_id: SyncId,
-        new_editor_uid: Option<String>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(notebook) = self.get_notebook_mut(&notebook_id) {
-            notebook.metadata.set_current_editor(new_editor_uid.clone());
-            ctx.emit(ObjectStoreEvent::NotebookEditorChangedExternally { notebook_id });
-            ctx.notify();
-        }
-    }
-
-    /// Updates the per-environment "last used" timestamp.
-    ///
-    /// This timestamp is derived from `CloudEnvironment.lastTaskCreated.createdAt`.
-    pub fn update_environment_last_task_run_timestamps(
-        &mut self,
-        timestamps: HashMap<String, DateTime<Utc>>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        for (uid, timestamp) in timestamps {
-            if let Some(object) = self.objects_by_id.get_mut(&uid) {
-                object.metadata_mut().last_task_run_ts = Some(timestamp.into());
-            }
-        }
-        ctx.notify();
-    }
-
-    pub fn update_object_metadata_last_updated_ts(
-        &mut self,
-        uid: &ObjectUid,
-        new_ts: ServerTimestamp,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(object) = self.objects_by_id.get_mut(uid) {
-            object.metadata_mut().metadata_last_updated_ts = Some(new_ts);
-
-            if let Some(model_event_sender) = &self.model_event_sender {
-                if let Err(e) = model_event_sender.send(ModelEvent::UpdateObjectMetadata {
-                    id: object.hashed_sqlite_id(),
-                    metadata: object.metadata().clone(),
-                }) {
-                    log::error!("Error saving to cache: {e:?}");
-                }
-            }
-            ctx.notify();
-        }
-    }
-
     /// Update an object in the object store as part of a local user edit.
     pub fn update_object_from_edit<K, M>(
         &mut self,
@@ -451,64 +367,6 @@ impl ObjectStoreModel {
             ctx.emit(ObjectStoreEvent::ObjectUpdated {
                 type_and_id: cloud_object.object_type_and_id(),
                 source: UpdateSource::Local,
-            });
-            ctx.notify();
-        }
-    }
-
-    /// Overwrite a workflow's definition from a non-local replacement path.
-    pub fn overwrite_workflow(
-        &mut self,
-        workflow: Workflow,
-        workflow_id: SyncId,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(workflow_object) = self.get_workflow_mut(&workflow_id) {
-            workflow_object.set_model(WorkflowObjectModel::new(workflow));
-            ctx.emit(ObjectStoreEvent::ObjectUpdated {
-                type_and_id: workflow_object.object_type_and_id(),
-                source: UpdateSource::External,
-            });
-            ctx.notify();
-        }
-    }
-
-    pub fn overwrite_env_var_collection(
-        &mut self,
-        env_var_collection: EnvVarCollection,
-        env_var_collection_id: SyncId,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(cloud_env_var_collection) = self
-            .get_object_of_type_mut::<GenericStringObjectId, EnvVarCollectionObjectModel>(
-                &env_var_collection_id,
-            )
-        {
-            cloud_env_var_collection
-                .set_model(EnvVarCollectionObjectModel::new(env_var_collection));
-            ctx.emit(ObjectStoreEvent::ObjectUpdated {
-                type_and_id: cloud_env_var_collection.object_type_and_id(),
-                source: UpdateSource::External,
-            });
-            ctx.notify();
-        }
-    }
-
-    pub fn overwrite_workflow_enum(
-        &mut self,
-        workflow_enum: WorkflowEnum,
-        workflow_enum_id: SyncId,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(cloud_workflow_enum) = self
-            .get_object_of_type_mut::<GenericStringObjectId, WorkflowEnumObjectModel>(
-                &workflow_enum_id,
-            )
-        {
-            cloud_workflow_enum.set_model(WorkflowEnumObjectModel::new(workflow_enum));
-            ctx.emit(ObjectStoreEvent::ObjectUpdated {
-                type_and_id: cloud_workflow_enum.object_type_and_id(),
-                source: UpdateSource::External,
             });
             ctx.notify();
         }
@@ -711,24 +569,6 @@ impl ObjectStoreModel {
         ctx.notify();
     }
 
-    /// Number of local objects with pending content changes.
-    pub fn num_unsaved_objects(&self) -> usize {
-        self.objects_by_id
-            .values()
-            .filter(|object| object.metadata().has_pending_content_changes())
-            .count()
-    }
-
-    /// Number of local objects with pending content changes that require a user warning before quitting.
-    pub fn num_unsaved_objects_to_warn_about_before_quitting(&self) -> usize {
-        self.objects_by_id
-            .values()
-            .filter(|object| {
-                object.warn_if_unsaved_at_quit() && object.metadata().has_pending_content_changes()
-            })
-            .count()
-    }
-
     /// The number of local objects that have entered an error state and will be shown in the Zap Drive index.
     pub fn num_visible_errored_objects(&self) -> usize {
         self.objects_by_id
@@ -737,30 +577,10 @@ impl ObjectStoreModel {
             .count()
     }
 
-    pub fn has_objects(&self) -> bool {
-        !self.objects_by_id.is_empty()
-    }
-
     pub fn has_non_welcome_objects(&self) -> bool {
         self.objects_by_id
             .iter()
             .any(|(_, object)| !object.metadata().is_welcome_object)
-    }
-
-    /// Whether or not there are any objects directly shared with the user.
-    ///
-    /// This takes a reference to [`UserWorkspaces`] to prevent circular model references.
-    pub fn has_directly_shared_objects(
-        &self,
-        user_workspaces: &UserWorkspaces,
-        app: &AppContext,
-    ) -> bool {
-        let user_uid = AuthStateProvider::as_ref(app).get().user_id();
-        self.objects_by_id.values().any(|object| {
-            // We can't use StoredObject::is_in_space, because that reborrows UserWorkspaces.
-            user_workspaces.owner_to_space(object.permissions().owner, app) == Space::Shared
-                && user_uid.is_some_and(|uid| object.permissions().has_direct_user_access(uid))
-        })
     }
 
     pub fn get_folder_by_uid(&self, uid: &str) -> Option<&FolderObject> {
@@ -787,15 +607,6 @@ impl ObjectStoreModel {
             .collect()
     }
 
-    #[allow(unused)]
-    /// Returns only active (not trashed) folders in object store.
-    pub fn get_all_active_folders(&self) -> impl Iterator<Item = &FolderObject> {
-        self.objects_by_id
-            .values()
-            .filter(|object| !object.is_trashed(self))
-            .filter_map(|object| object.into())
-    }
-
     /// Returns all folders (trashed or not) in object store.
     pub fn get_all_active_and_inactive_folders(&self) -> impl Iterator<Item = &FolderObject> {
         self.objects_by_id
@@ -819,21 +630,6 @@ impl ObjectStoreModel {
             .and_then(|object| object.into())
     }
 
-    pub fn get_ai_execution_profile(
-        &self,
-        profile_id: &SyncId,
-    ) -> Option<&AIExecutionProfileObject> {
-        self.objects_by_id
-            .get(&profile_id.uid())
-            .and_then(|object| object.into())
-    }
-
-    pub fn get_workflow_enum_mut(&mut self, enum_id: &SyncId) -> Option<&mut WorkflowEnumObject> {
-        self.objects_by_id
-            .get_mut(&enum_id.uid())
-            .and_then(|object| object.into())
-    }
-
     pub fn get_workflow_mut(&mut self, workflow_id: &SyncId) -> Option<&mut WorkflowObject> {
         self.objects_by_id
             .get_mut(&workflow_id.uid())
@@ -852,15 +648,6 @@ impl ObjectStoreModel {
     pub fn get_all_active_and_inactive_workflows(&self) -> impl Iterator<Item = &WorkflowObject> {
         self.objects_by_id
             .values()
-            .filter_map(|object| object.into())
-    }
-
-    /// Returns all workflows (trashed or not) in object store.
-    pub fn get_all_active_and_inactive_workflows_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut WorkflowObject> {
-        self.objects_by_id
-            .values_mut()
             .filter_map(|object| object.into())
     }
 
@@ -1301,42 +1088,6 @@ impl ObjectStoreModel {
     }
 
     // If the object is a folder and a welcome object, open it if we haven't opened a welcome folder before.
-    fn maybe_open_welcome_folder(&mut self, object_id: &SyncId, ctx: &mut ModelContext<Self>) {
-        if let Some(object) = self.get_by_uid(&object_id.uid()) {
-            let folder: Option<&FolderObject> = object.into();
-            if let Some(folder) = folder {
-                if folder.metadata().is_welcome_object {
-                    // Doing this as a nested check as a slight optimization
-                    if should_auto_open_welcome_folder(ctx) {
-                        self.set_folder_open_state(folder.id, FolderOpenState::Open, ctx);
-                        write_has_auto_opened_welcome_folder_to_user_defaults(ctx);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Whether the next local object-store refresh needs to force a full traversal of objects.
-    pub fn cloud_objects_force_refresh_pending(&self) -> bool {
-        // If there's no stated time for the next refresh, assume we should do one now. Otherwise,
-        // check if we're at or past the time of the next refresh.
-        self.time_of_next_force_refresh
-            .is_none_or(|time_of_next_refresh| Utc::now() >= time_of_next_refresh)
-    }
-
-    /// After a successful force refresh, mark the state as completed by picking a
-    /// time for the next refresh.
-    pub fn mark_cloud_objects_refresh_as_completed(&mut self) -> DateTime<Utc> {
-        // In order to offset when clients are performing the force refresh, we introduce
-        // a small amount of randomness into the calculation. This is intended to distribute
-        // server load to whatever extent possible.
-        let mut rng = rand::thread_rng();
-        let minutes_until_next_refresh = rng
-            .gen_range(MIN_MINUTES_UNTIL_NEXT_FORCE_REFRESH..MAX_MINUTES_UNTIL_NEXT_FORCE_REFRESH);
-        let next_refresh_time = Utc::now() + Duration::minutes(minutes_until_next_refresh);
-        self.time_of_next_force_refresh = Some(next_refresh_time);
-        next_refresh_time
-    }
 
     pub fn reset(&mut self) {
         self.objects_by_id = HashMap::new();

@@ -10,8 +10,7 @@ use crate::{
     auth::{UserUid, TEST_USER_UID},
     channel::ChannelState,
     cloud_object::{
-        model::persistence::ObjectStoreModel, ObjectType, Owner, Space, StoredObjectEventEntrypoint,
-    },
+        model::persistence::ObjectStoreModel, ObjectType, Owner, Space, },
     server::ids::ServerId,
     settings::{AISettings, PrivacySettings},
     workspaces::workspace::{AiAutonomySettings, SandboxedAgentSettings},
@@ -25,7 +24,7 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity, Tracked};
 
 #[cfg(test)]
 use crate::workspaces::workspace::{
-    AIAutonomyPolicy, BillingMetadata, WorkspaceMember, WorkspaceSettings,
+    BillingMetadata, WorkspaceMember, WorkspaceSettings,
 };
 
 #[cfg(test)]
@@ -98,11 +97,6 @@ impl UserWorkspaces {
         None
     }
 
-    pub fn team_from_uid_across_all_workspaces(&self, team_uid: ServerId) -> Option<&Team> {
-        let _ = team_uid;
-        None
-    }
-
     pub fn workspace_from_uid(&self, workspace_uid: WorkspaceUid) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.uid == workspace_uid)
     }
@@ -129,14 +123,6 @@ impl UserWorkspaces {
             ObjectType::Folder => false,
             ObjectType::GenericStringObject(_) => false,
         }
-    }
-
-    pub fn is_at_tier_limit_for_some_warp_drive_objects(
-        team_uid: ServerId,
-        ctx: &AppContext,
-    ) -> bool {
-        UserWorkspaces::is_at_tier_limit_for_object_type(team_uid, ObjectType::Notebook, ctx)
-            || UserWorkspaces::is_at_tier_limit_for_object_type(team_uid, ObjectType::Workflow, ctx)
     }
 
     // Checks if the team has capacity for another shared notebook for their current
@@ -218,10 +204,6 @@ impl UserWorkspaces {
         None
     }
 
-    pub fn current_team_mut(&mut self) -> Option<&mut Team> {
-        None
-    }
-
     /// Note that the team is populated with dummy data until
     /// the initial fetch completes (only team name and ID are cached in sqlite locally).
     /// Consider whether you need to wait for the results of the fetch before checking the
@@ -238,11 +220,6 @@ impl UserWorkspaces {
     pub fn current_workspace(&self) -> Option<&Workspace> {
         self.current_workspace_uid
             .and_then(|workspace_uid| self.workspace_from_uid(workspace_uid))
-    }
-
-    pub fn current_workspace_mut(&mut self) -> Option<&mut Workspace> {
-        self.current_workspace_uid
-            .and_then(|workspace_uid| self.workspace_from_uid_mut(workspace_uid))
     }
 
     pub fn workspaces(&self) -> &Vec<Workspace> {
@@ -275,23 +252,6 @@ impl UserWorkspaces {
     ) {
         *self.current_workspace_uid = Some(workspace_uid);
         self.notify_and_emit_teams_changed(ctx);
-    }
-
-    /// Returns `true` if active AI is allowed for the current workspace, based on billing config.
-    ///
-    /// In the future, we should store active AI enablement on the policy directly. For now, we
-    /// proxy whether active AI by checking if prompt suggestions, next command, or code suggestions are enabled.
-    pub fn is_active_ai_allowed(&self) -> bool {
-        self.current_team().is_none_or(|team| {
-            team.billing_metadata
-                .tier
-                .warp_ai_policy
-                .is_none_or(|policy| {
-                    policy.is_prompt_suggestions_toggleable
-                        || policy.is_next_command_enabled
-                        || policy.is_code_suggestions_toggleable
-                })
-        })
     }
 
     /// Returns `true` if the current team's enterprise status allows AI features that have an
@@ -602,107 +562,6 @@ impl UserWorkspaces {
         ctx.notify();
     }
 
-    pub fn team_created(
-        &mut self,
-        create_team_response: &CreateTeamResponse,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        self.workspaces.push(create_team_response.workspace.clone());
-        self.set_current_workspace_uid(create_team_response.workspace.uid, ctx);
-        self.notify_and_emit_teams_changed(ctx);
-    }
-
-    pub fn remove_user_from_team(
-        &mut self,
-        user_uid: UserUid,
-        team_uid: ServerId,
-        entrypoint: StoredObjectEventEntrypoint,
-        _ctx: &mut ModelContext<Self>,
-    ) {
-        // Zap (localization): the remove-member path has no remote team write target locally → no-op.
-        let _ = (user_uid, team_uid, entrypoint);
-    }
-
-    pub fn add_invite_link_domain_restrictions(
-        &mut self,
-        team_uid: ServerId,
-        domains: Vec<String>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        // Zap (localization): the domain-restriction path has no remote
-        // team/invite write target locally → emit a Success event so the UI doesn't get stuck.
-        let _ = (team_uid, domains);
-        ctx.emit(UserWorkspacesEvent::AddDomainRestrictionsSuccess);
-        ctx.notify();
-    }
-
-    pub fn delete_invite_link_domain_restriction(
-        &mut self,
-        team_uid: ServerId,
-        domain_uid: ServerId,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let _ = (team_uid, domain_uid);
-        ctx.emit(UserWorkspacesEvent::DeleteDomainRestrictionSuccess);
-        ctx.notify();
-    }
-
-    pub fn send_email_invites(
-        &mut self,
-        team_uid: ServerId,
-        emails: Vec<String>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let _ = (team_uid, emails);
-        ctx.emit(UserWorkspacesEvent::EmailInviteSent);
-        ctx.notify();
-    }
-
-    pub fn set_is_invite_link_enabled(
-        &mut self,
-        team_uid: ServerId,
-        new_value: bool,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let _ = (team_uid, new_value);
-        ctx.emit(UserWorkspacesEvent::ToggleInviteLinksSuccess);
-        ctx.notify();
-    }
-
-    pub fn reset_invite_links(&mut self, team_uid: ServerId, ctx: &mut ModelContext<Self>) {
-        let _ = team_uid;
-        ctx.emit(UserWorkspacesEvent::ResetInviteLinks);
-        ctx.notify();
-    }
-
-    pub fn set_team_member_role(
-        &mut self,
-        user_uid: UserUid,
-        team_uid: ServerId,
-        role: MembershipRole,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let _ = (user_uid, team_uid, role);
-        ctx.emit(UserWorkspacesEvent::SetTeamMemberRoleSuccess);
-        ctx.notify();
-    }
-
-    pub fn delete_team_invite(
-        &mut self,
-        team_uid: ServerId,
-        invitee_email: String,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let _ = (team_uid, invitee_email);
-        ctx.emit(UserWorkspacesEvent::DeleteTeamInvite);
-        ctx.notify();
-    }
-
-    pub fn refresh_ai_overages(&mut self, _ctx: &mut ModelContext<Self>) {
-        // Zap (localization, Phase 5): there's no cloud AI overages query locally, no-op.
-        // The call site (`blocklist/controller.rs::maybe_refresh_ai_overages`) UI doesn't initiate any meaningful update.
-    }
-
     pub fn is_enterprise_secret_redaction_enabled(&self) -> bool {
         self.current_team()
             .map(|team| team.organization_settings.secret_redaction_settings.enabled)
@@ -763,35 +622,6 @@ impl UserWorkspaces {
             .unwrap_or_default()
     }
 
-    pub fn is_anyone_with_link_sharing_enabled(&self) -> bool {
-        self.current_team()
-            .map(|team| {
-                team.organization_settings
-                    .link_sharing_settings
-                    .anyone_with_link_sharing_enabled
-            })
-            .unwrap_or(false)
-    }
-
-    pub fn is_direct_link_sharing_enabled(&self) -> bool {
-        self.current_team()
-            .map(|team| {
-                team.organization_settings
-                    .link_sharing_settings
-                    .direct_link_sharing_enabled
-            })
-            .unwrap_or(true)
-    }
-
-    /// Returns the team-level agent attribution setting.
-    ///
-    /// Use this to decide whether the user's attribution toggle should be locked
-    /// (`Enable`/`Disable`) or editable (`RespectUserSetting`).
-    pub fn get_agent_attribution_setting(&self) -> AdminEnablementSetting {
-        self.current_team()
-            .map(|team| team.organization_settings.enable_warp_attribution.clone())
-            .unwrap_or_default()
-    }
 }
 
 #[cfg(test)]
@@ -902,23 +732,6 @@ impl UserWorkspaces {
         );
     }
 
-    pub fn update_ai_autonomy_policy_flag(&mut self, enabled: bool, ctx: &mut ModelContext<Self>) {
-        self.update_current_workspace(
-            |workspace| {
-                if let Some(team) = workspace.teams.first_mut() {
-                    team.billing_metadata.tier.ai_autonomy_policy = Some(AIAutonomyPolicy {
-                        is_enabled: enabled,
-                        toggleable: true,
-                    });
-                } else {
-                    panic!(
-                        "No team found in current workspace. Did you call setup_test_workspace()?"
-                    );
-                }
-            },
-            ctx,
-        );
-    }
 }
 
 impl Entity for UserWorkspaces {

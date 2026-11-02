@@ -87,16 +87,6 @@ impl Workspace {
             .is_some_and(|member| member.role.is_admin_or_owner())
     }
 
-    pub fn can_be_deleted(&self, current_user_email: &str) -> bool {
-        // Current user needs to be an admin and be the only user remaining
-        self.is_workspace_admin(current_user_email)
-            && self.members.len() == 1
-            && self
-                .members
-                .first()
-                .is_some_and(|m| m.email == current_user_email)
-    }
-
     pub fn is_custom_llm_enabled(&self) -> bool {
         self.settings.llm_settings.enabled
     }
@@ -193,21 +183,6 @@ pub enum CustomerType {
 }
 
 impl CustomerType {
-    pub fn to_display_string(self) -> String {
-        match self {
-            CustomerType::Free => "Free".to_string(),
-            CustomerType::Turbo => "Turbo".to_string(),
-            CustomerType::SelfServe => "Team".to_string(),
-            CustomerType::Prosumer => "Pro".to_string(),
-            CustomerType::Legacy => "Early adopter".to_string(),
-            CustomerType::Enterprise => "Enterprise".to_string(),
-            CustomerType::Business => "Business".to_string(),
-            CustomerType::Lightspeed => "Lightspeed".to_string(),
-            CustomerType::Build => "Build".to_string(),
-            CustomerType::BuildMax => "Max".to_string(),
-            CustomerType::Unknown => "".to_string(),
-        }
-    }
 }
 
 /// Local representation of persisted billing delinquency status.
@@ -435,13 +410,6 @@ pub struct AiOverages {
 }
 
 impl BillingMetadata {
-    /// Returns whether the current tier has a usage-based pricing policy that can be toggled.
-    pub fn is_usage_based_pricing_toggleable(&self) -> bool {
-        self.tier
-            .usage_based_pricing_policy
-            .as_ref()
-            .is_some_and(|policy| policy.toggleable)
-    }
 
     /**
      * Returns whether customer can upgrade to the Build plan based on their current tier.
@@ -466,16 +434,10 @@ impl BillingMetadata {
      * Returns whether customer can upgrade to the Build Max plan based on their current tier.
      * Users on Build can upgrade to Build Max.
      */
-    pub fn can_upgrade_to_build_max_plan(&self) -> bool {
-        self.can_upgrade_to_build_plan() || self.customer_type == CustomerType::Build
-    }
 
     /**
      * Returns whether customer can upgrade to a higher tier based on their current tier.
      */
-    pub fn can_upgrade_to_higher_tier_plan(&self) -> bool {
-        self.can_upgrade_to_build_plan()
-    }
 
     pub fn is_stripe_paid_plan(customer_type: CustomerType) -> bool {
         match customer_type {
@@ -512,41 +474,6 @@ impl BillingMetadata {
         BillingMetadata::is_stripe_paid_plan(self.customer_type)
     }
 
-    pub fn is_on_build_plan(&self) -> bool {
-        self.customer_type == CustomerType::Build
-    }
-
-    pub fn is_on_build_max_plan(&self) -> bool {
-        self.customer_type == CustomerType::BuildMax
-    }
-
-    pub fn is_on_build_business_plan(&self) -> bool {
-        self.customer_type == CustomerType::Business
-    }
-
-    pub fn is_on_legacy_paid_plan(&self) -> bool {
-        match self.customer_type {
-            CustomerType::Prosumer
-            | CustomerType::Turbo
-            | CustomerType::Lightspeed
-            | CustomerType::SelfServe => true,
-            CustomerType::Business => {
-                // Legacy Business has a non-SelfServe service agreement type;
-                // Build Business uses SelfServe in persisted upstream-compatible metadata.
-                !matches!(
-                    self.service_agreements.first().map(|sa| &sa.type_),
-                    Some(ServiceAgreementType::SelfServe)
-                )
-            }
-            CustomerType::Free
-            | CustomerType::Legacy
-            | CustomerType::Enterprise
-            | CustomerType::Build
-            | CustomerType::BuildMax
-            | CustomerType::Unknown => false,
-        }
-    }
-
     pub fn is_delinquent_due_to_payment_issue(&self) -> bool {
         self.delinquency_status == DelinquencyStatus::PastDue
             || self.delinquency_status == DelinquencyStatus::Unpaid
@@ -557,27 +484,12 @@ impl BillingMetadata {
         self.tier.name == "Zap Plan"
     }
 
-    pub fn has_active_subscription(&self) -> bool {
-        if let Some(newest_service_agreement) = self.service_agreements.first() {
-            let not_expired = Utc::now() < newest_service_agreement.current_period_end;
-            let not_delinquent = !self.is_delinquent_due_to_payment_issue();
-            not_expired && not_delinquent
-        } else {
-            false
-        }
-    }
-
     pub fn is_byo_api_key_enabled(&self) -> bool {
         self.tier
             .byo_api_key_policy
             .is_some_and(|policy| policy.enabled)
     }
 
-    pub fn has_overages_used(&self) -> bool {
-        self.ai_overages
-            .as_ref()
-            .is_some_and(|ai_overages| ai_overages.current_monthly_requests_used > 0)
-    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
