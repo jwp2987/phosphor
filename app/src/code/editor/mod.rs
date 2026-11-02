@@ -4,7 +4,6 @@ pub(crate) mod comment_editor;
 mod comments;
 pub(super) mod diff;
 mod element;
-pub mod embedded_comment;
 pub mod find;
 pub mod goto_line;
 pub mod line;

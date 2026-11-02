@@ -478,9 +478,6 @@ pub enum FeatureFlag {
     /// Enables global search
     GlobalSearch,
 
-    /// Enables embedded code review comments.
-    EmbeddedCodeReviewComments,
-
     /// Enables the revert to checkpoints feature.
     RevertToCheckpoints,
 

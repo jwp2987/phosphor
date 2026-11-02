@@ -315,10 +315,6 @@ pub trait RenderableBlock {
         false
     }
 
-    fn is_embedded_comment(&self) -> bool {
-        false
-    }
-
     fn finish(self) -> Box<dyn RenderableBlock>
     where
         Self: Sized + 'static,
