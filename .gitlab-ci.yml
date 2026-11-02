@@ -663,12 +663,12 @@ test-shuttle-loom:
   when: manual
   allow_failure: true
   script:
-    - export RUSTFLAGS="--cfg shuttle"
-    - ./script/agent-cargo ci-shuttle test -p warpui_core --lib --release -- model_tests::
-    - ./script/agent-cargo ci-shuttle test -p warp --features gui --lib --release -- model_tests::
-    - export RUSTFLAGS="--cfg loom"
-    - ./script/agent-cargo ci-loom test -p warpui_core --lib --release -- model_tests::
-    - ./script/agent-cargo ci-loom test -p warp --features gui --lib --release -- model_tests::
+    - 'export RUSTFLAGS="--cfg shuttle"'
+    - './script/agent-cargo ci-shuttle test -p warpui_core --lib --release -- model_tests::'
+    - './script/agent-cargo ci-shuttle test -p warp --features gui --lib --release -- model_tests::'
+    - 'export RUSTFLAGS="--cfg loom"'
+    - './script/agent-cargo ci-loom test -p warpui_core --lib --release -- model_tests::'
+    - './script/agent-cargo ci-loom test -p warp --features gui --lib --release -- model_tests::'
 
 # cargo-fuzz smoke: each target for FUZZ_SECONDS (default 180, i.e. 2-5 minutes each), seeded
 # from the committed corpora. RUSTC_BOOTSTRAP=1 lets the pinned stable toolchain build with the
