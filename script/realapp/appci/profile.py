@@ -244,6 +244,7 @@ class Profile:
     def ssh_probe(self, timeout=15):
         """setup-time check, in the environment the app's shell gets (HOME = scratch home, <home>/bin first on PATH): `ssh fake true`
         (BatchMode is in the config) must succeed. Returns None when it does, else a skip reason carrying ssh's stderr."""
+        self.ssh_hint = None
         env = dict(os.environ, HOME=self.home, PATH=os.path.join(self.home, "bin") + os.pathsep + os.environ.get("PATH", os.defpath))
         argv = ["ssh", "fake", "true"]
         if self.win:        # run the pane's real client with the config, as the wrapper does (the .cmd/sh wrappers are for the shells)
@@ -269,12 +270,28 @@ class Profile:
                 a2 = [client, "-F", self.home + "/.ssh/config", "-o", "ControlMaster=yes", "-o", "ControlPath=" + _fwd(os.path.join(d, "cm")), "-o", "ControlPersist=3", "fake", "true"]
                 p = subprocess.run(a2, env=env, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
                 if p.returncode != 0:
-                    return "ssh test host unusable for Phosphor's ssh wrapper: %s cannot start a ControlMaster (exit %d): %s" % (client, p.returncode, (p.stderr or "").strip()[:300])
+                    # NOT a skip (r18co skipped all three ssh cases here): the app's bash wrapper runs exactly this on every ssh from a Git Bash pane, so a real Git Bash
+                    # user gets the same failure. The cases run and report what the user gets; this text is added to their failure messages as the lead.
+                    self.ssh_hint = ("Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (%s cannot start a ControlMaster, exit %d: %s); "
+                                     "the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way "
+                                     "(candidate APP finding: no fallback to plain ssh when the master cannot start)" % (client, p.returncode, " ".join((p.stderr or "").split())[:200]))
             except (subprocess.TimeoutExpired, OSError) as e:
-                return "ssh test host unusable for Phosphor's ssh wrapper: ControlMaster probe failed (%s)" % e
+                self.ssh_hint = "Git Bash pane: the ControlMaster probe with the wrapper's options did not finish (%s); candidate APP finding, see above" % e
             finally:
                 shutil.rmtree(d, ignore_errors=True)
         return None
+
+    ssh_hint = None      # Windows Git Bash: why Phosphor's ssh wrapper is expected to fail with Git for Windows' ssh.exe (set by ssh_probe); appended to ssh case failures
+
+    def ps_ssh_function(self):
+        """PowerShell source of a function `ssh` for the PowerShell pane: the pane has no rc, so nothing puts <home>/bin first on PATH and System32\\OpenSSH\\ssh.exe
+        would read the REAL user's config (`ssh fake` -> 'Could not resolve hostname fake', r18co). None when there is no such client. Typed into the pane once."""
+        if not self.win:
+            return None
+        real = self.win_client("ssh", False)
+        if not real:
+            return None
+        return "function ssh { & '%s' -F '%s' @args }" % (_fwd(real), self.home.replace("\\", "/") + "/.ssh/config")
 
     OWNER_SEED = os.path.join(os.path.expanduser("~"), ".config", "phosphor-ci", "owner-settings.toml")
     owner_note = None       # "sha256 <12>" or "not found (bare profile)": reported in results.json meta / summary.md
@@ -282,15 +299,17 @@ class Profile:
     def owner_seed(self):
         return os.environ.get("APPCI_OWNER_SETTINGS") or self.OWNER_SEED
 
-    def gitbash_toml(self):
-        """TOML string literal of Git for Windows' bash.exe for a Windows Git Bash pane, else None"""
+    def gitbash_toml(self, new_session=False):
+        """TOML value of Git for Windows' bash.exe for a Windows Git Bash pane, else None. startup_shell_override is a plain string (StartupShell: a custom
+        path); new_session_shell_override is an enum, so its TOML is the inline table `{ executable = "<path>" }` (r18co: a bare string made the app show
+        'Invalid value for new_session_shell_override' and use the default for new tabs)."""
         if not (self.win and self.pane == "gitbash"):
             return None
         import winapi
         b = winapi.git_bash()
         if not b:
             raise RuntimeError("Git for Windows (bash.exe) not found: the Git Bash pane cannot start")
-        return '"%s"' % _fwd(b)
+        return '{ executable = "%s" }' % _fwd(b) if new_session else '"%s"' % _fwd(b)
 
     def write_settings(self, mode, ollama_url=None, ollama_model="gpt-oss:20b"):
         """Start from the owner's real settings.toml (machine-local seed, never modified, never printed or uploaded) and apply ONLY
@@ -313,7 +332,7 @@ class Profile:
             gb = self.gitbash_toml()
             if gb:              # Windows Git Bash pane: the app's startup + new-tab shell is Git for Windows' bash.exe (HOME = scratch home, so ~/.bashrc logs)
                 t = T.set_key(t, "session", "startup_shell_override", gb)
-                t = T.set_key(t, "session", "new_session_shell_override", gb)
+                t = T.set_key(t, "session", "new_session_shell_override", self.gitbash_toml(True))
             if mode == "agent":
                 t = T.set_key(t, "agents.warp_agent.input", "ai_auto_detection_enabled", "true")
                 t = T.set_key(t, "agents.warp_agent.input", "nld_in_terminal_enabled", "true")
@@ -328,7 +347,7 @@ class Profile:
                  '[general]', 'default_session_mode = "%s"' % m, 'restore_session = false', '']
         gb = self.gitbash_toml()
         if gb:
-            lines += ['[session]', 'startup_shell_override = ' + gb, 'new_session_shell_override = ' + gb, '']
+            lines += ['[session]', 'startup_shell_override = ' + gb, 'new_session_shell_override = ' + self.gitbash_toml(True), '']
         if mode == "agent":
             lines += ['[agents.warp_agent.input]', 'ai_auto_detection_enabled = true', 'nld_in_terminal_enabled = true', '']
         if ollama_url:
