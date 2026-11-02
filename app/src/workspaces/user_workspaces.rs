@@ -696,6 +696,7 @@ impl UserWorkspaces {
         }
     }
 
+    #[cfg(test)]
     pub fn update_sandboxed_agent_settings<F>(&mut self, f: F, ctx: &mut ModelContext<Self>)
     where
         F: FnOnce(&mut Option<SandboxedAgentSettings>),

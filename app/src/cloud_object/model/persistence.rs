@@ -608,6 +608,7 @@ impl ObjectStoreModel {
     }
 
     /// Returns all folders (trashed or not) in object store.
+    #[cfg(test)]
     pub fn get_all_active_and_inactive_folders(&self) -> impl Iterator<Item = &FolderObject> {
         self.objects_by_id
             .values()

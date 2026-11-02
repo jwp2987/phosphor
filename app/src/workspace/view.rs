@@ -4784,6 +4784,7 @@ impl Workspace {
         self.active_tab_index
     }
 
+    #[cfg(test)]
     pub fn is_overflow_menu_showing(&self) -> bool {
         self.show_tab_bar_overflow_menu
     }

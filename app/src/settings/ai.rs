@@ -2870,6 +2870,7 @@ impl AISettings {
         *self.is_any_ai_enabled
     }
 
+    #[cfg(test)]
     pub fn is_orchestration_enabled(&self, app: &AppContext) -> bool {
         self.is_any_ai_enabled(app)
     }

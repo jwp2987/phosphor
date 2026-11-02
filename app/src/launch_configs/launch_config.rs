@@ -230,6 +230,7 @@ impl TabTemplate {
     /// Returns this tab's layout with any legacy tab-level `commands` merged into its startup
     /// pane (the focused pane, or the first pane if none is focused), so both old and new
     /// launch-config formats produce the same startup behavior.
+    #[cfg(test)]
     pub fn layout_with_tab_commands(&self) -> PaneTemplateType {
         let mut layout = self.layout.clone();
         if !self.commands.is_empty() {

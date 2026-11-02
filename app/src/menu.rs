@@ -2835,6 +2835,7 @@ impl<A: Action + Clone> MenuItem<A> {
         }
     }
 
+    #[cfg(test)]
     pub fn submenu_fields(&self) -> Option<&MenuItemFields<A>> {
         match self {
             MenuItem::Submenu { fields, .. } => Some(fields),

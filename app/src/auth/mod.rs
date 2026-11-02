@@ -441,6 +441,7 @@ impl AuthStateProvider {
     /// Zap no longer has a real logged-out state; this function returns a
     /// provider equivalent to `new_for_test` ("logged-in test user") so old
     /// test code keeps compiling.
+    #[cfg(test)]
     pub fn new_logged_out_for_test() -> Self {
         Self::new_for_test()
     }

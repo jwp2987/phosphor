@@ -102,6 +102,7 @@ impl BypassGate {
     }
 
     /// True when an item that arrived at `now` should be delivered immediately.
+    #[cfg(test)]
     pub fn may_bypass(&self, now: Instant, urgent: bool) -> bool {
         self.bypass_delay(now, urgent) == Some(Duration::ZERO)
     }

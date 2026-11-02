@@ -29,6 +29,7 @@ impl FileSearchItem {
     }
 
     /// Create a FileSearchItem with no match highlighting (for zero state)
+    #[cfg(test)]
     pub fn from_result_no_match(result: FileSearchResult) -> Self {
         Self {
             path: result.path,

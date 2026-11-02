@@ -338,6 +338,7 @@ impl RemoteCodebaseIndexModel {
             .map(ToOwned::to_owned)
     }
 
+    #[cfg(test)]
     pub fn codebases_for_agent_context(&self, host_id: &HostId) -> Vec<RemoteCodebaseContextEntry> {
         let host_label = self.host_label_for_host(host_id);
         let util_host_id = core_host_id_to_util(host_id);
