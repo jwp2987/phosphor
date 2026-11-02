@@ -389,53 +389,6 @@ impl TerminalFindModel {
         self.block_list_find_run.as_ref()
     }
 
-    /// Returns the currently focused match as a `BlockListMatch`.
-    ///
-    /// This works for both sync and async find paths.
-    pub(crate) fn focused_block_list_match(&self) -> Option<BlockListMatch> {
-        let model = self.terminal_model.lock();
-        if model.is_alt_screen_active() {
-            // Alt screen doesn't use BlockListMatch.
-            return None;
-        }
-
-        if let Some(controller) = &self.async_find_controller {
-            // Async path: the focused match is either a terminal match or an
-            // AI match (or neither). Try each in turn and synthesize the
-            // corresponding `BlockListMatch` variant so consumers don't need
-            // to know which path produced the focus.
-            if let Some(async_match) = controller.focused_terminal_match() {
-                let block = model.block_list().block_at(async_match.block_index)?;
-                let grid = match async_match.grid_type {
-                    GridType::PromptAndCommand => block.prompt_and_command_grid().grid_handler(),
-                    GridType::Output => block.output_grid().grid_handler(),
-                    _ => return None,
-                };
-                let range = async_match.range.to_range(grid)?;
-                return Some(BlockListMatch::CommandBlock(BlockGridMatch {
-                    block_index: async_match.block_index,
-                    grid_type: async_match.grid_type,
-                    range,
-                    is_filtered: false,
-                }));
-            }
-            if let Some(ai_match) = controller.focused_ai_match() {
-                return Some(BlockListMatch::RichContent {
-                    match_id: ai_match.match_id,
-                    view_id: ai_match.view_id,
-                    index: ai_match.total_index,
-                });
-            }
-            None
-        } else {
-            // Sync path: get from block_list_find_run.
-            self.block_list_find_run
-                .as_ref()
-                .and_then(|run| run.focused_match())
-                .cloned()
-        }
-    }
-
     /// Returns the focused rich content (AI) match id, if any.
     ///
     /// This works for both sync and async find paths and is used by AI block

@@ -1419,13 +1419,6 @@ impl InlineBannersState {
         self.next_banner_id += 1;
         next_id
     }
-
-    /// Returns the ID of the last inline banner inserted.
-    #[allow(dead_code)]
-    fn last_banner_id(&self) -> Option<InlineBannerId> {
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        (self.next_banner_id > 0).then(|| self.next_banner_id - 1)
-    }
 }
 
 /// Banners that we include in the blocklist to delimit

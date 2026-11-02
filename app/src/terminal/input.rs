@@ -5855,10 +5855,6 @@ impl Input {
         self.editor.as_ref(ctx).buffer_text(ctx)
     }
 
-    pub fn buffer_text_number_of_lines(&self, ctx: &AppContext) -> usize {
-        self.buffer_text(ctx).lines().count()
-    }
-
     #[cfg(feature = "integration_tests")]
     pub fn input_suggestions(&self) -> &ViewHandle<InputSuggestions> {
         &self.input_suggestions
@@ -7094,30 +7090,6 @@ impl Input {
             });
         }
         shared_session_input_state.pending_command_execution_request = None;
-    }
-
-    /// This clears the loading state and input buffer for both the sharer and viewer
-    /// once an agent request is in flight or cancelled.
-    pub fn unfreeze_and_clear_agent_input(&mut self, ctx: &mut ViewContext<Self>) {
-        if matches!(
-            self.model.lock().shared_session_status(),
-            SharedSessionStatus::ActiveViewer { .. } | SharedSessionStatus::ActiveSharer
-        ) {
-            self.editor.update(ctx, |editor, ctx| {
-                // Reinitialize the buffer to properly clear it
-                editor.reinitialize_buffer(None, ctx);
-
-                if let SharedSessionStatus::ActiveViewer { role } =
-                    self.model.lock().shared_session_status()
-                {
-                    // reinstate role for viewers
-                    editor.set_interaction_state(role.into(), ctx);
-                }
-
-                let appearance: &Appearance = Appearance::as_ref(ctx);
-                editor.set_text_colors(TextColors::from_appearance(appearance), ctx);
-            });
-        }
     }
 
     /// Restores the frozen/loading visual state of the agent input for both the sharer
@@ -8375,21 +8347,6 @@ impl Input {
         self.bump_input_generation();
         self.editor.update(ctx, |view, ctx| {
             view.set_buffer_text(content, ctx);
-        });
-    }
-
-    // Fill the input buffer with the provided text and auto-select all of the text
-    // (so that it's easy to delete).
-    pub fn prefill_buffer_and_select_all(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
-        let content = content.trim();
-        if content.is_empty() {
-            return;
-        }
-
-        self.editor.update(ctx, |editor, ctx| {
-            editor.clear_autosuggestion(ctx);
-            editor.set_buffer_text_ignoring_undo(content, ctx);
-            editor.handle_action(&EditorAction::SelectAll, ctx);
         });
     }
 
@@ -15105,7 +15062,6 @@ impl Input {
                         })
                         .cloned()
                 };
-
 
                 if let Some(command) = cmd_enter_slash_command {
                     self.select_slash_command(&command, SlashCommandTrigger::keybinding(), ctx);

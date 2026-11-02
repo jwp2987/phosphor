@@ -152,10 +152,6 @@ impl RichContent {
         matches!(self.metadata, Some(RichContentMetadata::UsageFooter))
     }
 
-    pub fn is_agent_view_entry(&self) -> bool {
-        matches!(self.metadata, Some(RichContentMetadata::AgentViewEntry(_)))
-    }
-
     pub fn is_inline_agent_view_header(&self) -> bool {
         matches!(
             self.metadata,

@@ -2,7 +2,6 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::SerializedBlockListItem;
-use crate::terminal::available_shells::AvailableShell;
 use crate::terminal::block_list_element::GridType;
 use crate::terminal::event::{
     BootstrappedEvent, Event, ExecutedExecutorCommandEvent, InitSshEvent, InitSubshellEvent,
@@ -296,10 +295,6 @@ impl<T> WithinBlock<T> {
             block_index: self.block_index,
             grid: self.grid,
         }
-    }
-
-    pub fn is_within_this_block(&self, index: BlockIndex) -> bool {
-        self.block_index == index
     }
 }
 
@@ -2517,17 +2512,6 @@ impl TerminalModel {
         self.block_list().active_block().is_mode_set(mode)
     }
 
-    pub fn get_shell(&self) -> Option<AvailableShell> {
-        match &self.shell_launch_state {
-            ShellLaunchState::DeterminingShell {
-                available_shell, ..
-            } => available_shell.clone(),
-            ShellLaunchState::ShellSpawned {
-                available_shell, ..
-            } => available_shell.clone(),
-        }
-    }
-
     pub fn shared_session_status(&self) -> &SharedSessionStatus {
         &self.shared_session_status
     }
@@ -2981,10 +2965,6 @@ impl TerminalModel {
 
     pub fn tmux_control_mode_active(&self) -> bool {
         self.tmux_control_mode_context.is_some()
-    }
-
-    pub fn is_pending_warp_initiated_control_mode(&self) -> bool {
-        self.pending_warp_initiated_control_mode.is_some()
     }
 
     pub fn is_warpified_ssh(&self) -> bool {

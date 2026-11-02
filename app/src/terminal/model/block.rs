@@ -840,13 +840,6 @@ impl BlockGridPoint {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum GridIndex {
-    PromptAndCommand(usize),
-    Command(usize),
-    Output(usize),
-}
-
 #[derive(Debug)]
 pub struct BlockMatches {
     prompt_and_command_grid_matches: Vec<RangeInclusive<Point>>,
@@ -854,29 +847,6 @@ pub struct BlockMatches {
     command_grid_matches: Vec<RangeInclusive<Point>>,
     output_grid_matches: Vec<RangeInclusive<Point>>,
     filtered_output_grid_matches: Option<Vec<RangeInclusive<Point>>>,
-}
-
-/// Returns the match that applies to the given point and advances the iterator if necessary.
-///
-/// NOTE: `matches_iter` must be sorted in descending order.
-fn active_or_prev_row<I>(
-    row_iter: &mut I,
-    active_row: Option<usize>,
-    current_row: &usize,
-) -> Option<usize>
-where
-    I: Iterator<Item = usize>,
-{
-    let mut row = active_row.or_else(|| row_iter.next());
-    while let Some(curr_row) = row {
-        if curr_row <= *current_row {
-            return row;
-        } else {
-            row = row_iter.next();
-        }
-    }
-
-    None
 }
 
 impl BlockMatches {
@@ -891,57 +861,6 @@ impl BlockMatches {
             output_grid_matches,
             filtered_output_grid_matches: None,
         }
-    }
-
-    pub fn calculate_filtered_output_grid_matches(
-        &self,
-        displayed_output_rows: impl DoubleEndedIterator<Item = usize>,
-    ) -> Vec<RangeInclusive<Point>> {
-        let output_grid_match_iter = self.output_grid_matches.iter();
-        let mut displayed_output_rows_iter = displayed_output_rows.rev();
-        let mut displayed_row = None;
-        let mut filtered_output_grid_matches = Vec::new();
-
-        // Add the output grid matches (in descending order) if they are contained in displayed rows.
-        for output_grid_match in output_grid_match_iter {
-            displayed_row = active_or_prev_row(
-                &mut displayed_output_rows_iter,
-                displayed_row,
-                &output_grid_match.end().row,
-            );
-            let end_row_is_displayed = displayed_row
-                .is_some_and(|displayed_row| output_grid_match.end().row == displayed_row);
-            displayed_row = active_or_prev_row(
-                &mut displayed_output_rows_iter,
-                displayed_row,
-                &output_grid_match.start().row,
-            );
-            let start_row_is_displayed = displayed_row
-                .is_some_and(|displayed_row| output_grid_match.start().row == displayed_row);
-
-            // We include a match if both the start row and end row of the match are displayed.
-            // This is to be defensive against any bugs that might cause only part of a logical line to be displayed.
-            // NOTE: When a match spans multiple rows, we include it when the start and end rows are displayed
-            // but the middle rows are not.
-            if start_row_is_displayed && end_row_is_displayed {
-                filtered_output_grid_matches.push(output_grid_match.clone());
-            }
-        }
-
-        filtered_output_grid_matches
-    }
-
-    /// Sets the filtered output grid matches
-    pub fn set_filtered_output_grid_matches(
-        &mut self,
-        filtered_output_grid_matches: Vec<RangeInclusive<Point>>,
-    ) {
-        self.filtered_output_grid_matches = Some(filtered_output_grid_matches);
-    }
-
-    /// Resets any filter on the output grid matches.
-    pub fn reset_output_grid_matches(&mut self) {
-        self.filtered_output_grid_matches = None;
     }
 
     pub fn prompt_and_command_grid_matches(&self) -> &[RangeInclusive<Point>] {
@@ -963,10 +882,6 @@ impl BlockMatches {
         self.prompt_and_command_grid_matches.len()
     }
 
-    pub fn number_of_command_grid_matches(&self) -> usize {
-        self.command_grid_matches.len()
-    }
-
     pub fn number_of_output_grid_matches(&self) -> usize {
         match &self.filtered_output_grid_matches {
             Some(filtered_output_grid_matches) => filtered_output_grid_matches.len(),
@@ -976,33 +891,6 @@ impl BlockMatches {
 
     pub fn num_matches(&self) -> usize {
         self.number_of_prompt_and_command_grid_matches() + self.number_of_output_grid_matches()
-    }
-
-    /// Returns the index of the bottommost match in the entire block grid.
-    /// Matches are ordered from the bottom of the grid to the top.
-    pub fn bottommost_match(&self) -> Option<GridIndex> {
-        if self.num_matches() == 0 {
-            return None;
-        }
-
-        if self.output_grid_matches().is_empty() {
-            return Some(GridIndex::PromptAndCommand(0));
-        }
-        Some(GridIndex::Output(0))
-    }
-
-    /// Returns the index of the topmost match in the entire block grid
-    pub fn topmost_match(&self) -> Option<GridIndex> {
-        if self.num_matches() == 0 {
-            return None;
-        }
-
-        if self.prompt_and_command_grid_matches.is_empty() {
-            return Some(GridIndex::Output(self.number_of_output_grid_matches() - 1));
-        }
-        Some(GridIndex::PromptAndCommand(
-            self.number_of_prompt_and_command_grid_matches() - 1,
-        ))
     }
 }
 
@@ -1367,11 +1255,6 @@ impl Block {
                 block_grid.disable_secret_obfuscation();
             }
         });
-    }
-
-    /// Scans the entire block (not just the dirty bytes) for secrets.
-    pub fn scan_full_block_for_secrets(&mut self) {
-        self.for_each_block_grid(|block_grid| block_grid.scan_full_grid_for_secrets())
     }
 
     /// Starts this block as a background output block, with no command.
@@ -2251,16 +2134,6 @@ impl Block {
         }
     }
 
-    /// The height of the output grid's full contents, irrespective of what is
-    /// actually being displayed in the block list.
-    pub fn output_grid_full_content_height(&self) -> Lines {
-        if self.output_grid.is_empty() || !self.ready_to_render() {
-            Lines::zero()
-        } else {
-            self.output_grid.len().into_lines()
-        }
-    }
-
     /// Returns prompt height in lines.
     pub fn prompt_height(&self) -> Lines {
         if !self.ready_to_render() {
@@ -3120,12 +2993,6 @@ impl Block {
 
     pub fn cloud_workflow_state(&self) -> Option<SyncId> {
         self.cloud_workflow_id
-    }
-
-    pub fn server_pwd(&self) -> Option<Cow<'_, str>> {
-        self.pwd
-            .as_ref()
-            .map(|pwd| user_friendly_path(pwd.as_str(), self.home_dir.as_deref()))
     }
 
     pub fn creation_ts(&self) -> &DateTime<Local> {

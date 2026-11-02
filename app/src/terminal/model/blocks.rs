@@ -2612,8 +2612,6 @@ impl BlockList {
         self.update_blocks_and_sumtree(None, None, |_| {}, |_| {});
     }
 
-    pub fn refresh_block_heights_for_passive_code_diff(&mut self) {}
-
     /// Associates the given blocks with a conversation, making them visible in that conversation's agent view.
     /// Returns a Vec of (block_id, visibility) for blocks that were found.
     pub fn associate_blocks_with_conversation<'a>(
@@ -2884,13 +2882,6 @@ impl BlockList {
                     .is_some_and(|action_id| action_id == id)
             })
         })
-    }
-
-    /// Scans the block at `block_index` for secrets.
-    pub fn scan_block_for_secrets(&mut self, block_index: BlockIndex) {
-        if let Some(block) = self.blocks.get_mut(block_index.0) {
-            block.scan_full_block_for_secrets();
-        }
     }
 
     pub fn block_heights(&self) -> &SumTree<BlockHeightItem> {
