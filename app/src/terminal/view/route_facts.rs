@@ -23,7 +23,7 @@
 // Steps 1 and 2 of #1424 build facts for the tests only: the table is not called yet.
 #![allow(dead_code)]
 
-use std::time::Instant;
+use instant::Instant;
 
 use warpui::ViewContext;
 use warpui::pane_key::PaneKeyContext;
