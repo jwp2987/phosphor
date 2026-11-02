@@ -346,6 +346,38 @@ command, nothing local), `ssh_enter_then_immediate_command` (#1415: `ssh fake` E
 `tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
 (`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
 
+Robustness cases (`appci/cases_robust.py`, #1468; all FULL tier, none in SMOKE; both modes; Linux unless noted). The quit and file-open ones
+SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor open uses the Linux D-Bus URL forward):
+- `session_restore` (order 85): restarts the app with `general.restore_session=true` (the profile default is false), opens `APPCI_SR_TABS`
+  (5) tabs each with its own cwd and one effect command, quits through the quit key (`ctrl+shift+q`, `APPCI_KEY_QUIT`; the confirm
+  dialog is answered by Return / Tab+Return), relaunches on the same private profile, and proves: the tabs come back in order with their
+  cwds (`ctrl+1..N`, `ctrl+9` = last tab, each answers `pwd`), the effect file is unchanged and rec.log has NO command from the restore
+  (the scratch rc no longer logs a shell's loaded history tail at its first prompt, so any command in rec.log after a relaunch is real).
+  Leaves a fresh restore-off app behind.
+- `quit_24_tabs` (86, #1410): `APPCI_QUIT_TABS` (24) streaming tabs + a second window, quit key; the app must be gone within
+  `APPCI_QUIT_BOUND_S` (10) s of the last confirm key, the app log must not contain `Failed to send Shutdown`, and no process whose cwd is
+  under the profile may outlive the app (orphan check). Repeated `APPCI_QUIT_REPEAT` (2) times (the original failure was 1 in 3).
+- `flood_typed_line` (60): `yes | head -n 2e6` and `seq 1 5e6` (scaled by `APPCI_SCALE`) with a line typed at 10-25 ms/key + Enter while
+  it runs: the line runs exactly once, only after the flood (shell-side timestamps), rec.log shows exactly [flood, typed line]; fails if the
+  flood ended before the typing did (then it tested nothing).
+- `flood_typing_latency` (61): tab A floods (`seq 1 8e6`), tab B reads raw keys at the pty (`ts_reader.py`): 80 chars at 15 ms/key arrive
+  complete and in order; gap p50/p95/max are metrics, a stall above `APPCI_FLOOD_STALL_MS` (1000) fails. No reference terminal is measured, so
+  no latency verdict against one is made.
+- `flood_scrollback_find` (62): a random uppercase marker is the first output line of a 300k-line flood; control: it is NOT on screen after
+  the flood; `ctrl+shift+f` + the marker + Enter must bring it on screen (OCR). SKIPs without tesseract (package `tesseract-ocr`).
+- `editor_edit_save` (70): opens a file in the code editor (`<bin> file://PATH` forwarded over the app's D-Bus session; the opener has no
+  display in its env and is killed after 30 s), types an edit at 10-25 ms/key, `ctrl+s`, byte-exact on disk; undo xN + save = original, redo
+  xN + save = edited; closes the pane, changes the file outside, reopens, edits again: the disk must hold the second edit on top of the
+  external content (a stale reopened buffer fails); nothing may reach the shell.
+- `editor_paste` (71, #1409): `ctrl+v` and `ctrl+shift+v` paste into the code editor; the saved file is byte-exact.
+- `soak` (89): `APPCI_SOAK_MIN` (60) minutes of mixed use (8 typed commands, an instant-Enter paste, a tab opened/used/closed per minute;
+  a 300k-line flood every 5th minute; in agent mode with a CI Ollama an agent prompt in a throw-away tab every 10th minute). Every minute
+  the RSS and CPU of every process running the app's executable (main + terminal-server) is sampled to `soak_samples.csv`. Rules: every
+  typed/pasted command arrived exactly; RSS FAILS when the series (first max(3, 10%) samples dropped, medians of windows of 5) never
+  decreases by more than 2% between windows AND grows by more than max(`APPCI_SOAK_GROW_MB` 150, 25% of the first window) MB, or any
+  sample exceeds `APPCI_SOAK_RSS_MAX_MB` (4096); fewer than 3 windows = noted, no verdict; idle CPU over 30 s at the end must be <=
+  max(`APPCI_SOAK_IDLE_CPU_PCT` 5, start + 3) %.
+
 #### Latency budgets and regression checks (`latency_enter`, `latency_key_log`, `ctrl_c_d`; Windows `latency_enter`)
 
 The latency cases are pass/fail on the owner's budgets (3.6, `perf-budgets`), not CI-sized bounds. Every record is in
