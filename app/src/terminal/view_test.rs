@@ -18267,6 +18267,34 @@ fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
     })
 }
 
+/// #1396: the exact sequence from the r18bi round. The ssh ended with `echo HELDLINE` handed
+/// back (guard armed); the user clears the line (Ctrl-U) and, later, types a new unrelated
+/// command. That Enter must run the new line, not be swallowed by the stale marker.
+#[test]
+fn ssh_handover_enter_guard_does_not_swallow_a_new_line_after_clear() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.arm_ssh_handover_enter_guard("echo HELDLINE".into());
+                input.replace_buffer_content("", ctx);
+                input.replace_buffer_content("echo NEXT >> hb.txt", ctx);
+            });
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            assert_ne!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo NEXT >> hb.txt",
+                "the new line was submitted, not swallowed"
+            );
+        });
+    })
+}
+
 /// Sends `action` to the input editor the way a key typed into it does.
 fn editor_key(view: &mut TerminalView, action: EditorAction, ctx: &mut ViewContext<TerminalView>) {
     view.input.update(ctx, |input, ctx| {
