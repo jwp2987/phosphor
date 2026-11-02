@@ -35,7 +35,7 @@ APP_NONAFFECTING = ["docs", ".gitlab", ".gitlab-ci.yml", "specs", "fuzz", ".agen
                     "script/large_deletion_allowlist.txt", "script/extract_sweep_ledger.py", "script/repro_subshell_relay_deadlock.py",
                     "script/test-fixtures", "deny.toml", "test-results", "script/agent-cargo", "script/agent-worktree", "script/setup-merge-drivers.sh"]
 APP_NONAFFECTING_GLOBS = ["**/*.md", "script/check_*", "script/test_*"]
-DOC_ONLY = re.compile(r"^(docs/|.*\.md$|TODO|issues\.md|DECLINED|ORACLE)")
+DOC_ONLY = re.compile(r"^(docs/|.*\.md$|issues\.md$)")   # #1527: no bare TODO/DECLINED/ORACLE prefixes
 
 
 def sh(*a, check=False):

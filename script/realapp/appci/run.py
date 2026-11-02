@@ -98,12 +98,14 @@ def main():
     ap.add_argument("--modes", default="terminal,agent")
     ap.add_argument("--cases", default="")
     ap.add_argument("--skip", default="")
-    ap.add_argument("--app-display", default="wayland")
+    ap.add_argument("--app-display", default=None)   # None: derived from the backend (#1526)
     ap.add_argument("--seed", type=int, default=int(os.environ.get("APPCI_SEED", "1")))
     ap.add_argument("--platform", default="linux")
     ap.add_argument("--startup-timeout", type=int, default=90)
     ap.add_argument("--report-only", action="store_true", help="only (re)generate results.json / junit.xml / summary.md from results.jsonl")
     a = ap.parse_args()
+    if a.app_display is None:
+        a.app_display = {"mac": "macos", "windows": "windows"}.get(a.backend, "wayland")
     if not a.report_only and not a.backend:
         ap.error("the following arguments are required: --backend")
     import signal

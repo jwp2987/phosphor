@@ -138,7 +138,7 @@ else
   [ "$MODE" = xwayland ] && [ -z "${DISPLAY:-}" ] && { log "XWayland DISPLAY was not published by sway"; exit 2; }
 fi
 log "session up: renderer=$RENDERER WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} DISPLAY=${DISPLAY:-} app-display=$APPDISP"
-{ echo "== uname"; uname -a; echo "== dri"; ls -l /dev/dri 2>&1; echo "== id"; id; echo "== vulkan"; vulkaninfo --summary 2>&1 | head -20; } > "$OUT/gpu.txt" 2>&1
+{ echo "== uname"; uname -srm; echo "== dri"; ls -l /dev/dri 2>&1; echo "== vulkan"; vulkaninfo --summary 2>&1 | head -20; } > "$OUT/gpu.txt" 2>&1
 
 RUNDIR="$OUT/run"; mkdir -p "$RUNDIR"
 python3 "$APPCI/run.py" --run "$RUNDIR" --bin "$BIN" --backend "$BACKEND" --app-display "$APPDISP" --modes "$SMODES" \
