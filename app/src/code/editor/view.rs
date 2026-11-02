@@ -259,14 +259,6 @@ impl CodeEditorRenderOptions {
         self.show_comment_editor_provider = Box::new(comment_editor_provider);
         self
     }
-
-    pub fn with_show_find_references_provider(
-        mut self,
-        find_references_provider: impl ShowFindReferencesCardProvider,
-    ) -> Self {
-        self.show_find_references_provider = Box::new(find_references_provider);
-        self
-    }
 }
 
 pub struct CodeEditorView {
@@ -880,13 +872,6 @@ impl CodeEditorView {
 
     pub fn set_horizontal_scrollbar_appearance(&mut self, appearance: ScrollableAppearance) {
         self.display_options.horizontal_scrollbar_appearance = appearance;
-    }
-
-    pub fn set_show_find_references_provider(
-        &mut self,
-        provider: impl ShowFindReferencesCardProvider,
-    ) {
-        self.show_find_references_provider = Box::new(provider);
     }
 
     pub fn set_find_highlights(
@@ -1701,18 +1686,6 @@ impl CodeEditorView {
         self.model.update(ctx, |model, ctx| {
             model.retrieve_unified_diff(file_name, ctx);
         });
-    }
-
-    /// Identifies which line (current or removed) is at the given content-space
-    /// vertical offset. Delegates to [`CodeEditorModel::line_at_vertical_offset`].
-    #[allow(dead_code)]
-    pub fn line_at_vertical_offset(
-        &self,
-        offset: Pixels,
-        ctx: &mut ViewContext<Self>,
-    ) -> Option<(StableEditorLine, Pixels)> {
-        self.model
-            .update(ctx, |model, ctx| model.line_at_vertical_offset(offset, ctx))
     }
 
     /// Returns the content-space vertical offset of the top of the given line.

@@ -7206,9 +7206,6 @@ impl CodeReviewView {
         }
         unsaved_paths
     }
-    pub fn set_pane_id(&mut self, pane_id: PaneId) {
-        self.containing_pane_id = Some(pane_id);
-    }
 
     pub fn file_sidebar_expanded(&self) -> bool {
         self.file_sidebar_expanded
@@ -7230,22 +7227,6 @@ impl CodeReviewView {
         } else {
             None
         }
-    }
-
-    pub fn open_file_in_tab(
-        &self,
-        path: &Path,
-        line_and_column: Option<LineAndColumnArg>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(repo_path) = self.repo_path() else {
-            return;
-        };
-        let full_path = repo_path.join(path);
-        ctx.emit(CodeReviewViewEvent::OpenFileInNewTab {
-            path: full_path,
-            line_and_column,
-        });
     }
 
     #[cfg(not(feature = "local_fs"))]

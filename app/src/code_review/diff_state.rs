@@ -630,14 +630,6 @@ impl DiffStats {
     }
 }
 
-/// Comprehensive git diff information including uncommitted changes, main branch comparison, and main branch name
-#[derive(Debug, Clone)]
-pub struct GitDiffInfo {
-    pub uncommitted_stats: Option<DiffStats>,
-    pub main_branch_stats: Option<DiffStats>,
-    pub main_branch_name: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct GitNumStatMetadata {
     lines_added: usize,
@@ -740,35 +732,12 @@ impl LocalDiffStateModel {
             .map(|metadata| metadata.against_head.aggregate_stats)
     }
 
-    pub fn get_main_branch_stats(&self) -> Option<DiffStats> {
-        self.metadata.as_ref().and_then(|metadata| {
-            metadata
-                .against_base_branch
-                .as_ref()
-                .map(|base| base.aggregate_stats)
-        })
-    }
-
     /// Get the name of the main branch being used for comparison
     pub fn get_main_branch_name(&self) -> Option<String> {
         self.metadata
             .as_ref()
             .map(|metadata| metadata.main_branch_name.clone())
             .filter(|name| !name.is_empty())
-    }
-
-    /// Converts an optional base branch name into a `DiffMode`.
-    /// Falls back to `DiffMode::MainBranch` when no branch is specified.
-    pub fn diff_mode_for_base_branch(&self, base_branch: Option<&str>) -> DiffMode {
-        match base_branch {
-            Some(branch) => {
-                let main_branch = self
-                    .get_main_branch_name()
-                    .and_then(|main_branch| main_branch.strip_prefix("origin/").map(String::from));
-                DiffMode::from_branch(branch, main_branch.as_deref())
-            }
-            None => DiffMode::MainBranch,
-        }
     }
 
     /// Get the name of the current checked-out branch or commit.
@@ -842,15 +811,6 @@ impl LocalDiffStateModel {
     pub fn is_git_operation_blocked(&self, _app: &warpui::AppContext) -> bool {
         false
     }
-    /// Get comprehensive git diff information including uncommitted stats, main branch stats, and main branch name
-    /// This is a utility function that combines all diff-related information in a single call
-    pub fn get_diff_stats(&self) -> GitDiffInfo {
-        GitDiffInfo {
-            uncommitted_stats: self.get_uncommitted_stats(),
-            main_branch_stats: self.get_main_branch_stats(),
-            main_branch_name: self.get_main_branch_name(),
-        }
-    }
 
     pub fn get_stats_for_current_mode(&self) -> Option<DiffStats> {
         self.get_stats_for_mode(self.mode.clone())
@@ -894,16 +854,6 @@ impl LocalDiffStateModel {
     #[cfg(not(feature = "local_fs"))]
     pub fn active_repository_path(&self, _app: &warpui::AppContext) -> Option<PathBuf> {
         None
-    }
-
-    pub fn is_inside_repository(&self) -> bool {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "local_fs")] {
-                self.repository.is_some()
-            } else {
-                false
-            }
-        }
     }
 
     pub fn set_diff_mode(
@@ -1584,28 +1534,6 @@ impl LocalDiffStateModel {
                 });
             }
         }
-    }
-
-    #[cfg(feature = "local_fs")]
-    pub fn remove_active_repo(&mut self, ctx: &mut ModelContext<Self>) {
-        let Some(repository) = &self.repository else {
-            return;
-        };
-
-        // Unsubscribe from the repository watcher before releasing the handle.
-        if let Some(subscriber_id) = self.subscriber_id.take() {
-            repository.update(ctx, |repo, ctx| {
-                repo.stop_watching(subscriber_id, ctx);
-            });
-        }
-
-        let repository = self.repository.take().unwrap();
-        ctx.unsubscribe_from_model(&repository);
-        self.state = InternalDiffState::NotInRepository;
-        ctx.emit(DiffStateModelEvent::RepositoryChanged);
-        ctx.emit(DiffStateModelEvent::DiffMetadataChanged(
-            InvalidationBehavior::All(InvalidationSource::MetadataChange),
-        ));
     }
 
     /// Gets the merge base between HEAD and the specified branch

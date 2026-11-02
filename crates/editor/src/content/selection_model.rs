@@ -83,10 +83,6 @@ impl BufferSelectionModel {
         &self.selections
     }
 
-    pub fn selections_mut(&mut self) -> &mut SelectionSet {
-        &mut self.selections
-    }
-
     /// Returns the index of all lines that have active selection.
     pub fn selected_lines(&self, ctx: &AppContext) -> Vec1<usize> {
         Vec1::try_from_vec(

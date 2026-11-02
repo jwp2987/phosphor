@@ -513,15 +513,6 @@ impl BufferBlockItem {
             Self::HorizontalRule | Self::Embedded { .. } | Self::Image { .. } => "\n".to_string(),
         }
     }
-
-    pub fn as_plain_text_sliced(&self, start: usize, end: usize) -> String {
-        let full_text = self.as_plain_text();
-        full_text
-            .chars()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .collect()
-    }
 }
 
 /// Serialize a CommonMark image to `![alt](source)` or `![alt](source "title")`.
@@ -1013,13 +1004,6 @@ impl IndentUnit {
         }
     }
 
-    pub fn char_unit(&self) -> String {
-        match self {
-            Self::Tab => "\t".to_string(),
-            Self::Space(_) => " ".to_string(),
-        }
-    }
-
     pub fn text_with_num_tab_stops(&self, count: usize) -> String {
         match self {
             Self::Tab => "\t".repeat(count),
@@ -1413,10 +1397,6 @@ impl TextStyles {
 
     pub fn is_strikethrough(&self) -> bool {
         self.strikethrough
-    }
-
-    pub fn get_weight(&self) -> Weight {
-        Weight::from_custom_weight(self.weight)
     }
 
     pub fn get_custom_weight(&self) -> Option<CustomWeight> {
