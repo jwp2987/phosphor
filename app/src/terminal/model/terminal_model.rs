@@ -16,7 +16,7 @@ use crate::terminal::model::completions::{
 use crate::terminal::model::escape_sequences::ModeProvider;
 use crate::terminal::model::index::VisibleRow;
 use crate::terminal::model::iterm_image::{ITermImage, ITermImageMetadata};
-use crate::terminal::shared_session::{ai_agent::encode_agent_response_event, SharedSessionStatus};
+use crate::terminal::shared_session::SharedSessionStatus;
 use crate::terminal::ssh::util::{InteractiveSshCommand, SshLoginState};
 use crate::terminal::{block_filter::BlockFilterQuery, model::ansi::Handler};
 use crate::terminal::{color, ssh, BlockPadding, ShellHost, SizeUpdate, SizeUpdateReason};
@@ -79,7 +79,6 @@ use crate::terminal::shell::{ShellName, ShellType};
 use crate::terminal::model::secrets::ObfuscateSecrets;
 use crate::terminal::shared_session::protocol::SessionSourceType;
 use warp_core::command::ExitCode;
-use warp_core::report_error;
 
 use crate::terminal::shared_session::protocol::{
     AICommandMetadata, OrderedTerminalEventType, ParticipantId,
@@ -1448,10 +1447,6 @@ impl TerminalModel {
         }
     }
 
-    pub fn set_write_to_pty_events_for_shared_session_tx(&mut self, tx: Sender<Vec<u8>>) {
-        self.write_to_pty_events_for_shared_session_tx = Some(tx);
-    }
-
     pub fn send_write_to_pty_events_for_shared_session(&mut self, bytes: Vec<u8>) {
         if !self.shared_session_status().is_executor() {
             return;
@@ -1464,80 +1459,10 @@ impl TerminalModel {
         }
     }
 
-    pub fn clear_write_to_pty_events_for_shared_session_tx(&mut self) {
-        self.write_to_pty_events_for_shared_session_tx = None;
-    }
-
-    /// Sends an Agent ResponseEvent to viewers if this session is shared.
-    /// The participant_id should be the ID of the participant who initiated the query.
-    /// The forked_from_conversation_token is used for forked conversations to help viewers
-    /// link the new server-assigned token to an existing conversation from historical replay.
-    pub fn send_agent_response_for_shared_session(
-        &mut self,
-        response: &warp_multi_agent_api::ResponseEvent,
-        response_initiator: Option<ParticipantId>,
-        forked_from_conversation_token: Option<String>,
-    ) {
-        // We should always have a response initiator for shared sessions,
-        // but if we don't we should still send the response event to the viewers
-        // (as opposed to completely failing and skipping the send).
-        if response_initiator.is_none() {
-            report_error!(anyhow::anyhow!(
-                "No response initiator tracked for agent response event."
-            ));
-        }
-
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                let encoded = encode_agent_response_event(response);
-                if let Err(e) = tx.try_send(OrderedTerminalEventType::AgentResponseEvent {
-                    response_initiator,
-                    response_event: encoded,
-                    forked_from_conversation_token,
-                }) {
-                    log::warn!("Failed to send OrderedTerminalEventType::AgentResponseEvent: {e}");
-                }
-            }
-        } else {
-            log::debug!("Not sharing this session; ignoring agent response event");
-        }
-    }
-
-    pub fn send_agent_conversation_replay_started_for_shared_session(&mut self) {
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                if let Err(e) =
-                    tx.try_send(OrderedTerminalEventType::AgentConversationReplayStarted)
-                {
-                    log::warn!(
-                        "Failed to send OrderedTerminalEventType::AgentConversationReplayStarted: {e}"
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn send_agent_conversation_replay_ended_for_shared_session(&mut self) {
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                if let Err(e) = tx.try_send(OrderedTerminalEventType::AgentConversationReplayEnded)
-                {
-                    log::warn!(
-                        "Failed to send OrderedTerminalEventType::AgentConversationReplayEnded: {e}"
-                    );
-                }
-            }
-        }
-    }
-
     /// Whether the session sharing server is currently replaying
     /// conversation events (for conversation reconstruction).
     pub fn is_receiving_agent_conversation_replay(&self) -> bool {
         self.is_receiving_agent_conversation_replay
-    }
-
-    pub fn set_is_receiving_agent_conversation_replay(&mut self, value: bool) {
-        self.is_receiving_agent_conversation_replay = value;
     }
 
     pub fn set_shared_session_source_type(
@@ -2670,38 +2595,6 @@ impl TerminalModel {
         self.obfuscate_secrets = obfuscate_secrets;
         self.alt_screen.set_obfuscate_secrets(obfuscate_secrets);
         self.block_list.set_obfuscate_secrets(obfuscate_secrets);
-    }
-
-    /// Disables secret obfuscation for shared session creators only.
-    /// Specifically, secret obfuscation is disabled starting
-    /// from the `first_scrollback_block_index` onwards.
-    pub fn disable_secret_obfuscation_for_shared_sesson_creator(
-        &mut self,
-        first_scrollback_block_index: BlockIndex,
-    ) {
-        if !self.shared_session_status.is_sharer() {
-            log::warn!(
-                "Tried to disable secret obfuscation without being a shared session creator."
-            );
-            return;
-        }
-
-        let setting = ObfuscateSecrets::No;
-        self.obfuscate_secrets = setting;
-
-        // Disable obfuscation in the alt-screen.
-        self.alt_screen.set_obfuscate_secrets(setting);
-
-        // Ensure that all scrollback blocks and any subsequent blocks don't have their secrets obfuscated.
-        let active_block_index = self.block_list.active_block_index();
-        for block_index in
-            BlockIndex::range_as_iter(first_scrollback_block_index..active_block_index)
-        {
-            self.block_list
-                .set_obfuscate_secrets_for_block(block_index, setting);
-        }
-        self.block_list
-            .set_obfuscate_secrets_for_subsequent_blocks(setting);
     }
 
     fn restored_block_commands(&self) -> Vec<HistoryEntry> {

@@ -3990,27 +3990,6 @@ impl BlockList {
         }
     }
 
-    /// Sets whether subsequent blocks (including the active block) have their grids obfuscated.
-    pub(super) fn set_obfuscate_secrets_for_subsequent_blocks(
-        &mut self,
-        obfuscate_secrets: ObfuscateSecrets,
-    ) {
-        self.obfuscate_secrets = obfuscate_secrets;
-        self.active_block_mut()
-            .set_obfuscate_secrets(obfuscate_secrets);
-    }
-
-    /// Sets whether the grids of the specified block should be obfuscated.
-    pub fn set_obfuscate_secrets_for_block(
-        &mut self,
-        block_index: BlockIndex,
-        obfuscate_secrets: ObfuscateSecrets,
-    ) {
-        if let Some(block) = self.blocks.get_mut(block_index.0) {
-            block.set_obfuscate_secrets(obfuscate_secrets);
-        }
-    }
-
     /// Inserts a fully serialized block into the block list.
     ///
     /// This is used to insert a block snapshot from a CLI agent conversation

@@ -15,7 +15,6 @@ use protocol::{Scrollback, ScrollbackBlock};
 use super::model::block::SerializedBlock;
 use super::{model::terminal_model::BlockIndex, GridType, TerminalModel};
 
-pub mod ai_agent;
 pub mod participant_avatar_view;
 pub mod presence_manager;
 pub mod render_util;

@@ -1306,10 +1306,6 @@ impl PromptSuggestion {
     pub fn label(&self) -> &String {
         self.label.as_ref().unwrap_or(&self.prompt)
     }
-
-    pub fn is_static_prompt_suggestion(&self) -> bool {
-        self.static_prompt_suggestion_name.is_some()
-    }
 }
 
 /// A unique identifier for an inline banner.
@@ -5576,19 +5572,6 @@ impl TerminalView {
         }
     }
 
-    /// Schedule a callback to run after the next
-    /// [`BlocklistAIControllerEvent::FinishedReceivingOutput`] received, regardless of whether the
-    /// conversation completed successfully, was cancelled, or encountered an error.
-    /// The callback receives the `FinishReason` to allow different handling based on how the
-    /// conversation ended.
-    pub fn on_next_conversation_finished<F>(&mut self, callback: F)
-    where
-        F: FnOnce(&mut Self, FinishReason, &mut ViewContext<Self>) + 'static,
-    {
-        self.conversation_completed_callbacks
-            .push(Box::new(callback));
-    }
-
     #[cfg(feature = "local_fs")]
     fn handle_git_repo_status_event(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(deferred) = self.deferred_code_review_open.take() {
@@ -8819,16 +8802,6 @@ impl TerminalView {
         })
     }
 
-    /// Returns the active session's launch shell, if it is specified.
-    /// Returns None if there is no active session or if the current session does not
-    /// have a launch shell.
-    pub fn active_session_shell<C: ModelAsRef>(&self, ctx: &C) -> Option<ShellLaunchData> {
-        self.active_block_session_id().and_then(|session_id| {
-            let current_session = self.sessions.as_ref(ctx).get(session_id)?;
-            current_session.launch_data().cloned()
-        })
-    }
-
     /// Returns the active session's WSL distribution information, if it exists.
     /// Returns None if there is no active session or if the current session is
     /// not a WSL session.
@@ -8939,18 +8912,6 @@ impl TerminalView {
 
     pub fn input_config(&self, app: &AppContext) -> InputConfig {
         self.ai_input_model.as_ref(app).input_config()
-    }
-
-    /// Applies an input mode update from an external source (e.g., session sharing).
-    /// This bypasses normal event emission to prevent update loops.
-    pub fn apply_external_input_mode_update(
-        &mut self,
-        config: InputConfig,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.input.update(ctx, |input, ctx| {
-            input.apply_external_input_config_update(config, ctx);
-        });
     }
 
     pub fn ai_controller(&self) -> &ModelHandle<BlocklistAIController> {
@@ -9279,42 +9240,6 @@ impl TerminalView {
             }
         };
         ctx.emit(Event::LongRunningCommandAgentInteractionStateChanged { state });
-    }
-
-    /// Applies a long-running command agent interaction state received from a shared session participant.
-    pub fn apply_long_running_command_agent_interaction_state(
-        &mut self,
-        state: LongRunningCommandAgentInteractionState,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        match state {
-            LongRunningCommandAgentInteractionState::InControl => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.handoff_active_command_control_to_agent(ctx);
-                });
-            }
-            LongRunningCommandAgentInteractionState::TaggedIn => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
-                });
-                self.tag_agent_in(ctx);
-            }
-            LongRunningCommandAgentInteractionState::NotInteracting => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
-                });
-                self.tag_agent_out(ctx);
-            }
-        }
-    }
-
-    /// Shows or hides the CLI agent footer from a shared session update.
-    pub fn apply_cli_agent_footer_visibility(&mut self, show: bool, ctx: &mut ViewContext<Self>) {
-        if show {
-            self.refresh_use_agent_footer(ctx);
-        } else {
-            self.suppress_use_agent_footer(ctx);
-        }
     }
 
     pub fn has_active_env_var_block(&self, app: &AppContext) -> bool {
@@ -10736,17 +10661,6 @@ impl TerminalView {
             drop(model);
             self.dismiss_tooltips(ctx);
         }
-    }
-
-    pub fn set_show_pane_accent_border(
-        &mut self,
-        show_accent_border: bool,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.pane_configuration.update(ctx, |pane_config, ctx| {
-            pane_config.set_show_accent_border(show_accent_border, ctx);
-            ctx.notify();
-        });
     }
 
     /// Whether a banner that advertises "Use agent <shortcut>" is on screen: the SSH Warpifying
@@ -21860,10 +21774,6 @@ impl TerminalView {
         if !executed {
             log::info!("Dropped the split's remote cd: the session could not run it yet");
         }
-    }
-
-    pub fn set_enter_agent_view_after_ssh_bootstrap(&mut self) {
-        self.enter_agent_view_after_ssh_bootstrap = true;
     }
 
     #[cfg(not(target_family = "wasm"))]

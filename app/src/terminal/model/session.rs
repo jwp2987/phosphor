@@ -2397,11 +2397,6 @@ pub mod testing {
             self
         }
 
-        pub fn with_history_sqlite(mut self, history_sqlite: Option<String>) -> Self {
-            self.history_sqlite = history_sqlite;
-            self
-        }
-
         pub fn with_user(mut self, user: String) -> Self {
             self.user = user;
             self
@@ -2550,16 +2545,6 @@ pub mod testing {
                 additional_builtin_names: Default::default(),
                 load_all_builtins_future: Default::default(),
             }
-        }
-
-        pub fn set_shell_options(&mut self, options: Option<HashSet<String>>) {
-            self.info.shell = Shell::new(
-                self.info.shell.shell_type(),
-                self.info.shell.version().clone(),
-                options,
-                self.info.shell.plugins().clone(),
-                self.info.shell.shell_path().clone(),
-            );
         }
 
         pub fn set_external_commands(&self, commands: impl IntoIterator<Item = impl AsRef<str>>) {

@@ -7025,39 +7025,6 @@ impl Input {
         did_execute
     }
 
-    /// We locked the viewer's input when they attempted to execute a command.
-    /// On failure, we must restore the editor to its original state before the attempt.
-    pub fn on_execute_command_for_shared_session_participant_failure(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(shared_session_input_state) = self.shared_session_input_state.as_mut() else {
-            return;
-        };
-        let Some(ViewerCommandExecutionRequest { original_buffer }) = shared_session_input_state
-            .pending_command_execution_request
-            .as_ref()
-        else {
-            return;
-        };
-
-        // Unfreeze the editor
-        if let SharedSessionStatus::ActiveViewer { role } =
-            self.model.lock().shared_session_status()
-        {
-            self.editor.update(ctx, |editor, ctx| {
-                // Restore the original buffer and interaction state based on the viewer's role.
-                editor.set_buffer_text(original_buffer, ctx);
-                editor.set_interaction_state(role.into(), ctx);
-
-                // Set the text colors back to normal.
-                let appearance: &Appearance = Appearance::as_ref(ctx);
-                editor.set_text_colors(TextColors::from_appearance(appearance), ctx);
-            });
-        }
-        shared_session_input_state.pending_command_execution_request = None;
-    }
-
     /// Restores the frozen/loading visual state of the agent input for both the sharer
     /// and viewer without touching the buffer contents.
     ///
@@ -15859,23 +15826,6 @@ impl Input {
         }
     }
 
-    /// Applies an input config update from an external source (e.g., session sharing).
-    pub fn apply_external_input_config_update(
-        &mut self,
-        config: InputConfig,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // do nothing if the config is the same as the current config
-        if config == self.ai_input_model.as_ref(ctx).input_config() {
-            return;
-        }
-
-        let is_input_buffer_empty = self.editor.as_ref(ctx).buffer_text(ctx).is_empty();
-        self.ai_input_model.update(ctx, |model, ctx| {
-            model.set_input_config(config, is_input_buffer_empty, ctx);
-        });
-    }
-
     /// Returns true if the input is locked in shell mode
     fn is_locked_in_shell_mode(&self, ctx: &ViewContext<Self>) -> bool {
         let ai_input_model = self.ai_input_model.as_ref(ctx);
@@ -15963,33 +15913,6 @@ impl Input {
     /// Returns the operations for any edits made to the latest buffer.
     pub fn latest_buffer_operations(&self) -> impl Iterator<Item = &CrdtOperation> {
         self.latest_buffer_operations.iter()
-    }
-
-    /// Applies the `operations` if the block ID of this buffer
-    /// is equal to `block_id`. Otherwise, queues up these operations
-    /// to be processed eventually when the block IDs are equal.
-    pub fn process_remote_edits(
-        &mut self,
-        block_id: &BlockId,
-        operations: Vec<CrdtOperation>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // We check the `block_id` against the cached latest block ID
-        // rather than the latest terminal model state because the terminal
-        // model can be updated off of the main thread. This can cause
-        // scenarios where the terminal model has a new active block ID but
-        // we haven't processed block completed events yet.
-        //
-        // Although we're checking against a potentially old block ID here,
-        // we'll flush the right ops when we handle the block completed events.
-        if block_id == &self.deferred_remote_operations.latest_block_id {
-            self.editor.update(ctx, |editor, ctx| {
-                editor.apply_remote_operations(operations, ctx);
-            });
-        } else {
-            self.deferred_remote_operations
-                .defer(block_id.clone(), operations);
-        }
     }
 
     /// Updates the latest block ID to be equal to the latest block ID known to the terminal model
@@ -17594,15 +17517,6 @@ impl Input {
         self.agent_input_footer
             .as_ref(app)
             .displayed_chip_kinds(app)
-    }
-
-    pub fn cli_footer_chip_kinds(
-        &self,
-        app: &AppContext,
-    ) -> Vec<crate::context_chips::ContextChipKind> {
-        self.agent_input_footer
-            .as_ref(app)
-            .cli_display_chip_kinds(app)
     }
 }
 
