@@ -1,0 +1,921 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "7f0be20b",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-02T16:11:35-0600",
+ "summary": {
+  "pass": 25,
+  "fail": 5,
+  "skip": 0,
+  "noref": 2
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 4.0,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.6,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 18.49,
+     "p95": 22.7,
+     "max": 24.53
+    }
+   },
+   "shots": [
+    "shots/terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 40.4,
+   "detail": [
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "Terminal.app (.command via open)"
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 77.5,
+   "detail": [
+    "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "Terminal.app (.command via open)",
+     "runs": {
+      "0.0": {
+       "ref": "Terminal.app (.command via open)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "Terminal.app (.command via open)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 68.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 8.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 25.7,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 250.4,
+   "detail": [
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 198.5 ms includes the input-tool spawn (harness floor 145.45695786364377 ms)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 198.5,
+     "p95": 207.16,
+     "max": 209.58
+    },
+    "harness_floor_ms": 145.457,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 193.49,
+     "p95": 212.41,
+     "max": 213.44
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 30,
+       "p50": 198.5,
+       "p95": 207.16,
+       "max": 209.58
+      },
+      "reference": {
+       "n": 30,
+       "p50": 193.49,
+       "p95": 212.41,
+       "max": 213.44
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 145.45695786364377,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 198.5 ms includes the input-tool spawn (harness floor 145.45695786364377 ms)"
+      ],
+      "overhead_ms": 5.01,
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "pass"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 36.2,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 10.0,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 8.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 137.6,
+   "detail": [
+    "Enter to command start: Phosphor overhead 6.02 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+    "app share of Enter->start: enter_begin -> pty_write median 0.51 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 30,
+     "p50": 211.53,
+     "p95": 223.73,
+     "max": 226.79
+    },
+    "app_enter_to_pty_write_ms": 0.51,
+    "harness_floor_ms": 145.457,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 205.51,
+     "p95": 217.99,
+     "max": 222.23
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 30,
+       "p50": 211.53,
+       "p95": 223.73,
+       "max": 226.79
+      },
+      "reference": {
+       "n": 30,
+       "p50": 205.51,
+       "p95": 217.99,
+       "max": 222.23
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 145.45695786364377,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "overhead_ms": 6.02,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 29.9,
+   "detail": [
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 7.08,
+     "p95": 9.25,
+     "max": 9.41
+    },
+    "lat": {
+     "key_to_frame": {
+      "phosphor": {
+       "n": 60,
+       "p50": 7.08,
+       "p95": 9.25,
+       "max": 9.41
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "slow-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 72.6,
+   "detail": [
+    "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+   ],
+   "metrics": {
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 36.32,
+     "p95": 44.54,
+     "max": 52.69
+    },
+    "reference_key_to_paint_ms": {
+     "n": 30,
+     "p50": 35.23,
+     "p95": 75.15,
+     "max": 76.45
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "key_to_paint": {
+      "phosphor": {
+       "n": 30,
+       "p50": 36.32,
+       "p95": 44.54,
+       "max": 52.69
+      },
+      "reference": {
+       "n": 30,
+       "p50": 35.23,
+       "p95": 75.15,
+       "max": 76.45
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 145.45695786364377,
+      "notes": [
+       "kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+      ],
+      "overhead_ms": 1.09,
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "pass"
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 35.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 104.4,
+   "detail": [
+    "nu: 12 typed lines: expected ['t220_dfgg8yi2zl', 't221_27cm25yswl', 't222_lb9de9o2u2', 't223_gyd3r03v6g', 't224_z8146jujwi', 't225_on3jgg1d3j', 't226_9urzay52tt', 't227_uslg5l2j3g', 't228_8uu59vu93u', 't229_z8nkp8mpdu', 't230_v0bwxx0nso', 't231_zylaywooeu'], got ['t220_dfgg8yi2zlt221_27cm25yswlt222_lb9de9o2u2t223_gyd3r03v6gt224_z8146jujwit225_on3jgg1d3jt226_9urzay52ttt227_uslg5l2j3gt228_8uu59vu93ut229_z8nkp8mpdut230_v0bwxx0nsot231_zylaywooeu']",
+    "nu: pasted lines + instant Enter: expected ['t232_nsg1awf0jh', 't233_8lvjy1u87r', 't234_nmkk8kjh27', 't235_i1ivuibwlo'], got ['t232_nsg1awf0jht233_8lvjy1u87rt234_nmkk8kjh27t235_i1ivuibwlo']",
+    "nu: nested nu, exit to the outer nu, next line: expected ['t236_p55cfi84', 't237_jnxirwey', 't238_4b73mpna'], got ['t236_p55cfi84t237_jnxirweyt238_4b73mpna']"
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 0
+   },
+   "shots": [
+    "shots/terminal_shell_nu_FAIL.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.5,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 1.53
+   },
+   "shots": [
+    "shots/terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 2.9,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.6,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 18.67,
+     "p95": 22.44,
+     "max": 37.01
+    }
+   },
+   "shots": [
+    "shots/agent_cadence.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 66.9,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.9,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 25.4,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 250.2,
+   "detail": [
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 200.36 ms includes the input-tool spawn (harness floor 140.45312511734664 ms)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 200.36,
+     "p95": 214.46,
+     "max": 222.05
+    },
+    "harness_floor_ms": 140.453,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 195.26,
+     "p95": 210.42,
+     "max": 211.35
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 30,
+       "p50": 200.36,
+       "p95": 214.46,
+       "max": 222.05
+      },
+      "reference": {
+       "n": 30,
+       "p50": 195.26,
+       "p95": 210.42,
+       "max": 211.35
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.45312511734664,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 200.36 ms includes the input-tool spawn (harness floor 140.45312511734664 ms)"
+      ],
+      "overhead_ms": 5.1,
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "pass"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 36.0,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/agent_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 10.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 36.0,
+   "detail": [
+    "the line typed behind a nested ssh ran exactly once remotely: []",
+    "ssh_nested_typeahead (inner): T111_jblqxi never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 137.5,
+   "detail": [
+    "Enter to command start: Phosphor overhead 10.00 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+    "app share of Enter->start: enter_begin -> pty_write median 1.18 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 30,
+     "p50": 216.04,
+     "p95": 226.5,
+     "max": 233.01
+    },
+    "app_enter_to_pty_write_ms": 1.18,
+    "harness_floor_ms": 140.453,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 206.04,
+     "p95": 219.33,
+     "max": 220.87
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 30,
+       "p50": 216.04,
+       "p95": 226.5,
+       "max": 233.01
+      },
+      "reference": {
+       "n": 30,
+       "p50": 206.04,
+       "p95": 219.33,
+       "max": 220.87
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.45312511734664,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "overhead_ms": 10.0,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 30.4,
+   "detail": [
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 6.91,
+     "p95": 9.16,
+     "max": 9.41
+    },
+    "lat": {
+     "key_to_frame": {
+      "phosphor": {
+       "n": 60,
+       "p50": 6.91,
+       "p95": 9.16,
+       "max": 9.41
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "slow-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    }
+   },
+   "shots": [
+    "shots/agent_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 72.3,
+   "detail": [
+    "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+   ],
+   "metrics": {
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 35.48,
+     "p95": 43.38,
+     "max": 44.16
+    },
+    "reference_key_to_paint_ms": {
+     "n": 30,
+     "p50": 33.88,
+     "p95": 75.57,
+     "max": 77.15
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "key_to_paint": {
+      "phosphor": {
+       "n": 30,
+       "p50": 35.48,
+       "p95": 43.38,
+       "max": 44.16
+      },
+      "reference": {
+       "n": 30,
+       "p50": 33.88,
+       "p95": 75.57,
+       "max": 77.15
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 140.45312511734664,
+      "notes": [
+       "kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+      ],
+      "overhead_ms": 1.6,
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "pass"
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 33.7,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 102.1,
+   "detail": [
+    "nu: 12 typed lines: expected ['t135_ywsv2p7jdv', 't136_6l85vhb4ny', 't137_zogpvvp34x', 't138_m12z8h5rij', 't139_y0gbel3y6s', 't140_j7gqb3zo8z', 't141_8p1klvpe89', 't142_lyb6n1pc7m', 't143_pz3hdyf9g4', 't144_7pabt3r0ki', 't145_82609kzym5', 't146_xjqrlfxvjq'], got ['t135_ywsv2p7jdvt136_6l85vhb4nyt137_zogpvvp34xt138_m12z8h5rijt139_y0gbel3y6st140_j7gqb3zo8zt141_8p1klvpe89t142_lyb6n1pc7mt143_pz3hdyf9g4t144_7pabt3r0kit145_82609kzym5t146_xjqrlfxvjq']",
+    "nu: pasted lines + instant Enter: expected ['t147_qwyr3ajiqo', 't148_me8m81pi93', 't149_zmfejdbzy0', 't150_ii88epyism'], got ['t147_qwyr3ajiqot148_me8m81pi93t149_zmfejdbzy0t150_ii88epyism']",
+    "nu: nested nu, exit to the outer nu, next line: expected ['t151_zwlotjw5', 't152_8sf6tn3b', 't153_sgx2qddu'], got ['t151_zwlotjw5t152_8sf6tn3bt153_sgx2qddu']",
+    "nu app log: 2026-11-02T22:03:48Z [DEBUG] frame 1: updated=[\"ActionButton\", \"Workspace\", \"RightPanelView\", \"ActionButton\", \"PaneView\", \"UseAgentToolbar\", \"ActionButton\", \"Input\", \"ActionButton\", \"Menu\", \"Terminal\"",
+    "nu app log: 2026-11-02T22:03:48Z [DEBUG] frame 1: updated=[\"Input\", \"ActionButton\", \"Menu\", \"Workspace\", \"PaneView\", \"RightPanelView\", \"Terminal\", \"WarpifyFooterView\", \"ActionButton\", \"PaneHeader\", \"ActionButton\"",
+    "nu app log: 2026-11-02T22:03:49Z [DEBUG] frame 1: updated=[\"RightPanelView\", \"Workspace\", \"Input\", \"ActionButton\", \"Menu\", \"WarpifyFooterView\", \"UseAgentToolbar\", \"ActionButton\", \"ActionButton\", \"PaneHeader\", \"Pa",
+    "nu app log: 2026-11-02T22:03:52Z [DEBUG] frame 1: updated=[\"Menu\", \"ActionButton\", \"PaneView\", \"PaneHeader\", \"WarpifyFooterView\", \"UseAgentToolbar\", \"ActionButton\", \"RightPanelView\", \"ActionButton\", \"Terminal\", \""
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 25
+   },
+   "shots": [
+    "shots/agent_shell_nu_FAIL.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 6.4,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 1.53
+   },
+   "shots": [
+    "shots/agent_md_viewer.png"
+   ]
+  }
+ ]
+}
