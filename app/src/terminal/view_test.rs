@@ -17853,6 +17853,95 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
     })
 }
 
+/// A pane whose `ssh host` is connecting: the remote shell announced itself (pending session, no
+/// `Bootstrapped` yet) and "echo hi" + Enter were typed meanwhile, so they are held (#1494).
+fn ssh_pane_with_held_typeahead_for_test(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    register_local_session_for_ssh_test(view, ctx);
+    submit_command(view, "ssh host", ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("ssh host", "");
+    view.warpify_state
+        .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+    simulate_ssh_hook(view);
+    view.refresh_ssh_connect_gate();
+    view.model.lock().init_shell(InitShellValue {
+        session_id: SessionId::from(167303092612202),
+        shell: "bash".to_owned(),
+        user: "user".to_owned(),
+        hostname: "host".to_owned(),
+        ..Default::default()
+    });
+    assert!(view.refresh_ssh_connect_gate());
+    view.typed_characters_on_terminal("echo hi", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    assert!(view.ssh_typeahead_holding, "the keys are held (#1292)");
+    assert!(!view.ssh_held_is_empty());
+}
+
+/// #1494: the ssh bootstrap timed out with typing held. The remote shell is alive at a
+/// non-bootstrapped prompt (its tty still raw), so the held text is delivered to it -- after a
+/// `stty sane` line, once, in order -- instead of being discarded, and nothing is written to the
+/// local shell. (Against the old behaviour nothing was delivered at all.)
+#[test]
+fn ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "the text went to the remote shell, not into the local editor"
+            );
+        });
+        let written = pty_writes.borrow().concat();
+        let text = String::from_utf8_lossy(&written).into_owned();
+        let stty_at = text.find(" stty sane\r").expect("stty sane is sent first");
+        let echo_at = text.find("echo hi").expect("the held text is delivered");
+        assert!(stty_at < echo_at, "{text:?}");
+        assert_eq!(text.matches("stty sane").count(), 1, "{text:?}");
+        assert_eq!(text.matches("echo hi").count(), 1, "exactly once: {text:?}");
+        assert!(
+            text.ends_with("echo hi\r"),
+            "in order, Enter last: {text:?}"
+        );
+    })
+}
+
+/// #1494: if the shell is gone when the bootstrap timer fires, the held text goes nowhere: it is
+/// discarded (logged) and nothing is written or run locally.
+#[test]
+fn ssh_bootstrap_failure_with_a_dead_shell_discards_the_held_typeahead() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.model
+                .lock()
+                .exit(crate::terminal::model::terminal_model::ExitReason::ShellProcessExited);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
 /// #1085 (#983 window 5): the remote session is announced and finishes bootstrapping
 /// (`Bootstrapped`), but its shell is not at its prompt yet: the bootstrap script, MOTD and rc
 /// files are still finishing in a running block. Keys typed there used to be written to the tty

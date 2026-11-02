@@ -21936,10 +21936,78 @@ impl TerminalView {
         ctx.notify();
     }
 
+    /// #1494: the ssh bootstrap timed out with keys held. The remote shell is alive at a usable,
+    /// non-bootstrapped prompt, but its tty is still raw because the bootstrap's `stty sane` never
+    /// ran. Plain ssh would have delivered the typing to that shell, so it is delivered there: a
+    /// space-led `stty sane` line (a leading space keeps it out of history where the shell honours
+    /// that) goes first, then the held keys through the normal hand-over, in order, exactly once.
+    /// When no remote shell is provably in front (the ssh block is no longer running) the keys
+    /// are handed back as unexecuted text instead; they are never run locally.
+    fn hand_held_ssh_typeahead_to_unbootstrapped_remote(
+        &mut self,
+        is_ssh: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self.ssh_typeahead_holding || self.ssh_held_is_empty() {
+            return;
+        }
+        // `is_ssh` is the wrapper's pending state, which `InitShell` consumes; the pending
+        // session itself still says it came from ssh.
+        let (ssh_session, session_pending) = {
+            let model = self.model.lock();
+            let info = model.get_pending_session_info().as_ref();
+            let from_ssh = info.is_some_and(|info| {
+                info.legacy_ssh_spawning_command.is_some()
+                    || info
+                        .subshell_info
+                        .as_ref()
+                        .is_some_and(|sub| sub.ssh_connection_info.is_some())
+            });
+            (is_ssh || from_ssh, !model.is_read_only() && info.is_some())
+        };
+        if !ssh_session {
+            return;
+        }
+        if !(session_pending && self.is_long_running()) {
+            log::warn!(
+                "ssh typeahead: no remote shell is provably in front at the bootstrap timer; \
+                 handing {} held byte(s) back as unexecuted text (#1494)",
+                self.ssh_held_bytes()
+            );
+            self.finish_ssh_typeahead(ctx);
+            return;
+        }
+        log::warn!(
+            "ssh typeahead: bootstrap failed, delivering {} held byte(s) to the remote shell \
+             after `stty sane` (#1494)",
+            self.ssh_held_bytes()
+        );
+        self.clear_line_editor_and_write_to_pty(b" stty sane\r".to_vec(), ctx);
+        self.ssh_remote_prompt_seen = true;
+        self.finish_ssh_typeahead(ctx);
+        self.show_ssh_typing_toast(
+            "SSH setup didn't finish; your typed text was sent to the remote shell",
+            ctx,
+        );
+    }
+
     /// Called once the bootstrap timer completes
     /// Will send telemetry if the current session is not bootstrapped and will show a banner to
     /// the user if this is the first bootstrap in the session.
     fn on_bootstrap_failed_timer_complete(&mut self, _: (), ctx: &mut ViewContext<Self>) {
+        // #1494: the session died while the keys were held: they can go nowhere. Dropped, with a
+        // log, never run here.
+        if self.model.lock().is_read_only() {
+            if self.ssh_typeahead_holding && !self.ssh_held_is_empty() {
+                log::warn!(
+                    "ssh typeahead: the shell is gone at the bootstrap timer; discarding {} \
+                     held byte(s), not running them (#1494)",
+                    self.ssh_held_bytes()
+                );
+                self.reset_ssh_typeahead();
+            }
+            return;
+        }
         let (is_ssh, shell, is_subshell, was_triggered_by_rc_file, is_wsl, is_msys2) = {
             let model = self.model.lock();
 
@@ -21974,7 +22042,9 @@ impl TerminalView {
         log::warn!("Bootstrapping failed for shell {shell:?} on ssh {is_ssh}");
 
         // #983: this pending session is stuck; stop swallowing typing on its behalf.
-        self.ssh_bootstrap_failed_session = self.model.lock().pending_session_id();
+        let failed_session = self.model.lock().pending_session_id();
+        self.ssh_bootstrap_failed_session = failed_session;
+        self.hand_held_ssh_typeahead_to_unbootstrapped_remote(is_ssh, ctx);
 
         // Unhide the long-running block that was hidden at the start of
         // subshell bootstrap so the user can see the session output again.
