@@ -3100,6 +3100,16 @@ impl RenderState {
 
     /// Replace all temporary blocks in the BlockItem cache with a new set of temporary
     fn reset_temporary_block(&self, mut blocks: HashMap<LineCount, Vec<BlockItem>>) {
+        // Temporary blocks are inserted at line boundaries; a parked chunk straddling one is
+        // split there first (#1340 P5), otherwise the block would never find its position.
+        let lines: Vec<LineCount> = blocks.keys().copied().collect();
+        let split = {
+            let content = self.content.borrow();
+            parked::split_parked_at_lines(&content, &lines)
+        };
+        if let Some(split) = split {
+            *self.content.borrow_mut() = split;
+        }
         let mut new_tree = SumTree::new();
         {
             let content = self.content.borrow();
@@ -3131,6 +3141,17 @@ impl RenderState {
         *self.content.borrow_mut() = new_tree;
     }
 
+    /// Splits any parked chunk that strictly contains one of the tree offsets `offsets`.
+    fn split_parked_chunks_at(&self, offsets: &[CharOffset]) {
+        let split = {
+            let content = self.content.borrow();
+            parked::split_parked_at(&content, offsets)
+        };
+        if let Some(split) = split {
+            *self.content.borrow_mut() = split;
+        }
+    }
+
     /// Update the render state with laid out new edits.
     fn layout_pending_edit(
         &self,
@@ -3150,18 +3171,24 @@ impl RenderState {
         );
 
         let hidden_range_clone = hidden_ranges.clone();
+        // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
+        let effective_start = pending_edit
+            .old_offset
+            .start
+            .saturating_sub(&CharOffset::from(1));
+        let effective_end = pending_edit
+            .old_offset
+            .end
+            .saturating_sub(&CharOffset::from(1));
+        // A parked chunk straddling either end of the replaced range is split at that line
+        // boundary first, so the splice below only ever cuts between items (#1340 P5).
+        self.split_parked_chunks_at(&[effective_start, effective_end]);
         let mut new_tree = SumTree::new();
         {
             let content = self.content.borrow();
 
             log::trace!("Initial blocks:\n{}", content.describe());
             let mut cursor = content.cursor::<CharOffset, CharOffset>();
-
-            // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
-            let effective_start = pending_edit
-                .old_offset
-                .start
-                .saturating_sub(&CharOffset::from(1));
 
             // Push blocks that are not affected by the change. We don't need to recompute them.
             new_tree.push_tree(cursor.slice(&effective_start, SeekBias::Right));
@@ -3185,12 +3212,6 @@ impl RenderState {
                 }
                 new_tree.push(item);
             }
-
-            // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
-            let effective_end = pending_edit
-                .old_offset
-                .end
-                .saturating_sub(&CharOffset::from(1));
 
             let sub_tree_start = *cursor.start();
             let sub_tree = cursor.slice(&effective_end, SeekBias::Left);
@@ -3266,6 +3287,15 @@ impl RenderState {
         // Hidden range updates could be incremental. This means we might end with duplicate adjacent hidden blocks.
         // This step ensures these are merged into one.
         if let Some(hidden_ranges) = hidden_ranges {
+            // `dedupe_hidden_ranges` slices at each range's (start - 1) and end: no chunk may
+            // straddle those.
+            let boundaries: Vec<CharOffset> = hidden_ranges
+                .iter()
+                .flat_map(|range| [range.start.saturating_sub(&CharOffset::from(1)), range.end])
+                .collect();
+            if let Some(split) = parked::split_parked_at(&new_tree, &boundaries) {
+                new_tree = split;
+            }
             new_tree = Self::dedupe_hidden_ranges(new_tree, hidden_ranges);
         }
         log::trace!("Resulting blocks:\n{}", new_tree.describe());

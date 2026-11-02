@@ -115,6 +115,7 @@ use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use string_offset::CharOffset;
+use sum_tree::{SeekBias, SumTree};
 use warpui::text_layout::StyleAndFont;
 use warpui::units::{IntoPixels, Pixels};
 
@@ -709,6 +710,147 @@ impl ParkedBuilder {
         data.recompute_max_item_width();
         Some(ParkedLines(Arc::new(data)))
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Splitting chunks at splice boundaries
+// ---------------------------------------------------------------------------------------------
+
+/// What replaces a chunk that is cut at the content offsets `cuts` (relative to the chunk start,
+/// each strictly inside it): chunk pieces when every cut is a line boundary, otherwise (which a
+/// block-aligned edit cannot produce) the chunk's ordinary per-line paragraphs, which is always
+/// correct.
+fn split_chunk_items(chunk: &ParkedLines, cuts: &[usize]) -> Vec<BlockItem> {
+    let mut line_cuts: Vec<usize> = Vec::with_capacity(cuts.len());
+    for &cut in cuts {
+        let index = chunk.line_at_offset(cut);
+        if index == 0 || chunk.line_start(index) != cut {
+            return chunk
+                .to_paragraphs()
+                .into_iter()
+                .map(BlockItem::Paragraph)
+                .collect();
+        }
+        if line_cuts.last() != Some(&index) {
+            line_cuts.push(index);
+        }
+    }
+    chunk
+        .split_at_lines(&line_cuts)
+        .into_iter()
+        .map(BlockItem::ParkedLines)
+        .collect()
+}
+
+/// Splits every chunk that strictly contains one of the tree offsets `offsets` (0-based content
+/// offsets, as `layout_pending_edit` seeks them) at that boundary, so the tree can then be sliced
+/// there. Returns `None` (without building anything) when no chunk straddles an offset, which is
+/// the case for every edit near the viewport.
+pub(super) fn split_parked_at(
+    tree: &SumTree<BlockItem>,
+    offsets: &[CharOffset],
+) -> Option<SumTree<BlockItem>> {
+    let mut sorted: Vec<CharOffset> = offsets.to_vec();
+    sorted.sort();
+    sorted.dedup();
+
+    // Cheap pre-check: one seek per offset.
+    let straddles = |target: CharOffset| {
+        let mut cursor = tree.cursor::<CharOffset, CharOffset>();
+        cursor.seek(&target, SeekBias::Left);
+        matches!(cursor.item(), Some(BlockItem::ParkedLines(_)))
+            && *cursor.start() < target
+            && target < cursor.end()
+    };
+    if !sorted.iter().any(|target| straddles(*target)) {
+        return None;
+    }
+
+    let mut cursor = tree.cursor::<CharOffset, CharOffset>();
+    let mut new_tree = SumTree::new();
+    let mut index = 0;
+    while index < sorted.len() {
+        let target = sorted[index];
+        new_tree.push_tree(cursor.slice(&target, SeekBias::Left));
+        let Some(BlockItem::ParkedLines(chunk)) = cursor.item() else {
+            index += 1;
+            continue;
+        };
+        let start = *cursor.start();
+        let end = cursor.end();
+        if !(start < target && target < end) {
+            index += 1;
+            continue;
+        }
+        // Every offset inside this chunk is handled in one go (an edit inside a single chunk
+        // cuts it at both ends).
+        let mut cuts = Vec::new();
+        while index < sorted.len() && sorted[index] < end {
+            if sorted[index] > start {
+                cuts.push((sorted[index] - start).as_usize());
+            }
+            index += 1;
+        }
+        for piece in split_chunk_items(chunk, &cuts) {
+            new_tree.push(piece);
+        }
+        cursor.next();
+    }
+    new_tree.push_tree(cursor.suffix());
+    Some(new_tree)
+}
+
+/// Like [`split_parked_at`] for boundaries given as line numbers (diff-hunk temporary blocks are
+/// inserted at lines).
+pub(super) fn split_parked_at_lines(
+    tree: &SumTree<BlockItem>,
+    lines: &[LineCount],
+) -> Option<SumTree<BlockItem>> {
+    let mut sorted: Vec<LineCount> = lines.to_vec();
+    sorted.sort();
+    sorted.dedup();
+
+    let straddles = |target: LineCount| {
+        let mut cursor = tree.cursor::<LineCount, LineCount>();
+        cursor.seek(&target, SeekBias::Left);
+        matches!(cursor.item(), Some(BlockItem::ParkedLines(_)))
+            && *cursor.start() < target
+            && target < cursor.end()
+    };
+    if !sorted.iter().any(|target| straddles(*target)) {
+        return None;
+    }
+
+    let mut cursor = tree.cursor::<LineCount, LineCount>();
+    let mut new_tree = SumTree::new();
+    let mut index = 0;
+    while index < sorted.len() {
+        let target = sorted[index];
+        new_tree.push_tree(cursor.slice(&target, SeekBias::Left));
+        let Some(BlockItem::ParkedLines(chunk)) = cursor.item() else {
+            index += 1;
+            continue;
+        };
+        let start = *cursor.start();
+        let end = cursor.end();
+        if !(start < target && target < end) {
+            index += 1;
+            continue;
+        }
+        let mut cuts = Vec::new();
+        while index < sorted.len() && sorted[index] < end {
+            if sorted[index] > start {
+                cuts.push((sorted[index] - start).as_usize());
+            }
+            index += 1;
+        }
+        for piece in chunk.split_at_lines(&cuts) {
+            new_tree.push(BlockItem::ParkedLines(piece));
+        }
+        cursor.next();
+    }
+    new_tree.push_tree(cursor.suffix());
+    Some(new_tree)
 }
 
 // ---------------------------------------------------------------------------------------------
