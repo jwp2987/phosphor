@@ -12229,6 +12229,18 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let bytes: Cow<'static, [u8]> = data.into();
+        // #1424 (step 6): the agent origin's row (D13). In `table` mode the table refuses the write
+        // while a setup gate or the ssh remote setup owns the pty; in `shadow` mode it is compared
+        // with what the legacy gate below did.
+        let row = self.begin_origin_row(Class::AgentWrite, input_queue::Origin::Agent, ctx);
+        if row.refused() {
+            log::warn!(
+                "refused {} agent byte(s) for the pty: a setup owns it (#1431, row D13)",
+                bytes.len()
+            );
+            self.end_origin_row(row, false);
+            return;
+        }
         // #1431: the agent answers a prompt (or quits a pager) in a command it drives; while an
         // ssh connect's remote setup or a subshell / PowerShell setup owns the pty those bytes
         // would land in the bootstrap. REFUSED, not held: the answer belongs to the prompt it was
@@ -12239,6 +12251,7 @@ impl TerminalView {
                 "refused {} agent byte(s) for the pty: {gate} is in progress (#1431)",
                 bytes.len()
             );
+            self.end_origin_row(row, false);
             return;
         }
         // #1178: a ^C the agent writes into its command interrupts it.
@@ -12250,6 +12263,7 @@ impl TerminalView {
                 .mark_interrupted_by_ctrl_c();
         }
         ctx.emit(Event::WriteAgentInputToPty { bytes, mode: *mode });
+        self.end_origin_row(row, true);
     }
 
     /// Writes a shared session viewer's bytes to the pty.
@@ -22795,8 +22809,30 @@ impl TerminalView {
         // #1179: an agent-driven command's pty takes no user bytes, so a paste is steer text for
         // the agent's input, exactly as typed characters are. Computed before the model lock.
         let agent_owns_pty = self.agent_owns_command_pty();
+        // #1424 (step 6): in `table` mode the table routes a paste (the destination rows, on facts
+        // that take no blocking model lock); in `shadow` mode it is compared with the legacy route.
+        let routing_shadow = self.shadow_begin(Class::Paste, ctx);
         let (should_paste_in_input, needs_bracketed_paste) =
-            self.paste_routing(agent_owns_pty, ctx);
+            if input_queue::destination_mode() == input_queue::DestinationMode::Table {
+                self.paste_routing_via_table(ctx)
+            } else {
+                self.paste_routing(agent_owns_pty, ctx)
+            };
+        // A paste made while the pane queue holds input waits behind it, whichever way it routes.
+        let queue_holds = self
+            .paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| queue.holds_keys())
+            && !self.only_ssh_gates_open();
+        note_shadow_leaf(if queue_holds {
+            DestClass::Held
+        } else if should_paste_in_input {
+            DestClass::Editor
+        } else {
+            DestClass::Pty
+        });
+        self.shadow_end(routing_shadow);
 
         let is_cli_agent_paste =
             !should_paste_in_input && !middle_click && self.has_active_cli_agent_session(ctx);
@@ -29644,7 +29680,10 @@ impl TerminalView {
                     );
                 }
             }
-        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
+        } else if self.nav_key_goes_to_pty(
+            self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
             self.on_ssh_warpification_key_event(None, ctx);
             let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_UP]);
             self.write_passive_input_to_pty(sequence, ctx);
@@ -29801,14 +29840,20 @@ impl TerminalView {
                     self.select_less_recent_block(false /* is_cmd_down */, ctx);
                 }
             }
-        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
+        } else if self.nav_key_goes_to_pty(
+            self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
             let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_DOWN]);
             self.write_passive_input_to_pty(sequence, ctx);
         }
     }
 
     fn page_up(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() && !self.agent_owns_command_pty() {
+        if self.nav_key_goes_to_pty(
+            self.is_long_running() && !self.agent_owns_command_pty(),
+            ctx,
+        ) {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page up defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_UP);
@@ -29819,7 +29864,10 @@ impl TerminalView {
     }
 
     fn page_down(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() && !self.agent_owns_command_pty() {
+        if self.nav_key_goes_to_pty(
+            self.is_long_running() && !self.agent_owns_command_pty(),
+            ctx,
+        ) {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page down defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_DOWN);
@@ -29830,9 +29878,11 @@ impl TerminalView {
     }
 
     fn move_home(&mut self, ctx: &mut ViewContext<Self>) {
-        if (self.is_long_running() && !self.agent_owns_command_pty())
-            || self.typeahead_handoff_routes_keys_to_pty()
-        {
+        if self.nav_key_goes_to_pty(
+            (self.is_long_running() && !self.agent_owns_command_pty())
+                || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
             let sequence = self.build_cursor_key_sequence(b"H");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
@@ -29841,9 +29891,11 @@ impl TerminalView {
     }
 
     fn move_end(&mut self, ctx: &mut ViewContext<Self>) {
-        if (self.is_long_running() && !self.agent_owns_command_pty())
-            || self.typeahead_handoff_routes_keys_to_pty()
-        {
+        if self.nav_key_goes_to_pty(
+            (self.is_long_running() && !self.agent_owns_command_pty())
+                || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
             let sequence = self.build_cursor_key_sequence(b"F");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {

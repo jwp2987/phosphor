@@ -23872,6 +23872,28 @@ fn scenario_written_by_other_origins(view: &mut TerminalView, ctx: &mut ViewCont
     view.write_cli_submit_bytes(b"c".to_vec(), ctx);
 }
 
+fn scenario_agent_writes(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+    announce_powershell_setup(view);
+    view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+}
+
+/// The navigation keys of the key bindings, in a running command and at an idle prompt.
+fn scenario_navigation_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.terminal_up(ctx);
+    view.page_up(ctx);
+    view.move_home(ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("sleep 100", "");
+    view.terminal_up(ctx);
+    view.terminal_down(ctx);
+    view.page_up(ctx);
+    view.page_down(ctx);
+    view.move_home(ctx);
+    view.move_end(ctx);
+}
+
 fn scenario_text_behind_a_cli_submit_gate(
     view: &mut TerminalView,
     ctx: &mut ViewContext<TerminalView>,
@@ -24293,7 +24315,7 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
 /// the real view code.
 #[test]
 fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
-    let scenarios: [(&str, Scenario); 7] = [
+    let scenarios: [(&str, Scenario); 9] = [
         ("running command", scenario_running_command_keys),
         (
             "block started, not yet long running",
@@ -24306,6 +24328,8 @@ fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
         ),
         ("powershell setup", scenario_powershell_setup_keys),
         ("other origins", scenario_written_by_other_origins),
+        ("agent writes", scenario_agent_writes),
+        ("navigation keys", scenario_navigation_keys),
         ("text behind a gate", scenario_text_behind_a_cli_submit_gate),
     ];
     for (name, scenario) in scenarios {
@@ -24437,6 +24461,47 @@ fn table_mode_keys_typed_during_a_paced_cli_agent_submit_follow_the_submit_in_or
     })
 }
 
+/// Paste routing (step 6): the table's destination rows say what the legacy `paste_routing` says,
+/// at an idle prompt and in a running command.
+#[test]
+fn table_mode_paste_routing_agrees_with_the_legacy_routing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let owns = view.agent_owns_command_pty();
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "idle prompt");
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            let owns = view.agent_owns_command_pty();
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "running command");
+            assert!(!legacy.0, "a paste goes to the running command's pty");
+        });
+    })
+}
+
+/// ... and while the agent drives the command: the paste is steer text for the agent's input.
+#[test]
+fn table_mode_paste_routing_sends_a_paste_to_the_agents_input_while_it_drives_the_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (_pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let owns = view.agent_owns_command_pty();
+            assert!(owns);
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "agent-driven");
+            assert!(legacy.0, "a paste is steer text for the agent's input");
+        });
+    })
+}
+
 /// A key that had to wait in the deferred mailbox (the queue was busy) keeps the stamp it got when
 /// it was typed: it is applied later with the classification it had then (H4's premise).
 #[test]
@@ -24464,5 +24529,31 @@ fn table_mode_a_key_that_waited_in_the_mailbox_keeps_the_stamp_it_had_when_typed
             assert_eq!(stamps.len(), 1, "the key was applied: {stamps:?}");
             assert_eq!(stamps[0].facts_gen, typed_at.facts_gen);
         });
+    })
+}
+
+/// The agent origin (row D13) in `table` mode: its write is refused while a setup owns the pty
+/// (here a PowerShell setup) and goes out otherwise, once. The legacy gate is the same rule.
+#[test]
+fn table_mode_the_agents_write_is_refused_during_a_setup_and_goes_out_otherwise() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert_eq!(*seen.borrow(), vec![PtyDoorEvent::Agent(b"y\n".to_vec())]);
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "refused while the setup owns the pty: {:?}",
+            seen.borrow()
+        );
     })
 }

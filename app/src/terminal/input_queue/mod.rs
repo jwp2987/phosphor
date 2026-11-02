@@ -38,7 +38,7 @@
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
 //!
-//! DESTINATION TABLE (#1424, steps 1-5 of the approved design). Where an input goes is still
+//! DESTINATION TABLE (#1424, steps 1-6 of the approved design). Where an input goes is still
 //! decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
 //! `after_paste_stage`, `deliver_replayed_entry`, ...). The replacement is one pure function,
 //! [`table::decide`]`(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }`
@@ -88,10 +88,14 @@
 //!    setup window is held as a `HELD_SIGNAL` entry (`ssh_hold_push_signal`). The H8 matrix
 //!    (`table::gate_holds`) has its editor column (`InputQueue::editor_key_passes_gates_by_table`,
 //!    used by the editor's hold decision in `table` mode and compared with it in `shadow`).
-//!  - ORIGIN ROWS (step 5, `table` mode, compared in `shadow`): synced input (`O-synced`: judged
-//!    as synced input, refused for a pane with no running command), the paced CLI-agent submit
-//!    (`O-cli-submit`) and the shared-session viewer decide at their writers (`begin_origin_row` /
-//!    `end_origin_row`).
+//!  - ORIGIN ROWS AND PASTE (step 6, `table` mode, compared in `shadow`): synced input
+//!    (`O-synced`: judged as synced input, refused for a pane with no running command), the paced
+//!    CLI-agent submit (`O-cli-submit`) and the shared-session viewer decide at their writers
+//!    (`begin_origin_row` / `end_origin_row`); the agent's write consults row D13 at its writer;
+//!    a terminal paste is routed by the destination rows (`paste_routing_via_table`) instead of
+//!    `paste_routing`'s blocking model lock; the navigation keys of the key bindings are compared
+//!    in `shadow` (`nav_key_goes_to_pty`). `view/dest_table.rs` audits every pty write call site
+//!    (routed or not, and why).
 //!  - PURE, NOT CALLED: `destination_for_fixed` (fixes B12, the inverted hidden-input branch of
 //!    `destination_for`), the `ReleasedFrom` origin (no producer yet),
 //!    `TypeaheadHandoff::peek_user_bytes_route`.

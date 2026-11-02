@@ -18,8 +18,40 @@
 //! discard), builds the facts of THIS moment, decides ONCE with `table::decide` (the entry's own
 //! stamp, no gate behind it: the queue delivered it, so none covers it) and executes the plan with
 //! the same leaf writers legacy ends in. A plan that holds the input behind the ssh connect
-//! requeues it exactly as `ssh_hold_push` always did mid-drain. Everything else (arrival of live
-//! keys, the editor, paste reads, the idle path) is still legacy; those are steps 5-8.
+//! requeues it exactly as `ssh_hold_push` always did mid-drain.
+//!
+//! **Step 5, arrival of terminal keys** (the section below `Arrival`): in `table` mode a live key
+//! is decided by the table at the three entry points, the idle path included; the origin rows of
+//! the writers of other origins (synced input, the paced CLI-agent submit, the viewer) and the H8
+//! editor column are wired.
+//!
+//! **Step 6, paste, the agent's writes and the audit of the pty write call sites (R11).** A
+//! terminal paste is routed by the destination rows (`paste_routing_via_table`); the agent's
+//! write consults row D13 at its writer; the navigation keys of the key bindings are compared in
+//! `shadow`. Every site that puts user-originated bytes on the pty, and what became of it:
+//!
+//! | site | status | why |
+//! |---|---|---|
+//! | `typed_characters_on_terminal`, `keydown_on_terminal`, `control_sequence_on_terminal` | ROUTED (table mode: `arrive_via_table`; shadow: compared at the leaves) | live keys |
+//! | `replay_held_key`, `route_after_enter_input` (replayed Enter), `deliver_ssh_held`, `deliver_paste_text` | ROUTED (step 4, `deliver_via_table`) | deliveries |
+//! | `paste` (the routing decision) | ROUTED (table mode: `paste_routing_via_table`; shadow: compared) | a paste read takes its own `PasteReading` gate; the table decides the destination only |
+//! | `write_to_pty_for_syncing_long_running_commands` | ROUTED (origin row `O-synced`, judged as synced input) | text goes through the arrival, raw bytes through `begin_origin_row` |
+//! | `write_cli_submit_bytes` (9 callers in `use_agent_footer`) | WIRED (origin row `O-cli-submit`, exempt from the holds; the table's plan is logged, shadow compares) | the paced submit owns a `CliSubmit` gate and writes into the stage |
+//! | `write_viewer_bytes_to_pty` | WIRED (origin `Viewer`; test-only writer in this tree) | no production caller |
+//! | `write_agent_bytes_to_pty` | ROUTED (row `D13`, refusal) | refused while a setup owns the pty, as `agent_pty_write_gate` |
+//! | `terminal_up` / `terminal_down` / `page_up` / `page_down` / `move_home` / `move_end` | NOT ROUTED, compared in shadow (`nav_key_goes_to_pty`) | their fall-back is a scroll or a block-selection move, which no row models, and their predicates differ by design (B11); `terminal_up` writes passively |
+//! | `alt_scroll`, `alt_mouse_action` (`write_passive_input_to_pty`) | NOT ROUTED | pointer-driven at wheel / mouse rate: building facts per event breaks the 2 ms budget; the only rule (`D3`, drop when the agent is in control) is the stage's own |
+//! | `user_write_ctrl_c_to_pty`, `ctrl_d`, `InputEvent::CtrlD` (and `Input::ctrl_d`'s `Event::CtrlD`) | NOT ROUTED | explicit Stop / Escape / Ctrl-C / Ctrl-D actions with their own marks (`mark_interrupted_by_ctrl_c`, `ignore_bootstrapping_messages`); they write through the queue's writer and ask the same ssh facts (`ssh_connect_holds_eot`); the signal rows are the keyboard's |
+//! | `try_send_text_to_cli_agent_or_rich_input`, `use_agent_footer` (2 text writes) | NOT ROUTED | CLI-agent plumbing that always means the pty; through the queue's writer (#1433) |
+//! | `deliver_powershell_held_bytes`, `release_held_keys`, `apply_young_hold_end`, `release_young_hold_keys`, `release_queued_prompt_hold` | NOT ROUTED | take-and-write: the hand-off's and the PowerShell gate's keys come back as BYTES, which the design keeps (R3; step 8 retires them with the legacy fields) |
+//! | `write_init_subshell_bytes_to_pty`, `write_subshell_bootstrap_line`, `clear_line_editor_and_write_to_pty_with_mac_workaround_hack` (the ssh warpify payloads), `ctrl_c_during_powershell_setup` (raw ETX) | NOT ROUTED (allowlisted doors) | app-generated setup bytes that OWN the setup gates, or must reach the console ahead of the PowerShell gate's keys |
+//! | `maybe_report_focus_in/out`, the OSC 52 reply | NOT ROUTED (allowlisted doors) | terminal protocol answers, never user text |
+//! | the editor's Enter submit (`PtyIntent::ExecuteCommand`) and the nested write of a delivery (#1418) | NOT ROUTED | the nested write needs follow-ups placed at the delivered entry's position (`EntryId` as a `(major, minor)` pair, R11), which touches every barrier comparison: step 8 |
+//! | the editor's own keys (`hold_key_for_paste_on_queue`) | PARTLY ROUTED | the H8 matrix decides whether a key waits behind the gates (`editor_key_passes_gates_by_table`); its ssh, Enter-verdict and display-map holds keep their producers |
+//! | `write_user_bytes_to_pty_inner`, `_after_paste_stage`, `write_to_pty`, `PtyQueueHost::deliver_entry` | the writers themselves | what the table's plans execute into |
+//!
+//! The "open doors" issues #1429-#1437 were closed with the queue / command path and the
+//! `script/check_pty_doors` allowlist; nothing in this table reopens one.
 //!
 //! Never logged: the text of an input (it can be a password). Rows, classes and counts only.
 
@@ -1074,6 +1106,9 @@ impl TerminalView {
         match destination_mode() {
             DestinationMode::Table => {
                 let stamp = self.paste_queue.queue.stamp_now();
+                // The connect gate is armed lazily from the warpify state, as the legacy probes
+                // (`agent_pty_write_gate`, the hold) did before they read it.
+                let _ = self.refresh_ssh_connect_gate();
                 let queue_facts = self.paste_queue.queue.try_queue_facts().unwrap_or_default();
                 let facts = self.build_route_facts(queue_facts, ctx);
                 let intent = Intent::new(class, origin).stamped(stamp);
@@ -1091,7 +1126,10 @@ impl TerminalView {
                 }
                 OriginRow {
                     shadow: None,
-                    refused: plan.row == Row::OSynced,
+                    // The rows that refuse a write at its origin: the synced origin (no running
+                    // command) and the agent's write (a setup owns the pty).
+                    refused: matches!(plan.outcome, Outcome::Drop(_))
+                        && matches!(plan.row, Row::OSynced | Row::D13),
                 }
             }
             _ => OriginRow {
@@ -1112,5 +1150,53 @@ impl TerminalView {
             });
         }
         self.shadow_end(row.shadow);
+    }
+
+    /// A navigation key from the key bindings (an arrow, Page Up / Down, Home, End) goes to the pty
+    /// when `legacy` says so, else it scrolls or moves the block selection. Not routed by the table:
+    /// the fall-back is a scroll, which no table row models, and the predicates differ by design
+    /// (B11: `terminal_up` ignores the agent, `page_up` ignores the hand-off); this only COMPARES
+    /// them in `shadow` mode, with the table's plan for a control sequence, and returns `legacy`.
+    pub(super) fn nav_key_goes_to_pty(
+        &mut self,
+        legacy: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let pending = self.shadow_begin(Class::Seq, ctx);
+        if pending.is_some() {
+            shadow::note_leaf(if legacy {
+                DestClass::Pty
+            } else {
+                DestClass::Dropped
+            });
+        }
+        self.shadow_end(pending);
+        legacy
+    }
+
+    /// `paste_routing` decided by the table (step 6, `table` mode): whether a paste made now goes
+    /// into the input (else to the pty), and whether the pty paste is bracketed. The destination
+    /// rows only (D1, D2, D5-D7): the paste read takes its own place in the queue (a
+    /// `PasteReading` gate), so no queue fact is passed, and nothing blocks on the model's lock.
+    pub(super) fn paste_routing_via_table(&mut self, ctx: &mut ViewContext<Self>) -> (bool, bool) {
+        let facts = self.build_route_facts(QueueFacts::default(), ctx);
+        // The focus of THIS moment (a paste is not a key of the pane sink, so the focus the last
+        // key noted may be stale).
+        let mut stamp = self.paste_queue.queue.stamp_now();
+        stamp.focus = facts.focus;
+        let intent = Intent::new(Class::Paste, arrival_origin())
+            .stamped(stamp)
+            .delivering();
+        let plan = table::decide(&intent, &facts, None);
+        warpui::input_order::log_key_hop("kh_table_decide", || {
+            format!(
+                "class=Paste row={} outcome={:?} effects={:?} routing=1",
+                plan.row.name(),
+                plan.outcome,
+                plan.effects
+            )
+        });
+        let into_input = matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput);
+        (into_input, facts.needs_bracketed_paste)
     }
 }
