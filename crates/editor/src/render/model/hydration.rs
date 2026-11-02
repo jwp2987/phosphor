@@ -5,6 +5,10 @@
 //! ([`RenderState::update_hydration`]) then hydrates what is on or near the screen plus the pinned
 //! set (selections), and evicts hydrated paragraphs that fall far outside it.
 //!
+//! Dehydrated paragraphs far from the viewport are further compacted into
+//! [`super::parked::ParkedLines`] chunks (#1340 P5); the pass below expands the chunks it needs
+//! before it hydrates and re-parks far dehydrated runs when it sweeps.
+//!
 //! Invariants this module relies on:
 //! * The editor is unwrapped (`WidthSetting::InfiniteWidth`), so every plain-text paragraph is
 //!   exactly one line of `font_size * line_height_ratio` pixels: height is known without shaping.
