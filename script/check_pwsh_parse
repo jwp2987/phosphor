@@ -20,14 +20,28 @@
 # pwsh_init_shell.ps1's `[uint64]@@WARP_SESSION_ID@@`); they are replaced with
 # `0` in a temporary copy so the parser sees what the shell will see.
 #
-# Needs `pwsh` (PowerShell 7) on PATH. Without it the check prints SKIPPED and
-# exits 0, so a machine without PowerShell isn't blocked -- but the skip is
-# visible in precheck output.
+# Also parsed (#1507): the Windows harness and CI scripts (script/realapp/windows/**/*.ps1,
+# script/ci/*.ps1). 53c0a38ca shipped an app_test.ps1 that did not parse and nothing noticed.
+# Templates carry @TOKEN@ placeholders (e.g. @WINUSER@, rendered before upload; nearly every
+# harness script does), so for the parse they are replaced with the word PLACEHOLDER, which is
+# valid inside the strings/paths they appear in. A template whose token sits in code position
+# would fail here and should be fixed or renamed to a non-.ps1 template extension. The parser is pwsh 7's; the Windows VM runs 5.1,
+# so this catches syntax breaks, not 5.1-only incompatibilities.
+#
+# Needs `pwsh` (PowerShell 7) on PATH. Without it: in CI (the CI variable is set) the check
+# FAILS, because a skipped gate reads as a pass; locally it prints SKIPPED (a warning in
+# precheck) and exits 0. WHERE IT RUNS: script/precheck (the little-thing runner has no pwsh
+# of its own -- it is only installed by the manual integration-linux-pwsh job -- so the
+# `guards` job would fail there). Do not add it to `guards` until the box has pwsh.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 if ! command -v pwsh >/dev/null 2>&1; then
+    if [[ -n "${CI:-}" ]]; then
+        echo "check_pwsh_parse: FAILED (pwsh not installed, and CI is set: a skipped parse gate reads as a pass)" >&2
+        exit 1
+    fi
     echo "check_pwsh_parse: SKIPPED (pwsh not installed)"
     exit 0
 fi
@@ -44,19 +58,36 @@ $tokens = $null; $errors = $null
 foreach ($e in $errors) { "  line $($e.Extent.StartLineNumber): $($e.Message)" }
 PS1
 
+# Pre-existing broken file found by the first run of this gate (it starts mid-way through a C# here-string, the
+# Add-Type header is gone). It lives in script/realapp/ (owned by the harness work), so it is listed, loudly, instead
+# of fixed here. Delete the entry when the file is fixed or removed.
+KNOWN_UNPARSEABLE=(script/realapp/windows/hooks/host_remote.ps1)
+
 status=0
+n_parsed=0
 while IFS= read -r -d '' script; do
-    copy="$tmp/copy-$(basename "$script")"
-    sed -E 's/@@[A-Z0-9_]+@@/0/g' "$script" >"$copy"
+    skip=0
+    for k in "${KNOWN_UNPARSEABLE[@]}"; do
+        if [[ "$script" == "$k" ]]; then skip=1; fi
+    done
+    if ((skip)); then echo "WARN known-unparseable, not checked: $script"; continue; fi
+    n_parsed=$((n_parsed + 1))
+    copy="$tmp/copy-$n_parsed-$(basename "$script")"
+    sed -E -e 's/@@[A-Z0-9_]+@@/0/g' -e 's/@[A-Z][A-Z0-9_]+@/PLACEHOLDER/g' "$script" >"$copy"
     result="$(pwsh -NoProfile -NonInteractive -File "$tmp/parse.ps1" -Path "$copy")"
     if [[ -n "$result" ]]; then
         echo "FAIL $script"
         printf '%s\n' "$result"
         status=1
     fi
-done < <(find app/assets/bundled -name '*.ps1' -print0 | sort -z)
+done < <({ find app/assets/bundled script/realapp/windows -name '*.ps1' -print0 2>/dev/null
+            find script/ci -maxdepth 1 -name '*.ps1' -print0; } | sort -z)
 
+if ((n_parsed == 0)); then
+    echo "check_pwsh_parse: FAILED (found no scripts to parse; the find paths are stale)" >&2
+    exit 1
+fi
 if ((status == 0)); then
-    echo "check_pwsh_parse: all bundled PowerShell scripts parse"
+    echo "check_pwsh_parse: all $n_parsed PowerShell scripts parse (bundled, windows harness, script/ci)"
 fi
 exit $status
