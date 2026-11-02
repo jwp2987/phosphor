@@ -3473,22 +3473,28 @@ fn powershell_bootstrap_lines_carry_no_control_characters() {
     });
 }
 
+fn bash_here_document_script() -> &'static [u8] {
+    b"before\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body1\n body2\nEOM\n # comment\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n"
+}
+
 #[test]
 fn bash_counted_read_bootstrap_replaces_the_here_document_with_a_counted_read() {
     // #1172: the body moves out of the here-document; what is before and after it is untouched.
-    let script = b"before\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body1\n body2\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"\n";
-    let rewritten = bash_counted_read_bootstrap(script).expect("has the here-document");
+    let rewritten =
+        bash_counted_read_bootstrap(bash_here_document_script()).expect("has the here-document");
+    // #1549: the `stty sane` and the `eval` run from the command line; nothing follows the body.
     assert_eq!(
         decode_script(&rewritten),
         "before\n command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c 14); \
-         command -p stty echo\r body1\n body2\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"\n"
+         command -p stty echo; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\r \
+         body1\n body2\n"
     );
 }
 
 #[test]
 fn bash_counted_read_bootstrap_counts_bytes_not_characters() {
     // `head -c` counts bytes; a multi-byte character in the body must be counted as its bytes.
-    let script = "x\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n \u{2328}\nEOM\n"
+    let script = "x\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n \u{2328}\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n"
         .as_bytes()
         .to_vec();
     let rewritten = bash_counted_read_bootstrap(&script).expect("has the here-document");
@@ -3526,18 +3532,84 @@ fn bash_counted_read_bootstrap_applies_to_the_bundled_bash_script() {
         .next()
         .and_then(|n| n.parse().ok())
         .expect("a byte count");
-    let command_end = text.find("command -p stty echo\r").unwrap() + "command -p stty echo\r".len();
-    // Whatever followed the terminator line in the original (here the raw file, so two comment
-    // lines before `stty sane`; `script_for_shell` would have trimmed them) now follows the body
-    // directly, in place of the `EOM` line.
-    let after_terminator =
-        &script[script.find("\nEOM\n").expect("the EOM terminator") + "\nEOM\n".len()..];
-    let tail_start = text
-        .find(after_terminator)
-        .expect("the lines after the terminator follow the body");
-    // The body runs from the end of the command to the newline that ended its last line.
-    assert_eq!(tail_start - command_end, count);
+    let command_end =
+        text.find("unset WARP_BOOTSTRAP_VAR\r").unwrap() + "unset WARP_BOOTSTRAP_VAR\r".len();
+    // #1549: the body is the end of the write; the `stty sane` and `eval` that followed the
+    // terminator line in the original now run from the command line.
+    assert_eq!(text.len() - command_end, count);
+    assert!(text.contains("command -p stty echo; stty sane; eval \"$WARP_BOOTSTRAP_VAR\""));
     assert!(!text.contains("<< 'EOM'"));
+}
+
+#[test]
+fn counted_read_rewrite_ends_exactly_with_the_body_for_every_shell() {
+    // #1549: macOS `head` over-reads a tty and swallows whatever is queued after the counted
+    // bytes, so nothing may follow the body.
+    let bash_body = b" body1\n body2\n";
+    let zsh_body = b" body1\n body2\n";
+    for (script, shell, body) in [
+        (bash_here_document_script(), ShellType::Bash, &bash_body[..]),
+        (zsh_here_document_script(), ShellType::Zsh, &zsh_body[..]),
+    ] {
+        let (rewritten, prefix_len) = counted_read_rewrite(script, shell).expect("rewritable");
+        assert!(rewritten.ends_with(body), "{shell:?}: bytes after the body");
+        assert_eq!(&rewritten[prefix_len..], body, "{shell:?}");
+    }
+    // Fish and the other shells are not rewritten at all.
+    for shell in [ShellType::Fish, ShellType::Nu, ShellType::PowerShell] {
+        assert_eq!(
+            counted_read_rewrite(bash_here_document_script(), shell),
+            None
+        );
+    }
+    // A script with an unknown line after the here-document would put it after the body (or lose
+    // it): not rewritten.
+    assert_eq!(
+        counted_read_rewrite(
+            b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n echo extra\n",
+            ShellType::Bash
+        ),
+        None
+    );
+}
+
+#[test]
+fn bash_counted_read_runs_the_eval_from_the_head_line() {
+    let (rewritten, prefix_len) =
+        counted_read_rewrite(bash_here_document_script(), ShellType::Bash).expect("rewritable");
+    let command = decode_script(&rewritten[..prefix_len]);
+    let command = command.rsplit('\n').next().unwrap();
+    assert_eq!(
+        command,
+        " command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c 14); \
+         command -p stty echo; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\r"
+    );
+}
+
+#[test]
+fn counted_read_count_is_the_body_byte_length_including_multibyte() {
+    for shell in [ShellType::Bash, ShellType::Zsh] {
+        let body = " \u{2328} h\u{e9}llo \u{1f600}\n";
+        let script = match shell {
+            ShellType::Bash => format!(
+                "x\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n{body}EOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n"
+            ),
+            _ => format!(
+                "x\n read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval \"$WARP_BOOTSTRAP_VAR\"\n{body}EOM\n"
+            ),
+        };
+        let (rewritten, prefix_len) =
+            counted_read_rewrite(script.as_bytes(), shell).expect("rewritable");
+        let command = decode_script(&rewritten[..prefix_len]);
+        let count: usize = command
+            .split("head -c ")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .and_then(|n| n.parse().ok())
+            .expect("a byte count");
+        assert_eq!(count, body.len(), "{shell:?}");
+        assert_eq!(&rewritten[prefix_len..], body.as_bytes(), "{shell:?}");
+    }
 }
 
 #[test]
@@ -3551,7 +3623,7 @@ fn counted_read_bootstrap_is_on_unless_switched_off() {
 #[test]
 fn bootstrap_for_session_rewrites_only_bash_over_ssh_that_asked_for_it() {
     let script: Cow<'static, [u8]> = Cow::Borrowed(
-        b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\nEOM\n stty sane\n",
+        b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n",
     );
     let ssh_raw = SessionInfo::new_for_test()
         .with_ssh_socket_path(std::path::PathBuf::from("/tmp/sock"))

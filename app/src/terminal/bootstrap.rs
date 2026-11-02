@@ -158,9 +158,19 @@ pub fn bash_counted_read_bootstrap(script: &[u8]) -> Option<Vec<u8>> {
 /// the same line, after the `read`.
 const ZSH_BOOTSTRAP_HEREDOC_OPEN: &[u8] = b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; ";
 
+/// The lines `bash.sh` has after the here-document (comments and blank lines aside). The counted
+/// read runs them from its command line instead ([`BASH_COUNTED_READ_RUN`]), #1549.
+const BASH_BOOTSTRAP_AFTER_READ: [&str; 2] = [
+    "stty sane",
+    "eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR",
+];
+/// What the bash counted-read command line runs once `head` has read the body.
+const BASH_COUNTED_READ_RUN: &[u8] =
+    b"; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR";
+
 /// #1226: [`bash_counted_read_bootstrap`] for either shell, also returning how many leading bytes
 /// of the result end with the counted-read command line (its CR): everything after that is the
-/// raw body (and, for bash, the lines that follow it), which the shell does not see until `head`
+/// raw body and nothing else (#1549), which the shell does not see until `head`
 /// reads it.
 ///
 /// zsh: the command is `stty -echo; WARP_BOOTSTRAP_VAR=$(head -c N); stty echo; <the rest of the
@@ -190,6 +200,27 @@ pub(crate) fn counted_read_rewrite(
     let close = body_start + find_subslice(&script[body_start..], BASH_BOOTSTRAP_HEREDOC_CLOSE)?;
     // The body keeps its final newline, exactly as `read -d ''` read it.
     let body = &script[body_start..=close];
+    // #1549: nothing may follow the body in the same write. macOS `head` over-reads a tty and
+    // swallows whatever is already queued past the count, so any line sent after the body is
+    // lost and the body is never evaluated. What bash used to send after the here-document
+    // (`stty sane`, then the `eval`) therefore moves onto the command line, like zsh's `eval`.
+    // A script with anything else after the here-document is not rewritten: dropping it would
+    // lose it, and keeping it after the body would reintroduce the hazard.
+    let tail = &script[close + BASH_BOOTSTRAP_HEREDOC_CLOSE.len()..];
+    let tail_lines: Vec<&str> = std::str::from_utf8(tail)
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let expected_tail: &[&str] = if rest_of_line {
+        &[]
+    } else {
+        &BASH_BOOTSTRAP_AFTER_READ
+    };
+    if tail_lines != expected_tail {
+        return None;
+    }
     let mut command = format!(
         " command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c {}); command -p stty echo",
         body.len()
@@ -198,14 +229,15 @@ pub(crate) fn counted_read_rewrite(
     if rest_of_line {
         command.extend_from_slice(b"; ");
         command.extend_from_slice(after_read);
+    } else {
+        command.extend_from_slice(BASH_COUNTED_READ_RUN);
     }
     command.push(b'\r');
-    let mut rewritten = Vec::with_capacity(script.len() + command.len());
+    let mut rewritten = Vec::with_capacity(body_start + command.len() + body.len());
     rewritten.extend_from_slice(&script[..open]);
     rewritten.extend_from_slice(&command);
     let prefix_len = rewritten.len();
     rewritten.extend_from_slice(body);
-    rewritten.extend_from_slice(&script[close + BASH_BOOTSTRAP_HEREDOC_CLOSE.len()..]);
     Some((rewritten, prefix_len))
 }
 
