@@ -18679,9 +18679,29 @@ fn ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys() {
                 assert!(view.ssh_typeahead_holding, "{mode:?}: held");
                 view.model.lock().process_bytes("Last login: Mon\r\n");
                 view.model.lock().process_bytes("user@fake:~$ ");
+                // The pty reader publishes the key facts after each parse; without this the
+                // table never saw the prompt, so the H4 row (a key stamped before the prompt is
+                // a password typed blind) could not fire, and this test passed while the app
+                // lost the keys (#1561, r18cx: `row=H4 why=StaleBeforePrompt` x16).
+                view.model.lock().publish_key_facts();
                 view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: the shell prompt ended the connect window"
+                );
+                assert!(
+                    !matches!(
+                        view.build_route_facts(
+                            crate::terminal::input_queue::QueueFacts::default(),
+                            ctx
+                        )
+                        .ssh,
+                        crate::terminal::input_queue::SshPhase::PromptUp { .. }
+                    ),
+                    "{mode:?}: the phase left PromptUp"
+                );
             });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
             let written = String::from_utf8_lossy(&written).into_owned();
@@ -18717,6 +18737,7 @@ fn ssh_password_prompt_still_discards_the_held_keys_in_both_modes() {
                 view.typed_characters_on_terminal("hunter2", ctx);
                 assert!(view.ssh_typeahead_holding, "{mode:?}: held");
                 view.model.lock().process_bytes("user@fake's password: ");
+                view.model.lock().publish_key_facts();
                 view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
                 assert!(view.ssh_held_is_empty(), "{mode:?}: the blind text is gone");

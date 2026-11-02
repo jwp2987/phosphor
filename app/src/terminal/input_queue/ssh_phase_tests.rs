@@ -252,6 +252,7 @@ fn every_give_up_is_named_and_only_the_timers_are_give_ups() {
         SshRelease::FirstPrompt,
         SshRelease::Failed,
         SshRelease::OtherCommand,
+        SshRelease::ShellPrompt,
     ] {
         assert!(!how.is_give_up(), "{} is an event", how.name());
     }

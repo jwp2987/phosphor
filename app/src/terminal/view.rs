@@ -5,10 +5,10 @@ mod block_banner;
 pub mod block_onboarding;
 pub(crate) mod blocklist_filter;
 mod bookmarks;
+mod fork_restore_persist;
 pub mod init;
 pub mod inline_banner;
 pub mod load_ai_conversation;
-mod fork_restore_persist;
 use crate::ai::block_context::BlockContext;
 #[cfg(feature = "local_fs")]
 use crate::ai::skills::SkillOpenOrigin;
@@ -10589,7 +10589,8 @@ impl TerminalView {
 
         // Never waits for the pty reader (#1403): left in the model's inbox, which applies it
         // before it parses the next bytes (in typed order); applied now when the model is free.
-        self.model_inbox.post(ModelCommand::SharedSessionWrite(chars));
+        self.model_inbox
+            .post(ModelCommand::SharedSessionWrite(chars));
         if let Some(mut model) = self.model.try_lock() {
             model.apply_inbox();
         }
@@ -11137,6 +11138,15 @@ impl TerminalView {
                     self.ssh_held_bytes()
                 );
                 self.ssh_remote_prompt_seen = true;
+                // The shell prompt ends the connect window (an event): the machine leaves
+                // `PromptUp` BEFORE the delivery, else the table's H4 row drops every held
+                // input as "stamped before the prompt" (a password typed blind), the very
+                // keys this branch hands to the shell (#1561, r18cx). The hold ends first so
+                // the release does not leave the phase at `Holding`.
+                self.set_ssh_typeahead_holding(false);
+                self.ssh_connect_gate = None;
+                self.ssh_connect_gate_released_at = Some(Local::now());
+                self.note_ssh_gate_released(input_queue::SshRelease::ShellPrompt);
             }
             self.finish_ssh_typeahead(ctx);
             return;
@@ -23300,7 +23310,6 @@ impl TerminalView {
     ) {
         then(self, parts.render(), ctx);
     }
-
 
     fn copy(&mut self, ctx: &mut ViewContext<Self>) {
         // First check if there's selected text in the CLI subagent views
