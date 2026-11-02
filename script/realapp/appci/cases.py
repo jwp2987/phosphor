@@ -126,10 +126,14 @@ class Ctx:
 
     def lines(self, name, remote=False):
         base = self.prof.rhome if remote else self.W
-        try:
-            return open(os.path.join(base, name), errors="replace").read().splitlines()
-        except FileNotFoundError:
-            return []
+        for attempt in range(5):
+            try:
+                return open(os.path.join(base, name), errors="replace").read().splitlines()
+            except FileNotFoundError:
+                return []
+            except PermissionError:       # Windows: the shell still has the file open for writing (r18cm crashed here); read again shortly
+                time.sleep(0.05 * (attempt + 1))
+        return []
 
     def rm(self, *names):
         for n in names:

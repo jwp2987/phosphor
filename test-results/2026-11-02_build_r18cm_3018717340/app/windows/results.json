@@ -1,0 +1,54 @@
+{
+    "meta":  {
+                 "platform":  "windows",
+                 "backend":  "windows",
+                 "commit":  "ac70362e"
+             },
+    "generated":  "2026-11-02T08:37:53-0800",
+    "summary":  {
+                    "pass":  2,
+                    "fail":  0,
+                    "skip":  0
+                },
+    "cases":  [
+                  {
+                      "name":  "mode_proof",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  1.0,
+                      "detail":  [
+                                     "no OCR engine: screenshot only (shots/terminal_proof_prekey.png), mode not machine-verified"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_mode_proof.png"
+                                ]
+                  },
+                  {
+                      "name":  "restore",
+                      "mode":  "-",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  }
+              ],
+    "reused_build":  {
+                         "commit":  "18fddcd8088da7ef506568624cc7936eff3a47e2",
+                         "fetched":  "local cache (C:\\Users\\Winters\\.cache\\phosphor-ci\\builds\\windows\\17664724432)",
+                         "this_pipeline":  "3018717340",
+                         "job_name":  "build-windows-x86_64",
+                         "this_commit":  "ac70362eb89bf37d171f00d50babecac5f5c1dc8",
+                         "job_id":  17664724432,
+                         "pipeline_id":  "3017838858"
+                     }
+}
