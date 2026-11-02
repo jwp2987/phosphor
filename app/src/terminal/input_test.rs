@@ -2687,6 +2687,141 @@ fn test_stale_as_you_type_menu_hidden_on_keystroke_then_refreshed() {
     });
 }
 
+// #1452: an Enter that arrives right behind the last typed character, before that edit has been
+// handled (the editor reports an insert one effect hop after the model's own), finds an
+// as-you-type menu that still answers the PREVIOUS text and `completion_menu_stale` unset.
+// Accepting it replaced the word with a stale item and consumed the Enter: the line did not run
+// and the next one was appended to it. The menu must be recognised as stale from the buffer.
+#[test]
+fn test_enter_behind_an_unhandled_edit_does_not_accept_the_stale_as_you_type_menu() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings
+                .completions_open_while_typing
+                .set_value(true, ctx);
+        });
+
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if let super::Event::ExecuteCommand(event) = event {
+                    sink.borrow_mut().push(event.command.clone());
+                }
+            });
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("open-file ", ctx);
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![argument_suggestion("a.txt"), argument_suggestion("b.txt")],
+                    (10, 10),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            // The menu answers the buffer it was opened for: not stale.
+            assert!(!input.as_you_type_menu_lags_buffer(ctx));
+        });
+
+        // One more character, and the edit's handler has not run yet: the flag is still unset.
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("z", ctx);
+            input.completion_menu_stale = false;
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.as_you_type_menu_lags_buffer(ctx),
+                "the menu lists results for 'open-file ', the buffer is 'open-file z'"
+            );
+        });
+
+        // Enter acts as if no menu were open: it never inserts the stale item.
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, ctx| {
+            assert!(!matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+            let buffer = input.editor.as_ref(ctx).buffer_text(ctx);
+            assert!(
+                !buffer.contains("a.txt") && !buffer.contains("b.txt"),
+                "a stale item was inserted: {buffer:?}"
+            );
+        });
+        assert!(
+            executed.borrow().iter().all(|c| !c.contains(".txt")),
+            "the stale item reached the command: {:?}",
+            executed.borrow()
+        );
+    });
+}
+
+// #1452: with completions-as-you-type and NOTHING selected in the open menu there is no
+// highlighted suggestion to accept, so Enter submits the line instead of only closing the menu.
+#[test]
+fn test_enter_with_an_as_you_type_menu_and_no_selection_submits() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings
+                .completions_open_while_typing
+                .set_value(true, ctx);
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("open-file ", ctx);
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![argument_suggestion("a.txt"), argument_suggestion("b.txt")],
+                    (10, 10),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::AsYouType,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+            input
+                .input_suggestions
+                .update(ctx, |suggestions, _| suggestions.clear_selection_for_test());
+        });
+        input.read(&app, |input, ctx| {
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+            assert!(
+                !input.should_enter_accept_completion_suggestion(ctx),
+                "nothing is selected: Enter must submit, not just close the menu"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_agent_mode_set_while_typing_slash_command() {
     App::test((), |mut app| async move {

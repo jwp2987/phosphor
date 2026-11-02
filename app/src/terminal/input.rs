@@ -11111,14 +11111,27 @@ impl Input {
             warpui::clipboard::request_read(ctx.clipboard(), warpui::clipboard::ReadKind::Full);
         match request.start {
             warpui::clipboard::ReadStart::Ready(outcome) => {
-                self.process_paste_content(outcome.into_content(), ctx)
+                self.offer_answered_paste(outcome.into_content(), ctx)
             }
             warpui::clipboard::ReadStart::Pending(pending) => {
                 ctx.spawn(pending, |me, outcome, ctx| {
-                    me.process_paste_content(outcome.into_content(), ctx)
+                    me.offer_answered_paste(outcome.into_content(), ctx)
                 });
             }
         }
+    }
+
+    /// A paste whose clipboard read the platform answered without the background reader (macOS
+    /// reads inline). It is an entry of the pane queue, not a direct insert (#1453): with an
+    /// Enter's gate or a pending read held ahead of it, it takes its place behind them, and an
+    /// Enter typed right after it is queued behind IT, so the paste is never inserted past the
+    /// previous line's gate and then discarded by that line's submit.
+    pub(crate) fn offer_answered_paste(
+        &mut self,
+        content: ClipboardContent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.offer_ready_paste(content, PasteSource::Clipboard, ctx);
     }
 
     /// Reads the clipboard on a worker thread; the paste's queue entry inserts it (`paste_queue`).
@@ -12932,10 +12945,37 @@ impl Input {
         }
     }
 
+    /// True when an open as-you-type completion menu answers text the buffer no longer holds,
+    /// before the edit that changed it has been handled (#1452). The editor reports an insert as
+    /// an `Edited` event one effect hop after the model's own, so an Enter replayed or typed right
+    /// behind the last character can arrive while the menu still lists the results for the
+    /// previous text and `completion_menu_stale` is not yet set. Accepting that menu on Enter
+    /// replaces the word with a stale item and consumes the Enter: the line is not submitted and
+    /// the next one is appended to it. The menu opened with `buffer_text_original` (the text up to
+    /// the cursor); an as-you-type menu always answers exactly that text (typing recomputes it
+    /// and marks it stale), so any difference means an edit the menu has not seen yet. Classic
+    /// completions are exempt: cycling rewrites the buffer on purpose.
+    fn as_you_type_menu_lags_buffer(&self, ctx: &ViewContext<Self>) -> bool {
+        let InputSuggestionsMode::CompletionSuggestions {
+            buffer_text_original,
+            trigger,
+            ..
+        } = self.suggestions_mode_model.as_ref(ctx).mode()
+        else {
+            return false;
+        };
+        if *trigger != CompletionsTrigger::AsYouType || self.is_classic_completions_enabled(ctx) {
+            return false;
+        }
+        let editor_text = self.editor.as_ref(ctx).buffer_text(ctx);
+        let cursor = self.start_byte_index_of_last_selection(ctx).as_usize();
+        editor_text.get(..cursor) != Some(buffer_text_original.as_str())
+    }
+
     /// If the open completion menu is stale (#1355), closes it so the action that follows (Tab,
     /// Enter, a click) behaves exactly as if no menu were open. True if it was closed.
     fn drop_stale_completion_menu(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if !self.completion_menu_stale {
+        if !self.completion_menu_stale && !self.as_you_type_menu_lags_buffer(ctx) {
             return false;
         }
         self.completion_menu_stale = false;
@@ -13177,9 +13217,11 @@ impl Input {
 
         // At this point, we know completions as you type is enabled and classic completions
         // is disabled. Accept the completion unless the buffer already matches the selected item
-        // (in which case, just execute the command).
+        // (in which case, just execute the command). With NOTHING selected there is nothing the
+        // user saw highlighted to accept: confirming would only close the menu and swallow the
+        // Enter, so the line submits (#1452).
         let current_buffer_text = self.editor.as_ref(app).buffer_text(app);
-        selected_item.is_none_or(|selected_item| {
+        selected_item.is_some_and(|selected_item| {
             let Some(replacement) = &current_buffer_text.get(*replacement_start..) else {
                 log::error!("Failed to get replacement range in current buffer text");
                 return true;

@@ -22791,6 +22791,48 @@ fn an_inline_clipboard_read_waits_behind_what_the_queue_holds() {
     })
 }
 
+/// #1453: the editor's paste (Cmd-V on a platform that reads the clipboard inline, macOS) is an
+/// entry of the pane queue like the terminal-side one: behind a held gate it waits, and an Enter
+/// typed right after it is queued BEHIND it, so the order is paste then Enter, never the Enter
+/// first (an empty submit) with the paste inserted after.
+#[test]
+fn an_inline_editor_paste_then_an_immediate_enter_are_queued_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().open_gate(
+                    &mut host,
+                    input_queue::GateSpec::new(input_queue::GateKind::PromptSeen, 77)
+                        .with_cap(None),
+                );
+            }
+            view.input.update(ctx, |input, ctx| {
+                input.offer_answered_paste(ClipboardContent::plain_text("P".to_owned()), ctx)
+            });
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "the paste waits behind the gate, it is not inserted past it"
+            );
+            let queue = view.paste_queue.queue.peek();
+            let kinds: Vec<_> = queue.entries().map(|e| e.kind.clone()).collect();
+            assert!(
+                matches!(kinds.first(), Some(input_queue::EntryKind::Paste { .. })),
+                "the paste is the first held entry, ahead of the Enter"
+            );
+            assert!(
+                kinds.len() >= 2,
+                "the Enter is held behind the paste, not consumed"
+            );
+        });
+    })
+}
+
 /// #1440: with the pty reader inside the model's lock (parsing), the helpers a key calls decide
 /// from the published facts or leave their work for after the parse, and none of them waits. The
 /// lock is held by another thread for up to three seconds; every call must be through long before.

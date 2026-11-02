@@ -385,6 +385,12 @@ impl InputSuggestions {
         self.items.len() == 0
     }
 
+    /// Leaves no item selected (as an `Unselected` as-you-type menu is), for tests.
+    #[cfg(test)]
+    pub fn clear_selection_for_test(&mut self) {
+        self.selected_index = None;
+    }
+
     #[cfg(test)]
     pub fn item_text(&self, index: usize) -> &String {
         &self.items[index].text
