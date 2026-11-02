@@ -226,6 +226,10 @@ if [[ -x ./script/check_queue_access ]]; then
     ./script/check_queue_access >/dev/null 2>&1 && ok "input queue access" \
         || fail "input queue access -- run ./script/check_queue_access for detail"
 fi
+if [[ -x ./script/check_pty_doors ]]; then
+    ./script/check_pty_doors >/dev/null 2>&1 && ok "pty doors" \
+        || fail "pty doors -- run ./script/check_pty_doors for detail"
+fi
 if [[ -x ./script/check_declined_collisions ]]; then
     ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
         || fail "declined collisions -- run ./script/check_declined_collisions for detail"

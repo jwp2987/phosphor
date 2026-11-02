@@ -3521,6 +3521,11 @@ pub struct TerminalView {
     /// converted to `pending_cloud_cli_login: Option<CloudProvider>` where CloudProvider
     /// is an enum with variants like Aws, Gcp, Azure.
     is_pending_aws_login: bool,
+    /// Bytes of input synced from another pane (#1430) that were accepted for this pty and have
+    /// not yet reached the point where a typed key is reported to the other synced panes. The
+    /// report is skipped for exactly these bytes, or two synced panes would echo them to each
+    /// other forever. Reset whenever a synced write finds the pane queue idle.
+    synced_in_flight: usize,
     /// `true` if this view explicitly requested a PTY shutdown.
     /// Once set, this remains true for the rest of the view's lifecycle and
     /// suppresses `AgentExitedShellProcess` telemetry so manual shutdown paths
@@ -5133,6 +5138,7 @@ impl TerminalView {
             ambient_agent_cancel_mouse_state: Default::default(),
 
             is_pending_aws_login: false,
+            synced_in_flight: 0,
             manual_pty_shutdown_requested: false,
             pane_stack: None,
             ephemeral_message_model,
@@ -10400,6 +10406,25 @@ impl TerminalView {
         }
     }
 
+    /// Whether anything that orders or holds input is open: keys held by the pane queue (a gate
+    /// or a paste reading), an announced subshell setup, a paced bootstrap write in flight, or a
+    /// PowerShell setup hold. A write that must not overtake held input goes through
+    /// [`Self::write_user_bytes_to_pty`] while this is true (#1432).
+    fn pane_queue_or_setup_gate_open(&self) -> bool {
+        // (An ssh connect's own gate is not counted: it holds its keys before they get here and
+        // `ssh_connect_holds_eot` decides the EOT; a Ctrl-D that cancels a password prompt keeps
+        // the controller's started-command mark.)
+        (self
+            .paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| queue.holds_keys())
+            && !self.only_ssh_gates_open())
+            || self.subshell_bootstrap_announced.is_some()
+            || self.subshell_bootstrap_in_flight.is_some()
+            || self.powershell_setup_hold != PowerShellSetupHold::Off
+    }
+
     fn ctrl_d(&mut self, ctx: &mut ViewContext<Self>) {
         // #1111: not into an ssh connect that is still starting (before the lock below).
         if self.ssh_connect_holds_eot() {
@@ -12172,6 +12197,29 @@ impl TerminalView {
             .read(ctx, |recorder, _| recorder.inactive_pty_reads_rx())
     }
 
+    /// Which hand-over gate, if any, forbids the agent writing to the pty right now (#1431): a
+    /// subshell or PowerShell setup (announced, bootstrap lines in flight, or its queue gates
+    /// open) or the remote-setup window of an ssh connect. The ssh connect's earlier window (a
+    /// password prompt, a host-key question) is not a gate: the agent answers those.
+    fn agent_pty_write_gate(&mut self) -> Option<&'static str> {
+        let setup_gate_open = self.paste_queue.queue.try_peek().is_some_and(|queue| {
+            queue.has_gate_kind(input_queue::GateKind::SubshellSetup)
+                || queue.has_gate_kind(input_queue::GateKind::SubshellBootstrapWrite)
+                || queue.has_gate_kind(input_queue::GateKind::PowershellSetup)
+        });
+        if setup_gate_open
+            || self.subshell_bootstrap_announced.is_some()
+            || self.subshell_bootstrap_in_flight.is_some()
+            || self.powershell_setup_hold != PowerShellSetupHold::Off
+        {
+            return Some("a subshell / PowerShell setup");
+        }
+        if self.ssh_gate_holds_interrupt() {
+            return Some("the remote setup of an ssh connect");
+        }
+        None
+    }
+
     fn write_agent_bytes_to_pty<B: Into<Cow<'static, [u8]>>>(
         &mut self,
         data: B,
@@ -12179,6 +12227,18 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let bytes: Cow<'static, [u8]> = data.into();
+        // #1431: the agent answers a prompt (or quits a pager) in a command it drives; while an
+        // ssh connect's remote setup or a subshell / PowerShell setup owns the pty those bytes
+        // would land in the bootstrap. REFUSED, not held: the answer belongs to the prompt it was
+        // computed for, and a held answer delivered after the hand-over goes to a different
+        // program (the remote shell); the agent sees the command still waiting and asks again.
+        if let Some(gate) = self.agent_pty_write_gate() {
+            log::warn!(
+                "refused {} agent byte(s) for the pty: {gate} is in progress (#1431)",
+                bytes.len()
+            );
+            return;
+        }
         // #1178: a ^C the agent writes into its command interrupts it.
         if bytes.contains(&0x03) {
             self.model
@@ -12619,9 +12679,9 @@ impl TerminalView {
             return true;
         }
 
-        let bytes_vec = self
-            .non_editor_typed_event_wanted(ctx)
-            .then(|| bytes.to_vec());
+        let bytes_vec = (!self.consume_synced_in_flight(bytes.len())
+            && self.non_editor_typed_event_wanted(ctx))
+        .then(|| bytes.to_vec());
         // Nothing before the write waits for the pty reader (#1403): the selection reset has
         // nothing to do unless something is selected, and the scroll update, which needs the
         // model, runs now if it is free and right after the write is emitted if it is not.
@@ -12655,9 +12715,15 @@ impl TerminalView {
         true
     }
 
-    /// Write to the PTY if the session has finished bootstrapping and
-    /// has an active long-running command.
-    /// Never emits a sync event.
+    /// Write input synced from another pane to the PTY if the session has finished bootstrapping
+    /// and has an active long-running command. Never emits a sync event for these bytes.
+    ///
+    /// #1430: the bytes go through [`Self::write_passive_input_to_pty`], so they are ordered with
+    /// everything else this pane's queue holds and never take over an agent's command. They are
+    /// held while a hand-over gate is open (an ssh connect, a subshell / PowerShell setup, the
+    /// queue holding keys or reading a paste) and delivered in order behind it: a broadcast copy
+    /// of keys typed in another pane must not end up in this pane's bootstrap or remote shell,
+    /// and must not be lost.
     fn write_to_pty_for_syncing_long_running_commands(
         &mut self,
         characters: Vec<u8>,
@@ -12670,13 +12736,36 @@ impl TerminalView {
         // Make sure we don't write any text to the pty until we've echoed out
         // the bootstrap script, otherwise the user could accidentally interfere
         // with bootstrap script execution.
-        if was_bootstrap_script_echoed && self.is_long_running() {
-            self.clear_selected_blocks(ctx);
-            self.update_scroll_position_locking(
-                ScrollPositionUpdate::AfterWriteUserBytesToPty,
-                ctx,
-            );
-            self.write_to_pty(characters, ctx);
+        if !(was_bootstrap_script_echoed && self.is_long_running()) {
+            return;
+        }
+        // Held in order, never dropped (#1430): the bytes take the pane's own key routing, so an
+        // ssh connect, a subshell / PowerShell setup, a waiting Enter or a paste being read hold
+        // them exactly as they hold typed keys, and they are delivered behind them.
+        let len = characters.len();
+        if !self.pane_queue_or_setup_gate_open() && self.ssh_connect_gate.is_none() {
+            // Idle: nothing synced is still on its way, so a count left over is stale.
+            self.synced_in_flight = 0;
+        }
+        self.synced_in_flight += len;
+        match String::from_utf8(characters) {
+            Ok(text) => self.typed_characters_on_terminal(&text, ctx),
+            Err(err) => {
+                if !self.write_passive_input_to_pty(err.into_bytes(), ctx) {
+                    self.synced_in_flight = self.synced_in_flight.saturating_sub(len);
+                }
+            }
+        }
+    }
+
+    /// Whether `len` bytes about to be reported as typed are the synced bytes accepted by
+    /// [`Self::write_to_pty_for_syncing_long_running_commands`] (then they are not reported).
+    fn consume_synced_in_flight(&mut self, len: usize) -> bool {
+        if self.synced_in_flight >= len && len > 0 {
+            self.synced_in_flight -= len;
+            true
+        } else {
+            false
         }
     }
 
@@ -15329,10 +15418,11 @@ impl TerminalView {
         // "command not found" if AWS CLI isn't installed
         self.is_pending_aws_login = true;
 
-        // Write the command to the PTY and execute it
-        let command_bytes = login_command.into_bytes();
-        self.clear_line_editor_and_write_to_pty(command_bytes, ctx);
-        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // Run it as a command, not as raw bytes (#1429): written raw (line clear + text + CR) it
+        // ran in whatever owned the pty -- a program, an ssh connect, a subshell bootstrap, a
+        // remote shell. `execute_command_or_set_pending` runs it only when this shell can take a
+        // command now, and holds it as the pending command until then.
+        self.execute_command_or_set_pending(&login_command, ctx);
     }
 
     /// Checks if the current model request could be served via AWS Bedrock and the user
@@ -28867,6 +28957,13 @@ impl TerminalView {
                 // terminal-path Ctrl-D (see `ssh_connect_holds_eot`).
                 if self.ssh_connect_holds_eot() {
                     self.note_ssh_interrupt_held(ctx);
+                } else if self.pane_queue_or_setup_gate_open() {
+                    // #1432: with keys held (a paste reading, an Enter waiting for its verdict,
+                    // a prompt hold) or a subshell / PowerShell setup in flight, the EOT is a
+                    // signal that goes out in typed order behind them, exactly like the
+                    // terminal-path Ctrl-D; `Event::CtrlD` reaches the controller directly and
+                    // would overtake them and land inside the setup.
+                    self.write_user_bytes_to_pty(&[escape_sequences::C0::EOT][..], ctx);
                 } else {
                     ctx.emit(Event::CtrlD);
                 }
@@ -30183,7 +30280,10 @@ impl TerminalView {
             self.append_to_rich_input(&text, ctx);
             Some(CliAgentRouting::RichInput)
         } else {
-            self.write_to_pty(text.into_bytes(), ctx);
+            // Through the pane queue like every user-visible byte (#1433): written raw it could
+            // overtake keys the queue holds (a paste still reading, an Enter waiting for its
+            // verdict) and ignored the ssh / subshell holds.
+            self.write_user_bytes_to_pty(text.into_bytes(), ctx);
             self.focus_terminal(ctx);
             Some(CliAgentRouting::Pty)
         }
@@ -33228,7 +33328,9 @@ impl TerminalView {
         let payload =
             convert_script_to_one_line(&begin_warpify_ssh_session_command(session_id, ctx));
         self.warpify_state.mark_ssh_payload_written(&payload);
-        self.clear_line_editor_and_write_to_pty(payload.into_bytes(), ctx);
+        // One SetupChunked job like the third writer (#1436): the probe / installer payloads are
+        // as long as the warpify script and a cooked macOS tty drops input past 1 KB.
+        self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(payload.into_bytes(), ctx);
     }
 
     fn continue_warpify_ssh_session(
@@ -33271,7 +33373,9 @@ impl TerminalView {
             .set_pending_warp_initiated_control_mode_with_install_tmux(install_with_root_method);
         let payload = convert_script_to_one_line(install_script);
         self.warpify_state.mark_ssh_payload_written(&payload);
-        self.clear_line_editor_and_write_to_pty(payload.into_bytes(), ctx);
+        // One SetupChunked job like the third writer (#1436): the probe / installer payloads are
+        // as long as the warpify script and a cooked macOS tty drops input past 1 KB.
+        self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(payload.into_bytes(), ctx);
     }
 
     fn begin_ssh_warpify_timeout(&mut self, duration: Duration, ctx: &mut ViewContext<Self>) {

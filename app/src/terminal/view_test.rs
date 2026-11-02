@@ -22051,7 +22051,10 @@ fn editor_keys_taken_out_of_a_prompt_hold_are_applied_backspace_included() {
             assert!(queue.borrow().is_idle());
             assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "ac");
         });
-        assert!(pty_writes.borrow().is_empty(), "editor keys never reach the pty");
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "editor keys never reach the pty"
+        );
     })
 }
 
@@ -22106,7 +22109,13 @@ fn a_held_key_that_finds_the_queue_busy_goes_behind_its_gate_when_it_is_free() {
             let queue = view.paste_queue.queue.clone();
             {
                 let _peek = queue.peek();
-                view.hold_prompt_keys_in_queue(5, std::time::Duration::from_secs(60), b"x".to_vec(), true, ctx);
+                view.hold_prompt_keys_in_queue(
+                    5,
+                    std::time::Duration::from_secs(60),
+                    b"x".to_vec(),
+                    true,
+                    ctx,
+                );
             }
             assert!(queue.has_deferred());
             assert!(queue.borrow().is_idle(), "nothing applied while busy");
@@ -22128,7 +22137,10 @@ fn a_held_key_that_finds_the_queue_busy_goes_behind_its_gate_when_it_is_free() {
             view.flush_deferred_queue_ops(ctx);
             assert_eq!(queue.borrow().queued_len(), 2, "the PowerShell key is held");
         });
-        assert!(pty_writes.borrow().is_empty(), "nothing was written as typed");
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "nothing was written as typed"
+        );
     })
 }
 
@@ -22158,7 +22170,10 @@ fn the_cli_submit_gate_survives_a_busy_queue() {
             }
             view.flush_deferred_queue_ops(ctx);
             assert!(!queue.borrow().has_gate_kind(GateKind::CliSubmit));
-            assert!(queue.borrow().is_idle(), "the key behind the submit was released");
+            assert!(
+                queue.borrow().is_idle(),
+                "the key behind the submit was released"
+            );
         });
     })
 }
@@ -22207,12 +22222,23 @@ fn a_powershell_take_under_a_busy_queue_runs_when_the_queue_is_free() {
                 let _peek = queue.peek();
                 view.take_powershell_held_then(PowershellKeysThen::CancelHeldLine, ctx);
             }
-            assert!(queue.has_deferred(), "the take is recorded, not returned empty");
-            assert_eq!(queue.borrow().queued_len(), 1, "nothing was taken while busy");
+            assert!(
+                queue.has_deferred(),
+                "the take is recorded, not returned empty"
+            );
+            assert_eq!(
+                queue.borrow().queued_len(),
+                1,
+                "nothing was taken while busy"
+            );
             view.flush_deferred_queue_ops(ctx);
             assert!(!queue.has_deferred());
             assert!(queue.borrow().has_gate_kind(GateKind::PowershellSetup));
-            assert_eq!(queue.borrow().queued_len(), 1, "\"a\\r\" is held again, in order");
+            assert_eq!(
+                queue.borrow().queued_len(),
+                1,
+                "\"a\\r\" is held again, in order"
+            );
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
@@ -22288,7 +22314,11 @@ fn an_ssh_gate_drop_under_a_busy_queue_is_not_lost() {
                 );
                 assert!(queue.borrow().is_idle());
             });
-            assert!(pty_writes.borrow().is_empty(), "never delivered: {:?}", pty_writes.borrow());
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "never delivered: {:?}",
+                pty_writes.borrow()
+            );
         });
     }
 }
@@ -22788,6 +22818,303 @@ fn input_box_visibility_from_the_snapshot_matches_the_model() {
             let from_model = view.is_input_box_visible(&model, ctx);
             let facts = KeyModelSnapshot::from_model(&model).input_box;
             assert_eq!(view.is_input_box_visible_with(&facts, ctx), from_model);
+        });
+    })
+}
+
+// ---- input doors that bypassed the pane queue / the hand-over gates (opendoors round) ----------
+// Not compiled/run when written (no builds in the fix pass).
+
+/// Every `Event` a view emits towards the pty, in order, by kind: what each door test asserts on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PtyDoorEvent {
+    Bytes(Vec<u8>),
+    Agent(Vec<u8>),
+    LineClearSetup(Vec<u8>),
+    CtrlD,
+}
+
+fn record_pty_door_events(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<PtyDoorEvent>>> {
+    let seen: Rc<RefCell<Vec<PtyDoorEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                sink.borrow_mut().push(PtyDoorEvent::Bytes(bytes.to_vec()))
+            }
+            Event::WriteAgentInputToPty { bytes, .. } => {
+                sink.borrow_mut().push(PtyDoorEvent::Agent(bytes.to_vec()))
+            }
+            Event::WriteLineClearSetupToPty { payload } => sink
+                .borrow_mut()
+                .push(PtyDoorEvent::LineClearSetup(payload.clone())),
+            Event::CtrlD => sink.borrow_mut().push(PtyDoorEvent::CtrlD),
+            _ => {}
+        });
+    });
+    seen
+}
+
+/// #1429: the AWS login command is a COMMAND. Written raw (line clear + text + CR) it ran in
+/// whatever owned the pty; as a command it waits (pending) while a program runs.
+#[test]
+fn aws_login_is_a_command_that_waits_for_the_running_program() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.run_aws_login_command(ctx);
+            assert!(
+                view.input.as_ref(ctx).has_pending_command(),
+                "the login command is held as the pending command while a program runs"
+            );
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "nothing is written raw to the pty: {:?}",
+            seen.borrow()
+        );
+    })
+}
+
+/// #1430: input synced from another pane does not reach a pane whose hand-over gate is open (here
+/// a PowerShell subshell setup): it would land in the bootstrap. Without a gate it is written
+/// through the pane's write path and is not reported back to the other panes as typed.
+#[test]
+fn synced_input_is_held_not_written_into_an_open_hand_over_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("claude", "");
+            // Control: no gate, the synced bytes are written and the echo guard is consumed.
+            view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
+            assert_eq!(
+                *seen.borrow(),
+                vec![PtyDoorEvent::Bytes(b"ab".to_vec())],
+                "synced input reaches a pane running a command"
+            );
+            assert_eq!(
+                view.synced_in_flight, 0,
+                "synced bytes are not reported back as typed (that would echo between panes)"
+            );
+            seen.borrow_mut().clear();
+            announce_powershell_setup(view);
+            view.write_to_pty_for_syncing_long_running_commands(b"cd".to_vec(), ctx);
+            assert!(
+                seen.borrow().is_empty(),
+                "nothing synced is written while a PowerShell setup is open: {:?}",
+                seen.borrow()
+            );
+            assert_eq!(
+                powershell_held(view),
+                vec![b"cd".to_vec()],
+                "it is held in order behind the setup's gate, not dropped"
+            );
+        });
+    })
+}
+
+/// #1431: the agent's pty writes are refused while a subshell / PowerShell setup is in progress
+/// (they would land in the bootstrap); outside of one they go out as before.
+#[test]
+fn agent_pty_writes_are_refused_during_a_subshell_setup() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+            assert_eq!(*seen.borrow(), vec![PtyDoorEvent::Agent(b"y\n".to_vec())]);
+            seen.borrow_mut().clear();
+            announce_powershell_setup(view);
+            view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+            assert!(
+                seen.borrow().is_empty(),
+                "refused while the setup owns the pty: {:?}",
+                seen.borrow()
+            );
+        });
+    })
+}
+
+/// #1432: the editor's Ctrl-D goes through the pane queue (behind the keys it holds, inside the
+/// subshell / PowerShell setup rules) instead of straight to the controller.
+#[test]
+fn editor_ctrl_d_goes_through_the_queue_while_a_setup_is_open() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.handle_input_event(&InputEvent::CtrlD, ctx);
+        });
+        assert!(
+            !seen.borrow().contains(&PtyDoorEvent::CtrlD),
+            "no direct controller EOT: {:?}",
+            seen.borrow()
+        );
+        assert!(
+            seen.borrow().contains(&PtyDoorEvent::Bytes(vec![0x04])),
+            "the EOT is written as a queued user byte: {:?}",
+            seen.borrow()
+        );
+    })
+}
+
+/// #1433: text for a CLI agent goes through the queue, so it is held behind an open setup gate
+/// instead of overtaking it.
+#[test]
+fn text_for_a_cli_agent_is_held_by_an_open_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _hoa = FeatureFlag::HoaCodeReview.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.set_session(
+                    view.view_id,
+                    CLIAgentSession {
+                        agent: CLIAgent::Claude,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        should_auto_toggle_input: false,
+                        listener: None,
+                        remote_host: None,
+                        plugin_version: None,
+                        draft_text: None,
+                        custom_command_prefix: None,
+                        received_rich_notification: false,
+                    },
+                    ctx,
+                );
+            });
+            announce_powershell_setup(view);
+            let routing = view.try_send_text_to_cli_agent_or_rich_input("hello".to_owned(), ctx);
+            assert!(routing.is_some());
+            assert_eq!(
+                powershell_held(view),
+                vec![b"hello".to_vec()],
+                "held behind the setup gate, in order"
+            );
+        });
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+    })
+}
+
+/// #1436: the ssh-warpify payload writers all use the paced SetupChunked job.
+#[test]
+fn ssh_warpify_install_payload_is_one_paced_setup_write() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.install_tmux_and_warpify(
+                ctx,
+                &TmuxInstallMethod {
+                    script: "echo install".to_owned(),
+                    should_use_package_manager: false,
+                },
+            );
+        });
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(
+            matches!(&seen[0], PtyDoorEvent::LineClearSetup(payload) if payload.starts_with(b"echo install")),
+            "{seen:?}"
+        );
+    })
+}
+
+/// #1434 / #1435: a programmatic insert (here the pending command a producer sets) while an
+/// Enter waits for its verdict is deferred, not applied: applying it voided the Enter or had it
+/// replayed to the pty as typeahead.
+#[test]
+fn programmatic_insert_waits_for_a_waiting_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.open_submitted_enter_gate_for_test(Vec::new(), false, ctx);
+                assert!(input.enter_queue_holds_keys(ctx));
+                assert!(input.system_insert("echo hi", ctx));
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "the insert did not touch the buffer the Enter is about"
+                );
+                // The Enter's gate closes: the deferred insert is applied.
+                input.release_enter_gate(ctx);
+                assert_eq!(input.buffer_text(ctx), "echo hi");
+            });
+        });
+    })
+}
+
+/// #1435: the pending command runs as it was requested, never as a mix with what was typed into
+/// the buffer it was shown in.
+#[test]
+fn pending_command_text_is_remembered_apart_from_the_buffer() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.set_pending_command("echo requested", ctx);
+            view.input.update(ctx, |input, ctx| {
+                assert_eq!(
+                    input.pending_command_text_for_test(),
+                    Some("echo requested")
+                );
+                // The user types into it while it waits.
+                input.system_insert(" && rm x", ctx);
+                assert_ne!(input.buffer_text(ctx), "echo requested");
+                assert_eq!(
+                    input.pending_command_text_for_test(),
+                    Some("echo requested"),
+                    "what runs is what was requested"
+                );
+            });
+        });
+    })
+}
+
+/// #1434: an accepted history entry (buffer replace + submit) and the misroute-recovery resubmits
+/// wait for a waiting Enter instead of replacing its line.
+#[test]
+fn programmatic_submits_wait_for_a_waiting_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.open_submitted_enter_gate_for_test(Vec::new(), false, ctx);
+                input.accept_history_text_and_submit("ls -la", ctx);
+                input.resubmit_locked_to_shell("pwd", ctx);
+                input.send_text_to_agent("explain", ctx);
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "none of them touched the buffer the waiting Enter is about"
+                );
+            });
         });
     })
 }

@@ -1967,6 +1967,14 @@ pub struct Input {
     /// If true, will submit the command in the editor to the shell upon receiving the
     /// precmd message.
     has_pending_command: bool,
+    /// The command [`Self::set_pending_command`] was asked to run (#1435): what runs is this, never
+    /// whatever the user's keys made of the buffer it was shown in.
+    pending_command_text: Option<String>,
+    /// Programmatic edits (a command producer, the local-control IPC, a slash command) that
+    /// arrived while an Enter waited for its verdict (#1434). Applied, in order, when that Enter's
+    /// gate closes: applied at once they changed the waiting line and voided the Enter, or were
+    /// taken for keys typed behind it and replayed to the pty.
+    deferred_programmatic_edits: Vec<enter_queue::DeferredEdit>,
     last_word_insertion: LastWordInsertion,
 
     ai_controller: ModelHandle<BlocklistAIController>,
@@ -3891,6 +3899,8 @@ impl Input {
             debounce_input_background_tx,
             debounce_ai_query_prediction_tx,
             has_pending_command: false,
+            pending_command_text: None,
+            deferred_programmatic_edits: Vec::new(),
             last_word_insertion,
             decorations_future_handle: None,
             decorations_cancel: None,
@@ -4953,10 +4963,7 @@ impl Input {
                     });
                     ctx.notify();
                 }
-                self.editor.update(ctx, |editor, ctx| {
-                    editor.set_buffer_text(command, ctx);
-                });
-                self.input_enter(ctx);
+                self.accept_history_text_and_submit(command, ctx);
             }
             inline_history::InlineHistoryMenuEvent::AcceptAIPrompt { query_text } => {
                 if self
@@ -4969,10 +4976,7 @@ impl Input {
                     });
                     ctx.notify();
                 }
-                self.editor.update(ctx, |editor, ctx| {
-                    editor.set_buffer_text(query_text, ctx);
-                });
-                self.input_enter(ctx);
+                self.accept_history_text_and_submit(query_text, ctx);
             }
             inline_history::InlineHistoryMenuEvent::SelectCommand {
                 command,
@@ -6651,14 +6655,50 @@ impl Input {
         if !self.has_pending_command {
             return;
         }
+        // #1435: a command must not overtake input the pane queue still holds for the editor or
+        // the pty: an Enter waiting for its verdict (its gate's release re-enters here, after
+        // applying the edits deferred behind it) or a paste being read (its result re-enters).
+        if self.pending_command_must_wait_for_queue(ctx) {
+            return;
+        }
+        if !self.deferred_programmatic_edits.is_empty() {
+            self.flush_deferred_programmatic_edits(ctx);
+            return;
+        }
 
-        let command = self.get_command(ctx);
         if self.can_execute_command(ctx).is_no() {
             return;
         }
 
-        self.try_execute_command(&command, ctx);
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        let requested = self.pending_command_text.clone();
+        let mut keep_typed_after: Option<String> = None;
+        let command = match requested {
+            // Untouched: as before, with abbreviations / aliases expanded.
+            Some(requested) if requested != buffer => {
+                // The user typed into the pending command (or cleared it) while it waited. It
+                // runs as it was requested, never as a mix of the two (#1435); what the user
+                // typed is not part of it. The buffer is cleared when the block completes, as
+                // for any command.
+                log::warn!(
+                    "pending command: the buffer changed while it waited; running the \
+                     requested command, not the edited text"
+                );
+                keep_typed_after = Some(requested.clone());
+                requested
+            }
+            _ => self.get_command(ctx),
+        };
+
+        let executed = self.try_execute_command(&command, ctx);
+        if let (true, Some(requested)) = (executed, keep_typed_after) {
+            // What the user typed into the pending command is not lost when the block's buffer is
+            // cleared: the text beyond the requested command (all of it if the command text was
+            // edited) is what `take_text_newer_than_completed_submission` gives back (#1435).
+            self.editor_submission = Some(requested);
+        }
         self.has_pending_command = false;
+        self.pending_command_text = None;
 
         self.editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(InteractionState::Editable, ctx);
@@ -8318,6 +8358,13 @@ impl Input {
     }
 
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
+        // #1434: not while an Enter waits for its verdict or an editor paste is read.
+        if self.defer_programmatic_edit(
+            enter_queue::DeferredEdit::Replace(content.to_owned()),
+            ctx,
+        ) {
+            return;
+        }
         self.bump_input_generation();
         self.editor.update(ctx, |view, ctx| {
             view.set_buffer_text(content, ctx);
@@ -13050,6 +13097,10 @@ impl Input {
     // should be inputted into the input area (i.e. arrow keys should not be
     // included in the string).
     pub fn system_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
+        // #1434: ordered with the keys the pane queue holds for the editor.
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::Insert(text.to_owned()), ctx) {
+            return true;
+        }
         self.insert_internal(text, EditOrigin::UserInitiated, ctx)
     }
 
@@ -13075,8 +13126,15 @@ impl Input {
         self.has_pending_command
     }
 
+    /// The command [`Self::set_pending_command`] was last asked to run, for tests.
+    #[cfg(test)]
+    pub(crate) fn pending_command_text_for_test(&self) -> Option<&str> {
+        self.pending_command_text.as_deref()
+    }
+
     pub fn set_pending_command(&mut self, exec: &str, ctx: &mut ViewContext<Self>) {
         self.has_pending_command = true;
+        self.pending_command_text = Some(exec.to_owned());
         self.system_insert(exec, ctx);
     }
 
@@ -14684,7 +14742,11 @@ impl Input {
     /// chosen that route explicitly (so it is recorded as locked and never offered a recovery of
     /// its own). The buffer must be empty. If nothing was submitted (the submit was refused), the
     /// previous input config is restored exactly, including its lock flag.
-    fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        // #1434: not while an Enter waits for its verdict or an editor paste is read.
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::ResubmitToShell(text.to_owned()), ctx) {
+            return;
+        }
         let (previous_config, previous_lock_flag) =
             self.ai_input_model.as_ref(ctx).input_config_snapshot();
         self.ai_input_model.update(ctx, |model, ctx| {
@@ -14716,7 +14778,11 @@ impl Input {
     /// input to AI, so `input_enter` would see Shell and run the text in the shell again (#907).
     /// Whatever the buffer holds when the submit is refused is cleared, since the buffer was
     /// empty before.
-    fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        // #1434: not while an Enter waits for its verdict or an editor paste is read.
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::SendToAgent(text.to_owned()), ctx) {
+            return;
+        }
         self.editor.update(ctx, |editor, ctx| {
             editor.set_buffer_text(text, ctx);
         });
