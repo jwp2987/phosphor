@@ -1056,7 +1056,6 @@ fn bootstrap_and_builtin_pwsh_commands_are_module_qualified() {
 
 mod real_shells {
     use super::*;
-    use std::io::Read as _;
     use std::process::{Command, ExitStatus, Stdio};
     use std::sync::{Arc, Mutex, OnceLock, mpsc};
     use std::time::{Duration, Instant};

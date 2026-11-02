@@ -1176,6 +1176,7 @@ impl AIConversation {
     /// Updates the last observed orchestration event sequence number. Callers
     /// must follow up with `write_updated_conversation_state` to push the
     /// change to SQLite.
+    #[cfg(test)]
     pub fn set_last_event_sequence(&mut self, sequence: i64) {
         self.last_event_sequence = Some(sequence);
     }

@@ -28,11 +28,11 @@ pub use input_classifier::InputType;
 use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
 use super::compute_clock::ComputeClock;
 use super::context_model::BlocklistAIContextModel;
-use super::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
+use super::conversation_selection::ConversationSelectionEvent;
 use super::history_model::BlocklistAIHistoryModel;
 use super::misroute_recovery::{MisrouteMemory, MisrouteOffer, RouteReason, SubmitRoute};
 #[cfg(any(test, feature = "test-util"))]
-use super::conversation_selection::MockConversationSelection;
+use super::conversation_selection::{ConversationSelection, MockConversationSelection};
 use super::input_mode_policy::{InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,

@@ -7,7 +7,6 @@ use futures::channel::oneshot;
 use futures_util::StreamExt;
 use settings::Setting as _;
 use uuid::Uuid;
-use warp_multi_agent_api::response_event;
 use warpui::{Entity, ModelContext};
 
 use super::project_rules_wait;
@@ -674,13 +673,6 @@ pub struct ResponseStreamId(String);
 impl ResponseStreamId {
     pub fn new_local() -> Self {
         Self(Uuid::new_v4().to_string())
-    }
-
-    pub fn for_shared_session(init_event: &response_event::StreamInit) -> Self {
-        // Make the stream ID unique per viewing by appending a local UUID
-        // This prevents collisions when replaying the same conversation multiple times
-        // (either on close-and-reopen or when viewing the same shared session from multiple terminals)
-        Self(format!("{}-{}", init_event.request_id, Uuid::new_v4()))
     }
 
     #[cfg(test)]
