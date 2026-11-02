@@ -189,13 +189,13 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 |---|---|---|---|
 | `guards` | test | automatic | oracle pin fetch + all guards of 2.3 + `macos/test_create_warpctrl_wrapper` + `test_warpctrl_early_dispatch` |
 | `check-linux` | test | automatic (~10 min warm) | `cargo check -p warp --features gui --lib --tests`, feature-unified multi-package check, `--features tui`, `-p warp_tui` |
-| `test-linux` | test | manual (auto on tags) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule) |
-| `test-warpui-core` | test | manual (auto on tags) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
+| `test-linux` | test | manual (auto on tags and on pushes to `main`, with the filter derived from the pushed diff by `ci_seq.py --derive-env`; skipped when nothing in its scope changed) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule) |
+| `test-warpui-core` | test | manual (auto on tags and on `main` pushes that touch warpui_core) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
 | `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation (honours `$TEST_FILTER`) |
 | `integration-linux` | test | manual, allow_failure | `crates/integration` under xvfb, 3 shards, `--profile ci` |
 | `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh` |
 | `usage-test-linux` / `usage-test-macos` | test | manual | `script/usage-test --surface both` (Linux, xvfb) / `--surface tui` (Mac has no WindowServer for the daemon) |
-| `licenses`, `advisories` | test | on box | `cargo deny check licenses sources`, `check advisories` |
+| `licenses`, `advisories` | test | on box | `cargo deny check licenses sources`, `check advisories`; `retry: max 2` on script/runner-system failure (network-dependent: ci_seq reports a fetch outage as NETWORK-FAIL, separate from code failures; a real `error[...]` finding stays FAIL) |
 | `check-macos`, `check-windows` | test | manual | cargo check of OS-only paths (`script/windows/bundle.ps1 -CHECK_ONLY`) |
 | `diag-mac`, `diag-windows` | test | manual | read-only environment reports |
 | `build-linux-x86_64`, `build-macos-arm64`, `build-windows-x86_64` | build | manual | AppImage+deb (launches `--version`), ad-hoc signed DMG, unsigned Inno installer; `dist/` artifacts, 3 days |
@@ -622,7 +622,7 @@ suites. Docs-only and CI-only diffs run nothing but `check-linux`. The derived f
 before anything is played (`--dry-run` stops there): read it, and override with `--tests` when the mapping is too narrow (a change in
 shared code that other modules' tests exercise) or too wide. Dependents of a changed non-app crate inside `warp` are not added
 automatically. Platforms: a diff of only Windows (or macOS, Linux) paths builds only that platform; any shared code builds all three;
-`--platforms` overrides. A filtered `check_test_failures` run still fails on any new failure but does not judge listed known failures
+`--platforms` overrides. `ci_seq.py --self-test` checks the filter mapping (`--dry-run --files a,b` prints the filter for a fake file list); a job pending with no runner for `--pending-timeout` minutes (default 20) is reported RUNNER-OFFLINE, the rest continue and the exit status is non-zero. A filtered `check_test_failures` run still fails on any new failure but does not judge listed known failures
 that did not run (that stale-entry rule needs a full run, which candidate does).
 
 **Scoped mutation testing (release tier).** `.cargo/mutants.toml` + the `mutants` job: `pane_key.rs`, `model/key_facts.rs`,

@@ -544,6 +544,20 @@ build-windows-profiling:
     - when: manual
       allow_failure: true
 
+# Fix-tier gate on every direct push to main (#1503): test-linux with the filter derived from the pushed diff
+# (script/ci/ci_seq.py --derive-env) and test-warpui-core when warpui_core changed. A push that changes only
+# docs/scripts runs neither (they print "skipped"). build/* refs stay manual; the heavy suites stay manual.
+.main_push_rules:
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: on_success
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
+      when: on_success
+      variables:
+        AUTO_DERIVE: "1"
+    - when: manual
+      allow_failure: true
+
 # Dependency licence gate: deny.toml / about.toml were claimed to be enforced in CI
 # since the fork was created and nothing ran them (see pr-check.yml history).
 # `check sources` is wider than upstream ran: the fork has a personal winit fork
@@ -551,6 +565,11 @@ build-windows-profiling:
 licenses:
   extends: .box_job
   timeout: 30m
+  # Network-dependent (#1518): a transient fetch failure retries instead of failing the round. A real finding also retries (GitLab
+  # cannot filter on the log) and fails again, only slower; script/ci/ci_seq.py reports a fetch outage as NETWORK-FAIL, apart from code failures.
+  retry:
+    max: 2
+    when: [script_failure, runner_system_failure]
   script:
     - ./script/install_cargo_binstall
     - cargo binstall --force -y cargo-deny
@@ -566,6 +585,11 @@ licenses:
 advisories:
   extends: .box_job
   timeout: 30m
+  # Network-dependent (#1518): a transient fetch failure retries instead of failing the round. A real finding also retries (GitLab
+  # cannot filter on the log) and fails again, only slower; script/ci/ci_seq.py reports a fetch outage as NETWORK-FAIL, apart from code failures.
+  retry:
+    max: 2
+    when: [script_failure, runner_system_failure]
   script:
     - ./script/install_cargo_binstall
     - cargo binstall --force -y cargo-deny
@@ -577,18 +601,31 @@ advisories:
 # fails the gate. nextest, not `cargo test`: the suite was stabilised under its
 # process-per-test isolation.
 test-linux:
-  extends: [.box_job, .heavy_rules]
+  extends: [.box_job, .main_push_rules]
   timeout: 3h
   script:
+    - |
+      if [[ -n "${AUTO_DERIVE:-}" && -z "${TEST_FILTER:-}" ]]; then
+        git cat-file -e "${CI_COMMIT_BEFORE_SHA}^{commit}" 2>/dev/null || git fetch -q --depth=500 origin "$CI_COMMIT_BEFORE_SHA" || true
+        eval "$(python3 script/ci/ci_seq.py --derive-env "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA" linux)"
+        echo "main push: RUN_SUITE=$RUN_SUITE TEST_FILTER=${TEST_FILTER:-<none: full suite>}"
+        if [[ "$RUN_SUITE" == 0 ]]; then echo "skipped: nothing in test-linux's scope changed"; exit 0; fi
+      fi
     - ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui ${TEST_FILTER:+-E "$TEST_FILTER"}
 
 # warpui_core with --features tui. The flag is NOT optional: elements/tui/ is
 # cfg(feature = "tui"), so without it those ~259 tests do not exist, and the run
 # reports a green that says nothing about them.
 test-warpui-core:
-  extends: [.box_job, .heavy_rules]
+  extends: [.box_job, .main_push_rules]
   timeout: 90m
   script:
+    - |
+      if [[ -n "${AUTO_DERIVE:-}" ]]; then
+        git cat-file -e "${CI_COMMIT_BEFORE_SHA}^{commit}" 2>/dev/null || git fetch -q --depth=500 origin "$CI_COMMIT_BEFORE_SHA" || true
+        eval "$(python3 script/ci/ci_seq.py --derive-env "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA" core)"
+        if [[ "$RUN_SUITE" == 0 ]]; then echo "skipped: warpui_core did not change"; exit 0; fi
+      fi
     - ./script/check_test_failures -p warpui_core --features tui ${TEST_FILTER:+-E "$TEST_FILTER"}
 
 # insta snapshots: run every package that has `insta` snapshot tests with INSTA_UPDATE=always so
