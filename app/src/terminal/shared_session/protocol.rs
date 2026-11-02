@@ -170,11 +170,6 @@ pub enum Selection {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum PresenceUpdate {
-    Selection(Selection),
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ProfileData {
     pub user_uid: String,
