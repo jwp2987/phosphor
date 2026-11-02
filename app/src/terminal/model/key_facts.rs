@@ -618,3 +618,10 @@ mod tests;
 #[cfg(all(test, any(shuttle, loom)))]
 #[path = "key_facts_model_tests.rs"]
 mod model_tests;
+
+// Interleaving models of the input pipeline (pane queue drain, ssh hand-over, hand-off holds, the
+// stamp-then-decide gen order; #1512, #1531). The module name ends in `model_tests` so the
+// `model_tests::` filter of the `test-shuttle-loom` job selects it.
+#[cfg(all(test, any(shuttle, loom)))]
+#[path = "pipeline_model_tests.rs"]
+mod pipeline_model_tests;
