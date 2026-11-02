@@ -40,7 +40,7 @@ use self::{
     empty::Empty, header::RenderableHeader, hidden_section::RenderableHiddenSection,
     horizontal_rule::HorizontalRule, image::RenderableImage, mermaid::RenderableMermaidDiagram,
     ordered_list::RenderableOrderedListItem, paragraph::RenderableParagraph,
-    runnable_command::RenderableRunnableCommand, table::RenderableTable,
+    parked::RenderableParked, runnable_command::RenderableRunnableCommand, table::RenderableTable,
     task_list::RenderableTaskList, text_block::RenderableTextBlock,
     unordered_list::RenderableBulletList,
 };
@@ -58,6 +58,7 @@ mod mermaid;
 mod ordered_list;
 mod paint;
 mod paragraph;
+mod parked;
 mod placeholder;
 mod runnable_command;
 mod table;
@@ -940,6 +941,10 @@ impl<V: EditorView> RichTextElement<V> {
                     BlockItem::Table { .. } => RenderableTable::new(item).finish(),
                     BlockItem::TrailingNewLine(_) => Empty::new(item).finish(),
                     BlockItem::Hidden { .. } => RenderableHiddenSection::new(item, ctx).finish(),
+                    // Not expanded by the hydration pass yet (it runs at the start of this
+                    // layout, so this only happens when the scroll moved afterwards): keep the
+                    // rows' height and paint nothing; the next layout expands them.
+                    BlockItem::ParkedLines(_) => RenderableParked::new(item).finish(),
                     BlockItem::Embedded(embed) => {
                         let start_offset = item.block_offset;
                         let child_model = parent.embedded_item_at(start_offset, ctx);

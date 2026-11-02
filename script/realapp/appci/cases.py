@@ -994,6 +994,116 @@ def c_approval(ctx, r):
 
 
 # ---------------------------------------------------------------- tabs and windows (last: leaves the app busy)
+# ---------------------------------------------------------------- code editor memory (#1340)
+def editor_mem_file(path, kind, target_bytes):
+    """a generated ~7 MB source file: 'txt' = plain prose-like lines (~85k lines), 'rs' = Rust-looking code with long lines"""
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega".split()
+    rng = random.Random(1340)
+    size, i = 0, 0
+    with open(path, "w") as f:
+        while size < target_bytes:
+            if kind == "rs":
+                a, b = rng.choice(words), rng.choice(words)
+                line = ("    pub fn %s_%d(&self, %s: &str, count: usize) -> Result<Vec<String>, Error> { let mut out = Vec::with_capacity(count); "
+                        "for n in 0..count { out.push(format!(\"{}-{}\", %s, n * %d)); } Ok(out) } // %s %s\n" % (a, i, b, b, i % 97, a, b))
+            else:
+                line = "line %d: %s\n" % (i, " ".join(rng.choice(words) for _ in range(rng.randint(6, 14))))
+            f.write(line)
+            size += len(line)
+            i += 1
+
+
+def rss_mb(ctx):
+    return ctx.app.cpu_ticks()[1] / 1024.0
+
+
+def settle_rss(ctx, quiet_s=3.0, timeout=150):
+    """wait until the app's RSS has stayed within +-2 MB for quiet_s seconds (file load is asynchronous and slow)"""
+    t0 = time.time()
+    last, since = rss_mb(ctx), time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(0.75)
+        cur = rss_mb(ctx)
+        if abs(cur - last) > 2.0:
+            last, since = cur, time.time()
+        elif time.time() - since >= quiet_s:
+            break
+    return rss_mb(ctx)
+
+
+@case("editor_memory_7mb", modes=("terminal",), order=85, gui=True)
+def c_editor_mem(ctx, r):
+    """#1340 P5: open a generated 7 MB file in the code editor (command palette + absolute path), record RSS after open, close the
+    pane and record RSS after the undo-close grace window. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
+    7 MB Rust <= ~150 MB, memory released on close). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the
+    palette / close key sequence is platform specific: APPCI_KEY_PALETTE (default ctrl+shift+p; mac cmd+p) and APPCI_KEY_CLOSE
+    (default ctrl+shift+w; mac cmd+w) override it. Needs the process RSS via ps (Linux, macOS)."""
+    try:
+        rss_mb(ctx)
+    except Exception as e:  # noqa: BLE001 - no ps / no pid on this platform
+        r.skip("process RSS is not readable on this backend: %s" % e)
+    palette = os.environ.get("APPCI_KEY_PALETTE", "ctrl+shift+p")
+    close = os.environ.get("APPCI_KEY_CLOSE", "ctrl+shift+w")   # empty: skip the close phase
+    grace = float(os.environ.get("APPCI_UNDO_CLOSE_WAIT_S", "75"))   # general.undo_close.grace_period is 60 s
+    strict = os.environ.get("APPCI_EDITOR_MEM_STRICT", "") not in ("", "0")
+    limits = {"txt": float(os.environ.get("APPCI_EDITOR_MEM_TXT_MAX_MB", "100")), "rs": float(os.environ.get("APPCI_EDITOR_MEM_RS_MAX_MB", "150"))}
+    close_max = float(os.environ.get("APPCI_EDITOR_MEM_CLOSE_MAX_MB", "60"))
+    kinds = [k for k in os.environ.get("APPCI_EDITOR_MEM_KINDS", "txt,rs").split(",") if k in limits]
+    size = int(float(os.environ.get("APPCI_EDITOR_MEM_MB", "7")) * 1024 * 1024)
+    ctx.reset()
+    opened_any = False
+    for kind in kinds:
+        path = os.path.join(ctx.W, "editor_mem_%s.%s" % (kind, "rs" if kind == "rs" else "txt"))
+        editor_mem_file(path, kind, size)
+        base = settle_rss(ctx)
+        ctx.be.key(palette)
+        time.sleep(1.5)
+        ctx.be.type(path, 12)
+        time.sleep(1.0)
+        ctx.be.key("enter")
+        opened = settle_rss(ctx)
+        delta = opened - base
+        ctx.shot("editor_mem_%s_open" % kind)
+        r.metric("%s_rss_base_mb" % kind, base)
+        r.metric("%s_rss_open_mb" % kind, opened)
+        r.metric("%s_rss_open_delta_mb" % kind, delta)
+        if delta < 8:
+            msg = "%s: RSS grew only %.1f MB after opening %s through the palette (%s): the file did not open; set APPCI_KEY_PALETTE" % (kind, delta, path, palette)
+            if strict:
+                r.check(False, msg)
+            else:
+                r.note("SKIPPED " + msg)
+            ctx.be.key("escape")
+            ctx.reset()
+            continue
+        opened_any = True
+        r.check(delta <= limits[kind], "%s: opening a %d MB file cost %.0f MB of RSS (> %.0f MB target)" % (kind, size >> 20, delta, limits[kind]))
+        if not close:
+            r.note("%s: no close key on this platform (APPCI_KEY_CLOSE empty): release on close not measured" % kind)
+            ctx.reset()
+            continue
+        try:
+            ctx.be.key(close)
+        except RuntimeError as e:  # the macOS guard refuses some chords
+            r.note("%s: close key %r refused by the backend (%s): release on close not measured" % (kind, close, e))
+            ctx.reset()
+            continue
+        time.sleep(grace)
+        after = settle_rss(ctx)
+        r.metric("%s_rss_close_mb" % kind, after)
+        r.metric("%s_rss_close_delta_mb" % kind, after - base)
+        ctx.shot("editor_mem_%s_closed" % kind)
+        r.check(after - base <= close_max, "%s: %.0f MB of RSS still held %.0f s after closing the editor (> %.0f MB over the pre-open baseline %.0f MB)" % (kind, after - base, grace, close_max, base))
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        ctx.reset()
+    if not opened_any and not strict:
+        r.skip("the generated file never opened in the code editor on this backend (see notes)")
+    r.check(ctx.app.alive(), "app died during the editor memory case")
+
+
 @case("tabs_two_windows", order=90, gui=True)
 def c_tabs(ctx, r):
     ntabs = int(os.environ.get("APPCI_TABS", "12"))

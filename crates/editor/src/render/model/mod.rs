@@ -48,6 +48,7 @@ use warpui::{
 
 pub use self::location::{HitTestOptions, Location};
 pub use self::offset_map::{OffsetMap, SelectableTextRun};
+pub use self::parked::ParkedLines;
 pub use self::positioned::Positioned;
 use self::{
     location::WrapDirection,
@@ -89,6 +90,7 @@ pub use self::char_cell_display::{DisplayLattice, DisplayRow, DisplayRowKind};
 pub(crate) mod hydration;
 mod location;
 mod offset_map;
+pub(crate) mod parked;
 mod positioned;
 pub mod saved_positions;
 pub mod table_offset_map;
@@ -430,7 +432,16 @@ impl<'a> RenderContentTreeRef<'a> {
         }
         let mut cursor = self.0.cursor::<LineCount, LayoutSummary>();
         cursor.seek_clamped(&line, SeekBias::Right);
-        (cursor.start().height as f32).into_pixels()
+        let mut height = cursor.start().height;
+        if let Some(BlockItem::ParkedLines(chunk)) = cursor.item() {
+            // The line is inside a parked chunk: every line of it is one stride tall.
+            let into_chunk = line
+                .as_usize()
+                .saturating_sub(cursor.start().lines.as_usize())
+                .min(chunk.len().saturating_sub(1));
+            height += into_chunk as f64 * f64::from(chunk.stride().as_f32());
+        }
+        (height as f32).into_pixels()
     }
 }
 
@@ -931,6 +942,11 @@ pub enum BlockItem {
     Table(Box<LaidOutTable>),
     TrailingNewLine(Cursor),
     Hidden(HiddenBlockConfig),
+    /// Many consecutive dehydrated single-line plain-text paragraphs stored as one tree item
+    /// (#1340 P5, see [`parked`]). Only the lazy-layout code editor produces these; the
+    /// hydration pass expands the ones near the viewport and the selections into ordinary
+    /// paragraphs, so on-screen and edited lines are never chunks.
+    ParkedLines(ParkedLines),
 }
 
 pub struct EmbeddedItemHTMLRepresentation<'a> {
@@ -2350,7 +2366,19 @@ impl RenderState {
 
         Self::move_cursor_to_location(&mut cursor, location);
 
-        Some(cursor.positioned_item()?.start_y_offset - self.viewport().scroll_top())
+        let positioned = cursor.positioned_item()?;
+        let mut y_offset = positioned.start_y_offset;
+        if let (BlockItem::ParkedLines(chunk), RenderLineLocation::Current(line)) =
+            (positioned.item, location)
+        {
+            // A line inside a parked chunk: offset by whole strides from the chunk start.
+            let into_chunk = line
+                .as_usize()
+                .saturating_sub(positioned.start_line.as_usize())
+                .min(chunk.len().saturating_sub(1));
+            y_offset += (into_chunk as f32 * chunk.stride().as_f32()).into_pixels();
+        }
+        Some(y_offset - self.viewport().scroll_top())
     }
 
     fn move_cursor_to_location<'a>(
@@ -3093,6 +3121,16 @@ impl RenderState {
 
     /// Replace all temporary blocks in the BlockItem cache with a new set of temporary
     fn reset_temporary_block(&self, mut blocks: HashMap<LineCount, Vec<BlockItem>>) {
+        // Temporary blocks are inserted at line boundaries; a parked chunk straddling one is
+        // split there first (#1340 P5), otherwise the block would never find its position.
+        let lines: Vec<LineCount> = blocks.keys().copied().collect();
+        let split = {
+            let content = self.content.borrow();
+            parked::split_parked_at_lines(&content, &lines)
+        };
+        if let Some(split) = split {
+            *self.content.borrow_mut() = split;
+        }
         let mut new_tree = SumTree::new();
         {
             let content = self.content.borrow();
@@ -3124,6 +3162,17 @@ impl RenderState {
         *self.content.borrow_mut() = new_tree;
     }
 
+    /// Splits any parked chunk that strictly contains one of the tree offsets `offsets`.
+    fn split_parked_chunks_at(&self, offsets: &[CharOffset]) {
+        let split = {
+            let content = self.content.borrow();
+            parked::split_parked_at(&content, offsets)
+        };
+        if let Some(split) = split {
+            *self.content.borrow_mut() = split;
+        }
+    }
+
     /// Update the render state with laid out new edits.
     fn layout_pending_edit(
         &self,
@@ -3143,18 +3192,24 @@ impl RenderState {
         );
 
         let hidden_range_clone = hidden_ranges.clone();
+        // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
+        let effective_start = pending_edit
+            .old_offset
+            .start
+            .saturating_sub(&CharOffset::from(1));
+        let effective_end = pending_edit
+            .old_offset
+            .end
+            .saturating_sub(&CharOffset::from(1));
+        // A parked chunk straddling either end of the replaced range is split at that line
+        // boundary first, so the splice below only ever cuts between items (#1340 P5).
+        self.split_parked_chunks_at(&[effective_start, effective_end]);
         let mut new_tree = SumTree::new();
         {
             let content = self.content.borrow();
 
             log::trace!("Initial blocks:\n{}", content.describe());
             let mut cursor = content.cursor::<CharOffset, CharOffset>();
-
-            // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
-            let effective_start = pending_edit
-                .old_offset
-                .start
-                .saturating_sub(&CharOffset::from(1));
 
             // Push blocks that are not affected by the change. We don't need to recompute them.
             new_tree.push_tree(cursor.slice(&effective_start, SeekBias::Right));
@@ -3178,12 +3233,6 @@ impl RenderState {
                 }
                 new_tree.push(item);
             }
-
-            // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
-            let effective_end = pending_edit
-                .old_offset
-                .end
-                .saturating_sub(&CharOffset::from(1));
 
             let sub_tree_start = *cursor.start();
             let sub_tree = cursor.slice(&effective_end, SeekBias::Left);
@@ -3259,6 +3308,15 @@ impl RenderState {
         // Hidden range updates could be incremental. This means we might end with duplicate adjacent hidden blocks.
         // This step ensures these are merged into one.
         if let Some(hidden_ranges) = hidden_ranges {
+            // `dedupe_hidden_ranges` slices at each range's (start - 1) and end: no chunk may
+            // straddle those.
+            let boundaries: Vec<CharOffset> = hidden_ranges
+                .iter()
+                .flat_map(|range| [range.start.saturating_sub(&CharOffset::from(1)), range.end])
+                .collect();
+            if let Some(split) = parked::split_parked_at(&new_tree, &boundaries) {
+                new_tree = split;
+            }
             new_tree = Self::dedupe_hidden_ranges(new_tree, hidden_ranges);
         }
         log::trace!("Resulting blocks:\n{}", new_tree.describe());
@@ -4054,6 +4112,7 @@ impl BlockItem {
             BlockItem::Table(laid_out_table) => laid_out_table.height().as_f32(),
             BlockItem::Embedded(embedded_item) => embedded_item.height().as_f32(),
             BlockItem::Hidden(config) => config.height().as_f32(),
+            BlockItem::ParkedLines(chunk) => chunk.first_line_height(),
         }
     }
 
@@ -4078,6 +4137,7 @@ impl BlockItem {
             BlockItem::Table(laid_out_table) => laid_out_table.spacing(),
             BlockItem::Embedded(embedded_item) => embedded_item.spacing(),
             BlockItem::Hidden { .. } => BlockSpacing::default(),
+            BlockItem::ParkedLines(chunk) => chunk.spacing(),
         }
     }
 
@@ -4114,6 +4174,7 @@ impl BlockItem {
             BlockItem::Image { config, .. } => config.height,
             BlockItem::Table(laid_out_table) => laid_out_table.height(),
             BlockItem::Hidden(config) => config.height(),
+            BlockItem::ParkedLines(chunk) => chunk.total_height() - chunk.spacing().y_axis_offset(),
         }
     }
 
@@ -4138,15 +4199,25 @@ impl BlockItem {
             BlockItem::Image { config, .. } => config.width,
             BlockItem::Table(laid_out_table) => laid_out_table.width(),
             BlockItem::Hidden(_) => MIN_HIDDEN_BLOCK_WIDTH,
+            BlockItem::ParkedLines(chunk) => {
+                chunk.max_item_width() - chunk.spacing().x_axis_offset()
+            }
         }
     }
 
     /// The total height of this item, including content, padding, and margins.
     pub fn height(&self) -> Pixels {
+        if let BlockItem::ParkedLines(chunk) = self {
+            // Exactly the chunk's lines stacked; avoids `a - x + x` rounding.
+            return chunk.total_height();
+        }
         self.content_height() + self.spacing().y_axis_offset()
     }
 
     pub fn width(&self) -> Pixels {
+        if let BlockItem::ParkedLines(chunk) = self {
+            return chunk.max_item_width();
+        }
         self.content_width() + self.spacing().x_axis_offset()
     }
 
@@ -4169,6 +4240,7 @@ impl BlockItem {
             | BlockItem::Image { .. } => CharOffset::from(1),
             BlockItem::Table(laid_out_table) => laid_out_table.content_length(),
             BlockItem::Hidden(config) => config.content_length(),
+            BlockItem::ParkedLines(chunk) => chunk.content_length(),
         }
     }
 
@@ -4191,6 +4263,7 @@ impl BlockItem {
             | BlockItem::Image { .. } => LineCount(1),
             BlockItem::Table(laid_out_table) => laid_out_table.lines(),
             BlockItem::Hidden(config) => config.line_count(),
+            BlockItem::ParkedLines(chunk) => chunk.lines(),
         }
     }
 
@@ -4213,7 +4286,8 @@ impl BlockItem {
             | BlockItem::HorizontalRule(_)
             | BlockItem::Image { .. }
             | BlockItem::Table(_)
-            | BlockItem::TemporaryBlock { .. } => false,
+            | BlockItem::TemporaryBlock { .. }
+            | BlockItem::ParkedLines(_) => false,
             // The trailing newline placeholder and hidden blocks are always considered empty.
             BlockItem::TrailingNewLine(_) | BlockItem::Hidden { .. } => true,
         }
@@ -4267,6 +4341,20 @@ impl Positioned<'_, BlockItem> {
                     })
             }
             BlockItem::MermaidDiagram { .. } => self.start_char_offset,
+            BlockItem::ParkedLines(chunk) => {
+                // Row picks the line; without glyphs the column cannot be resolved, so this is
+                // the line start (what a dehydrated paragraph answers too).
+                hydration::report_dehydrated_lines();
+                let row = point.row() as usize;
+                let first_row = self.start_line.as_usize();
+                if row < first_row {
+                    self.start_char_offset
+                } else if row - first_row >= chunk.len() {
+                    self.end_char_offset()
+                } else {
+                    self.start_char_offset + chunk.line_start(row - first_row)
+                }
+            }
             BlockItem::TrailingNewLine(_)
             | BlockItem::Embedded(_)
             | BlockItem::HorizontalRule(_)
@@ -4331,6 +4419,22 @@ impl Positioned<'_, BlockItem> {
             }
             BlockItem::MermaidDiagram { .. } => {
                 SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
+            }
+            BlockItem::ParkedLines(chunk) => {
+                hydration::report_dehydrated_lines();
+                if offset < self.start_char_offset {
+                    SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
+                } else {
+                    let relative = (offset - self.start_char_offset).as_usize();
+                    if relative >= chunk.content_length().as_usize() {
+                        SoftWrapPoint::new(self.end_line().as_u32(), ColumnUnit::pixels_zero())
+                    } else {
+                        SoftWrapPoint::new(
+                            self.start_line.as_u32() + chunk.line_at_offset(relative) as u32,
+                            ColumnUnit::Pixels(self.style.left_offset()),
+                        )
+                    }
+                }
             }
             BlockItem::TrailingNewLine(_)
             | BlockItem::Embedded(_)
@@ -4418,7 +4522,28 @@ impl Positioned<'_, BlockItem> {
                 Some(RectF::new(origin, embedded_item.size()))
             }
             BlockItem::TemporaryBlock { .. } | BlockItem::Hidden { .. } => None,
+            BlockItem::ParkedLines(chunk) => {
+                hydration::report_dehydrated_lines();
+                if offset < self.start_char_offset || offset >= self.end_char_offset() {
+                    None
+                } else {
+                    let index = chunk.line_at_offset((offset - self.start_char_offset).as_usize());
+                    // Row-exact, x at the line start: there are no carets to resolve a column.
+                    Some(RectF::new(
+                        self.parked_line_origin(chunk, index),
+                        vec2f(0., chunk.text_height().as_f32()),
+                    ))
+                }
+            }
         }
+    }
+
+    /// Where line `index` of a parked chunk draws its text (the same box a centered
+    /// per-line paragraph would use), relative to the buffer origin.
+    fn parked_line_origin(&self, chunk: &ParkedLines, index: usize) -> Vector2F {
+        let top = self.start_y_offset + (index as f32 * chunk.stride().as_f32()).into_pixels();
+        let gap = chunk.line_content_height() - chunk.text_height();
+        bounds::content_origin(top + gap / 2.0.into_pixels(), &self.style)
     }
 
     /// The bounds of the first line of this item, relative to the buffer origin.
@@ -4476,6 +4601,13 @@ impl Positioned<'_, BlockItem> {
                 RectF::new(origin, embedded_item.first_line_bound())
             }
             BlockItem::TemporaryBlock { .. } | BlockItem::Hidden { .. } => return None,
+            BlockItem::ParkedLines(chunk) => {
+                hydration::report_dehydrated_lines();
+                RectF::new(
+                    self.parked_line_origin(chunk, 0),
+                    vec2f(chunk.line_width(0), chunk.first_line_height()),
+                )
+            }
         };
 
         // At the block level, we want to include any space for list bullets and other
@@ -4489,6 +4621,16 @@ impl sum_tree::Item for BlockItem {
     type Summary = LayoutSummary;
 
     fn summary(&self) -> Self::Summary {
+        if let BlockItem::ParkedLines(chunk) = self {
+            return LayoutSummary {
+                content_length: chunk.content_length(),
+                // N x stride in f64: the exact sum of the per-line summaries this chunk replaces.
+                height: chunk.summary_height(),
+                width: chunk.max_item_width(),
+                lines: chunk.lines(),
+                item_count: 1,
+            };
+        }
         LayoutSummary {
             content_length: self.content_length(),
             // We use f64 to represent heights to avoid cumulative precision error from iteratively adding

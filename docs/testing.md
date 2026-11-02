@@ -58,6 +58,19 @@ Hard rules:
   exist and the run is a false green). The remaining ~40 library crates under `crates/` have their own
   unit tests; the list is the `test-workspace-rest` job in `.gitlab-ci.yml`.
   `command-signatures-v2` is excluded (build script needs yarn, 0 tests).
+- **Code-editor memory (#1340)**. `crates/editor/src/render/model/parked.rs` (unit tests: a chunk expands into
+  exactly the paragraphs it stood for, its summary equals the sum of the per-line summaries bit for bit, split / merge
+  round trips, which paragraphs are parkable) and `parked_tests.rs` (randomized sessions, `StdRng` seeds 0..60 x 40 steps
+  and 1000..1006 x 250 steps, no extra dependency): a plain `Vec<String>` model, a render state whose dehydrated runs are
+  parked into chunks and an "eager" render state with one tree item per line receive the same random edits (replace N lines
+  with M across chunk boundaries, deletes, 8-700 line pastes, replacing the whole document as a line-ending change does),
+  hydration passes, chunk expansion, eviction and re-parking. After every step the rendered text equals the model, the
+  chunked tree's summary (length, height, width, lines) equals the eager tree's exactly, every line's cached metrics equal a
+  fresh layout, `y_offset_at_line` / `vertical_offset_at_render_location` / `character_bounds` y / soft-wrap rows equal the
+  eager tree's, and each chunk keeps its invariants (1..=256 lines, runs tile their line, offsets monotonic). Targeted tests
+  cover an edit inside one chunk, deleting almost every line, expand / re-park round trips, a temporary (diff-hunk) block
+  inside a chunk and a split at a non-line boundary. Run them like any `warp_editor` test:
+  `script/agent-cargo <name> nextest run -p warp_editor parked`.
 - **warp_tui tests need the warp package in the same invocation** (feature unification of `test-util`):
 
       script/agent-cargo <name> nextest run -p warp -p warp_tui --lib --features warp/gui [filter]
@@ -234,6 +247,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_ATTACHMENT_READ_GIVE_UP_MS` | attachment-read timeout for a submit (#1370) |
 | `PHOSPHOR_CONPTY_PROMPT_HOLD=0` | Windows: no ConPTY prompt hold (#1162) |
 | `PHOSPHOR_EDITOR_EAGER_LAYOUT=1`, `PHOSPHOR_EDITOR_FULL_LAYOUT=1`, `PHOSPHOR_EDITOR_LAZY_STRICT=1`, `PHOSPHOR_EDITOR_MAX_FILE_MB` | editor: disable lazy layout / windowed layout; panic on geometry of a dehydrated paragraph (always on in tests); file-size guard (`0`/`off` disables) |
+| `PHOSPHOR_EDITOR_P5=0` | editor: no parked line chunks (#1340 P5); every dehydrated line is an individual tree item again, the P4 representation |
 | `PHOSPHOR_CODE_PANE_KEEP_ON_CLOSE=1`, `PHOSPHOR_FILE_PANE_KEEP_ON_CLOSE=1` | keep closed code/file pane editors alive through the undo-close grace (pre-#1340) |
 | `PHOSPHOR_LAZY_RESTORE=0`, `PHOSPHOR_LAZY_REFLOW=0` | eager restore / reflow of blocks (#1303) |
 | `PHOSPHOR_ALT_FILE_LINKS=0` | alt-screen TUIs treated as editors (no file hover scan) |
@@ -367,6 +381,8 @@ nushell is not in the Ubuntu repos (release tarball from github.com/nushell/nush
 still bash (the harness rc files log its `rec.log`); a zsh/fish/nu/pwsh PRIMARY shell would need per-shell logging rc files in `profile.py`.
 Windows adds `gitbash_subshell` (Git for Windows `bash.exe` started from the pane's PowerShell: 20 fast-typed lines, 4 pasted lines of 10-5000 bytes
 with instant Enter, 3 Ctrl-C of a trapped `sleep 30`, `exit` back to PowerShell; skips when Git for Windows is absent). Windows runs the PowerShell subset
+`editor_memory_7mb` (terminal pass only, #1340 P5: generates a 7 MB plain-text and a 7 MB Rust file, opens each in the code editor through the command palette with the absolute path, records the app's RSS before / after open and after closing the pane and waiting out the 60 s undo-close grace; fails when open costs more than `APPCI_EDITOR_MEM_TXT_MAX_MB` = 100 / `APPCI_EDITOR_MEM_RS_MAX_MB` = 150 MB over the pre-open baseline or more than `APPCI_EDITOR_MEM_CLOSE_MAX_MB` = 60 MB is still held after close; metrics `txt_rss_*_mb`, `rs_rss_*_mb` in `results.json`; `APPCI_KEY_PALETTE` / `APPCI_KEY_CLOSE` override the keys, `APPCI_EDITOR_MEM_STRICT=1` fails instead of skipping when the file never opens, `APPCI_EDITOR_MEM_KINDS=txt` limits it; needs `ps` RSS, so it skips on Windows, and on macOS the close phase is skipped because the frontmost-app guard refuses Cmd-W),
+`tabs_two_windows` (`APPCI_TABS`, default 12 streaming tabs, a second window, typing and paste). Windows runs the PowerShell subset
 (`fast_typing`, `paste_instant_enter`, `ctrl_c`, `latency_enter`, `idle_cpu`, `tabs_streaming`).
 
 **UI cases (`script/realapp/appci/cases_ui.py`, #1462; all full-tier, none in SMOKE, Linux + macOS python harness only).**

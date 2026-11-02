@@ -1132,6 +1132,19 @@ impl CodeEditorModel {
 
                     (char_offset, Some(temp_index), intra_line_offset)
                 }
+                BlockItem::ParkedLines(chunk) => {
+                    // A chunk of dehydrated lines (far from the viewport): pick the line under
+                    // `offset` by its stride so the anchor lands on that line, not the chunk start.
+                    let stride = chunk.stride().as_f32().max(f32::EPSILON);
+                    let into_chunk = intra_line_offset.as_f32();
+                    let index = ((into_chunk / stride).floor().max(0.) as usize)
+                        .min(chunk.len().saturating_sub(1));
+                    (
+                        positioned_block.start_char_offset + chunk.line_start(index),
+                        None,
+                        Pixels::new((into_chunk - index as f32 * stride).max(0.)),
+                    )
+                }
                 BlockItem::Paragraph(_)
                 | BlockItem::TextBlock { .. }
                 | BlockItem::RunnableCodeBlock { .. }

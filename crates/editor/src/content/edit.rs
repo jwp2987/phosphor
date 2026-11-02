@@ -38,9 +38,10 @@ use crate::{
             BlockItem, BlockLocation, BlockSpacing, CellLayout, Cursor, Decoration, FrameOffset,
             HiddenBlockConfig, HorizontalRuleConfig, ImageBlockConfig, LaidOutEmbeddedItem,
             LaidOutTable, LineCount, LineSource, OffsetMap, Paragraph, ParagraphBlock,
-            ParagraphStyles, RenderLayoutOptions, SelectableTextRun, TableBlockConfig, TableStyle,
-            gutter_expansion_button_types,
+            ParagraphMetrics, ParagraphStyles, RenderLayoutOptions, SelectableTextRun,
+            TableBlockConfig, TableStyle, gutter_expansion_button_types,
             hydration::{estimate_paragraph_metrics, has_line_break},
+            parked::{PARK_MIN_RUN, Parker},
         },
     },
 };
@@ -620,11 +621,20 @@ impl EditDelta {
         // `render::model::hydration`. Small edits stay eager.
         let dehydrate = layout.lazy_capable() && layout_tasks.len() >= LAZY_LAYOUT_MIN_BLOCKS;
         layout.set_dehydrate_paragraphs(dehydrate);
+        // Dehydrated runs are grouped into compact chunks as each parallel batch lands, so the
+        // per-line items of a whole file never coexist (#1340 P5). Not while hidden ranges are in
+        // play: their boundaries cut the tree at offsets this layout does not control.
+        let mut parker = (dehydrate && layout.parking_enabled() && hidden_ranges.is_empty())
+            .then(|| Parker::new(PARK_MIN_RUN));
 
         // Then, run the tasks in bounded chunks (each chunk in parallel, chunks in sequence),
         // collecting (a) the laid out BlockItems in order and (b) whether or not the last item
         // ends with a newline.
-        let mut block_items = Vec::with_capacity(layout_tasks.len());
+        let mut block_items = if parker.is_some() {
+            Vec::new()
+        } else {
+            Vec::with_capacity(layout_tasks.len())
+        };
         let mut has_trailing_newline = None;
         let mut chunk_start = 0;
 
@@ -657,7 +667,14 @@ impl EditDelta {
                 })
                 .unzip();
 
-            block_items.extend(chunk_items);
+            match parker.as_mut() {
+                Some(parker) => {
+                    for item in chunk_items {
+                        parker.push(item);
+                    }
+                }
+                None => block_items.extend(chunk_items),
+            }
             if let Some(trailing_newline) = chunk_trailing_newline.into_inner() {
                 has_trailing_newline = Some(trailing_newline);
             }
@@ -665,6 +682,9 @@ impl EditDelta {
         }
 
         layout.set_dehydrate_paragraphs(false);
+        if let Some(parker) = parker {
+            block_items = parker.finish();
+        }
 
         // Iterate through block_items, and collapse adjacent Hidden items.
         let block_items = block_items.into_iter().fold(Vec::new(), |mut acc, item| {
@@ -710,30 +730,47 @@ impl EditDelta {
     }
 }
 
-/// Shapes the widest few dehydrated paragraphs once so their metrics (and therefore the content
+/// Shapes the widest few dehydrated lines once so their metrics (and therefore the content
 /// width) are exact, then drops their glyphs again. The rest keep their estimated width until
-/// they are hydrated.
+/// they are hydrated. Lines inside parked chunks are measured the same way and their cached
+/// width in the chunk is replaced by the measurement.
 fn measure_widest_dehydrated(items: &mut [BlockItem], layout: &TextLayout) {
-    let mut candidates: Vec<(usize, Pixels)> = items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| match item {
+    // (item index, line within a parked chunk or `None` for a paragraph item, estimated width)
+    let mut candidates: Vec<(usize, Option<usize>, f32)> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match item {
             BlockItem::Paragraph(paragraph)
                 if !paragraph.is_hydrated() && !paragraph.metrics().width_exact =>
             {
-                Some((index, paragraph.width()))
+                candidates.push((index, None, paragraph.width().as_f32()));
             }
-            _ => None,
-        })
-        .collect();
-    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            BlockItem::ParkedLines(chunk) => {
+                candidates.extend(
+                    chunk
+                        .widest_lines(LAZY_LAYOUT_EXACT_WIDTH_LINES)
+                        .into_iter()
+                        .filter(|(width, _)| *width > 0.)
+                        .map(|(width, line)| (index, Some(line), width)),
+                );
+            }
+            _ => {}
+        }
+    }
+    candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     candidates.truncate(LAZY_LAYOUT_EXACT_WIDTH_LINES);
-    for (index, _) in candidates {
-        if let BlockItem::Paragraph(paragraph) = &mut items[index] {
-            if let Some(source) = paragraph.line_source().cloned() {
-                paragraph.hydrate(source.layout(layout));
-                paragraph.evict();
+    for (index, line, _) in candidates {
+        match (&mut items[index], line) {
+            (BlockItem::Paragraph(paragraph), None) => {
+                if let Some(source) = paragraph.line_source().cloned() {
+                    paragraph.hydrate(source.layout(layout));
+                    paragraph.evict();
+                }
             }
+            (BlockItem::ParkedLines(chunk), Some(line)) => {
+                let frame = chunk.line_source(line).layout(layout);
+                chunk.set_line_width(line, ParagraphMetrics::from_frame(&frame).width.as_f32());
+            }
+            _ => {}
         }
     }
 }

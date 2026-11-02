@@ -69,6 +69,9 @@ impl<V: EditorView> Element for RichTextElementLens<V> {
     ) -> Vector2F {
         let model = self.model.as_ref(app);
         let mut total_height = 0.;
+        // The lens shows lines that may be far from the editor's own viewport: expand any parked
+        // chunk and shape their rows before reading them.
+        model.hydrate_line_range(&self.line_range, app);
         let blocks =
             model.blocks_in_line_range(self.line_range.clone(), constraint.max.x().into_pixels());
 
