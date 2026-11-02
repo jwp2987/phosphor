@@ -300,7 +300,6 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
         ),
     );
 
-
     toggle_binding_pairs.push(
         ToggleSettingActionPair::new(
             &crate::t!("toggle-suffix-focus-follows-mouse"),
@@ -1179,7 +1178,6 @@ impl AppearanceSettingsPageView {
         if ChannelState::channel() != Channel::Integration {
             // There's no such thing as a "system font" on the web, so the
             // `all_system_fonts` API doesn't exist.
-            #[cfg(not(target_family = "wasm"))]
             {
                 let all_system_fonts = warpui::fonts::Cache::handle(ctx)
                     .update(ctx, |font_cache, ctx| font_cache.all_system_fonts(ctx));
@@ -2681,7 +2679,6 @@ impl AppearanceSettingsPageView {
         ctx.notify();
     }
 
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn set_system_fonts(
         &mut self,
         available_families: Vec<(Option<FamilyId>, FontInfo)>,
@@ -5236,17 +5233,6 @@ struct MarkdownHeadingScaleWidget {
 }
 
 const MARKDOWN_SCALE_INPUT_BOX_WIDTH: f32 = 80.0;
-
-fn markdown_heading_scale_defaults() -> [f32; 6] {
-    [
-        MarkdownHeadingH1Scale::default_value(),
-        MarkdownHeadingH2Scale::default_value(),
-        MarkdownHeadingH3Scale::default_value(),
-        MarkdownHeadingH4Scale::default_value(),
-        MarkdownHeadingH5Scale::default_value(),
-        MarkdownHeadingH6Scale::default_value(),
-    ]
-}
 
 impl MarkdownHeadingScaleWidget {
     /// Renders a single scale-factor input box

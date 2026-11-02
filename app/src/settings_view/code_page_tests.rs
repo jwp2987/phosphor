@@ -39,7 +39,6 @@ use crate::appearance::Appearance;
 use crate::settings::{AppEditorSettings, CodeEditorLineNumberMode, CodeSettings};
 use crate::settings_view::SettingsSection;
 use crate::settings_view::settings_page::SettingsPageMeta as _;
-#[cfg(not(target_family = "wasm"))]
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 fn add_code_page(app: &mut App) -> warpui::ViewHandle<CodeSettingsPageView> {
@@ -357,7 +356,6 @@ fn code_page_action_writes_through_to_auto_indexing_setting() {
 /// here is installation and gating: a row nobody added to `build_page`, or one
 /// whose `should_render` is wrong, fails this test; a row that panics while
 /// drawing does not.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn the_indexing_rows_appear_only_behind_the_indexing_flag() {
     App::test((), |mut app| async move {
@@ -437,7 +435,6 @@ fn the_indexing_rows_appear_only_behind_the_indexing_flag() {
 /// wire actually produces. If the daemon's wording ever drifts from the client's substring,
 /// the limit case silently degrades to a grey "Unavailable" with no indication that the fix is
 /// to delete an index, which is the regression these two tests are here to catch.
-#[cfg(not(target_family = "wasm"))]
 mod remote_index_limit {
     use remote_server::codebase_index_proto::{RemoteCodebaseIndexState, RemoteCodebaseIndexStatus};
 

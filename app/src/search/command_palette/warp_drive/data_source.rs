@@ -27,18 +27,12 @@ pub struct DataSource {
 }
 
 impl DataSource {
-    #[cfg(not(target_family = "wasm"))]
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
         if warp_core::features::FeatureFlag::UseTantivySearch.is_enabled() {
             Self::new_full_text(ctx)
         } else {
             Self::new_fuzzy(ctx)
         }
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        Self::new_fuzzy(ctx)
     }
 
     pub fn new_fuzzy(ctx: &mut ModelContext<Self>) -> Self {
@@ -53,7 +47,6 @@ impl DataSource {
         DataSource { searcher }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn new_full_text(ctx: &mut ModelContext<Self>) -> Self {
         ctx.subscribe_to_model(
             &ObjectStoreModel::handle(ctx),
@@ -518,7 +511,6 @@ impl WarpDriveSearcher for FuzzyWarpDriveSearcher {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 mod full_text_searcher {
     use std::sync::Arc;
 

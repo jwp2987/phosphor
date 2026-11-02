@@ -161,7 +161,6 @@ impl AlertConfig {
         Self::new(message, AlertFlavor::Error)
     }
 
-    #[allow(dead_code)]
     pub fn success(message: String) -> Self {
         Self::new(message, AlertFlavor::Success)
     }

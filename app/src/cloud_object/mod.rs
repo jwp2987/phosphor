@@ -370,19 +370,6 @@ pub trait StoredObject: Debug {
     /// Updates the object to deal with any conflict status.
     fn replace_object_with_conflict(&mut self);
 
-    /// Sets the content sync status of this object to `InFlight` (if it wasn't already) and
-    /// increments the number of in flight requests tracked in the `InFlight` enum.
-    fn increment_in_flight_request_count(&mut self) {
-        let new_reqs = match &self.metadata().pending_changes_statuses.content_sync_status {
-            StoredObjectSyncStatus::InFlight(reqs) => reqs.0 + 1,
-            _ => 1,
-        };
-
-        self.set_pending_content_changes_status(StoredObjectSyncStatus::InFlight(
-            NumInFlightRequests(new_reqs),
-        ))
-    }
-
     /// Decrements the number of in flight requests tracked in this object's `InFlight` enum. If
     /// that number becomes 0, it's no longer in flight, so it will be set to `status_if_no_reqs`.
     /// Returns true if the object is no longer in flight.
@@ -976,7 +963,6 @@ pub trait StoredObjectMetadataExt {
     fn semantic_editing_history(&self, app: &AppContext) -> Option<String>;
 
     /// Returns a semantic summary of the object's creator. For example, "Alice" or "joan@warp.dev".
-    #[cfg_attr(target_family = "wasm", expect(dead_code))]
     fn semantic_creator(&self, app: &AppContext) -> Option<String>;
 
     /// Returns semantic summary of countdown of days until permadeletion.

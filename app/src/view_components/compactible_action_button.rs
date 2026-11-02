@@ -20,7 +20,6 @@ const BUTTON_MARGIN: f32 = 8.;
 // Size switch thresholds for responsive button behavior
 pub const SMALL_SIZE_SWITCH_THRESHOLD: f32 = 400.0;
 pub const MEDIUM_SIZE_SWITCH_THRESHOLD: f32 = 500.0;
-pub const LARGE_SIZE_SWITCH_THRESHOLD: f32 = 600.0;
 pub const XLARGE_SIZE_SWITCH_THRESHOLD: f32 = 650.0;
 
 /// Stores normal and compact (i.e. without a keybinding display) versions of action buttons

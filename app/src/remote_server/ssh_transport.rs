@@ -14,10 +14,7 @@ use warpui::r#async::{FutureExt as _, executor};
 
 use remote_server::auth::RemoteServerAuthContext;
 use remote_server::client::RemoteServerClient;
-use remote_server::setup::{
-    PreinstallCheckResult, RemotePlatform, daemon_pid_name, daemon_socket_name, parse_uname_output,
-    remote_server_daemon_dir,
-};
+use remote_server::setup::{PreinstallCheckResult, RemotePlatform, parse_uname_output};
 use remote_server::ssh::ssh_args;
 use remote_server::transport::{Connection, RemoteTransport};
 
@@ -69,22 +66,6 @@ impl SshTransport {
     /// reused an existing user-owned one (which must be left running).
     pub fn owns_control_master(&self) -> bool {
         self.owns_control_master
-    }
-
-    pub fn remote_daemon_socket_path(&self) -> String {
-        format!(
-            "{}/{}",
-            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key()),
-            daemon_socket_name()
-        )
-    }
-
-    pub fn remote_daemon_pid_path(&self) -> String {
-        format!(
-            "{}/{}",
-            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key()),
-            daemon_pid_name()
-        )
     }
 
     /// Maps ControlMaster ownership onto the `control_path` teardown token

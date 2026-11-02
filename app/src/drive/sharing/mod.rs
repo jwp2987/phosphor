@@ -60,10 +60,6 @@ impl SharingAccessLevel {
         self >= SharingAccessLevel::Full
     }
 
-    pub fn can_edit_access(self) -> bool {
-        self >= SharingAccessLevel::Full
-    }
-
     pub fn to_serializable_value(self) -> &'static str {
         match self {
             SharingAccessLevel::View => "VIEW",
@@ -122,12 +118,6 @@ impl TeamKind {
 }
 
 impl Subject {
-    pub fn from_owner(owner: Owner) -> Self {
-        match owner {
-            Owner::User { user_uid } => Subject::User(UserKind::Account(user_uid)),
-            Owner::Team { team_uid } => Subject::Team(TeamKind::Team { team_uid }),
-        }
-    }
 
     pub fn user_uid(&self) -> Option<UserUid> {
         match self {

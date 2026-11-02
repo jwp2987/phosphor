@@ -73,7 +73,7 @@ fn take_toast_slot(slot: &Mutex<Option<Instant>>, now: Instant) -> bool {
 /// falls back to whichever window is currently active. That fallback is what
 /// unblocks `workspace/global_actions.rs`'s handlers, which have no
 /// `window_id` of their own.
-trait SettingsWriteFailureWindow {
+pub(crate) trait SettingsWriteFailureWindow {
     fn settings_write_failure_window_id(&self) -> Option<WindowId>;
 }
 

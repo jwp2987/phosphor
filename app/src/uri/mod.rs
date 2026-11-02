@@ -3,9 +3,6 @@ pub mod link_policy;
 pub mod parse_url_paths;
 pub mod web_intent_parser;
 
-#[cfg(target_family = "wasm")]
-pub mod browser_url_handler;
-
 use crate::ai::agent::api::ServerConversationToken;
 use crate::drive::ZapDriveObjectSettings;
 use crate::features::FeatureFlag;
@@ -40,7 +37,7 @@ use warp_util::path::LineAndColumnArg;
 use warpui::notification::UserNotification;
 use warpui::{platform::TerminationMode, SingletonEntity as _, TypedActionView};
 
-use warpui::{AppContext, EntityId, ViewHandle, WindowId};
+use warpui::{AppContext, EntityId, WindowId};
 
 use self::docker::open_docker_container;
 
@@ -52,12 +49,6 @@ const DESKTOP_REDIRECT_URI_PATH: &str = "/desktop_redirect";
 pub struct OpenMCPSettingsArgs {
     pub autoinstall: Option<String>,
 }
-
-/// Source query parameter value indicating auth was initiated from agent setup.
-/// Zap Wave 7-3: the URI handler / Settings UI have been removed; this only
-/// serves as a stopgap for `update_environment_form` before the agent UI's
-/// major-surgery commit lands (the latter doesn't use it to build outgoing URLs).
-pub const CLOUD_SETUP_SOURCE: &str = "cloud_setup";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum UriHost {
@@ -359,7 +350,6 @@ impl UriHost {
                 ctx.dispatch_global_action("root_view::open_new", &());
             }
             UriHost::Mcp => {
-                #[cfg(not(target_family = "wasm"))]
                 {
                     let result = crate::ai::mcp::TemplatableMCPServerManager::handle(ctx)
                         .update(ctx, |manager, _ctx| manager.handle_oauth_callback(url));
@@ -1220,75 +1210,6 @@ fn open_window_with_action(active_window_id: Option<WindowId>, action: &str, ctx
         // TODO: Note we cannot just dispatch here as it will be a no-op.
         // Need to send a callback once window is fully open.
     }
-}
-
-fn find_workspace_for_terminal_view(
-    terminal_view_id: EntityId,
-    ctx: &mut AppContext,
-) -> Option<(WindowId, ViewHandle<Workspace>)> {
-    for window_id in ctx.window_ids() {
-        let Some(workspaces) = ctx.views_of_type::<Workspace>(window_id) else {
-            continue;
-        };
-        for workspace in workspaces {
-            let contains_terminal = workspace
-                .as_ref(ctx)
-                .list_tab_pane_groups(ctx)
-                .iter()
-                .any(|group| group.terminal_ids.contains(&terminal_view_id));
-            if contains_terminal {
-                return Some((window_id, workspace));
-            }
-        }
-    }
-
-    None
-}
-
-fn active_terminal_view_id_in_window(window_id: WindowId, ctx: &AppContext) -> Option<EntityId> {
-    let workspaces = ctx.views_of_type::<Workspace>(window_id)?;
-    let workspace = workspaces.first()?;
-    workspace.read(ctx, |workspace, w_ctx| {
-        let pane_group = workspace.active_tab_pane_group().as_ref(w_ctx);
-        pane_group
-            .active_session_view(w_ctx)
-            .map(|terminal_view| terminal_view.id())
-            .or_else(|| {
-                pane_group
-                    .terminal_views(w_ctx)
-                    .first()
-                    .map(|view| view.id())
-            })
-    })
-}
-
-fn find_ambient_agent_terminal_view_id(
-    primary_window_id: Option<WindowId>,
-    ctx: &AppContext,
-) -> Option<EntityId> {
-    let mut window_ids = Vec::new();
-    if let Some(primary_window_id) = primary_window_id {
-        window_ids.push(primary_window_id);
-    }
-    window_ids.extend(
-        ctx.window_ids()
-            .filter(|window_id| Some(*window_id) != primary_window_id),
-    );
-
-    for window_id in window_ids {
-        let Some(workspaces) = ctx.views_of_type::<Workspace>(window_id) else {
-            continue;
-        };
-        for workspace in workspaces {
-            if let Some(terminal_view_id) = workspace.read(ctx, |workspace, w_ctx| {
-                find_ambient_agent_terminal_in_workspace(workspace, w_ctx)
-            }) {
-                return Some(terminal_view_id);
-            }
-        }
-    }
-
-    None
 }
 
 fn find_ambient_agent_terminal_in_workspace(

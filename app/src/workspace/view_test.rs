@@ -35,7 +35,6 @@ use std::sync::Arc;
 use watcher::HomeDirectoryWatcher;
 
 use crate::cloud_object::update_manager::UpdateManager;
-use crate::server::experiments::ServerExperiments;
 
 use crate::settings::PrivacySettings;
 use crate::settings_view::DisplayCount;
@@ -67,7 +66,7 @@ use crate::test_util::settings::initialize_settings_for_tests;
 use crate::undo_close::UndoCloseSettings;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use crate::workflows::local_workflows::LocalWorkflows;
-use crate::{GlobalResourceHandlesProvider, experiments, workspace};
+use crate::{GlobalResourceHandlesProvider, workspace};
 
 // Zap (localization, Phase 5): `PreferencesSyncer` was physically removed.
 
@@ -152,10 +151,8 @@ pub(crate) fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_| GPUState::new());
     app.add_singleton_model(|_| RestoredAgentConversations::default());
     app.add_singleton_model(OneTimeModalModel::new);
-    // Register GlobalResourceHandlesProvider before ServerExperiments which depends on it
     let global_resource_handles = GlobalResourceHandles::mock(app);
     app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
-    app.add_singleton_model(|ctx| ServerExperiments::new_from_cache(vec![], ctx));
     app.add_singleton_model(DefaultTerminal::new);
     app.add_singleton_model(|_| IgnoredSuggestionsModel::new(vec![]));
     app.add_singleton_model(|_| crate::code_review::git_status_update::GitStatusUpdateModel::new());
@@ -176,7 +173,6 @@ pub(crate) fn initialize_app(app: &mut App) {
     #[cfg(enable_crash_recovery)]
     crate::crash_recovery::CrashRecovery::register_for_test(app);
 
-    app.update(experiments::init);
 
     app.add_singleton_model(AIRequestUsageModel::new_for_test);
     app.add_singleton_model(
@@ -305,7 +301,6 @@ async fn wait_for_tab_count(workspace: &ViewHandle<Workspace>, app: &mut App, ex
 
 /// Polls until the active tab holds `expected` code panes (the size guard checks the file off
 /// the UI thread, so the pane opens a few ticks after the call).
-#[allow(dead_code)]
 async fn wait_for_code_panes(workspace: &ViewHandle<Workspace>, app: &mut App, expected: usize) {
     for _ in 0..1000 {
         let count = workspace.read(app, |workspace, ctx| {
@@ -324,7 +319,6 @@ async fn wait_for_code_panes(workspace: &ViewHandle<Workspace>, app: &mut App, e
 
 /// For "nothing should open" assertions there is no condition to poll for; give the off-thread
 /// size check ample time to have (wrongly) opened a pane before the caller asserts none did.
-#[allow(dead_code)]
 async fn settle_background_tasks() {
     warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
 }

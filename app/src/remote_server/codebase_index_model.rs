@@ -338,40 +338,7 @@ impl RemoteCodebaseIndexModel {
             .map(ToOwned::to_owned)
     }
 
-    pub fn request_active_repo_index(
-        &self,
-        session_context: &SessionContext,
-        explicit_repo_path: Option<&str>,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
-        if !should_use_codebase_indexing(CodebaseAutoIndexingSurface::Remote, ctx) {
-            return false;
-        }
-        let Some(host_id) = session_context.host_id() else {
-            return false;
-        };
-        let Some(remote_path) = self.resolve_remote_repo_path(
-            host_id,
-            session_context.current_working_directory().as_deref(),
-            explicit_repo_path,
-        ) else {
-            return false;
-        };
-
-        let (host_id, repo_path) = manager_target(&remote_path);
-        RemoteServerManager::handle(ctx).update(ctx, |manager, ctx| {
-            let _ = manager.ensure_codebase_indexed(
-                host_id,
-                repo_path,
-                RemoteCodebaseIndexUpdateOperation::IndexNewRepo {
-                    is_auto_index: false,
-                },
-                ctx,
-            );
-        });
-        true
-    }
-
+    #[cfg(test)]
     pub fn codebases_for_agent_context(&self, host_id: &HostId) -> Vec<RemoteCodebaseContextEntry> {
         let host_label = self.host_label_for_host(host_id);
         let util_host_id = core_host_id_to_util(host_id);
@@ -396,33 +363,6 @@ impl RemoteCodebaseIndexModel {
             .collect::<Vec<_>>();
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         entries
-    }
-
-    pub fn request_index(&self, remote_path: RemotePath, ctx: &mut ModelContext<Self>) {
-        if !should_use_codebase_indexing(CodebaseAutoIndexingSurface::Remote, ctx) {
-            return;
-        }
-        let (host_id, repo_path) = manager_target(&remote_path);
-        RemoteServerManager::handle(ctx).update(ctx, |manager, ctx| {
-            let _ = manager.ensure_codebase_indexed(
-                host_id,
-                repo_path,
-                RemoteCodebaseIndexUpdateOperation::IndexNewRepo {
-                    is_auto_index: false,
-                },
-                ctx,
-            );
-        });
-    }
-
-    pub fn resync_index(&self, remote_path: RemotePath, ctx: &mut ModelContext<Self>) {
-        if !should_use_codebase_indexing(CodebaseAutoIndexingSurface::Remote, ctx) {
-            return;
-        }
-        let (host_id, repo_path) = manager_target(&remote_path);
-        RemoteServerManager::handle(ctx).update(ctx, |manager, ctx| {
-            let _ = manager.resync_codebase(host_id, repo_path, ctx);
-        });
     }
 
     pub fn drop_index(&self, remote_path: RemotePath, ctx: &mut ModelContext<Self>) {

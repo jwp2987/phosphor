@@ -7,7 +7,7 @@ use crate::tab::{ShortcutModifierKind, reveals_shortcut_hints};
 use crate::terminal::CLIAgent;
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::tab_settings::VerticalTabsDisplayGranularity;
-use crate::workspace::{TabBarLocation, VerticalTabsPaneDropTargetData};
+use crate::workspace::TabBarLocation;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
 use std::iter::once;

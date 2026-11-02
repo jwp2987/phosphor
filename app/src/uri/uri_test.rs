@@ -715,7 +715,6 @@ fn test_settings_widget_deeplink_target() {
     // Fork adaptation: the upstream `custom_router` slug (custom model routers)
     // has no counterpart here, so it is not linkable.
     assert!(settings_widget_deeplink_target("custom_router").is_none());
-    #[cfg(not(target_family = "wasm"))]
     assert_eq!(
         settings_widget_deeplink_target("cli_agents").map(|(section, _)| section),
         Some(SettingsSection::ThirdPartyCLIAgents),

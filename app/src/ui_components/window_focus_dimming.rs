@@ -22,10 +22,6 @@ impl WindowFocusDimming {
     /// the traditional concept of "unfocused windows", and focus events can be
     /// unreliable due to soft keyboard management.
     pub fn is_window_focused(window_id: WindowId, ctx: &AppContext) -> bool {
-        #[cfg(target_family = "wasm")]
-        if warpui::platform::wasm::is_mobile_device() {
-            return true;
-        }
 
         let window_manager = WindowManager::as_ref(ctx);
         if !window_manager.app_is_active() {

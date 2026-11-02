@@ -9,7 +9,6 @@ mod notebooks;
 mod query_gate;
 mod rules;
 pub mod search;
-#[cfg(not(target_family = "wasm"))]
 mod skills;
 mod styles;
 pub mod view;

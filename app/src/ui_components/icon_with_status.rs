@@ -356,7 +356,6 @@ impl StatusBadgeStyle {
 /// default overhang, so it does not want this ratio. Kept as the accessor for
 /// the default geometry, which `corner_overlay_offset` below still derives
 /// from `CIRCLE_RATIO`.
-#[allow(dead_code)]
 pub(crate) fn circle_size(total: f32) -> f32 {
     total * CIRCLE_RATIO
 }

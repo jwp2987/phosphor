@@ -367,12 +367,6 @@ impl AutoupdateState {
         )
     }
 
-    /// Trigger the update check to /client_version/daily, but only go through with sending the
-    /// request if we haven't done that today.
-    pub fn maybe_daily_check_for_update(&mut self, ctx: &mut ModelContext<Self>) {
-        self.enqueue_request(RequestType::DailyCheck, ctx)
-    }
-
     /// Check if an update is available.
     ///
     /// The caller is responsible for checking that we _should_ check for an update. Generally, the
@@ -915,7 +909,6 @@ impl Entity for AutoupdateState {
 impl SingletonEntity for AutoupdateState {}
 
 /// Set of results from an update check.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdateReady {
     /// An update is available and has been downloaded.
@@ -948,7 +941,6 @@ pub enum UpdateReady {
 }
 
 /// Set of results from downloading an update.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum DownloadReady {
     /// The update was downloaded successfully.
     Yes,
@@ -968,7 +960,6 @@ pub enum DownloadReady {
 /// update via their package manager.  After the update completes, we send
 /// ourselves a signal (via a DCS hook) that the update has completed and we're
 /// ready to relaunch.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum ReadyForRelaunch {
     Yes,
     #[cfg_attr(any(target_os = "macos", windows), allow(dead_code))]
@@ -1097,7 +1088,6 @@ async fn fetch_version(
 }
 
 // This method is unimplemented on wasm, so we allow unused variables.
-#[cfg_attr(target_family = "wasm", allow(unused_variables))]
 async fn download_update(
     version_info: VersionInfo,
     update_id: String,

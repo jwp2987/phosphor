@@ -344,7 +344,6 @@ impl<A: Action + Clone> ToastLink<A> {
         }
     }
 
-    #[allow(dead_code)]
     pub fn with_href(mut self, href: String) -> Self {
         self.href = Some(href);
         self
@@ -352,11 +351,6 @@ impl<A: Action + Clone> ToastLink<A> {
 
     pub fn with_onclick_action(mut self, action: A) -> Self {
         self.action = Some(action);
-        self
-    }
-
-    pub fn with_keystroke(mut self, keystroke: Keystroke) -> Self {
-        self.keystroke = Some(keystroke);
         self
     }
 

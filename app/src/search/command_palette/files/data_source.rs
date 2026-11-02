@@ -10,7 +10,6 @@ use futures_lite::FutureExt;
 use fuzzy_match::FuzzyMatchResult;
 use instant::Instant;
 use itertools::Itertools;
-use std::collections::HashSet;
 #[cfg(feature = "local_fs")]
 use std::path::Path;
 use std::path::PathBuf;

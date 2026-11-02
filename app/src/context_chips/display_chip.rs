@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::ai::blocklist::agent_view::AgentViewController;
@@ -244,24 +243,6 @@ impl UdiChipConfig {
             is_in_agent_view: false,
             hovered: false,
         }
-    }
-
-    fn new_with_keystroke(color: ColorU, text: String, keystroke: Keystroke) -> Self {
-        Self {
-            icon: None,
-            keystroke: Some(keystroke),
-            color,
-            text,
-            truncate_text: true,
-            border_override: None,
-            is_in_agent_view: false,
-            hovered: false,
-        }
-    }
-
-    pub(crate) fn with_truncate_text(mut self, truncate: bool) -> Self {
-        self.truncate_text = truncate;
-        self
     }
 
     pub(crate) fn with_border_override(mut self, border: Border) -> Self {
@@ -1287,59 +1268,6 @@ impl DisplayChip {
             appearance.monospace_font_family(),
             appearance.monospace_font_size(),
         )
-    }
-
-    fn render_keystroke_with_label(
-        keystroke: &Option<Keystroke>,
-        label: impl Into<Cow<'static, str>>,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let appearance = Appearance::as_ref(app);
-        let prompt_height = app.font_cache().line_height(
-            appearance.monospace_font_size(),
-            DEFAULT_UI_LINE_HEIGHT_RATIO,
-        );
-        let theme = appearance.theme();
-        let keybinding_style = UiComponentStyles {
-            height: Some(prompt_height),
-            width: Some(prompt_height),
-            font_size: Some(appearance.monospace_font_size() - 4.),
-            font_color: Some(blended_colors::text_main(theme, theme.surface_2())),
-            background: Some(theme.surface_2().into()),
-            foreground: Some(theme.foreground().into()),
-            padding: Some(Coords::default()),
-            margin: Some(Coords {
-                left: 2.,
-                right: 2.,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
-
-        if let Some(keystroke) = keystroke {
-            row.add_child(
-                Container::new(
-                    appearance
-                        .ui_builder()
-                        .keyboard_shortcut(keystroke)
-                        .with_style(keybinding_style)
-                        .build()
-                        .finish(),
-                )
-                .finish(),
-            );
-        }
-        row.add_child(
-            Text::new_inline(
-                label,
-                appearance.monospace_font_family(),
-                appearance.monospace_font_size(),
-            )
-            .with_color(blended_colors::text_disabled(theme, theme.background()))
-            .finish(),
-        );
-        row.finish()
     }
 
     pub fn should_render(&self, app: &AppContext) -> bool {

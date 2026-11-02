@@ -718,7 +718,6 @@ fn vscode_2026_dark_display_name() {
 }
 
 #[test]
-#[cfg(not(target_family = "wasm"))]
 fn in_memory_theme_generation_test() {
     let mountains_bg_path: PathBuf = [
         env!("CARGO_MANIFEST_DIR"),

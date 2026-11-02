@@ -7,12 +7,10 @@ mod linux;
 use std::borrow::Cow;
 
 use lazy_static::lazy_static;
-use warp_core::channel::Channel;
 use warpui::{r#async::block_on, AppContext, SingletonEntity};
 
 use crate::antivirus::{AntivirusInfo, AntivirusInfoEvent};
 use crate::auth::{AuthStateProvider, UserUid};
-use crate::channel::ChannelState;
 use crate::features::FeatureFlag;
 use crate::settings::{PrivacySettings, PrivacySettingsChangedEvent};
 use parking_lot::RwLock;
@@ -228,39 +226,6 @@ pub(crate) fn init(ctx: &mut AppContext) -> bool {
     is_crash_reporting_enabled
 }
 
-/// Returns the local crash-reporting environment label.
-fn get_environment() -> Cow<'static, str> {
-    let channel = ChannelState::channel();
-
-    cfg_if::cfg_if! {
-        if #[cfg(target_os = "macos")] {
-            let operating_system = "mac";
-        } else if #[cfg(target_os = "linux")] {
-            let operating_system = "linux";
-        }
-        else if #[cfg(target_os = "windows")] {
-            let operating_system = "windows";
-        } else {
-           let operating_system = "";
-        }
-    };
-
-    let base_environment_name = match channel {
-        Channel::Stable => "stable_release",
-        Channel::Preview => "preview_release",
-        Channel::Local => "local",
-        Channel::Integration => "integration_test",
-        Channel::Dev => "dev_release",
-        Channel::Oss => "oss_release",
-    };
-
-    if operating_system.is_empty() {
-        base_environment_name.into()
-    } else {
-        format!("{operating_system}_{base_environment_name}").into()
-    }
-}
-
 fn init_local_crash_reporting(
     _user_id: Option<UserUid>,
     _email: Option<String>,
@@ -319,13 +284,6 @@ pub fn resume_crash_reporting_after_child_spawn() {
 
 pub fn crash() {
     panic!("Phosphor: crash() invoked for local panic-hook smoke test");
-}
-
-/// The public signature is kept for use by login-state callbacks, but local crash reporting doesn't write any user identity.
-pub fn set_user_id(_user_id: UserUid, _email: Option<String>, _ctx: &mut AppContext) {}
-
-fn release_version() -> &'static str {
-    ChannelState::app_version().unwrap_or("<no tag>")
 }
 
 /// Sets the warp.client_type local crash metadata.

@@ -51,7 +51,6 @@ pub enum AboutPageAction {
     /// summary are packaged into a zip and written directly to the user-specified path,
     /// reporting success / failure via a workspace toast when done.
     /// Implemented by `WorkspaceAction::ExportLogsToPath`.
-    #[cfg(not(target_family = "wasm"))]
     ExportLogs,
 }
 
@@ -127,7 +126,6 @@ impl TypedActionView for AboutPageView {
                 // install wizard / Linux: restart new binary).
                 ctx.dispatch_typed_action(&WorkspaceAction::ApplyUpdate);
             }
-            #[cfg(not(target_family = "wasm"))]
             AboutPageAction::ExportLogs => {
                 // Triggers the workspace layer to pop up the save-file dialog; once the user
                 // picks a save path, packaging completes and a toast reports the result.
@@ -163,7 +161,6 @@ struct AboutPageWidget {
     /// Hover / pressed state for the AGPL §13 source-code link.
     source_code_link_mouse_state: MouseStateHandle,
     /// Hover / pressed state for the "Export logs" link.
-    #[cfg(not(target_family = "wasm"))]
     export_logs_link_mouse_state: MouseStateHandle,
 }
 
@@ -330,7 +327,6 @@ impl SettingsWidget for AboutPageWidget {
 
         // "Export logs" link: platform-native export of a zip to share with support staff.
         // Skipped on WASM, which has no filesystem logs.
-        #[cfg(not(target_family = "wasm"))]
         {
             let export_link = ui_builder
                 .link(

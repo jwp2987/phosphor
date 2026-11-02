@@ -287,7 +287,6 @@ pub struct CategoriesView {
     search_term: String,
 }
 
-#[allow(dead_code)]
 enum WorkflowsFocusState {
     Editor,
     WorkflowTypesSidebar,

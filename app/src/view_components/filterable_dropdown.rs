@@ -172,10 +172,6 @@ where
         self.style_override = Some(style);
     }
 
-    pub fn set_button_variant(&mut self, button_variant: ButtonVariant) {
-        self.button_variant = button_variant;
-    }
-
     pub fn set_orientation(&mut self, orientation: FilterableDropdownOrientation) {
         self.orientation = orientation;
     }

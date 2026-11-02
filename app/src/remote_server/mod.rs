@@ -2,27 +2,21 @@
 // `crate::remote_server::*` imports in `app` continue to work.
 pub use remote_server::*;
 
-#[cfg(not(target_family = "wasm"))]
 pub mod auth_context;
 /// Remote codebase indexing (Delta D2). `local_fs`-gated for the same reason
 /// the daemon's index manager is: it walks and stores on the host filesystem.
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 pub mod codebase_index_status;
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 pub mod codebase_index_store;
 /// Client-side model of the remote codebase index. Unlike the daemon-side
 /// status/store modules above it never touches the host filesystem, so it is
 /// not `local_fs`-gated; it is `wasm`-gated only because every
 /// `RemoteServerManager` mutation it calls is.
-#[cfg(not(target_family = "wasm"))]
 pub mod codebase_index_model;
-#[cfg(not(target_family = "wasm"))]
 pub mod server_buffer_tracker;
-#[cfg(not(target_family = "wasm"))]
 pub mod get_branches;
-#[cfg(not(target_family = "wasm"))]
 pub mod get_committed_branch_files;
-#[cfg(not(target_family = "wasm"))]
 pub mod diff_state_proto;
 /// Wire conversions for the remote git-chip / PR-context pushes. Gated on
 /// `local_fs` rather than on wasm like its neighbours, so the gate matches the
@@ -31,13 +25,10 @@ pub mod diff_state_proto;
 /// `app/build.rs:245-249` sets `local_fs` for exactly `target_family != "wasm"`.
 #[cfg(feature = "local_fs")]
 pub mod git_status_proto;
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 pub mod diff_state_tracker;
-#[cfg(not(target_family = "wasm"))]
 pub mod ripgrep_search;
-#[cfg(not(target_family = "wasm"))]
 pub mod server_model;
-#[cfg(not(target_family = "wasm"))]
 pub mod ssh_transport;
 #[cfg(unix)]
 pub mod unix;
@@ -49,9 +40,9 @@ pub mod unix;
 /// uses, and `ServerModel::apply_codebase_index_limits` replaces these. They
 /// exist only so a daemon that is asked to index before any client has
 /// completed the handshake behaves sanely instead of using `usize::MAX`.
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 const DAEMON_DEFAULT_MAX_FILES_PER_REPO: usize = 10_000;
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 const DAEMON_DEFAULT_EMBEDDING_BATCH_SIZE: usize = 32;
 
 /// Run the `remote-server-proxy` subcommand.
@@ -82,7 +73,7 @@ pub fn run_daemon(identity_key: String) -> anyhow::Result<()> {
 /// [`run_daemon_app`] — so the identity key is taken from the argument that
 /// already carries it, and this lives next to the daemon rather than in
 /// `lib.rs`.
-#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+#[cfg(feature = "local_fs")]
 pub fn daemon_codebase_index_data_dir(identity_key: &str) -> std::path::PathBuf {
     let data_dir = ::remote_server::setup::remote_server_daemon_data_dir(identity_key);
     std::path::PathBuf::from(shellexpand::tilde(&data_dir).into_owned())
@@ -106,7 +97,6 @@ pub fn run_daemon(_identity_key: String) -> anyhow::Result<()> {
 /// // In unix/mod.rs:
 /// super::run_daemon_app(move |ctx| ServerModel::new(unix_listener, ctx))
 /// ```
-#[cfg(not(target_family = "wasm"))]
 pub(super) fn run_daemon_app(
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))] identity_key: String,
     server_model_init: impl FnOnce(&mut warpui::ModelContext<server_model::ServerModel>) -> server_model::ServerModel

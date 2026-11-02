@@ -35,10 +35,6 @@ impl<OnClick> TooltipLink<OnClick> {
         }
     }
 
-    pub fn with_detail(mut self, detail: String) -> Self {
-        self.detail = Some(detail);
-        self
-    }
 }
 
 /// Configuration for redaction messaging in tooltips

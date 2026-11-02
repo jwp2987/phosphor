@@ -144,14 +144,6 @@ impl DirectoryFetcher {
         self.fetch_handle.is_some()
     }
 
-    /// Change the current directory and refetch contents
-    pub fn change_directory(&mut self, new_directory: String, ctx: &mut ModelContext<Self>) {
-        if self.current_directory != new_directory {
-            self.current_directory = new_directory;
-            self.cached_files.clear();
-            self.refetch_directory(ctx);
-        }
-    }
 }
 
 impl Entity for DirectoryFetcher {

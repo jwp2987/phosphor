@@ -11,13 +11,8 @@ pub enum FeatureFlag {
     CrashReporting,
     DebugMode,
     Autoupdate,
-    WithSandboxTelemetry,
     RecordAppActiveEvents,
 
-    WelcomeTips,
-    ThinStrokes,
-    WelcomeBlock,
-    KnowledgeSidebar,
 
     RuntimeFeatureFlags,
 
@@ -37,8 +32,6 @@ pub enum FeatureFlag {
     /// menu bar.
     ToggleBootstrapBlock,
 
-    /// Enabling context chips functionality for prompt
-    ContextChips,
 
     /// Ligature Support in the Editor and Grid
     Ligatures,
@@ -52,12 +45,7 @@ pub enum FeatureFlag {
     /// to get a sense of PTY throughput over time.
     RecordPtyThroughput,
 
-    /// Whether to fetch generic string objects from the server.
-    FetchGenericStringObjects,
 
-    /// Enables a setting on Intel Dual-GPU Macs to enable use of the integrated GPU over the
-    /// discrete GPU.
-    IntegratedGPU,
 
     /// Defaults Windows builds to the high-performance GPU with Vulkan as the preferred backend.
     WindowsHighPerformanceGpuDefault,
@@ -106,8 +94,6 @@ pub enum FeatureFlag {
     /// Enable dynamic enum parameter types for workflow arguments
     DynamicWorkflowEnums,
 
-    /// Enables next action prediction within Zap, powered by AI.
-    AgentPredict,
 
     /// Enables receiving shared Zap Drive objects.
     SharedWithMe,
@@ -162,8 +148,6 @@ pub enum FeatureFlag {
     SshDragAndDrop,
     DragTabsToWindows,
 
-    /// Enables the overflow menu on AI blocks.
-    AIBlockOverflowMenu,
 
     /// Enables cycling through the next command suggestions with down arrow.
     CycleNextCommandSuggestion,
@@ -183,7 +167,6 @@ pub enum FeatureFlag {
     /// Enables partial next command suggestions with a prefix.
     PartialNextCommandSuggestions,
 
-    AIGeneratedOnboardingSuggestions,
 
     /// Enables iTerm image rendering
     ITermImages,
@@ -206,8 +189,6 @@ pub enum FeatureFlag {
     /// Enables support for Zap Packs.
     WarpPacks,
 
-    /// Enables auto-generated AI memories.
-    AIMemories,
 
     /// Enables the XML output system prompt for the primary (terminal) agent in Agent Mode.
     AgentModePrimaryXML,

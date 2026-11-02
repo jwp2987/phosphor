@@ -246,37 +246,6 @@ impl ObjectActions {
         action
     }
 
-    /// Remove the action from the model with the corresponding object_id, timestamp, and pending=true.
-    pub fn remove_pending_action(
-        &mut self,
-        uid: &ObjectUid,
-        timestamp_of_action: &DateTime<Utc>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if let Some(actions) = self.object_actions_by_id.get_mut(uid) {
-            // Remove the action that has a matching timestamp and pending=true
-            if let Some(index) = actions.iter().position(|a| {
-                matches!(
-                    &a.action_subtype,
-                    ObjectActionSubtype::SingleAction {
-                        timestamp,
-                        pending: true,
-                        ..
-                    } if timestamp == timestamp_of_action
-                )
-            }) {
-                actions.remove(index);
-            } else {
-                log::warn!(
-                    "Could not find the pending action to remove from the ObjectActions model"
-                )
-            }
-        } else {
-            log::warn!("Could not find the object id in the ObjectActions model")
-        }
-        ctx.notify();
-    }
-
     /// Get the processed_at_timestamp of the most recent server-synced action we have for a given object. This determines
     /// whether or not we should accept some update from the server.
     pub fn get_latest_processed_at_ts(&self, uid: &ObjectUid) -> Option<DateTime<Utc>> {

@@ -20,7 +20,6 @@ pub(super) mod file_pane;
 pub(super) mod get_started_pane;
 pub(super) mod get_started_view;
 pub(super) mod image_pane;
-#[cfg(not(target_family = "wasm"))]
 pub(super) mod local_harness_launch;
 pub(super) mod notebook_pane;
 pub(super) mod settings_pane;
@@ -398,10 +397,6 @@ impl PaneId {
 
     pub fn is_terminal_pane(&self) -> bool {
         matches!(self.0.pane_type, IPaneType::Terminal)
-    }
-
-    pub fn is_notebook_pane(&self) -> bool {
-        matches!(self.0.pane_type, IPaneType::Notebook)
     }
 
     pub fn is_code_pane(&self) -> bool {
@@ -819,12 +814,6 @@ impl PaneConfiguration {
         ctx.emit(PaneConfigurationEvent::HeaderContentChanged);
     }
 
-    pub fn set_header_left_inset(&mut self, inset: f32, ctx: &mut ModelContext<Self>) {
-        if (self.header_left_inset - inset).abs() > f32::EPSILON {
-            self.header_left_inset = inset;
-            ctx.emit(PaneConfigurationEvent::HeaderContentChanged);
-        }
-    }
 }
 
 pub enum PaneConfigurationEvent {
@@ -870,11 +859,6 @@ impl<P: BackingView> Entity for PaneStack<P> {
 }
 
 impl<P: BackingView<AssociatedData = ()>> PaneStack<P> {
-    /// Pushes a new view onto the stack, making it the active view. This is a convenience wrapper
-    /// around [`Self::push`] for panes with no associated data.
-    pub fn push_view(&mut self, view: ViewHandle<P>, ctx: &mut ModelContext<Self>) {
-        self.push((), view, ctx);
-    }
 }
 
 impl<P: BackingView> PaneStack<P> {
@@ -901,11 +885,6 @@ impl<P: BackingView> PaneStack<P> {
     /// Returns the associated data for the topmost (active) view in the stack.
     pub fn active_data(&self) -> &P::AssociatedData {
         &self.children.last().0
-    }
-
-    /// Returns a mutable reference to the associated data for the topmost (active) view.
-    pub fn active_data_mut(&mut self) -> &mut P::AssociatedData {
-        &mut self.children.last_mut().0
     }
 
     /// Returns all views in the stack.
@@ -1139,7 +1118,6 @@ pub enum PaneEvent {
 // `local_harness_launch`'s own visibility is untouched by this -- nothing
 // outside `pane_group::pane` gained access to it; only this narrow new
 // surface did.
-#[cfg(not(target_family = "wasm"))]
 pub struct TuiPreparedChildAgentLaunch {
     pub command: String,
     pub env_vars: std::collections::HashMap<std::ffi::OsString, std::ffi::OsString>,
@@ -1148,13 +1126,11 @@ pub struct TuiPreparedChildAgentLaunch {
 }
 
 /// TUI counterpart of [`local_harness_launch::split_orchestrate_tasks`].
-#[cfg(not(target_family = "wasm"))]
 pub fn tui_split_orchestrate_tasks(argument: &str) -> Vec<String> {
     local_harness_launch::split_orchestrate_tasks(argument)
 }
 
 /// TUI counterpart of [`local_harness_launch::compose_child_agent_prompt`].
-#[cfg(not(target_family = "wasm"))]
 pub fn tui_compose_child_agent_prompt(task: &str) -> String {
     local_harness_launch::compose_child_agent_prompt(task)
 }
@@ -1163,7 +1139,6 @@ pub fn tui_compose_child_agent_prompt(task: &str) -> String {
 /// fixed to the same Claude-only default harness `/orchestrate` uses
 /// (`local_harness_launch::ORCHESTRATE_DEFAULT_HARNESS`) since the TUI has no
 /// model/harness-selection UI for child agents either.
-#[cfg(not(target_family = "wasm"))]
 pub async fn prepare_tui_child_agent_launch(
     prompt: String,
     parent_run_id: Option<String>,

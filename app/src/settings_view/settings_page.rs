@@ -316,7 +316,6 @@ pub fn render_sub_header_with_description(
     .finish()
 }
 
-#[cfg_attr(target_family = "wasm", allow(unused))]
 pub fn render_sub_sub_header(
     appearance: &Appearance,
     text_name: impl Into<Cow<'static, str>>,
@@ -1499,17 +1498,6 @@ impl<V: warpui::View> PageType<V> {
                 ..
             } => {
                 *highlighted_widget_id = None;
-            }
-        }
-    }
-
-    /// Set the minimum page width for narrow panes.
-    pub fn set_min_page_width(&mut self, width: f32) {
-        match self {
-            Self::Monolith { min_page_width, .. }
-            | Self::Uncategorized { min_page_width, .. }
-            | Self::Categorized { min_page_width, .. } => {
-                *min_page_width = width;
             }
         }
     }

@@ -32,7 +32,6 @@ impl<S: Slide> CTAButton<S> {
         }
     }
 
-    #[allow(dead_code)]
     pub fn open_url(label: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -52,11 +51,6 @@ impl<S: Slide> CTAButton<S> {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn with_telemetry(mut self, event: TelemetryEvent) -> Self {
-        self.telemetry_event = Some(event);
-        self
-    }
 }
 
 pub enum CTAButtonAction<S: Slide> {

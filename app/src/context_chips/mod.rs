@@ -62,14 +62,6 @@ impl ChipValue {
         }
     }
 
-    /// Returns the `GitLineChanges` payload, if this is the `GitDiffStats` variant.
-    pub fn as_git_diff_stats(&self) -> Option<&display_chip::GitLineChanges> {
-        match self {
-            ChipValue::GitDiffStats(g) => Some(g),
-            ChipValue::Text(_) | ChipValue::GitBranchStatus(_) => None,
-        }
-    }
-
     /// Returns the `GitBranchTrackingStatus` payload, if this is the
     /// `GitBranchStatus` variant.
     pub fn as_git_branch_tracking_status(&self) -> Option<&display_chip::GitBranchTrackingStatus> {

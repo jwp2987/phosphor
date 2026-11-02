@@ -450,8 +450,7 @@ impl DaemonStoreClient {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[async_trait]
 impl StoreClient for DaemonStoreClient {
     async fn update_intermediate_nodes(
         &self,

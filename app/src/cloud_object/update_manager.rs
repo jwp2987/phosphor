@@ -1,4 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::templatable::{TemplatableMCPServer, TemplatableMCPServerObjectModel};
 use crate::{
     ai::{
@@ -8,10 +7,9 @@ use crate::{
     auth::TEST_USER_UID,
     cloud_object::{
         model::{
-            actions::{ObjectAction, ObjectActionHistory, ObjectActionType, ObjectActions},
+            actions::{ObjectAction, ObjectActionType, ObjectActions},
             generic_string_model::{
-                GenericStringModel, GenericStringObjectId, Serializer, StringModel,
-            },
+                GenericStringModel, GenericStringObjectId, },
             persistence::{ObjectStoreEvent, ObjectStoreModel, UpdateSource},
             view::{Editor, EditorState, ObjectStoreViewModel},
         },
@@ -110,19 +108,6 @@ pub enum InitiatedBy {
     User,
     System,
 }
-#[derive(Debug)]
-pub struct GenericStringObjectInput<T, S>
-where
-    T: StringModel<
-            StoredObjectType = GenericStoredObject<GenericStringObjectId, GenericStringModel<T, S>>,
-        > + 'static,
-    S: Serializer<T> + 'static,
-{
-    pub id: ClientId,
-    pub model: GenericStringModel<T, S>,
-    pub initial_folder_id: Option<SyncId>,
-    pub entrypoint: StoredObjectEventEntrypoint,
-}
 
 /// The UpdateManager is responsible for delegating work
 /// when there is an update to an object (e.g. via a user interaction or
@@ -167,42 +152,6 @@ impl UpdateManager {
         }
     }
 
-    /// Remove team-owned objects in response to leaving a team.
-    pub fn remove_team_objects(&mut self, left_team_uid: ServerId, ctx: &mut ModelContext<Self>) {
-        let object_store_model = ObjectStoreModel::handle(ctx);
-        let objects_to_remove = object_store_model
-            .as_ref(ctx)
-            .all_cloud_objects_in_space(
-                Space::Team {
-                    team_uid: left_team_uid,
-                },
-                ctx,
-            )
-            .map(|object| object.object_type_and_id())
-            .collect_vec();
-
-        // First, delete in-memory from ObjectStoreModel and object actions.
-        object_store_model.update(ctx, |object_store_model, ctx| {
-            for object in objects_to_remove.iter() {
-                object_store_model.delete_object(object.sync_id(), ctx);
-            }
-        });
-        ObjectActions::handle(ctx).update(ctx, |object_actions, ctx| {
-            for object in objects_to_remove.iter() {
-                object_actions.delete_actions_for_object(&object.uid(), ctx);
-            }
-        });
-
-        // Then, delete from SQLite.
-        let object_ids_and_types = objects_to_remove
-            .into_iter()
-            .map(|object| (object.sync_id(), object.object_id_type()))
-            .collect();
-        self.save_to_db([ModelEvent::DeleteObjects {
-            ids: object_ids_and_types,
-        }]);
-    }
-
     pub fn resync_object(
         &mut self,
         object_type_and_id: &ObjectTypeAndId,
@@ -212,14 +161,6 @@ impl UpdateManager {
         // local changes up to the server". After localization it's already a
         // one-way sqlite write, so call sites only need a lightweight check.
         let _ = (object_type_and_id, ctx);
-    }
-
-    /// Out-of-band (from the regular poll) refresh of updated objects.
-    pub fn refresh_updated_objects(&mut self, ctx: &mut ModelContext<Self>) {
-        // Zap localization: there is no cloud object polling source for now.
-        // This method is kept only for compatibility with old call sites; it
-        // triggers no network I/O.
-        let _ = ctx;
     }
 
     fn save_in_memory_object_to_sqlite(
@@ -309,7 +250,6 @@ impl UpdateManager {
         );
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn update_templatable_mcp_server(
         &mut self,
         templatable_mcp_server: TemplatableMCPServer,
@@ -801,7 +741,6 @@ impl UpdateManager {
         );
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn create_templatable_mcp_server(
         &mut self,
         templatable_mcp_server: TemplatableMCPServer,
@@ -822,7 +761,6 @@ impl UpdateManager {
         );
     }
 
-    #[allow(dead_code)]
     pub fn create_ai_execution_profile(
         &mut self,
         ai_execution_profile: AIExecutionProfile,
@@ -1162,46 +1100,6 @@ impl UpdateManager {
         // into SyncQueue at the end; now that SyncQueue has been fully removed, the
         // local sqlite record is itself considered "done".
         let _ = (id_and_type, action_type, data, action_timestamp);
-    }
-
-    fn maybe_overwrite_object_action_history(
-        &mut self,
-        history: &ObjectActionHistory,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        ObjectActions::handle(ctx).update(ctx, |object_actions_model, ctx| {
-            // Accept this action history if we don't have any actions for this object OR the server's latest action
-            // for this object is at least as recent as our latest synced action for this object
-            let latest_processed_at_ts =
-                object_actions_model.get_latest_processed_at_ts(&history.uid);
-            if latest_processed_at_ts
-                .is_none_or(|client_ts| client_ts <= history.latest_processed_at_timestamp)
-            {
-                // Overwrite the history for this object.
-                object_actions_model.overwrite_action_history_for_object(
-                    &history.uid,
-                    history.actions.clone(),
-                    ctx,
-                );
-            }
-        });
-    }
-
-    /// Overwrites the actions in SQLite for a specified set of objects with the actions that
-    /// are currently in the ObjectActions singleton model.
-    fn sync_actions_for_objects_to_sqlite(
-        &mut self,
-        object_uids: Vec<&ObjectUid>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        // Retrieve the objects from the ObjectActions model
-        let actions = ObjectActions::handle(ctx).read(ctx, |object_actions_model, _ctx| {
-            object_actions_model.get_actions_for_objects(object_uids)
-        });
-
-        // Overwrite the actions for those objects in sqlite
-        let actions_to_sync: Vec<ObjectAction> = actions.values().flatten().cloned().collect();
-        self.save_to_db([ModelEvent::SyncObjectActions { actions_to_sync }]);
     }
 
     /// Sets the notebooks current editor in memory. SQLite is not updated until we receive

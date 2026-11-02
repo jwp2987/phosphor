@@ -165,16 +165,6 @@ impl WorkflowType {
         }
     }
 
-    /// Returns the contained [`Workflow`], consuming `self`.
-    pub fn take_workflow(self) -> Workflow {
-        match self {
-            WorkflowType::Local(workflow) => workflow,
-            WorkflowType::AIGenerated { workflow, .. } => workflow,
-            WorkflowType::Cloud(workflow) => workflow.model().data.clone(),
-            WorkflowType::Notebook(workflow) => workflow,
-        }
-    }
-
     /// The object type and ID for the object containing this workflow, if there is
     /// one. This is currently only supported for object-backed workflows, not workflows within notebooks.
     pub fn object_id(&self) -> Option<ObjectTypeAndId> {

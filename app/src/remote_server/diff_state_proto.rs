@@ -318,6 +318,7 @@ pub(super) fn git_diff_with_base_content_to_proto(
     }
 }
 
+#[cfg(test)]
 pub(super) fn proto_to_git_diff_data(data: &proto::GitDiffData) -> GitDiffData {
     GitDiffData {
         files: data

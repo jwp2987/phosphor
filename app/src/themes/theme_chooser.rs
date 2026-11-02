@@ -429,7 +429,6 @@ impl ThemeChooser {
 
     // this is actually used in our integration test assertions,
     // but rust thinks it's unused when running unit tests in this crate
-    #[allow(dead_code)]
     pub fn themes(&self) -> impl Iterator<Item = &ThemeKind> {
         self.themes
             .iter()

@@ -216,18 +216,6 @@ pub enum SlashCommandKind {
 }
 
 impl StaticCommand {
-    pub fn matches_filter(&self, filter_text: &str) -> bool {
-        if filter_text.is_empty() {
-            return true;
-        }
-
-        let filter_lower = filter_text.to_lowercase();
-        self.name
-            .to_lowercase()
-            .get(1..)
-            .unwrap_or("")
-            .starts_with(&filter_lower)
-    }
 
     pub fn is_active(&self, session_context: Availability) -> bool {
         session_context.contains(self.availability)

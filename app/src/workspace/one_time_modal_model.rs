@@ -100,15 +100,6 @@ impl OneTimeModalModel {
         }
     }
 
-    pub fn mark_feature_intro_dismissed(&mut self, ctx: &mut ModelContext<Self>) {
-        self.set_active_feature_intro(None, ctx);
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn force_open_feature_intro(&mut self, id: FeatureIntroId, ctx: &mut ModelContext<Self>) {
-        self.set_active_feature_intro(Some(id), ctx);
-    }
-
     fn set_active_feature_intro(
         &mut self,
         intro: Option<FeatureIntroId>,

@@ -472,6 +472,7 @@ impl InputSuggestions {
     }
 
     /// Whether a background refilter has not landed yet (so `items` may not match the query).
+    #[cfg(test)]
     pub fn has_pending_refilter(&self) -> bool {
         self.pending_refilter.is_some()
     }

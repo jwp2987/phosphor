@@ -5,7 +5,7 @@ use warp_util::path::ShellDialect;
 use warpui::clipboard::{
     BackgroundTextRead, ClipboardContent, ReadKind, StartedRead, read_in_background,
 };
-use warpui::{Entity, ModelContext, SingletonEntity as _, View, ViewContext};
+use warpui::{SingletonEntity as _, View, ViewContext};
 
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
@@ -74,21 +74,6 @@ pub fn read_clipboard_for_view<V: View>(
 ) {
     match read_in_background(ctx.clipboard(), kind) {
         StartedRead::Ready(read) => on_read(view, read, ctx),
-        StartedRead::Pending(pending) => {
-            ctx.spawn(pending, on_read);
-        }
-    }
-}
-
-/// [`read_clipboard_for_view`] for a model.
-pub fn read_clipboard_for_model<M: Entity>(
-    model: &mut M,
-    ctx: &mut ModelContext<M>,
-    kind: ReadKind,
-    on_read: impl FnOnce(&mut M, BackgroundTextRead, &mut ModelContext<M>) + 'static,
-) {
-    match read_in_background(ctx.clipboard(), kind) {
-        StartedRead::Ready(read) => on_read(model, read, ctx),
         StartedRead::Pending(pending) => {
             ctx.spawn(pending, on_read);
         }

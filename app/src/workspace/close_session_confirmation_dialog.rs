@@ -66,9 +66,6 @@ impl CloseSessionConfirmationDialog {
         self.open_confirmation_source = Some(source);
     }
 
-    pub fn get_open_confirmation_source(&self) -> Option<OpenDialogSource> {
-        self.open_confirmation_source
-    }
 }
 
 impl Entity for CloseSessionConfirmationDialog {

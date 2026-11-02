@@ -18,7 +18,6 @@ use crate::{
 /// icon-only menu button (chevron-down). The menu button may be used as an anchor
 /// for a dropdown Menu via `with_menu`.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct CompactibleSplitActionButton {
     primary_button: CompactibleActionButton,
     menu_button: ViewHandle<ActionButton>,
