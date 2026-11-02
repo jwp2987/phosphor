@@ -2864,3 +2864,63 @@ fn a_key_reaching_the_hand_off_under_a_live_prompt_hold_is_held_not_written() {
     assert_eq!(handoff.take_prompt_hold_started(), Some(id));
     assert_eq!(handoff.writes_in_flight(), 0);
 }
+
+// ---- peek_user_bytes_route (#1424): the pure form of on_user_bytes ----------------------------
+
+/// The states the route depends on, built fresh so a case may commit.
+fn peek_states() -> Vec<(&'static str, fn() -> TypeaheadHandoff)> {
+    vec![
+        ("editor owned", TypeaheadHandoff::default),
+        ("pty owned, command running", after_submit),
+        ("pty owned, command just written", young_after_submit),
+        ("awaiting the report", awaiting_report),
+        ("queued young hold", || queued_young_hold().0),
+    ]
+}
+
+const PEEK_KEYS: [&[u8]; 6] = [b"a", b"\r", b"\x03", b"\x04", b"\x1a", b"\x1b[D"];
+
+/// A peek changes nothing: the whole state prints the same before and after, however often it is
+/// asked.
+#[test]
+fn peeking_the_route_mutates_nothing() {
+    for (name, make) in peek_states() {
+        for bytes in PEEK_KEYS {
+            for reaches_shell_line in [true, false] {
+                let handoff = make();
+                let before = format!("{handoff:?}");
+                let _ = handoff.peek_user_bytes_route(bytes, reaches_shell_line, Instant::now());
+                let _ = handoff.peek_user_bytes_route(bytes, reaches_shell_line, Instant::now());
+                assert_eq!(
+                    before,
+                    format!("{handoff:?}"),
+                    "{name}: a peek of {bytes:?} changed the hand-off"
+                );
+            }
+        }
+    }
+}
+
+/// What a peek answers is what the commit that follows it answers (when nothing else moves the
+/// state in between: the pty reader thread can, and the shadow counts those).
+#[test]
+fn a_peek_predicts_the_commit() {
+    for (name, make) in peek_states() {
+        for bytes in PEEK_KEYS {
+            for reaches_shell_line in [true, false] {
+                let mut handoff = make();
+                let peeked =
+                    handoff.peek_user_bytes_route(bytes, reaches_shell_line, Instant::now());
+                let committed = if reaches_shell_line {
+                    handoff.on_user_bytes(bytes)
+                } else {
+                    handoff.on_user_bytes_to_full_screen_program(bytes)
+                };
+                assert_eq!(
+                    peeked, committed,
+                    "{name}: peek and commit disagree for {bytes:?} (reaches_shell_line={reaches_shell_line})"
+                );
+            }
+        }
+    }
+}

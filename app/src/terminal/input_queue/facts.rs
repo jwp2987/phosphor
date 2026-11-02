@@ -245,6 +245,9 @@ pub struct RouteFacts {
     /// forwarded during the bootstrap.
     pub forwards_subshell_key: bool,
     pub forwards_subshell_abort: bool,
+    /// A subshell setup was announced and the shell is asking for something (a prompt waiting for
+    /// an answer): typing is the answer, so the subshell holds let keys through (H7b).
+    pub subshell_awaiting_answer: bool,
     /// The announced subshell bootstrap is older than `SUBSHELL_BOOTSTRAP_STALL_CEILING`,
     /// computed when the facts are built so the table reads no clock.
     pub subshell_bootstrap_stalled: bool,

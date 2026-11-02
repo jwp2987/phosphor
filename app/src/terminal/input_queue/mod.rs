@@ -38,6 +38,37 @@
 //! `view/paste_queue.rs`. The old holders and their `PHOSPHOR_INPUT_QUEUE_*` kill switches are
 //! gone; the revert path is git.
 //!
+//! DESTINATION TABLE (#1424, steps 1 and 2 of the approved design; NOT LIVE). Where an input goes
+//! is still decided by the chain of predicates inside delivery (`route_typed`, `keydown_on_terminal`,
+//! `after_paste_stage`, `deliver_replayed_entry`, ...). The replacement is one pure function,
+//! [`table::decide`]`(intent, &RouteFacts, pin) -> Plan { outcome, effects, on_refused, row }`
+//! (`table.rs`: every hold row H1-H10, destination row D1-D13, signal row P1-P2 and origin row, the
+//! four per-class pty predicates exactly as legacy computes them, the gate x class matrix of H8
+//! including #1423's editor exemption, and `signal_plan` per gate and signal). What exists
+//! and what does not:
+//!  - LIVE (changes no behaviour): the facts and the stamp. [`RouteFacts`] is built by
+//!    `TerminalView::build_route_facts` (`view/route_facts.rs`) without a blocking lock and without
+//!    `in_key_path()`, from a consistent read of the two published model cells (a `facts_gen` in
+//!    both, a reader retry until they agree), the pane's [`PaneRouteState`] and live reads. Every
+//!    entry carries a [`Stamp`] taken at the sink (`on_pane_key_event`) -- the model gen it saw, the
+//!    focus chain, the focus epoch -- through the deferred mailbox (`Deferred::Offer { .. stamp }`)
+//!    and follow-ups, so a key judged later still has the classification it had when typed (the ssh
+//!    password rule, H4). [`SshPhase`], [`SubshellPhase`] and [`PsPhase`] are DERIVED read-only
+//!    from the legacy fields; no refresher moved off the key path.
+//!  - PURE, NOT CALLED: `table.rs` (`decide`, the predicates, `gate_holds`, `destination_for_fixed`
+//!    which fixes B12, the inverted hidden-input branch of `destination_for`), the `Origin` rows
+//!    (Synced, Viewer, CliSubmit, ReleasedFrom), `TypeaheadHandoff::peek_user_bytes_route`, the
+//!    `HELD_SIGNAL` held class (declared, no producer or executor).
+//!  - THE SWITCH: `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`], parsed like
+//!    `PHOSPHOR_PANE_KEY`). Default `legacy`. Nothing reads `shadow` or `table` yet.
+//!  - DELIBERATE CHANGES encoded in the table but not yet effective (the owner's decisions OD-1,
+//!    OD-5, OD-7): ^Z and ^\ jump the queue like ^C with a per-gate plan; a signal typed during the
+//!    ssh setup window is HELD and delivered to the REMOTE side, never to the local shell; a key
+//!    stamped before the ssh prompt was published is dropped even if it is processed later.
+//!  - NEXT (design steps 3-8): the shadow comparison (`kh_dest_disagree`), delivery through the
+//!    table (the #1415 fix), arrival of terminal keys, editor arrival and paste, the edge-driven
+//!    `SshPhase`, then `table` as the default and the deletion of `delivering`/`requeue_request`.
+//!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
 //! never be dropped, written "as typed", left half done, or consume a one-shot cap for nothing.
@@ -68,6 +99,7 @@ mod destination;
 pub mod facts;
 mod gates;
 mod pane;
+pub mod table;
 pub mod trace;
 
 #[cfg(test)]

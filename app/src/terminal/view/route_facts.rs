@@ -323,6 +323,9 @@ impl TerminalView {
                 true,
                 announced_age,
             ),
+            subshell_awaiting_answer: announced_age.is_some()
+                && self.subshell_bootstrap_in_flight.is_none()
+                && awaits_an_answer,
             subshell_bootstrap_stalled: announced_age
                 .is_some_and(|age| age >= SUBSHELL_BOOTSTRAP_STALL_CEILING),
             ps,
