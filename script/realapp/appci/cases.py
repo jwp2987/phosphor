@@ -1464,7 +1464,10 @@ def enter_to_start(ctx, n, budget_s=None):
         f = os.path.join(ctx.W, "lat_%d" % i)
         if os.path.exists(f):
             os.remove(f)
-        stamp = "print -r -- $EPOCHREALTIME > lat_%d" if ctx.be.name == "mac" else "date +%%s.%%N > lat_%d"   # BSD date has no %N
+        # macOS: BSD date has no %N, and the pane runs /bin/bash 3.2 (no $EPOCHREALTIME; zsh's `print` is "command not found" there and,
+        # in agent mode, autodetect rightly sends it to the AI: r18ct queued 31 prompts). perl is in the base system; its start-up is
+        # paid identically by the reference terminal, which types the same line.
+        stamp = "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d" if ctx.be.name == "mac" else "date +%%s.%%N > lat_%d"
         if ctx.pane == "powershell":
             stamp = "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
         ctx.be.guard_ref()
@@ -1478,6 +1481,11 @@ def enter_to_start(ctx, n, budget_s=None):
             ds.append(((v / 1000.0 if v > 1e11 else v) - t0) * 1000)       # PowerShell stamps UTC milliseconds
         except Exception:
             pass
+        if i == 2 and not ds:
+            # three stamps in a row never ran: the line is not reaching a shell (wrong shell, wrong destination, wedged pane). Stop
+            # rather than type 30 more lines into whatever took them (an agent queue, a pager); the caller reports 0/n captured.
+            ctx.be.key("ctrl+c")
+            break
         time.sleep(0.2)
     return ds
 
