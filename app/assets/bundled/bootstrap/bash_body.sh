@@ -122,6 +122,10 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       if [[ -f ${_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE:-} ]]; then
         command -p rm "$_WARP_GENERATOR_PIDS_COMPLETED_TMP_FILE"
       fi
+      # The scratch file __bp_history1_viafile reads `history 1` back from (#1492).
+      if [[ -n ${__bp_h1_file:-} && $__bp_h1_file != none && -f $__bp_h1_file ]]; then
+        command -p rm "$__bp_h1_file"
+      fi
     }
     trap __warp_generator_pid_file_cleanup EXIT
 
@@ -188,35 +192,44 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
         fi
     }
 
+    # Phosphor (#1492): a key-value hook (MSYS2 / Git Bash) used to be 5 to 15 separate writes to
+    # /dev/tty, each one an open + write + close, which on Windows is a ConPTY round trip apiece
+    # on every command. The pieces are now collected in __warp_kv_buf by printf -v (the same format
+    # strings, so the same bytes) and written once by ..._end. A hook is always start ... end.
+
     # Expects the first argument to be the shell hook.
     warp_send_hook_via_kv_pairs_start () {
-      __warp_emit "${OSC_START}k;A;%s\a" "${1-}"
+      builtin printf -v __warp_kv_buf "${OSC_START}k;A;%s\a" "${1-}"
     }
 
     # Expects the first argument to be the key and the second argument to be the value.
     warp_send_hook_kv_pair_escaped () {
       # Note that we only escape the value.
       if [[ -n "${2-}" ]]; then
-        __warp_emit "${OSC_START}k;B;%s;%q\a" "$1" "$2"
+        builtin printf -v __warp_kv_piece "${OSC_START}k;B;%s;%q\a" "$1" "$2"
       else
         # Don't print anything for the empty value.
-        __warp_emit "${OSC_START}k;B;%s;\a" "${1-}"
+        builtin printf -v __warp_kv_piece "${OSC_START}k;B;%s;\a" "${1-}"
       fi
+      __warp_kv_buf+=$__warp_kv_piece
     }
 
     # Expects the first argument to be the key and the second argument to be the value.
     warp_send_hook_kv_pair () {
       # Note that we only escape the value.
       if [[ -n "${2-}" ]]; then
-        __warp_emit "${OSC_START}k;B;%s;%s\a" "$1" "$2"
+        builtin printf -v __warp_kv_piece "${OSC_START}k;B;%s;%s\a" "$1" "$2"
       else
         # Don't print anything for the empty value.
-        __warp_emit "${OSC_START}k;B;%s;\a" "${1-}"
+        builtin printf -v __warp_kv_piece "${OSC_START}k;B;%s;\a" "${1-}"
       fi
+      __warp_kv_buf+=$__warp_kv_piece
     }
 
     warp_send_hook_via_kv_pairs_end () {
-      __warp_emit "${OSC_START}k;C\a"
+      builtin printf -v __warp_kv_piece "${OSC_START}k;C\a"
+      __warp_emit '%s' "${__warp_kv_buf-}$__warp_kv_piece"
+      __warp_kv_buf=
     }
 
     # Hex-encodes the given argument and writes it to the PTY, wrapped in the OSC
