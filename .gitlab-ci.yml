@@ -553,17 +553,14 @@ build-windows-profiling:
     - when: manual
       allow_failure: true
 
-# Fix-tier gate on every direct push to main (#1503): test-linux with the filter derived from the pushed diff
-# (script/ci/ci_seq.py --derive-env) and test-warpui-core when warpui_core changed. A push that changes only
-# docs/scripts runs neither (they print "skipped"). build/* refs stay manual; the heavy suites stay manual.
+# #1503, owner 2026-11-02: pushes to main do NOT run the suites automatically (mass pushes would queue a test run
+# each). Tags run them; everything else is manual. The intended future gate is merge requests: when the repo moves to
+# MRs, add `- if: '$CI_PIPELINE_SOURCE == "merge_request_event"'` (when: on_success, AUTO_DERIVE: "1") here, and let
+# MR pipelines through `workflow:` (today it drops them) with a runner that may run unprotected refs.
 .main_push_rules:
   rules:
     - if: $CI_COMMIT_TAG
       when: on_success
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
-      when: on_success
-      variables:
-        AUTO_DERIVE: "1"
     - when: manual
       allow_failure: true
 
