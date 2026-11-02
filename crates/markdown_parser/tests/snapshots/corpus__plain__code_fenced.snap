@@ -11,29 +11,11 @@ FormattedText {
             },
         ),
         LineBreak,
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "~~~python",
-                    styles: PlainText,
-                },
-            ],
-        ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "print(\"tilde fence\")",
-                    styles: PlainText,
-                },
-            ],
-        ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "~~~",
-                    styles: PlainText,
-                },
-            ],
+        CodeBlock(
+            CodeBlockText {
+                lang: "python",
+                code: "print(\"tilde fence\")\n",
+            },
         ),
         LineBreak,
         CodeBlock(
@@ -52,14 +34,15 @@ FormattedText {
         LineBreak,
         CodeBlock(
             CodeBlockText {
-                lang: "`md",
-                code: "```nested\ninner\n",
+                lang: "md",
+                code: "```nested\ninner\n```\n",
             },
         ),
+        LineBreak,
         CodeBlock(
             CodeBlockText {
-                lang: "`",
-                code: "\n```mermaid\ngraph TD\nA[Start] --> B[Finish]\n",
+                lang: "mermaid",
+                code: "graph TD\nA[Start] --> B[Finish]\n",
             },
         ),
         LineBreak,

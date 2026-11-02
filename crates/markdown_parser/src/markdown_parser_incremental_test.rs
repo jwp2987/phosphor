@@ -40,7 +40,11 @@ const CORPUS: &[&str] = &[
     "trailing blank lines\n\n\n",
     "\n\n\nleading blank lines\n",
     "unicode \u{1f600} text\n- \u{00e9}l\u{00e8}ve\n\n\u{4e2d}\u{6587}\n",
-    "> not a quote construct\n>> nested\n",
+    "> a quote\n>> nested\n",
+    "> quote\nlazy line\n\ntext\n",
+    "> ```\n> code\n> ```\nafter\n~~~py\nx\n~~~\n",
+    "~~~\nunterminated tilde fence\n",
+    "> ```\n> unterminated fence in a quote\n",
     "mix\n- list\ntext\n1. ordered\n- [ ] task\n# head\n---\n| t | u |\n| - | - |\n| 1 | 2 |\n```\nc\n```\n",
 ];
 

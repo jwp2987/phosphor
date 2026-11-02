@@ -50,14 +50,7 @@ FormattedText {
                 ],
             },
         ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: ">>> >> >",
-                    styles: PlainText,
-                },
-            ],
-        ),
+        LineBreak,
         Line(
             [
                 FormattedTextFragment {

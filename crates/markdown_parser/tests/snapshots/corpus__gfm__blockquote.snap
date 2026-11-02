@@ -7,8 +7,8 @@ FormattedText {
         Line(
             [
                 FormattedTextFragment {
-                    text: "> single quote",
-                    styles: PlainText,
+                    text: "single quote",
+                    styles: Italic,
                 },
             ],
         ),
@@ -16,49 +16,24 @@ FormattedText {
         Line(
             [
                 FormattedTextFragment {
-                    text: "> multi",
-                    styles: PlainText,
+                    text: "multi",
+                    styles: Italic,
                 },
             ],
         ),
         Line(
             [
                 FormattedTextFragment {
-                    text: "> line",
-                    styles: PlainText,
+                    text: "line",
+                    styles: Italic,
                 },
             ],
         ),
         Line(
             [
                 FormattedTextFragment {
-                    text: "> quote",
-                    styles: PlainText,
-                },
-            ],
-        ),
-        LineBreak,
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "> outer",
-                    styles: PlainText,
-                },
-            ],
-        ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "> > inner",
-                    styles: PlainText,
-                },
-            ],
-        ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "> > > innermost",
-                    styles: PlainText,
+                    text: "quote",
+                    styles: Italic,
                 },
             ],
         ),
@@ -66,50 +41,56 @@ FormattedText {
         Line(
             [
                 FormattedTextFragment {
-                    text: "> - list in quote",
-                    styles: PlainText,
+                    text: "outer",
+                    styles: Italic,
                 },
             ],
         ),
         Line(
             [
                 FormattedTextFragment {
-                    text: "> - second",
-                    styles: PlainText,
+                    text: "inner",
+                    styles: Italic,
                 },
             ],
         ),
         Line(
             [
                 FormattedTextFragment {
-                    text: ">",
-                    styles: PlainText,
+                    text: "innermost",
+                    styles: Italic,
                 },
             ],
         ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "> ```rust",
-                    styles: PlainText,
-                },
-            ],
+        LineBreak,
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "list in quote",
+                        styles: Italic,
+                    },
+                ],
+            },
         ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "> let x = 1;",
-                    styles: PlainText,
-                },
-            ],
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "second",
+                        styles: Italic,
+                    },
+                ],
+            },
         ),
-        Line(
-            [
-                FormattedTextFragment {
-                    text: "> ```",
-                    styles: PlainText,
-                },
-            ],
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "rust",
+                code: "let x = 1;\n",
+            },
         ),
     ],
 }

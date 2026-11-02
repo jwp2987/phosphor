@@ -3006,3 +3006,157 @@ fn test_parse_html_comment_with_trailing_same_line_content_is_not_block() {
     );
 }
 
+// Blockquotes (#1554) and tilde fences (#1555).
+
+fn parse_lines(source: &str) -> Vec<FormattedTextLine> {
+    parse_markdown(source)
+        .expect("Markdown should parse")
+        .lines
+        .into_iter()
+        .collect()
+}
+
+fn quoted(text: &str) -> FormattedTextLine {
+    FormattedTextLine::Line(vec![FormattedTextFragment::italic(text)])
+}
+
+fn plain_line(text: &str) -> FormattedTextLine {
+    FormattedTextLine::Line(vec![FormattedTextFragment::plain_text(text)])
+}
+
+fn code_block(lang: &str, code: &str) -> FormattedTextLine {
+    FormattedTextLine::CodeBlock(CodeBlockText {
+        lang: lang.to_string(),
+        code: code.to_string(),
+    })
+}
+
+#[test]
+fn test_blockquote_single_and_multi_line() {
+    assert_eq!(parse_lines("> single quote"), vec![quoted("single quote")]);
+    assert_eq!(parse_lines(">no space"), vec![quoted("no space")]);
+    assert_eq!(
+        parse_lines("> a\n> b\n\n> c\n"),
+        vec![
+            quoted("a"),
+            quoted("b"),
+            FormattedTextLine::LineBreak,
+            quoted("c")
+        ]
+    );
+}
+
+#[test]
+fn test_blockquote_lazy_continuation() {
+    assert_eq!(
+        parse_lines("> a\nlazy\n\nafter"),
+        vec![
+            quoted("a"),
+            quoted("lazy"),
+            FormattedTextLine::LineBreak,
+            plain_line("after"),
+        ]
+    );
+}
+
+#[test]
+fn test_blockquote_not_lazy_after_fence_or_blank() {
+    assert_eq!(
+        parse_lines("> ```\n> code\n> ```\nplain"),
+        vec![
+            code_block(RUNNABLE_BLOCK_MARKDOWN_LANG, "code\n"),
+            plain_line("plain")
+        ]
+    );
+    assert_eq!(
+        parse_lines(">\nplain"),
+        vec![FormattedTextLine::LineBreak, plain_line("plain")]
+    );
+}
+
+#[test]
+fn test_blockquote_nested() {
+    assert_eq!(
+        parse_lines("> outer\n> > inner\n> > > innermost"),
+        vec![quoted("outer"), quoted("inner"), quoted("innermost")]
+    );
+}
+
+#[test]
+fn test_blockquote_with_list_and_code() {
+    assert_eq!(
+        parse_lines("> - a\n> - b\n>\n> ```rust\n> let x = 1;\n> ```"),
+        vec![
+            FormattedTextLine::UnorderedList(FormattedIndentTextInline {
+                indent_level: 0,
+                text: vec![FormattedTextFragment::italic("a")],
+            }),
+            FormattedTextLine::UnorderedList(FormattedIndentTextInline {
+                indent_level: 0,
+                text: vec![FormattedTextFragment::italic("b")],
+            }),
+            FormattedTextLine::LineBreak,
+            code_block("rust", "let x = 1;\n"),
+        ]
+    );
+}
+
+#[test]
+fn test_blockquote_deep_nesting_does_not_overflow() {
+    let source = format!("{} deep", ">".repeat(5000));
+    assert!(parse_markdown(&source).is_ok());
+}
+
+#[test]
+fn test_tilde_fence() {
+    assert_eq!(
+        parse_lines("~~~python\nprint(1)\n~~~"),
+        vec![code_block("python", "print(1)\n")]
+    );
+    assert_eq!(
+        parse_lines("~~~\nplain\n~~~\n"),
+        vec![code_block(RUNNABLE_BLOCK_MARKDOWN_LANG, "plain\n")]
+    );
+}
+
+#[test]
+fn test_fence_close_must_match_char_and_length() {
+    // A backtick fence is not closed by tildes, nor a tilde fence by backticks.
+    assert_eq!(
+        parse_lines("```\n~~~\n```"),
+        vec![code_block(RUNNABLE_BLOCK_MARKDOWN_LANG, "~~~\n")]
+    );
+    assert_eq!(
+        parse_lines("~~~\n```\nx\n~~~"),
+        vec![code_block(RUNNABLE_BLOCK_MARKDOWN_LANG, "```\nx\n")]
+    );
+    // A shorter run does not close a longer fence; a longer one does.
+    assert_eq!(
+        parse_lines("~~~~\n~~~\nx\n~~~~~"),
+        vec![code_block(RUNNABLE_BLOCK_MARKDOWN_LANG, "~~~\nx\n")]
+    );
+    assert_eq!(
+        parse_lines("````md\n```nested\ninner\n```\n````"),
+        vec![code_block("md", "```nested\ninner\n```\n")]
+    );
+}
+
+#[test]
+fn test_mermaid_fences_of_both_kinds_keep_their_language() {
+    assert_eq!(
+        parse_lines("```mermaid\ngraph TD\n```"),
+        vec![code_block("mermaid", "graph TD\n")]
+    );
+    assert_eq!(
+        parse_lines("~~~mermaid\ngraph TD\n~~~"),
+        vec![code_block("mermaid", "graph TD\n")]
+    );
+}
+
+#[test]
+fn test_unterminated_tilde_fence_stays_text() {
+    assert_eq!(
+        parse_lines("~~~\nnever closed"),
+        vec![plain_line("~~~"), plain_line("never closed")]
+    );
+}
