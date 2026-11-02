@@ -19658,6 +19658,26 @@ fn record_pty_writes(
     pty_writes
 }
 
+/// Like [`record_pty_writes`], but also records the writes the typeahead hand-off counts
+/// (`Event::WriteHandoffUserBytesToPty`): both reach the pty, and right after an ssh hand-over the
+/// counted route is the expected one.
+fn record_all_pty_writes(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<Vec<u8>>>> {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+            _ => {}
+        });
+    });
+    pty_writes
+}
+
 /// Registers the local shell session the way a bootstrapped pane has it. Typed text only goes to
 /// the pty (rather than the input editor) once a session exists, as it does for a real ssh run.
 fn register_local_session_for_ssh_test(view: &TerminalView, ctx: &mut ViewContext<TerminalView>) {
@@ -23696,7 +23716,7 @@ fn table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
