@@ -54,7 +54,7 @@ pub fn initialize_settings_for_tests_with_mode(
             AccessibilitySettings, AliasExpansionSettings, AppEditorSettings,
             BlockVisibilitySettings, CodeSettings, DebugSettings, EmacsBindingsSettings,
             FontSettings, GPUSettings, InputModeSettings, InputSettings, LocalControlSettings,
-            NativePreferenceSettings, PaneSettings, PreferencesSettings, ScrollSettings,
+            NativePreferenceSettings, PaneSettings, ScrollSettings,
             SelectionSettings, SshSettings, ThemeSettings, TuiAutoupdateSettings,
             TuiThemeSettings, TuiZeroStateSettings, VimBannerSettings, WarpDrivePrivacySettings,
         },
@@ -94,7 +94,6 @@ pub fn initialize_settings_for_tests_with_mode(
     BlockVisibilitySettings::register(app);
     BlockListSettings::register(app);
     crate::settings::language::LanguageSettings::register(app);
-    PreferencesSettings::register(app);
     CommandSearchSettings::register(app);
     DebugSettings::register(app);
     AppIconSettings::register(app);

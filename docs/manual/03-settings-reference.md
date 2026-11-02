@@ -26,9 +26,8 @@ is the case the table says so instead of describing the setting as useful. See
 **`sync_to_cloud` is meaningless here.** If you read the source you will find
 every setting carries a `sync_to_cloud` field. It is an upstream artifact.
 Phosphor has no cloud backend, no account, and no settings syncer — the field is
-read by exactly one thing, a small "this value is local only" icon in the
-Settings window, and nothing in this application ever transmits a setting
-anywhere. Your settings file never leaves your machine.
+read by nothing at runtime, and nothing in this application ever transmits a
+setting anywhere. Your settings file never leaves your machine.
 
 ---
 
@@ -701,12 +700,6 @@ in the running application.
 | `appearance.panes.should_dim_inactive_panes` | boolean | `false` | Dim panes that do not have focus. |
 | `appearance.panes.focus_pane_on_hover` | boolean | `false` | Focus a pane when the mouse moves over it, without clicking. |
 
-## PreferencesSettings
-
-| TOML path | Type | Default | What it does |
-|---|---|---|---|
-| `account.is_settings_sync_enabled` | boolean | `false` | **Largely inert.** Upstream this enabled cloud settings sync. Phosphor has no cloud and no syncer — nothing is uploaded whether this is on or off. Its only remaining effect is cosmetic: when it is `true`, the Settings window draws a small "this setting is local only" icon next to settings that upstream would not have synced. Leave it at `false`. |
-
 ## SameLinePromptBlockSettings — removed
 
 **Deleted in 2026-09 (#638); it never had a TOML key.** Upstream this recorded
@@ -864,7 +857,6 @@ works is the most likely way to waste an afternoon.
 
 | Key | Why it is inert |
 |---|---|
-| `account.is_settings_sync_enabled` | No cloud, no syncer. Only draws a "local only" icon. |
 | `privacy.telemetry_enabled` | Telemetry channel physically removed; toggle never rendered. |
 | `privacy.crash_reporting_enabled` | The toggle renders, but `crash_reporting::init` is compiled out of every OSS bundle (`app/src/lib.rs:1551-1557`; no `oss` bundler branch sets the cargo feature). Live only in a `--features crash_reporting` build. |
 | `cloud_platform.third_party_api_keys.can_use_warp_credits_with_byok` | There are no credits. The value is computed and never read. |
@@ -973,7 +965,6 @@ Group declarations (all defaults/paths/platforms above are read from these):
   app/src/settings/app_installation_detection.rs:27-35 (WEB, private)
   app/src/settings/autoupdate.rs:3-13
   app/src/settings/block_visibility.rs:7-34
-  app/src/settings/cloud_preferences.rs:17-27 (PreferencesSettings)
   app/src/settings/code.rs:5-118 (incl. the deliberate default:false on codebase_context_enabled and why)
   app/src/settings/debug.rs:21-58 (all private)
   app/src/settings/editor.rs:24-28,53-58,100-104,183-290
@@ -1015,7 +1006,6 @@ Group declarations (all defaults/paths/platforms above are read from these):
   app/src/drive/settings.rs (WarpDriveSettings — separate group, referenced only for warp_drive_context_enabled's meaning)
 
 Inertness claims:
-  app/src/settings_view/features_page.rs:6469 and app/src/settings_view/keybindings.rs:1158 and app/src/settings_view/settings_page.rs:522 (settings_sync_enabled only drives a "local only" icon); no CloudPreferencesSyncer exists in the tree
   app/src/ai/agent/api.rs:512-513,642 + grep: allow_use_of_warp_credits_with_byok is never read after being set
   app/Cargo.toml ("autoupdate" not in default) + script/macos/bundle and script/windows/bundle.ps1 (oss FEATURES; the feature was removed from both by #630) + script/linux/bundle (oss resets FEATURES to "release_bundle", dropping the crash_reporting default set at :24) + crates/warp_features/src/lib.rs:895-907 (RELEASE_FLAGS: FeatureFlag::Autoupdate is deliberately NOT present) + app/src/lib.rs:2926-2929 (extra_flags adds it under #[cfg(feature = "autoupdate")])
   app/src/autoupdate/mod.rs:273-274,313-317 (both autoupdate paths gated on FeatureFlag::Autoupdate / can_autoupdate)
