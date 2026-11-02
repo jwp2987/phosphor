@@ -18,9 +18,10 @@
 //!   the edge-driven machine exists, step 7 of the design).
 //!
 //! `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`]) is the kill switch.
-//! The default is `legacy`. `shadow` compares the table with what the legacy leaf actions did
-//! (`shadow.rs`, step 3); `table` makes delivery of replayed text / Enters and ssh-held inputs
-//! decide with the table (`view/dest_table.rs`, step 4).
+//! The default is `shadow` (since step 4): legacy behaviour plus the comparison log. `shadow`
+//! compares the table with what the legacy leaf actions did (`shadow.rs`, step 3); `table` makes
+//! delivery of replayed text / Enters and ssh-held inputs decide with the table
+//! (`view/dest_table.rs`, step 4); `legacy` is the kill switch that turns the table off entirely.
 
 use std::cell::{Cell, RefCell};
 use std::sync::OnceLock;
@@ -31,11 +32,12 @@ use crate::terminal::model::key_facts::{KeyFactsCell, KeyModelCell, load_gen_con
 /// Which destination logic is in charge (`PHOSPHOR_QUEUE_DESTINATION`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DestinationMode {
-    /// The legacy chain decides (the default; the table is not consulted).
-    #[default]
+    /// The legacy chain decides; the table is not consulted.
     Legacy,
     /// The table decides next to the legacy chain and the two are compared in the log
-    /// (`kh_dest_disagree`, `input_order` target, debug). Behaviour is legacy's.
+    /// (`kh_dest_disagree`, `input_order` target, debug). Behaviour is legacy's. The default
+    /// (design: legacy until step 4, then shadow, until step 8).
+    #[default]
     Shadow,
     /// The table decides, for the paths that have been moved onto it (step 4: delivery of
     /// replayed text / Enters and of ssh-held inputs). Everything else is still legacy.
@@ -44,10 +46,12 @@ pub enum DestinationMode {
 
 impl DestinationMode {
     /// Parsed like `PHOSPHOR_PANE_KEY` (`pane_key::PaneKeyMode::parse`): `shadow` and `table`
-    /// select those modes; `legacy`, `0`, `off`, empty, unset and anything unknown are `Legacy`
-    /// (an unknown value must never switch the destination logic).
+    /// select those modes; unset and empty are the default (`Shadow`: legacy behaviour with the
+    /// comparison log); `legacy`, `0`, `off`, `false` and anything unknown are `Legacy` (an
+    /// unknown value must never switch the destination logic on).
     pub fn parse(value: Option<&str>) -> Self {
         match value.map(str::trim) {
+            None | Some("") => Self::default(),
             Some("shadow") => Self::Shadow,
             Some("table") => Self::Table,
             _ => Self::Legacy,
@@ -478,9 +482,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mode_parses_like_the_pane_key_switch_and_defaults_to_legacy() {
-        assert_eq!(DestinationMode::parse(None), DestinationMode::Legacy);
-        for legacy in ["", "legacy", "0", "off", "garbage", " LEGACY "] {
+    fn mode_parses_like_the_pane_key_switch_and_defaults_to_shadow() {
+        // Unset and empty: the default, which is legacy behaviour plus the comparison log.
+        assert_eq!(DestinationMode::parse(None), DestinationMode::Shadow);
+        assert_eq!(DestinationMode::parse(Some("")), DestinationMode::Shadow);
+        assert_eq!(DestinationMode::default(), DestinationMode::Shadow);
+        // The kill switch, and anything unknown: legacy (an unknown value never turns on more).
+        for legacy in ["legacy", "0", "off", "false", "garbage", " LEGACY "] {
             assert_eq!(
                 DestinationMode::parse(Some(legacy)),
                 DestinationMode::Legacy,

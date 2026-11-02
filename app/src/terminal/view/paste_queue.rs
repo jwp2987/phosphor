@@ -43,9 +43,9 @@ use warpui::{SingletonEntity as _, ViewContext};
 use super::{AfterEnterInput, Event, TerminalView, held_bytes_through_last_enter};
 use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input_queue::{
-    Deferred, DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps,
-    GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue, PasteOwner,
-    PowershellKeysThen, SignalKind, Stamp, is_pty_entry, trace,
+    Deferred, DeliverOutcome, DestFacts, Destination, DestinationMode, DiscardReason, EntryKind,
+    FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue,
+    PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode, is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
@@ -225,7 +225,7 @@ fn abort_signal(bytes: &[u8]) -> Option<SignalKind> {
     }
 }
 
-fn signal_bytes(kind: SignalKind) -> &'static [u8] {
+pub(super) fn signal_bytes(kind: SignalKind) -> &'static [u8] {
     match kind {
         SignalKind::Interrupt => &[0x03],
         SignalKind::Eof => &[0x04],
@@ -278,7 +278,44 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
             .input
             .as_ref(self.ctx)
             .note_replayed_after_enter(&input);
+        super::dest_table::note_legacy_chain_delivery();
         self.view.route_after_enter_input(&input, self.ctx);
+        self.finish_replayed_delivery()
+    }
+
+    /// The same delivery decided by the destination table (`PHOSPHOR_QUEUE_DESTINATION=table`,
+    /// #1424 step 4): the input is judged once, on the facts of this moment and the stamp the
+    /// entry got at its sink, and executed with the leaf writers; the legacy chain is not called.
+    fn deliver_replayed_entry_table(&mut self, entry: &InputEntry) -> DeliverOutcome {
+        let input = match &entry.kind {
+            EntryKind::Text(text) => AfterEnterInput::Text(text.clone()),
+            _ => AfterEnterInput::Enter,
+        };
+        self.view
+            .input
+            .as_ref(self.ctx)
+            .note_replayed_after_enter(&input);
+        let origin = Origin::Replay(entry.id);
+        match &input {
+            AfterEnterInput::Text(text) => self.view.deliver_via_table(
+                super::dest_table::Replayed::Typed(text),
+                origin,
+                entry.stamp,
+                self.ctx,
+            ),
+            AfterEnterInput::Enter => self.view.deliver_via_table(
+                super::dest_table::Replayed::Key("\r"),
+                origin,
+                entry.stamp,
+                self.ctx,
+            ),
+        }
+        self.finish_replayed_delivery()
+    }
+
+    /// What a delivered text / Enter caused: a key the hand-off held goes back under its gate, an
+    /// Enter that waits again hands its gate to the drain.
+    fn finish_replayed_delivery(&mut self) -> DeliverOutcome {
         if let Some(request) = self.view.paste_queue.requeue_request.take() {
             let spec = request.spec;
             self.view.paste_queue.requeue_replacement = Some(request.into_entry());
@@ -303,6 +340,9 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
         // Text and Enters typed behind an Enter that waited are routed here, by the view that
         // reaches both destinations and decides where each goes when it is delivered (#1353).
         if matches!(entry.kind, EntryKind::Text(_) | EntryKind::Enter) {
+            if destination_mode() == DestinationMode::Table {
+                return self.deliver_replayed_entry_table(entry);
+            }
             return self.deliver_replayed_entry(entry);
         }
         // The pane's queue is shared with the input editor (#1353 step 3): this host reaches both
@@ -374,7 +414,15 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
             }
             // The ssh connect typeahead (phase 4): delivered at the hand-over, routed from the
             // facts of this moment.
-            EntryKind::Held { class, text } => self.view.deliver_ssh_held(*class, text, self.ctx),
+            EntryKind::Held { class, text } => {
+                if destination_mode() == DestinationMode::Table {
+                    self.view
+                        .deliver_held_via_table(*class, text, entry.stamp, self.ctx);
+                } else {
+                    super::dest_table::note_legacy_chain_delivery();
+                    self.view.deliver_ssh_held(*class, text, self.ctx);
+                }
+            }
             other => log::warn!(
                 "input queue: pty paste queue was handed an entry it does not deliver: {other:?}"
             ),
