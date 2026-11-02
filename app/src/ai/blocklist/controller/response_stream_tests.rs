@@ -551,15 +551,15 @@ mod key_wait {
 
     #[test]
     fn keyless_providers_never_wait_for_the_keyring() {
-        // The owner's LAN Ollama: no key is ever sent, so a slow keyring must not delay it.
+        // A LAN Ollama (documentation address): no key is ever sent, so a slow keyring must not delay it.
         assert!(!provider_may_send_api_key(&provider(
             AgentProviderApiType::Ollama,
-            "http://203.0.113.125:11434"
+            "http://198.51.100.7:11434"
         )));
         // Plaintext non-loopback http: the key is withheld anyway.
         assert!(!provider_may_send_api_key(&provider(
             AgentProviderApiType::OpenAi,
-            "http://203.0.113.125:8080/v1"
+            "http://198.51.100.7:8080/v1"
         )));
         // Hosted APIs and loopback gateways can carry a key and do wait.
         assert!(provider_may_send_api_key(&provider(

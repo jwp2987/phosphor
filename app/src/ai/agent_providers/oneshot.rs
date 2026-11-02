@@ -636,7 +636,7 @@ mod tests {
                 for policy in [WhileKeysLoading::Wait, WhileKeysLoading::Skip] {
                     let cfg = config(
                         &app,
-                        provider(AgentProviderApiType::Ollama, "http://203.0.113.125:11434"),
+                        provider(AgentProviderApiType::Ollama, "http://198.51.100.7:11434"),
                         policy,
                     )
                     .expect("Ollama does not wait for the keyring");
