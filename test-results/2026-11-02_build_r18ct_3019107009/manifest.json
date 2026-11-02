@@ -1,0 +1,2023 @@
+{
+ "pipeline": 3019107009,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3019107009",
+ "ref": "build/r18ct",
+ "commit": "167012a7b10d792756a5db894111af884a029f3f",
+ "created_at": "2026-11-02T18:28:01.553Z",
+ "date": "2026-11-02",
+ "tier": "fix",
+ "pipeline_status": "manual",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910132,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910130,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910129,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910128,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "failed",
+   "duration": 3011.803612,
+   "id": 17674910127,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos": {
+   "status": "failed",
+   "duration": 1803.217056,
+   "id": 17674910126,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910125,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland": {
+   "status": "failed",
+   "duration": 985.164684,
+   "id": 17674910124,
+   "runner": ""
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910123,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910122,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910121,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "success",
+   "duration": 2228.256841,
+   "id": 17674910120,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 1913.898,
+   "id": 17674910119,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1202.673308,
+   "id": 17674910118,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910117,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910116,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910115,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910114,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910113,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910112,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910111,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910110,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910109,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910108,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910107,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "failed",
+   "duration": 95.171621,
+   "id": 17674910106,
+   "runner": ""
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910105,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 69.189564,
+   "id": 17674910104,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "failed",
+   "duration": 535.554065,
+   "id": 17674910103,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 10.231232,
+   "id": 17674910102,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 11.910198,
+   "id": 17674910101,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910100,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910099,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910098,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17674910097,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 513.300986,
+   "id": 17674910096,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 87.680835,
+   "id": 17674910095,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-workspace-rest": {
+   "summary_line": "Summary [  26.711s] 3230 tests run: 3228 passed, 2 failed, 19 skipped",
+   "duration_s": 26.711,
+   "run": 3230,
+   "passed": 3228,
+   "failed": 2,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp_editor::mermaid_corpus",
+     "test": "invalid_diagram_outcomes_are_snapshotted",
+     "seconds": 0.179
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp_editor::mermaid_corpus",
+     "test": "valid_diagram_summaries_are_stable",
+     "seconds": 0.169
+    }
+   ],
+   "regressions": [],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-workspace-rest",
+   "status": "failed",
+   "duration": 95.171621
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   4.941s] 775 tests run: 775 passed, 7 skipped",
+   "duration_s": 4.941,
+   "run": 775,
+   "passed": 775,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 69.189564
+  },
+  "test-linux": {
+   "summary_line": "Summary [ 211.135s] 10473 tests run: 10470 passed (1 slow), 3 failed, 29 skipped",
+   "duration_s": 211.135,
+   "run": 10473,
+   "passed": 10470,
+   "failed": 3,
+   "timed_out": 0,
+   "skipped": 29,
+   "slow": 1,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input_queue::facts::table_enum_tests::every_row_of_the_table_is_reachable",
+     "seconds": 0.406
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane",
+     "seconds": 0.155
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover",
+     "seconds": 0.146
+    }
+   ],
+   "regressions": [
+    "terminal::input_queue::facts::table_enum_tests::every_row_of_the_table_is_reachable",
+    "terminal::view::tests::ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane",
+    "terminal::view::tests::table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover"
+   ],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-linux",
+   "status": "failed",
+   "duration": 535.554065
+  }
+ },
+ "app": {
+  "windows": {
+   "job": "app-test-windows",
+   "job_id": 17674910127,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.1,
+     "detail": [
+      "no OCR engine: screenshot only (shots/terminal_proof_prekey.png), mode not machine-verified"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 96.7,
+     "detail": [
+      "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 52.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 5.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 18.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 518.1,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median -2273.19 ms includes the input-tool spawn (harness floor 0.2787999692372978 ms)",
+      "Ctrl-C: n=8 < 30 samples (smoke/scaled run): numbers are indicative only",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": -2273.19,
+       "p95": -1072.57,
+       "n": 8,
+       "overhead_ms": -1917.25,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_wedged_after_ctrl_c_d",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ctrl_c_d, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 21.9,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T146_igh1pn never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:18:25 connection closed: authenticated=False channels=1 | 11:31:44 connect from ('127.0.0.1', 64691) | 11",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_wedged_after_ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ssh_connect_typing, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 21.8,
+     "detail": [
+      "ssh_enter_then_immediate_command: T151_c5nz8v never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:32:58 connection closed: authenticated=False channels=1 | 11:33:20 connect from ('127.0.0.1', 64700) | ",
+      "remote shell received 0/1 immediately-typed commands exactly: []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_wedged_after_ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ssh_enter_then_immediate_command, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.0,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T156_zrw4d9 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:34:33 connection closed: authenticated=False channels=1 | 11:34:54 connect from ('127.0.0.1', 64707) | 11:3"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_wedged_after_ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ssh_nested_typeahead, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 121.7,
+     "detail": [
+      "Enter to command start: Phosphor overhead 82.39 ms over conhost (powershell.exe) exceeds the 2 ms budget",
+      "app share of Enter->start: enter_begin -> pty_write median 1.28 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 89.21,
+       "p95": 106.8,
+       "n": 30,
+       "overhead_ms": 82.39,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: types into a running `cat > /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.0,
+     "detail": [
+      "no OCR engine: screenshot only (shots/terminal@gitbash_proof_prekey.png), mode not machine-verified"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 33.5,
+     "detail": [
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 56.4,
+     "detail": [
+      "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 83.8,
+     "detail": [
+      "ft25: file has 29/30 lines, exact match False first diff: exp='t134_xvjqqqwyr3' got='t135_jiqome8m81' [first bad line 17: injector call #753 posted its ENTER at 11:41:13.514] -- the reference kept every line exactly in the same session (30/30 lines): Phosphor-side (#1482)",
+      "ft25: shell received 30 commands, not the typed ones (first mismatch: '34echo t1_xvjqqqwyr3 >> r_ft25.txt') -- characters REORDERED (a character moved: '3' came before 'e'): typed 'echo t134_xvjqqqwyr3 >> r_ft25.txt', shell received '34echo t1_xvjqqqwyr3 >> r_ft25.txt'; the app's log shows every cha"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 17.0,
+     "detail": [
+      "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 14.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 174.9,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 6/33 sample lines reached the shell NOT exactly as typed; e.g. one character LOST: typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt', shell received 'bash-c \\'trap \"date +%s.%N >> cc.tx",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 80.27 ms includes the input-tool spawn (harness floor 0.24620001204311848 ms)",
+      "Ctrl-C: n=24 < 30 samples (smoke/scaled run): numbers are indicative only",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 80.27,
+       "p95": 105.61,
+       "n": 24,
+       "overhead_ms": 8.25,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 22.0,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T168_emlmt1 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:38:46 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -> ok | 11:38:49 conne",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 21.9,
+     "detail": [
+      "ssh_enter_then_immediate_command: T170_ve0m65 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:45:32 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -> ok | 11:45:32 con",
+      "remote shell received 0/1 immediately-typed commands exactly: []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.0,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T172_tz8qqt never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:45:56 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -> ok | 11:45:56 connect"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 70.9,
+     "detail": [
+      "Enter to command start: Phosphor overhead 25.01 ms over conhost (bash) exceeds the 2 ms budget",
+      "app share of Enter->start: enter_begin -> pty_write median 0.88 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+      "Enter to command start: n=29 < 30 samples (smoke/scaled run): numbers are indicative only"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 92.26,
+       "p95": 119.13,
+       "n": 29,
+       "overhead_ms": 25.01,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 11.8,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 3.66,
+       "p95": 10.22,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "shell_fish",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "shell_nu",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "md_viewer",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.0,
+     "detail": [
+      "no OCR engine: screenshot only (shots/agent_proof_prekey.png), mode not machine-verified"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 21.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 5.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 18.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 340.3,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+      "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "pane_wedged_after_ctrl_c_d",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ctrl_c_d, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 22.0,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T55_srpy9a never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:48:21 connection closed: authenticated=False channels=1 | 11:56:26 connect from ('127.0.0.1', 65239) | 11:",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "pane_wedged_after_ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ssh_connect_typing, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 21.9,
+     "detail": [
+      "ssh_enter_then_immediate_command: T60_e6xt16 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:57:39 connection closed: authenticated=False channels=1 | 11:58:01 connect from ('127.0.0.1', 65248) | 1",
+      "remote shell received 0/1 immediately-typed commands exactly: []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "pane_wedged_after_ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ssh_enter_then_immediate_command, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.0,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T65_1zve5p never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:59:14 connection closed: authenticated=False channels=1 | 11:59:36 connect from ('127.0.0.1', 65255) | 11:59"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "pane_wedged_after_ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the powershell pane did not run a marker command (no effect file) after ssh_nested_typeahead, twice: the app is relaunched so the remaining cases measure something"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 0.9,
+     "detail": [
+      "no OCR engine: screenshot only (shots/agent@gitbash_proof_prekey.png), mode not machine-verified"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 53.9,
+     "detail": [
+      "ft0: file has 28/30 lines, exact match False first diff: exp='t11_5w0wa88v3b' got='t12_l9lf9qcefb' [first bad line 9: injector call #1509 posted its ENTER at 12:01:33.917]",
+      "ft0: shell received 31 commands, not the typed ones (first mismatch: \"echo t1_ieqh524yng >> 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run/home/<user>/proof_agent_gitbash.txt'\") -- differs (31 typed, 122 received characters): typed 'echo t2_5by1a2rogu >> r_ft0.txt', shell recei"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 11.7,
+     "detail": [
+      "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 14.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 82.0,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 6/33 sample lines reached the shell NOT exactly as typed; e.g. characters REORDERED (a character moved: \"'\" came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER8 >> cc.txt', shell re",
+      "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 21.9,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T53_fif2py never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:01:15 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -> ok | 12:01:18 connec",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 21.9,
+     "detail": [
+      "ssh_enter_then_immediate_command: T55_h180hs never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:04:14 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -> ok | 12:04:14 conn",
+      "remote shell received 0/1 immediately-typed commands exactly: []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.0,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T57_bbpqnl never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:04:38 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -> ok | 12:04:38 connecti"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/junit.xml",
+    "windows/results.json",
+    "windows/summary.md"
+   ],
+   "meta": {
+    "platform": "windows",
+    "backend": "windows",
+    "app_display": "windows",
+    "seed": "1",
+    "commit": "167012a7",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 29,
+    "fail": 30,
+    "skip": 9,
+    "noref": 1
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots\\terminal_ctrl_c_d_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_wedged_after_ctrl_c_d.png",
+    "shots\\terminal_ssh_connect_typing_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_wedged_after_ssh_connect_typing.png",
+    "shots\\terminal_ssh_enter_then_immediate_command_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_wedged_after_ssh_enter_then_immediate_command.png",
+    "shots\\terminal_ssh_nested_typeahead_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_wedged_after_ssh_nested_typeahead.png",
+    "shots\\terminal_latency_enter_FAIL.png",
+    "shots\\terminal@gitbash_fast_typing_FAIL.png",
+    "shots\\terminal@gitbash_paste_instant_enter_FAIL.png",
+    "shots\\terminal@gitbash_ctrl_c_d_FAIL.png",
+    "shots\\terminal@gitbash_ssh_connect_typing_FAIL.png",
+    "shots\\terminal@gitbash_ssh_enter_then_immediate_command_FAIL.png",
+    "shots\\terminal@gitbash_ssh_nested_typeahead_FAIL.png",
+    "shots\\terminal@gitbash_latency_enter_FAIL.png",
+    "shots\\agent_ctrl_c_d_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent_wedged_after_ctrl_c_d.png",
+    "shots\\agent_ssh_connect_typing_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent_wedged_after_ssh_connect_typing.png",
+    "shots\\agent_ssh_enter_then_immediate_command_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent_wedged_after_ssh_enter_then_immediate_command.png",
+    "shots\\agent_ssh_nested_typeahead_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent_wedged_after_ssh_nested_typeahead.png",
+    "shots\\agent@gitbash_fast_typing_FAIL.png",
+    "shots\\agent@gitbash_paste_instant_enter_FAIL.png",
+    "shots\\agent@gitbash_ctrl_c_d_FAIL.png",
+    "shots\\agent@gitbash_ssh_connect_typing_FAIL.png",
+    "shots\\agent@gitbash_ssh_enter_then_immediate_command_FAIL.png",
+    "shots\\agent@gitbash_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 17674910126,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 7.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 40.2,
+     "detail": [
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 77.5,
+     "detail": [
+      "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 68.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 25.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "pass",
+     "seconds": 250.7,
+     "detail": [
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 198.12 ms includes the input-tool spawn (harness floor 140.38216602057219 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 198.12,
+       "p95": 212.34,
+       "n": 30,
+       "overhead_ms": 3.78,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 35.2,
+     "detail": [
+      "harness exception: ValueError(\"could not convert string to float: ''\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 10.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 35.9,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T193_2cvu0h never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_sessi"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 214.1,
+     "detail": [
+      "only 0/30 Enter timings captured"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 29.3,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 13.8,
+       "p95": 22.53,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "fail",
+     "seconds": 72.0,
+     "detail": [
+      "Key to paint: Phosphor overhead 5.02 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 36.34,
+       "p95": 45.02,
+       "n": 30,
+       "overhead_ms": 5.02,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": 21.0,
+     "detail": [
+      "fish never executed a probe line after start (wait 3.0s + 4 probes)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 22.4,
+     "detail": [
+      "nu never executed a probe line after start (wait 4.0s + 4 probes)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 7.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 4.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 7.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 66.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 25.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "pass",
+     "seconds": 250.7,
+     "detail": [
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 199.08 ms includes the input-tool spawn (harness floor 139.97258292511106 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 199.08,
+       "p95": 207.99,
+       "n": 30,
+       "overhead_ms": 3.83,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 34.7,
+     "detail": [
+      "harness exception: ValueError(\"could not convert string to float: ''\")"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 10.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 35.8,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T109_fayr3r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_sessi"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 213.4,
+     "detail": [
+      "only 0/30 Enter timings captured"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 30.2,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 15.77,
+       "p95": 23.25,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "fail",
+     "seconds": 72.2,
+     "detail": [
+      "Key to paint: Phosphor overhead 3.99 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 37.46,
+       "p95": 45.37,
+       "n": 30,
+       "overhead_ms": 3.99,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": 21.0,
+     "detail": [
+      "fish never executed a probe line after start (wait 3.0s + 4 probes)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 22.5,
+     "detail": [
+      "nu never executed a probe line after start (wait 4.0s + 4 probes)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 7.1,
+     "detail": [],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/junit.xml",
+    "macos/results.json",
+    "macos/summary.md"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "167012a7",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 18,
+    "fail": 12,
+    "skip": 0,
+    "noref": 2
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_ssh_connect_typing_FAIL.png",
+    "shots/terminal_ssh_nested_typeahead_FAIL.png",
+    "shots/terminal_latency_enter_FAIL.png",
+    "shots/terminal_latency_paint_FAIL.png",
+    "shots/terminal_shell_fish_FAIL.png",
+    "shots/terminal_shell_nu_FAIL.png",
+    "shots/agent_ssh_connect_typing_FAIL.png",
+    "shots/agent_ssh_nested_typeahead_FAIL.png",
+    "shots/agent_latency_enter_FAIL.png",
+    "shots/agent_latency_paint_FAIL.png",
+    "shots/agent_shell_fish_FAIL.png",
+    "shots/agent_shell_nu_FAIL.png"
+   ]
+  },
+  "wayland": {
+   "job": "app-test-linux-wayland",
+   "job_id": 17674910124,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 42.7,
+     "detail": [
+      "no reference terminal available: loss is reported but no variant can be attributed to Phosphor or the injector",
+      "phosphor / perline-unprimed: first char lost on 12/12 lines, other bad 0, missing 0",
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 0.6,
+     "detail": [
+      "enter control: no reference terminal (unavailable): a lost Enter in Phosphor cannot be attributed",
+      "no reference terminal available: Enter loss is not controlled"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 54.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 6.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 17.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "noref",
+     "seconds": 99.3,
+     "detail": [
+      "no reference: absolute only (Ctrl-C): no reference terminal available",
+      "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 36.12 ms includes the input-tool spawn (harness floor 2.0111147314310074 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 36.12,
+       "p95": 37.87,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 28.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 7.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.4,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T145_ay0gbe never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 129.9,
+     "detail": [
+      "only 0/30 Enter timings captured",
+      "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 14.4,
+     "detail": [
+      "key->frame p50 30.7 ms > 20 ms CI bound (owner target: next refresh, own work <= 2 ms; software GL here)",
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 30.74,
+       "p95": 45.39,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.6,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": 18.5,
+     "detail": [
+      "fish never executed a probe line after start (wait 3.0s + 4 probes)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 21.4,
+     "detail": [
+      "nu never executed a probe line after start (wait 4.0s + 4 probes)",
+      "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 4.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 56.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 6.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 17.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "noref",
+     "seconds": 100.6,
+     "detail": [
+      "no reference: absolute only (Ctrl-C): no reference terminal available",
+      "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 41.58 ms includes the input-tool spawn (harness floor 1.9890880212187767 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 41.58,
+       "p95": 42.61,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 28.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 7.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.4,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T109_fayr3r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 130.2,
+     "detail": [
+      "only 0/30 Enter timings captured",
+      "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 14.7,
+     "detail": [
+      "key->frame p50 28.4 ms > 20 ms CI bound (owner target: next refresh, own work <= 2 ms; software GL here)",
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 28.37,
+       "p95": 41.64,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.6,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": 18.5,
+     "detail": [
+      "fish never executed a probe line after start (wait 3.0s + 4 probes)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 21.5,
+     "detail": [
+      "nu never executed a probe line after start (wait 4.0s + 4 probes)",
+      "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 3.6,
+     "detail": [],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "wayland/junit.xml",
+    "wayland/results.json",
+    "wayland/summary.md"
+   ],
+   "meta": {
+    "platform": "linux-wayland",
+    "backend": "wayland",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "167012a7",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 18,
+    "fail": 10,
+    "skip": 2,
+    "noref": 2
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_ssh_nested_typeahead_FAIL.png",
+    "shots/terminal_latency_enter_FAIL.png",
+    "shots/terminal_latency_key_log_FAIL.png",
+    "shots/terminal_shell_fish_FAIL.png",
+    "shots/terminal_shell_nu_FAIL.png",
+    "shots/agent_ssh_nested_typeahead_FAIL.png",
+    "shots/agent_latency_enter_FAIL.png",
+    "shots/agent_latency_key_log_FAIL.png",
+    "shots/agent_shell_fish_FAIL.png",
+    "shots/agent_shell_nu_FAIL.png"
+   ]
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 49,
+  "warnings_by_crate": {
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 23,
+   "warp (lib test)": 19
+  },
+  "warning_lines_by_kind": {
+   "unused import": 78,
+   "unused imports": 23,
+   "use of deprecated type alias": 8,
+   "function": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 513.300986
+ }
+}
