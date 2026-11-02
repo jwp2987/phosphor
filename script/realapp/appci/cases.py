@@ -225,15 +225,27 @@ class Ctx:
         scratch home ("local"), or nowhere ("none")."""
         probe = "w" + self.tok(8)
         self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
-        def local_where():
-            try:
-                return open(os.path.join(self.prof.home, ".appci_where"), errors="replace").read().split()
-            except OSError:
-                return []
+        local_where = self.local_where
         self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout)
         if probe in self.lines(".appci_where", remote=True):
             return "remote"
         return "local" if probe in local_where() else "none"
+
+    def local_where(self):
+        """tokens of the LOCAL shell's `~/.appci_where`: the scratch home, and in a Windows PowerShell pane also the user's real home (PowerShell
+        resolves `~` to USERPROFILE) in UTF-16 (`>>` in Windows PowerShell 5.1) -- r18cz: the PowerShell pane was never provably local because only
+        the scratch home was read"""
+        out = []
+        homes = [self.prof.home]
+        if self.pane == "powershell":
+            homes.append(os.path.expanduser("~"))
+        for h in homes:
+            try:
+                raw = open(os.path.join(h, ".appci_where"), "rb").read()
+            except OSError:
+                continue
+            out += raw.replace(b"\x00", b"").replace(b"\xff\xfe", b"").decode("utf-8", "replace").split()
+        return out
 
     def return_to_local(self, max_levels=3):
         """After an ssh case, pass or fail: leave every remote level until a probe lands in the LOCAL home. `exit` is typed only while the
@@ -266,11 +278,7 @@ class Ctx:
         # a fresh token must land in the REMOTE home, never the local one.
         probe = "w" + self.tok(8)
         self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
-        def local_where():          # `~` in the LOCAL shell is the scratch home, not the work dir that lines() reads
-            try:
-                return open(os.path.join(self.prof.home, ".appci_where"), errors="replace").read().split()
-            except OSError:
-                return []
+        local_where = self.local_where      # `~` in the LOCAL shell is the scratch home (PowerShell: the real home), not the work dir that lines() reads
         self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout)
         if probe not in self.lines(".appci_where", remote=True):
             where = "the LOCAL shell" if probe in local_where() else "no shell"
@@ -945,13 +953,21 @@ def c_ctrl(ctx, r):
     # command's cost, which cancel in the overhead; the owner budget (Ctrl-C <= 20 ms) is judged on that overhead.
     rs, ref = [], None
     short = ctx.opts.get("cc_short", False)
-    if lat_ms:
+    pw_all_missed = ctx.pane == "powershell" and not lat_ms
+    if lat_ms or pw_all_missed:
+        # r18cz: when Ctrl-C stopped NOTHING in the Phosphor PowerShell pane the reference never ran, so "does conhost stop it?" stayed unanswered. Run a few
+        # reference samples anyway (each miss costs a 36 s wait) and say what the reference did.
         ctx.reset()
         ref = None if short else ref_terminal(ctx)
         if ref:
             try:
                 time.sleep(2.5)
-                rs = ctrlc_samples(ctx, n + warm, "cc_ref.txt", budget_s=max(120, (n + warm) * 5))[0][warm:]
+                if pw_all_missed:
+                    rs = ctrlc_samples(ctx, 4, "cc_ref.txt", budget_s=300)[0]
+                    nref = len(ctx.cc_integrity.get("misses", {}).get("cc_ref.txt", []))
+                    r.note("Phosphor stopped the sleep on 0 samples; reference %s: Ctrl-C stopped it on %d of 4 samples" % (ref.name, 4 - nref))
+                else:
+                    rs = ctrlc_samples(ctx, n + warm, "cc_ref.txt", budget_s=max(120, (n + warm) * 5))[0][warm:]
                 ctx.reset()
             finally:
                 ref.close()
@@ -962,7 +978,7 @@ def c_ctrl(ctx, r):
             r.note("no reference: absolute only (Ctrl-C): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
         if short:
             r.note("fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode")
-        rec = None if short else lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
+        rec = None if (short or not lat_ms) else lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
                            remeasure=None if short else (lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:]), ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
                            notes=["same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; "
                                   "absolute Phosphor median %s ms includes the input-tool spawn (harness floor %s ms)" % (stats(lat_ms).get("p50"), ctx.be.key_floor_ms)])
