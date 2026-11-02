@@ -435,7 +435,8 @@ class Ctx:
             return None
         low = " ".join(txt.lower().split())
         agent = "new phosphor agent conversation" in low or "for terminal" in low or "ask anything" in low
-        term = ("/agent" in low and "conversation" in low) or "new terminal session" in low
+        term = (("/agent" in low and "conversation" in low) or "new terminal session" in low
+                or "run commands, or ask the agent" in low or "to continue conversation" in low)     # r18cz: the terminal prompt's other hints
         if agent and not term:
             return "agent"
         if term and not agent:
