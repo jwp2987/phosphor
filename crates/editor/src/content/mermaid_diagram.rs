@@ -119,6 +119,11 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
             "diagram is nested too deeply to render ({nesting} levels, limit {MAX_MERMAID_NESTING})"
         );
     }
+    if let Some(id) = subgraph_cycle(source) {
+        anyhow::bail!(
+            "diagram nests subgraph `{id}` inside itself, which the renderer cannot lay out"
+        );
+    }
     if let Some(token) = source
         .split_whitespace()
         .find(|token| token.chars().count() > MAX_MERMAID_TOKEN_CHARS)
@@ -129,6 +134,70 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
         );
     }
     Ok(())
+}
+
+/// A subgraph id that is (transitively) its own ancestor, if any. The renderer records each
+/// subgraph's parent by id, so `subgraph s` nested inside `subgraph s` (or `a` in `b` in `a`,
+/// even in separate blocks) makes a parent cycle, and its layout walks the parent links without a
+/// visited set: unbounded recursion that overflows any stack, however large, and aborts the app
+/// (the real cause of #1493; nesting depth alone was never the problem). Mirrors the renderer's
+/// parsing: the id of `subgraph id`, `subgraph id[title]`; a multi-word title gets a unique id; a
+/// line that is exactly `end` closes a block, and an unmatched `end` stops the renderer's parse.
+fn subgraph_cycle(source: &str) -> Option<String> {
+    use std::collections::HashMap;
+    let mut open: Vec<String> = Vec::new();
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    let mut indegree: HashMap<String, usize> = HashMap::new();
+    let mut anonymous = 0usize;
+    for line in source.lines() {
+        let line = line.trim();
+        if let Some(after) = line.strip_prefix("subgraph ") {
+            let after = after.trim();
+            let id = match after.find('[') {
+                Some(bracket) if after.ends_with(']') => after[..bracket].trim().to_string(),
+                Some(_) => after.to_string(),
+                None if after.split_whitespace().count() > 1 => {
+                    anonymous += 1;
+                    format!("\0anonymous{anonymous}")
+                }
+                None => after.to_string(),
+            };
+            indegree.entry(id.clone()).or_insert(0);
+            if let Some(parent) = open.last() {
+                children.entry(parent.clone()).or_default().push(id.clone());
+                *indegree.entry(id.clone()).or_insert(0) += 1;
+            }
+            open.push(id);
+        } else if line == "end" && open.pop().is_none() {
+            break;
+        }
+    }
+    // Topological sort: whatever cannot be removed lies on, or below, a cycle.
+    let mut ready: Vec<String> = indegree
+        .iter()
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let mut removed = 0usize;
+    while let Some(id) = ready.pop() {
+        removed += 1;
+        for child in children.get(&id).into_iter().flatten() {
+            if let Some(degree) = indegree.get_mut(child) {
+                *degree -= 1;
+                if *degree == 0 {
+                    ready.push(child.clone());
+                }
+            }
+        }
+    }
+    if removed == indegree.len() {
+        return None;
+    }
+    indegree
+        .into_iter()
+        .filter(|(_, degree)| *degree > 0)
+        .map(|(id, _)| id)
+        .min()
 }
 
 /// The deepest nesting in `source`: open block keywords (closed by `end` or `}`), leading
@@ -355,6 +424,33 @@ mod render_limit_tests {
             + &"end\n".repeat(200);
         let err = render(&source, MERMAID_RENDER_TIMEOUT).expect_err("200 levels must not render");
         assert!(err.to_string().contains("nested too deeply"), "{err}");
+    }
+
+    /// The actual cause of #1493: `subgraph s` inside `subgraph s` makes the renderer's subgraph
+    /// parent links a cycle, and its layout recurses around it forever. Two levels, well under the
+    /// nesting limit, is enough; it must take the source fallback, not abort the process.
+    #[test]
+    fn a_subgraph_nested_inside_its_own_id_falls_back_instead_of_overflowing_the_stack() {
+        let source = "graph TD\nsubgraph s\nsubgraph s\nA --> B\nend\nend\n";
+        let err =
+            render(source, MERMAID_RENDER_TIMEOUT).expect_err("a parent cycle must not render");
+        assert!(err.to_string().contains("inside itself"), "{err}");
+    }
+
+    #[test]
+    fn subgraph_parent_cycles_are_found_however_they_are_spelled() {
+        // Three levels, titled forms, and a cycle spread over separate blocks (a in b, then b in a).
+        let titled = "graph TD\nsubgraph a\nsubgraph b\nsubgraph a[Title]\nend\nend\nend\n";
+        assert!(subgraph_cycle(titled).is_some());
+        let split =
+            "graph TD\nsubgraph a\nsubgraph b\nA-->B\nend\nend\nsubgraph b\nsubgraph a\nend\nend\n";
+        assert!(subgraph_cycle(split).is_some());
+        // Legitimate shapes are untouched: nesting, siblings, repeated reopening, multi-word titles.
+        let nested = "graph TD\nsubgraph a\nsubgraph b\nA-->B\nend\nend\nsubgraph c\nend\n";
+        assert!(subgraph_cycle(nested).is_none());
+        assert!(subgraph_cycle("graph TD\nsubgraph a\nend\nsubgraph a\nend\n").is_none());
+        let titles = "graph TD\nsubgraph One two\nsubgraph One two\nend\nend\n";
+        assert!(subgraph_cycle(titles).is_none());
     }
 
     #[test]
