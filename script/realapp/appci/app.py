@@ -257,6 +257,14 @@ class WindowsApp:
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))
         tail = os.pathsep.join(winapi.git_dirs())
         e["PATH"] = os.path.join(self.home, "bin") + os.pathsep + e.get("PATH", "") + (os.pathsep + tail if tail else "")
+        if os.name != "nt":
+            # where the CI users keep shells (nu in ~/.local/bin): on the app's own PATH, as on a real user's machine. Added only inside the pane
+            # (`export PATH`) the app's classifier does not see it, and agent view sends a bare `nu` to the agent as a prompt (r18cz Linux).
+            have = e["PATH"].split(os.pathsep)
+            extra = [d for d in (os.path.expanduser(x) for x in ("~/.local/bin", "/home/gitlab-runner/.local/bin", "/opt/homebrew/bin", "~/.cargo/bin"))
+                     if os.path.isdir(d) and d not in have]
+            if extra:
+                e["PATH"] = e["PATH"] + os.pathsep + os.pathsep.join(dict.fromkeys(extra))
         if self.pane == "gitbash":
             e["HOME"] = self.home
             e["SHELL"] = "/usr/bin/bash"
