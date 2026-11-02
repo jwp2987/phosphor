@@ -3809,9 +3809,8 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     // The six flags below gate live, shipped code but sat in `DOGFOOD_FLAGS` with
     // no reader: upstream's channel binaries pass that list to
     // `with_additional_features`, and this fork's equivalents
-    // (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compile --
-    // `autobins = false`, one declared `[[bin]]`, and they import a crate absent
-    // from the workspace. `bin/phosphor_oss.rs` adds `DEBUG_FLAGS` alone. So the
+    // (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compiled and have been
+    // removed. `bin/phosphor_oss.rs` adds `DEBUG_FLAGS` alone. So the
     // code was unreachable in every binary this repo actually builds, including
     // the entire `warpctrl` local-control surface and its bundled skill.
     //

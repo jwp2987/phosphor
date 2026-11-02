@@ -817,10 +817,9 @@ pub const LOCAL_FLAGS: &[FeatureFlag] = &[FeatureFlag::LocalClaudeCodexChildHarn
 ///
 /// **This fork ships no binary that *enables* the flags in this list, or in
 /// [`LOCAL_FLAGS`] or [`PREVIEW_FLAGS`].** Upstream's channel binaries pass them to
-/// `with_additional_features`, and the only such call sites left here are
-/// `crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`, which never compile:
-/// `crates/warp_tui/Cargo.toml` sets `autobins = false` and declares one `[[bin]]`,
-/// and those files reference a crate that is not in the workspace. `app/Cargo.toml`
+/// `with_additional_features`; the fork's former equivalents
+/// (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compiled and were
+/// removed. `app/Cargo.toml`
 /// builds `phosphor-oss` (which adds `DEBUG_FLAGS`, debug builds only) and
 /// `generate_settings_schema`. So membership here enables nothing at runtime; it
 /// only tells the schema/default-settings generators which channel a flag belongs
