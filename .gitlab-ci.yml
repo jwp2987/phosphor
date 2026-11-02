@@ -875,6 +875,8 @@ app-test-linux-wayland:
     - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: skipping the xwayland pass"; exit $rc; fi'
     - script/realapp/linux/wayland_session.sh --mode xwayland --dist dist --out "$CI_PROJECT_DIR/appci-out/xwayland" --cases fast_typing,paste_instant_enter,tab_enter,ctrl_c_d,latency_enter || { r=$?; [ $r -gt $rc ] && rc=$r; }
     - exit $rc
+  after_script:
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
 
 # Private Xvfb (software GL), xdotool: the original X11 path.
 app-test-linux-x11:
@@ -887,6 +889,8 @@ app-test-linux-x11:
   script:
     - 'if [ "${APPCI_TIER:-}" = smoke ]; then echo "APPCI_TIER=smoke: the x11 pass is not part of the fix tier"; exit 0; fi'
     - script/realapp/linux/wayland_session.sh --mode x11 --dist dist --out "$CI_PROJECT_DIR/appci-out/x11"
+  after_script:
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
 
 # Mac runner. Needs a GUI (Aqua) session for gitrunner plus Accessibility + Screen Recording for the job's process
 # chain; the script probes that first and fails with exit 3 and the list of grants for the owner.
@@ -904,6 +908,8 @@ app-test-macos:
     - script/ci/fetch_build.sh --this-pipeline
   script:
     - script/realapp/mac/ci/app_test.sh dist "$CI_PROJECT_DIR/appci-out/macos"
+  after_script:
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
   artifacts:
     name: appci-macos
     when: always
@@ -966,6 +972,7 @@ app-test-linux-wayland-reuse:
     - script/ci/fetch_build.sh
   after_script:
     - python3 script/ci/record_reuse.py
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/wayland" "$CI_PROJECT_DIR/appci-out/xwayland"
 
 app-test-linux-x11-reuse:
   extends: app-test-linux-x11
@@ -974,6 +981,7 @@ app-test-linux-x11-reuse:
     - script/ci/fetch_build.sh
   after_script:
     - python3 script/ci/record_reuse.py
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/x11"
 
 app-test-macos-reuse:
   extends: app-test-macos
@@ -983,6 +991,7 @@ app-test-macos-reuse:
     - script/ci/fetch_build.sh
   after_script:
     - export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; python3 script/ci/record_reuse.py
+    - script/realapp/teardown.sh "$CI_PROJECT_DIR/appci-out/macos"
 
 app-test-windows-reuse:
   extends: app-test-windows
