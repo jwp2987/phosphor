@@ -33,7 +33,7 @@ APP_NONAFFECTING = ["docs", ".gitlab", ".gitlab-ci.yml", "specs", "fuzz", ".agen
                     "script/ci", "script/realapp", "script/precheck", "script/presubmit", "script/state", "script/keylat", "script/lint_powershell",
                     "script/_cloud_boundary_scan.py", "script/cloud_boundary_allowlist.txt", "script/known_test_failures.txt",
                     "script/large_deletion_allowlist.txt", "script/extract_sweep_ledger.py", "script/repro_subshell_relay_deadlock.py",
-                    "script/test-fixtures", "deny.toml", "script/agent-cargo", "script/agent-worktree", "script/setup-merge-drivers.sh"]
+                    "script/test-fixtures", "deny.toml", "test-results", "script/agent-cargo", "script/agent-worktree", "script/setup-merge-drivers.sh"]
 APP_NONAFFECTING_GLOBS = ["**/*.md", "script/check_*", "script/test_*"]
 DOC_ONLY = re.compile(r"^(docs/|.*\.md$|TODO|issues\.md|DECLINED|ORACLE)")
 
