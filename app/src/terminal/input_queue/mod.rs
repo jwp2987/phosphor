@@ -55,6 +55,10 @@
 //!    display-map wait), because the gate it would wait behind no longer exists;
 //!  - `PtyQueueHost::deliver` marks EVERY delivery (editor entries too) so a key a later stage
 //!    wants held is requeued by the drain instead of finding the queue busy.
+//!  - operations that RETURN what they take out of the queue (the deferred Enter's gate keys, the
+//!    PowerShell held bytes, the ssh gate's inputs, the void Enter's text; #1446) are never
+//!    "return empty when busy": the take and the caller's continuation (`then`) are one `Deferred`
+//!    variant, and the view's state (the ssh gate key) is detached at once.
 //! `PaneQueue::lock()` stays only for callers provably outside any operation.
 
 // Later phases' surface (other gate kinds, `Origin`, follow-ups) has no consumer yet.
@@ -83,7 +87,10 @@ pub use destination::{
     pin_still_valid,
 };
 pub use gates::{Gate, GateKind, GateSpec, GateToken, SignalPlan};
-pub use pane::{Deferred, PaneQueue, PasteOwner, QueueGuard, is_editor_paste_id};
+pub use pane::{
+    Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, QueueGuard, SshDropThen,
+    is_editor_paste_id,
+};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

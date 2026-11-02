@@ -37,7 +37,9 @@ use warpui::ViewContext;
 use super::TerminalView;
 use super::paste_queue::PtyQueueHost;
 use super::ssh_typeahead::{HeldInput, SSH_TYPEAHEAD_MAX_BYTES, SshTypeahead, SshTypeaheadPush};
-use crate::terminal::input_queue::{Deferred, EntryKind, GateKind, GateSpec, Origin, trace};
+use crate::terminal::input_queue::{
+    Deferred, EntryKind, GateKind, GateSpec, Origin, SshDropThen, trace,
+};
 
 /// What the ssh hold keeps next to the queue itself: which gate is open. What it holds is read
 /// from the queue (entries of both origins).
@@ -190,19 +192,31 @@ impl TerminalView {
         if self.ssh_iq.overflowed {
             return SshTypeaheadPush::Ignored;
         }
-        self.ssh_hold_drop_gate();
+        self.ssh_hold_clear_gate(SshDropThen::Discard, None);
         self.ssh_iq.overflowed = true;
         SshTypeaheadPush::Overflowed
     }
 
-    /// Removes the gate and everything behind it without delivering, and returns what it held in
-    /// typed order. That includes the pastes whose clipboard read is still pending behind the
-    /// connect (their gates and what was typed after them): they were typed for a session that
-    /// is not coming (a prompt appeared, ^C, a new command), so their late answer must not be
-    /// pasted anywhere. A paste that was already read comes back as a held paste.
-    fn ssh_hold_drop_gate(&mut self) -> Vec<HeldInput> {
+    /// Detaches the view's state of the hold (the gate key and the pastes still reading behind
+    /// it). The queue's entries are dropped separately ([`Self::ssh_drop_detached`]), now or as a
+    /// deferred operation when the queue is busy, so a busy queue never leaves the gate set.
+    fn ssh_hold_detach(&mut self) -> (Option<u64>, Vec<u64>) {
         let gate = self.ssh_iq.gate.take();
         let paste_ids: Vec<u64> = self.paste_queue.ssh_pastes.drain().collect();
+        (gate, paste_ids)
+    }
+
+    /// Removes the gate `gate` and everything behind it without delivering, and returns what it
+    /// held in typed order. That includes the pastes whose clipboard read is still pending behind
+    /// the connect (their gates and what was typed after them): they were typed for a session that
+    /// is not coming (a prompt appeared, ^C, a new command), so their late answer must not be
+    /// pasted anywhere. A paste that was already read comes back as a held paste. The queue must
+    /// not be busy (callers check, or run this from the mailbox).
+    pub(super) fn ssh_drop_detached(
+        &mut self,
+        gate: Option<u64>,
+        paste_ids: &[u64],
+    ) -> Vec<HeldInput> {
         if gate.is_none() && paste_ids.is_empty() {
             return Vec::new();
         }
@@ -212,12 +226,20 @@ impl TerminalView {
                 if let Some(key) = gate {
                     removed.extend(queue.drop_gate(GateKind::SshConnect, key));
                 }
-                for id in &paste_ids {
+                for id in paste_ids {
                     removed.extend(queue.drop_gate(GateKind::PasteReading, *id));
                 }
             }
             None => {
-                log::warn!("ssh hold: input queue busy while dropping the ssh gate");
+                // Not reachable from the callers (they check, the mailbox applies only when
+                // free). Never lose the drop: it is recorded to run when the queue is free.
+                debug_assert!(false, "ssh hold: queue busy in ssh_drop_detached");
+                log::error!("ssh hold: input queue busy while dropping the ssh gate, deferred");
+                self.paste_queue.queue.defer(Deferred::DropSshGate {
+                    gate,
+                    paste_ids: paste_ids.to_vec(),
+                    then: SshDropThen::Discard,
+                });
                 return Vec::new();
             }
         }
@@ -246,16 +268,69 @@ impl TerminalView {
         held
     }
 
-    /// Forgets every held key and the overflow state.
-    pub(super) fn ssh_hold_clear(&mut self) {
-        self.ssh_hold_drop_gate();
-        self.ssh_iq.overflowed = false;
+    /// Drops the hold's gate now, or (the queue is busy: mid-drain, or earlier operations wait in
+    /// the mailbox) records the drop as a deferred operation that carries `then` (#1446). The
+    /// view's state is detached either way, so the hold reads as over at once. With `ctx`, a
+    /// pending drop is also applied right away when only the mailbox was in the way.
+    fn ssh_hold_clear_gate(&mut self, then: SshDropThen, ctx: Option<&mut ViewContext<Self>>) {
+        let (gate, paste_ids) = self.ssh_hold_detach();
+        if gate.is_none() && paste_ids.is_empty() {
+            return;
+        }
+        let queue = self.paste_queue.queue.clone();
+        if let Some(ctx) = ctx {
+            if !queue.is_draining() {
+                self.flush_deferred_queue_ops(ctx);
+            }
+            if !queue.has_deferred() && queue.try_peek().is_some() {
+                let held = self.ssh_drop_detached(gate, &paste_ids);
+                self.finish_dropped_ssh_gate(held, then, ctx);
+                return;
+            }
+        } else if !queue.has_deferred() && queue.try_peek().is_some() {
+            // Discarding needs no view context.
+            debug_assert_eq!(then, SshDropThen::Discard);
+            let _ = self.ssh_drop_detached(gate, &paste_ids);
+            return;
+        }
+        queue.defer(Deferred::DropSshGate {
+            gate,
+            paste_ids,
+            then,
+        });
     }
 
-    /// Takes everything held, in typed order, without delivering it.
+    /// The continuation of a dropped ssh gate: what it held is forgotten, or shown in the editor
+    /// as unexecuted text.
+    pub(super) fn finish_dropped_ssh_gate(
+        &mut self,
+        held: Vec<HeldInput>,
+        then: SshDropThen,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match then {
+            SshDropThen::Discard => {}
+            SshDropThen::HandBackText => {
+                // Adjacent printable runs are one input.
+                let mut merged = SshTypeahead::default();
+                for input in held {
+                    merged.push(input);
+                }
+                let mut collector = SshTypeahead::default();
+                for input in merged.take() {
+                    collector.push(input);
+                }
+                let text = collector.unexecuted_text();
+                self.hand_back_unexecuted_ssh_text(text, ctx);
+            }
+        }
+    }
+
+    /// Takes everything held, in typed order, without delivering it (tests; the queue is free).
+    #[cfg(test)]
     pub(super) fn ssh_hold_take(&mut self) -> Vec<HeldInput> {
-        let held = self.ssh_hold_drop_gate();
-        // Adjacent printable runs are one input.
+        let (gate, paste_ids) = self.ssh_hold_detach();
+        let held = self.ssh_drop_detached(gate, &paste_ids);
         let mut merged = SshTypeahead::default();
         for input in held {
             merged.push(input);
@@ -263,14 +338,17 @@ impl TerminalView {
         merged.take()
     }
 
-    /// The text the user would see had they typed the held keys into an empty editor, without
-    /// running anything (for a connect that ended without a remote shell). Consumes the hold.
-    pub(super) fn ssh_hold_take_unexecuted_text(&mut self) -> String {
-        let mut collector = SshTypeahead::default();
-        for input in self.ssh_hold_take() {
-            collector.push(input);
-        }
-        collector.unexecuted_text()
+    /// Forgets every held key and the overflow state.
+    pub(super) fn ssh_hold_clear(&mut self) {
+        self.ssh_hold_clear_gate(SshDropThen::Discard, None);
+        self.ssh_iq.overflowed = false;
+    }
+
+    /// The connect ended without a remote shell: what the held keys would show in an empty editor,
+    /// without running anything, is handed back to the editor (consumes the hold). When the queue
+    /// is busy this is a deferred operation, so the text is never lost.
+    pub(super) fn ssh_hold_hand_back_unexecuted_text(&mut self, ctx: &mut ViewContext<Self>) {
+        self.ssh_hold_clear_gate(SshDropThen::HandBackText, Some(ctx));
     }
 
     /// Number of inputs held (for the log line, never content).

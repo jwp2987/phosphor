@@ -22182,6 +22182,117 @@ fn a_pane_drain_wake_that_finds_the_queue_busy_is_kept() {
     })
 }
 
+/// #1446: the PowerShell take that RETURNS the held bytes finds the queue busy: the take and its
+/// continuation are one deferred operation; the held keys are neither lost nor reordered.
+#[test]
+fn a_powershell_take_under_a_busy_queue_runs_when_the_queue_is_free() {
+    use crate::terminal::input_queue::{GateKind, GateSpec, PowershellKeysThen};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.borrow_mut().open_gate(
+                    &mut host,
+                    GateSpec::new(GateKind::PowershellSetup, 0).with_cap(None),
+                );
+            }
+            view.hold_powershell_keys(b"a\rb".to_vec(), true, ctx);
+            assert_eq!(queue.borrow().queued_len(), 1);
+            {
+                // Ctrl-C at the prompt discards the line being typed ("b"), keeps "a\r".
+                let _peek = queue.peek();
+                view.take_powershell_held_then(PowershellKeysThen::CancelHeldLine, ctx);
+            }
+            assert!(queue.has_deferred(), "the take is recorded, not returned empty");
+            assert_eq!(queue.borrow().queued_len(), 1, "nothing was taken while busy");
+            view.flush_deferred_queue_ops(ctx);
+            assert!(!queue.has_deferred());
+            assert!(queue.borrow().has_gate_kind(GateKind::PowershellSetup));
+            assert_eq!(queue.borrow().queued_len(), 1, "\"a\\r\" is held again, in order");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1446: the keys held behind a deferred Enter's HandoffReport gate are taken and released in
+/// typed order even when the take finds the queue busy.
+#[test]
+fn a_deferred_enter_gate_take_under_a_busy_queue_releases_the_keys_in_order() {
+    use crate::terminal::input_queue::{GateKeysThen, GateKind};
+    for hold_a_guard in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let queue = view.paste_queue.queue.clone();
+                view.hold_deferred_key_in_queue(7, b"ls".to_vec(), true, ctx);
+                view.hold_deferred_key_in_queue(7, b"\r".to_vec(), true, ctx);
+                assert!(queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                {
+                    let _guard = hold_a_guard.then(|| queue.lock());
+                    let _peek = (!hold_a_guard).then(|| queue.peek());
+                    view.take_deferred_gate_keys_then(7, GateKeysThen::Release, ctx);
+                }
+                assert!(queue.has_deferred(), "guard={hold_a_guard}: recorded");
+                assert!(queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                view.flush_deferred_queue_ops(ctx);
+                assert!(!queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                assert!(queue.borrow().is_idle());
+            });
+            let written: Vec<u8> = pty_writes.borrow().concat();
+            assert_eq!(written, b"ls\r".to_vec(), "guard={hold_a_guard}");
+        });
+    }
+}
+
+/// #1446: dropping the ssh gate under a busy queue detaches the view's state at once and drops
+/// the queue's gate (and what it held) when the queue is free; the gate is not left set.
+#[test]
+fn an_ssh_gate_drop_under_a_busy_queue_is_not_lost() {
+    use crate::terminal::input_queue::GateKind;
+    for hand_back in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                assert!(view.ssh_typeahead_holding);
+                let queue = view.paste_queue.queue.clone();
+                assert!(queue.borrow().has_gate_kind(GateKind::SshConnect));
+                {
+                    let _peek = queue.peek();
+                    if hand_back {
+                        view.ssh_hold_hand_back_unexecuted_text(ctx);
+                    } else {
+                        view.ssh_hold_clear();
+                    }
+                }
+                assert!(view.ssh_iq.gate.is_none(), "the hold reads as over at once");
+                assert!(queue.has_deferred(), "the drop is recorded");
+                assert!(queue.borrow().has_gate_kind(GateKind::SshConnect));
+                view.flush_deferred_queue_ops(ctx);
+                assert!(!queue.has_deferred());
+                assert!(
+                    !queue.borrow().has_gate_kind(GateKind::SshConnect),
+                    "hand_back={hand_back}: the gate is dropped"
+                );
+                assert!(queue.borrow().is_idle());
+            });
+            assert!(pty_writes.borrow().is_empty(), "never delivered: {:?}", pty_writes.borrow());
+        });
+    }
+}
+
 // ---- #1353 phase 5b: a young Enter's hold on the one input queue -------------------------------
 //
 // The Enter and the keys behind it are entries behind a `PromptSeen` gate (the hand-off keeps no
