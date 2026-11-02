@@ -459,12 +459,6 @@ impl AuthState {
     }
 }
 
-impl warp_managed_secrets::ActorProvider for AuthState {
-    fn actor_uid(&self) -> Option<String> {
-        self.user_id().map(|uid| uid.as_string())
-    }
-}
-
 /// Singleton wrapper for AuthState.
 pub struct AuthStateProvider {
     auth_state: Arc<AuthState>,

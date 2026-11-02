@@ -52,7 +52,6 @@ exclude_globs = [
   "app/src/app_menus.rs",
   # vendored crates and the wasm helpers
   "lib/**",
-  "crates/serve-wasm/**",
   "crates/warp_js/**",
   "crates/warp_web_event_bus/**",
 ]

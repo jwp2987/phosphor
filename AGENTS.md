@@ -24,7 +24,7 @@ Top-level directories:
 | `.agents/skills`, `.claude/skills` | Skill descriptions for agent workflows (creating PRs, fixing bugs, feature rollout, etc.) |
 | `.warp/`, `.config/`, `.cargo/`, `.vscode/` | Various tool configs |
 
-Build system: Cargo workspace, `resolver = "2"`; `default-members` is deliberately narrowed to the subset that's compiled/tested often (see `Cargo.toml`). `serve-wasm` and `integration` are not in `default-members` by default.
+Build system: Cargo workspace, `resolver = "2"`; `default-members` is deliberately narrowed to the subset that's compiled/tested often (see `Cargo.toml`). `integration` is not in `default-members` by default.
 
 License split:
 - `crates/warpui` and `crates/warpui_core` → MIT
@@ -108,7 +108,6 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 | `jsonrpc` | JSON-RPC implementation |
 | `lsp` | Language Server Protocol client implementation |
 | `remote_server` | Server-side logic for the remote sshd mode |
-| `serve-wasm` | Helper server that hosts WASM build output (not part of compilation by default) |
 | `firebase` | Firebase client tooling (crash/analytics channels, etc.) |
 
 ### 3.5 Persistence / files / resources
@@ -122,7 +121,7 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 | `watcher` | File system watcher (wraps `notify`) |
 | `asset_cache` | Disk/memory cache for resources |
 | `asset_macro` | Resource-reference macros such as `bundled!` / `theme!` |
-| `managed_secrets` / `managed_secrets_wasm` | Keychain / DPAPI / Linux Keyring abstraction + WASM proxy |
+| `managed_secrets` | Local managed-secrets client trait + secret value types (the cloud upload/envelope path was removed) |
 
 ### 3.6 Configuration / settings
 

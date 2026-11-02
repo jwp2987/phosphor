@@ -1659,10 +1659,7 @@ fn initialize_app(
     ctx.add_singleton_model(|_| ExecutionProfileEditorManager::default());
     ctx.add_singleton_model(|_| pricing::PricingInfoModel::new());
     ctx.add_singleton_model(|_| {
-        ManagedSecretManager::new(
-            Arc::new(local_managed_secrets::DisabledManagedSecretsClient),
-            auth_state.clone(),
-        )
+        ManagedSecretManager::new(Arc::new(local_managed_secrets::DisabledManagedSecretsClient))
     });
 
     #[cfg(target_os = "macos")]
