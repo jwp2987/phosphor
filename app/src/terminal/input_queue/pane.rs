@@ -73,6 +73,49 @@ pub enum Deferred {
     ApplyYoungHoldEnds,
     /// A drain stopped at an entry only the view can deliver, and the view was busy.
     Poke,
+    /// Operations that RETURN what they take out of the queue (#1446): the caller could not get
+    /// the bytes (the queue was busy), so the take and the caller's continuation (`then`) are one
+    /// deferred operation, run in order once the queue is free. Nothing is returned empty.
+    /// Closes `HandoffReport` gate `gate_id` and hands the keys held behind it to `then`.
+    TakeGateKeys { gate_id: u64, then: GateKeysThen },
+    /// Closes the PowerShell setup gate and hands the keys it held to `then`.
+    TakePowershellKeys { then: PowershellKeysThen },
+    /// The waiting Enter's gate is void: closes it and puts the text typed behind it in the editor.
+    VoidEnterGate { kind: GateKind, key: u64 },
+    /// Drops the ssh connect gate `gate` and the pastes still reading behind it (`paste_ids`),
+    /// then does `then` with what they held. The view's own state was already detached.
+    DropSshGate {
+        gate: Option<u64>,
+        paste_ids: Vec<u64>,
+        then: SshDropThen,
+    },
+}
+
+/// What happens to the keys of a `Deferred::TakeGateKeys` once taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateKeysThen {
+    /// The deferred Enter wrote no command: the keys are released (sent on, in order).
+    Release,
+    /// The report never came: the keys come back to the editor as text.
+    GiveUpToEditor,
+}
+
+/// What happens to the keys of a `Deferred::TakePowershellKeys` once taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowershellKeysThen {
+    /// The setup is over: the held lines are delivered.
+    Deliver,
+    /// Ctrl-C discarded the line being typed: what was held through the last Enter stays held.
+    CancelHeldLine,
+}
+
+/// What happens to the inputs of a `Deferred::DropSshGate` once taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshDropThen {
+    /// Forgotten.
+    Discard,
+    /// Shown in the editor as unexecuted text (the connect ended without a remote shell).
+    HandBackText,
 }
 
 /// Whether paste `id` belongs to the input editor.

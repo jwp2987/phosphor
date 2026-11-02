@@ -40,12 +40,12 @@ use std::time::Duration;
 use warpui::r#async::Timer;
 use warpui::{SingletonEntity as _, ViewContext};
 
-use super::{AfterEnterInput, Event, TerminalView};
+use super::{AfterEnterInput, Event, TerminalView, held_bytes_through_last_enter};
 use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps,
-    GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue, PasteOwner, SignalKind,
-    is_pty_entry, trace,
+    GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue, PasteOwner,
+    PowershellKeysThen, SignalKind, SshDropThen, is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
@@ -1128,20 +1128,55 @@ impl TerminalView {
         );
     }
 
-    /// Closes the `HandoffReport` gate `gate_id` and returns, as bytes in typed order, the keys
-    /// held behind it (the deferred Enter ran and wrote no command, or its report never came).
-    /// Nothing is delivered: the caller sends the bytes to the pty or the editor.
-    pub(super) fn take_deferred_gate_bytes(
+    /// Closes the `HandoffReport` gate `gate_id` and hands the keys held behind it, as bytes in
+    /// typed order, to `then` (the deferred Enter ran and wrote no command, or its report never
+    /// came). Nothing is delivered by the take itself. When the queue is busy (mid-drain) or
+    /// earlier operations wait in the mailbox, the take AND `then` are one deferred operation
+    /// (#1446): they run, in order, when the queue is free.
+    pub(super) fn take_deferred_gate_keys_then(
+        &mut self,
+        gate_id: u64,
+        then: GateKeysThen,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.paste_queue.queue.clone();
+        if !queue.is_draining() {
+            // Earlier operations that waited for the queue go first (the keys they carry are
+            // behind this gate).
+            self.flush_deferred_queue_ops(ctx);
+        }
+        if queue.has_deferred() || queue.is_draining() {
+            queue.defer(Deferred::TakeGateKeys { gate_id, then });
+            return;
+        }
+        match self.take_deferred_gate_bytes_now(gate_id, ctx) {
+            Some(held) => self.finish_taken_gate_keys(held, then, ctx),
+            None => queue.defer(Deferred::TakeGateKeys { gate_id, then }),
+        }
+    }
+
+    /// The continuation of [`Self::take_deferred_gate_keys_then`].
+    fn finish_taken_gate_keys(
+        &mut self,
+        held: Vec<u8>,
+        then: GateKeysThen,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match then {
+            GateKeysThen::Release => self.release_held_keys(held, ctx),
+            GateKeysThen::GiveUpToEditor => self.give_up_deferred_enter_keys_to_editor(held, ctx),
+        }
+    }
+
+    /// The take itself; `None` when the queue could not be locked (nothing was changed).
+    fn take_deferred_gate_bytes_now(
         &mut self,
         gate_id: u64,
         ctx: &mut ViewContext<Self>,
-    ) -> Vec<u8> {
+    ) -> Option<Vec<u8>> {
         let queue = self.paste_queue.queue.clone();
         let entries = {
-            let Some(mut guard) = queue.try_lock() else {
-                log::warn!("input queue: the deferred Enter's keys could not be taken, queue busy");
-                return Vec::new();
-            };
+            let mut guard = queue.try_lock()?;
             let mut host = PtyQueueHost::new(self, ctx);
             let mut entries = Vec::new();
             // A key held mid-delivery may have opened a second gate under the same id.
@@ -1154,7 +1189,7 @@ impl TerminalView {
             }
             entries
         };
-        self.pty_bytes_of_taken_entries(entries, ctx).concat()
+        Some(self.pty_bytes_of_taken_entries(entries, ctx).concat())
     }
 
     /// As [`Self::bytes_of_taken_entries`], for keys that go to the pty as typed or come back as
@@ -1512,21 +1547,62 @@ impl TerminalView {
         self.hold_keys_behind_gate(spec, bytes, takes_over_agent_control, ctx);
     }
 
-    /// Takes the keys held for the PowerShell setup out of the queue, in typed order, as bytes.
-    /// The gate closes with them; the caller holds again what it does not consume.
-    pub(super) fn take_powershell_held_bytes(&mut self, ctx: &mut ViewContext<Self>) -> Vec<u8> {
+    /// Takes the keys held for the PowerShell setup out of the queue, in typed order, as bytes,
+    /// and hands them to `then`. The gate closes with them; `then` holds again what it does not
+    /// consume. When the queue is busy (mid-drain) or earlier operations wait in the mailbox, the
+    /// take AND `then` are one deferred operation (#1446), run in order when the queue is free.
+    pub(super) fn take_powershell_held_then(
+        &mut self,
+        then: PowershellKeysThen,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.paste_queue.queue.clone();
+        if !queue.is_draining() {
+            // Earlier operations that waited for the queue go first (the keys they carry are
+            // behind this gate).
+            self.flush_deferred_queue_ops(ctx);
+        }
+        if queue.has_deferred() || queue.is_draining() {
+            queue.defer(Deferred::TakePowershellKeys { then });
+            return;
+        }
+        match self.take_powershell_held_bytes_now(ctx) {
+            Some(held) => self.finish_taken_powershell_keys(held, then, ctx),
+            None => queue.defer(Deferred::TakePowershellKeys { then }),
+        }
+    }
+
+    fn finish_taken_powershell_keys(
+        &mut self,
+        held: Vec<u8>,
+        then: PowershellKeysThen,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match then {
+            PowershellKeysThen::Deliver => self.deliver_powershell_held_bytes(held, ctx),
+            PowershellKeysThen::CancelHeldLine => {
+                let mut held = held;
+                held.truncate(held_bytes_through_last_enter(&held));
+                if !held.is_empty() {
+                    self.hold_powershell_keys(held, true, ctx);
+                }
+            }
+        }
+    }
+
+    /// The take itself; `None` when the queue could not be locked (nothing was changed). Empty
+    /// when no PowerShell gate is open.
+    fn take_powershell_held_bytes_now(&mut self, ctx: &mut ViewContext<Self>) -> Option<Vec<u8>> {
         let queue = self.paste_queue.queue.clone();
         let entries = {
-            let Some(mut guard) = queue.try_lock() else {
-                return Vec::new();
-            };
+            let mut guard = queue.try_lock()?;
             if !guard.has_gate_kind(GateKind::PowershellSetup) {
-                return Vec::new();
+                return Some(Vec::new());
             }
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::PowershellSetup, 0)
         };
-        self.bytes_of_taken_entries(entries, ctx).concat()
+        Some(self.bytes_of_taken_entries(entries, ctx).concat())
     }
 
     /// The PowerShell setup is over: the gate closes (its event) and the queue's one drain writes
@@ -1849,6 +1925,52 @@ impl TerminalView {
                 self.release_young_hold_keys(hold_id, routed, ctx);
             }
             Deferred::ApplyYoungHoldEnds => self.drain_young_hold_ends(ctx),
+            Deferred::TakeGateKeys { gate_id, then } => {
+                let Some(held) = self.take_deferred_gate_bytes_now(gate_id, ctx) else {
+                    return Err(Deferred::TakeGateKeys { gate_id, then });
+                };
+                self.finish_taken_gate_keys(held, then, ctx);
+            }
+            Deferred::TakePowershellKeys { then } => {
+                let Some(held) = self.take_powershell_held_bytes_now(ctx) else {
+                    return Err(Deferred::TakePowershellKeys { then });
+                };
+                self.finish_taken_powershell_keys(held, then, ctx);
+            }
+            Deferred::VoidEnterGate { kind, key } => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::VoidEnterGate { kind, key });
+                };
+                let mut host = PtyQueueHost::new(self, ctx);
+                let text: String = guard
+                    .close_gate_taking(&mut host, kind, key)
+                    .into_iter()
+                    .filter_map(|entry| match entry.kind {
+                        EntryKind::Text(text) => Some(text),
+                        _ => None,
+                    })
+                    .collect();
+                drop(guard);
+                if !text.is_empty() {
+                    self.input
+                        .update(ctx, |input, ctx| input.system_insert(&text, ctx));
+                }
+            }
+            Deferred::DropSshGate {
+                gate,
+                paste_ids,
+                then,
+            } => {
+                if queue.try_peek().is_none() {
+                    return Err(Deferred::DropSshGate {
+                        gate,
+                        paste_ids,
+                        then,
+                    });
+                }
+                let held = self.ssh_drop_detached(gate, &paste_ids);
+                self.finish_dropped_ssh_gate(held, then, ctx);
+            }
             Deferred::Poke => {
                 let Some(mut guard) = queue.try_lock() else {
                     return Err(Deferred::Poke);

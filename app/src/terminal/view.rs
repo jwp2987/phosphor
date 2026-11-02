@@ -76,10 +76,10 @@ use crate::view_components::action_button::{ActionButton, ButtonSize, KeystrokeS
 use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
-use super::input_queue;
-use super::paste_sequencer::PasteFailure;
 use super::CLIAgent;
 use super::cli_agent;
+use super::input_queue::{self, GateKeysThen, PowershellKeysThen};
+use super::paste_sequencer::PasteFailure;
 #[cfg(feature = "local_fs")]
 use crate::ai::agent::{CurrentHead, DiffBase};
 use crate::ai::ambient_agents::{AmbientAgentTaskId, conversation_output_status_from_conversation};
@@ -11238,8 +11238,18 @@ impl TerminalView {
             });
             return;
         }
-        let text = self.ssh_hold_take_unexecuted_text();
-        self.ssh_hold_clear();
+        // The held keys leave the queue (now, or as a deferred operation when it is busy) and
+        // come back through `hand_back_unexecuted_ssh_text` (#1446).
+        self.ssh_hold_hand_back_unexecuted_text(ctx);
+    }
+
+    /// The tail of [`Self::finish_ssh_typeahead`] for a connect that ended without a remote
+    /// shell: `text` is what the held keys would show, never run.
+    pub(super) fn hand_back_unexecuted_ssh_text(
+        &mut self,
+        text: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
         if text.is_empty() {
             return;
         }
@@ -12969,38 +12979,47 @@ impl TerminalView {
                     return;
                 };
                 // The keys typed behind the Enter come back to the editor as text.
-                let held = me.take_deferred_gate_bytes(gate, ctx);
-                log::warn!(
-                    "Enter not run: the shell did not report its line within {} ms; the text \
-                     stays in the input",
-                    TYPEAHEAD_REPORT_PATIENCE.as_millis()
-                );
-                me.input.update(ctx, |input, ctx| {
-                    input.clear_handoff_enter_hold();
-                    let text = text_for_editor(&held);
-                    if !text.is_empty() {
-                        input.system_insert(&text, ctx);
-                    }
-                });
-                if ctx.has_singleton_model::<ToastStack>() {
-                    let window_id = ctx.window_id();
-                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                        toast_stack.add_ephemeral_toast(
-                            DismissibleToast::new(
-                                "Enter not run: the shell did not report its line. The text is \
-                                 in the input; press Enter to run it"
-                                    .to_string(),
-                                ToastFlavor::Default,
-                            ),
-                            window_id,
-                            ctx,
-                        );
-                    });
-                }
-                me.note_editor_took_over();
-                me.redetermine_terminal_focus(ctx);
+                me.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUpToEditor, ctx);
             },
         );
+    }
+
+    /// The tail of the report-patience give-up (#1215), with the keys that were held behind the
+    /// Enter: they join the editor as text and a notice says the Enter did not run.
+    pub(super) fn give_up_deferred_enter_keys_to_editor(
+        &mut self,
+        held: Vec<u8>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        log::warn!(
+            "Enter not run: the shell did not report its line within {} ms; the text \
+             stays in the input",
+            TYPEAHEAD_REPORT_PATIENCE.as_millis()
+        );
+        self.input.update(ctx, |input, ctx| {
+            input.clear_handoff_enter_hold();
+            let text = text_for_editor(&held);
+            if !text.is_empty() {
+                input.system_insert(&text, ctx);
+            }
+        });
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::new(
+                        "Enter not run: the shell did not report its line. The text is \
+                         in the input; press Enter to run it"
+                            .to_string(),
+                        ToastFlavor::Default,
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
     }
 
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
@@ -13038,8 +13057,7 @@ impl TerminalView {
     fn release_keys_held_behind_unsubmitted_enter(&mut self, ctx: &mut ViewContext<Self>) {
         let gate = self.handoff.write().release_after_unsubmitted_enter();
         if let Some(gate) = gate {
-            let held = self.take_deferred_gate_bytes(gate, ctx);
-            self.release_held_keys(held, ctx);
+            self.take_deferred_gate_keys_then(gate, GateKeysThen::Release, ctx);
         }
     }
 
@@ -20416,7 +20434,15 @@ impl TerminalView {
     fn deliver_powershell_setup_keys(&mut self, ctx: &mut ViewContext<Self>) {
         self.subshell_bootstrap_announced = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
-        let mut held: Vec<u8> = self.take_powershell_held_bytes(ctx);
+        self.take_powershell_held_then(PowershellKeysThen::Deliver, ctx);
+    }
+
+    /// The keys held through the PowerShell setup, taken: see [`Self::deliver_powershell_setup_keys`].
+    pub(super) fn deliver_powershell_held_bytes(
+        &mut self,
+        mut held: Vec<u8>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         loop {
             let Some((line, raw_line, rest)) = split_first_held_line(&mut held) else {
                 self.powershell_setup_hold = PowerShellSetupHold::Off;
@@ -20477,11 +20503,7 @@ impl TerminalView {
             .is_some_and(|(_, at)| at.elapsed() >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
         match powershell_setup_ctrl_c_route(self.powershell_setup_hold, stalled) {
             PowerShellSetupCtrlC::CancelHeldLine => {
-                let mut held = self.take_powershell_held_bytes(ctx);
-                held.truncate(held_bytes_through_last_enter(&held));
-                if !held.is_empty() {
-                    self.hold_powershell_keys(held, true, ctx);
-                }
+                self.take_powershell_held_then(PowershellKeysThen::CancelHeldLine, ctx);
             }
             PowerShellSetupCtrlC::StopProfiles => {
                 self.dismiss_subshell_setup_waiting_toast(ctx);

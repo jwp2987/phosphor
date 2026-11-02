@@ -235,12 +235,18 @@ impl Input {
             return String::new();
         };
         let queue = self.enter_queue_handle(ctx);
-        let Some(mut queue) = queue.try_lock() else {
-            log::warn!("input queue: voided Enter gate could not be closed, the queue was busy");
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            // Busy (mid-drain) or earlier operations wait: the take and the editor insert are one
+            // deferred operation the view runs when the queue is free (#1446); the text typed
+            // behind the void Enter is neither lost nor left in the queue.
+            queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
+                kind: gate.kind,
+                key: gate.key,
+            });
             return String::new();
         };
         let mut host = InputQueueHost::new(self, ctx);
-        queue
+        guard
             .close_gate_taking(&mut host, gate.kind, gate.key)
             .into_iter()
             .filter_map(|entry| match entry.kind {
@@ -248,6 +254,12 @@ impl Input {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Test seam for [`Self::void_enter_gate`].
+    #[cfg(test)]
+    pub(crate) fn void_enter_gate_for_test(&mut self, ctx: &mut ViewContext<Self>) -> String {
+        self.void_enter_gate(ctx)
     }
 
     /// The Enter has run. With nothing typed behind it the gate closes now; otherwise it is kept
