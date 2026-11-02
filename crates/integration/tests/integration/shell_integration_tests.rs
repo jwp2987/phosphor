@@ -88,6 +88,22 @@ integration_tests! {
     // TODO(vorporeal): Reenable fish once we actually support it as a remote
     // shell.
     // test_ssh_into_fish,
+    //
+    // The ssh scenarios connect to a LOCAL sshd on 127.0.0.1 that each scenario starts and stops
+    // itself (#1506, `app/src/integration_testing/subshell/util.rs`). They SKIP with a reason on
+    // stderr when sshd or the remote shell is missing, and FAIL instead when
+    // PHOSPHOR_REQUIRE_SSH_FIXTURE=1 (the integration-linux CI job). The tmux-wrapper variants
+    // (`test_tmux_ssh_into_*`, `test_install_tmux_ssh_into_*`) need tmux on the remote and a
+    // package install, which the local sshd cannot offer, so they are not listed.
+    test_legacy_ssh_into_bash,
+    test_legacy_ssh_into_zsh,
+    test_ssh_into_sh,
+    test_ssh_into_ash,
+    test_ssh_with_shell_override,
+    // The remote bash shell bootstraps over ssh (Bootstrapped hook arrives).
+    test_ssh_remote_bash_bootstrapped_hook,
+    // A command typed during the ssh connect runs on the remote shell once, never locally.
+    test_ssh_typeahead_during_connect_runs_remotely_once,
 
     // Tests of custom prompt behavior.
     test_copy_prompt_from_block_honor_ps1_enabled,

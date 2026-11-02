@@ -95,6 +95,23 @@ Hard rules:
   Environment: `xvfb`, a software Vulkan driver (`mesa-vulkan-drivers`), `libxkbcommon-x11-0`
   (`script/linux/install_test_deps`); `precheck` reports a missing piece as its own failure. Baseline is
   empty: any failure is a regression. Shard in CI with `--partition count:N/3`.
+  The ssh scenarios (`src/test/ssh.rs`: `test_legacy_ssh_into_bash/zsh`, `test_ssh_into_sh/ash`,
+  `test_ssh_with_shell_override`, `test_ssh_remote_bash_bootstrapped_hook`,
+  `test_ssh_typeahead_during_connect_runs_remotely_once`; #1506) used to need Warp's private GCP instance via
+  `gcloud` and therefore never ran. They now connect to a LOCAL OpenSSH `sshd` on 127.0.0.1 that the scenario
+  starts and stops itself (`app/src/integration_testing/subshell/util.rs`, same recipe as
+  `script/realapp/appci/sshd.py`): the current user, no privileges (`UsePAM no`, pubkey only), one sshd per
+  remote login shell, a `ForceCommand` that sets `HOME` (scratch remote home) and `SHELL`, runs commands as
+  `$SHELL -c` and otherwise prints a MotD and starts `$SHELL -l -i`; the remote shell has
+  `PHOSPHOR_TEST_SSHD=remote` and `WARP_PROFILE_LOADED=true` exported. Two throw-away client keys: one without a
+  passphrase (no prompt: used by the bootstrap and typeahead scenarios, so keys typed during the connect are real
+  typeahead) and one with a passphrase (the stand-in for the old password prompt: `Enter passphrase for key`).
+  The remote user and host are this machine's (`whoami`, `hostname`). Without `sshd` / `ssh-keygen` / the remote
+  shell the scenario SKIPS with the reason on stderr; `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` (set by the
+  `integration-linux` job) turns a missing or broken sshd into a failure (a missing remote shell, e.g. `ash`, still
+  skips). The tmux-wrapper variants (`test_tmux_ssh_into_*`, `test_install_tmux_ssh_into_*`) need tmux on the remote
+  and a package install and are not listed in `integration_tests!`; `test_ssh_into_fish` stays off (fish is not a
+  supported remote shell). A scenario killed by a timeout can leave its sshd running (`ps`, stop by exact PID).
   Every scenario in `integration_tests!` must be registered in the binary's `register_tests()`
   (guard `check_integration_test_registry`). `PHOSPHOR_TEST_SHELL=pwsh` pins the shell for the two
   PowerShell-only scenarios (`test_input_reporting_powershell`, `test_pwsh_vi_edit_mode_does_not_corrupt_commands`,
@@ -195,7 +212,7 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 | `test-linux` | test | manual (auto on tags and on pushes to `main`, with the filter derived from the pushed diff by `ci_seq.py --derive-env`; skipped when nothing in its scope changed) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule) |
 | `test-warpui-core` | test | manual (auto on tags and on `main` pushes that touch warpui_core) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
 | `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation (honours `$TEST_FILTER`) |
-| `integration-linux` | test | manual, allow_failure | `crates/integration` under xvfb, 3 shards, `--profile ci` |
+| `integration-linux` | test | manual, allow_failure | `crates/integration` under xvfb, 3 shards, `--profile ci`; sets `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` and checks `sshd` / `ssh-keygen` first (the ssh scenarios use a local sshd, 2.2) |
 | `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh` |
 | `usage-test-linux` / `usage-test-macos` | test | manual | `script/usage-test --surface both` (Linux, xvfb) / `--surface tui` (Mac has no WindowServer for the daemon) |
 | `licenses`, `advisories` | test | on box | `cargo deny check licenses sources`, `check advisories`; `retry: max 2` on script/runner-system failure (network-dependent: ci_seq reports a fetch outage as NETWORK-FAIL, separate from code failures; a real `error[...]` finding stays FAIL) |

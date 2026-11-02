@@ -274,6 +274,8 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_ssh_into_sh);
     register_test!(test_ssh_into_ash);
     register_test!(test_ssh_with_shell_override);
+    register_test!(test_ssh_remote_bash_bootstrapped_hook);
+    register_test!(test_ssh_typeahead_during_connect_runs_remotely_once);
     register_test!(test_custom_open_completions_menu_binding);
     register_test!(test_color_overrides_in_prompt_dont_crash);
     register_test!(test_copy_prompt_from_block_honor_ps1_disabled);
