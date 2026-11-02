@@ -9,26 +9,15 @@ use crate::{
     integration_testing::{
         step::assert_no_pending_model_events,
         terminal::{
-            assert_long_running_block_executing_for_single_terminal_in_tab,
-            execute_command_for_single_terminal_in_tab, util::ExpectedExitStatus,
-            validate_block_output, wait_until_bootstrapped_pane,
+            assert_long_running_block_executing_for_single_terminal_in_tab, validate_block_output,
+            wait_until_bootstrapped_pane,
         },
         view_getters::{single_terminal_view, terminal_view},
     },
     terminal::{model::rich_content::RichContentType, view::WithinBlockBanner},
 };
 
-use super::util::{ssh_command, user_host};
-
-/// Sets environment variables needed by the Google Cloud SDK.
-pub fn setup_gcloud_sdk() -> TestStep {
-    execute_command_for_single_terminal_in_tab(
-        0,
-        "export CLOUDSDK_CONFIG=\"$ORIGINAL_HOME/.config/gcloud\"".into(),
-        ExpectedExitStatus::Success,
-        (),
-    )
-}
+use super::util::{SSH_KEY_PASSPHRASE, ssh_command, ssh_command_with_key};
 
 /// Initiates an SSH connection, executing the necessary command and then
 /// waiting briefly (to avoid any subsequent steps performing assertions about
@@ -41,6 +30,18 @@ pub fn enter_ssh_command(shell: &str) -> TestStep {
         .set_post_step_pause(Duration::from_millis(250))
 }
 
+/// Like [`enter_ssh_command`] but authenticates with the key that has no passphrase, so the
+/// connect never prompts, and does NOT pause afterwards: whatever the next step types arrives
+/// while the connect and the remote bootstrap are still under way (typeahead during connect).
+pub fn enter_ssh_command_without_prompt(shell: &str) -> TestStep {
+    let ssh_command = ssh_command_with_key(shell, true, false);
+    TestStep::new(&format!(
+        "Start ssh connection (no passphrase prompt) with remote shell '{shell}'"
+    ))
+    .with_typed_characters(&[&ssh_command])
+    .with_keystrokes(&["enter"])
+}
+
 pub fn enter_remote_subshell_command(shell: &str) -> TestStep {
     let ssh_command = ssh_command(shell, false);
     TestStep::new(&format!("Start ssh connection with remote shell '{shell}'"))
@@ -49,15 +50,15 @@ pub fn enter_remote_subshell_command(shell: &str) -> TestStep {
         .set_post_step_pause(Duration::from_millis(250))
 }
 
-/// Waits for a password prompt.
-pub fn wait_for_password_prompt(tab_index: usize, shell: &str) -> TestStep {
-    let user_host = user_host(shell);
-    let regex = Regex::new(&format!("{user_host}'s password:[\\s]*$"))
+/// Waits for the prompt that asks for the credential: for the local sshd fixture, the
+/// passphrase of the throw-away client key (an unprivileged sshd cannot offer a password).
+pub fn wait_for_password_prompt(tab_index: usize, _shell: &str) -> TestStep {
+    let regex = Regex::new(r"Enter passphrase for key '[^']*':[\s]*$")
         .expect("regex should not fail to compile");
     TestStep::new("Wait for password prompt")
-        // Wait up to 40 seconds for the password prompt to appear.  This is
+        // Wait up to 40 seconds for the prompt to appear.  This is
         // intended to reduce flakiness due to still-not-understood delays
-        // in the password prompt appearing.
+        // in the prompt appearing.
         .set_timeout(Duration::from_secs(40))
         .add_assertion(assert_long_running_block_executing_for_single_terminal_in_tab(true, 0))
         .add_assertion(move |app, window_id| {
@@ -65,9 +66,9 @@ pub fn wait_for_password_prompt(tab_index: usize, shell: &str) -> TestStep {
         })
 }
 
-/// Enters the password for the user in the SSH testing VM.
+/// Enters the passphrase of the client key the local sshd fixture accepts.
 pub fn enter_ssh_password() -> TestStep {
-    TestStep::new("Enter ssh password").with_typed_characters(&["password\n"])
+    TestStep::new("Enter ssh password").with_typed_characters(&[&format!("{SSH_KEY_PASSPHRASE}\n")])
 }
 
 pub fn enter_local_subshell_command(shell: &str) -> TestStep {

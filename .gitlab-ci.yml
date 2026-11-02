@@ -643,11 +643,18 @@ integration-linux:
   timeout: 150m
   when: manual
   allow_failure: true
+  # The ssh scenarios connect to a local unprivileged sshd on 127.0.0.1 that each scenario starts
+  # and stops itself (#1506, docs/testing.md 2.2). With this set a missing/broken sshd FAILS them
+  # instead of skipping, so they cannot silently stop running.
+  variables:
+    PHOSPHOR_REQUIRE_SSH_FIXTURE: "1"
   parallel:
     matrix:
       - SHARD: ["1", "2", "3"]
   script:
     - command -v xvfb-run >/dev/null || { echo "ERROR xvfb-run is missing on this runner" >&2; exit 1; }
+    - test -x /usr/sbin/sshd || command -v sshd >/dev/null || { echo "ERROR sshd (openssh-server) is missing on this runner: the ssh integration scenarios need it (#1506)" >&2; exit 1; }
+    - command -v ssh-keygen >/dev/null || { echo "ERROR ssh-keygen is missing on this runner" >&2; exit 1; }
     - 'echo "nproc: $(nproc)"; free -h; df -h /home'
     - xvfb-run -a -s "-screen 0 1280x1024x24" ./script/agent-cargo "$PHOSPHOR_CARGO_LABEL" nextest run -p integration --profile ci --partition "count:${SHARD}/3"
 

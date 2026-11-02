@@ -11,7 +11,8 @@ use warp::{
         subshell::{
             assert_subshell_banner_is_showing, assert_subshell_is_bootstrapped,
             enter_local_subshell_command, enter_remote_subshell_command, enter_ssh_password,
-            setup_gcloud_sdk, trigger_subshell_bootstrap, util::ssh_command,
+            trigger_subshell_bootstrap,
+            util::{ssh_command, ssh_test_fixture_available, stop_ssh_fixtures},
             wait_for_password_prompt,
         },
         terminal::wait_until_bootstrapped_single_pane_for_tab,
@@ -19,13 +20,13 @@ use warp::{
     terminal::warpify::settings::AddedSubshellCommands,
 };
 use warpui::integration::{AssertionOutcome, TestStep};
-use warpui::windowing::state::ApplicationStage;
 use warpui::windowing::WindowManager;
-use warpui::{async_assert, UpdateModel};
+use warpui::windowing::state::ApplicationStage;
+use warpui::{UpdateModel, async_assert};
 
 use crate::util::skip_if_powershell_core_2303;
 
-use super::{new_builder, Builder};
+use super::{Builder, new_builder};
 
 /// Generates an integration test that asserts that a local subshell of the given shell type can be
 /// successfully bootstrapped.
@@ -58,10 +59,13 @@ macro_rules! generate_can_bootstrap_remote_subshell_for_shell {
         /// Ensure a local subshell bootstraps successfully.
         pub fn $fn_name() -> Builder {
             new_builder()
+                .with_cleanup(|_| stop_ssh_fixtures())
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
                     let (starter, _) = current_shell_starter_and_version();
+                    // Last: this starts the local sshd (see `ssh_test_fixture_available`).
                     starter.shell_type() != ShellType::PowerShell
+                        && ssh_test_fixture_available($shell)
                 })
                 .with_user_defaults(HashMap::from([(
                     AddedSubshellCommands::storage_key().to_owned(),
@@ -69,7 +73,6 @@ macro_rules! generate_can_bootstrap_remote_subshell_for_shell {
                         .expect("Can serialize Vec<String> to string"),
                 )]))
                 .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
-                .with_step(setup_gcloud_sdk())
                 .with_step(enter_remote_subshell_command($shell))
                 .with_step(wait_for_password_prompt(0 /*tab_idx*/, $shell))
                 .with_step(
