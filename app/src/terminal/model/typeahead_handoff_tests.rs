@@ -1947,6 +1947,201 @@ fn a_precmd_that_found_the_editor_flagged_active_still_gets_a_signal() {
     assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
 }
 
+// ---- the enter window of the ConPTY prompt hold (#1490, #1349) ---------------------------------
+
+/// A ConPTY hand-off with the enter window on, at a shell that is ready: the precmd arrived, the
+/// line editor's signal released the wait, and the shell reads a line.
+fn conpty_ready_with_enter_window() -> TypeaheadHandoff {
+    let mut handoff = conpty_awaiting_line_editor();
+    handoff.set_conpty_enter_window_hold(true);
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    // No young Enter: the prompt is old enough that nothing is typed "before the app noticed it".
+    handoff.age_last_activity_for_test();
+    handoff
+}
+
+#[test]
+fn keys_typed_between_the_enter_and_the_next_ready_signal_are_held_and_released_in_order() {
+    let mut handoff = conpty_ready_with_enter_window();
+    // Ready: a line is written as typed, and its Enter opens the window in which the shell is not
+    // reading.
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    handoff.on_preexec(false);
+    // Typed ahead while the command runs: held, not written raw to ConPTY (old behaviour:
+    // `WriteCounted`, which lost or reordered them while the shell switched tty modes).
+    let keys: [&[u8]; 3] = [b"e", b"c", b"\r"];
+    assert_eq!(handoff.on_user_bytes(keys[0]), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
+    assert_eq!(
+        handoff.writes_in_flight(),
+        2,
+        "only `ls` and its Enter reached the pty"
+    );
+    // The next prompt's precmd starts the wait for the line editor; it releases nothing itself.
+    handoff.on_precmd();
+    assert!(handoff.awaiting_line_editor_signal());
+    assert!(handoff.has_prompt_hold());
+    // The line editor's ready signal releases the keys, in typed order.
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    let mut written = Vec::new();
+    for key in keys {
+        if handoff.route_released_chunk(key) {
+            written.push(key.to_vec());
+        }
+    }
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(written, keys.map(|key| key.to_vec()).to_vec());
+    // The released Enter submitted a line, so the window is open again for what follows it.
+    assert_eq!(handoff.on_user_bytes(b"z"), UserBytesRoute::Held);
+    assert!(handoff.take_prompt_hold_started().is_some());
+}
+
+#[test]
+fn the_enter_window_is_off_unless_enabled() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    handoff.age_last_activity_for_test();
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.has_prompt_hold());
+}
+
+#[test]
+fn the_enter_window_needs_conpty_and_an_armed_prompt_hold() {
+    // Not ConPTY: the flag alone changes nothing.
+    let mut handoff = young_after_submit();
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
+    handoff.set_conpty_enter_window_hold(true);
+    handoff.on_precmd();
+    handoff.age_last_activity_for_test();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::WriteCounted);
+    // A shell not known to signal is never held for.
+    let mut handoff = young_after_submit();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_enter_window_hold(true);
+    handoff.on_precmd();
+    handoff.age_last_activity_for_test();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn a_command_written_by_the_app_opens_the_window_too() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
+    handoff.set_conpty_enter_window_hold(true);
+    handoff.on_precmd();
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    // The editor's Enter: the command is written to the shell that was reading its line.
+    handoff.on_command_written();
+    assert_eq!(
+        handoff.peek_user_bytes_route(b"a", true, Instant::now()),
+        UserBytesRoute::Held
+    );
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    assert!(handoff.take_prompt_hold_started().is_some());
+}
+
+#[test]
+fn a_command_that_becomes_interactive_gets_the_typeahead_in_order() {
+    // Typeahead for a running interactive program is still delivered: the window ends, by the
+    // event, and the held keys go to the program in typed order.
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"cat"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"1"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
+    assert_eq!(handoff.release_enter_window_for_program(), Some(id));
+    assert!(handoff.route_released_chunk(b"1"));
+    handoff.finish_queued_prompt_hold(id);
+    // Nothing is held any more: the program reads what is typed.
+    assert_eq!(handoff.on_user_bytes(b"2"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.release_enter_window_for_program(), None);
+}
+
+#[test]
+fn a_running_programs_own_enter_never_opens_the_window() {
+    let mut handoff = conpty_ready_with_enter_window();
+    // The shell started a command: its keys belong to it.
+    handoff.on_preexec(false);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.has_prompt_hold());
+    assert_eq!(handoff.release_enter_window_for_program(), None);
+}
+
+#[test]
+fn a_ready_signal_before_the_precmd_does_not_end_the_window() {
+    // A program enabling bracketed paste itself (a REPL), or the shell's own signal from before the
+    // Enter parsed late: neither is the line editor of the NEXT prompt.
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), None);
+    // Still held, behind the same hold.
+    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
+    assert!(handoff.has_prompt_hold());
+    // The prompt's precmd and its signal release both.
+    handoff.on_precmd();
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+}
+
+#[test]
+fn the_enter_window_gives_up_like_the_prompt_hold_and_is_then_off() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    // No precmd, no signal, no interactive command: the logged give-up writes the keys.
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert!(handoff.route_released_chunk(b"a"));
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(handoff.release_enter_window_for_program(), None);
+    assert_eq!(handoff.on_user_bytes(b"c"), UserBytesRoute::WriteCounted);
+}
+
+#[test]
+fn a_signal_ends_the_window_and_the_held_keys_go_out_behind_it() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert_eq!(
+        handoff.take_queued_prompt_hold_for_signal(b"\x03"),
+        Some(id)
+    );
+    assert_eq!(handoff.release_enter_window_for_program(), None);
+}
+
+#[test]
+fn the_enter_window_follows_the_table_mode_unless_the_environment_says_otherwise() {
+    // Unset it follows the destination mode: on in `table` (the default), off in the others.
+    assert!(!conpty_enter_hold_from(None, false));
+    assert!(conpty_enter_hold_from(None, true));
+    assert!(conpty_enter_hold_from(Some("1"), false));
+    assert!(!conpty_enter_hold_from(Some("0"), true));
+    assert!(
+        !conpty_enter_hold_from(Some("true"), true),
+        "only `1` turns it on"
+    );
+}
+
+#[test]
+fn a_new_session_closes_the_window() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    handoff.on_new_session();
+    assert_eq!(handoff.release_enter_window_for_program(), None);
+}
+
 /// #1345: the view reads how many prompts it has yet to handle, to hold the ssh hand-off until
 /// the editor reinitialization of the remote prompt has run.
 #[test]

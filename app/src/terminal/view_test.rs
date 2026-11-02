@@ -24666,3 +24666,244 @@ fn table_mode_the_agents_write_is_refused_during_a_setup_and_goes_out_otherwise(
         );
     })
 }
+
+// ---- the edge-driven ssh phase (#1424, step 7) ---------------------------------------------------
+//
+// The mode is forced on the test thread. The give-up counter (`ssh_give_ups`) is what tells an
+// event-driven hand-over from one a safety net made: every timer-made release adds to it.
+
+/// `shadow`: the machine and the legacy derivation give the same phase through a silent connect
+/// and a password prompt, so `kh_ssh_phase_disagree` stays quiet.
+#[test]
+fn shadow_mode_the_ssh_phase_machine_agrees_with_the_derivation_through_a_connect() {
+    use crate::terminal::input_queue::{QueueFacts, SshPhase};
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let before = ssh_edges::ssh_phase_disagreements();
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Idle
+            );
+            // The Enter on ssh opens the window; nothing is printed yet.
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.ssh_phase.armed());
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Holding
+            );
+            // A password prompt: unterminated text before any remote session.
+            view.model.lock().process_bytes("Password: ");
+            view.model.lock().publish_key_facts();
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            let prompt = view.build_route_facts(QueueFacts::default(), ctx).ssh;
+            assert!(matches!(prompt, SshPhase::PromptUp { .. }), "{prompt:?}");
+            assert_eq!(
+                ssh_edges::ssh_phase_disagreements(),
+                before,
+                "the machine and the derivation agreed at every step"
+            );
+        });
+    });
+}
+
+/// `table`: the facts carry the machine's phase. With the legacy fields tampered to say "no
+/// window", a key typed during the connect is still held, because the Enter's edge opened it.
+#[test]
+fn table_mode_decides_on_the_machines_phase_not_the_legacy_fields() {
+    use crate::terminal::input_queue::{QueueFacts, SshPhase};
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.ssh_connect_gate = None;
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Holding
+            );
+            view.typed_characters_on_terminal("ls", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(view.ssh_held_count(), 1);
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+/// #1348 in `table` mode: the remote shell's first prompt EVENT hands the held keys over inside its
+/// own handler. No timer ran and no give-up was logged; the machine saw the window end by the
+/// event (`FirstPrompt`) and the hold end.
+#[test]
+fn table_mode_the_remote_prompt_event_hands_over_with_no_timer_and_no_give_up() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo hi", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert!(view.ssh_phase.holding());
+            remote_first_prompt_is_next_for_test(view);
+            first_precmd_processed_for_test(view, ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                !view.ssh_typeahead_holding,
+                "the hand-over ran inside the precmd handler"
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
+            assert_eq!(
+                view.ssh_give_ups, 0,
+                "released by the event, not a safety net"
+            );
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::FirstPrompt)
+            );
+            assert!(!view.ssh_phase.armed() && !view.ssh_phase.holding());
+        });
+    });
+}
+
+/// The safety net: no prompt ever comes. The give-up releases the window, hands the text back
+/// unexecuted, and is LOGGED (counted).
+#[test]
+fn table_mode_a_gate_past_its_ceiling_is_released_by_a_logged_give_up() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo lost", ctx);
+            let gate = view.ssh_connect_gate.as_mut().unwrap();
+            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            view.ssh_give_up_fired(ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
+            assert_eq!(view.ssh_give_ups, 1);
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::GiveUpCeiling)
+            );
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+/// The same give-up with nothing held: in `table` mode the key path no longer releases a stale
+/// window, so the timer does, and logs it.
+#[test]
+fn table_mode_the_give_up_ends_a_window_nothing_is_held_behind() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(view.ssh_phase.armed());
+            view.ssh_connect_gate.as_mut().unwrap().armed_at =
+                Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            view.ssh_give_up_fired(ctx);
+            assert!(view.ssh_connect_gate.is_none());
+            assert!(!view.ssh_phase.armed());
+            assert_eq!(view.ssh_give_ups, 1);
+        });
+    });
+}
+
+/// A password prompt: the OUTPUT event discards what was held, and the next key reaches the prompt,
+/// with no timing involved (#1348, owner rule 2026-11-01).
+#[test]
+fn table_mode_a_password_prompt_discards_the_held_keys_and_the_next_key_reaches_it() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("blind", ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.model.lock().process_bytes("Password: ");
+            view.model.lock().publish_key_facts();
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.ssh_held_is_empty(), "the output event discarded them");
+            assert!(!view.ssh_typeahead_holding);
+            view.typed_characters_on_terminal("hunter2", ctx);
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+        let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            writes, b"hunter2",
+            "only the post-prompt key reaches the prompt"
+        );
+    });
+}
+
+/// A non-ssh command starting ends a stale window by event.
+#[test]
+fn a_non_ssh_command_starting_releases_the_window_by_event() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(view.ssh_phase.armed());
+            view.ssh_connect_gate = None;
+            view.ssh_on_other_command_started(ctx);
+            assert!(!view.ssh_phase.armed());
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::OtherCommand)
+            );
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+    });
+}
+
+/// `legacy` is the kill switch: the machine is not fed at all.
+#[test]
+fn legacy_mode_does_not_feed_the_ssh_phase_machine() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Legacy);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(view.ssh_connect_gate.is_some());
+            assert!(!view.ssh_phase.armed());
+        });
+    });
+}

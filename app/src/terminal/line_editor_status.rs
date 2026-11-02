@@ -169,6 +169,12 @@ impl LineEditorStatus {
         let abort_handle = ctx.spawn_abortable(
             async move { warpui::r#async::Timer::after(delay).await },
             move |me, _, ctx| {
+                // A give-up, not the release: the shell's own ready signal ends the wait when it
+                // sends one (`note_shell_reading_line`). Logged where it fires (#1349), so a shell
+                // that relies on this delay shows up in a capture.
+                warpui::input_order::log_hop("line_editor_activation_fallback", || {
+                    format!("delay_ms={}", delay.as_millis())
+                });
                 if me.signal_wait.is_some_and(|wait| wait <= delay) {
                     log::warn!(
                         "line editor: no ready signal within {} ms of the prompt; the shell \

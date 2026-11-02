@@ -80,6 +80,9 @@ pub enum Deferred {
     ApplyYoungHoldEnds,
     /// A drain stopped at an entry only the view can deliver, and the view was busy.
     Poke,
+    /// Focus moved while the queue was busy: advance the focus epoch and drain once the queue is
+    /// free (`InputQueue::on_focus_changed`, #1424 step 7).
+    FocusChanged,
     /// Programmatic editor edits (and the pending command waiting behind them) that waited for
     /// an Enter's gate: apply them, in order, now that the gate operation ahead of this one ran
     /// (#1434, #1435).
@@ -299,6 +302,10 @@ impl PaneQueue {
         let mut stamp = self.inner.route_state.stamp();
         stamp.epoch = guard.focus_epoch();
         guard.set_stamp(stamp);
+        // An owner-change edge asked for the line pin to go (#1424 step 7).
+        if self.inner.route_state.take_pin_clear() {
+            guard.clear_line_pin();
+        }
         Some(QueueGuard {
             guard,
             draining: &self.inner.draining,

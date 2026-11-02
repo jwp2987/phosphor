@@ -1055,6 +1055,11 @@ fn on_shell_determined<S: TerminalSurface>(
         model
             .typeahead_handoff_mut()
             .set_conpty_prompt_hold(hold_enabled);
+        // #1490: the hold also covers the stretch from an Enter to the next prompt's line editor
+        // (`PHOSPHOR_CONPTY_ENTER_HOLD=1|0`; unset it follows the `table` destination mode, the default).
+        model.typeahead_handoff_mut().set_conpty_enter_window_hold(
+            crate::terminal::model::typeahead_handoff::conpty_enter_hold_enabled(),
+        );
         // #1349: the hold is released by the line editor's bracketed-paste signal, so it only
         // exists for shells known to send one (readline, zle, fish). PowerShell 5.1, cmd and an
         // unknown WSL shell are never held for: a hold with no signal could only be a timer.

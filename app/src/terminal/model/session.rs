@@ -172,6 +172,10 @@ pub enum SessionsEvent {
     SessionBootstrapped(Box<SessionBootstrappedEvent>),
     /// The environment variables were updated.
     EnvironmentVariablesUpdated { session_id: SessionId },
+    /// The remote-server setup state of the session changed (checking, installing, connected,
+    /// failed ...): an edge of the ssh connect typeahead's phase (#1424 step 7). Emitted after
+    /// the state is stored, so a subscriber that reads it sees the new one.
+    RemoteServerSetupStateChanged { session_id: SessionId },
     /// A legacy SSH session's command executor was just constructed without
     /// ever reaching a connected remote-server client, and without an
     /// explicit `RemoteServerSetupState::Failed`/`Unsupported` state existing
@@ -250,6 +254,9 @@ impl Sessions {
                 }
                 RemoteServerManagerEvent::SetupStateChanged { session_id, state } => {
                     sessions.set_remote_server_setup_state(*session_id, state.clone());
+                    ctx.emit(SessionsEvent::RemoteServerSetupStateChanged {
+                        session_id: *session_id,
+                    });
                     ctx.notify();
                 }
                 RemoteServerManagerEvent::SessionConnecting { .. }

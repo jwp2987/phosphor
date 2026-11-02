@@ -107,9 +107,14 @@
 //!    dropped even if it is processed later (H4); a held signal is delivered to the REMOTE shell.
 //!    The ARRIVAL side (step 5): ^Z and ^\ jump the queue like ^C; a signal typed in the ssh setup
 //!    window is held instead of dropped.
-//!  - NEXT (design steps 7-8): the edge-driven `SshPhase` (and the key path's ssh refresh leaving
-//!    it), then `table` as the default and the deletion of the legacy fields
-//!    (`delivering`/`requeue_request`).
+//!  - STEP 7 (edge-driven ssh phase): [`SshPhaseMachine`] (`ssh_phase.rs`) is fed by the events that
+//!    are its edges (`view/ssh_edges.rs`); `table` mode carries its phase in the facts and the key
+//!    path runs no ssh refresher; `shadow` reports `kh_ssh_phase_disagree`. The remote-setup
+//!    `SessionsEvent` is an edge. Every timer left in the ssh hand-over is a counted, logged
+//!    give-up. The focus epoch follows focus, owner-change edges clear the line pin
+//!    ([`InputQueue::clear_line_pin`]), and the gates nothing opened (`EditorFocusPending`,
+//!    `PtyRouteSettling`) are gone.
+//!  - NEXT (design step 8): the deletion of the legacy fields (`delivering`/`requeue_request`).
 //!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
@@ -139,6 +144,7 @@ pub mod facts;
 mod gates;
 mod pane;
 pub mod shadow;
+pub mod ssh_phase;
 pub mod table;
 pub mod trace;
 
@@ -168,6 +174,7 @@ pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
 };
+pub use ssh_phase::{SshEdge, SshObservation, SshPhaseMachine, SshRelease};
 
 /// Monotonic id assigned at arrival; it is the entry's position in the one order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1144,6 +1151,19 @@ impl InputQueue {
     pub fn on_focus_changed<H: Host>(&mut self, host: &mut H) {
         self.focus_epoch += 1;
         self.drain(host);
+    }
+
+    /// An owner-change edge (the ssh phase moved, the hand-off's owner changed, the block changed
+    /// ...): the line that was pinned to a destination is over, so the next content decides afresh
+    /// (#1424 step 7). A focus flip does NOT call this: it never splits a line.
+    pub fn clear_line_pin(&mut self) {
+        self.line_pin = None;
+    }
+
+    /// Whether a line is pinned to a destination (tests).
+    #[cfg(any(test, feature = "dev-support"))]
+    pub fn has_line_pin(&self) -> bool {
+        self.line_pin.is_some()
     }
 
     /// Facts changed in a way that can unblock nothing by itself but that the host wants applied

@@ -1157,7 +1157,7 @@ const SIGNALS: [SignalKind; 4] = [
 fn the_gate_by_signal_plan_matrix() {
     use GateSignalPlan::*;
     // [Interrupt, Eof, Suspend, Quit] per gate kind: the 14 x 4 plan of design revision 3.
-    let expected: [(GateKind, [GateSignalPlan; 4]); 14] = [
+    let expected: [(GateKind, [GateSignalPlan; 4]); 12] = [
         (GateKind::PasteReading, [CancelPasteThenFlush; 4]),
         (GateKind::CliSubmit, [CancelPasteThenFlush; 4]),
         (GateKind::EnterVerdict, [DiscardThenSignal; 4]),
@@ -1190,8 +1190,6 @@ fn the_gate_by_signal_plan_matrix() {
                 VoidHeldThenSignal,
             ],
         ),
-        (GateKind::PtyRouteSettling, [FlushThenSignal; 4]),
-        (GateKind::EditorFocusPending, [FlushThenSignal; 4]),
         (GateKind::EditorDisplayMap, [FlushThenSignal; 4]),
         (GateKind::SubshellSetup, [SignalThenRelease; 4]),
         (

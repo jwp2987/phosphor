@@ -484,11 +484,11 @@ fn pin_is_released_when_its_destination_disappears() {
 fn destination_is_decided_at_drain_not_at_arrival() {
     let mut q = InputQueue::new();
     let mut h = MockHost::new();
-    q.open_gate(&mut h, GateSpec::new(GateKind::EditorFocusPending, 1));
+    q.open_gate(&mut h, GateSpec::new(GateKind::EditorDisplayMap, 1));
     q.offer(&mut h, text("a"));
     // While it waited, the editor took focus.
     h.facts.editor_focused = true;
-    q.on_gate_event(&mut h, GateKind::EditorFocusPending, 1);
+    q.on_gate_event(&mut h, GateKind::EditorDisplayMap, 1);
     assert_eq!(h.delivered[0].dest, Destination::Editor);
 }
 
@@ -1832,4 +1832,33 @@ fn the_panes_epoch_follows_the_queues_focus_epoch() {
         guard.on_focus_changed(&mut h);
     }
     assert_eq!(pane.stamp_now().epoch, 1, "mirrored when the guard drops");
+}
+
+/// #1424 step 7: an owner-change edge (the ssh phase moved, the hand-off's owner changed, the
+/// block changed) clears the line pin at the queue's next lock, never mid-operation; content after
+/// it pins afresh. A focus flip is not such an edge.
+#[test]
+fn an_owner_change_edge_clears_the_line_pin_at_the_next_lock() {
+    let pane = PaneQueue::new();
+    let mut h = MockHost::new();
+    pane.lock().offer(&mut h, text("a"));
+    assert!(pane.peek().has_line_pin());
+    pane.route_state().request_pin_clear();
+    assert!(
+        pane.peek().has_line_pin(),
+        "the edge only asks; the next lock clears"
+    );
+    drop(pane.lock());
+    assert!(!pane.peek().has_line_pin());
+    assert!(
+        !pane.route_state().take_pin_clear(),
+        "the request is consumed"
+    );
+    pane.lock().offer(&mut h, text("b"));
+    assert!(pane.peek().has_line_pin(), "later content pins afresh");
+    pane.lock().on_focus_changed(&mut h);
+    assert!(
+        pane.peek().has_line_pin(),
+        "a focus flip never splits a line"
+    );
 }

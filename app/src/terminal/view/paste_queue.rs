@@ -2133,6 +2133,13 @@ impl TerminalView {
                     input.flush_deferred_programmatic_edits(ctx)
                 });
             }
+            Deferred::FocusChanged => {
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::FocusChanged);
+                };
+                let mut host = PtyQueueHost::new(self, ctx);
+                guard.on_focus_changed(&mut host);
+            }
             Deferred::Poke => {
                 let Some(mut guard) = queue.try_lock() else {
                     return Err(Deferred::Poke);

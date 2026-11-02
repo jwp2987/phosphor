@@ -3153,6 +3153,14 @@ pub struct TerminalView {
     /// First time input was swallowed for a pending ssh session, to bound the swallow window
     /// by `SSH_BOOTSTRAP_SWALLOW_CEILING` even if no failure timer ever fires for it.
     ssh_bootstrap_swallow_started: Option<(SessionId, Instant)>,
+    /// The edge-driven ssh phase (#1424 step 7): fed by the events that are its edges
+    /// (`view/ssh_edges.rs`); in `table` mode the facts carry its phase and the key path no longer
+    /// refreshes the connect gate.
+    ssh_phase: input_queue::SshPhaseMachine,
+    /// Releases of the ssh connect hand-over that came from a safety net (a timer) instead of the
+    /// event that ends it, each logged where it happens. The tests assert the event path leaves
+    /// this at zero.
+    ssh_give_ups: u64,
 
     /// The [`EntityId`] for this terminal view.
     view_id: EntityId,
@@ -4987,6 +4995,8 @@ impl TerminalView {
             ssh_remote_prompt_seen: false,
             ssh_bootstrap_failed_session: None,
             ssh_bootstrap_swallow_started: None,
+            ssh_phase: input_queue::SshPhaseMachine::default(),
+            ssh_give_ups: 0,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
@@ -11095,6 +11105,13 @@ impl TerminalView {
         if !self.ssh_typeahead_holding || !self.ssh_prompt_has_arrived() {
             return false;
         }
+        self.discard_held_ssh_typeahead_for_prompt(ctx);
+        true
+    }
+
+    /// The discard itself, once a prompt is known to be up (the legacy probe above, or the edge
+    /// machine's `PromptUp` in `table` mode).
+    fn discard_held_ssh_typeahead_for_prompt(&mut self, ctx: &mut ViewContext<Self>) {
         let had_keys = !self.ssh_held_is_empty();
         // #1348: an event rule, no timing. Everything held when the prompt appeared goes; the hold
         // ends here, so every key typed afterwards passes straight to the prompt, as in plain ssh.
@@ -11105,7 +11122,6 @@ impl TerminalView {
                 ctx,
             );
         }
-        true
     }
 
     fn set_ssh_typeahead_holding(&mut self, holding: bool) {
@@ -11114,6 +11130,11 @@ impl TerminalView {
         }
         self.ssh_typeahead_holding = holding;
         self.paste_queue.queue.set_ssh_hold_active(holding);
+        self.ssh_edge(if holding {
+            input_queue::SshEdge::HoldStarted
+        } else {
+            input_queue::SshEdge::HoldEnded
+        });
     }
 
     /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
@@ -11164,6 +11185,11 @@ impl TerminalView {
             self.ssh_typeahead_precmd_wait_since = None;
             Duration::ZERO
         };
+        if awaiting_first_precmd && !delivery_waits_for_first_precmd(awaiting_first_precmd, waited)
+        {
+            // The registration the held Enter waits for never came: the keys are delivered anyway.
+            self.note_ssh_give_up("first_precmd_wait_cap");
+        }
         if delivery_waits_for_first_precmd(awaiting_first_precmd, waited) {
             warpui::input_order::log_key_hop("kh_handover_waits", || {
                 format!(
@@ -11217,7 +11243,7 @@ impl TerminalView {
             if me.ssh_typeahead_deadline_armed == Some(deadline) {
                 me.ssh_typeahead_deadline_armed = None;
             }
-            me.deliver_ssh_typeahead_if_ready("give_up", ctx);
+            me.ssh_give_up_fired(ctx);
         });
     }
 
@@ -11314,6 +11340,8 @@ impl TerminalView {
         if text.is_empty() {
             return;
         }
+        // The ssh hand-back ends the line the held text belonged to.
+        self.request_queue_pin_clear();
         // Whatever happens to the text below, an Enter typed in the same burst must not run what
         // the user meant for the remote machine on this one.
         let existing = self.input.as_ref(ctx).buffer_text(ctx);
@@ -11393,6 +11421,9 @@ impl TerminalView {
             // A different command now owns the pty: a stale gate must not eat its typing.
             self.ssh_connect_gate = None;
         }
+        self.ssh_edge(input_queue::SshEdge::Submitted {
+            ssh: self.ssh_connect_gate.is_some(),
+        });
     }
 
     /// Makes the gate consistent with the model and says whether it is still armed. Lazily arms
@@ -11420,6 +11451,7 @@ impl TerminalView {
                 // this one read keeps the model's lock.
                 gate.block_id = Some(self.model.lock().active_block_id().clone());
                 self.ssh_connect_gate = Some(gate);
+                self.ssh_edge(input_queue::SshEdge::ConnectStart);
             }
         }
         let Some(gate) = self.ssh_connect_gate.as_mut() else {
@@ -11429,9 +11461,12 @@ impl TerminalView {
         if managed_ssh {
             gate.managed = true;
         }
-        if gate.should_release(Instant::now(), pending) {
+        let now = Instant::now();
+        if gate.should_release(now, pending) {
+            let how = gate.release_reason(now, pending);
             self.ssh_connect_gate = None;
             self.ssh_connect_gate_released_at = Some(Local::now());
+            self.note_ssh_gate_released(how);
             return false;
         }
         true
@@ -11596,6 +11631,9 @@ impl TerminalView {
             gate.note_block_completed(Instant::now(), exit_code == 0);
             // Deliberately no change to the held keys, whatever ssh did: the hand-over delivers
             // them to the remote shell, or shows them unexecuted if ssh failed (#1292).
+            self.ssh_edge(input_queue::SshEdge::BlockCompleted {
+                clean: exit_code == 0,
+            });
         }
         // Release a gate that has nothing more to wait for right away, not at the next refresh.
         self.refresh_ssh_connect_gate();
@@ -12931,12 +12969,20 @@ impl TerminalView {
     fn handle_sessions_event(&mut self, event: SessionsEvent, ctx: &mut ViewContext<Self>) {
         match event {
             SessionsEvent::SessionInitialized { .. } => {
+                self.ssh_observe_for_wakeup(ctx);
                 self.handle_session_initialized(ctx);
             }
             SessionsEvent::SessionBootstrapped(event) => {
+                // The remote session is registered: the machine sees the pending session gone.
+                self.ssh_observe_for_wakeup(ctx);
                 self.handle_session_bootstrapped(*event, ctx);
                 // #1348: the registration a held Enter was waiting for (#1332).
                 self.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
+            }
+            // #1424 step 7: the remote-setup state of a session changed (checking, installing,
+            // connected, failed): an edge of the ssh phase.
+            SessionsEvent::RemoteServerSetupStateChanged { .. } => {
+                self.ssh_on_setup_changed(ctx);
             }
             // The "default fully-silent" legacy-SSH-fallback case (TODO.md
             // "Remote-session setup degrades silently", item 1): fired at
@@ -13035,6 +13081,8 @@ impl TerminalView {
     /// behind it, and the editor holds only what was typed after it -- submitting that would run
     /// a fragment. Only the report, Ctrl-C or the session ending releases it.
     fn handle_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        // The hand-off's owner may have changed: the line pinned to a destination is over.
+        self.request_queue_pin_clear();
         // A hold the hand-off ended since (a command written, a state that outgrew it) is
         // applied to the queue before anything decides on the keys behind it.
         self.drain_young_hold_ends(ctx);
@@ -13693,6 +13741,7 @@ impl TerminalView {
         }
         // #1348: output is the event that shows a host-key / password prompt (or ends a connect
         // silently); the held keys are judged on it, not on a timer or the next key.
+        self.ssh_observe_for_wakeup(ctx);
         if self.ssh_typeahead_holding {
             self.deliver_ssh_typeahead_if_ready("output", ctx);
         }
@@ -16435,6 +16484,16 @@ impl TerminalView {
     }
 
     fn handle_terminal_event(&mut self, event: &ModelEvent, ctx: &mut ViewContext<Self>) {
+        // #1424 step 7: the ssh phase machine sees what this event published before anything
+        // below reacts to it (the edge, not a key, moves the phase).
+        self.ssh_observe_for_event(event, ctx);
+        // A new block is a new line: the pinned destination of the previous one is over.
+        if matches!(
+            event,
+            ModelEvent::BlockCompleted(_) | ModelEvent::AfterBlockStarted { .. }
+        ) {
+            self.request_queue_pin_clear();
+        }
         // #983: observe the announced remote session (and its end) as it happens, so the gate
         // does not depend on a keystroke arriving while the session is pending.
         if self.ssh_connect_gate.is_some() {
@@ -16978,6 +17037,11 @@ impl TerminalView {
                                     gate.block_id = Some(running_block_id);
                                 }
                                 self.model.lock().start_notify_on_end_of_ssh_login();
+                                // #1424 step 7: the event that shows ssh running arms the window
+                                // (and its give-up deadline) in `table` mode, not the next key.
+                                if Self::ssh_events_own_the_gate() {
+                                    self.ssh_arm_gate_at_event(ctx);
+                                }
                                 ctx.emit(Event::TerminalViewStateChanged);
                                 // A pending SSH target just appeared (host resolved
                                 // or not) -- the other half of
@@ -16988,6 +17052,7 @@ impl TerminalView {
                             // A non-ssh command started: an unmanaged ssh gate is stale (#983).
                             if self.ssh_connect_gate.as_ref().is_some_and(|g| !g.managed) {
                                 self.ssh_connect_gate = None;
+                                self.ssh_on_other_command_started(ctx);
                             }
                             // A line dropped during an ssh connect must stay dropped through
                             // its Enter: the remote session's own blocks start here too (#983).
@@ -17617,6 +17682,15 @@ impl TerminalView {
             ModelEvent::CommandBecameInteractive { block_id } => {
                 // A program took over the terminal (#1373): the event the "long running"
                 // consumers used to wait 50 ms for.
+                // #1490: keys the ConPTY enter window held since the Enter are typeahead for this
+                // program, not for the shell's line editor: they are released to it in typed
+                // order, by this event and not by a timer.
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    let held_for_program = self.handoff.write().release_enter_window_for_program();
+                    if let Some(hold_id) = held_for_program {
+                        self.on_prompt_hold_released(hold_id, ctx);
+                    }
+                }
                 if self.pending_agent_input_lock.as_ref() == Some(block_id) {
                     self.lock_input_for_interactive_agent_command(ctx);
                 }
@@ -18393,6 +18467,8 @@ impl TerminalView {
         );
 
         self.redetermine_global_focus(ctx);
+        // The dialog now owns input: an edge of the ssh phase.
+        self.ssh_on_setup_changed(ctx);
     }
 
     /// Returns a clone of the `SshRemoteServerChoiceView` handle for the
@@ -18588,6 +18664,8 @@ impl TerminalView {
         drop(model);
         self.rich_content_views
             .retain(|rich_content| !view_ids_to_remove.contains(&rich_content.view_id()));
+        // The dialog no longer owns input: an edge of the ssh phase.
+        self.ssh_on_setup_changed(ctx);
         ctx.notify();
     }
 
@@ -22088,6 +22166,7 @@ impl TerminalView {
         // #983: this pending session is stuck; stop swallowing typing on its behalf.
         let failed_session = self.model.lock().pending_session_id();
         self.ssh_bootstrap_failed_session = failed_session;
+        self.ssh_edge(input_queue::SshEdge::BootstrapFailed);
         self.hand_held_ssh_typeahead_to_unbootstrapped_remote(is_ssh, ctx);
 
         // Unhide the long-running block that was hidden at the start of
@@ -36162,10 +36241,13 @@ impl View for TerminalView {
             ctx.notify();
         }
         self.update_focused_terminal_info(ctx);
+        // #1424 step 7: the queue's focus epoch follows focus (table mode).
+        self.note_queue_focus_changed(ctx);
     }
 
     fn on_blur(&mut self, blur_ctx: &BlurContext, ctx: &mut ViewContext<Self>) {
         if blur_ctx.is_self_blurred() {
+            self.note_queue_focus_changed(ctx);
             // Make sure to close link tooltips when terminal view is not in focus.
             self.open_grid_link_tool_tip.take();
 
@@ -36996,6 +37078,25 @@ impl SshConnectGate {
                 .is_some_and(|at| now.saturating_duration_since(at) >= SSH_CONNECT_POST_BLOCK_GRACE)
     }
 
+    /// Why [`Self::should_release`] just answered true (call right after it did): the event that
+    /// ends the window, or the give-up that did (#1424 step 7). Same order as `should_release`.
+    fn release_reason(&self, now: Instant, pending: bool) -> input_queue::SshRelease {
+        if self.failed {
+            return input_queue::SshRelease::Failed;
+        }
+        if now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_SILENCE_CEILING {
+            return input_queue::SshRelease::GiveUpCeiling;
+        }
+        if self.saw_pending && !pending {
+            return if self.first_prompt_seen {
+                input_queue::SshRelease::FirstPrompt
+            } else {
+                input_queue::SshRelease::GiveUpFirstPromptGrace
+            };
+        }
+        input_queue::SshRelease::GiveUpPostBlockGrace
+    }
+
     /// The instant this gate releases on time alone if no event does (#1348), for the one-shot
     /// give-up timer. `pending` is whether a remote session is announced now. Mirrors the time
     /// conditions of [`Self::should_release`]; a condition that needs an event has no deadline.
@@ -37395,6 +37496,7 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
 mod dest_table;
 mod paste_queue;
 mod route_facts;
+mod ssh_edges;
 mod ssh_queue;
 mod ssh_typeahead;
 

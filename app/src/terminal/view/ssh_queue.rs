@@ -21,6 +21,9 @@
 //!   run (`finish_ssh_typeahead`).
 //! The only timer left is the give-up deadline of `schedule_ssh_typeahead_give_up` (its deadline
 //! depends on the connect gate's state, so the queue gate itself carries no cap).
+//! Since #1424 step 7 every timer is a COUNTED, logged give-up (`note_ssh_give_up`, `kh_ssh_give_up`)
+//! and the key path refreshes nothing in `table` mode: the edge-driven `SshPhase` (`ssh_edges.rs`)
+//! carries the connect state and the events arm, release and hand over the window.
 //!
 //! A key that must join the hold while the queue is mid-delivery (text replayed behind an Enter
 //! whose command opened the connect, a held input judged at a hand-over for the next connect)
