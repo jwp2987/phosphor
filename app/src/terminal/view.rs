@@ -79,7 +79,7 @@ use window_footer_bar::render_window_footer_bar;
 use super::CLIAgent;
 use super::cli_agent;
 use super::input_queue::{self, GateKeysThen, PowershellKeysThen};
-use super::paste_sequencer::PasteFailure;
+use super::paste_sequencer::{PasteFailure, paste_backstop};
 #[cfg(feature = "local_fs")]
 use crate::ai::agent::{CurrentHead, DiffBase};
 use crate::ai::ambient_agents::{AmbientAgentTaskId, conversation_output_status_from_conversation};
@@ -22625,7 +22625,7 @@ impl TerminalView {
             self.paste_queue.ssh_pastes.insert(id);
         }
         #[cfg(not(target_family = "wasm"))]
-        let backstop = Self::paste_backstop();
+        let backstop = paste_backstop();
         #[cfg(target_family = "wasm")]
         let backstop: Option<Duration> = None;
         self.prepare_subshell_gates(&[], ctx);
@@ -22864,22 +22864,9 @@ impl TerminalView {
             reader,
             shell_dialect,
             bracketed,
-            Self::paste_backstop(),
+            paste_backstop(),
             ctx,
         );
-    }
-
-    /// How long the terminal holds typed keys for a clipboard read before giving up on it (#1331).
-    /// The platform readers bound their own wait; this is the backstop for a wedged reader thread.
-    /// `PHOSPHOR_PASTE_BACKSTOP_MS` overrides it (shared with the input editor); `0` turns it off.
-    #[cfg(not(target_family = "wasm"))]
-    fn paste_backstop() -> Option<Duration> {
-        const DEFAULT_MS: u64 = 3_000;
-        let ms = std::env::var("PHOSPHOR_PASTE_BACKSTOP_MS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_MS);
-        (ms > 0).then(|| Duration::from_millis(ms))
     }
 
     #[cfg(not(target_family = "wasm"))]

@@ -101,6 +101,7 @@ use crate::terminal::input::user_query::{UserQueryMenuEvent, UserQueryMenuView};
 use crate::terminal::model::session::active_session::ActiveSession;
 use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::terminal::package_installers::command_at_cursor_has_common_package_installer_prefix;
+use crate::terminal::paste_sequencer::paste_backstop;
 use crate::terminal::prompt_render_helper::should_render_ps1_prompt;
 use crate::terminal::universal_developer_input::AtContextMenuDisabledReason;
 use crate::terminal::view::CodeDiffAction;
@@ -11092,21 +11093,7 @@ impl Input {
         reader: warpui::clipboard::BackgroundTextReader,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.start_background_paste_with_backstop(reader, Self::paste_backstop(), ctx);
-    }
-
-    /// How long the editor holds typed keys for a clipboard read before giving up on it (#1331).
-    /// The platform readers bound their own wait; this is the backstop for one that does not (a
-    /// wedged reader thread), so the held keys are ALWAYS applied. `PHOSPHOR_PASTE_BACKSTOP_MS`
-    /// overrides it; `0` turns the backstop off (the old behaviour: wait for the reader).
-    #[cfg(not(target_family = "wasm"))]
-    fn paste_backstop() -> Option<Duration> {
-        const DEFAULT_MS: u64 = 3_000;
-        let ms = std::env::var("PHOSPHOR_PASTE_BACKSTOP_MS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_MS);
-        (ms > 0).then(|| Duration::from_millis(ms))
+        self.start_background_paste_with_backstop(reader, paste_backstop(), ctx);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -11129,7 +11116,7 @@ impl Input {
         source: PasteSource,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.start_background_read(reader, Self::paste_backstop(), source, ctx);
+        self.start_background_read(reader, paste_backstop(), source, ctx);
     }
 
     #[cfg(not(target_family = "wasm"))]
