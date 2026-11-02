@@ -269,8 +269,7 @@ def main():
             head = sh("git", "rev-parse", gitref(ref) + "^{commit}", check=True)
             cur = (api("projects/%s/pipelines?ref=%s&per_page=1" % (PROJECT, ref.replace("/", "%2F"))) or [{}])[0].get("id")
             for p in plats:
-                if BUILD[p] in SKIP:
-                    continue
+                # a skipped build job still allows reuse: --skip build-* means "never build", not "never test"
                 msg, r = find_reusable(p, head, cur)
                 print(msg, flush=True)
                 if r:
