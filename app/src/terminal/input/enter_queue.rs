@@ -834,6 +834,20 @@ impl Input {
         self.enter_gate_held_len(ctx)
     }
 
+    /// The `Held` entries (class, text) the Enter gate holds, in order, for tests (#1586).
+    #[cfg(test)]
+    pub(crate) fn queued_held_for_test(&self, ctx: &AppContext) -> Vec<(u8, String)> {
+        let queue = self.enter_queue_handle(ctx);
+        let queue = queue.peek();
+        queue
+            .entries()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Held { class, text } => Some((*class, text.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The text and Enters queued behind the Enter, in order, adjacent text merged: what the
     /// wait's own list and the after-Enter replay list used to hold, for tests.
     #[cfg(test)]

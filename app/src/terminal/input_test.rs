@@ -14647,6 +14647,113 @@ fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
     }
 }
 
+/// #1586, both destination modes: behind an Enter held for an unready shell, keys with a tty form
+/// (Delete, Home, End, Tab, ^K) wait as `Held` entries and never edit the held line; keys with
+/// neither a tty form nor text (Escape, Shift-Tab, ...) are swallowed. The held line then runs
+/// exactly as typed.
+#[test]
+fn test_unready_enter_holds_or_swallows_keys_with_no_text() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input_queue::facts::DestinationMode;
+    use crate::terminal::input_queue::{HELD_KEY, HELD_SEQ};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+        App::test((), move |mut app| async move {
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+            {
+                let executed = executed.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                        if let super::Event::ExecuteCommand(event) = event {
+                            executed.borrow_mut().push(event.command.clone());
+                        }
+                    });
+                });
+            }
+            let real_session = terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                let block = model.block_list_mut().active_block_for_test();
+                let real = block.session_id();
+                block.set_session_id(SessionId::from(1571));
+                real
+            });
+            input.update(&mut app, |input, ctx| {
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::Shell,
+                            is_locked: true,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("ssh fake", ctx);
+                input.input_enter(ctx);
+            });
+            input.read(&app, |input, _| {
+                assert!(input.unready_enter_gate_open(), "{mode:?}");
+            });
+            for action in [
+                EditorAction::Delete,
+                EditorAction::MoveToLineStart,
+                EditorAction::MoveToLineEnd,
+                EditorAction::Tab,
+                EditorAction::DeleteAllRight,
+            ] {
+                type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
+            }
+            let held_with_forms = input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
+            for action in [
+                EditorAction::Escape,
+                EditorAction::ShiftTab,
+                EditorAction::DeleteWordRight,
+                EditorAction::MoveToBufferStart,
+                EditorAction::MoveToBufferEnd,
+            ] {
+                type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
+            }
+            let held_after_swallowed =
+                input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
+            let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
+            assert_eq!(buffer, "ssh fake", "{mode:?}: the held line is not edited");
+            assert_eq!(
+                held_with_forms,
+                vec![
+                    (HELD_SEQ, "\u{1b}[3~".to_owned()),
+                    (HELD_SEQ, "\u{1b}[H".to_owned()),
+                    (HELD_SEQ, "\u{1b}[F".to_owned()),
+                    (HELD_SEQ, "\t".to_owned()),
+                    (HELD_KEY, "\u{b}".to_owned()),
+                ],
+                "{mode:?}"
+            );
+            assert_eq!(
+                held_after_swallowed, held_with_forms,
+                "{mode:?}: keys with no text and no tty form queue nothing"
+            );
+            // The readiness event: the held line runs exactly as typed.
+            terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                if let Some(real) = real_session {
+                    model
+                        .block_list_mut()
+                        .active_block_for_test()
+                        .set_session_id(real);
+                }
+            });
+            input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+            assert_eq!(*executed.borrow(), ["ssh fake".to_owned()], "{mode:?}");
+        });
+    }
+}
+
 /// #1571, both destination modes: the held Enter's give-up never runs anything. The line and what
 /// was typed after it go back to the editor as text (one line each), the pending command is gone,
 /// and the readiness event that comes later runs nothing.

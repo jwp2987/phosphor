@@ -3269,6 +3269,34 @@ impl EditorView {
                     // edits the held line. A key with no such form acts at once, as before.
                     _ if behind_unready_enter => match held_form_of_editor_key(action) {
                         Some((class, text)) => EntryKind::Held { class, text },
+                        // #1586: navigation and editing keys with no tty form carry no text; the
+                        // held line must not change, so they are swallowed.
+                        None if matches!(
+                            action,
+                            EditorAction::ShiftTab
+                                | EditorAction::DeleteWordRight
+                                | EditorAction::MoveToBufferStart
+                                | EditorAction::MoveToBufferEnd
+                                | EditorAction::MoveToParagraphStart
+                                | EditorAction::MoveToParagraphEnd
+                                | EditorAction::MoveToVisualLineStart
+                                | EditorAction::MoveToVisualLineEnd
+                                | EditorAction::SelectToLineStart
+                                | EditorAction::ClearLines
+                                | EditorAction::ClearAndCopyLines
+                                | EditorAction::Escape
+                                | EditorAction::VimEscape
+                        ) =>
+                        {
+                            log::info!(
+                                "editor: {action:?} typed behind an Enter held for an unready shell was ignored (#1586)"
+                            );
+                            warpui::input_order::log_key_hop(
+                                "kh_editor_ignored_behind_held_enter",
+                                String::new,
+                            );
+                            return true;
+                        }
                         None => return false,
                     },
                     _ => return false,
@@ -9630,6 +9658,12 @@ fn held_form_of_editor_key(action: &EditorAction) -> Option<(u8, String)> {
         EditorAction::Down => (HELD_SEQ, "\u{1b}[B".to_owned()),
         EditorAction::Right => (HELD_SEQ, "\u{1b}[C".to_owned()),
         EditorAction::Left => (HELD_SEQ, "\u{1b}[D".to_owned()),
+        // #1586: the bytes a tty gets for these.
+        EditorAction::Delete => (HELD_SEQ, "\u{1b}[3~".to_owned()),
+        EditorAction::MoveToLineStart => (HELD_SEQ, "\u{1b}[H".to_owned()),
+        EditorAction::MoveToLineEnd => (HELD_SEQ, "\u{1b}[F".to_owned()),
+        EditorAction::DeleteAllRight => (HELD_KEY, "\u{b}".to_owned()),
+        EditorAction::Tab => (HELD_SEQ, "\t".to_owned()),
         _ => return None,
     })
 }

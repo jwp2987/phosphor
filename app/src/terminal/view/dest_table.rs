@@ -548,6 +548,7 @@ impl TerminalView {
                     "\u{7f}" | "\u{8}" => EditorAction::Backspace,
                     "\u{15}" => EditorAction::DeleteAllLeft,
                     "\u{17}" => EditorAction::DeleteWordLeft,
+                    "\u{b}" => EditorAction::DeleteAllRight,
                     _ => {
                         log::info!("input queue: a held key has no editor action and was ignored");
                         return;
