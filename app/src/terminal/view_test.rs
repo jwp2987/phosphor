@@ -23929,13 +23929,14 @@ fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
                 });
 
                 // With the user's Enter deferred behind the report: it runs as a shell command.
-                // A new line at the next prompt: the model's precmd clears the report the first
-                // line left (reports accumulate per line; `store_shell_report` appends to it).
+                // The first line was written to the pty, which clears its report (pty_controller.rs,
+                // hand-off engage); this test captures the command instead of writing it, so it
+                // clears it the same way (reports accumulate per line: `store_shell_report` appends).
                 view.model
                     .lock()
                     .block_list_mut()
                     .early_output_mut()
-                    .precmd();
+                    .clear_typeahead_for_new_command();
                 lock_input_in_ai_mode(view, ctx);
                 hold_after_deferred_enter(view);
                 store_shell_report(view, "echo T93");
