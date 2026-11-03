@@ -14,7 +14,7 @@
 //! The sample space is fixed, so a failure is reproducible from the message alone (it prints the
 //! intent, the facts and the pin).
 //!
-//! #1530 adds `exhaustive_*` below: enumerations, not samples. `RouteFacts` has ~42 booleans, four
+//! #1530 adds `exhaustive_*` below: enumerations, not samples. `RouteFacts` has ~43 booleans, four
 //! small enums and a 12-bit gate mask (about 2^60 combinations), so the full product cannot be
 //! walked. The reduction is stated in each test: (1) EVERY gate mask x ssh phase x every class x
 //! every origin; (2) EVERY subshell x ps x ssh phase x all 11 core booleans x every class; (3)
@@ -357,6 +357,7 @@ fn random_facts(rng: &mut Rng) -> RouteFacts {
         },
     };
     f.ssh_dialog_up = rng.flag();
+    f.ssh_prompt_is_shell = rng.flag();
     f.ssh_setup_in_flight = rng.flag();
     f.ssh_bootstrapping = rng.flag();
     f.ssh_connecting_silently = rng.flag();
@@ -669,7 +670,7 @@ fn stamp_of(index: usize) -> Stamp {
     }
 }
 
-/// Every dimension the table can branch on: all 42 boolean facts, the four enum facts, the 12 gate
+/// Every dimension the table can branch on: all 43 boolean facts, the four enum facts, the 12 gate
 /// bits, the five intent flags and the stamp.
 fn all_dims() -> Vec<Dim> {
     let mut dims: Vec<Dim> = Vec::new();
@@ -704,6 +705,7 @@ fn all_dims() -> Vec<Dim> {
         ssh_route_forward,
         ssh_pre_init_abort,
         ssh_sigint_applies,
+        ssh_prompt_is_shell,
         approval_card,
         ai_awaiting_confirmation,
         settled_ai_target,

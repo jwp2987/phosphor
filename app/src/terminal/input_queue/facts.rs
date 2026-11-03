@@ -322,7 +322,8 @@ pub struct RouteFacts {
     /// While `ssh` is `PromptUp`: the unterminated line is a SHELL's prompt (ends in `$ # % >`,
     /// not credential-shaped), e.g. a nested `ssh` into a host that is not bootstrapped. Keys held
     /// for the connect that handed over to it belong to that shell (#1561, #1575), so H4 does not
-    /// drop them as a possible password. False otherwise (and never computed outside `PromptUp`).
+    /// drop them as a possible password. Latched by the pty reader for the whole unterminated episode
+    /// (the inner shell's echo of a delivered line does not unlatch it); meaningful only in `PromptUp`.
     pub ssh_prompt_is_shell: bool,
 
     // ---- focus, cards, editor ----

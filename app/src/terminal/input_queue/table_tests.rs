@@ -1914,7 +1914,7 @@ fn arb_facts() -> impl Strategy<Value = RouteFacts> {
             ssh_route_forward: a[27],
             ssh_pre_init_abort: a[28],
             ssh_sigint_applies: a[29],
-            ssh_prompt_is_shell: false,
+            ssh_prompt_is_shell: a[30],
             focus: focus_of(b[0] as usize),
             approval_card: b[1],
             ai_awaiting_confirmation: b[2],

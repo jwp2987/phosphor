@@ -611,3 +611,50 @@ fn selection_bits_overlay_the_stale_copy() {
     assert!(exact.has_block_list_selection && !exact.has_alt_screen_selection);
     assert!(!cell.load().has_block_list_selection);
 }
+
+#[test]
+fn the_shell_prompt_latch_survives_the_echo_and_clears_at_the_episode_end() {
+    let mut sticky = StickyOutput::default();
+    // Visible text, unterminated from gen 20; the tail is a shell's prompt: latched.
+    let _ = sticky.observe(1, 20, || true, || true);
+    assert!(sticky.observe_shell(|| true));
+    // The inner shell echoes the line (`inner$ echo B`): the tail no longer looks like a prompt,
+    // but the latch holds and the tail is not even read again.
+    let _ = sticky.observe(1, 21, || true, || true);
+    assert!(sticky.observe_shell(|| panic!("a latched episode is not rescanned")));
+    // The line ends: the latch clears with the episode.
+    let _ = sticky.observe(1, 22, || true, || false);
+    assert!(!sticky.observe_shell(|| panic!("no episode, no scan")));
+    // A credential-style prompt is not latched, and typing after it does not latch it.
+    let _ = sticky.observe(1, 30, || true, || true);
+    assert!(!sticky.observe_shell(|| false));
+    let _ = sticky.observe(1, 31, || true, || true);
+    assert!(!sticky.observe_shell(|| false));
+    // A new block forgets a latch.
+    let _ = sticky.observe(1, 35, || true, || true);
+    assert!(sticky.observe_shell(|| true));
+    let _ = sticky.observe(2, 40, || true, || true);
+    assert!(!sticky.observe_shell(|| false));
+}
+
+#[test]
+fn a_published_shell_prompt_stays_a_shell_prompt_through_the_echo_of_a_line() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh other", "");
+    parse_slice_like_the_event_loop(&mut model, "inner$ ");
+    let read = load_consistent(&model.key_facts_cell(), &model.key_model_cell());
+    assert!(read.snapshot.unterminated_since_gen.is_some());
+    assert!(read.snapshot.unterminated_is_shell, "a shell's prompt");
+    parse_slice_like_the_event_loop(&mut model, "echo B");
+    let read = load_consistent(&model.key_facts_cell(), &model.key_model_cell());
+    assert!(read.snapshot.unterminated_since_gen.is_some());
+    assert!(read.snapshot.unterminated_is_shell, "the echo does not unlatch it");
+    parse_slice_like_the_event_loop(&mut model, "\r\nout\r\n");
+    let read = load_consistent(&model.key_facts_cell(), &model.key_model_cell());
+    assert!(!read.snapshot.unterminated_is_shell, "the episode ended");
+    // A credential prompt is never latched.
+    parse_slice_like_the_event_loop(&mut model, "user@host's password: ");
+    let read = load_consistent(&model.key_facts_cell(), &model.key_model_cell());
+    assert!(read.snapshot.unterminated_since_gen.is_some());
+    assert!(!read.snapshot.unterminated_is_shell);
+}

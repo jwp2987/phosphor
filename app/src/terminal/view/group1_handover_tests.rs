@@ -232,6 +232,134 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
     }
 }
 
+/// #1575 (review of bbfe42460): as above, with the inner shell's echo of the line on the grid.
+/// The inner shell's prompt appears while the hand-over drain is yielded after the nested
+/// `ssh other` Enter. The input delivered next (`echo B`) must not split from the held line: it
+/// joins the hold, and the hand-over runs on the next turn, in typed order. The line reaches the
+/// inner shell once and never the editor or a local run. Legacy runs only to prove it does not
+/// panic.
+#[test]
+fn nested_prompt_then_the_inner_echo_still_delivers_the_line_to_the_inner_shell() {
+    for mode in [DestinationMode::Table, DestinationMode::Legacy] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("ssh other", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                view.typed_characters_on_terminal("echo B", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                if mode == DestinationMode::Table {
+                    assert_eq!(view.ssh_held_count(), 4);
+                }
+                view.ssh_remote_prompt_seen = true;
+                first_precmd_processed_for_test(view, ctx);
+                release_ssh_gate_for_test(view);
+                view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            });
+            // The inner prompt becomes visible while the drain is yielded after the `ssh other`
+            // Enter: in a SECOND consecutive update (no await between), so the effects of the
+            // first one (the Enter's ExecuteCommand, which arms the nested connect window) are
+            // applied before the prompt is observed, as in production, and the spawned drain
+            // continuation has not run yet. In one update the prompt was observed before the
+            // nested window existed and nothing observed it afterwards.
+            terminal.update(&mut app, |view, ctx| {
+                // The nested ssh starts running (its preexec), as in production: the inner
+                // shell's prompt is output of that running block, which is what opens the
+                // window's "a prompt is up" reading. Without a running block the text landed
+                // outside any command's output and the window never saw a prompt.
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh other", "");
+                view.model.lock().process_bytes("inner$ ");
+                view.model.lock().publish_key_facts();
+                // The inner shell echoes the line it was handed: the tail is `inner$ echo B`,
+                // no longer a prompt-shaped line, yet the episode is still the shell's prompt
+                // (the latch is published by the reader, not read from the grid at the decision).
+                view.model.lock().process_bytes("echo B");
+                // The pty reader publishes the key facts after each parse (as the sibling
+                // `ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys`).
+                view.model.lock().publish_key_facts();
+                // The output wakeup the parse ends with: it observes the prompt AND judges the
+                // held line (`deliver_ssh_typeahead_if_ready("output")`), as in production. Only
+                // observing left the hand-over with no event to run on.
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            });
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            if mode != DestinationMode::Table {
+                return;
+            }
+            terminal.read(&app, |view, ctx| {
+                let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+                if writes.matches("echo B").count() != 1 {
+                    // Tell a dropped line from one still queued (a stuck hand-over).
+                    let queued: Vec<String> = view
+                        .paste_queue
+                        .queue
+                        .peek()
+                        .entries()
+                        .filter_map(|entry| match &entry.kind {
+                            input_queue::EntryKind::Text(text) => Some(text.clone()),
+                            input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+                    let still_queued = queued.iter().any(|text| text.contains("echo B"));
+                    let in_editor = buffer.contains("echo B");
+                    let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
+                    let verdict = if still_queued {
+                        "STILL QUEUED (the hand-over never ran: nothing observed the inner prompt \
+                         after the nested window was armed)"
+                    } else if in_editor || ran_locally {
+                        "WENT TO THE WRONG DESTINATION (editor / local run)"
+                    } else {
+                        "DROPPED: not queued, not written, not in the editor (possible #1575 \
+                         product bug: table row H4 StaleBeforePrompt dropping a queued Held line \
+                         after reset_ssh_typeahead)"
+                    };
+                    panic!(
+                        "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \
+                         queued={queued:?} editor={buffer:?} executed={:?} holding={}",
+                        writes.matches("echo B").count(),
+                        executed.borrow(),
+                        view.ssh_typeahead_holding
+                    );
+                }
+                assert_eq!(writes.matches("echo B").count(), 1, "{writes:?}");
+                let at = writes.find("echo B").unwrap_or(0);
+                assert!(writes[at..].contains('\r'), "{writes:?}");
+                assert!(
+                    !view.input.as_ref(ctx).buffer_text(ctx).contains("echo B"),
+                    "the editor took the line"
+                );
+                assert!(
+                    !executed.borrow().iter().any(|c| c.contains("echo B")),
+                    "{:?}",
+                    executed.borrow()
+                );
+                assert!(!view.ssh_typeahead_holding);
+            });
+        })
+    }
+}
+
 /// #1578: the ssh gate vanished behind the view's back and an UNRELATED op waits in the mailbox.
 /// The next held key must re-open a gate (not be offered to a gateless queue and delivered at
 /// once, mid-connect).

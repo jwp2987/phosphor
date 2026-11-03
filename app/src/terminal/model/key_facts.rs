@@ -243,6 +243,12 @@ pub struct KeyModelSnapshot {
     /// it was typed blind. Exact for the last `OUTPUT_TAIL_ROWS` rows, like the view's own
     /// `active_output_ends_in_unterminated_text`.
     pub unterminated_since_gen: Option<u64>,
+    /// While `unterminated_since_gen` is `Some`: the unterminated line LOOKED like a shell's own
+    /// prompt (not a credential-style one) when the episode began, and stays so until it ends,
+    /// whatever is typed after it (the inner shell's echo of a delivered line, `inner$ echo B`,
+    /// must not turn it into "not a prompt"). Latched by the pty reader at publish, read without
+    /// the model's lock by row H4's shell-prompt exemption (#1575).
+    pub unterminated_is_shell: bool,
 }
 
 /// The terminal modes `KeystrokeWithDetails::to_escape_sequence` asks about (application cursor
@@ -322,6 +328,8 @@ pub struct StickyOutput {
     visible_seen: bool,
     unterminated: bool,
     unterminated_since: u64,
+    /// Latched for the unterminated episode (see [`KeyModelSnapshot::unterminated_is_shell`]).
+    unterminated_is_shell: bool,
 }
 
 impl StickyOutput {
@@ -348,15 +356,60 @@ impl StickyOutput {
             if !self.unterminated {
                 self.unterminated = true;
                 self.unterminated_since = facts_gen;
+                self.unterminated_is_shell = false;
             }
         } else {
             self.unterminated = false;
+            self.unterminated_is_shell = false;
         }
         (
             self.visible_seen,
             self.unterminated.then_some(self.unterminated_since),
         )
     }
+}
+
+impl StickyOutput {
+    /// Latches "the unterminated line is a shell's prompt" for the open episode: `scan` (the tail
+    /// test) runs only while an episode is open and the latch is not set. Call after `observe`.
+    fn observe_shell(&mut self, scan: impl FnOnce() -> bool) -> bool {
+        if self.unterminated && !self.unterminated_is_shell {
+            self.unterminated_is_shell = scan();
+        }
+        self.unterminated && self.unterminated_is_shell
+    }
+}
+
+/// Whether the last line of `output` reads as a prompt for the user's input (#1032): a question
+/// or a request ending in `:` / `?`, a `[y/n]` choice, or one that names a secret. The shell's
+/// own `$ ` / `% ` prompt is deliberately not one. Callers check that the line is unterminated.
+pub fn output_tail_is_input_prompt(output: &str) -> bool {
+    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
+        return false;
+    };
+    let line = line.trim_end();
+    if !output_has_visible_text(line) {
+        return false;
+    }
+    let lower = line.to_lowercase();
+    line.ends_with(':')
+        || line.ends_with('?')
+        || lower.ends_with("[y/n]")
+        || lower.ends_with("(y/n)")
+        || ["password", "passphrase", "passcode", "secret"]
+            .iter()
+            .any(|word| lower.contains(word))
+}
+
+/// Whether the last line of `output` has the shape of a shell's own prompt: it ends in `$`, `#`,
+/// `%`, `>` or the chevron `❯` (after the prompt's trailing space). Callers check that the line is
+/// unterminated and not a credential-style prompt (`output_tail_is_input_prompt`) (#1561).
+pub fn output_tail_is_shell_prompt(output: &str) -> bool {
+    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
+        return false;
+    };
+    let line = line.trim_end();
+    output_has_visible_text(line) && line.ends_with(['$', '#', '%', '>', '\u{276f}'])
 }
 
 /// The cheap model facts behind "is the input box visible", so the key path can answer it from
@@ -427,6 +480,12 @@ impl KeyModelSnapshot {
                     )
             },
         );
+        let unterminated_is_shell = model.sticky_output().lock().observe_shell(|| {
+            let tail = active_block
+                .output_grid()
+                .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
+            output_tail_is_shell_prompt(&tail) && !output_tail_is_input_prompt(&tail)
+        });
         Self {
             read_only: model.is_read_only(),
             shared_session_executor: model.shared_session_status().is_executor(),
@@ -462,6 +521,7 @@ impl KeyModelSnapshot {
             needs_bracketed_paste: model.needs_bracketed_paste_shared(),
             visible_text_seen,
             unterminated_since_gen,
+            unterminated_is_shell,
         }
     }
 
