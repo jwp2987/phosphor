@@ -2870,6 +2870,7 @@ impl AISettings {
         *self.is_any_ai_enabled
     }
 
+    #[cfg(test)]
     pub fn is_orchestration_enabled(&self, app: &AppContext) -> bool {
         self.is_any_ai_enabled(app)
     }
@@ -3028,8 +3029,26 @@ impl AISettings {
         false
     }
 
+    /// Whether any completed cycle still has its quota banner undismissed. False for the empty
+    /// history of a user with no quota data, and once every completed cycle has been dismissed.
+    pub fn quota_banner_needs_dismissal(&self) -> bool {
+        let now = Utc::now();
+        self.ai_request_quota_info
+            .cycle_history
+            .iter()
+            .any(|cycle| cycle.end_date < now && !cycle.banner_state.dismissed)
+    }
+
     /// Marks the banner as dismissed for all completed cycles.
+    ///
+    /// A no-op when no completed cycle needs it (#1203): Enter calls this on every submit, and
+    /// the write below reads the stored value back from the preferences backend (a file, or the
+    /// OS keychain for a private setting) on the UI thread, ahead of the pty write. On a busy disk
+    /// or a slow keyring that read took 0.2-5.7 s per Enter.
     pub fn mark_quota_banner_as_dismissed(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.quota_banner_needs_dismissal() {
+            return;
+        }
         let mut cycle_history = self.ai_request_quota_info.cycle_history.clone();
 
         for cycle in cycle_history.iter_mut() {
@@ -3466,10 +3485,6 @@ impl AISettings {
         }
     }
 
-    /// Returns whether at least one CLI agent installation scan has completed.
-    pub fn is_cli_agent_scan_completed(&self) -> bool {
-        *self.cli_agent_scan_completed.value()
-    }
 }
 
 /// Singleton model that caches compiled regexes for the `cli_agent_footer_enabled_commands`
@@ -3526,6 +3541,17 @@ impl Entity for CompiledCommandsForCodingAgentToolbar {
 }
 
 impl SingletonEntity for CompiledCommandsForCodingAgentToolbar {}
+
+/// `entered_agent_mode_num_times` only gates the voice-input new-feature popup, which compares it
+/// against a small threshold. Counting past this cap changes no reader's outcome, so the counter
+/// stops here: each increment is a persisted write plus an `AISettings` change event that
+/// re-renders every settings view, which cost a main-thread burst on each autodetect flip to AI.
+pub const ENTERED_AGENT_MODE_COUNT_CAP: usize = 5;
+
+/// Whether entering agent mode once more still changes the stored counter.
+pub fn should_count_agent_mode_entry(current: usize) -> bool {
+    current < ENTERED_AGENT_MODE_COUNT_CAP
+}
 
 #[cfg(test)]
 #[path = "ai_tests.rs"]

@@ -2,7 +2,7 @@ use warpui::{async_assert_eq, integration::AssertionCallback};
 
 pub fn assert_clipboard_contains_string(string: String) -> AssertionCallback {
     Box::new(move |app, _window_id| {
-        let clipboard = app.update(|ctx| ctx.clipboard().read());
+        let clipboard = app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()));
         let content = match clipboard.paths {
             Some(paths) => paths.join(" "),
             None => clipboard.plain_text,

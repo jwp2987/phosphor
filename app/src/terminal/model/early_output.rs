@@ -109,6 +109,13 @@ impl EarlyOutput {
         self.mode = mode;
     }
 
+    /// Stores `text` as the shell's reported line, as a report would, without sending the
+    /// `Typeahead` event: a view test then hands it to the view itself.
+    #[cfg(test)]
+    pub(crate) fn set_reported_typeahead_for_test(&mut self, text: &str) {
+        self.typeahead.push_str(text);
+    }
+
     /// Returns a reference to the current typeahead.
     pub fn typeahead(&self) -> &str {
         &self.typeahead

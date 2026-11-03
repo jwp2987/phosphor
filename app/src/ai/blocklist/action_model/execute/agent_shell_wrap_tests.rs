@@ -48,6 +48,27 @@ fn posix_group_runs_in_the_current_shell_and_restores() {
 }
 
 #[test]
+fn guard_save_forks_only_when_the_user_has_an_exit_or_logout_function() {
+    // #1283: every command substitution is a fork before the agent's command starts; the saved
+    // text is only needed when there is a function to save, which `typeset -f` answers in-process.
+    for shell in POSIX {
+        let wrapped = wrap_command(Some(shell), "echo hi");
+        for (name, var) in [("exit", "__phosphor_ap_gx"), ("logout", "__phosphor_ap_gl")] {
+            let subst = format!("$(typeset -f {name} 2>/dev/null)");
+            let at = wrapped
+                .find(&subst)
+                .unwrap_or_else(|| panic!("{shell:?}: no save of {name}: {wrapped}"));
+            let test = format!("if typeset -f {name} >/dev/null 2>&1; then {var}=");
+            assert!(
+                wrapped[..at].ends_with(&test),
+                "{shell:?}: the {name} save is not behind its test: {wrapped}"
+            );
+        }
+        assert_eq!(wrapped.matches("$(").count(), 2, "{shell:?}: {wrapped}");
+    }
+}
+
+#[test]
 fn every_pager_variable_is_saved_and_restored() {
     for var in PAGER_VARS {
         assert!(posix_restore().contains(var), "{var}");
@@ -1035,7 +1056,6 @@ fn bootstrap_and_builtin_pwsh_commands_are_module_qualified() {
 
 mod real_shells {
     use super::*;
-    use std::io::Read as _;
     use std::process::{Command, ExitStatus, Stdio};
     use std::sync::{Arc, Mutex, OnceLock, mpsc};
     use std::time::{Duration, Instant};

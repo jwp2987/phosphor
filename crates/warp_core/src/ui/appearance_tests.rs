@@ -239,16 +239,17 @@ fn test_per_window_theme_override_resolution() {
     // Fast path: with no overrides, the ambient window is irrelevant and the
     // global theme/ui_builder is always returned.
     set_current_render_window(Some(window_a));
-    assert!(std::ptr::eq(appearance.theme(), &appearance.theme));
+    assert!(std::ptr::eq(appearance.theme(), &*appearance.theme));
     assert!(std::ptr::eq(appearance.ui_builder(), &appearance.ui_builder));
     set_current_render_window(None);
 
     // Insert an override for window A directly (bypassing `ModelContext`, which
     // the unit-test harness doesn't provide). A distinct instance differs by
     // address from the global theme even though the values are equal.
-    appearance
-        .theme_overrides
-        .insert(window_a, appearance.theme.clone());
+    appearance.theme_overrides.insert(
+        window_a,
+        std::sync::Arc::new(WarpTheme::clone(&appearance.theme)),
+    );
     let override_ui_builder = appearance.ui_builder.clone();
     appearance
         .ui_builder_overrides
@@ -258,7 +259,7 @@ fn test_per_window_theme_override_resolution() {
     set_current_render_window(Some(window_a));
     assert!(std::ptr::eq(
         appearance.theme(),
-        appearance.theme_overrides.get(&window_a).unwrap()
+        &**appearance.theme_overrides.get(&window_a).unwrap()
     ));
     assert!(std::ptr::eq(
         appearance.ui_builder(),
@@ -267,21 +268,32 @@ fn test_per_window_theme_override_resolution() {
 
     // Ambient == B (no override) → the global theme is returned.
     set_current_render_window(Some(window_b));
-    assert!(std::ptr::eq(appearance.theme(), &appearance.theme));
+    assert!(std::ptr::eq(appearance.theme(), &*appearance.theme));
     assert!(std::ptr::eq(appearance.ui_builder(), &appearance.ui_builder));
 
     // Ambient == None (e.g. non-render reads) → the global theme is returned.
     set_current_render_window(None);
     assert_eq!(current_render_window(), None);
-    assert!(std::ptr::eq(appearance.theme(), &appearance.theme));
+    assert!(std::ptr::eq(appearance.theme(), &*appearance.theme));
 
     // Clearing the override returns to the fast path.
     appearance.theme_overrides.remove(&window_a);
     appearance.ui_builder_overrides.remove(&window_a);
     set_current_render_window(Some(window_a));
-    assert!(std::ptr::eq(appearance.theme(), &appearance.theme));
+    assert!(std::ptr::eq(appearance.theme(), &*appearance.theme));
 
     // Reset the thread-local ambient so it doesn't leak into other tests sharing
     // this test thread.
     set_current_render_window(None);
+}
+
+/// `shared_theme` hands out the same allocation as `theme()` rather than a copy, so per-frame
+/// consumers can hold the theme without cloning it (#1177).
+#[test]
+fn test_shared_theme_is_the_same_allocation_as_theme() {
+    let appearance = mock_appearance();
+    let shared = appearance.shared_theme();
+    assert!(std::ptr::eq(&*shared, appearance.theme()));
+    // Handing it out twice shares one allocation.
+    assert!(std::sync::Arc::ptr_eq(&shared, &appearance.shared_theme()));
 }

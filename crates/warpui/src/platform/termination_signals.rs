@@ -123,13 +123,10 @@ pub(crate) trait ShutdownHooks {
     fn arm_deadline(&self, deadline: Duration, exit_code: i32);
     /// Exits the process immediately.
     fn exit(&self, exit_code: i32);
-    /// Remembers that `signal` started the shutdown, for the latch-reading
-    /// [`exit_after_signal_shutdown`]. Kept as a fallback entry point: winit,
-    /// macOS, and the headless loop now all track their own request's
-    /// attribution instead and call [`exit_after_signal_shutdown_for`] directly
-    /// (jwp2987/phosphor#726, jwp2987/phosphor#791), so no current caller actually
-    /// reads this latch, but a future main-loop variant that cannot yet
-    /// distinguish its own request's signal still can.
+    /// Remembers that `signal` started the shutdown. winit, macOS, and the headless
+    /// loop track their own request's attribution and call
+    /// [`exit_after_signal_shutdown_for`] directly (jwp2987/phosphor#726,
+    /// jwp2987/phosphor#791); the latch-reading variant was removed as dead code.
     fn record_initiating_signal(&self, signal: i32);
 }
 
@@ -473,9 +470,12 @@ pub(crate) fn run_deadline_watchdog(
     exit: impl FnOnce(i32),
 ) {
     sleep(deadline);
+    // The step still running is what a truncated flush hangs on: name it (the quit path
+    // records each step in `shutdown_progress`).
     log::error!(
-        "Graceful shutdown did not finish within {}s; exiting",
-        deadline.as_secs()
+        "Graceful shutdown did not finish within {}s; exiting while step `{}` was still running",
+        deadline.as_secs(),
+        super::shutdown_progress::current_step()
     );
     exit(exit_code);
 }
@@ -539,44 +539,11 @@ pub(crate) fn final_exit(initiating_signal: Option<i32>) -> FinalExit {
     }
 }
 
-fn initiating_signal() -> Option<i32> {
-    match INITIATING_SIGNAL.load(Ordering::Acquire) {
-        0 => None,
-        signal => Some(signal),
-    }
-}
-
-/// If a termination signal started this shutdown, ends the process the way that
-/// signal would have (default disposition, re-raised) now that `app_will_terminate`
-/// has finished; otherwise returns so the caller exits as usual.
-///
-/// Consults [`INITIATING_SIGNAL`], which [`ProcessHooks::record_initiating_signal`]
-/// sets the moment *any* termination signal is first received -- regardless of
-/// whether that signal is what actually ends up driving the app to quit. A caller
-/// that can end up here for a reason other than that specific signal (a key
-/// binding, menu, or TUI exit action's quit can race a concurrent SIGTERM/SIGHUP
-/// and still reach the same exit path) must not use this global-state version, or
-/// it will re-raise a signal that had nothing to do with its own quit
-/// (jwp2987/phosphor#726). Such callers should track their own request's signal,
-/// if any, and call [`exit_after_signal_shutdown_for`] with it instead -- as
-/// winit, macOS, and the headless loop all now do (jwp2987/phosphor#791), which
-/// is why nothing in this crate currently calls this latch-reading version; it
-/// is kept as a fallback entry point for a future main-loop variant that cannot
-/// yet distinguish its own request's signal (jwp2987/phosphor#717 has the
-/// headless-loop-specific reason a caller can't always call this immediately
-/// after `app_will_terminate`: it has to return control to its caller to
-/// restore the terminal first).
-// Kept as a documented fallback entry point even though nothing in this crate
-// currently calls it (see the doc comment above) -- every actual caller has been
-// scoped to `exit_after_signal_shutdown_for` (jwp2987/phosphor#791).
-#[allow(dead_code)]
-pub(crate) fn exit_after_signal_shutdown() {
-    exit_after_signal_shutdown_for(initiating_signal());
-}
-
-/// [`exit_after_signal_shutdown`], but told explicitly which signal (if any) is
-/// responsible for the quit that just finished, instead of reading the process-wide
-/// [`INITIATING_SIGNAL`] latch. Use this whenever the caller can distinguish "this
+/// Ends the process the way a termination signal would have (default disposition,
+/// re-raised) now that `app_will_terminate` has finished, if one is responsible for the
+/// quit; otherwise returns so the caller exits as usual. The caller says explicitly which
+/// signal (if any) is responsible for the quit that just finished, rather than this
+/// reading the process-wide [`INITIATING_SIGNAL`] latch. Use this whenever the caller can distinguish "this
 /// exact quit was that signal's" from "some signal was received at some point" --
 /// the latch alone conflates the two (jwp2987/phosphor#726).
 pub(crate) fn exit_after_signal_shutdown_for(initiating_signal: Option<i32>) {

@@ -38,10 +38,6 @@ impl CloseReason {
     pub fn is_manual_dismissal(&self) -> bool {
         matches!(self, Self::ManualDismissal)
     }
-
-    pub fn is_no_results(&self) -> bool {
-        matches!(self, Self::NoResults)
-    }
 }
 
 /// Events emitted by the slash commands menu
@@ -256,6 +252,24 @@ impl InlineSlashCommandView {
     pub fn accept_selected_item(&self, cmd_or_ctrl_enter: bool, ctx: &mut ViewContext<Self>) {
         self.menu_view
             .update(ctx, |v, ctx| v.accept_selected_item(cmd_or_ctrl_enter, ctx));
+    }
+
+    /// True when the open menu lists results for exactly the text now in the buffer, so Enter
+    /// has a current, selectable row to accept. False while results are for older text (Enter
+    /// raced the last keystroke's edit), still loading, or empty (#1459).
+    pub fn answers_current_buffer(&self, app: &AppContext) -> bool {
+        let Some(filter) = self
+            .input_buffer_model
+            .as_ref(app)
+            .current_value()
+            .strip_prefix('/')
+        else {
+            return false;
+        };
+        let mixer = self.mixer.as_ref(app);
+        mixer.current_query().is_some_and(|q| q.text == filter)
+            && !mixer.is_loading()
+            && !mixer.are_results_empty()
     }
 
     pub fn result_count(&self, app: &AppContext) -> usize {

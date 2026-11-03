@@ -62,7 +62,7 @@ pub struct GetRelevantFilesArgs {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct GetRelevantFilesOutput {
     pub query: String,
-    /// `"ok"` | `"no_context"` | `"no_matches"`.
+    /// `"ok"` | `"no_context"` | `"no_matches"` | `"error"`.
     pub status: String,
     /// Number of candidate files the filter chose from (the search-space size).
     pub total_candidates: usize,
@@ -77,6 +77,20 @@ pub struct GetRelevantFilesOutput {
     /// embedding index went unqueried for so long.
     #[serde(default)]
     pub sources: Vec<String>,
+    /// Why the outline filter could not answer (a model-call failure or timeout). Set with
+    /// status `"error"` when nothing else answered, so it cannot be read as `"no_matches"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// `"truncated: N of M"` when the candidate list was cut to fit the one-shot prompt,
+    /// so only N of the M candidate files were considered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<String>,
+}
+
+/// The `truncated` note for a prompt that showed `shown` of `total` candidate files, or
+/// `None` when everything fit.
+pub fn truncation_note(shown: usize, total: usize) -> Option<String> {
+    (shown < total).then(|| format!("truncated: {shown} of {total}"))
 }
 
 /// The name [`GetRelevantFilesOutput::sources`] uses for the embedding index.
@@ -162,23 +176,37 @@ pub async fn run_get_relevant_files(
             total_candidates,
             relevant_files: Vec::new(),
             sources: Vec::new(),
+            error: None,
+            truncated: None,
         };
     }
 
-    let relevant =
-        relevant_files::run_with_context(&snapshot.prepared, &query, &snapshot.candidates).await;
-
-    let status = if relevant.is_empty() {
-        "no_matches"
-    } else {
-        "ok"
-    };
-    GetRelevantFilesOutput {
-        query,
-        status: status.to_owned(),
-        total_candidates,
-        relevant_files: relevant,
-        sources: vec![SOURCE_REPO_OUTLINE.to_owned()],
+    match relevant_files::run_with_context(&snapshot.prepared, &query, &snapshot.candidates).await {
+        Ok(run) => {
+            let status = if run.files.is_empty() {
+                "no_matches"
+            } else {
+                "ok"
+            };
+            GetRelevantFilesOutput {
+                query,
+                status: status.to_owned(),
+                total_candidates,
+                relevant_files: run.files,
+                sources: vec![SOURCE_REPO_OUTLINE.to_owned()],
+                error: None,
+                truncated: truncation_note(run.shown, run.total),
+            }
+        }
+        Err(message) => GetRelevantFilesOutput {
+            query,
+            status: "error".to_owned(),
+            total_candidates,
+            relevant_files: Vec::new(),
+            sources: Vec::new(),
+            error: Some(message),
+            truncated: None,
+        },
     }
 }
 
@@ -214,6 +242,8 @@ pub async fn run_get_relevant_files_merged(
             total_candidates: snapshot.map_or(0, |s| s.candidates.len()),
             relevant_files: Vec::new(),
             sources: Vec::new(),
+            error: None,
+            truncated: None,
         };
     }
 
@@ -222,6 +252,8 @@ pub async fn run_get_relevant_files_merged(
     let mut embedding_failure = None;
     let mut merged: Vec<String> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
+    let mut outline_error: Option<String> = None;
+    let mut truncated: Option<String> = None;
 
     if let Some(handle) = retrieval {
         match handle.retrieve(&query).await {
@@ -245,13 +277,19 @@ pub async fn run_get_relevant_files_merged(
     if let Some(snapshot) = snapshot {
         let outline = run_get_relevant_files(args, snapshot).await;
         merged = merge_preserving_rank(merged, &outline.relevant_files);
-        if outline.status != "no_context" {
+        if outline.status != "no_context" && outline.status != "error" {
             sources.push(SOURCE_REPO_OUTLINE.to_owned());
         }
+        outline_error = outline.error;
+        truncated = outline.truncated;
     }
 
     let status = if !merged.is_empty() {
         "ok".to_owned()
+    } else if outline_error.is_some() {
+        // The outline filter failed or timed out and nothing else produced files: an empty
+        // list here would be indistinguishable from "no relevant files".
+        "error".to_owned()
     } else if !sources.is_empty() {
         // Something ran and found nothing, which is an answer.
         "no_matches".to_owned()
@@ -268,6 +306,8 @@ pub async fn run_get_relevant_files_merged(
         total_candidates: snapshot.map_or(0, |s| s.candidates.len()),
         relevant_files: merged,
         sources,
+        error: outline_error,
+        truncated,
     }
 }
 
@@ -327,8 +367,8 @@ pub fn error_to_json(e: &anyhow::Error) -> Value {
     })
 }
 
-/// Builds the request-scoped snapshot from the active repository's local `RepoOutlines`
-/// index plus the BYOP one-shot context.
+/// Builds the request-scoped snapshot from the conversation's own repository's local
+/// `RepoOutlines` index (resolved from `session_context`, not the active window; #1276) plus the BYOP one-shot context.
 ///
 /// Returns `None` (the tool then reports a graceful `no_context` status, or is filtered
 /// out of the tools array) when any prerequisite is missing: no BYOP active-AI one-shot
@@ -338,32 +378,26 @@ pub fn error_to_json(e: &anyhow::Error) -> Value {
 /// The active-repo outline lookup is intentionally kept inline here rather than shared
 /// with `codebase_runtime::collect_codebase_symbols` — the two request-snapshot builders
 /// stay decoupled, and the outline handle borrows `app` for only the duration of the call.
-#[cfg(not(target_family = "wasm"))]
 pub fn collect_relevant_files_snapshot(
     app: &warpui::AppContext,
     terminal_view_id: Option<warpui::EntityId>,
+    session_context: &crate::ai::blocklist::SessionContext,
 ) -> Option<RelevantFilesSnapshot> {
-    use std::path::Path;
-
     use repo_metadata::repositories::DetectedRepositories;
     use warpui::SingletonEntity as _;
 
     use crate::ai::outline::{OutlineStatus, RepoOutlines};
-    use crate::workspace::ActiveSession;
 
     // A BYOP active-AI one-shot must be configured, or there's nothing to run the
     // relevance filter with. Resolve it first (cheap) before touching the outline.
     let prepared = relevant_files::prepare_context(app, terminal_view_id)?;
 
-    let git_repo_path = app
-        .windows()
-        .state()
-        .active_window
-        .and_then(|window_id| ActiveSession::as_ref(app).path_if_local(window_id))
-        .and_then(|current_dir| {
-            DetectedRepositories::as_ref(app).get_root_for_path(Path::new(current_dir))
-        })?;
+    let git_repo_path = super::codebase_runtime::local_cwd_for_session(session_context).and_then(
+        |current_dir| DetectedRepositories::as_ref(app).get_root_for_path(&current_dir),
+    )?;
 
+    // Lazy outline: first use in this repo kicks off the build (None until done).
+    RepoOutlines::as_ref(app).request_outline(&git_repo_path);
     let (outline_status, _) = RepoOutlines::as_ref(app).get_outline(&git_repo_path)?;
     let OutlineStatus::Complete(outline) = outline_status else {
         return None;
@@ -393,6 +427,7 @@ pub fn collect_relevant_files_snapshot(
 pub fn collect_relevant_files_snapshot(
     _app: &warpui::AppContext,
     _terminal_view_id: Option<warpui::EntityId>,
+    _session_context: &crate::ai::blocklist::SessionContext,
 ) -> Option<RelevantFilesSnapshot> {
     None
 }

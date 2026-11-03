@@ -1,0 +1,39 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "macos",
+  "seed": "1",
+  "commit": "9625b716",
+  "owner_settings": "sha256 a0613b641a27",
+  "tier": "full",
+  "scale": "1"
+ },
+ "generated": "2026-11-02T23:47:19-0600",
+ "summary": {
+  "pass": 0,
+  "fail": 2,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "launch",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 120,
+   "detail": [
+    "no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)"
+   ]
+  },
+  {
+   "name": "launch",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 120,
+   "detail": [
+    "no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)"
+   ]
+  }
+ ]
+}

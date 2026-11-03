@@ -1,22 +1,24 @@
 use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use serde::{Serialize, Serializer};
 use url::Url;
 use warp_core::channel::ChannelState;
 
-use warpui::{platform::Cursor, ViewContext};
+use warpui::{ViewContext, platform::Cursor};
 
 use crate::{
     send_telemetry_from_ctx,
     server::telemetry::{LinkOpenMethod, TelemetryEvent},
     terminal::{
+        TerminalModel,
         model::{
-            grid::grid_handler::Link,
+            RespectObfuscatedSecrets,
+            grid::grid_handler::{ContentGeneration, Link},
             index::Point,
             terminal_model::{WithinBlock, WithinModel},
-            RespectObfuscatedSecrets,
         },
-        TerminalModel,
     },
     uri::link_policy::is_openable_url_scheme,
 };
@@ -38,6 +40,26 @@ cfg_if::cfg_if! {
 }
 
 use super::{FindLinkArg, TerminalEditor};
+
+/// An in-flight hover scan for file-path links (see `compute_valid_paths`).
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+pub(super) struct FileLinkScan {
+    abort: futures::future::AbortHandle,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl FileLinkScan {
+    pub(super) fn new(abort: futures::future::AbortHandle, cancelled: Arc<AtomicBool>) -> Self {
+        Self { abort, cancelled }
+    }
+
+    /// Aborts the async wrapper (so `handle_file_link_completed` never runs for a
+    /// superseded hover) and asks a blocking scan already in progress to stop.
+    pub(super) fn cancel(&self) {
+        self.cancelled.store(true, AtomicOrdering::Relaxed);
+        self.abort.abort();
+    }
+}
 
 // "a/" and "b/" are prefixes specific to Git Diff
 #[cfg(feature = "local_fs")]
@@ -151,7 +173,7 @@ impl GridHighlightedLink {
                 if file_link
                     .get_inner()
                     .absolute_path()
-                    .map(|path| path.is_dir())
+                    .map(|path| crate::util::path_probe::is_dir_cached(&path))
                     .unwrap_or(false) =>
             {
                 crate::t!("common-open-folder")
@@ -235,6 +257,12 @@ pub struct HighlightedLinkOption {
     inner: Option<GridHighlightedLink>,
     /// True if the underlying content has changed such that the link may no longer be valid.
     invalidated: bool,
+    /// The alt-screen position and grid content generation of the last completed hover scan.
+    /// The alt screen re-sends its (synthetic) mouse position every frame, so a parked mouse over
+    /// unchanged content would otherwise redo the model-locking link scan on every frame. Cleared
+    /// whenever the highlight is taken, so a hover that was dropped (selection, window blur) is
+    /// re-evaluated.
+    last_scan: Option<(WithinModel<Point>, ContentGeneration)>,
 }
 
 #[derive(Clone, Debug)]
@@ -252,7 +280,9 @@ impl RichContentLink {
     pub fn tooltip_text(&self) -> String {
         match &self {
             #[cfg(feature = "local_fs")]
-            RichContentLink::FilePath { absolute_path, .. } if absolute_path.is_dir() => {
+            RichContentLink::FilePath { absolute_path, .. }
+                if crate::util::path_probe::is_dir_cached(absolute_path) =>
+            {
                 crate::t!("common-open-folder")
             }
             #[cfg(feature = "local_fs")]
@@ -459,7 +489,22 @@ impl HighlightedLinkOption {
         model.block_list_mut().clear_smart_select_override();
         model.alt_screen_mut().clear_smart_select_override();
         self.invalidated = false;
+        self.last_scan = None;
         self.inner.take()
+    }
+
+    /// True if a scan already ran for exactly this alt-screen position and grid content, so
+    /// running it again cannot find anything new.
+    pub fn scan_is_current(
+        &self,
+        position: &WithinModel<Point>,
+        generation: ContentGeneration,
+    ) -> bool {
+        !self.invalidated && self.last_scan == Some((*position, generation))
+    }
+
+    pub fn record_scan(&mut self, position: WithinModel<Point>, generation: ContentGeneration) {
+        self.last_scan = Some((position, generation));
     }
 
     pub fn invalidate(&mut self) {
@@ -521,9 +566,30 @@ impl super::TerminalView {
             }
         }
 
+        // The alt screen re-sends the parked mouse position every frame. If neither the position
+        // nor the grid content changed since the last completed scan, there is nothing new to
+        // find; skip the repeated model locks and url/boundary scans. Any content change bumps the
+        // generation, so a link that newly appears under a parked mouse is still detected.
+        let scan_generation = match position {
+            WithinModel::AltScreen(_) => Some(
+                self.model
+                    .lock()
+                    .alt_screen()
+                    .grid_handler()
+                    .content_generation(),
+            ),
+            WithinModel::BlockList(_) => None,
+        };
+        if let Some(generation) = scan_generation {
+            if self.highlighted_link.scan_is_current(position, generation) {
+                return;
+            }
+        }
+
         // Updating the cursor shape repeatedly can cause flashing, so we only set it once, and only
         // when necessary.
         let mut new_cursor_shape = None;
+        let mut scan_dropped = false;
 
         // If a link is highlighted and it's invalidated or we're not hovering it, remove that
         // hover and look for a new one.
@@ -577,17 +643,23 @@ impl super::TerminalView {
             {
                 // Use try_send to return an error directly when the channel is full
                 // instead of blocking main thread.
-                let _ = self.find_link_tx.try_send(FindLinkArg {
-                    position: *position,
-                    from_editor,
-                });
+                scan_dropped |= self
+                    .find_link_tx
+                    .try_send(FindLinkArg {
+                        position: *position,
+                        from_editor,
+                    })
+                    .is_err();
             }
             // If there's no last hover fragment boundary, we scan for links.
             (_, _, None) => {
-                let _ = self.find_link_tx.try_send(FindLinkArg {
-                    position: *position,
-                    from_editor,
-                });
+                scan_dropped |= self
+                    .find_link_tx
+                    .try_send(FindLinkArg {
+                        position: *position,
+                        from_editor,
+                    })
+                    .is_err();
             }
             _ => (),
         };
@@ -598,6 +670,11 @@ impl super::TerminalView {
         }
 
         self.last_hover_fragment_boundary = Some(new_fragment_boundary);
+
+        // A dropped async scan request must be retried by the next frame, so don't record it.
+        if let (Some(generation), false) = (scan_generation, scan_dropped) {
+            self.highlighted_link.record_scan(*position, generation);
+        }
     }
 
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
@@ -710,7 +787,7 @@ impl super::TerminalView {
     /// Always returns `false` when `local_tty` is disabled / on wasm / the
     /// `SshRemoteServer` feature flag is off — i.e. local behavior stays completely
     /// unchanged.
-    fn session_is_remote(
+    pub(super) fn session_is_remote(
         &self,
         session_id: Option<crate::terminal::model::session::SessionId>,
         ctx: &warpui::AppContext,
@@ -922,30 +999,36 @@ impl super::TerminalView {
                     .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
                     .and_then(|session| session.launch_data().cloned());
 
-                // Using the thread builder instead of ctx.spawn here so that the previous
-                // scanning job will be dropped once there is a new scanning job created.
-                let (tx, rx) = futures::channel::oneshot::channel();
-                self.file_link_scanning_join_handle = std::thread::Builder::new()
-                    .name("Compute file paths".into())
-                    .spawn(move || {
-                        let paths = Self::compute_valid_paths(
-                            &path,
-                            possible_paths,
-                            max_columns,
-                            shell_launch_data,
-                            validation_ctx,
-                        );
-                        let _ = tx.send(paths);
-                    })
-                    .map_err(|e| {
-                        log::error!("Unable to spawn thread {e:?}");
-                    })
-                    .ok();
-
-                let _ = ctx.spawn(
-                    async move { rx.await.ok().flatten() },
+                // A new hover aborts the previous scan: the async wrapper is dropped
+                // and `cancelled` tells an already-running blocking stat loop to stop
+                // at the next candidate. The loop itself runs on tokio's reusable
+                // blocking pool instead of a freshly spawned OS thread per hover.
+                if let Some(previous) = self.file_link_scanning_join_handle.take() {
+                    previous.cancel();
+                }
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let cancelled_for_scan = cancelled.clone();
+                let spawned = ctx.spawn(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let possible_paths = possible_paths
+                                .take_while(|_| !cancelled_for_scan.load(AtomicOrdering::Relaxed));
+                            Self::compute_valid_paths(
+                                &path,
+                                possible_paths,
+                                max_columns,
+                                shell_launch_data,
+                                validation_ctx,
+                            )
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    },
                     Self::handle_file_link_completed,
                 );
+                self.file_link_scanning_join_handle =
+                    Some(FileLinkScan::new(spawned.abort_handle(), cancelled));
             }
             _ if self.highlighted_link.take(&mut self.model.lock()).is_some() => {
                 ctx.reset_cursor();
@@ -1131,6 +1214,73 @@ impl super::TerminalView {
     }
 }
 
+/// Right-click menu entries for the path / URL under the pointer in the alt screen (#1347):
+/// Open, Show in Finder / containing folder, Copy path (Copy URL for links). Pure so it can be
+/// unit-tested; the reveal entry is omitted for remote sessions, where the path names a file on
+/// another machine and revealing it locally would show the wrong filesystem.
+pub(super) fn alt_screen_link_menu_items(
+    link: &GridHighlightedLink,
+    url_content: Option<String>,
+    session_is_remote: bool,
+) -> Vec<crate::menu::MenuItem<super::TerminalAction>> {
+    use crate::menu::MenuItemFields;
+
+    use super::{ContextMenuAction, TerminalAction};
+
+    let copy = |label: String, content: String| {
+        MenuItemFields::new(label)
+            .with_on_select_action(TerminalAction::ContextMenu(ContextMenuAction::CopyUrl {
+                url_content: content,
+            }))
+            .into_item()
+    };
+    match link {
+        #[cfg(feature = "local_fs")]
+        GridHighlightedLink::File(file_link) => {
+            let Some(path) = file_link.get_inner().absolute_path() else {
+                return Vec::new();
+            };
+            let mut items = vec![
+                MenuItemFields::new(crate::t!("common-open"))
+                    .with_on_select_action(TerminalAction::OpenGridLink(link.clone()))
+                    .into_item(),
+            ];
+            if !session_is_remote {
+                let label = if cfg!(target_os = "macos") {
+                    crate::t!("menu-block-show-in-finder")
+                } else {
+                    crate::t!("menu-block-show-containing-folder")
+                };
+                items.push(
+                    MenuItemFields::new(label)
+                        .with_on_select_action(TerminalAction::ShowInFileExplorer(path.clone()))
+                        .into_item(),
+                );
+            }
+            items.push(copy(
+                crate::t!("menu-block-copy-path"),
+                path.to_string_lossy().into_owned(),
+            ));
+            items
+        }
+        GridHighlightedLink::Url(_) => {
+            let mut items = vec![
+                MenuItemFields::new(crate::t!("common-open-link"))
+                    .with_on_select_action(TerminalAction::OpenGridLink(link.clone()))
+                    .into_item(),
+            ];
+            items.extend(url_content.map(|url| copy(crate::t!("menu-block-copy-url"), url)));
+            items
+        }
+        GridHighlightedLink::Hyperlink { uri, .. } => vec![
+            MenuItemFields::new(crate::t!("common-open-link"))
+                .with_on_select_action(TerminalAction::OpenGridLink(link.clone()))
+                .into_item(),
+            copy(crate::t!("menu-block-copy-url"), uri.clone()),
+        ],
+    }
+}
+
 #[cfg(all(test, feature = "local_fs"))]
 #[path = "link_detection_tests.rs"]
 mod tests;
@@ -1284,5 +1434,46 @@ mod scheme_policy_tests {
         assert!(!BlockedTerminalLink::NotAUrl.toast_text().is_empty());
         let blocked_scheme = BlockedTerminalLink::DisallowedScheme("file".to_owned());
         assert!(!blocked_scheme.toast_text().is_empty());
+    }
+}
+
+/// The per-frame hover-scan memo (#1177).
+#[cfg(test)]
+mod scan_memo_tests {
+    use super::HighlightedLinkOption;
+    use crate::terminal::model::{
+        ansi::Handler, grid::grid_handler::GridHandler, index::Point, terminal_model::WithinModel,
+    };
+
+    fn pos(row: usize, col: usize) -> WithinModel<Point> {
+        WithinModel::AltScreen(Point { row, col })
+    }
+
+    #[test]
+    fn scan_is_current_only_for_same_position_and_content() {
+        let mut grid = GridHandler::new_for_test_with_scroll_limit(4, 6, 1000);
+        let mut link = HighlightedLinkOption::default();
+        let before = grid.content_generation();
+
+        // Nothing recorded yet: the first frame must scan.
+        assert!(!link.scan_is_current(&pos(0, 1), before));
+
+        link.record_scan(pos(0, 1), before);
+        assert!(link.scan_is_current(&pos(0, 1), before));
+        // Mouse moved.
+        assert!(!link.scan_is_current(&pos(0, 2), before));
+        // A URL printed under the parked mouse bumps the generation, so it gets re-scanned.
+        grid.input('h');
+        assert!(!link.scan_is_current(&pos(0, 1), grid.content_generation()));
+    }
+
+    #[test]
+    fn invalidation_defeats_the_memo() {
+        let grid = GridHandler::new_for_test_with_scroll_limit(4, 6, 1000);
+        let mut link = HighlightedLinkOption::default();
+        let generation = grid.content_generation();
+        link.record_scan(pos(0, 1), generation);
+        link.invalidate();
+        assert!(!link.scan_is_current(&pos(0, 1), generation));
     }
 }

@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Write;
 use std::mem;
 use std::ptr::NonNull;
 use std::sync::Once;
+use std::time::Instant;
 
 use dispatch2::DispatchData;
 use objc2::rc::Retained;
@@ -33,6 +34,12 @@ use crate::platform::mac::rendering::renderer::Device;
 use crate::platform::mac::window::WindowState;
 use crate::rendering::atlas::{AllocatedRegion, TextureId};
 use crate::rendering::{GlyphCache, GlyphRasterBoundsFn, RasterizeGlyphFn, get_best_dash_gap};
+
+unsafe extern "C" {
+    /// Implemented in `objc/host_view.m`: attaches the pending key press to this frame and
+    /// reports key -> presented latency once the drawable reaches the screen.
+    fn warp_frame_track_drawable(drawable: *mut c_void, wait_ns: u64);
+}
 
 const METAL_LIB_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
 static WRITE_LIB_TO_FILE: Once = Once::new();
@@ -99,7 +106,7 @@ impl<'a> RenderPass<'a> {
             None
         };
 
-        self.drawable.present();
+        warpui_core::profiling::present_frame(|| self.drawable.present());
         captured
     }
 
@@ -562,7 +569,7 @@ impl<'a> Frame<'a> {
             );
         }
 
-        let mut per_rect_uniforms = Vec::new();
+        let mut per_rect_uniforms = Vec::with_capacity(layer.rects.len());
         for rect in &layer.rects {
             let scale_factor = self.scene.scale_factor();
             let bounds = rect.bounds * scale_factor;
@@ -712,8 +719,8 @@ impl<'a> Frame<'a> {
 
         let scale_factor = self.scene.scale_factor();
 
-        let mut texture_to_glyph: HashMap<TextureId, Vec<shader::PerGlyphUniforms>> =
-            HashMap::new();
+        let mut texture_to_glyph: FxHashMap<TextureId, Vec<shader::PerGlyphUniforms>> =
+            FxHashMap::default();
         for glyph in &layer.glyphs {
             let glyph_position = glyph.position * scale_factor;
             let subpixel_alignment = SubpixelAlignment::new(glyph_position);
@@ -1065,9 +1072,25 @@ impl super::super::Renderer for Renderer {
 
         let metal_layer = window.metal_layer();
         let presents_with_transaction = metal_layer.presentsWithTransaction();
-        let drawable = metal_layer
-            .nextDrawable()
-            .expect("CAMetalLayer with allowsNextDrawableTimeout disabled always vends a drawable");
+        let drawable_wait_start = Instant::now();
+        // With `allowsNextDrawableTimeout` enabled this returns nil after ~1s when no drawable
+        // frees up. Skip the frame rather than panic, and ask for another pass (the scene is
+        // still cached, so the retry reuses it) so the window cannot be left showing stale
+        // content. The ~1s block in `nextDrawable` itself paces any repeat.
+        let Some(drawable) = metal_layer.nextDrawable() else {
+            log::warn!(
+                "CAMetalLayer vended no drawable after {:?}; skipping this frame and re-requesting a redraw",
+                drawable_wait_start.elapsed()
+            );
+            window.schedule_redraw();
+            return;
+        };
+        let drawable_wait_ns = drawable_wait_start.elapsed().as_nanos() as u64;
+        // SAFETY: `drawable` is a live CAMetalDrawable (an `id<MTLDrawable>`); the ObjC side only
+        // adds a presented handler to it and does not retain it past the call.
+        unsafe {
+            warp_frame_track_drawable(Retained::as_ptr(&drawable) as *mut c_void, drawable_wait_ns)
+        };
 
         let ctx = &MetalDrawContext {
             device: metal_device,

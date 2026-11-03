@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+# script/check_test_results: guard for the test-results/ archive (script/ci/collect_results.py; docs/testing.md "Test results history").
+# Fails when (1) one run directory exceeds 10 MB, (2) a text file contains something that looks like a secret or an endpoint
+# (script/ci/results_scrub.py: non-loopback IPv4 addresses, tokens, private keys, credentials in URLs, and - on a machine that has
+# them - the values of APPCI_OLLAMA_URL / PHOSPHOR_*_SSH / PHOSPHOR_BOX_HOST), (3) a run directory lacks manifest.json, (4) the newest
+# run (dated 2026-11-03 or later) has a unit failure that its triage.md does not tie to an issue (#1496).
+# Warns above 5 MB. Wired into script/precheck and the CI guards job.
+import glob, os, sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+root = os.path.dirname(here)
+sys.path.insert(0, os.path.join(here, "ci"))
+import results_scrub
+
+FAIL_BYTES, WARN_BYTES = 10 * 1024 * 1024, 5 * 1024 * 1024
+BIN = (".png", ".jpg", ".jpeg", ".gif")
+bad = 0
+for d in sorted(glob.glob(os.path.join(root, "test-results", "*", ""))):
+    name = os.path.basename(os.path.dirname(d))
+    files = [os.path.join(r, f) for r, _, fs in os.walk(d) for f in fs]
+    size = sum(os.path.getsize(f) for f in files)
+    if size > FAIL_BYTES:
+        print("FAIL %s is %.1f MB (limit 10 MB): drop large files" % (name, size / 1e6)); bad += 1
+    elif size > WARN_BYTES:
+        print("warn %s is %.1f MB (soft limit 5 MB)" % (name, size / 1e6))
+    if not os.path.exists(os.path.join(d, "manifest.json")):
+        print("FAIL %s has no manifest.json" % name); bad += 1
+    for f in files:
+        if f.lower().endswith(BIN + (".webp", ".bmp", ".tif", ".tiff", ".mp4", ".mov")):
+            # owner 2026-11-02: no screenshots/images in the (public) repo; they stay in CI artifacts
+            print("FAIL %s: image/video files are not allowed in test-results/" % os.path.relpath(f, root)); bad += 1
+            continue
+        for kind, snip in results_scrub.find_leaks(open(f, errors="replace").read()):
+            print("FAIL %s: %s (%s)" % (os.path.relpath(f, root), kind, snip)); bad += 1
+            break
+# (4) #1496: the NEWEST run's unit failures must each be owned by an issue. A failing test is owned when a line of the run's
+# triage.md names it together with an issue reference (#NNNN). Only runs dated TRIAGE_FROM or later (older runs predate the rule).
+# Without it a red suite in a "green" pipeline goes unowned for rounds (the never_panic SIGABRT of r18cc..r18ch).
+TRIAGE_FROM = "2026-11-03"
+import json, re
+runs = sorted(glob.glob(os.path.join(root, "test-results", "*", "manifest.json")))
+if runs:
+    newest = runs[-1]
+    d = os.path.dirname(newest)
+    try:
+        man = json.load(open(newest))
+    except Exception as e:
+        man = {}; print("FAIL %s: manifest.json unreadable (%s)" % (os.path.relpath(newest, root), e)); bad += 1
+    if str(man.get("date", "")) >= TRIAGE_FROM:
+        tpath = os.path.join(d, "triage.md")
+        lines = open(tpath, errors="replace").read().splitlines() if os.path.exists(tpath) else []
+        owned = [l for l in lines if re.search(r"#\d+", l)]
+        for job, u in sorted((man.get("unit") or {}).items()):
+            if not isinstance(u, dict) or not u.get("failed"):
+                continue
+            names = [f.get("test", "") for f in u.get("failures") or [] if isinstance(f, dict)]
+            if not names and not owned:
+                print("FAIL %s: %s has %s failure(s) and triage.md names no issue (#NNNN)" % (os.path.relpath(d, root), job, u["failed"])); bad += 1
+            for t in names:
+                if t and not any(t in l for l in owned):
+                    print("FAIL %s: %s failure %s has no issue in triage.md (a line naming the test and #NNNN)" % (os.path.relpath(d, root), job, t)); bad += 1
+if bad:
+    print("check_test_results: %d problem(s); re-run collect_results.py (it scrubs), remove the offending files, or add <run>/triage.md lines '<test name> #NNNN'" % bad)
+    sys.exit(1)
+print("check_test_results: ok")

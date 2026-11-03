@@ -261,14 +261,14 @@ pub fn layout(text: &str, styles: &RichTextStyles, max_width: impl IntoPixels) -
         glyphs_acc.push(Glyph {
             id: 0,
             position_along_baseline: vec2f(line_width.as_f32(), 0.),
-            index,
+            index: index as u32,
             width: char_width.as_f32(),
         });
 
         carets_acc.push(CaretPosition {
             position_in_line: line_width.as_f32(),
-            start_offset: index,
-            last_offset: index,
+            start_offset: index as u32,
+            last_offset: index as u32,
         });
 
         line_width += char_width;

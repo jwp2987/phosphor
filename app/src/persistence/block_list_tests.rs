@@ -302,3 +302,133 @@ fn process_ai_queries_for_nld_history_match_filters_empty_and_whitespace_inputs_
     // `[]` and whitespace-only rows are dropped; the rest come back oldest-first.
     assert_eq!(texts, vec!["older prompt", "newer prompt"]);
 }
+
+/// Inserts a block row for `pane` that started at `start_ts` (or never, for `None`).
+fn insert_block(conn: &mut SqliteConnection, pane: &[u8], start_ts: Option<chrono::NaiveDateTime>) {
+    use crate::persistence::schema::blocks;
+    diesel::insert_into(blocks::table)
+        .values((
+            blocks::pane_leaf_uuid.eq(pane.to_vec()),
+            blocks::stylized_command.eq(b"ls".to_vec()),
+            blocks::stylized_output.eq(b"out".to_vec()),
+            blocks::exit_code.eq(0),
+            blocks::did_execute.eq(true),
+            blocks::honor_ps1.eq(false),
+            blocks::is_background.eq(false),
+            blocks::block_id.eq(uuid::Uuid::new_v4().to_string()),
+            blocks::start_ts.eq(start_ts),
+        ))
+        .execute(conn)
+        .expect("block should insert");
+}
+
+fn block_panes(conn: &mut SqliteConnection) -> Vec<(Vec<u8>, Option<chrono::NaiveDateTime>)> {
+    use crate::persistence::schema::blocks;
+    blocks::table
+        .select((blocks::pane_leaf_uuid, blocks::start_ts))
+        .order(blocks::id.asc())
+        .load(conn)
+        .expect("blocks should load")
+}
+
+/// #1155: only blocks that are unreferenced by `terminal_panes` AND older than the
+/// cutoff are deleted. Foreign keys are switched off below (the migrations leave them on), so
+/// a pane row can be inserted without its parent pane node and an orphan block can exist.
+#[test]
+fn delete_orphaned_blocks_removes_only_old_unreferenced_blocks() {
+    use crate::persistence::schema::terminal_panes;
+    let mut conn = test_connection();
+    diesel::sql_query("PRAGMA foreign_keys = OFF")
+        .execute(&mut conn)
+        .expect("pragma should run");
+    let now = chrono::Utc::now().naive_utc();
+    let old = now - chrono::Duration::days(30);
+    let cutoff = now - chrono::Duration::days(7);
+    let live_pane = vec![1u8; 16];
+    let dead_pane = vec![2u8; 16];
+    diesel::insert_into(terminal_panes::table)
+        .values((
+            terminal_panes::id.eq(1),
+            terminal_panes::uuid.eq(live_pane.clone()),
+        ))
+        .execute(&mut conn)
+        .expect("pane should insert");
+
+    insert_block(&mut conn, &live_pane, Some(old)); // referenced, old: kept
+    insert_block(&mut conn, &dead_pane, Some(old)); // orphan, old: deleted
+    insert_block(&mut conn, &dead_pane, Some(old)); // orphan, old: deleted
+    insert_block(&mut conn, &dead_pane, Some(now)); // orphan, recent: kept
+    insert_block(&mut conn, &dead_pane, None); // orphan, no timestamp: kept
+
+    let deleted = super::delete_orphaned_blocks(&mut conn, cutoff).expect("gc should run");
+
+    assert_eq!(deleted, 2);
+    let remaining = block_panes(&mut conn);
+    assert_eq!(remaining.len(), 3);
+    assert_eq!(remaining[0], (live_pane, Some(old)));
+    assert_eq!(remaining[1], (dead_pane.clone(), Some(now)));
+    assert_eq!(remaining[2], (dead_pane, None));
+}
+
+/// #1189: oversized stylized output is persisted as head + marker + tail, line-aligned.
+#[test]
+fn cap_persisted_output_keeps_head_and_tail() {
+    use super::{MAX_PERSISTED_OUTPUT_BYTES, cap_persisted_output};
+
+    assert!(cap_persisted_output(&vec![b'x'; MAX_PERSISTED_OUTPUT_BYTES]).is_none());
+
+    let mut big = Vec::new();
+    let mut i = 0;
+    while big.len() < MAX_PERSISTED_OUTPUT_BYTES * 8 {
+        big.extend_from_slice(format!("line {i:08}\r\n").as_bytes());
+        i += 1;
+    }
+    let capped = cap_persisted_output(&big).expect("must cap");
+    assert!(capped.len() <= MAX_PERSISTED_OUTPUT_BYTES + 256);
+    let text = String::from_utf8(capped).unwrap();
+    assert!(text.starts_with("line 00000000\r\n"));
+    assert!(text.contains("bytes of output omitted"));
+    assert!(text.ends_with(&format!("line {:08}\r\n", i - 1)));
+    assert!(
+        text.split("\r\n")
+            .filter(|l| l.starts_with("line "))
+            .all(|l| l.len() == 13)
+    );
+
+    let capped = cap_persisted_output(&vec![b'y'; MAX_PERSISTED_OUTPUT_BYTES * 4]).unwrap();
+    assert!(capped.len() <= MAX_PERSISTED_OUTPUT_BYTES + 256);
+}
+
+/// #1253: an over-long single line must not be cut mid-character or mid-escape-sequence, and
+/// capping a capped block again must not change it.
+#[test]
+fn cap_persisted_output_cuts_on_char_and_escape_boundaries_and_is_idempotent() {
+    use super::{MAX_PERSISTED_OUTPUT_BYTES, cap_persisted_output};
+
+    let half = MAX_PERSISTED_OUTPUT_BYTES / 2;
+    let total = MAX_PERSISTED_OUTPUT_BYTES * 3;
+    let tail_floor = total - half;
+
+    // Plant a 3-byte character straddling the head cut and a CSI sequence straddling the tail cut.
+    let mut big = vec![b'a'; total];
+    big[half - 1..half + 2].copy_from_slice("\u{20ac}".as_bytes());
+    big[tail_floor - 3..tail_floor].copy_from_slice(b"\x1b[3");
+    big[tail_floor..tail_floor + 3].copy_from_slice(b"96m");
+    let capped = cap_persisted_output(&big).expect("must cap");
+    let marker_at = capped
+        .windows(4)
+        .position(|w| w == b"\x1b[0m")
+        .expect("marker");
+    let (head, rest) = capped.split_at(marker_at);
+    assert!(std::str::from_utf8(head).is_ok(), "head ends mid-character");
+    let tail_at = rest.windows(2).rposition(|w| w == b"\r\n").unwrap() + 2;
+    let tail = &rest[tail_at..];
+    assert!(std::str::from_utf8(tail).is_ok());
+    assert!(
+        !tail.starts_with(b"96m"),
+        "tail starts inside a CSI sequence"
+    );
+
+    // Re-capping the capped form is a no-op.
+    assert!(cap_persisted_output(&capped).is_none());
+}

@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use instant::Instant;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::{IdleTracker, is_referenced};
@@ -63,9 +63,51 @@ fn referenced_repos_are_never_evicted_and_dropped_candidates_are_forgotten() {
 
     tracker.observe(t0, GRACE, &[a.clone(), b.clone()], |_| false);
     // `a` stops being a candidate (e.g. removed elsewhere); `b` stays referenced.
-    let due = tracker.observe(t0 + GRACE * 2, GRACE, std::slice::from_ref(&b), |path| path == b);
+    let due = tracker.observe(t0 + GRACE * 2, GRACE, std::slice::from_ref(&b), |path| {
+        path == b
+    });
     assert!(due.is_empty());
     // `a` returning later starts from scratch rather than inheriting its old idle time.
     let due = tracker.observe(t0 + GRACE * 3, GRACE, std::slice::from_ref(&a), |_| false);
     assert!(due.is_empty());
+}
+
+#[test]
+fn next_due_in_is_none_when_nothing_is_idle_and_counts_down_otherwise() {
+    let mut tracker = IdleTracker::default();
+    let repo = vec![p("/work/repo")];
+    let t0 = Instant::now();
+
+    assert_eq!(tracker.next_due_in(t0, GRACE), None);
+    tracker.observe(t0, GRACE, &repo, |_| false);
+    assert_eq!(tracker.next_due_in(t0, GRACE), Some(GRACE));
+    assert_eq!(
+        tracker.next_due_in(t0 + Duration::from_secs(100), GRACE),
+        Some(Duration::from_secs(200))
+    );
+    assert_eq!(
+        tracker.next_due_in(t0 + GRACE * 2, GRACE),
+        Some(Duration::ZERO)
+    );
+    // Referenced again: nothing idle, so no timer is wanted.
+    tracker.observe(t0 + Duration::from_secs(1), GRACE, &repo, |_| true);
+    assert_eq!(
+        tracker.next_due_in(t0 + Duration::from_secs(1), GRACE),
+        None
+    );
+}
+
+#[test]
+fn next_due_in_reports_the_earliest_of_several_repos() {
+    let mut tracker = IdleTracker::default();
+    let a = p("/work/a");
+    let b = p("/work/b");
+    let t0 = Instant::now();
+    tracker.observe(t0, GRACE, std::slice::from_ref(&a), |_| false);
+    let t1 = t0 + Duration::from_secs(60);
+    tracker.observe(t1, GRACE, &[a, b], |_| false);
+    assert_eq!(
+        tracker.next_due_in(t1, GRACE),
+        Some(Duration::from_secs(240))
+    );
 }

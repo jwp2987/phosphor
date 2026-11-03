@@ -1,0 +1,2037 @@
+{
+ "pipeline": 3020063118,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3020063118",
+ "ref": "build/r18d2",
+ "commit": "332fd97b24690442e79c3f321332cb28a9edf1c1",
+ "created_at": "2026-11-02T23:25:45.153Z",
+ "date": "2026-11-02",
+ "tier": "fix",
+ "pipeline_status": "manual",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949505,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949504,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949503,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949502,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "failed",
+   "duration": 4105.982543,
+   "id": 17681949501,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos": {
+   "status": "failed",
+   "duration": 1814.389828,
+   "id": 17681949500,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949499,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland": {
+   "status": "failed",
+   "duration": 1548.144305,
+   "id": 17681949498,
+   "runner": ""
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949497,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949496,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949495,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "success",
+   "duration": 2182.67941,
+   "id": 17681949494,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 2028.112128,
+   "id": 17681949493,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1197.634439,
+   "id": 17681949492,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949491,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949490,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949489,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949488,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949487,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949486,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949485,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949484,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949483,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949482,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949481,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949480,
+   "runner": null,
+   "note": "not run"
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949479,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949478,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-linux": {
+   "status": "failed",
+   "duration": 535.538833,
+   "id": 17681949477,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 10.489987,
+   "id": 17681949476,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 11.945298,
+   "id": 17681949475,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949474,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949473,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949472,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17681949471,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 383.019914,
+   "id": 17681949470,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 104.563332,
+   "id": 17681949469,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-linux": {
+   "summary_line": "Summary [ 211.542s] 10564 tests run: 10557 passed (1 slow), 7 failed, 29 skipped",
+   "duration_s": 211.542,
+   "run": 10564,
+   "passed": 10557,
+   "failed": 7,
+   "timed_out": 0,
+   "skipped": 29,
+   "slow": 1,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty",
+     "seconds": 0.126
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session",
+     "seconds": 0.131
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_handover_holds_the_text_after_a_nested_ssh_for_the_second_connect",
+     "seconds": 0.225
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_line_typed_across_gate_release_is_never_run_locally",
+     "seconds": 0.145
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event",
+     "seconds": 0.12
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_shell_once",
+     "seconds": 0.116
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover",
+     "seconds": 0.115
+    }
+   ],
+   "regressions": [
+    "terminal::view::tests::keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty",
+    "terminal::view::tests::ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session",
+    "terminal::view::tests::ssh_handover_holds_the_text_after_a_nested_ssh_for_the_second_connect",
+    "terminal::view::tests::ssh_line_typed_across_gate_release_is_never_run_locally",
+    "terminal::view::tests::table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event",
+    "terminal::view::tests::table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_shell_once",
+    "terminal::view::tests::table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover"
+   ],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-linux",
+   "status": "failed",
+   "duration": 535.538833
+  }
+ },
+ "app": {
+  "windows": {
+   "job": "app-test-windows",
+   "job_id": 17681949501,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.3,
+     "detail": [
+      "mode machine-verified from the app log (hop=view_mode mode=terminal); no OCR engine"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 96.7,
+     "detail": [
+      "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 52.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 5.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 18.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 1229.1,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]); reference: 4 misses",
+      "Phosphor stopped the sleep on 0 samples; reference conhost (powershell.exe): Ctrl-C stopped it on 0 of 4 samples",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 42.2,
+     "detail": [
+      "ssh_connect_typing (gap 0.1 s): T153_8vpgec never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:38:05 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 16:38:05 sessi",
+      "remote shell received 5/6 typed-ahead commands exactly (missing 1)",
+      "remote rec.log lacks the exact typed command for some trials"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 12.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.4,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T163_v68aku never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:38:48 connect from ('127.0.0.1', 50531) | 16:38:48 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 122.5,
+     "detail": [
+      "Enter to command start: Phosphor overhead 86.47 ms over conhost (powershell.exe) exceeds the 2 ms budget",
+      "app share of Enter->start: enter_begin -> pty_write median 1.27 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 93.41,
+       "p95": 107.75,
+       "n": 30,
+       "overhead_ms": 86.47,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: types into a running `cat > /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "routing_table",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.0,
+     "detail": [
+      "mode machine-verified from the app log (hop=view_mode mode=terminal); no OCR engine"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 33.5,
+     "detail": [
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 56.4,
+     "detail": [
+      "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 48.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 17.2,
+     "detail": [
+      "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 14.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 175.3,
+     "detail": [
+      "Ctrl-C: Phosphor overhead 20.10 ms over conhost (bash) exceeds the 20 ms budget",
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 4/33 sample lines reached the shell NOT exactly as typed; e.g. characters REORDERED (a character moved: \"'\" came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt', shell re",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 87.01 ms includes the input-tool spawn (harness floor 0.13080000644549727 ms)",
+      "Ctrl-C: n=26 < 30 samples (smoke/scaled run): numbers are indicative only",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 87.01,
+       "p95": 108.1,
+       "n": 26,
+       "overhead_ms": 20.1,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 42.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 25.5,
+     "detail": [
+      "ssh_enter_then_immediate_command: T194_duje2j never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:48:47 connect from ('127.0.0.1', 50894) | 16:48:47 auth publickey user=Winters key=ssh-ed25519 c99bfbd8",
+      "remote shell received 1/2 immediately-typed commands exactly: ['T192_vu0hbl']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 7.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 68.2,
+     "detail": [
+      "Enter to command start: Phosphor overhead 16.97 ms over conhost (bash) exceeds the 2 ms budget",
+      "app share of Enter->start: enter_begin -> pty_write median 0.88 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 86.64,
+       "p95": 213.15,
+       "n": 30,
+       "overhead_ms": 16.97,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 12.0,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 3.61,
+       "p95": 10.3,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "routing_table",
+     "status": "fail",
+     "seconds": 44.8,
+     "detail": [
+      "'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "shell_fish",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "shell_nu",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "md_viewer",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 0.2,
+     "detail": [
+      "mode machine-verified from the app log (hop=view_mode mode=agent); no OCR engine"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 21.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 5.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 18.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 1087.9,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])",
+      "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_ctrl_c_d",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 48.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 12.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.0,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T85_39yn2q never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 17:12:21 connect from ('127.0.0.1', 51255) | 17:12:21 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087a"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_stream_cancel",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "routing_table",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 0.2,
+     "detail": [
+      "mode machine-verified from the app log (hop=view_mode mode=agent); no OCR engine"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 19.1,
+     "detail": [
+      "ft0: shell received 31 commands, not the typed ones (first mismatch: \"echo t1_ieqh524yng >> 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run/home/<user>/proof_agent_gitbash.txt'\") -- differs (31 typed, 122 received characters): typed 'echo t2_5by1a2rogu >> r_ft0.txt', shell recei"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 11.9,
+     "detail": [
+      "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 25.0,
+     "detail": [
+      "Tab+Enter: completed file has 1/12 expected lines"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 111.5,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 14/33 sample lines reached the shell NOT exactly as typed; e.g. differs (81 typed, 80 received characters): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt', shell received 'cbash -c \\",
+      "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+      "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "left_agent_mode_after_ctrl_c_d",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 42.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 10.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 7.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "agent_stream_cancel",
+     "status": "fail",
+     "seconds": 62.3,
+     "detail": [
+      "no model request ('[byop] opening stream') within 60 s of the prompt's Enter; prompt not routed to the agent or provider unreachable"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "routing_table",
+     "status": "fail",
+     "seconds": 44.2,
+     "detail": [
+      "'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/junit.xml",
+    "windows/results.json",
+    "windows/summary.md"
+   ],
+   "meta": {
+    "platform": "windows",
+    "backend": "windows",
+    "app_display": "windows",
+    "seed": "1",
+    "commit": "332fd97b",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 32,
+    "fail": 19,
+    "skip": 12,
+    "noref": 1
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots\\terminal_ctrl_c_d_FAIL.png",
+    "shots\\terminal_ssh_connect_typing_FAIL.png",
+    "shots\\terminal_ssh_nested_typeahead_FAIL.png",
+    "shots\\terminal_latency_enter_FAIL.png",
+    "shots\\terminal@gitbash_paste_instant_enter_FAIL.png",
+    "shots\\terminal@gitbash_ctrl_c_d_FAIL.png",
+    "shots\\terminal@gitbash_ssh_enter_then_immediate_command_FAIL.png",
+    "shots\\terminal@gitbash_latency_enter_FAIL.png",
+    "shots\\terminal@gitbash_routing_table_FAIL.png",
+    "shots\\agent_ctrl_c_d_FAIL.png",
+    "shots\\agent_left_agent_after_ctrl_c_d.png",
+    "shots\\agent_ssh_nested_typeahead_FAIL.png",
+    "shots\\agent@gitbash_fast_typing_FAIL.png",
+    "shots\\agent@gitbash_paste_instant_enter_FAIL.png",
+    "shots\\agent@gitbash_tab_enter_FAIL.png",
+    "shots\\agent@gitbash_ctrl_c_d_FAIL.png",
+    "shots\\agent@gitbash_left_agent_after_ctrl_c_d.png",
+    "shots\\agent@gitbash_agent_stream_cancel_FAIL.png",
+    "shots\\agent@gitbash_routing_table_FAIL.png"
+   ]
+  },
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 17681949500,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 7.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 40.1,
+     "detail": [
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 77.8,
+     "detail": [
+      "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 68.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 25.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "pass",
+     "seconds": 250.3,
+     "detail": [
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 198.9 ms includes the input-tool spawn (harness floor 145.43920918367803 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 198.9,
+       "p95": 213.85,
+       "n": 30,
+       "overhead_ms": 5.49,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 36.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 9.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 8.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 137.3,
+     "detail": [
+      "Enter to command start: Phosphor overhead 9.77 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "app share of Enter->start: enter_begin -> pty_write median 0.49 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 215.8,
+       "p95": 222.81,
+       "n": 30,
+       "overhead_ms": 9.77,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 29.7,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 8.24,
+       "p95": 9.33,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "pass",
+     "seconds": 72.9,
+     "detail": [
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 35.61,
+       "p95": 44.61,
+       "n": 30,
+       "overhead_ms": 1.53,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "routing_table",
+     "status": "fail",
+     "seconds": 57.2,
+     "detail": [
+      "'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 34.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "pass",
+     "seconds": 43.0,
+     "detail": [
+      "nu app log: 2026-11-03T00:10:25Z [DEBUG] frame 1: updated=[\"WarpifyFooterView\", \"PaneView\", \"ActionButton\", \"Terminal\", \"ActionButton\", \"PaneHeader\", \"UseAgentToolbar\", \"Menu\", \"ActionButton\", \"Input\", \"Workspace"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 6.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 7.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 66.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 25.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "pass",
+     "seconds": 249.8,
+     "detail": [
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 199.9 ms includes the input-tool spawn (harness floor 137.81795790418983 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 199.9,
+       "p95": 204.49,
+       "n": 30,
+       "overhead_ms": 6.91,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 35.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 10.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 8.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 137.1,
+     "detail": [
+      "Enter to command start: Phosphor overhead 9.50 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "app share of Enter->start: enter_begin -> pty_write median 1.22 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 215.82,
+       "p95": 224.25,
+       "n": 30,
+       "overhead_ms": 9.5,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 30.1,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 7.31,
+       "p95": 9.22,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "fail",
+     "seconds": 72.8,
+     "detail": [
+      "Key to paint: Phosphor overhead 7.72 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 35.91,
+       "p95": 45.35,
+       "n": 30,
+       "overhead_ms": 7.72,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "agent_stream_cancel",
+     "status": "fail",
+     "seconds": 22.7,
+     "detail": [
+      "the screen kept changing 6 s after Ctrl-C (4 distinct frames in 5): the stream did not stop"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "routing_table",
+     "status": "fail",
+     "seconds": 57.9,
+     "detail": [
+      "'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 34.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_nu",
+     "status": "pass",
+     "seconds": 43.1,
+     "detail": [
+      "nu app log: 2026-11-03T00:17:48Z [DEBUG] frame 1: updated=[\"ActionButton\", \"RightPanelView\", \"Terminal\", \"ActionButton\", \"ActionButton\", \"Workspace\", \"UseAgentToolbar\", \"Menu\", \"WarpifyFooterView\", \"PaneView\", \"A",
+      "nu app log: 2026-11-03T00:17:48Z [DEBUG] frame 1: updated=[\"ActionButton\", \"Input\", \"ActionButton\", \"Menu\", \"PaneHeader\", \"Terminal\", \"ActionButton\", \"ActionButton\", \"PaneView\", \"UseAgentToolbar\", \"Workspace\", \"W",
+      "nu app log: 2026-11-03T00:17:50Z [DEBUG] frame 1: updated=[\"PaneView\", \"RightPanelView\", \"Menu\", \"Input\", \"PaneHeader\", \"UseAgentToolbar\", \"ActionButton\", \"Workspace\", \"ActionButton\", \"Terminal\", \"ActionButton\", ",
+      "nu app log: 2026-11-03T00:17:51Z [DEBUG] frame 1: updated=[\"ActionButton\", \"ActionButton\", \"ActionButton\", \"PaneHeader\", \"Terminal\", \"Menu\", \"PaneView\", \"ActionButton\", \"WarpifyFooterView\", \"UseAgentToolbar\", \"In"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 6.5,
+     "detail": [],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/junit.xml",
+    "macos/results.json",
+    "macos/summary.md"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "332fd97b",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 27,
+    "fail": 6,
+    "skip": 0,
+    "noref": 2
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_latency_enter_FAIL.png",
+    "shots/terminal_routing_table_FAIL.png",
+    "shots/agent_latency_enter_FAIL.png",
+    "shots/agent_latency_paint_FAIL.png",
+    "shots/agent_agent_stream_cancel_FAIL.png",
+    "shots/agent_routing_table_FAIL.png"
+   ]
+  },
+  "wayland": {
+   "job": "app-test-linux-wayland",
+   "job_id": 17681949498,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "fail",
+     "seconds": 88.6,
+     "detail": [
+      "Phosphor lost keys the reference keeps with the SAME injection (perline-unprimed): Phosphor 12/12 bad lines (first char lost 12), foot 0/12 -- a Phosphor-side drop (#1414)",
+      "phosphor / perline-unprimed: first char lost on 12/12 lines, other bad 0, missing 0",
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline-unprimed: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 132.7,
+     "detail": [
+      "reference foot gap 0.00s: 30/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted None Enters",
+      "reference foot gap 0.25s: 30/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted None Enters",
+      "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 56.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 6.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 17.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "noref",
+     "seconds": 275.7,
+     "detail": [
+      "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 35.29 ms includes the input-tool spawn (harness floor 1.9825287163257599 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 35.29,
+       "p95": 40.91,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 28.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 7.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 6.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "noref",
+     "seconds": 47.3,
+     "detail": [
+      "app share of Enter->start: enter_begin -> pty_write median 0.40 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "NO-REFERENCE: Enter to command start: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 40.42,
+       "p95": 45.11,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 15.0,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 5.34,
+       "p95": 12.28,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.6,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "routing_table",
+     "status": "pass",
+     "seconds": 38.0,
+     "detail": [
+      "ambiguous 'find the bug in main.rs': went to shell (no routing log line, so no rule to check)",
+      "ambiguous 'make a PR': went to shell (no routing log line, so no rule to check)",
+      "ambiguous 'cat the error log and tell me what is wrong': went to agent (no routing log line, so no rule to check)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 29.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "pass",
+     "seconds": 39.8,
+     "detail": [
+      "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane",
+      "nu app log: 2026-11-03T00:20:16Z [DEBUG] frame 1: updated=[\"EditorView\", \"FeaturePopup\", \"FeaturePopup\", \"WarpifyFooterView\", \"AutosuggestionIgnore\", \"DisplayChip\", \"ActionButton\", \"RightPanelView\", \"EditorView\",",
+      "nu app log: 2026-11-03T00:20:18Z [DEBUG] frame 1: updated=[\"DisplayChip\", \"DisplayChip\", \"FeaturePopup\", \"AutosuggestionIgnore\", \"AutosuggestionIgnore\", \"DisplayMenu\", \"FeaturePopup\", \"AcceptAutosuggestionKeybind"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 3.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 0.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 57.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_fast_typing",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after fast_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "fail",
+     "seconds": 21.4,
+     "detail": [
+      "paste + instant Enter: 0/6 md5 digest lines exact (first got [], expected ['5adab3d97a990aa6e1bec241daf9082a'])"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 17.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "noref",
+     "seconds": 277.8,
+     "detail": [
+      "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 42.1 ms includes the input-tool spawn (harness floor 2.0698774605989456 ms)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 42.1,
+       "p95": 57.04,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 28.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ssh_connect_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 7.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 6.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "noref",
+     "seconds": 47.2,
+     "detail": [
+      "app share of Enter->start: enter_begin -> pty_write median 1.64 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "NO-REFERENCE: Enter to command start: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 44.69,
+       "p95": 45.55,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 15.4,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 3.67,
+       "p95": 9.65,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_latency_key_log",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after latency_key_log the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.6,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_stream_cancel",
+     "status": "fail",
+     "seconds": 17.7,
+     "detail": [
+      "text typed at 10-25 ms/key while the reply streamed is not visible in the input ('keepmet115_qm09d8')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "routing_table",
+     "status": "pass",
+     "seconds": 42.0,
+     "detail": [
+      "ambiguous 'find the bug in main.rs': went to shell (no routing log line, so no rule to check)",
+      "ambiguous 'make a PR': went to agent (no routing log line, so no rule to check)",
+      "ambiguous 'cat the error log and tell me what is wrong': went to agent (no routing log line, so no rule to check)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_routing_table",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after routing_table the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 29.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_nu",
+     "status": "pass",
+     "seconds": 39.5,
+     "detail": [
+      "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane",
+      "nu app log: 2026-11-03T00:33:34Z [DEBUG] frame 1: updated=[\"ActionButton\", \"AutosuggestionIgnore\", \"InlineMenuMessageBar\", \"FeaturePopup\", \"FeaturePopup\", \"Dropdown\", \"RemoveTabConfigConfirmationDialog\", \"Autosug",
+      "nu app log: 2026-11-03T00:34:05Z [DEBUG] frame 1: updated=[\"ActionButton\", \"TerminalViewZeroStateBlock\", \"Terminal\", \"Workspace\", \"ActionButton\", \"Menu\", \"AgentViewZeroState\", \"PaneView\", \"Input\", \"WarpifyFooterV"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_shell_nu",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after shell_nu the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 3.8,
+     "detail": [],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "wayland/junit.xml",
+    "wayland/results.json",
+    "wayland/summary.md"
+   ],
+   "meta": {
+    "platform": "linux-wayland",
+    "backend": "wayland",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "332fd97b",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 24,
+    "fail": 8,
+    "skip": 2,
+    "noref": 6
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_key_loss_control_FAIL.png",
+    "shots/agent_left_agent_after_fast_typing.png",
+    "shots/agent_paste_instant_enter_FAIL.png",
+    "shots/agent_left_agent_after_ssh_connect_typing.png",
+    "shots/agent_left_agent_after_latency_key_log.png",
+    "shots/agent_agent_stream_cancel_FAIL.png",
+    "shots/agent_left_agent_after_routing_table.png",
+    "shots/agent_left_agent_after_shell_nu.png"
+   ]
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 49,
+  "warnings_by_crate": {
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 23,
+   "warp (lib test)": 19
+  },
+  "warning_lines_by_kind": {
+   "unused import": 78,
+   "unused imports": 23,
+   "use of deprecated type alias": 8,
+   "function": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 383.019914
+ }
+}

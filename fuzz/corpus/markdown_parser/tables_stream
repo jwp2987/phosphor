@@ -1,0 +1,14 @@
+| Name | Qty | Note |
+|------|----:|:----:|
+| apple | 3 | fresh |
+| `code` | 10 | **bold** cell |
+| pipe \| escaped | 0 | |
+
+Left | Right
+--- | ---
+no leading pipe | works
+
+| ragged | header |
+|---|---|
+| only one cell |
+| three | cells | here |

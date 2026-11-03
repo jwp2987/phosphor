@@ -302,12 +302,6 @@ impl Prompt {
         }
     }
 
-    /// Updates the in-memory prompt configuration to reflect an AI input model change.
-    fn handle_ai_input_model_change(&mut self, ctx: &mut ModelContext<Self>) {
-        log::debug!("Loading new prompt configuration due to AI input model change");
-        self.config = Self::from_user_settings(ctx);
-        ctx.emit(PromptEvent::Changed);
-    }
 }
 
 impl Entity for Prompt {
@@ -405,11 +399,4 @@ impl PromptConfiguration {
         self.separator
     }
 
-    pub fn remove_chip(&mut self, chip: ContextChipKind) {
-        self.chips.retain(|c| c.chip != chip);
-    }
-
-    pub fn add_chip_to_end(&mut self, chip: ContextChipKind) {
-        self.chips.push(PromptChip::new(chip, Default::default()));
-    }
 }

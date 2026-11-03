@@ -1,0 +1,325 @@
+{
+ "pipeline": 3018717340,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3018717340",
+ "ref": "build/r18cm",
+ "commit": "ac70362eb89bf37d171f00d50babecac5f5c1dc8",
+ "created_at": "2026-11-02T16:36:36.063Z",
+ "date": "2026-11-02",
+ "tier": "fix",
+ "pipeline_status": "waiting_for_resource",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "failed",
+   "duration": 65.314793,
+   "id": 17671718528,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718527,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718526,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718525,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17671718524,
+   "runner": null
+  },
+  "app-test-macos": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17671718523,
+   "runner": null
+  },
+  "app-test-linux-x11": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17671718522,
+   "runner": null
+  },
+  "app-test-linux-wayland": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17671718521,
+   "runner": null
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718520,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718519,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718518,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718517,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718516,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-arm64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718515,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718514,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718513,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718512,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718511,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718510,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718509,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718508,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718507,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718506,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718505,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718504,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718503,
+   "runner": null,
+   "note": "not run"
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718502,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718501,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718500,
+   "runner": null,
+   "note": "not run"
+  },
+  "advisories": {
+   "status": "waiting_for_resource",
+   "duration": null,
+   "id": 17671718499,
+   "runner": null,
+   "note": "not run"
+  },
+  "licenses": {
+   "status": "waiting_for_resource",
+   "duration": null,
+   "id": 17671718498,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718497,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718496,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718495,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17671718494,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "waiting_for_resource",
+   "duration": null,
+   "id": 17671718493,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards": {
+   "status": "success",
+   "duration": 100.250682,
+   "id": 17671718492,
+   "runner": ""
+  }
+ },
+ "unit": {},
+ "app": {
+  "windows": {
+   "job": "app-test-windows-reuse",
+   "job_id": 17671718528,
+   "status": "failed",
+   "reuse": true,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.0,
+     "detail": [
+      "no OCR engine: screenshot only (shots/terminal_proof_prekey.png), mode not machine-verified"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/junit.xml",
+    "windows/results.json",
+    "windows/summary.md",
+    "windows/reused_build.json"
+   ],
+   "meta": {
+    "platform": "windows",
+    "backend": "windows",
+    "commit": "ac70362e"
+   },
+   "summary": {
+    "pass": 2,
+    "fail": 0,
+    "skip": 0
+   },
+   "reused_build": {
+    "reused_build": {
+     "commit": "18fddcd8088da7ef506568624cc7936eff3a47e2",
+     "fetched": "local cache (C:\\Users\\Winters\\.cache\\phosphor-ci\\builds\\windows\\17664724432)",
+     "this_pipeline": "3018717340",
+     "job_name": "build-windows-x86_64",
+     "this_commit": "ac70362eb89bf37d171f00d50babecac5f5c1dc8",
+     "job_id": 17664724432,
+     "pipeline_id": "3017838858"
+    }
+   },
+   "screenshots_in_ci_artifacts": []
+  }
+ },
+ "notes": []
+}

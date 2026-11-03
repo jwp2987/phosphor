@@ -266,6 +266,16 @@ impl WindowManager {
         );
     }
 
+    /// Test hook: what the platform does when a window becomes (or stops being) the active one.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_active_window_for_test(
+        &mut self,
+        window_id: Option<WindowId>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.set_active_window(window_id, ctx);
+    }
+
     pub fn toggle_fullscreen(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) {
         if let Some(window) = self.platform_window(window_id) {
             window.toggle_fullscreen();

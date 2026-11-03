@@ -18,6 +18,10 @@ pub struct DirectoryFetcher {
     session_context: Option<SessionContext>,
     /// Handle to the fetch operation
     fetch_handle: Option<SpawnedFutureHandle>,
+    /// Whether anyone has asked for the contents yet (the chip's menu was opened). Until then
+    /// nothing reads `cached_files`, so no directory is listed: the prompt display rebuilds its
+    /// chips whenever any chip value changes, and each rebuild used to list the directory again.
+    requested: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -37,19 +41,20 @@ impl DirectoryFetcher {
         session_context: Option<SessionContext>,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        let mut fetcher = Self {
+        let fetcher = Self {
             current_directory: directory_path.clone(),
             cached_files: vec![],
             session_context,
             fetch_handle: None,
+            requested: false,
         };
-
-        fetcher.refetch_directory(ctx);
+        let _ = ctx;
         fetcher
     }
 
     /// Explicitly refetch the directory contents
     pub fn refetch_directory(&mut self, ctx: &mut ModelContext<Self>) {
+        self.requested = true;
         if self.is_fetching() {
             return;
         }
@@ -118,7 +123,10 @@ impl DirectoryFetcher {
         }
 
         self.session_context = session_context;
-        self.refetch_directory(ctx);
+        // Only keep contents fresh for a menu that has been opened.
+        if self.requested {
+            self.refetch_directory(ctx);
+        }
     }
 
     /// Get the current directory path
@@ -136,14 +144,6 @@ impl DirectoryFetcher {
         self.fetch_handle.is_some()
     }
 
-    /// Change the current directory and refetch contents
-    pub fn change_directory(&mut self, new_directory: String, ctx: &mut ModelContext<Self>) {
-        if self.current_directory != new_directory {
-            self.current_directory = new_directory;
-            self.cached_files.clear();
-            self.refetch_directory(ctx);
-        }
-    }
 }
 
 impl Entity for DirectoryFetcher {

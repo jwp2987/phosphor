@@ -1,6 +1,3 @@
-#![cfg_attr(target_family = "wasm", allow(dead_code, unused_imports))]
-// Adding this file level gate as some of the code around editability is not used in WASM yet.
-
 use crate::code::editor::{
     line::EditorLineLocation,
     model::CodeEditorModel,
@@ -257,7 +254,9 @@ pub fn init(app: &mut AppContext) {
             CodeEditorViewAction::Paste,
             text_entry.clone(),
         ),
-        #[cfg(windows)]
+        // Linux also needs the plain `ctrl-v` binding: `CustomAction::Paste` is `ctrl-shift-v`
+        // there (#1409).
+        #[cfg(any(windows, target_os = "linux"))]
         FixedBinding::custom(
             CustomAction::WindowsPaste,
             CodeEditorViewAction::Paste,
@@ -733,6 +732,35 @@ pub enum CodeEditorViewAction {
 }
 
 impl CodeEditorViewAction {
+    /// Whether the action edits the buffer or moves/extends the cursor, so its effect depends on
+    /// where an in-flight paste lands and it must apply after it (#1380).
+    fn waits_behind_paste(&self) -> bool {
+        // Everything the selectable state refuses is an edit; add the cursor movers.
+        !self.allowed_in_selectable_state()
+            || matches!(
+                self,
+                Self::SelectUp
+                    | Self::SelectDown
+                    | Self::SelectLeft
+                    | Self::SelectRight
+                    | Self::SelectBackwardsByWord
+                    | Self::SelectForwardsByWord
+                    | Self::SelectToLineStart
+                    | Self::SelectToLineEnd
+                    | Self::SelectAll
+                    | Self::MoveUp
+                    | Self::MoveDown
+                    | Self::MoveLeft
+                    | Self::MoveRight
+                    | Self::MoveBackwardsByWord
+                    | Self::MoveForwardsByWord
+                    | Self::MoveToLineStart
+                    | Self::MoveToLineEnd
+                    | Self::CursorAtBufferStart
+                    | Self::CursorAtBufferEnd
+            )
+    }
+
     pub fn allowed_in_interaction_state(&self, state: InteractionState) -> bool {
         match state {
             InteractionState::Editable => true,
@@ -821,6 +849,54 @@ impl CodeEditorViewAction {
     }
 }
 
+impl CodeEditorView {
+    /// Reads the clipboard off the UI thread (#1380); [`Self::finish_paste`] inserts the text and
+    /// replays the keys held meanwhile. A paste asked for during a read waits behind it.
+    pub(super) fn start_paste(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.paste_gate.has_pending() {
+            self.paste_gate.hold(CodeEditorViewAction::Paste);
+            return;
+        }
+        let id = self.paste_gate.begin();
+        match warpui::clipboard::read_in_background(
+            ctx.clipboard(),
+            warpui::clipboard::ReadKind::TextAndPaths,
+        ) {
+            warpui::clipboard::StartedRead::Ready(read) => self.finish_paste(id, read, ctx),
+            warpui::clipboard::StartedRead::Pending(pending) => {
+                ctx.spawn(pending, move |view, read, ctx| {
+                    view.finish_paste(id, read, ctx)
+                });
+            }
+        }
+    }
+
+    pub(super) fn finish_paste(
+        &mut self,
+        id: u64,
+        read: warpui::clipboard::BackgroundTextRead,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(held) = self.paste_gate.complete(id) else {
+            return;
+        };
+        match read {
+            warpui::clipboard::BackgroundTextRead::Content(content) => {
+                self.model
+                    .update(ctx, |model, ctx| model.paste_text(&content.plain_text, ctx));
+            }
+            failed => {
+                if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
+                    crate::util::clipboard::show_read_failure_toast(message, ctx);
+                }
+            }
+        }
+        for action in held {
+            self.handle_action(&action, ctx);
+        }
+    }
+}
+
 impl TypedActionView for CodeEditorView {
     type Action = CodeEditorViewAction;
 
@@ -829,6 +905,15 @@ impl TypedActionView for CodeEditorView {
 
         // Some actions are not allowed if editing or selection is disabled.
         if !action.allowed_in_interaction_state(self.interaction_state(ctx)) {
+            return;
+        }
+
+        // While a paste is read off the UI thread, keys that edit the buffer or move the cursor
+        // wait behind it and apply right after the pasted text, in typing order (#1380).
+        if self.paste_gate.has_pending()
+            && action.waits_behind_paste()
+            && self.paste_gate.hold(action.clone())
+        {
             return;
         }
 
@@ -1003,9 +1088,7 @@ impl TypedActionView for CodeEditorView {
                 }
             }
             SelectionEnd => self.selection_end(ctx),
-            Paste => self.model.update(ctx, |model, ctx| {
-                model.paste(ctx);
-            }),
+            Paste => self.start_paste(ctx),
             Cut => self.model.update(ctx, |model, ctx| {
                 model.cut(ctx);
             }),
@@ -1115,7 +1198,8 @@ impl TypedActionView for CodeEditorView {
                         model.open_comment_line(line_info, ctx);
                     });
 
-                    ctx.focus(&self.active_comment_editor);
+                    let active_comment_editor = self.ensure_comment_editor(ctx);
+                    ctx.focus(&active_comment_editor);
                     ctx.notify();
                 }
             }

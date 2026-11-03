@@ -1,19 +1,20 @@
 //! This module should houses all horizontal/cross-cutting AI functionality throughout
 //! Zap (including Agent Mode).
 //!
-//! The side panel Zap AI implementation lives in `super::ai_assistant`.
+//! The old side-panel "AI Assistant" was removed (see DECLINED.md); Agent Mode is the AI path.
 pub(crate) mod agent;
 pub(crate) mod agent_conversations_model;
 pub(crate) mod agent_events;
 pub(crate) mod agent_providers;
 pub(crate) mod agent_tips;
 pub(crate) mod ai_document_view;
+pub(crate) mod ask_ai;
+pub(crate) mod execution_context;
 pub mod ambient_agents;
 pub(crate) mod api_error;
 pub(crate) mod artifact_download;
 pub mod artifacts;
 pub(crate) mod attachment_utils;
-#[cfg(not(target_family = "wasm"))]
 pub mod aws_credentials;
 pub(crate) mod block_context;
 pub(crate) mod blocklist;
@@ -40,7 +41,6 @@ pub(crate) mod conversation_navigation;
 pub(crate) mod conversation_status_ui;
 pub(crate) mod conversation_utils;
 pub(crate) mod document;
-pub(crate) mod get_relevant_files_file_contents;
 pub(crate) mod harness_display;
 pub(crate) mod llms;
 pub(crate) mod local_harness_setup;
@@ -64,25 +64,20 @@ pub(crate) mod skills;
 // `warp_managed_paths_watcher`, whose `WarpManagedPathsWatcherEvent` is an
 // empty enum on wasm (no `FilesChanged` variant to destructure), and because
 // the revision file is plain filesystem IO.
-#[cfg(not(target_family = "wasm"))]
 pub(crate) mod tui_api_keys;
 // The canonical home of `all_working_directories` -- read its module docs
 // before adding a second copy of it anywhere. Its callers are
 // `ai::outline::native` and `ai::persisted_workspace`'s indexing seam;
-// `wasm` swaps `outline::native` out for `outline::wasm`, so the whole module
-// is callerless there.
 //
 // This declaration was added by `5368ef2c0` and lost again in `a2a10c0f1`
 // (the D1 rebuild onto main), which left `ai/outline/native.rs:19` importing a
 // module that was not declared. Restored here.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) mod terminal_working_directories;
 pub mod usage_cost;
 pub(crate) mod voice;
 pub use agent_tips::*;
 pub use request_usage_model::*;
 use warpui::AppContext;
-#[cfg(not(target_family = "wasm"))]
 pub mod agent_sdk;
 // Zap Wave 7-3: `ambient_agent_settings` was physically deleted along with the ambient-agent UI subsystem.
 // Zap Wave 7-2: cloud environments' CLI / form / environment-prep chain has been

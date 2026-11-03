@@ -109,7 +109,6 @@ pub struct TerminalManager<S> {
 
     /// The manager is responsible for managing the lifetime
     /// of the PTY controller.
-    #[allow(dead_code)]
     pty_controller: ModelHandle<PtyController>,
 
     /// The manager is responsible for managing the lifetime of the remote server controller.
@@ -162,6 +161,31 @@ impl<S: 'static> TerminalManagerTrait for TuiTerminalManager<S> {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut self.0
+    }
+}
+
+/// Joins the PTY reader thread. `wait`: block until it has finished (app exit, where nothing may
+/// outlive the process); otherwise the join is handed to a short-lived "PTY reaper" thread and
+/// this returns at once, so closing a tab never blocks the UI thread on the reader's teardown
+/// (which kills and reaps the shell tree). The reaper still collects the reader when it finishes.
+fn join_event_loop(join_handle: JoinHandle<()>, wait: bool) {
+    if wait {
+        if let Err(e) = join_handle.join() {
+            log::error!("Failed to join event loop handle {e:?}");
+        }
+        return;
+    }
+    let reaper = std::thread::Builder::new()
+        .name("PTY reaper".into())
+        .spawn(move || {
+            if let Err(e) = join_handle.join() {
+                log::error!("Failed to join event loop handle {e:?}");
+            }
+        });
+    // On failure the handle went down with the closure, which detaches the reader: it still
+    // exits on its own after the `Shutdown` that was sent.
+    if let Err(e) = reaper {
+        log::error!("Failed to spawn the PTY reaper thread: {e:?}");
     }
 }
 
@@ -432,6 +456,10 @@ impl<S> TerminalManager<S> {
         });
 
         let preferred_shell = chosen_shell.unwrap_or_else(|| {
+            // Re-scan in the background if the process PATH changed since the last scan (#1310).
+            AvailableShells::handle(ctx).update(ctx, |shells, ctx| {
+                shells.rescan_if_path_changed(ctx);
+            });
             AvailableShells::handle(ctx)
                 .read(ctx, |shells, ctx| shells.get_user_preferred_shell(ctx))
         });
@@ -466,7 +494,11 @@ impl<S> TerminalManager<S> {
 
         // This is purely for measuring throughput on WarpDev.
         if FeatureFlag::RecordPtyThroughput.is_enabled() {
-            Self::record_pty_throughput(inactive_pty_reads_rx.clone(), model.clone(), ctx);
+            Self::record_pty_throughput(
+                inactive_pty_reads_rx.clone(),
+                channel_event_proxy.pty_read_countable_flag(),
+                ctx,
+            );
         }
 
         // Initialize the PtyController.
@@ -587,9 +619,17 @@ impl<S> TerminalManager<S> {
         self.model.clone()
     }
 
-    /// Sends a shutdown message to the PTY event loop and waits for it to
-    /// process that event.
+    /// Sends a shutdown message to the PTY event loop and returns without waiting for it.
+    ///
+    /// This runs on the UI thread when a tab closes, so it must never block (#1376): the join
+    /// moves to a short-lived "PTY reaper" thread, which still collects the reader (and so the
+    /// shell it kills) when it finishes.
     fn shutdown_event_loop(&mut self) {
+        self.shutdown_event_loop_within(false);
+    }
+
+    /// As `shutdown_event_loop`, with `wait` blocking until the reader has finished.
+    fn shutdown_event_loop_within(&mut self, wait: bool) {
         let shutdown_res = self.event_loop_tx.lock().send(Message::Shutdown);
         // Happens normally if the event loop has already been terminated (so the channel is now gone).
         if let Err(e) = shutdown_res {
@@ -597,9 +637,7 @@ impl<S> TerminalManager<S> {
         }
 
         match self.event_loop_handle.take() { Some(join_handle) => {
-            if let Err(e) = join_handle.join() {
-                log::error!("Failed to join event loop handle {e:?}");
-            }
+            join_event_loop(join_handle, wait);
         } _ => {
             log::error!("No event loop handle to join when dropping terminal manager.")
         }}
@@ -628,14 +666,14 @@ impl<S> TerminalManager<S> {
     /// is non-zero over some time interval.
     fn record_pty_throughput(
         pty_reads_rx: InactiveReceiver<Arc<Vec<u8>>>,
-        model: Arc<FairMutex<TerminalModel>>,
+        countable: Arc<std::sync::atomic::AtomicBool>,
         ctx: &mut AppContext,
     ) {
         if FeatureFlag::RecordPtyThroughput.is_enabled() {
             let auth_state = AuthStateProvider::as_ref(ctx).get();
             recorder::record_pty_throughput(
                 pty_reads_rx.activate(),
-                model,
+                countable,
                 auth_state.clone(),
                 ctx.background_executor().to_owned(),
             );
@@ -668,7 +706,7 @@ impl<S> TerminalManager<S> {
     fn create_pty(
         startup_directory: Option<PathBuf>,
         shell_starter: ShellStarter,
-        env_vars: HashMap<OsString, OsString>,
+        mut env_vars: HashMap<OsString, OsString>,
         model: Arc<FairMutex<TerminalModel>>,
         #[cfg(windows)] event_loop_tx: mio_channel::Sender<Message>,
         ctx: &mut AppContext,
@@ -713,6 +751,20 @@ impl<S> TerminalManager<S> {
             // second declaration of the same storage key, not a second setting.
             *WarpifySettings::as_ref(ctx).enable_ssh_wrapper.value()
         };
+
+        // #1171: the wrapper adds ssh keepalives unless this is "0". Only the "off" case is
+        // exported, so every other launch path keeps the default (on).
+        if !*SshSettings::as_ref(ctx).keepalive.value() {
+            env_vars.insert(OsString::from("WARP_SSH_KEEPALIVE"), OsString::from("0"));
+        }
+        // #1243: likewise only the opt-out is exported; the wrapper leaves the ssh default alone
+        // for every other launch path.
+        if !*SshSettings::as_ref(ctx).obscure_keystroke_timing.value() {
+            env_vars.insert(
+                OsString::from("WARP_SSH_OBSCURE_KEYSTROKE_TIMING"),
+                OsString::from("0"),
+            );
+        }
 
         // Only meaningful when the legacy ControlMaster wrapper is active.
         let reuse_ssh_control_master = enable_ssh_wrapper
@@ -916,7 +968,7 @@ fn on_shell_determined<S: TerminalSurface>(
         }
     };
 
-    #[cfg(feature = "integration_tests")]
+    #[cfg(any(unix, feature = "integration_tests"))]
     let pid = pty.get_pid();
     #[cfg(unix)]
     let fd = pty.get_fd();
@@ -948,6 +1000,31 @@ fn on_shell_determined<S: TerminalSurface>(
         manager.pid = Some(pid);
     }
 
+    #[cfg(windows)]
+    let shell_launch_data_for_hold = shell_launch_data.clone();
+    // F7 (#1595): PowerShell's PSReadLine does not bind ^U as a line kill, so the hand-off must
+    // not count a raw ^U as having cleaned the line there.
+    let ctrl_u_kills_line = !matches!(
+        &shell_launch_data,
+        ShellLaunchData::Executable { shell_type, .. } | ShellLaunchData::MSYS2 { shell_type, .. }
+            if matches!(shell_type, crate::terminal::shell::ShellType::PowerShell)
+    );
+    // #1392: the drained-stream veto trusts that the shell writes its Precmd before its line editor
+    // sets raw mode. bash (PROMPT_COMMAND) and zsh (precmd) do; fish sets raw THEN fires
+    // fish_prompt, so a drained stream there proves nothing. Other shells keep the plain hold.
+    #[cfg(unix)]
+    let precmd_precedes_raw_tty = matches!(
+        &shell_launch_data,
+        ShellLaunchData::Executable { shell_type, .. } | ShellLaunchData::MSYS2 { shell_type, .. }
+            if matches!(
+                shell_type,
+                crate::terminal::shell::ShellType::Bash | crate::terminal::shell::ShellType::Zsh
+            )
+    );
+    model
+        .lock()
+        .typeahead_handoff_mut()
+        .set_ctrl_u_kills_line(ctrl_u_kills_line);
     manager.view.update(ctx, |surface, ctx| {
         surface.on_shell_determined(ctx);
         surface.on_active_shell_launch_data_updated(Some(shell_launch_data), ctx);
@@ -967,11 +1044,83 @@ fn on_shell_determined<S: TerminalSurface>(
         );
 
         manager.terminal_attributes_poller = Some(terminal_attributes_poller);
+        // Taken before the statement below locks the model (the lock is not reentrant).
+        let stream_barrier = model.lock().pty_stream_barrier();
+        // #1131: a plain program in the foreground, or a password being read, means no prompt is
+        // waiting for a held Enter.
+        let mut probe =
+            crate::terminal::model::typeahead_handoff::ForegroundProbe::new(Arc::new(move || {
+                super::terminal_attributes::shell_provably_not_at_prompt(fd, pid as i32)
+            }))
+            // #1353 phase 6: the same sample, also saying when the shell's line editor is reading.
+            .with_prompt_fact(Arc::new(move || {
+                super::terminal_attributes::shell_prompt_fact(fd, pid as i32)
+            }));
+        // #1392: whether everything the shell wrote before now is read and applied, so the
+        // hook account can be set against the sample just taken (the pty reader counts into
+        // the barrier; the master is asked whether it holds anything unread). Only for shells
+        // that write their Precmd before raw mode; without it the veto never fires.
+        if precmd_precedes_raw_tty {
+            probe = probe.with_stream_drained(Arc::new(move || {
+                stream_barrier
+                    .drained_with(|| super::terminal_attributes::pty_master_has_unread(fd))
+            }));
+        }
+        model.lock().typeahead_handoff_mut().set_foreground_probe(probe);
+        // #1373: who owns the terminal decides "interactive / long running", not elapsed time.
+        model.lock().set_interactive_probe(Arc::new(move || {
+            super::terminal_attributes::terminal_owner(fd, pid as i32)
+        }));
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)
             }));
         });
+    }
+    // #1162: the session's input goes through ConPTY, which loses lines when a held run of
+    // keys with an embedded Enter arrives as one write, or when a request lands mid-line.
+    #[cfg(windows)]
+    {
+        let mut model = model.lock();
+        model.typeahead_handoff_mut().set_conpty_input(true);
+        // #1162: raw keys typed between a prompt and its line editor are held (bounded);
+        // PHOSPHOR_CONPTY_PROMPT_HOLD=0 turns it off.
+        let hold_enabled =
+            crate::terminal::model::typeahead_handoff::conpty_prompt_hold_env_enabled();
+        model
+            .typeahead_handoff_mut()
+            .set_conpty_prompt_hold(hold_enabled);
+        // #1490: the hold also covers the stretch from an Enter to the next prompt's line editor
+        // (`PHOSPHOR_CONPTY_ENTER_HOLD=1|0`; unset it follows the `table` destination mode, the default).
+        model.typeahead_handoff_mut().set_conpty_enter_window_hold(
+            crate::terminal::model::typeahead_handoff::conpty_enter_hold_enabled(),
+        );
+        // #1349: the hold is released by the line editor's bracketed-paste signal, so it only
+        // exists for shells known to send one (readline, zle, fish). PowerShell 5.1, cmd and an
+        // unknown WSL shell are never held for: a hold with no signal could only be a timer.
+        let shell_signals = matches!(
+            &shell_launch_data_for_hold,
+            ShellLaunchData::Executable { shell_type, .. }
+                | ShellLaunchData::MSYS2 { shell_type, .. }
+                if matches!(
+                    shell_type,
+                    crate::terminal::shell::ShellType::Bash
+                        | crate::terminal::shell::ShellType::Zsh
+                        | crate::terminal::shell::ShellType::Fish
+                )
+        );
+        model
+            .typeahead_handoff_mut()
+            .set_conpty_prompt_hold_shell_signals(shell_signals);
+        drop(model);
+        if hold_enabled && shell_signals {
+            manager.pty_controller.update(ctx, |controller, ctx| {
+                controller.set_conpty_prompt_hold_signals(
+                    Some(crate::terminal::model::typeahead_handoff::CONPTY_PROMPT_HOLD_GIVE_UP),
+                    ctx,
+                );
+            });
+        }
     }
 }
 
@@ -995,23 +1144,47 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     <S as Entity>::Event: PtyIntentEvent,
 {
     let poller_weak_handle = terminal_attributes_poller.downgrade();
-    let poller_weak_handle_for_termios = poller_weak_handle.clone();
     let surface_weak_handle = surface.downgrade();
-    let surface_weak_handle_for_termios = surface_weak_handle.clone();
 
-    // Tracks the index of the started block across the model-event <-> poller interactions.
-    let block_index: Rc<RefCell<Option<BlockIndex>>> = Rc::new(RefCell::new(None));
-    let block_index_for_termios = block_index.clone();
+    // Turns termios observations into prompt detections, once per episode; reset per block.
+    // Judged when the terminal produces output and when the one quiet timer it arms fires; the
+    // 1 Hz termios poller below is only the fallback for the one thing with no event (see
+    // `PromptWatch`). Tracks the started block's index across the model-event <-> poller
+    // interactions too.
+    let prompt_watch = Rc::new(PromptWatch {
+        detector: RefCell::default(),
+        active: std::cell::Cell::new(false),
+        block_index: RefCell::new(None),
+        epoch: std::cell::Cell::new(0),
+        armed_for: std::cell::Cell::new(None),
+        surface: surface.downgrade(),
+        poller: terminal_attributes_poller.downgrade(),
+    });
 
-    // Turns termios polls into prompt detections, debounced and once per episode; reset per
-    // block.
-    let prompt_detector: Rc<RefCell<PromptDetector>> = Rc::default();
-    let prompt_detector_for_termios = prompt_detector.clone();
-
-    // Notices a waited agent command stalled on a pager or other full-screen program; reset
-    // per block (#855).
-    let fullscreen_detector: Rc<RefCell<FullscreenStallDetector>> = Rc::default();
-    let fullscreen_detector_for_termios = fullscreen_detector.clone();
+    // Notices a waited agent command stalled on a pager or other full-screen program (#855).
+    // Judged when the terminal produces output, plus one quiet timer while a stall-eligible
+    // screen is shown -- no polling tick (#1365). Reset per block.
+    let fullscreen_watch = Rc::new(FullscreenWatch {
+        detector: RefCell::default(),
+        active: std::cell::Cell::new(false),
+        epoch: std::cell::Cell::new(0),
+        armed_for: std::cell::Cell::new(None),
+        surface: surface.downgrade(),
+        poller: terminal_attributes_poller.downgrade(),
+    });
+    let (output_tx, output_rx) = async_channel::bounded::<()>(1);
+    surface.update(ctx, |surface, _| surface.set_output_signal(output_tx));
+    let watch_for_output = fullscreen_watch.clone();
+    let prompt_watch_for_output = prompt_watch.clone();
+    let prompt_watch_for_termios = prompt_watch.clone();
+    let _ = ctx.spawn_stream_local(
+        output_rx,
+        move |_, _, ctx| {
+            watch_for_output.observe(ctx);
+            prompt_watch_for_output.on_output(ctx);
+        },
+        |_, _| {},
+    );
 
     // On block start, record the active block index and ask the surface whether
     // password-prompt polling is useful before starting the poller. On block
@@ -1032,16 +1205,15 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                         surface.should_start_password_prompt_polling(command, ctx)
                     })
                 });
-                prompt_detector.borrow_mut().reset();
-                fullscreen_detector.borrow_mut().reset();
+                prompt_watch.restart(should_poll);
+                fullscreen_watch.restart(should_poll);
                 if should_poll {
-                    *block_index.borrow_mut() =
+                    *prompt_watch.block_index.borrow_mut() =
                         Some(model.lock().block_list().active_block_index());
                     poller.update(ctx, |poller, ctx| {
                         poller.start_polling(ctx);
                     });
                 } else {
-                    *block_index.borrow_mut() = None;
                     // An agent command keeps the poller running after a detection, so make
                     // sure it cannot outlive its block into one that was not meant to be polled.
                     poller.update(ctx, |poller, _ctx| {
@@ -1050,6 +1222,8 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
                 }
             }
             TerminalModelEvent::AfterBlockCompleted(completed) => {
+                fullscreen_watch.restart(false);
+                prompt_watch.restart(false);
                 if let Some(surface) = surface_weak_handle.upgrade(ctx) {
                     let should_stop = surface.read(ctx, |surface, _ctx| {
                         surface.should_stop_password_prompt_polling(completed)
@@ -1075,38 +1249,220 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
     // host key, then for the password), and `PromptDetector` only fires once per episode.
     ctx.subscribe_to_model(terminal_attributes_poller, move |_manager, event, ctx| {
         let TerminalAttributesPollerEvent::TermiosQueryFinished { termios } = event;
-
-        let Some(surface) = surface_weak_handle_for_termios.upgrade(ctx) else {
-            return;
-        };
-
         // A PTY likely has a password prompt if ECHO is disabled but ICANON is still enabled.
         // Apps like neovim disable both in raw mode, so requiring ICANON avoids false
         // positives. A `[y/N]` confirmation or a `read -p` prompt leaves termios cooked with
         // echo on -- exactly what an ordinary running command looks like -- so for that shape
         // the surface is asked what is printed before the cursor instead.
-        let is_echo_on = termios.local_flags.contains(LocalFlags::ECHO);
-        let is_canonical = termios.local_flags.contains(LocalFlags::ICANON);
+        prompt_watch_for_termios.judge(
+            termios.local_flags.contains(LocalFlags::ECHO),
+            termios.local_flags.contains(LocalFlags::ICANON),
+            ctx,
+        );
+    });
+}
 
+/// Password / interactive-prompt detection for a polled block (#1383).
+///
+/// `on_output` runs when the terminal produced output and when the quiet timer armed from
+/// [`PromptDetector::next_wake`] fires, reading the termios on demand (one cheap ioctl per
+/// output burst). How long a prompt has "looked like a prompt" is a named duration
+/// (`INTERACTIVE_PROMPT_QUIET_*`), logged when it fires -- not a count of 1 s polls.
+///
+/// The 1 Hz `TerminalAttributesPoller` remains, as the fallback for the one signal with no
+/// event: a program flipping ECHO off (a silent `read -s`) without printing anything. The OS
+/// raises nothing when termios changes, so only sampling can see it. Every other path is
+/// output-driven and does not depend on the poll tick.
+#[cfg(unix)]
+struct PromptWatch<S: TerminalSurface>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
+    detector: RefCell<PromptDetector>,
+    /// Whether the active block is one the poller was started for and is still wanted.
+    active: std::cell::Cell<bool>,
+    /// The started block's index, handed to the password-prompt notification.
+    block_index: RefCell<Option<BlockIndex>>,
+    /// Bumped to invalidate a pending quiet timer.
+    epoch: std::cell::Cell<u64>,
+    /// The instant the pending quiet timer is armed for.
+    armed_for: std::cell::Cell<Option<instant::Instant>>,
+    surface: warpui::WeakViewHandle<S>,
+    poller: warpui::WeakModelHandle<TerminalAttributesPoller>,
+}
+
+#[cfg(unix)]
+impl<S: TerminalSurface> PromptWatch<S>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
+    /// New block (or block end): forget everything observed and any pending timer.
+    fn restart(&self, active: bool) {
+        self.detector.borrow_mut().reset();
+        self.active.set(active);
+        *self.block_index.borrow_mut() = None;
+        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.armed_for.set(None);
+    }
+
+    /// Output arrived (or the quiet timer fired): judge the termios as it is now.
+    fn on_output(self: &Rc<Self>, ctx: &mut ModelContext<Box<dyn TerminalManagerTrait>>) {
+        if !self.active.get() {
+            return;
+        }
+        let Some(poller) = self.poller.upgrade(ctx) else {
+            return;
+        };
+        let Some(termios) = poller.as_ref(ctx).current_attributes() else {
+            return;
+        };
+        self.judge(
+            termios.local_flags.contains(LocalFlags::ECHO),
+            termios.local_flags.contains(LocalFlags::ICANON),
+            ctx,
+        );
+    }
+
+    /// Feeds one termios observation to the detector and acts on a detection. For the user's
+    /// own commands, stops after the first detection to preserve the one-notification-per-
+    /// command behavior. For agent commands it keeps watching: the command can stop on a
+    /// second prompt after the user answers the first and hands control back (an agent-run
+    /// `ssh` asking about the host key, then for the password), and `PromptDetector` only
+    /// fires once per episode.
+    fn judge(
+        self: &Rc<Self>,
+        is_echo_on: bool,
+        is_canonical: bool,
+        ctx: &mut ModelContext<Box<dyn TerminalManagerTrait>>,
+    ) {
+        if !self.active.get() {
+            return;
+        }
+        let Some(surface) = self.surface.upgrade(ctx) else {
+            return;
+        };
+        let now = instant::Instant::now();
+        let detection =
+            self.detector
+                .borrow_mut()
+                .observe(now, is_echo_on, is_canonical, || {
+                    surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
+                });
+        if let Some(detection) = detection {
+            match detection {
+                PromptDetection::Password => {
+                    let block_index = self.block_index.borrow_mut().take();
+                    surface.update(ctx, |surface, ctx| {
+                        surface.on_possible_password_prompt(block_index, ctx);
+                    });
+                }
+                PromptDetection::Interactive => {
+                    surface.update(ctx, |surface, ctx| {
+                        surface.on_stalled_interactive_prompt(ctx);
+                    });
+                }
+            }
+            let keeps_polling =
+                surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
+            if !keeps_polling {
+                self.active.set(false);
+                self.epoch.set(self.epoch.get().wrapping_add(1));
+                self.armed_for.set(None);
+                if let Some(poller) = self.poller.upgrade(ctx) {
+                    poller.update(ctx, |poller, _ctx| {
+                        poller.stop_polling();
+                    });
+                }
+                return;
+            }
+        }
+
+        // Arm the one quiet timer for when the pending candidate will have been quiet long
+        // enough, unless one is already armed for this exact instant. Further output that
+        // changes the prompt moves the deadline; the stale timer is invalidated by the epoch.
+        let wake = self.detector.borrow().next_wake();
+        if wake == self.armed_for.get() {
+            return;
+        }
+        self.armed_for.set(wake);
+        let epoch = self.epoch.get().wrapping_add(1);
+        self.epoch.set(epoch);
+        if let Some(at) = wake {
+            let me = self.clone();
+            let _ = ctx.spawn(
+                async move {
+                    warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
+                },
+                move |_, _, ctx| {
+                    if me.epoch.get() == epoch {
+                        me.armed_for.set(None);
+                        me.on_output(ctx);
+                    }
+                },
+            );
+        }
+    }
+}
+
+/// Event-driven stall detection for a waited agent command on a full-screen program (#855,
+/// #1365). `observe` runs when the terminal produced output and when the single quiet timer it
+/// arms fires; the timer exists only while a stall-eligible screen is tracked and is armed once
+/// per unchanged screen. The termios is read on demand (a cheap ioctl); nothing here ticks.
+#[cfg(unix)]
+struct FullscreenWatch<S: TerminalSurface>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
+    detector: RefCell<FullscreenStallDetector>,
+    /// Whether the active block is one the poller was started for.
+    active: std::cell::Cell<bool>,
+    /// Bumped to invalidate a pending quiet timer.
+    epoch: std::cell::Cell<u64>,
+    /// The instant the pending quiet timer is armed for.
+    armed_for: std::cell::Cell<Option<instant::Instant>>,
+    surface: warpui::WeakViewHandle<S>,
+    poller: warpui::WeakModelHandle<TerminalAttributesPoller>,
+}
+
+#[cfg(unix)]
+impl<S: TerminalSurface> FullscreenWatch<S>
+where
+    <S as Entity>::Event: PtyIntentEvent,
+{
+    /// New block (or block end): forget the screen and any pending timer.
+    fn restart(&self, active: bool) {
+        self.detector.borrow_mut().reset();
+        self.active.set(active);
+        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.armed_for.set(None);
+    }
+
+    fn observe(self: &Rc<Self>, ctx: &mut ModelContext<Box<dyn TerminalManagerTrait>>) {
+        if !self.active.get() {
+            return;
+        }
+        let (Some(surface), Some(poller)) = (self.surface.upgrade(ctx), self.poller.upgrade(ctx))
+        else {
+            return;
+        };
         // A full-screen program (pager, editor, TUI) under an agent command that is waiting
         // for it to finish: close a known pager, otherwise give the command to the user.
         // Only the foreground process NAME decides whether a key is sent; an unknown or
         // unidentifiable process never gets one.
+        let is_raw_mode = poller
+            .as_ref(ctx)
+            .current_attributes()
+            .is_some_and(|termios| !termios.local_flags.contains(LocalFlags::ICANON));
         let fingerprint = surface.read(ctx, |surface, ctx| {
-            surface.fullscreen_stall_fingerprint(!is_canonical, ctx)
+            surface.fullscreen_stall_fingerprint(is_raw_mode, ctx)
         });
-        let poller_for_name = poller_weak_handle_for_termios.upgrade(ctx);
-        let stall = fullscreen_detector_for_termios.borrow_mut().observe(
-            fingerprint,
-            instant::Instant::now(),
-            || {
-                poller_for_name
-                    .as_ref()?
-                    .as_ref(ctx)
-                    .foreground_process_names()
-                    .map(|names| is_closable_pager_group(&names))
-            },
-        );
+        let now = instant::Instant::now();
+        let stall = self.detector.borrow_mut().observe(fingerprint, now, || {
+            poller
+                .as_ref(ctx)
+                .foreground_process_names()
+                .map(|names| is_closable_pager_group(&names))
+        });
         match stall {
             Some(FullscreenStall::ClosePager) => {
                 surface.update(ctx, |surface, ctx| surface.on_stalled_pager(ctx));
@@ -1116,39 +1472,31 @@ fn wire_up_terminal_attribute_poller_with_surface<S: TerminalSurface>(
             }
             None => {}
         }
-        let detection =
-            prompt_detector_for_termios
-                .borrow_mut()
-                .observe(is_echo_on, is_canonical, || {
-                    surface.read(ctx, |surface, ctx| surface.pending_interactive_prompt(ctx))
-                });
-        let Some(detection) = detection else {
+
+        // Arm the one quiet timer, unless one is already armed for this exact instant.
+        let wake = self.detector.borrow().next_wake(now);
+        if wake == self.armed_for.get() {
             return;
-        };
-
-        match detection {
-            PromptDetection::Password => {
-                let block_index = block_index_for_termios.borrow_mut().take();
-                surface.update(ctx, |surface, ctx| {
-                    surface.on_possible_password_prompt(block_index, ctx);
-                });
-            }
-            PromptDetection::Interactive => {
-                surface.update(ctx, |surface, ctx| {
-                    surface.on_stalled_interactive_prompt(ctx);
-                });
-            }
         }
-
-        let keeps_polling = surface.read(ctx, |surface, _ctx| surface.keeps_polling_after_prompt());
-        if !keeps_polling {
-            if let Some(poller) = poller_weak_handle_for_termios.upgrade(ctx) {
-                poller.update(ctx, |poller, _ctx| {
-                    poller.stop_polling();
-                });
-            }
+        self.armed_for.set(wake);
+        let epoch = self.epoch.get().wrapping_add(1);
+        self.epoch.set(epoch);
+        if let Some(at) = wake {
+            let me = self.clone();
+            let _ =
+                ctx.spawn(
+                    async move {
+                        warpui::r#async::Timer::after(at.saturating_duration_since(now)).await
+                    },
+                    move |_, _, ctx| {
+                        if me.epoch.get() == epoch {
+                            me.armed_for.set(None);
+                            me.observe(ctx);
+                        }
+                    },
+                );
         }
-    });
+    }
 }
 
 /// Contains necessary logic for stopping the current shared session.
@@ -1243,7 +1591,7 @@ pub fn shutdown_all_pty_event_loops(ctx: &mut AppContext) {
                 .as_any_mut()
                 .downcast_mut::<TerminalManager<TerminalView>>()
             {
-                manager.shutdown_event_loop();
+                manager.shutdown_event_loop_within(true);
             }
         })
     })
@@ -1288,7 +1636,6 @@ impl TerminalManagerTrait for TerminalManager<TerminalView> {
         // The pane's own `shutdown_for_discard` cannot run for a window that is gone (its
         // views are not updatable), so deregister the remote-server sessions from the model:
         // that stops the `ssh ... remote-server-proxy` and exits an owned ControlMaster.
-        #[cfg(not(target_family = "wasm"))]
         if crate::features::FeatureFlag::SshRemoteServer.is_enabled() {
             let session_ids = {
                 let model = self.model.lock();
@@ -1325,6 +1672,13 @@ impl EventLoopSender for mio_channel::Sender<Message> {
             SendError(_) => EventLoopSendError::Disconnected,
         })
     }
+
+    /// The typed write queue runs in the same event loop on every platform. On Windows its
+    /// backpressure is the ConPTY named pipe: a write is `WouldBlock` while the previous
+    /// overlapped write is in flight, and mio reports the pipe writable when it completes.
+    fn supports_write_queue(&self) -> bool {
+        true
+    }
 }
 
 impl TerminalSurfaceInit {
@@ -1356,3 +1710,7 @@ impl TerminalSurfaceInit {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_manager_tests.rs"]
+mod tests;

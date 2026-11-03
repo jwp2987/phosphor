@@ -3,39 +3,38 @@
 use super::shared_session::adapter::Kind as SharedSessionKind;
 use super::{Event, PaneConfiguration, TerminalAction, TerminalViewState, Viewer};
 use crate::ai::agent::conversation::{AIConversation, ConversationStatus};
-use crate::ai::blocklist::agent_view::agent_view_bg_fill;
 use crate::ai::blocklist::BlocklistAIHistoryModel;
-use crate::ai::conversation_status_ui::{render_status_element, STATUS_ELEMENT_PADDING};
+use crate::ai::blocklist::agent_view::agent_view_bg_fill;
+use crate::ai::conversation_status_ui::{STATUS_ELEMENT_PADDING, render_status_element};
 use crate::appearance::Appearance;
 use crate::features::FeatureFlag;
 use crate::menu::{MenuItem, MenuItemFields};
 use crate::pane_group::focus_state::{PaneFocusHandle, PaneGroupFocusEvent, PaneGroupFocusState};
-use crate::pane_group::pane::view::header::components::{
-    header_edge_min_width, render_pane_header_buttons, render_pane_header_title_text,
-    render_three_column_header, CenteredHeaderEdgeWidth,
-};
 use crate::pane_group::pane::PaneStack;
-use crate::pane_group::{pane::view, pane::view::PaneHeaderAction, BackingView, SplitPaneState};
-use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
-use crate::terminal::model::terminal_model::ConversationTranscriptViewerStatus;
-use crate::terminal::shared_session::participant_avatar_view::render_participants_and_role_elements;
-use crate::terminal::shared_session::render_util::shared_session_indicator_color;
-use crate::terminal::shared_session::SharedSessionActionSource;
+use crate::pane_group::pane::view::header::components::{
+    CenteredHeaderEdgeWidth, header_edge_min_width, render_pane_header_buttons,
+    render_pane_header_title_text, render_three_column_header,
+};
+use crate::pane_group::{BackingView, SplitPaneState, pane::view};
 use crate::terminal::TerminalManager;
 use crate::terminal::TerminalView;
+use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
+use crate::terminal::model::terminal_model::ConversationTranscriptViewerStatus;
+use crate::terminal::shared_session::SharedSessionActionSource;
+use crate::terminal::shared_session::participant_avatar_view::render_participants_and_role_elements;
+use crate::terminal::shared_session::render_util::shared_session_indicator_color;
 use crate::ui_components::blended_colors;
-use crate::ui_components::buttons::icon_button_with_color;
 use crate::ui_components::icons;
 use crate::workspace::tab_settings::TabSettings;
 use warp_core::ui::Icon as WarpIcon;
+use warpui::WeakModelHandle;
 use warpui::elements::{
     ChildAnchor, ConstrainedBox, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize,
     OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Shrinkable, Stack,
 };
-use warpui::prelude::{vec2f, ChildView, Container, Hoverable};
+use warpui::prelude::{ChildView, Container, Hoverable, vec2f};
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::UiComponent;
-use warpui::WeakModelHandle;
 use warpui::{AppContext, Element, ModelHandle, SingletonEntity, TypedActionView, ViewContext};
 
 impl TerminalView {
@@ -510,34 +509,6 @@ impl BackingView for TerminalView {
 }
 
 impl TerminalView {
-    /// Render the cancel button for cancelling the ambient agent task while it's loading.
-    fn render_ambient_agent_cancel_button(&self, app: &AppContext) -> Box<dyn Element> {
-        let appearance = Appearance::as_ref(app);
-        let theme = appearance.theme();
-        let ui_builder = appearance.ui_builder().clone();
-
-        icon_button_with_color(
-            appearance,
-            icons::Icon::StopFilled,
-            false, /* active */
-            self.ambient_agent_cancel_mouse_state.clone(),
-            blended_colors::text_sub(theme, theme.background()).into(),
-        )
-        .with_tooltip(move || {
-            ui_builder
-                .tool_tip(crate::t!("common-cancel"))
-                .build()
-                .finish()
-        })
-        .build()
-        .on_click(|ctx, _, _| {
-            ctx.dispatch_typed_action::<PaneHeaderAction<TerminalAction, TerminalAction>>(
-                PaneHeaderAction::CustomAction(TerminalAction::CancelAmbientAgentTask),
-            );
-        })
-        .finish()
-    }
-
     /// Render the agent indicator icon for when a conversation is selected.
     fn render_agent_indicator(
         &self,

@@ -9,15 +9,12 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use warpui::r#async::{executor, FutureExt as _};
+use anyhow::{Result, anyhow};
+use warpui::r#async::{FutureExt as _, executor};
 
 use remote_server::auth::RemoteServerAuthContext;
 use remote_server::client::RemoteServerClient;
-use remote_server::setup::{
-    PreinstallCheckResult, RemotePlatform, daemon_pid_name, daemon_socket_name, parse_uname_output,
-    remote_server_daemon_dir,
-};
+use remote_server::setup::{PreinstallCheckResult, RemotePlatform, parse_uname_output};
 use remote_server::ssh::ssh_args;
 use remote_server::transport::{Connection, RemoteTransport};
 
@@ -69,22 +66,6 @@ impl SshTransport {
     /// reused an existing user-owned one (which must be left running).
     pub fn owns_control_master(&self) -> bool {
         self.owns_control_master
-    }
-
-    pub fn remote_daemon_socket_path(&self) -> String {
-        format!(
-            "{}/{}",
-            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key()),
-            daemon_socket_name()
-        )
-    }
-
-    pub fn remote_daemon_pid_path(&self) -> String {
-        format!(
-            "{}/{}",
-            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key()),
-            daemon_pid_name()
-        )
     }
 
     /// Maps ControlMaster ownership onto the `control_path` teardown token
@@ -658,7 +639,9 @@ async fn dev_install_local_binary(socket_path: &Path) -> Result<()> {
         ));
     }
 
-    log::info!("dev remote-server: uploading local cross-compiled artifact to {remote_binary} (scp -C compression, may take several minutes for hundreds of MB)");
+    log::info!(
+        "dev remote-server: uploading local cross-compiled artifact to {remote_binary} (scp -C compression, may take several minutes for hundreds of MB)"
+    );
     // Dev artifacts are hundreds of MB, so use DEV_UPLOAD_TIMEOUT (far
     // longer than SCP_INSTALL_TIMEOUT), to avoid a large file upload being
     // interrupted by the 120s timeout and falling back to downloading a
@@ -989,6 +972,7 @@ impl RemoteTransport for SshTransport {
             // spontaneous disconnect) sends SIGKILL to this ssh process.
             let mut child = command::r#async::Command::new("ssh")
                 .args(&args)
+                .env("SHELL", "/bin/sh")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -1045,6 +1029,13 @@ impl RemoteTransport for SshTransport {
             }
         })
     }
+
+    /// The ControlPath socket, owned or reused: a reused, user-owned master is never torn
+    /// down (`control_path_for_teardown`), but its socket still tells a crashed proxy from
+    /// the ssh session ending (#1250).
+    fn master_socket_path(&self) -> Option<PathBuf> {
+        Some(self.socket_path.clone())
+    }
 }
 
 #[cfg(test)]
@@ -1091,8 +1082,11 @@ mod tests {
             let ipqos = line.find("warp_ipqos_args").unwrap();
             let control = line.find("-o ControlMaster=").expect("ControlMaster");
             assert!(ipqos < control, "{name}: IPQoS must precede ControlMaster");
+            // The bash wrapper reads the key from its single `ssh -G` capture through
+            // `warp_ssh_g_value` (1594b17a4, #1172); zsh and fish still sed it out of that capture.
             assert!(
-                script.contains("s/^ipqos //p"),
+                script.contains("s/^ipqos //p")
+                    || script.contains("warp_ssh_g_value warp_ssh_ipqos ipqos"),
                 "{name}: must read the configured IPQoS with ssh -G"
             );
             assert!(
@@ -1142,6 +1136,20 @@ mod tests {
             None,
             "reused user-owned ControlMaster must yield None so teardown leaves it running",
         );
+    }
+
+    // #1250: a reused, user-owned master has no teardown path, but its socket is still the
+    // one to stat when the proxy dies, so a crashed proxy is not mistaken for the user leaving.
+    #[test]
+    fn master_socket_path_is_reported_whether_or_not_the_master_is_owned() {
+        let socket_path = PathBuf::from("/tmp/control-master.sock");
+        for owned in [true, false] {
+            let transport = SshTransport::new(socket_path.clone(), static_auth_context(), owned);
+            assert_eq!(
+                RemoteTransport::master_socket_path(&transport),
+                Some(socket_path.clone()),
+            );
+        }
     }
 
     // The `owns_control_master` flag passed to `new()` is exposed verbatim

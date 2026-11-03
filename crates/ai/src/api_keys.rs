@@ -26,6 +26,7 @@ pub struct ApiKeys {
 }
 
 impl ApiKeys {
+    #[cfg(test)]
     pub fn has_any_key(&self) -> bool {
         self.openai.is_some()
             || self.anthropic.is_some()
@@ -52,44 +53,85 @@ pub enum AwsCredentialsRefreshStrategy {
 /// A structure that manages API keys for AI providers.
 pub struct ApiKeyManager {
     keys: ApiKeys,
+    /// Edits made while the keychain read is in flight (#1309); re-applied on top of what the
+    /// read returns, and only then persisted, so a partial in-memory set never overwrites the
+    /// stored keys.
+    pending: PendingKeyEdits,
+    /// Whether a keychain read is in flight.
+    loading: bool,
+    /// Identifies the latest read; older results are stale and dropped.
+    load_epoch: u64,
+    /// Whether the first read has completed.
+    loaded: bool,
     pub(crate) aws_credentials_state: AwsCredentialsState,
     aws_credentials_refresh_strategy: AwsCredentialsRefreshStrategy,
 }
 
+/// Per-field edits (`Some(new_value)`) not yet reconciled with the stored keys.
+#[derive(Debug, Default)]
+struct PendingKeyEdits {
+    google: Option<Option<String>>,
+    anthropic: Option<Option<String>>,
+    openai: Option<Option<String>>,
+    open_router: Option<Option<String>>,
+}
+
+impl PendingKeyEdits {
+    fn is_empty(&self) -> bool {
+        self.google.is_none()
+            && self.anthropic.is_none()
+            && self.openai.is_none()
+            && self.open_router.is_none()
+    }
+
+    fn apply_to(self, keys: &mut ApiKeys) {
+        if let Some(v) = self.google {
+            keys.google = v;
+        }
+        if let Some(v) = self.anthropic {
+            keys.anthropic = v;
+        }
+        if let Some(v) = self.openai {
+            keys.openai = v;
+        }
+        if let Some(v) = self.open_router {
+            keys.open_router = v;
+        }
+    }
+}
+
 impl ApiKeyManager {
+    /// Starts reading the stored keys; they arrive shortly after construction, off the UI thread
+    /// (#1309), and `KeysUpdated` is emitted when they do.
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        let keys = Self::load_keys_from_secure_storage(ctx);
-        Self {
-            keys,
+        let mut me = Self {
+            keys: ApiKeys::default(),
+            pending: PendingKeyEdits::default(),
+            loading: false,
+            load_epoch: 0,
+            loaded: false,
             aws_credentials_state: AwsCredentialsState::Missing,
             aws_credentials_refresh_strategy: AwsCredentialsRefreshStrategy::default(),
-        }
+        };
+        me.start_load(ctx);
+        me
+    }
+
+    /// Whether the initial read of the stored keys has completed.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
     }
 
     pub fn keys(&self) -> &ApiKeys {
         &self.keys
     }
 
-    pub fn set_google_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
-        self.keys.google = key;
-        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
-        self.write_keys_to_secure_storage(ctx);
-    }
-
+    #[cfg(test)]
     pub fn set_anthropic_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
+        if self.loading {
+            self.pending.anthropic = Some(key.clone());
+        }
         self.keys.anthropic = key;
-        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
-        self.write_keys_to_secure_storage(ctx);
-    }
-
-    pub fn set_openai_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
-        self.keys.openai = key;
-        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
-        self.write_keys_to_secure_storage(ctx);
-    }
-
-    pub fn set_open_router_key(&mut self, key: Option<String>, ctx: &mut ModelContext<Self>) {
-        self.keys.open_router = key;
         ctx.emit(ApiKeyManagerEvent::KeysUpdated);
         self.write_keys_to_secure_storage(ctx);
     }
@@ -200,12 +242,60 @@ impl ApiKeyManager {
     /// Emits [`ApiKeyManagerEvent::KeysUpdated`] unconditionally, matching the
     /// setters above: subscribers re-derive from `keys()` rather than diffing.
     pub fn reload_keys_from_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
-        self.keys = Self::load_keys_from_secure_storage(ctx);
-        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.start_load(ctx);
     }
 
-    fn load_keys_from_secure_storage(ctx: &mut ModelContext<Self>) -> ApiKeys {
-        let key_json = match ctx.secure_storage().read_value(SECURE_STORAGE_KEY) {
+    fn start_load(&mut self, ctx: &mut ModelContext<Self>) {
+        self.load_epoch += 1;
+        self.loading = true;
+        let epoch = self.load_epoch;
+        match secure_storage::background::run_or_inline(
+            |storage| Self::read_keys(storage),
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => {
+                ctx.spawn(result.wait(), move |me, keys, ctx| {
+                    if let Some(keys) = keys {
+                        me.finish_load(epoch, keys, true, ctx);
+                    }
+                });
+            }
+            // Synchronous backend: during construction nothing can be subscribed yet and the
+            // model is not registered, so don't emit then.
+            Err(keys) => {
+                let emit = self.loaded;
+                self.finish_load(epoch, keys, emit, ctx);
+            }
+        }
+    }
+
+    /// Adopts a completed read, unless a newer one was started since.
+    fn finish_load(
+        &mut self,
+        epoch: u64,
+        mut keys: ApiKeys,
+        emit: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if epoch != self.load_epoch {
+            return;
+        }
+        self.loading = false;
+        self.loaded = true;
+        let pending = std::mem::take(&mut self.pending);
+        let had_pending = !pending.is_empty();
+        pending.apply_to(&mut keys);
+        self.keys = keys;
+        if emit {
+            ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        }
+        if had_pending {
+            self.write_keys_to_secure_storage(ctx);
+        }
+    }
+
+    fn read_keys(storage: &dyn secure_storage::SecureStorage) -> ApiKeys {
+        let key_json = match storage.read_value(SECURE_STORAGE_KEY) {
             Ok(json) => json,
             Err(e) => {
                 if !matches!(e, secure_storage::Error::NotFound) {
@@ -230,27 +320,34 @@ impl ApiKeyManager {
     /// funnel through it, so the cross-process notification is stamped here
     /// rather than at each call site.
     fn write_keys_to_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
-        let keys = self.keys.clone();
-
-        let json = match serde_json::to_string(&keys) {
+        // Deferred while a read is in flight; `finish_load` writes the merged result.
+        if self.loading {
+            return;
+        }
+        let json = match serde_json::to_string(&self.keys) {
             Ok(json) => json,
             Err(e) => {
                 log::error!("Failed to serialize API keys: {e:#}");
                 return;
             }
         };
-
-        if let Err(e) = ctx.secure_storage().write_value(SECURE_STORAGE_KEY, &json) {
-            log::error!("Failed to write API keys to secure storage: {e:#}");
-            // Deliberately no revision bump on a failed write: this process is
-            // still serving the new key from memory, and stamping the revision
-            // would make its own watcher reload the *old* value back over it.
-            return;
-        }
-
-        // The keyring is shared with every other Zap process -- GUI and TUI use
-        // one app id -- so tell them to re-read it. See `crate::secret_revision`.
-        crate::secret_revision::bump_or_log();
+        // Queued behind any earlier write on the secure-storage worker, so writes land in the
+        // order they were made; runs synchronously where no worker exists.
+        let _ = secure_storage::background::run_or_inline(
+            move |storage| {
+                if let Err(e) = storage.write_value(SECURE_STORAGE_KEY, &json) {
+                    log::error!("Failed to write API keys to secure storage: {e:#}");
+                    // Deliberately no revision bump on a failed write: this process is
+                    // still serving the new key from memory, and stamping the revision
+                    // would make its own watcher reload the *old* value back over it.
+                    return;
+                }
+                // The keyring is shared with every other Zap process -- GUI and TUI use
+                // one app id -- so tell them to re-read it. See `crate::secret_revision`.
+                crate::secret_revision::bump_or_log();
+            },
+            ctx.secure_storage(),
+        );
     }
 }
 

@@ -252,6 +252,16 @@ impl MessageBridge {
             return Ok(());
         }
 
+        if !agent_event_stream_client.is_available() {
+            // Nothing can ever arrive on this route (only the disabled client is wired in this
+            // fork), so don't start a listener that would retry a permanent failure (#1475).
+            log::debug!(
+                "Claude message bridge not started for {}: agent event stream unavailable",
+                self.state_dir.display()
+            );
+            return Ok(());
+        }
+
         ensure_parent_bridge_state_dir(&self.state_dir)?;
         let run_id = self.run_id.clone();
         let state_dir = self.state_dir.clone();

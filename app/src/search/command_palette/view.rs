@@ -235,7 +235,9 @@ impl warpui::View for View {
 impl View {
     pub fn new(navigation_mode: NavigationMode, ctx: &mut ViewContext<Self>) -> Self {
         let search_bar_state = ctx.add_model(|_ctx| {
-            SearchBarState::new(SearchResultOrdering::TopDown).with_max_results(MAX_SEARCH_RESULTS)
+            SearchBarState::new(SearchResultOrdering::TopDown)
+                .with_max_results(MAX_SEARCH_RESULTS)
+                .skip_query_in_zero_state()
         });
 
         ctx.subscribe_to_model(&search_bar_state, |me, _, event, ctx| {
@@ -274,7 +276,12 @@ impl View {
             .flat_map(|name| ctx.get_binding_by_name(name).map(|binding| binding.id))
             .collect_vec();
 
-        let mixer = ctx.add_model(|_| CommandPaletteMixer::new());
+        let mixer = ctx.add_model(|_| {
+            let mut mixer = CommandPaletteMixer::new();
+            // Show sync results immediately; async sources (files, etc.) stream in below.
+            mixer.set_early_sync_commit(true);
+            mixer
+        });
         data_source_store.update(ctx, |store, ctx| {
             store.reset_search_mixer(mixer.clone(), false, ctx);
             ctx.notify();
@@ -343,18 +350,6 @@ impl View {
         app: &'a AppContext,
     ) -> Option<&'a QueryResult<CommandPaletteItemAction>> {
         self.search_bar_state.as_ref(app).selected_result()
-    }
-
-    pub fn set_fixed_query_filters(
-        &mut self,
-        title: String,
-        filters: Vec<QueryFilter>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.search_bar.update(ctx, |search_bar, ctx| {
-            search_bar.set_fixed_filters(title, filters, ctx);
-        });
-        ctx.notify();
     }
 
     /// Set the active query filter in the search bar to be `filter`.
@@ -528,6 +523,33 @@ impl View {
 
     fn on_session_source_changed(&mut self, ctx: &mut ViewContext<Self>) {
         self.compute_recent_items_for_zero_state(ctx);
+
+        // The palette opens in the zero state: nothing on screen needs the session list or a
+        // query result yet, and snapshotting every pane (prompt render + terminal model lock
+        // per pane) before the first frame cost O(panes) of open latency (#1194). Do it right
+        // after the frame instead. The first keystroke can only race it by one event-loop turn,
+        // and if the user has typed by then the deferred step re-runs the query against the
+        // fresh snapshot, so a stale one is replaced at once.
+        if self.search_bar_state.as_ref(ctx).should_show_zero_state() {
+            let _ = ctx.spawn(async {}, |me, _, ctx| {
+                me.data_source_store
+                    .update(ctx, |store, ctx| store.refresh_sessions(ctx));
+                if !me.search_bar_state.as_ref(ctx).should_show_zero_state() {
+                    me.search_bar.update(ctx, |search_bar, ctx| {
+                        search_bar.run_query(ctx);
+                    });
+                }
+            });
+            return;
+        }
+        self.refresh_sessions_and_rerun_query(ctx);
+    }
+
+    /// Snapshot the open sessions once, before the first query, rather than rebuilding every
+    /// pane's prompt on every keystroke, then run the query against it.
+    fn refresh_sessions_and_rerun_query(&mut self, ctx: &mut ViewContext<Self>) {
+        self.data_source_store
+            .update(ctx, |store, ctx| store.refresh_sessions(ctx));
 
         self.search_bar.update(ctx, |search_bar, ctx| {
             search_bar.run_query(ctx);

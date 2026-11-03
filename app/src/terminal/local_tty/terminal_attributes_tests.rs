@@ -1,4 +1,30 @@
-use super::parse_proc_stat;
+use super::{
+    is_canonical_without_echo, is_shell_or_login_hop, parse_proc_stat, parse_proc_stat_state,
+};
+use nix::sys::termios::LocalFlags;
+
+#[test]
+fn only_a_canonical_tty_with_echo_off_is_a_password_read() {
+    let cooked = LocalFlags::ICANON | LocalFlags::ECHO;
+    assert!(is_canonical_without_echo(LocalFlags::ICANON));
+    assert!(is_canonical_without_echo(
+        LocalFlags::ICANON | LocalFlags::ISIG
+    ));
+    // A running program with echo on, readline at a prompt (raw, echo off), and ssh (raw).
+    assert!(!is_canonical_without_echo(cooked));
+    assert!(!is_canonical_without_echo(LocalFlags::ISIG));
+    assert!(!is_canonical_without_echo(LocalFlags::empty()));
+}
+
+#[test]
+fn shells_and_login_hops_are_not_plain_programs() {
+    for name in ["bash", "-zsh", "fish", "ssh", "sudo", "ksu", "tmux"] {
+        assert!(is_shell_or_login_hop(name), "{name}");
+    }
+    for name in ["cat", "less", "python3", "vim", "sleep", "ncat"] {
+        assert!(!is_shell_or_login_hop(name), "{name}");
+    }
+}
 
 #[test]
 fn parses_comm_and_process_group() {
@@ -20,4 +46,11 @@ fn malformed_stat_is_none() {
     assert_eq!(parse_proc_stat(""), None);
     assert_eq!(parse_proc_stat("1 (x"), None);
     assert_eq!(parse_proc_stat("1 (x) S"), None);
+}
+
+#[test]
+fn proc_stat_state_is_read_after_the_last_paren() {
+    assert_eq!(parse_proc_stat_state("12 (bash) S 1 12 12 0"), Some('S'));
+    assert_eq!(parse_proc_stat_state("12 (we (ird) R 1 12 12 0"), Some('R'));
+    assert_eq!(parse_proc_stat_state("garbage"), None);
 }

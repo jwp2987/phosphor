@@ -341,7 +341,6 @@ ai-inline-code-diff-review-changes = Review changes
 ai-execution-profile-name-placeholder = e.g. "YOLO code"
 ai-execution-profile-delete-profile = Delete profile
 ai-notifications-mark-all-as-read = Mark all as read
-ai-assistant-copy-transcript-tooltip = Copy transcript to clipboard
 code-comment = Comment
 code-copy-file-path = Copy file path
 code-select-all = Select all
@@ -831,7 +830,6 @@ settings-keybindings-press-new-shortcut = Press new keyboard shortcut
 settings-keybindings-description = Add your own custom keybindings to existing actions below.
 settings-keybindings-use-prefix = Use
 settings-keybindings-use-suffix = to reference these keybindings in a side pane at anytime.
-settings-keybindings-not-synced-tooltip = Keyboard shortcuts are stored locally on this machine
 settings-keybindings-subheader = Configure keyboard shortcuts
 settings-keybindings-command-column = Command
 
@@ -928,7 +926,7 @@ settings-privacy-page-title = Privacy
 
 # Secret redaction
 settings-privacy-secret-redaction-title = Secret redaction
-settings-privacy-secret-redaction-description = When this setting is enabled, Phosphor will scan blocks, the contents of Library objects, and agent prompts for potential sensitive information and prevent saving or sending this data to any servers. You can customize this list via regexes.
+settings-privacy-secret-redaction-description = When this setting is enabled, Phosphor will scan blocks, the contents of Library objects, and agent prompts for potential sensitive information and prevent saving or sending this data. Everything sent to your configured model providers is redacted first: prompts, conversation history, command output, file and project context, tool results, one-shot requests, and embeddings. Images and tool schemas are not scanned. You can customize this list via regexes.
 settings-privacy-secret-redaction-enabled-by-org = Enabled by your organization.
 settings-privacy-secret-display-mode-label = Secret visual redaction mode
 settings-privacy-secret-display-mode-description = Choose how secrets are visually presented in the block list while keeping them searchable. This setting only affects what you see in the block list.
@@ -1537,6 +1535,7 @@ settings-appearance-pane-focus-follows-mouse-label = Focus follows mouse
 settings-appearance-block-compact-label = Compact mode
 settings-appearance-block-jump-bottom-label = Show Jump to Bottom of Block button
 settings-appearance-block-show-dividers-label = Show block dividers
+settings-appearance-block-show-duration-label = Show command run time with the shell prompt
 
 # Text / Fonts
 settings-appearance-font-agent-label = Agent font
@@ -2033,7 +2032,6 @@ keybinding-desc-workspace-install-warpctrl = Install the warpctrl CLI globally f
 keybinding-desc-workspace-uninstall-warpctrl = Undo global warpctrl CLI installation (warpctrl will still work within Phosphor)
 
 # AI assistant / agents
-keybinding-desc-workspace-toggle-ai-assistant = Toggle Phosphor AI
 
 # Env vars / prompts
 keybinding-desc-workspace-create-personal-env-vars = Create new personal environment variables
@@ -2299,9 +2297,6 @@ keybinding-desc-welcome-terminal-session = Terminal session
 keybinding-desc-welcome-add-repository = Add repository
 
 # AI assistant panel binding desc
-keybinding-desc-ai-assistant-close = Close Phosphor AI
-keybinding-desc-ai-assistant-focus-terminal-input = Focus Terminal Input From Phosphor AI
-keybinding-desc-ai-assistant-restart = Restart Phosphor AI
 
 # Code review binding desc
 keybinding-desc-code-review-save-all = Save all unsaved files in code review

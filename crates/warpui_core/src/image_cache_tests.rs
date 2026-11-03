@@ -948,7 +948,7 @@ fn deferred_large_svg_is_pending_then_ready_at_the_wanted_size() {
     let image_cache = ImageCache::new();
     assert!(matches!(
         deferred_big_svg(&image_cache, &asset_cache, 300),
-        DeferredImage::Pending { stale: None }
+        DeferredImage::Pending { stale: None, .. }
     ));
     let image = wait_for_deferred_big_svg(&image_cache, &asset_cache, 300);
     let Image::Static(image) = image.as_ref() else {
@@ -958,7 +958,7 @@ fn deferred_large_svg_is_pending_then_ready_at_the_wanted_size() {
 
     // A new size shows the previous one while it is rasterised, then the exact size.
     match deferred_big_svg(&image_cache, &asset_cache, 400) {
-        DeferredImage::Pending { stale: Some(stale) } => {
+        DeferredImage::Pending { stale: Some(stale), .. } => {
             assert_eq!(stale.from_bounds, Vector2I::new(300, 300));
             assert_eq!(stale.to_bounds, Vector2I::new(400, 400));
         }
@@ -1195,6 +1195,21 @@ fn evict_size_keeps_the_bookkeeping_consistent() {
     assert_eq!(total, image_cache.total_bytes.get());
 }
 
+/// #1473: sizes dropped by the per-asset cap leave no bookkeeping behind, so memory stays bounded.
+#[test]
+fn cap_evictions_leave_consistent_bookkeeping() {
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    for side in 300..(300 + 2 * MAX_RENDERED_SIZES_PER_ASSET as i32) {
+        wait_for_deferred_big_svg(&image_cache, &asset_cache, side);
+    }
+    let cached: usize = image_cache.images.read().values().map(|m| m.len()).sum();
+    assert_eq!(cached, MAX_RENDERED_SIZES_PER_ASSET);
+    assert_eq!(image_cache.used.borrow().len(), cached);
+    let total: usize = image_cache.used.borrow().values().map(|e| e.bytes).sum();
+    assert_eq!(total, image_cache.total_bytes.get());
+}
+
 #[test]
 fn large_bitmap_scaling_is_deferred() {
     let asset_cache = new_asset_cache();
@@ -1268,4 +1283,45 @@ fn an_svg_with_too_many_nodes_is_refused() {
             DeferredImage::State(AssetState::FailedToLoad(_))
         )
     });
+}
+
+/// A pending raster hands back a wait that is event-driven: not ready while the worker runs
+/// (no polling needed), ready as soon as the worker finishes, with the result available then.
+#[test]
+fn pending_raster_wait_resolves_when_the_worker_finishes() {
+    use futures::FutureExt;
+    let asset_cache = new_asset_cache();
+    let image_cache = ImageCache::new();
+    image_cache.test_hook.set(3); // the worker stalls 1.5 s
+    let DeferredImage::Pending {
+        wait, give_up_at, ..
+    } = request(&image_cache, &asset_cache, "big-test.svg", 300)
+    else {
+        panic!("expected pending");
+    };
+    assert!(
+        give_up_at.is_some(),
+        "a started raster carries its give-up deadline"
+    );
+    assert!(
+        wait.when_ready().now_or_never().is_none(),
+        "the wait must not resolve before the worker finishes"
+    );
+    // Blocks on the worker's completion signal, not on a poll loop.
+    futures::executor::block_on(wait.when_ready());
+    assert!(matches!(
+        request(&image_cache, &asset_cache, "big-test.svg", 300),
+        DeferredImage::State(AssetState::Loaded { .. })
+    ));
+}
+
+/// A completion that lands after `image_deferred` read its state but before the caller started
+/// waiting is not lost: the wait is already resolved.
+#[test]
+fn raster_wait_created_before_a_completion_is_already_ready() {
+    use futures::FutureExt;
+    let (wait, finish) = RasterWait::test_new();
+    assert!(wait.when_ready().now_or_never().is_none());
+    finish();
+    assert!(wait.when_ready().now_or_never().is_some());
 }

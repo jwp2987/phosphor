@@ -848,3 +848,392 @@ fn test_965_described_collision_heads_follow_the_owner_rules() {
         }
     });
 }
+
+/// An active agent view directly after an agent block, with the session's commands fully loaded:
+/// the context of #1183, #1184 and #1185.
+fn agent_context() -> Context {
+    Context {
+        current_input_type: InputType::AI,
+        is_agent_follow_up: true,
+        commands_fully_loaded: true,
+        in_active_agent_view: true,
+        command_data_current: true,
+    }
+}
+
+async fn route<C: InputClassifier>(
+    inner: C,
+    snapshot: ParsedTokensSnapshot,
+    context: &Context,
+) -> InputType {
+    SafetyGatedClassifier::new(inner)
+        .detect_input_type(snapshot, context)
+        .await
+        .input_type
+}
+
+/// #1183, #1184: in an agent conversation a line needs positive evidence to reach the shell,
+/// whichever way the inner classifier votes; the head word being an installed command is not
+/// enough. Fails on the old gate: `make commit port` (head described, no request words) came out
+/// Shell from the Shell classifier and was vetoed to Shell for the AI one (#906).
+#[test]
+fn test_agent_conversation_sends_command_headed_prose_to_the_agent() {
+    futures::executor::block_on(async move {
+        let prose = [
+            // #1183, as typed in the torture run.
+            "make commit port",
+            "last about build script",
+            "git can memory my to",
+            "for tell where…",
+            "make more sense",
+            "git is great",
+            // Bare `help` is a bash builtin and an everyday request: ambiguous, so the agent.
+            "help",
+            // #1184: a slash command spelling is never a path.
+            "/mod",
+            "/model gpt",
+            "/",
+        ];
+        let commands = [
+            // #964: English arguments to commands that take free words, subcommands or flags.
+            "ls this that it",
+            "ls that is it",
+            "ls the",
+            "cat this that",
+            "cp it that",
+            "rm this that it",
+            "touch the",
+            "git add this that it",
+            "git commit -m \"fix the thing\"",
+            "git commit -m fix",
+            "git status",
+            "systemctl status nginx",
+            "echo the quick brown fox",
+            "grep -rn this src",
+            "docker ps",
+            "cargo build",
+            "npm run build",
+            "kubectl get pods",
+            "make",
+            "make test",
+            "make -j4",
+            "make clean install",
+            // #1185: installed `write` is a command.
+            "write",
+            "write alice",
+            "write alice pts/1",
+            "ls -la /tmp",
+            "python3 x.py",
+            "sudo systemctl restart nginx",
+            "for i in a b; do echo $i; done",
+            "ls | grep a",
+            "/usr/bin/ls",
+            "/usr/bin/ls -la",
+            "./run.sh --fast",
+        ];
+        for buffer in prose {
+            for (name, input_type) in [
+                (
+                    "shell",
+                    route(
+                        AlwaysShellClassifier,
+                        snapshot_head_known(buffer),
+                        &agent_context(),
+                    )
+                    .await,
+                ),
+                (
+                    "ai",
+                    route(
+                        AlwaysAiClassifier,
+                        snapshot_head_known(buffer),
+                        &agent_context(),
+                    )
+                    .await,
+                ),
+            ] {
+                assert_eq!(
+                    input_type,
+                    InputType::AI,
+                    "{buffer:?} in an agent conversation, inner={name}"
+                );
+            }
+        }
+        for buffer in commands {
+            for (name, input_type) in [
+                (
+                    "shell",
+                    route(
+                        AlwaysShellClassifier,
+                        snapshot_head_known(buffer),
+                        &agent_context(),
+                    )
+                    .await,
+                ),
+                (
+                    "ai",
+                    route(
+                        AlwaysAiClassifier,
+                        snapshot_head_known(buffer),
+                        &agent_context(),
+                    )
+                    .await,
+                ),
+            ] {
+                assert_eq!(
+                    input_type,
+                    InputType::Shell,
+                    "{buffer:?} in an agent conversation, inner={name}"
+                );
+            }
+        }
+    });
+}
+
+/// Outside an agent view nothing of #1183 applies: the same lines keep today's verdicts.
+#[test]
+fn test_plain_terminal_keeps_command_headed_lines_in_the_shell() {
+    futures::executor::block_on(async move {
+        let inner_shell = AlwaysShellClassifier;
+        for buffer in [
+            "make commit port",
+            "git can memory my to",
+            "help",
+            "/usr/bin/ls",
+        ] {
+            for loaded in [true, false] {
+                assert_eq!(
+                    route(
+                        AlwaysShellClassifier,
+                        snapshot_head_known(buffer),
+                        &context(loaded)
+                    )
+                    .await,
+                    InputType::Shell,
+                    "{buffer:?} outside an agent view (loaded={loaded})"
+                );
+            }
+        }
+    });
+}
+
+/// The completion spec is the evidence when it is loaded: a first argument it describes as a
+/// subcommand makes `mytool deploy now` a command line. (`make commit port` is no longer an
+/// example: ccb537046, #1183, deliberately checks make targets before the spec description.)
+#[test]
+fn test_agent_conversation_trusts_spec_described_subcommands() {
+    futures::executor::block_on(async move {
+        for (buffer, described_index, kind) in [
+            ("mytool ship it", 1, SuggestionType::Subcommand),
+            ("mytool deploy now", 1, SuggestionType::Subcommand),
+        ] {
+            let mut snapshot = snapshot_head_known(buffer);
+            let token = snapshot.parsed_tokens[described_index].token.clone();
+            snapshot.parsed_tokens[described_index].token_description = Some(Description {
+                token,
+                description_text: Some("Subcommand".to_string()),
+                suggestion_type: kind,
+            });
+            assert_eq!(
+                route(AlwaysShellClassifier, snapshot, &agent_context()).await,
+                InputType::Shell,
+                "{buffer:?} with a spec-described first argument"
+            );
+        }
+    });
+}
+
+/// #1185: the comment is not part of the command. Fails on the old gate: the inner classifier
+/// saw the `#` text and said AI for a line whose command is the unknown-to-the-model `myscript`.
+struct HashMeansProse;
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl InputClassifier for HashMeansProse {
+    async fn detect_input_type(
+        &self,
+        input: ParsedTokensSnapshot,
+        _context: &Context,
+    ) -> InputClassificationResult {
+        let input_type = if input.buffer_text.contains('#') || input.parsed_tokens.len() > 1 {
+            InputType::AI
+        } else {
+            InputType::Shell
+        };
+        InputClassificationResult::new(input_type, InputClassifierDecisionSource::InputClassifier)
+    }
+
+    async fn classify_input(
+        &self,
+        _input: ParsedTokensSnapshot,
+        _context: &Context,
+    ) -> anyhow::Result<ClassificationResult> {
+        Ok(ClassificationResult::pure_shell(
+            InputClassifierDecisionSource::ShellHeuristic,
+        ))
+    }
+}
+
+#[test]
+fn test_trailing_comment_is_not_classified() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            "myscript    # for its own body of text",
+            "myscript # tell me why the build failed",
+            "myscript\t# what is this",
+        ] {
+            assert_eq!(
+                route(
+                    HashMeansProse,
+                    snapshot_without_descriptions(buffer),
+                    &context(true)
+                )
+                .await,
+                InputType::Shell,
+                "{buffer:?}"
+            );
+            // In an agent conversation the head must be a known command (#1183), or the line is
+            // routed to the agent for lack of command evidence whatever its comment says.
+            assert_eq!(
+                route(
+                    HashMeansProse,
+                    snapshot_head_known(buffer),
+                    &agent_context()
+                )
+                .await,
+                InputType::Shell,
+                "{buffer:?} in an agent conversation"
+            );
+        }
+        // A `#` that is not a trailing comment still reaches the classifier.
+        for buffer in ["myscript a#b", "myscript '# not a comment'"] {
+            assert_eq!(
+                route(
+                    HashMeansProse,
+                    snapshot_without_descriptions(buffer),
+                    &context(true)
+                )
+                .await,
+                InputType::AI,
+                "{buffer:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn test_strip_trailing_comment_table() {
+    use crate::util::strip_trailing_comment;
+    for (buffer, expected) in [
+        ("ls # list", "ls"),
+        ("rec    # for its own body …", "rec"),
+        ("ls\t# list", "ls"),
+        ("echo hi # a # b", "echo hi"),
+        ("echo \"a # b\" # c", "echo \"a # b\""),
+        ("echo 'a # b'", "echo 'a # b'"),
+        ("echo a#b", "echo a#b"),
+        ("echo $# args", "echo $# args"),
+        ("echo \\# not", "echo \\# not"),
+        ("# whole line", "# whole line"),
+        ("ls", "ls"),
+    ] {
+        let snapshot = snapshot_without_descriptions(buffer);
+        let stripped = strip_trailing_comment(&snapshot);
+        assert_eq!(stripped.buffer_text, expected, "{buffer:?}");
+        assert!(
+            stripped
+                .parsed_tokens
+                .iter()
+                .all(|token| token.token.span.end() <= stripped.buffer_text.len()),
+            "{buffer:?}: tokens past the stripped text"
+        );
+    }
+}
+
+#[test]
+fn test_slash_command_spelling_versus_path() {
+    use crate::util::starts_with_slash_command_not_path;
+    for text in ["/mod", "/model gpt", "/", "  /plan", "/agent go now"] {
+        assert!(starts_with_slash_command_not_path(text), "{text:?}");
+    }
+    for text in [
+        "/usr/bin/ls",
+        "/usr/bin/ls -la",
+        "/bin/sh.",
+        "ls /mod",
+        "mod",
+        "",
+    ] {
+        assert!(!starts_with_slash_command_not_path(text), "{text:?}");
+    }
+}
+
+/// #1604: the inner (model) classifier is shown at most `MAX_MODEL_INPUT_BYTES` of the text, cut
+/// at a char boundary, while the gate's own rules read the whole buffer: a 10 MB paste costs the
+/// tokenizer no more than a 4 KiB line, and a shell line over the cap is still decided by the
+/// unambiguous-syntax rule before any model sees it.
+#[test]
+fn test_gate_bounds_what_the_inner_classifier_sees() {
+    use std::sync::Mutex;
+    use crate::util::MAX_MODEL_INPUT_BYTES;
+
+    struct Recording(Mutex<Vec<usize>>);
+
+    #[cfg_attr(not(target_family = "wasm"), async_trait)]
+    #[cfg_attr(target_family = "wasm", async_trait(?Send))]
+    impl InputClassifier for Recording {
+        async fn detect_input_type(
+            &self,
+            input: ParsedTokensSnapshot,
+            _context: &Context,
+        ) -> InputClassificationResult {
+            self.0.lock().unwrap().push(input.buffer_text.len());
+            InputClassificationResult::new(
+                InputType::AI,
+                InputClassifierDecisionSource::ShellHeuristic,
+            )
+        }
+
+        async fn classify_input(
+            &self,
+            input: ParsedTokensSnapshot,
+            _context: &Context,
+        ) -> anyhow::Result<ClassificationResult> {
+            self.0.lock().unwrap().push(input.buffer_text.len());
+            Ok(ClassificationResult::pure_ai(
+                InputClassifierDecisionSource::ShellHeuristic,
+            ))
+        }
+    }
+
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(Recording(Mutex::new(Vec::new())));
+        // Prose over the cap reaches the model, cut to the cap.
+        let prose = "the build fails on my machine with a strange error ".repeat(200);
+        assert!(prose.len() > MAX_MODEL_INPUT_BYTES);
+        let result = gated
+            .detect_input_type(snapshot_without_descriptions(&prose), &context(false))
+            .await;
+        assert_eq!(result.input_type, InputType::AI);
+        let _ = gated
+            .classify_input(snapshot_without_descriptions(&prose), &context(false))
+            .await;
+        {
+            let seen = gated.inner.0.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(seen.iter().all(|&len| len <= MAX_MODEL_INPUT_BYTES), "{seen:?}");
+        }
+        // A shell line over the cap never reaches the model at all.
+        let shell = format!("echo {}; echo END", "x ".repeat(3000));
+        assert!(shell.len() > MAX_MODEL_INPUT_BYTES);
+        let result = gated
+            .detect_input_type(snapshot_without_descriptions(&shell), &context(false))
+            .await;
+        assert_eq!(result.input_type, InputType::Shell);
+        assert_eq!(
+            result.source,
+            InputClassifierDecisionSource::UnambiguousShellSyntax
+        );
+        assert_eq!(gated.inner.0.lock().unwrap().len(), 2);
+    });
+}

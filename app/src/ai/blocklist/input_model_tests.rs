@@ -884,6 +884,37 @@ fn explicit_toggle_covers_the_buffer_it_was_made_for() {
     });
 }
 
+/// #1375 (INP-A2): a claimed explicit write stands for its buffer however long ago it was made,
+/// and ends when different text is requested; no clock decides either.
+#[test]
+fn claimed_explicit_write_is_event_bound_not_time_bound() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        let explicit_snapshot = parsed(PREFILTERED_COMMAND).await;
+        let new_text = "cat foo.txt | grep -i errors";
+        let new_snapshot = parsed(new_text).await;
+
+        input_model.update(&mut app, |model, ctx| {
+            model.set_input_type(InputType::AI, ctx);
+        });
+        request_detection(&mut app, &input_model, explicit_snapshot);
+        // Pretend the write is far older than the old 250 ms window.
+        input_model.update(&mut app, |model, _| {
+            let explicit = model.explicit_input_type_set.as_mut().unwrap();
+            explicit.at = Instant::now() - std::time::Duration::from_secs(60);
+            assert!(explicit.is_within_window());
+            assert!(model.is_detection_suppressed_by_explicit_set(PREFILTERED_COMMAND));
+        });
+        // Different text is a new question and ends it.
+        request_detection(&mut app, &input_model, new_snapshot);
+        input_model.read(&app, |model, _| {
+            assert!(model.explicit_input_type_set.is_none());
+            assert_eq!(model.input_type(), InputType::Shell);
+        });
+    });
+}
+
 /// #933: text the typeahead hand-off inserts right after a forced-shell submit falls inside the
 /// 250 ms explicit-write window, where the first detection request is swallowed and the buffer
 /// is never classified. Clearing the explicit write for that text makes the request register.
@@ -1031,6 +1062,8 @@ fn settle_for_submit_with_head(
             &snapshot_without_parse(buffer_text),
             head_unknown_to_shell,
             false,
+            false,
+            ShellFamily::Unknown,
             ctx,
         )
     })
@@ -1433,37 +1466,45 @@ fn pending_prose_with_unknown_first_word_settles_to_ai_at_submit() {
                 model.apply_autodetected_input_type(InputType::Shell, ctx);
                 model.note_detection_requested(text.to_owned());
             });
-            // Never a Shell-ward settle.
-            assert!(!settle_for_submit_with_head(
-                app,
-                &input_model,
-                text,
-                unknown
-            ));
+            // The settle may report a Shell decision for command-shaped text (`./run ...`, an
+            // assignment prefix): the inherited Shell then simply stands. What is asserted below
+            // is the resulting type, so a prose line settled Shell-ward still fails there.
+            settle_for_submit_with_head(app, &input_model, text, unknown);
             input_model.read(app, |model, _| model.input_type())
         };
-        // No #834 request word (`the`, `it`, ...), so only the unknown-head rule can move these (`my`, `when`, `which`, `can`, `where` are not request words).
+        // No #834 request word (`the`, `it`, ...): two words that address someone (`my`, `when`,
+        // `which`, `can`, `where`) make a sentence of these whatever the session knows about the
+        // head (#1234: a user function named `tell` is one click away; running prose is not).
         for prose in [
             "tell Josh when my build finished",
             "frobnicate which tests can fail",
             "explain where my config lives",
         ] {
             assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
-            // Head is an alias/function/builtin/PATH executable, or the session has no data:
-            // the caller reports `false`, and the line keeps the inherited Shell.
+            assert_eq!(enter(&mut app, prose, false), InputType::AI, "{prose}");
+        }
+        // With the head known absent (#1019): a request opener, a sentence comma or an English
+        // word that is no command here reads as prose; a shell operator does not make a command of
+        // a word the shell does not know (#696).
+        for prose in [
+            "tell Josh about outages",
+            "frobnicate widgets,",
+            "summarize when my build finished | less",
+            "summarize when my build finished && echo it",
+        ] {
+            assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
+            // The session cannot say: nothing moves the inherited Shell.
             assert_eq!(enter(&mut app, prose, false), InputType::Shell, "{prose}");
         }
+        // A path, an assignment prefix, a one-off keyword or a flag is command shape whatever the
+        // session knows about the head (#833).
         for kept in [
             "frobnicate",
-            "frobnicate widgets,",
             "./run when my build finished",
             "~/bin/run when my build finished",
             "FOO=1 summarize when my build finished",
-            "summarize when my build finished | less",
-            "summarize when my build finished && echo it",
             "echo when my build finished",
             "mytool --force run migrations for prod",
-            "tell Josh about outages",
         ] {
             assert_eq!(enter(&mut app, kept, true), InputType::Shell, "{kept}");
         }
@@ -1505,6 +1546,8 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
                     &snapshot_without_parse(text),
                     false,
                     known,
+                    false,
+                    ShellFamily::Unknown,
                     ctx,
                 );
             });
@@ -1522,7 +1565,6 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
             "env FOO=1 grep this the file",
             "time grep this the file",
             "timeout 5 grep this the file",
-            "sudo grep this the file",
         ] {
             assert_eq!(
                 enter(&mut app, command, true),
@@ -1530,6 +1572,32 @@ fn pending_known_command_line_settles_to_shell_at_submit() {
                 "{command}"
             );
             assert_eq!(enter(&mut app, command, false), InputType::AI, "{command}");
+        }
+        // `sudo` is a one-off shell keyword: outside an agent conversation the routing procedure
+        // (#1234) runs a line headed by it as a command whatever the session knows, so the
+        // inherited AI does not stand for it. #1291 judges it on what it wraps only INSIDE a
+        // conversation (this fixture has no agent view; `routing_corpus` covers that surface).
+        for command in ["sudo grep this the file"] {
+            for known in [true, false] {
+                assert_eq!(
+                    enter(&mut app, command, known),
+                    InputType::Shell,
+                    "{command} (known: {known})"
+                );
+            }
+        }
+        // Request shape (#834/#965) still sends a sentence to the agent here, so prose addressed
+        // to it does not run as root even in the plain terminal.
+        for prose in ["sudo rm the old logs for me"] {
+            assert_eq!(enter(&mut app, prose, true), InputType::AI, "{prose}");
+        }
+        // Nothing wrapped: a privilege shell or credential refresh is a command.
+        for command in ["sudo -s", "sudo -v", "sudo"] {
+            assert_eq!(
+                enter(&mut app, command, true),
+                InputType::Shell,
+                "{command}"
+            );
         }
         for prose in [
             "make sure the build passes",
@@ -1556,6 +1624,37 @@ fn enter_waits_for_the_verdict_only_for_unclassified_prose() {
     assert!(!wait(true, false, true, Classifiable, true), "second Enter after giving up");
 }
 
+/// #1158/#1351: a waiting Enter keeps waiting while the classifier's own compute is within the cap;
+/// past it, a slow verdict is dropped and the Enter submits on the Enter-time rules. It is never
+/// kept in the editor, however long it waited.
+#[test]
+fn enter_verdict_wait_is_bounded_and_never_swallows_the_enter() {
+    use std::time::Duration;
+    let decide = enter_verdict_wait_decision;
+    assert_eq!(decide(false, Duration::ZERO), EnterVerdictWait::Submit);
+    assert_eq!(
+        decide(false, Duration::from_secs(60)),
+        EnterVerdictWait::Submit
+    );
+    assert_eq!(decide(true, Duration::ZERO), EnterVerdictWait::Wait);
+    assert_eq!(
+        decide(true, ENTER_VERDICT_BUDGET - Duration::from_millis(1)),
+        EnterVerdictWait::Wait
+    );
+    assert_eq!(
+        decide(true, ENTER_VERDICT_BUDGET),
+        EnterVerdictWait::SubmitWithoutVerdict
+    );
+    assert_eq!(
+        decide(true, Duration::from_secs(5)),
+        EnterVerdictWait::SubmitWithoutVerdict
+    );
+    assert!(
+        ENTER_VERDICT_BUDGET <= Duration::from_millis(20),
+        "the budget is local compute plus the 10 ms debounce, never I/O"
+    );
+}
+
 #[test]
 fn typeahead_is_young_only_while_the_provenance_lasts() {
     App::test((), |mut app| async move {
@@ -1578,35 +1677,321 @@ fn typeahead_is_young_only_while_the_provenance_lasts() {
     });
 }
 
-/// #968: a huge paste never changes the input type in either direction. Forcing Shell would
-/// run pasted prose/logs on Enter; forcing AI would send them to the model.
+/// #968 -> #1604: a huge paste is classified exactly like its first line, by the same rules, in
+/// the background. Shell metacharacters in a 20 KB script in AI mode used to be left to the
+/// inherited type (so the script went to the agent); now the script runs in the shell and the
+/// prose goes to the agent, whichever type the user started in. The verdict is not synchronous
+/// (the request is still pending right after it is made, the rules run off the UI thread) and
+/// lands within the text's compute allowance.
 #[test]
-fn huge_buffer_never_changes_input_type() {
-    assert!(!exceeds_autodetect_limit(
-        &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES)
-    ));
-    assert!(exceeds_autodetect_limit(
-        &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES + 1)
-    ));
+fn huge_buffer_is_classified_like_a_short_one_in_the_background() {
+    assert!(!routes_off_thread(&"a".repeat(MAX_SYNC_ROUTING_BYTES)));
+    assert!(routes_off_thread(&"a".repeat(MAX_SYNC_ROUTING_BYTES + 1)));
 
-    let prose = "please explain why the build fails on my machine today. ".repeat(1000);
-    // The attack: shell metacharacters in a big paste while in AI mode must stay AI.
-    let attack = "rm -rf ~/x ; echo hi\n".repeat(1000);
+    let prose = "please explain why the build failed on my machine ".repeat(1000);
+    let script = "rm -rf ~/x ; echo hi\n".repeat(1000);
+    assert!(prose.len() > 16 * 1024 && script.len() > 16 * 1024);
     for (start, text, expected) in [
         (AI_UNLOCKED, prose.clone(), InputType::AI),
-        (SHELL_UNLOCKED, prose, InputType::Shell),
-        (AI_UNLOCKED, attack.clone(), InputType::AI),
-        (SHELL_UNLOCKED, attack, InputType::Shell),
+        (SHELL_UNLOCKED, prose, InputType::AI),
+        (AI_UNLOCKED, script.clone(), InputType::Shell),
+        (SHELL_UNLOCKED, script, InputType::Shell),
     ] {
         App::test((), |mut app| async move {
             let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
             let input_model = build_autodetecting_input_model(&mut app, start);
-            assert!(exceeds_autodetect_limit(&text));
             request_detection(&mut app, &input_model, snapshot_without_parse(&text));
             input_model.read(&app, |model, ctx| {
-                assert_eq!(model.input_type(), expected);
+                assert!(
+                    model.is_detection_pending_for(&text, ctx),
+                    "a buffer over the sync cap is not routed on the UI thread ({} bytes)",
+                    text.len()
+                );
+                assert!(model.detection_job_in_flight());
+            });
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(
+                    model.input_type(),
+                    expected,
+                    "{} bytes from {start:?}",
+                    text.len()
+                );
                 assert!(!model.is_detection_pending_for(&text, ctx));
+                assert!(!model.detection_job_in_flight());
             });
         });
     }
+}
+
+/// #1604 (review): a SHORT buffer with no parse (an Enter that beat the debounced parse, a test
+/// snapshot) is still classified, synchronously, from the head read out of the text: it must not
+/// be settled without a verdict (which left the inherited type to decide). The head window is
+/// bounded, so a huge buffer with no whitespace is not scanned to its end for its first word.
+#[test]
+fn a_short_line_without_a_parse_is_classified_from_its_text() {
+    for (text, expected) in [
+        ("echo PASTE-G1; echo PASTE-H1", InputType::Shell),
+        ("please explain why the build failed", InputType::AI),
+    ] {
+        App::test((), |mut app| async move {
+            let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+            let start = if expected == InputType::Shell {
+                AI_UNLOCKED
+            } else {
+                SHELL_UNLOCKED
+            };
+            let input_model = build_autodetecting_input_model(&mut app, start);
+            request_detection(&mut app, &input_model, snapshot_without_parse(text));
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), expected, "{text:?}");
+                assert!(
+                    !model.is_detection_pending_for(text, ctx),
+                    "{text:?}: decided synchronously, under the sync cap"
+                );
+            });
+        });
+    }
+    assert_eq!(head_word_from_text("  echo hi"), Some("echo".to_owned()));
+    assert_eq!(head_word_from_text("   \n\t "), None);
+    // More than the 4 KiB window of leading blank lines still finds the head.
+    assert_eq!(
+        head_word_from_text(&format!("{}echo hi", " \n".repeat(3000))),
+        Some("echo".to_owned())
+    );
+    let no_whitespace = "x".repeat(10 * 1024 * 1024);
+    let started = std::time::Instant::now();
+    let head = head_word_from_text(&no_whitespace).expect("a word");
+    assert_eq!(head.chars().count(), 256);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(100),
+        "{:?}: the head window is bounded",
+        started.elapsed()
+    );
+}
+
+/// #1604: the Enter's compute budget grows with the text it waits for, so a large paste's linear
+/// classification is waited for instead of handed back; a typed line's budget is unchanged.
+#[test]
+fn enter_verdict_budget_grows_with_the_text() {
+    use std::time::Duration;
+    assert_eq!(enter_verdict_budget_for(0), ENTER_VERDICT_BUDGET);
+    assert_eq!(
+        enter_verdict_budget_for(MAX_SYNC_ROUTING_BYTES),
+        ENTER_VERDICT_BUDGET
+    );
+    assert_eq!(
+        large_text_compute_allowance(MAX_SYNC_ROUTING_BYTES + 4096),
+        Duration::from_millis(1)
+    );
+    let one_mb = 1024 * 1024;
+    assert_eq!(
+        enter_verdict_budget_for(one_mb),
+        ENTER_VERDICT_BUDGET + Duration::from_millis(255)
+    );
+    let ten_mb = 10 * one_mb;
+    assert!(
+        enter_verdict_budget_for(ten_mb) >= Duration::from_millis(2500)
+            && enter_verdict_budget_for(ten_mb) <= Duration::from_secs(3),
+        "{:?}",
+        enter_verdict_budget_for(ten_mb)
+    );
+    // The size-aware decision: a 10 MB paste keeps waiting past the typed-line budget and gives
+    // up only past its own.
+    assert_eq!(
+        enter_verdict_wait_decision_for(true, ENTER_VERDICT_BUDGET, ten_mb),
+        EnterVerdictWait::Wait
+    );
+    assert_eq!(
+        enter_verdict_wait_decision_for(true, enter_verdict_budget_for(ten_mb), ten_mb),
+        EnterVerdictWait::SubmitWithoutVerdict
+    );
+    assert_eq!(
+        enter_verdict_wait_decision_for(false, Duration::from_secs(60), ten_mb),
+        EnterVerdictWait::Submit
+    );
+    // A typed line: identical to the size-less decision.
+    assert_eq!(
+        enter_verdict_wait_decision_for(true, ENTER_VERDICT_BUDGET, 40),
+        enter_verdict_wait_decision(true, ENTER_VERDICT_BUDGET)
+    );
+}
+
+/// #1604: the history matcher indexes the whole buffer when it is built, so it is built only once
+/// a candidate's length allows a match; the length test is the matcher's own upper bound.
+#[test]
+fn history_close_match_is_ruled_out_by_length_before_the_matcher_is_built() {
+    let cutoff = HISTORY_ENTRY_MATCH_CUTOFF;
+    assert!(close_match_possible_by_length(100, 100, cutoff));
+    assert!(close_match_possible_by_length(0, 0, cutoff));
+    // 2 * 90 / 190 = 0.947 >= 0.9; 2 * 80 / 180 = 0.889 < 0.9.
+    assert!(close_match_possible_by_length(90, 100, cutoff));
+    assert!(close_match_possible_by_length(100, 90, cutoff));
+    assert!(!close_match_possible_by_length(80, 100, cutoff));
+    assert!(!close_match_possible_by_length(100, 4096, cutoff));
+    assert!(!close_match_possible_by_length(10 * 1024 * 1024, 4096, cutoff));
+    // A 10 MB buffer against a 4 KiB history: no entry can match, so the matcher is never built
+    // and the job returns at once.
+    let buffer = "x".repeat(10 * 1024 * 1024);
+    let entries: Vec<(String, Option<DateTime<Local>>)> =
+        (0..100).map(|i| (format!("echo {i}"), None)).collect();
+    let started = std::time::Instant::now();
+    let outcome = futures::executor::block_on(most_recent_close_match(
+        &buffer,
+        entries.iter().map(|(command, ts)| (command.as_str(), *ts)),
+        cutoff,
+    ));
+    assert!(matches!(outcome, HistoryMatch::NoMatch));
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "{:?}: the 10 MB buffer was indexed although no entry could match",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn shell_history_candidates_accepts_shared_snapshot_entries() {
+    // #1137: the filter now runs in the spawned future over `Arc<HistoryEntry>` snapshots
+    // (`History::commands_shared`), not over borrowed entries on the main thread. Same result,
+    // same oldest-first order.
+    let snapshot: Vec<std::sync::Arc<HistoryEntry>> = vec![
+        std::sync::Arc::new(history_entry("ls -a", Some(0))),
+        std::sync::Arc::new(history_entry("say hello", Some(0))),
+        std::sync::Arc::new(history_entry("ls -l", Some(0))),
+    ];
+    let candidates = shell_history_candidates(snapshot.iter().map(|entry| entry.as_ref()), "ls -");
+    let commands: Vec<&str> = candidates.iter().map(|(c, _)| c.as_str()).collect();
+    assert_eq!(commands, ["ls -a", "ls -l"]);
+}
+
+/// #1183 (Mac verification): `make commit port` is a close match of earlier `make` history, and
+/// a history verdict returned before the classifier's safety gate ran, so the line ran in the
+/// shell in an idle agent conversation. History may not decide a line with no command evidence
+/// there; outside an agent view, or with evidence, it still may.
+#[test]
+fn history_close_match_is_not_allowed_without_command_evidence_in_agent_conversation() {
+    let snapshot = snapshot_without_parse;
+    assert!(!history_close_match_allowed(
+        true,
+        &snapshot("make commit port")
+    ));
+    assert!(!history_close_match_allowed(
+        true,
+        &snapshot("git can memory my to")
+    ));
+    // Evidence, or no agent conversation: history keeps its say.
+    assert!(history_close_match_allowed(true, &snapshot("make test")));
+    assert!(history_close_match_allowed(true, &snapshot("ls -la")));
+    assert!(history_close_match_allowed(
+        false,
+        &snapshot("make commit port")
+    ));
+}
+
+#[test]
+fn a_verdict_wakes_observers_only_when_something_asked_whether_it_is_pending() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        input_model.update(&mut app, |model, _| {
+            model.note_detection_requested(PREFILTERED_COMMAND.to_owned());
+        });
+        // Typing alone asks nobody to wait: settling must not re-render the message bars.
+        input_model.read(&app, |model, _| {
+            assert!(!model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+        // An Enter that finds the verdict pending registers the wait.
+        input_model.read(&app, |model, ctx| {
+            assert!(model.is_detection_pending_for(PREFILTERED_COMMAND, ctx));
+            assert!(model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+        // Settling consumes the wake-up.
+        let snapshot = parsed(PREFILTERED_COMMAND).await;
+        request_detection(&mut app, &input_model, snapshot);
+        input_model.read(&app, |model, _| {
+            assert!(!model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+    });
+}
+
+struct NotifyCounter(usize);
+impl warpui::Entity for NotifyCounter {
+    type Event = ();
+}
+
+fn count_notifies(
+    app: &mut App,
+    model: &ModelHandle<BlocklistAIInputModel>,
+) -> ModelHandle<NotifyCounter> {
+    app.add_model(|ctx: &mut warpui::ModelContext<NotifyCounter>| {
+        ctx.observe(model, |me, _, _| me.0 += 1);
+        NotifyCounter(0)
+    })
+}
+
+#[test]
+fn a_verdict_that_changes_the_input_type_notifies_even_with_no_waiter() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        // Starts as AI; the #808 pre-filter settles this command as Shell.
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        let counter = count_notifies(&mut app, &input_model);
+        let snapshot = parsed(PREFILTERED_COMMAND).await;
+        request_detection(&mut app, &input_model, snapshot);
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_type(), InputType::Shell);
+            assert!(!model.settle_wake_wanted.load(AtomicOrdering::Relaxed));
+        });
+        assert!(
+            counter.read(&app, |c, _| c.0) >= 1,
+            "a flip AI -> Shell must re-render observers"
+        );
+    });
+}
+
+#[test]
+fn a_verdict_that_changes_nothing_does_not_notify_without_a_waiter() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        // Already Shell: the same verdict changes nothing visible.
+        let input_model = build_autodetecting_input_model(&mut app, SHELL_UNLOCKED);
+        let counter = count_notifies(&mut app, &input_model);
+        let snapshot = parsed(PREFILTERED_COMMAND).await;
+        request_detection(&mut app, &input_model, snapshot);
+        assert_eq!(counter.read(&app, |c, _| c.0), 0);
+    });
+}
+
+/// #1203: a line the session's shell ran before, verbatim and successfully, settles to Shell at
+/// Enter without waiting for the history matcher; the caller's statement is taken only with
+/// command evidence (#1183), and without it the line waits for its verdict as before.
+#[test]
+fn pending_line_that_ran_before_exactly_settles_to_shell_at_submit() {
+    App::test((), |mut app| async move {
+        let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+        let input_model = build_autodetecting_input_model(&mut app, AI_UNLOCKED);
+        let enter = |app: &mut App, text: &str, ran_before: bool| {
+            inherit_ai(app, &input_model);
+            input_model.update(app, |model, ctx| {
+                model.note_detection_requested(text.to_owned());
+                model.settle_pending_detection_for_submit(
+                    &snapshot_without_parse(text),
+                    false,
+                    false,
+                    ran_before,
+                    ShellFamily::Unknown,
+                    ctx,
+                );
+            });
+            input_model.read(app, |model, _| model.input_type())
+        };
+        // `yesterday` is a prose word, so the pre-filter leaves this to the classifier; history
+        // decides it at once.
+        assert_eq!(enter(&mut app, "git log --since yesterday", true), InputType::Shell);
+        assert_eq!(
+            enter(&mut app, "git log --since yesterday", false),
+            InputType::AI,
+            "without the history statement the inherited type stands until the verdict"
+        );
+    });
 }

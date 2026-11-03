@@ -142,7 +142,9 @@ pub enum SshExtensionInstallMode {
     AlwaysAsk,
     /// Automatically install and connect without prompting.
     AlwaysInstall,
-    /// Never install; fall back to legacy warpification.
+    /// Never install; fall back to legacy warpification. This only stops the
+    /// install: a remote server binary that is already on the host is still
+    /// started and used (there is no "off" value; #1171).
     NeverInstall,
 }
 
@@ -153,7 +155,7 @@ maybe_define_setting!(SshExtensionInstallModeSetting, group: WarpifySettings, {
     sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
     private: false,
     toml_path: "warpify.ssh.ssh_extension_install_mode",
-    description: "Controls SSH extension installation behavior.",
+    description: "Controls SSH extension installation behavior. never_install only stops the installation: if the remote server binary is already present on the host it is still used.",
 });
 
 impl SshExtensionInstallMode {
@@ -264,8 +266,13 @@ lazy_static! {
 
     /// These are known compatible subshell commands
     static ref SUBSHELL_COMMAND_REGEXES: Vec<Regex> = vec![
-        // Matches "bash", "/bin/bash", any "./any/path/to/bash", plus the zsh/fish equivalents
-        Regex::new(r"^/?([\w\.-]+/)*(bash|zsh|fish)$").expect("Direct shell regex invalid"),
+        // Matches "bash", "/bin/bash", any "./any/path/to/bash", plus the zsh/fish equivalents,
+        // each optionally followed by flags that leave the shell interactive and keep its rc
+        // files: "-i", "-l", "-il"/"-li", "--login", "--interactive" (#1101). Anything else is
+        // rejected by the trailing anchor: "-c <cmd>" and "<script>" run and exit, and
+        // "--norc"/"--noprofile"/"-f" are unmanaged by design, as is "--version"/"--help".
+        // A leading `VAR=x`/`env` prefix is already stripped by the caller (#1098).
+        Regex::new(r"^/?([\w\.-]+/)*(bash|zsh|fish)(\s+(-i|-l|-il|-li|--login|--interactive))*$").expect("Direct shell regex invalid"),
 
         // Matches "docker run [whatever args] bash", plus zsh/fish/pwsh/powershell equivalents.
         // Optionally allows single or double quotes around the shell name. The container
@@ -374,30 +381,6 @@ impl WarpifySettings {
             enable_ssh_wrapper: EnableSshWrapper::new_from_storage(ctx),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new_from_storage(ctx),
             ssh_extension_install_mode: SshExtensionInstallModeSetting::new_from_storage(ctx),
-        }
-    }
-
-    #[cfg(any(test, feature = "integration_tests"))]
-    #[allow(dead_code)]
-    pub fn new_with_defaults(_ctx: &mut ModelContext<Self>) -> Self {
-        let added_subshell_commands = AddedSubshellCommands::new(None);
-        let subshell_command_denylist = SubshellCommandsDenylist::new(None);
-        let ssh_hosts_denylist = SshHostsDenylist::new(None);
-        Self {
-            parsed_added_subshell_commands: Self::parse_added_subshell_commands(
-                &added_subshell_commands,
-            ),
-            added_subshell_commands,
-            parsed_subshell_command_denylist: Self::parse_subshell_command_denylist(
-                &subshell_command_denylist,
-            ),
-            subshell_command_denylist,
-            parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
-            ssh_hosts_denylist,
-            enable_ssh_warpification: EnableSshWarpification::new(None),
-            enable_ssh_wrapper: EnableSshWrapper::new(None),
-            use_ssh_tmux_wrapper: UseSshTmuxWrapper::new(None),
-            ssh_extension_install_mode: SshExtensionInstallModeSetting::new(None),
         }
     }
 

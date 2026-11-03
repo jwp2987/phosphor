@@ -1,0 +1,51 @@
+{
+ "summary_line": "Summary [  26.481s] 3222 tests run: 3217 passed, 5 failed, 19 skipped",
+ "duration_s": 26.481,
+ "run": 3222,
+ "passed": 3217,
+ "failed": 5,
+ "timed_out": 0,
+ "skipped": 19,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "markdown_parser::corpus",
+   "test": "corpus_snapshots_gfm_tables",
+   "seconds": 0.219
+  },
+  {
+   "kind": "FAIL",
+   "crate": "markdown_parser::corpus",
+   "test": "corpus_snapshots_plain",
+   "seconds": 0.2
+  },
+  {
+   "kind": "SIGABRT",
+   "crate": "warp_editor::mermaid_corpus",
+   "test": "hostile_sources_never_panic",
+   "seconds": 8.283
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp_editor::mermaid_corpus",
+   "test": "invalid_diagram_outcomes_are_snapshotted",
+   "seconds": 0.163
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp_editor::mermaid_corpus",
+   "test": "valid_diagram_summaries_are_stable",
+   "seconds": 0.17
+  }
+ ],
+ "regressions": [],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-workspace-rest",
+ "status": "failed",
+ "duration": 95.127451
+}

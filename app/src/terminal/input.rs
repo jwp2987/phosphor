@@ -3,12 +3,16 @@ pub mod buffer_model;
 mod classic;
 mod cli_agent;
 mod common;
+mod enter_queue;
+pub(crate) use enter_queue::text_of_entries_typed_after;
 pub mod conversations;
 pub mod decorations;
 pub mod inline_history;
 pub mod inline_menu;
 pub mod message_bar;
 pub mod models;
+#[cfg(not(target_family = "wasm"))]
+mod paste_queue;
 pub mod plans;
 pub mod profiles;
 pub mod prompts;
@@ -28,9 +32,14 @@ use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentAttachment, AIAgentExchangeId, CancellationReason};
 use crate::ai::agent_conversations_model::AgentConversationsModel;
+use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
-use crate::ai::blocklist::input_model::{EnterProvenance, should_wait_for_verdict_before_submit};
-use crate::terminal::model::typeahead_handoff::{YoungSubmit, young_submit_decision};
+use crate::ai::blocklist::compute_clock::ComputeClock;
+use crate::ai::blocklist::input_model::{
+    EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision_for,
+    large_text_compute_allowance, routes_off_thread, shell_family,
+    should_wait_for_verdict_before_submit,
+};
 use instant::Instant;
 use warpui::r#async::Timer;
 use crate::ai::blocklist::agent_view::{AgentViewEntryOrigin, EphemeralMessageModel};
@@ -57,7 +66,7 @@ use crate::ai::blocklist::misroute_recovery::{
     agent_view_entry_keeps_offer, MisrouteOffer, RouteReason, SubmitRoute,
 };
 use crate::server::telemetry::{PaletteSource, SlashCommandAcceptedDetails, SlashMenuSource};
-use crate::settings::PrivacySettings;
+use crate::settings::{PrivacySettings, SelectionSettings};
 use crate::suggestions::ignored_suggestions_model::{
     IgnoredSuggestionsModel, IgnoredSuggestionsModelEvent, SuggestionType,
 };
@@ -94,11 +103,13 @@ use crate::terminal::input::user_query::{UserQueryMenuEvent, UserQueryMenuView};
 use crate::terminal::model::session::active_session::ActiveSession;
 use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::terminal::package_installers::command_at_cursor_has_common_package_installer_prefix;
+use crate::terminal::paste_sequencer::paste_backstop;
 use crate::terminal::prompt_render_helper::should_render_ps1_prompt;
 use crate::terminal::universal_developer_input::AtContextMenuDisabledReason;
 use crate::terminal::view::CodeDiffAction;
 use crate::terminal::CLIAgent;
 use crate::util::bindings::keybinding_name_to_normalized_string;
+use crate::util::clipboard::clipboard_content_with_escaped_paths;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor;
 use crate::util::truncation::truncate_from_end;
@@ -108,8 +119,6 @@ use crate::ASSETS;
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 
-use crate::ai::ambient_agents::AttachmentInput;
-use crate::ai::attachment_utils::MAX_ATTACHMENT_SIZE_BYTES;
 use crate::ai::block_context::BlockContext;
 use crate::ai::blocklist::AttachmentType;
 use crate::ai::mcp::TemplatableMCPServerManager;
@@ -133,7 +142,7 @@ use crate::{
         },
         AIRequestUsageModel,
     },
-    ai_assistant::execution_context::WarpAiExecutionContext,
+    ai::execution_context::WarpAiExecutionContext,
     appearance::{Appearance, AppearanceEvent},
     channel::{Channel, ChannelState},
     cloud_object::{
@@ -233,7 +242,6 @@ use crate::{
 
 use crate::terminal::shared_session::protocol::ParticipantId;
 use ai::skills::SkillReference;
-use base64::Engine as _;
 #[cfg(feature = "local_fs")]
 use diesel::SqliteConnection;
 use futures::FutureExt as _;
@@ -349,9 +357,22 @@ use super::{
 use crate::ai::blocklist::agent_view::{
     AgentInputFooter, AgentInputFooterEvent, AgentViewController,
 };
-use crate::terminal::view::ambient_agent::{HarnessSelector, HostSelector, NakedHeaderButtonTheme};
 use crate::terminal::view::queued_prompts_panel::{QueuedPromptsPanelEvent, QueuedPromptsPanelView};
 use async_channel::Sender;
+
+/// Capacity of the input debounce channels. The debounce stream drains its channel on every
+/// wake, so this is only reached if the UI thread is stalled; it bounds memory then (#1382).
+const DEBOUNCE_CHANNEL_CAPACITY: usize = 64;
+
+/// Tries to queue `item`; hands it back when the channel is full or closed so the caller can
+/// act on it directly instead of losing it.
+fn try_queue<T>(tx: &Sender<T>, item: T) -> Option<T> {
+    match tx.try_send(item) {
+        Ok(()) => None,
+        Err(async_channel::TrySendError::Full(item))
+        | Err(async_channel::TrySendError::Closed(item)) => Some(item),
+    }
+}
 use futures::stream::AbortHandle;
 use parking_lot::FairMutex;
 #[cfg(feature = "local_fs")]
@@ -359,6 +380,9 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+#[cfg(feature = "local_fs")]
+use crate::ai::predict::next_command_model::SimilarHistoryContextCache;
 use string_offset::ByteOffset;
 
 /// Drop target data for dropping content on the [`Input`].
@@ -408,7 +432,6 @@ pub fn get_input_box_top_border_width() -> f32 {
     }
 }
 
-pub const COMPLETIONS_MENU_WIDTH: f32 = 330.;
 pub const OPEN_COMPLETIONS_KEYBINDING_NAME: &str = "input:open_completion_suggestions";
 pub const INPUT_A11Y_LABEL_KEY: &str = "terminal-input-a11y-label";
 pub const INPUT_A11Y_HELPER_KEY: &str = "terminal-input-a11y-helper";
@@ -445,6 +468,27 @@ const AGENT_MODE_HINT_KEYS: &[&str] = &[
     "terminal-input-agent-hint-optimize-docker",
     "terminal-input-agent-hint-ab-testing",
 ];
+
+/// Logs (INFO, at most once a second) that an Enter went ahead without its classification verdict
+/// (#1158). Never the buffer text, only its length.
+fn log_late_enter_verdict(text: &str, classifier_compute: std::time::Duration) {
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicU64;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    static LAST_LOGGED_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1;
+    let last = LAST_LOGGED_MS.load(Ordering::Relaxed);
+    if last != 0 && now_ms.saturating_sub(last) < 1000 {
+        return;
+    }
+    LAST_LOGGED_MS.store(now_ms, Ordering::Relaxed);
+    log::info!(
+        "Enter submitted without its input-type verdict: classifier compute {} ms (cap {} ms, {} chars)",
+        classifier_compute.as_millis(),
+        crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET.as_millis(),
+        text.chars().count()
+    );
+}
 
 fn get_agent_mode_new_conversation_hint_key() -> &'static str {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -593,6 +637,23 @@ lazy_static! {
     };
 }
 
+/// What a background paste read is for (#1331): decides how its text is inserted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub(crate) enum PasteSource {
+    /// The system clipboard (ctrl-shift-v): images may attach.
+    Clipboard,
+    /// A middle click on the input editor: the primary selection as text.
+    EditorMiddleClick,
+    /// A middle click the terminal routed to the input.
+    TerminalMiddleClick(Option<warp_util::path::ShellDialect>),
+    /// A paste the terminal view routed to the input (#1380): copied paths escaped for the
+    /// shell, inserted as a system paste (no image attach), as the synchronous read was.
+    TerminalPaste(Option<warp_util::path::ShellDialect>),
+    /// The input's context-menu paste (#1380): the plain text only.
+    PlainTextPaste,
+}
+
 /// What a young line's text needs before its deferred Enter may run (#933).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum YoungTypeaheadDetection {
@@ -696,7 +757,7 @@ pub enum InputSuggestionsMode {
 
         /// Stores the suggestions for the original buffer_text_original.
         /// Used to filter down results during prefix search.
-        completion_results: SuggestionResults,
+        completion_results: Arc<SuggestionResults>,
 
         /// Stores the original trigger of the completions, so that we can track whether the menu
         /// was opened automatically (AsYouType) or manually (with Tab)
@@ -1003,6 +1064,7 @@ impl CommandExecutionSource {
     }
 
     /// Whether this execution should leave the user's in-progress editor draft alone.
+    #[cfg(test)]
     pub fn should_preserve_input(&self) -> bool {
         matches!(
             self,
@@ -1081,6 +1143,10 @@ pub enum InputEmptyStateChangeReason {
 
 pub enum Event {
     AutosuggestionAccepted,
+    /// Enter on an empty input while an agent approval card awaits the user's decision: the
+    /// terminal view focuses the card, so a second Enter (its Run binding) approves it (#1180).
+    /// Enter never approves from the input itself.
+    FocusPendingAgentAction,
     ClearSelectedBlock,
     PageUp,
     PageDown,
@@ -1182,8 +1248,8 @@ pub enum Event {
     /// reach the terminal so they are held behind the command (`FeatureFlag::TypeaheadHandoff`).
     TypeaheadHandoffEnterDeferred,
     /// Input the user typed after an Enter that waited for its classification verdict (#1016).
-    /// The Enter has now run; the terminal view routes these, in order, as if typed after it.
-    /// The terminal view drains [`Input::take_after_enter_replay`] once the pty route is settled.
+    /// The Enter has now run; its gate on the pane queue holds the keys typed behind it until the
+    /// pty route is settled (`TerminalView::settle_enter_queue`).
     ReplayAfterDeferredEnter,
 }
 
@@ -1195,37 +1261,211 @@ pub enum AfterEnterInput {
     Enter,
 }
 
+/// How long a backstop timer may run past its deadline before it is logged (#1181).
+const LATE_TIMER_WAKE_LOG_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Logs (INFO, one line per occurrence, at most once a second) that a backstop timer of a
+/// deferred Enter ran well after its deadline (#1181): the timer thread was not woken on time,
+/// which is what strands the Enter until the next OS event. `deadline` is when it was due.
+pub(crate) fn log_late_timer_wake(timer: &'static str, deadline: Instant) {
+    let late = Instant::now().saturating_duration_since(deadline);
+    if late <= LATE_TIMER_WAKE_LOG_THRESHOLD {
+        return;
+    }
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicU64;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    static LAST_LOGGED_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1;
+    let last = LAST_LOGGED_MS.load(Ordering::Relaxed);
+    if last != 0 && now_ms.saturating_sub(last) < 1000 {
+        return;
+    }
+    LAST_LOGGED_MS.store(now_ms, Ordering::Relaxed);
+    log::info!(
+        "Deferred-Enter timer '{timer}' ran {} ms after its deadline",
+        late.as_millis()
+    );
+}
+
+/// An Enter held longer than this is logged at WARN with the reason it was held (#1192).
+const SLOW_ENTER_HOLD_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether an Enter held for `held` is slow enough to log.
+pub(crate) fn is_slow_enter_hold(held: std::time::Duration) -> bool {
+    held >= SLOW_ENTER_HOLD_THRESHOLD
+}
+
+/// Logs (WARN, every occurrence: these are rare and each is a latency bug) that an Enter was held
+/// for `held` and why (#1192). Never the buffer text.
+pub(crate) fn log_slow_enter_hold(reason: &str, held: std::time::Duration) {
+    if is_slow_enter_hold(held) {
+        log::warn!("Enter held {} ms: {reason}", held.as_millis());
+    }
+}
+
+/// Longest the activity assertion of a deferred Enter is held, in case no release path runs.
+const DEFERRED_ENTER_ACTIVITY_CAP: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A macOS activity assertion (`NSProcessInfo beginActivityWithOptions`, UserInitiated) held
+/// while an Enter is deferred, so App Nap and timer coalescing cannot delay the timers that
+/// back it up (#1181). A no-op elsewhere.
+#[derive(Default)]
+struct DeferredEnterActivity {
+    #[cfg(target_os = "macos")]
+    guard: Option<prevent_sleep::Guard>,
+    /// Bumped on every begin, so a cap timer armed for an earlier hold cannot end a later one.
+    generation: u64,
+}
+
+impl DeferredEnterActivity {
+    /// Starts the assertion unless one is held. Returns the generation to pass to
+    /// [`Self::end_generation`] from the cap timer, or `None` if nothing was started.
+    #[cfg(target_os = "macos")]
+    fn begin(&mut self) -> Option<u64> {
+        if self.guard.is_some() {
+            return None;
+        }
+        self.guard = Some(prevent_sleep::prevent_sleep("Deferred Enter pending"));
+        self.generation = self.generation.wrapping_add(1);
+        Some(self.generation)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn begin(&mut self) -> Option<u64> {
+        None
+    }
+
+    fn end(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.guard = None;
+        }
+    }
+
+    fn end_generation(&mut self, generation: u64) {
+        if self.generation == generation {
+            self.end();
+        }
+    }
+}
+
 /// An Enter waiting for the classification verdict of `text` (#933), and what was typed behind
 /// it (#1016).
 #[derive(Debug)]
 struct VerdictWait {
+    /// Identifies this wait (#1206): a timer armed for a wait that was voided or released since
+    /// must not touch the one that replaced it.
+    id: u64,
     text: String,
-    queued: Vec<AfterEnterInput>,
+    hold: EnterHold,
+    /// The compute the job this Enter waits for (the classifier, the completer) has spent (#1351).
+    /// The give-up cap is measured on it, never on the age of the Enter.
+    compute: ComputeClock,
+    /// Which [`Input::watch_hold_compute`] the armed timers belong to: a hold that changes kind
+    /// (a Tab completion becoming the verdict wait of the completed line) starts a new watch, and
+    /// the old watch's timers must not act on it.
+    watch_epoch: u64,
+    /// Byte offset of the cursor in `text` when the Enter was pressed (#1207): keys typed behind
+    /// the Enter land there until the wait restores the line (which moves the cursor to its end).
+    cursor: usize,
 }
 
-/// Where the editor's text ended when an Enter was deferred behind the typeahead hand-off's
-/// report (#1016). Keys that reach the editor after that Enter (before the terminal takes the
-/// keys) are not part of the line it submits; the boundary lets them be split off at submit.
+/// The keys typed behind a waiting Enter, if `current` is the waiting line with them added
+/// (#1016): appended at its end, or inserted at the cursor the Enter was pressed at (#1207).
+/// `None` when the buffer still is the line, or the user edited the line itself.
+fn keys_typed_behind_waiting_enter(current: &str, wait: &VerdictWait) -> Option<String> {
+    let text = wait.text.as_str();
+    if let Some(suffix) = current.strip_prefix(text) {
+        return (!suffix.is_empty()).then(|| suffix.to_string());
+    }
+    let inserted = current.len().checked_sub(text.len()).filter(|len| *len > 0)?;
+    let cursor = wait.cursor.min(text.len());
+    let end = cursor + inserted;
+    if !text.is_char_boundary(cursor)
+        || !current.is_char_boundary(cursor)
+        || !current.is_char_boundary(end)
+    {
+        return None;
+    }
+    (current[..cursor] == text[..cursor] && current[end..] == text[cursor..])
+        .then(|| current[cursor..end].to_string())
+}
+
+/// Why the Enter of a [`VerdictWait`] is held, and since when. Each hold is released by its own
+/// event (the verdict notification, the completion result). The only timers are give-up safety
+/// nets (#1351): one armed from the event "the job started running" for the rest of the hold's
+/// compute cap, and one backstop for a result that never arrives at all. `since` is for logging.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EnterHold {
+    /// The classification verdict for `text` has not landed (#933): the Enter submits on it, or
+    /// on the Enter-time rules once `ENTER_VERDICT_BUDGET` is spent (#1158).
+    Verdict { since: Instant },
+    /// The local Tab completion in flight for `text` has not landed (#1165): the Enter then
+    /// submits the completed line (or the visible text on an ambiguous, empty, failed or late
+    /// result), after the completed line's own verdict wait.
+    TabCompletion { since: Instant },
+}
+
+/// The Tab (`CompletionsTrigger::Keybinding`) completion request in flight, so an Enter that
+/// arrives for the exact buffer and cursor it was started for can wait for it (#1165).
 #[derive(Debug)]
-struct HandoffEnterMark {
-    /// Characters in the buffer when the Enter was pressed.
-    len: usize,
-    /// The last few characters of that buffer, to check the boundary still lines up.
-    tail: String,
-    /// Net change in the buffer's length from the report inserted since (it replaces the front).
-    inserted_delta: isize,
+struct TabCompletionRequest {
+    generation: u64,
+    snapshot: EditorSnapshot,
+    /// Whether the completer runs on this machine. A remote completer cannot answer quickly and
+    /// is never waited for.
+    local: bool,
+    /// The compute the completer job spends (#1351): the Enter's give-up cap is measured on it.
+    compute: ComputeClock,
+}
+
+/// The most compute the Tab completer may spend before an Enter holding for it submits the visible
+/// text (#1351). Measured from when the completer job started running, never from the Enter.
+const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::from_millis(150);
+/// A hold longer than this is logged at WARN, so slow completers can be traced.
+const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
+
+impl EnterHold {
+    /// The most compute the awaited job may spend before the Enter gives up on it (#1351). For a
+    /// verdict the cap grows with the text (#1604, `enter_verdict_budget_for`): a buffer over the
+    /// sync routing cap is classified by a linear background job the Enter waits for, and the
+    /// 20 ms a typed line gets would hand a 1 MB paste back on every Enter.
+    fn compute_cap(self, text_len: usize) -> std::time::Duration {
+        match self {
+            EnterHold::Verdict { .. } => {
+                crate::ai::blocklist::input_model::enter_verdict_budget_for(text_len)
+            }
+            EnterHold::TabCompletion { .. } => TAB_COMPLETION_ENTER_BUDGET,
+        }
+    }
+
+    /// How long an Enter holds before giving up on a result that never arrived, whether or not
+    /// any job was seen running (#1351). A safety net for a lost signal, never the way a hold is
+    /// normally released; it is logged when it fires. Grows with the text like the compute cap
+    /// (#1604), so it cannot fire inside a large buffer's allowed compute.
+    fn backstop(self, text_len: usize) -> std::time::Duration {
+        match self {
+            EnterHold::Verdict { .. } => {
+                std::time::Duration::from_millis(250) + large_text_compute_allowance(text_len)
+            }
+            EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
+        }
+    }
 }
 
 impl VerdictWait {
-    /// The text typed behind the Enter, without the Enters (they have nothing to submit).
-    fn queued_text(&self) -> String {
-        self.queued
-            .iter()
-            .filter_map(|input| match input {
-                AfterEnterInput::Text(text) => Some(text.as_str()),
-                AfterEnterInput::Enter => None,
-            })
-            .collect()
+    /// Whether the Enter holds for a Tab completion (#1165).
+    fn holds_for_tab_completion(&self) -> bool {
+        self.tab_completion_since().is_some()
+    }
+
+    /// When the Enter began holding for a Tab completion, if it does.
+    fn tab_completion_since(&self) -> Option<Instant> {
+        match self.hold {
+            EnterHold::Verdict { .. } => None,
+            EnterHold::TabCompletion { since } => Some(since),
+        }
     }
 }
 
@@ -1523,6 +1763,9 @@ pub struct AutoSuggestionResult {
     pub buffer_text: String,
     /// Generated autosuggestion result.
     pub autosuggestion_result: Option<String>,
+    /// `Input::input_generation` when the request started; `None` when the requester has no
+    /// generation to check.
+    pub generation: Option<u64>,
 }
 
 /// Views that call into the autosuggestion generation logic must implement the Autosuggester
@@ -1644,9 +1887,44 @@ enum DenyExecutionReason {
     HistoryNotAppendable,
 }
 
-impl DenyExecutionReason {
-    pub fn is_existing_active_command(&self) -> bool {
-        matches!(self, DenyExecutionReason::ExistingActiveCommand)
+/// Whether `buffer_text`, verbatim, is a line the session's shell ran before (#1203), as the
+/// host's history records it ([`History::ran_before`], O(1) through the command index): the
+/// newest entry with a recorded exit code decides, the shell's own history file counts without
+/// one, a Phosphor-recorded entry needs exit 0. Never for a line the classifier reserves for the
+/// agent whatever the history says (#965): a request shape, or one bare word that reads as English
+/// rather than as a command (`where`, `bar`, `help`). A pipeline or redirection is a command in
+/// any shell's syntax (`ls | where size > 1kb`, `Get-ChildItem | Where-Object ...`), so those
+/// shapes are not asked.
+fn history_says_ran_before(history: &History, session_id: SessionId, buffer_text: &str) -> bool {
+    let line = buffer_text.trim();
+    if line.is_empty() {
+        return false;
+    }
+    let has_shell_operator = line.contains(['|', '>', '<', '$', ';', '&', '(']);
+    if !has_shell_operator
+        && (input_classifier::util::reads_as_request_to_agent(line)
+            || input_classifier::util::lone_word_belongs_to_agent(line))
+    {
+        return false;
+    }
+    history.ran_before(session_id, line) == crate::terminal::history::RanBefore::Succeeded
+}
+
+/// The notice for a command the shell cannot take now. A running command blocks user
+/// submissions, as before; a shell that is not ready yet (still bootstrapping, or its history not
+/// initialised) used to drop the Enter with only a log line (#1216). An empty Enter gets none.
+fn deny_execution_toast(reason: &DenyExecutionReason, command: &str) -> Option<String> {
+    const MAX_COMMAND_LENGTH: usize = 43;
+    let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
+    match reason {
+        DenyExecutionReason::ExistingActiveCommand => Some(format!(
+            "Cannot run `{truncated_command}` (command already running)."
+        )),
+        DenyExecutionReason::NotBootstrapped | DenyExecutionReason::HistoryNotAppendable => {
+            (!command.trim().is_empty()).then(|| {
+                format!("Cannot run `{truncated_command}` yet: the shell is still starting.")
+            })
+        }
     }
 }
 
@@ -1667,6 +1945,13 @@ pub struct Input {
     menu_positioning_provider: Arc<dyn MenuPositioningProvider>,
     tips_completed: ModelHandle<TipsCompleted>,
     editor: ViewHandle<EditorView>,
+    /// Clipboard content read for editor-bound pastes that wait for their turn on the editor's
+    /// input queue (#1353 phase 1), by paste id.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    paste_payloads: std::collections::HashMap<u64, (PasteSource, ClipboardContent)>,
+    /// Queued pastes refused by the size cap (#1382): their own toast was shown, so the generic
+    /// "clipboard did not answer" one is not.
+    paste_refused: std::collections::HashSet<u64>,
     input_suggestions: ViewHandle<InputSuggestions>,
     suggestions_mode_model: ModelHandle<InputSuggestionsModeModel>,
     completions_menu_resizable_width: ResizableStateHandle,
@@ -1689,22 +1974,48 @@ pub struct Input {
     /// If true, will submit the command in the editor to the shell upon receiving the
     /// precmd message.
     has_pending_command: bool,
+    /// F6 (#1594): the editor was made read-only by `show_pending_command_after_give_up`.
+    pending_command_shown_read_only: bool,
+    /// #1558: the pending command is an Enter the shell could not take yet (its first Precmd had
+    /// not arrived), held so it runs when it can instead of being dropped with its text kept.
+    held_unready_enter: bool,
+    /// The command [`Self::set_pending_command`] was asked to run (#1435): what runs is this, never
+    /// whatever the user's keys made of the buffer it was shown in.
+    pending_command_text: Option<String>,
+    /// Programmatic edits (a command producer, the local-control IPC, a slash command) that
+    /// arrived while an Enter waited for its verdict (#1434). Applied, in order, when that Enter's
+    /// gate closes: applied at once they changed the waiting line and voided the Enter, or were
+    /// taken for keys typed behind it and replayed to the pty.
+    deferred_programmatic_edits: Vec<enter_queue::DeferredEdit>,
     last_word_insertion: LastWordInsertion,
 
     ai_controller: ModelHandle<BlocklistAIController>,
     ai_context_model: ModelHandle<BlocklistAIContextModel>,
     ai_input_model: ModelHandle<BlocklistAIInputModel>,
     ai_action_model: ModelHandle<BlocklistAIActionModel>,
-    /// The input is responsible for managing the lifetime
-    /// of this mouse state handle.
-    #[allow(dead_code)]
-    ai_follow_up_icon_mouse_state: MouseStateHandle,
 
     /// To ensure we only have one run of completions-as-you-type at any given time,
     /// we keep an abort handle of the current run. If we have reason to start a new run
     /// (e.g. new input), we simply abort the existing run. The same applies to the
     /// syntax highlighting and autosuggestions features (all which use the completer).
     completions_abort_handle: Option<AbortHandle>,
+    /// The Tab completion request in flight, if any (#1165).
+    tab_completion_request: Option<TabCompletionRequest>,
+    /// The give-up timers armed for held Enters: (timer, delay), for tests.
+    #[cfg(test)]
+    hold_timers_armed_for_test: Vec<(&'static str, std::time::Duration)>,
+    /// Bumped whenever a pending async result (completion, autosuggestion, next-command
+    /// suggestion, AI query prediction) can no longer be applied: Esc, submit, buffer
+    /// clear/replace, block completion, input-mode switch. Requests capture it when they start
+    /// and their result handlers drop results from an older generation. Aborting a future does
+    /// not stop a result already queued for delivery, and the buffer-text check alone cannot
+    /// tell a stale result from a valid one when the text happens to match (#1165).
+    input_generation: u64,
+    /// The open as-you-type completion menu lists results for text the user has since edited;
+    /// accepting is disabled until the new results arrive (#1355).
+    completion_menu_stale: bool,
+    /// `input_generation` when the last next-command suggestion was requested from this input.
+    next_command_request_generation: u64,
     decorations_future_handle: Option<SpawnedFutureHandle>,
     /// Cooperative cancel flag of the in-flight decoration/detection job (#1031).
     decorations_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -1764,6 +2075,10 @@ pub struct Input {
     /// data collection when the command completes, but state is cleared when the command is executed.
     last_intelligent_autosuggestion_result: Option<IntelligentAutosuggestionResult>,
     next_command_model: ModelHandle<NextCommandModel>,
+    /// The similar-history lookup the autosuggestion future makes for the last completed
+    /// block, remembered so it runs once per block rather than once per keystroke (#1140).
+    #[cfg(feature = "local_fs")]
+    similar_history_context_cache: Arc<SimilarHistoryContextCache>,
 
     /// The last block that the user ran. This is used for generating autosuggestions.
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -1776,6 +2091,12 @@ pub struct Input {
 
     /// Cached hint key to ensure it remains stable during shell initialization hooks.
     cached_agent_mode_hint_key: Option<&'static str>,
+
+    /// The `selected_conversation_status_for_hint` value the placeholder was last derived from,
+    /// so `UpdatedStreamingExchange` (one per streamed delta) only rebuilds the hint and
+    /// notifies the editor when the hint's inputs actually changed (#1137).
+    last_hint_conversation_status:
+        Option<Option<crate::ai::agent::conversation::ConversationStatus>>,
 
     /// Cached result of the last `check_slash_menu_disabled_state` computation, so we can
     /// skip re-notifying the slash button / button bar when the disabled state hasn't
@@ -1794,10 +2115,6 @@ pub struct Input {
     terminal_input_message_bar: ViewHandle<TerminalInputMessageBar>,
 
     agent_input_footer: ViewHandle<AgentInputFooter>,
-
-    harness_selector: ViewHandle<HarnessSelector>,
-
-    host_selector: Option<ViewHandle<HostSelector>>,
 
     prompt_suggestions_view: ViewHandle<PromptSuggestionsView>,
 
@@ -1855,26 +2172,35 @@ pub struct Input {
     awaiting_multiline_submit_confirmation: bool,
     /// The user confirmed: the next shell submission skips the multi-line check.
     multiline_submit_confirmed: bool,
-    /// The buffer text an Enter gave up waiting for a classification verdict on (#933): pressing
-    /// Enter again submits it as the rules decide.
-    verdict_wait_gave_up_on: Option<String>,
     /// The Enter currently waiting for a verdict, with the input typed behind it (#1016).
     verdict_wait: Option<VerdictWait>,
-    /// The editor's text boundary at an Enter deferred behind the typeahead hand-off (#1016).
-    handoff_enter_mark: Option<HandoffEnterMark>,
-    /// Input typed after a deferred Enter, held until the terminal view has routed it (#1016).
-    /// While it is non-empty or `after_enter_replay_open` is set, every new key appends here
-    /// instead of being routed, so nothing overtakes what was typed earlier.
-    after_enter_replay: Vec<AfterEnterInput>,
-    /// A replay is in progress: the Enter has run but the queue is not drained yet.
-    after_enter_replay_open: bool,
-    /// The deferred Enter submitted a shell command, so the replay must wait until the pty has
-    /// taken the command and routes keys (before that, routed text lands in the editor and the
-    /// shell's typeahead report is later inserted in front of it).
-    after_enter_replay_awaits_pty: bool,
+    /// The id given to the next [`VerdictWait`] (#1206).
+    next_verdict_wait_id: u64,
+    /// The queue gate of the Enter that waits (or whose keys wait for its route), if one is open.
+    enter_gate: Option<enter_queue::EnterGate>,
+    /// A gate this input needed to open while the queue was delivering the Enter that opened it
+    /// (an Enter replayed from the queue that waits again): the delivering host takes it right
+    /// after the call and returns it as the delivery's `OpensGate`, so the entries behind that
+    /// Enter wait for it (#1353, the replay hop is gone).
+    stashed_gate: Option<crate::terminal::input_queue::GateSpec>,
+    /// Where the view records the entries it routes after an Enter that waited, for tests.
+    #[cfg(test)]
+    replayed_sink_for_test: Option<Rc<std::cell::RefCell<Vec<AfterEnterInput>>>>,
+    /// #1181: macOS activity assertion held while an Enter is deferred (App Nap and timer
+    /// coalescing stranded the backstop timers on a late wake).
+    deferred_enter_activity: DeferredEnterActivity,
+    /// When an Enter was deferred behind the typeahead hand-off (or a young Enter held), to log a
+    /// long hold (#1192).
+    handoff_enter_started: Option<Instant>,
     /// The waiting Enter is being run right now (#1016): its own `input_enter` is the submit, not
     /// an Enter typed behind a pending replay, so it must not queue itself.
     running_deferred_enter: bool,
+    /// #1348 / owner rule: text typed while an ssh connect was in progress was handed back to this
+    /// editor (the connect ended without a remote shell), so the line may be one the user meant
+    /// for the remote machine. The first Enter after that hand-back is not executed (it may have
+    /// been typed in the same burst as the line); the user sees the line and presses Enter again.
+    /// The text handed back to the editor when the ssh connect ended; `Some` while armed (#1395).
+    ssh_handover_enter_guard: Option<String>,
     /// Whether the last Enter submitted a shell command; read by `input_enter_as_shell_command`.
     last_enter_submitted_shell_command: bool,
     /// What the editor held when it last submitted a command. The editor is cleared when that
@@ -1883,6 +2209,10 @@ pub struct Input {
     /// newer (#934). `None` when the block that completes was not submitted from the editor
     /// (a typeahead line the shell ran itself): then nothing in the editor belongs to it.
     editor_submission: Option<String>,
+    /// `editor_submission` was set by a pending command that ran as requested while the user had
+    /// typed into its text (#1451): the typed text is handed back whether or not the typeahead
+    /// hand-off is enabled, because it is not typeahead but text the command would have eaten.
+    editor_submission_from_pending: bool,
     /// Whether the last Enter submitted an agent query (sent it, or asked to enter the agent view
     /// with it); read by the misroute recovery to tell a real submit from a refused one (#835).
     last_enter_submitted_ai_query: bool,
@@ -1903,6 +2233,10 @@ pub struct Input {
     /// we snapshot the current input contents here so we can restore them after the command
     /// completes and the buffer would normally be cleared.
     input_contents_before_prompt_chip_command: Option<String>,
+    /// Text the ssh hand-back could not put into the editor because a command was running
+    /// (`TerminalView::hand_back_unexecuted_ssh_text`): restored, never run, when a block completes
+    /// ([`Self::restore_handed_back_text`]).
+    handed_back_text: Option<String>,
 
     /// The multi-prompt queued-prompts panel, present only when
     /// [`FeatureFlag::QueueSlashCommand`] is enabled. Rendered between the warping indicator
@@ -2231,6 +2565,10 @@ pub enum CompletionsTrigger {
     SlashCommandAutoOpen,
 }
 
+/// How long the as-you-type completions menu waits, on a remote session, for the keystrokes to
+/// stop before it lists a directory over the shared ssh connection (#1295).
+const REMOTE_AS_YOU_TYPE_DEBOUNCE: Duration = Duration::from_millis(150);
+
 /// Represents whether the input editor should render the subshell flag.
 #[derive(Clone, Debug)]
 enum SubshellRenderState {
@@ -2250,6 +2588,13 @@ enum Executing {
 }
 
 impl Input {
+    /// The session a command about to run belongs to: the input's active block metadata (set by
+    /// the Precmd), else the block list's active block, which `can_execute_command` consults.
+    fn command_session_id(&self) -> Option<SessionId> {
+        self.active_block_session_id()
+            .or_else(|| self.model.lock().block_list().active_block().session_id())
+    }
+
     /// Whether a queued prompt is currently being edited inline.
     ///
     /// Ported from the oracle for #399 item 6. Drives the
@@ -2449,26 +2794,6 @@ impl Input {
             )
         });
 
-        let harness_selector = ctx.add_typed_action_view(|ctx| {
-            HarnessSelector::new(
-                menu_positioning_provider.clone(),
-                ambient_agent_view_model.clone(),
-                ctx,
-            )
-        });
-
-        let host_selector = if false {
-            let view = ctx.add_typed_action_view(|ctx| {
-                HostSelector::new(menu_positioning_provider.clone(), ctx)
-            });
-            harness_selector.update(ctx, |selector, ctx| {
-                selector.set_button_theme(NakedHeaderButtonTheme, ctx);
-            });
-            Some(view)
-        } else {
-            None
-        };
-
         ctx.subscribe_to_view(&agent_input_footer, |me, _, event, ctx| {
             match event {
                 #[cfg(feature = "voice_input")]
@@ -2643,7 +2968,9 @@ impl Input {
             // Clones used in render_decorator_elements closure below.
             let prompt_render_helper_clone = prompt_render_helper.clone();
             let model_clone = model.clone();
-            let model_for_autopair_veto = model.clone();
+            // The hand-off is reached through its own handle: the veto runs for every typed
+            // character, and the model's lock is held by the pty reader while it parses (#1403).
+            let handoff_for_autopair_veto = model.lock().pane_handoff();
             // Clone used in keymap_context_modifier closure below.
             let terminal_model_for_keymap_context = model.clone();
             let has_prompt_suggestion_banner_for_keymap = has_prompt_suggestion_banner.clone();
@@ -2830,13 +3157,12 @@ impl Input {
                 EditorView::new(options, ctx)
                     // Auto-pairing is off while the typeahead hand-off is not editor-owned (#949):
                     // text typed now is prefixed by the shell's report, so the editor cannot know
-                    // its quote/bracket context. A blocking lock, like the rest of this file: a
-                    // `try_lock` that vetoed on contention would drop auto-pairing at random
-                    // whenever the pty thread holds the model during output.
+                    // its quote/bracket context. Read from the hand-off's own leaf lock, never the
+                    // model's: a key must not wait for the parser, and a `try_lock` that vetoed on
+                    // contention would drop auto-pairing at random whenever output is parsed.
                     .with_autocomplete_symbols_veto(Box::new(move || {
-                        model_for_autopair_veto
-                            .lock()
-                            .typeahead_handoff()
+                        handoff_for_autopair_veto
+                            .read()
                             .editor_text_precedes_report()
                     }))
                     .with_next_command_model(next_command_model.clone())
@@ -2950,7 +3276,7 @@ impl Input {
         });
 
         let (debounce_input_background_tx, debounce_input_background_rx) =
-            async_channel::unbounded();
+            async_channel::bounded(DEBOUNCE_CHANNEL_CAPACITY);
         let _ = ctx.spawn_stream_local(
             debounce(
                 DEBOUNCE_INPUT_DECORATION_PERIOD,
@@ -2961,7 +3287,7 @@ impl Input {
         );
 
         let (debounce_ai_query_prediction_tx, debounce_ai_query_prediction_rx) =
-            async_channel::unbounded();
+            async_channel::bounded(DEBOUNCE_CHANNEL_CAPACITY);
         let _ = ctx.spawn_stream_local(
             debounce(
                 DEBOUNCE_AI_QUERY_PREDICTION_PERIOD,
@@ -3061,9 +3387,10 @@ impl Input {
         });
 
         ctx.subscribe_to_model(&ai_input_model, |me, _, event, ctx| {
-            let _ = me
-                .debounce_input_background_tx
-                .try_send(InputBackgroundJobOptions::default().with_command_decoration());
+            me.queue_input_background_job(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
 
             let config = event.updated_config();
             if config.is_locked && me.suggestions_mode_model.as_ref(ctx).is_visible() {
@@ -3170,6 +3497,24 @@ impl Input {
                     return;
                 }
                 if event.terminal_view_id() != Some(terminal_view_id) {
+                    return;
+                }
+                // #1137: one of these arrives per streamed delta. The hint only depends on
+                // the selected conversation's status/title/emptiness, which don't change
+                // between deltas, so skip the rebuild and the editor/Input invalidation.
+                let hint_status = me
+                    .ai_context_model
+                    .as_ref(ctx)
+                    .selected_conversation_status_for_hint(ctx);
+                let is_streaming_delta = matches!(
+                    event,
+                    BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
+                );
+                if !hint_inputs_changed(
+                    &mut me.last_hint_conversation_status,
+                    hint_status,
+                    is_streaming_delta,
+                ) {
                     return;
                 }
                 me.set_zero_state_hint_text(ctx);
@@ -3433,10 +3778,21 @@ impl Input {
             me.handle_slash_commands_menu_event(event, ctx);
         });
 
+        // #1181: a verdict landing releases an Enter deferred behind it; the timers are only
+        // the backstop. The model notifies when a pending detection settles.
+        ctx.observe(&ai_input_model, |me, _, ctx| {
+            me.release_verdict_wait_if_settled(ctx);
+        });
         ctx.subscribe_to_model(&ai_input_model, move |me, _, event, ctx| {
             match event {
                 BlocklistAIInputEvent::InputTypeChanged { .. }
                 | BlocklistAIInputEvent::LockChanged { .. } => {
+                    // Results requested under the other input mode no longer apply.
+                    me.bump_input_generation();
+                    // #1284: the bump just dropped any ghost in flight, and nothing else asks
+                    // again until the next keystroke; a verdict landing after the last key left
+                    // the line without one.
+                    me.maybe_generate_autosuggestion(ctx);
                     // Close slash command menu if we're now in locked shell mode
                     if me.is_locked_in_shell_mode(ctx)
                         && me.suggestions_mode_model.as_ref(ctx).is_slash_commands()
@@ -3518,6 +3874,8 @@ impl Input {
             completions_menu_resizable_height: resizable_state_handle(completions_menu_height),
             tips_completed,
             editor,
+            paste_payloads: Default::default(),
+            paste_refused: Default::default(),
             model,
             sessions,
             focus_handle: None,
@@ -3533,12 +3891,22 @@ impl Input {
             debounce_input_background_tx,
             debounce_ai_query_prediction_tx,
             has_pending_command: false,
+            pending_command_shown_read_only: false,
+            held_unready_enter: false,
+            pending_command_text: None,
+            deferred_programmatic_edits: Vec::new(),
             last_word_insertion,
             decorations_future_handle: None,
             decorations_cancel: None,
             decorations_cleared_for_oversized_buffer: false,
             autosuggestions_abort_handle: None,
             completions_abort_handle: None,
+            tab_completion_request: None,
+            #[cfg(test)]
+            hold_timers_armed_for_test: Vec::new(),
+            input_generation: 0,
+            completion_menu_stale: false,
+            next_command_request_generation: 0,
             menu_positioning_provider,
             universal_developer_input_button_bar,
             terminal_input_message_bar,
@@ -3548,7 +3916,6 @@ impl Input {
             ai_context_model,
             ai_input_model,
             ai_action_model,
-            ai_follow_up_icon_mouse_state: MouseStateHandle::default(),
             enable_autosuggestions_setting: *editor_settings_handle
                 .as_ref(ctx)
                 .enable_autosuggestions,
@@ -3561,6 +3928,8 @@ impl Input {
             was_intelligent_autosuggestion_accepted: false,
             last_intelligent_autosuggestion_result: None,
             next_command_model,
+            #[cfg(feature = "local_fs")]
+            similar_history_context_cache: Default::default(),
             last_user_block_completed: None,
             hoverable_handle: Default::default(),
             terminal_view_id,
@@ -3585,33 +3954,37 @@ impl Input {
             inline_history_menu_view,
             inline_terminal_menu_positioner,
             cached_agent_mode_hint_key: None,
+            last_hint_conversation_status: None,
             cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
             shell_command_submit_pending: false,
             awaiting_multiline_submit_confirmation: false,
             multiline_submit_confirmed: false,
-            verdict_wait_gave_up_on: None,
             verdict_wait: None,
-            handoff_enter_mark: None,
-            after_enter_replay: Vec::new(),
-            after_enter_replay_open: false,
-            after_enter_replay_awaits_pty: false,
+            next_verdict_wait_id: 0,
+            enter_gate: None,
+            stashed_gate: None,
+            #[cfg(test)]
+            replayed_sink_for_test: None,
+            deferred_enter_activity: DeferredEnterActivity::default(),
+            handoff_enter_started: None,
             running_deferred_enter: false,
+            ssh_handover_enter_guard: None,
             last_enter_submitted_shell_command: false,
             editor_submission: None,
+            editor_submission_from_pending: false,
             last_enter_submitted_ai_query: false,
             submitting_misroute_recovery: false,
             weak_view_handle: ctx.handle(),
             agent_status_view,
             agent_view_controller,
             agent_input_footer,
-            harness_selector,
-            host_selector,
             agent_shortcut_view_model,
             ambient_agent_view_model,
             slash_command_data_source,
             ephemeral_message_model,
             input_contents_before_prompt_chip_command: None,
+            handed_back_text: None,
             queued_prompts_panel,
         };
 
@@ -4583,10 +4956,7 @@ impl Input {
                     });
                     ctx.notify();
                 }
-                self.editor.update(ctx, |editor, ctx| {
-                    editor.set_buffer_text(command, ctx);
-                });
-                self.input_enter(ctx);
+                self.accept_history_text_and_submit(command, ctx);
             }
             inline_history::InlineHistoryMenuEvent::AcceptAIPrompt { query_text } => {
                 if self
@@ -4599,10 +4969,7 @@ impl Input {
                     });
                     ctx.notify();
                 }
-                self.editor.update(ctx, |editor, ctx| {
-                    editor.set_buffer_text(query_text, ctx);
-                });
-                self.input_enter(ctx);
+                self.accept_history_text_and_submit(query_text, ctx);
             }
             inline_history::InlineHistoryMenuEvent::SelectCommand {
                 command,
@@ -5016,70 +5383,59 @@ impl Input {
         let action_model = self.ai_action_model.as_ref(ctx);
         let conversation_text = conversation.export_to_markdown(Some(action_model));
 
-        // Check if file already exists and warn user
-        let file_exists = file_path.exists();
-        if file_exists {
-            let window_id = ctx.window_id();
-            let display_path = file_path.display().to_string();
-            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                let toast = DismissibleToast::default(format!(
-                    "File {display_path} already exists and will be overwritten"
-                ));
-                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        // The exists check and the write are disk IO (the target may be on a slow or network
+        // mount), so they run on a worker thread; the toasts come back on the UI thread.
+        let window_id = ctx.window_id();
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let write_path = file_path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("export-conversation".into())
+            .spawn(move || {
+                let file_exists = write_path.exists();
+                let result = fs::write(&write_path, conversation_text);
+                let _ = tx.send((file_exists, result));
             });
+        if let Err(e) = spawned {
+            log::error!("Failed to start the conversation export thread: {e}");
+            return;
         }
-
-        // Write to file
-        match fs::write(&file_path, conversation_text) {
-            Ok(_) => {
-                // Show success toast
-                let window_id = ctx.window_id();
+        ctx.spawn(async move { rx.await.ok() }, move |_me, outcome, ctx| {
+            let Some((file_exists, result)) = outcome else {
+                return;
+            };
+            if file_exists {
                 let display_path = file_path.display().to_string();
-                ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     let toast = DismissibleToast::default(format!(
-                        "Conversation exported to {display_path}"
+                        "File {display_path} already exists and will be overwritten"
                     ));
                     toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                 });
             }
-            Err(e) => {
-                // Show error toast with user-friendly message
-                let user_message = match e.kind() {
-                    std::io::ErrorKind::PermissionDenied => {
-                        format!(
-                            "Permission denied writing to {}. Check file permissions.",
-                            file_path.display()
-                        )
-                    }
-                    std::io::ErrorKind::NotFound => {
-                        format!(
-                            "Directory not found: {}",
-                            file_path
-                                .parent()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_default()
-                        )
-                    }
-                    std::io::ErrorKind::AlreadyExists => {
-                        format!("File {} already exists", file_path.display())
-                    }
-                    _ => {
-                        format!("Failed to export to {}: {}", file_path.display(), e)
-                    }
-                };
-
-                log::error!(
-                    "Failed to write conversation to file {}: {}",
-                    file_path.display(),
-                    e
-                );
-                let window_id = ctx.window_id();
-                ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
-                    let toast = DismissibleToast::default(user_message);
-                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-                });
+            match result {
+                Ok(_) => {
+                    let display_path = file_path.display().to_string();
+                    ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                        let toast = DismissibleToast::default(format!(
+                            "Conversation exported to {display_path}"
+                        ));
+                        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                    });
+                }
+                Err(e) => {
+                    let user_message = export_error_message(&file_path, &e);
+                    log::error!(
+                        "Failed to write conversation to file {}: {}",
+                        file_path.display(),
+                        e
+                    );
+                    ToastStack::handle(ctx).update(ctx, move |toast_stack, ctx| {
+                        let toast = DismissibleToast::default(user_message);
+                        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                    });
+                }
             }
-        }
+        });
 
         // Clear the buffer after execution
         self.editor.update(ctx, |editor, ctx| {
@@ -5487,10 +5843,6 @@ impl Input {
         self.editor.as_ref(ctx).buffer_text(ctx)
     }
 
-    pub fn buffer_text_number_of_lines(&self, ctx: &AppContext) -> usize {
-        self.buffer_text(ctx).lines().count()
-    }
-
     #[cfg(feature = "integration_tests")]
     pub fn input_suggestions(&self) -> &ViewHandle<InputSuggestions> {
         &self.input_suggestions
@@ -5672,6 +6024,10 @@ impl Input {
     ) {
         match event {
             NextCommandModelEvent::NextCommandSuggestionReady => {
+                // Requested before an Esc / submit / clear / block completion since.
+                if self.is_stale_generation(self.next_command_request_generation) {
+                    return;
+                }
                 let NextCommandSuggestionState::Ready { is_from_cycle, .. } =
                     self.next_command_model.as_ref(ctx).get_state()
                 else {
@@ -5974,6 +6330,7 @@ impl Input {
             &self.model,
         ));
         let previous_result = self.last_intelligent_autosuggestion_result.take();
+        self.next_command_request_generation = self.input_generation;
         self.next_command_model.update(ctx, |model, ctx| {
             model.generate_next_command_suggestion(
                 block_completed,
@@ -6274,22 +6631,163 @@ impl Input {
         }
     }
 
+    /// #1572: THE readiness predicate (it replaces `shell_awaiting_first_precmd`, #1332, which
+    /// covered only the unregistered history): whether this session cannot take a command YET,
+    /// i.e. it would refuse one only because it is not ready (not bootstrapped, its history not
+    /// appendable because the session is not registered, no Precmd on the active block, no
+    /// session id) and not because a program owns the pty (a running command is "ready" for this
+    /// purpose: the pty, not the editor, owns typing then). Everything that decides whether the
+    /// editor may own typing AND submit uses it: an Enter refused while it holds is gated
+    /// ([`Self::hold_refused_unready_enter`]), and the ssh connect hold hands over only once it is
+    /// false (`TerminalView::deliver_ssh_typeahead_if_ready`). For a Phosphor-managed remote that
+    /// moment is the session's registration (`SessionBootstrapped`), not its first Precmd; an
+    /// unmanaged inner shell runs inside the ssh block (a running command), so this is false and
+    /// its own #1561 shell-prompt rule hands over.
+    pub(crate) fn shell_unready_for_submit(&self, ctx: &AppContext) -> bool {
+        match self.can_execute_command(ctx) {
+            CanExecuteCommand::No(DenyExecutionReason::ExistingActiveCommand) => false,
+            CanExecuteCommand::No(_) => true,
+            // `try_execute_command_from_source` refuses these too (silently, or with a log).
+            CanExecuteCommand::Yes => {
+                self.command_session_id().is_none()
+                    || !self
+                        .model
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .has_received_precmd()
+            }
+        }
+    }
+
+    /// #1558: an Enter that waited behind a gate (verdict, completion) and then found the shell
+    /// unable to take a command yet used to log `submit` and drop: the text stayed in the buffer
+    /// and the next typing merged into it (`ssh fakeecho ...`). It is now held as the pending
+    /// command and runs, exactly as typed, when the session can take it. #1564: a DIRECT Enter on
+    /// a not-ready shell is held the same way (a line typed into a just-connected remote, 44 ms
+    /// before its first Precmd, kept its text and merged with the next typing). The "still
+    /// starting" toast `try_execute_command` shows stays as a non-blocking notice. A running
+    /// program or a shared-session participant still refuses. Every decline is logged.
+    ///
+    /// #1571: the held Enter is a GATE, not only a flag: everything typed after it queues behind
+    /// it in order ([`Self::gate_unready_enter`]), so nothing merges into the held line and a
+    /// second Enter is its own entry. The readiness event runs the line once and releases them.
+    fn hold_refused_unready_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let shared = self
+            .model
+            .lock()
+            .shared_session_status()
+            .is_sharer_or_viewer();
+        // #1572: the one readiness predicate. A deferred Enter refused although the session
+        // could take it (#1558) is held as before.
+        let not_ready = self.shell_unready_for_submit(ctx)
+            || (self.running_deferred_enter && !self.can_execute_command(ctx).is_no());
+        let hold = not_ready && !shared;
+        warpui::input_order::log_hop("enter_declined", || {
+            format!(
+                "deferred={} held_as_pending={hold} shared_session={shared}",
+                self.running_deferred_enter
+            )
+        });
+        if !hold {
+            return;
+        }
+        // The requested text is the buffer as typed: when it is still the buffer the pending
+        // command runs the normal way (aliases expanded); when typing was added behind it, the
+        // requested line runs and the rest is given back (#1435).
+        self.pending_command_text = Some(self.editor.as_ref(ctx).buffer_text(ctx));
+        self.has_pending_command = true;
+        self.held_unready_enter = true;
+        self.gate_unready_enter(ctx);
+    }
+
+    /// #1558: an Enter is held as the pending command because the shell was not ready for it.
+    /// Test hook: the block id the deferred remote operations are keyed to.
+    #[cfg(test)]
+    pub(crate) fn set_deferred_ops_latest_block_for_test(&mut self, block_id: BlockId) {
+        self.deferred_remote_operations.latest_block_id = block_id;
+    }
+
+    pub(crate) fn has_held_unready_enter(&self) -> bool {
+        self.held_unready_enter && self.has_pending_command
+    }
+
     pub fn execute_pending_command(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.has_pending_command {
             return;
         }
+        // #1571: the gate of an Enter held for an unready shell is this pending command's own:
+        // what waits behind it (keys, deferred edits) was typed AFTER it and follows it.
+        let own_gate = self.held_unready_enter && self.unready_enter_gate_open();
+        // #1435: a command must not overtake input the pane queue still holds for the editor or
+        // the pty: an Enter waiting for its verdict (its gate's release re-enters here, after
+        // applying the edits deferred behind it) or a paste being read (its result re-enters).
+        if !own_gate && self.pending_command_must_wait_for_queue(ctx) {
+            return;
+        }
+        if !own_gate && !self.deferred_programmatic_edits.is_empty() {
+            self.flush_deferred_programmatic_edits(ctx);
+            return;
+        }
 
-        let command = self.get_command(ctx);
         if self.can_execute_command(ctx).is_no() {
             return;
         }
 
-        self.try_execute_command(&command, ctx);
+        // F6 (#1594): the read-only state `show_pending_command_after_give_up` set ends here, before
+        // the command is run, so the run and its buffer clearing see an ordinary editor.
+        if std::mem::take(&mut self.pending_command_shown_read_only) {
+            self.editor.update(ctx, |editor, ctx| {
+                editor.set_interaction_state(InteractionState::Editable, ctx);
+            });
+        }
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        let requested = self.pending_command_text.clone();
+        let mut keep_typed_after: Option<String> = None;
+        let command = match requested {
+            // Untouched: as before, with abbreviations / aliases expanded.
+            Some(requested) if requested != buffer => {
+                // The user typed into the pending command (or cleared it) while it waited. It
+                // runs as it was requested, never as a mix of the two (#1435); what the user
+                // typed is not part of it. The buffer is cleared when the block completes, as
+                // for any command.
+                log::warn!(
+                    "pending command: the buffer changed while it waited; running the \
+                     requested command, not the edited text"
+                );
+                keep_typed_after = Some(requested.clone());
+                requested
+            }
+            _ => self.get_command(ctx),
+        };
+
+        let executed = self.try_execute_command(&command, ctx);
+        if !executed && self.held_unready_enter {
+            // #1558: still not ready (the session has not processed its first Precmd): the held
+            // Enter stays pending for the next event that retries, never dropped.
+            warpui::input_order::log_hop("enter_held_still_unready", String::new);
+            return;
+        }
+        if let (true, Some(requested)) = (executed, keep_typed_after) {
+            // What the user typed into the pending command is not lost when the block's buffer is
+            // cleared: the text beyond the requested command (all of it if the command text was
+            // edited) is what `take_text_newer_than_completed_submission` gives back (#1435).
+            self.editor_submission = Some(requested);
+            self.editor_submission_from_pending = true;
+        }
         self.has_pending_command = false;
+        self.held_unready_enter = false;
+        self.pending_command_text = None;
+        // #1588: the hold on the Enter that went with a given-up pending command is over.
+        self.ssh_handover_enter_guard = None;
 
         self.editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(InteractionState::Editable, ctx);
         });
+        if executed && own_gate {
+            // #1571: the held line ran: what was typed after it follows, in order.
+            self.release_unready_enter_gate_after_run(ctx);
+        }
     }
 
     /// Try to execute a command in the local session that was
@@ -6459,24 +6957,29 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         if let CanExecuteCommand::No(reason) = self.can_execute_command(ctx) {
-            if reason.is_existing_active_command() {
-                const MAX_COMMAND_LENGTH: usize = 43;
-                let truncated_command = truncate_from_end(command, MAX_COMMAND_LENGTH);
-
-                // Block user submissions while a requested command is actively running
-                let window_id = ctx.window_id();
-                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                    toast_stack.add_ephemeral_toast(
-                        DismissibleToast::error(format!(
-                            "Cannot run `{truncated_command}` (command already running)."
-                        )),
-                        window_id,
-                        ctx,
-                    );
-                });
+            if let Some(message) = deny_execution_toast(&reason, command) {
+                // `handle` panics when the singleton was never registered (bare views); ask first.
+                if ctx.has_singleton_model::<ToastStack>() {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(
+                            DismissibleToast::error(message),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                }
             }
 
             log::warn!("Tried to execute command but can_execute_command was false: {reason:?}");
+            return false;
+        }
+
+        if self.command_session_id().is_none() {
+            // Bootstrapped and appendable per the block list, but the Precmd metadata has not
+            // reached the input yet. Refuse like any other not-ready state; the caller keeps the
+            // line (a held ssh key is retried) instead of the old `expect` crashing the app.
+            log::warn!("Tried to execute command but no session id is known yet");
             return false;
         }
 
@@ -6618,6 +7121,7 @@ impl Input {
             }
 
             if matches!(source, CommandExecutionSource::User) {
+                self.editor_submission_from_pending = false;
                 self.editor_submission = Some(self.editor.as_ref(ctx).buffer_text(ctx));
             }
             self.start_block_and_write_command_to_pty(command, source, ctx);
@@ -6638,63 +7142,6 @@ impl Input {
         did_execute
     }
 
-    /// We locked the viewer's input when they attempted to execute a command.
-    /// On failure, we must restore the editor to its original state before the attempt.
-    pub fn on_execute_command_for_shared_session_participant_failure(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(shared_session_input_state) = self.shared_session_input_state.as_mut() else {
-            return;
-        };
-        let Some(ViewerCommandExecutionRequest { original_buffer }) = shared_session_input_state
-            .pending_command_execution_request
-            .as_ref()
-        else {
-            return;
-        };
-
-        // Unfreeze the editor
-        if let SharedSessionStatus::ActiveViewer { role } =
-            self.model.lock().shared_session_status()
-        {
-            self.editor.update(ctx, |editor, ctx| {
-                // Restore the original buffer and interaction state based on the viewer's role.
-                editor.set_buffer_text(original_buffer, ctx);
-                editor.set_interaction_state(role.into(), ctx);
-
-                // Set the text colors back to normal.
-                let appearance: &Appearance = Appearance::as_ref(ctx);
-                editor.set_text_colors(TextColors::from_appearance(appearance), ctx);
-            });
-        }
-        shared_session_input_state.pending_command_execution_request = None;
-    }
-
-    /// This clears the loading state and input buffer for both the sharer and viewer
-    /// once an agent request is in flight or cancelled.
-    pub fn unfreeze_and_clear_agent_input(&mut self, ctx: &mut ViewContext<Self>) {
-        if matches!(
-            self.model.lock().shared_session_status(),
-            SharedSessionStatus::ActiveViewer { .. } | SharedSessionStatus::ActiveSharer
-        ) {
-            self.editor.update(ctx, |editor, ctx| {
-                // Reinitialize the buffer to properly clear it
-                editor.reinitialize_buffer(None, ctx);
-
-                if let SharedSessionStatus::ActiveViewer { role } =
-                    self.model.lock().shared_session_status()
-                {
-                    // reinstate role for viewers
-                    editor.set_interaction_state(role.into(), ctx);
-                }
-
-                let appearance: &Appearance = Appearance::as_ref(ctx);
-                editor.set_text_colors(TextColors::from_appearance(appearance), ctx);
-            });
-        }
-    }
-
     /// Restores the frozen/loading visual state of the agent input for both the sharer
     /// and viewer without touching the buffer contents.
     ///
@@ -6713,6 +7160,7 @@ impl Input {
     /// ephemeral overlay, so there is no ephemeral state to exit and no display-only
     /// overlay to show. `is_shared_session_viewer_prompt_inflight` is therefore currently
     /// unused here; kept in the signature for call-site parity with the pin.
+    #[cfg(test)]
     pub fn unfreeze_agent_input(
         &mut self,
         is_shared_session_viewer_prompt_inflight: bool,
@@ -7497,6 +7945,17 @@ impl Input {
             return;
         }
 
+        // A click or key on a stale completion menu (#1355) must not insert its old items.
+        if matches!(
+            event,
+            InputSuggestionsEvent::ConfirmSuggestion { .. }
+                | InputSuggestionsEvent::ConfirmAndExecuteSuggestion { .. }
+                | InputSuggestionsEvent::Select(_)
+        ) && self.drop_stale_completion_menu(ctx)
+        {
+            return;
+        }
+
         match event {
             InputSuggestionsEvent::ConfirmSuggestion {
                 suggestion,
@@ -7873,6 +8332,18 @@ impl Input {
         self.close_input_suggestions(/*should_focus_input=*/ should_focus_input, ctx);
     }
 
+    /// Debounced input background jobs. A full channel (stalled UI thread) runs the job right
+    /// away instead of dropping it or growing the queue without bound (#1382).
+    fn queue_input_background_job(
+        &mut self,
+        mode: InputBackgroundJobOptions,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Some(mode) = try_queue(&self.debounce_input_background_tx, mode) {
+            self.run_input_background_jobs(mode, ctx);
+        }
+    }
+
     pub fn close_input_suggestions(
         &mut self,
         should_focus_input: bool,
@@ -7887,6 +8358,11 @@ impl Input {
 
             self.suggestions_mode_model.update(ctx, |m, ctx| {
                 m.set_mode(InputSuggestionsMode::Closed, ctx);
+            });
+            // A refilter still computing for the menu that just closed has nobody to show it to
+            // (#1382).
+            self.input_suggestions.update(ctx, |suggestions, _| {
+                suggestions.cancel_pending_refilter();
             });
 
             // If we're closing an inline menu, trigger autodetection on the buffer contents
@@ -7904,6 +8380,7 @@ impl Input {
     }
 
     pub fn clear_buffer_and_reset_undo_stack(&mut self, ctx: &mut ViewContext<Self>) {
+        self.bump_input_generation();
         self.clear_cached_hint_text();
         self.editor.update(ctx, |view, ctx| {
             view.clear_buffer_and_reset_undo_stack(ctx);
@@ -7911,23 +8388,16 @@ impl Input {
     }
 
     pub fn replace_buffer_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
-        self.editor.update(ctx, |view, ctx| {
-            view.set_buffer_text(content, ctx);
-        });
-    }
-
-    // Fill the input buffer with the provided text and auto-select all of the text
-    // (so that it's easy to delete).
-    pub fn prefill_buffer_and_select_all(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
-        let content = content.trim();
-        if content.is_empty() {
+        // #1434: not while an Enter waits for its verdict or an editor paste is read.
+        if self.defer_programmatic_edit(
+            enter_queue::DeferredEdit::Replace(content.to_owned()),
+            ctx,
+        ) {
             return;
         }
-
-        self.editor.update(ctx, |editor, ctx| {
-            editor.clear_autosuggestion(ctx);
-            editor.set_buffer_text_ignoring_undo(content, ctx);
-            editor.handle_action(&EditorAction::SelectAll, ctx);
+        self.bump_input_generation();
+        self.editor.update(ctx, |view, ctx| {
+            view.set_buffer_text(content, ctx);
         });
     }
 
@@ -7942,6 +8412,7 @@ impl Input {
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
     ) {
+        warpui::profiling::zone!("typeahead_insert");
         self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         self.note_typeahead_inserted(typeahead, ctx);
     }
@@ -7988,23 +8459,93 @@ impl Input {
             .update(ctx, |model, _| model.note_typeahead_inserted(typeahead));
     }
 
-    /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for: it also
-    /// tracks how far the insertion moved the text behind a deferred Enter.
+    /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for.
+    /// Returns whether the report was inserted; a refusal (#1569: another line's text) leaves the
+    /// buffer exactly as it was and is logged.
     pub fn insert_handoff_typeahead_text(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
-    ) {
-        let len_before = self.buffer_text(ctx).chars().count();
-        self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
-        if self.handoff_enter_mark.is_some() {
-            let len_after = self.buffer_text(ctx).chars().count();
-            if let Some(mark) = self.handoff_enter_mark.as_mut() {
-                mark.inserted_delta += len_after as isize - len_before as isize;
-            }
+    ) -> bool {
+        let text_before = warpui::input_order::enabled().then(|| self.buffer_text(ctx));
+        // #1569: a report that replaces the front of the buffer must extend what is there (a
+        // second report of the same line). One that does not is another line's text; splicing it
+        // in made the editor run `echo t91_echo t94... >> 8hr_...`. Refused and logged, the
+        // buffer is left exactly as the user's keys built it.
+        if num_typeahead_chars_inserted.as_usize() > 0
+            && !typeahead_extends_buffer_prefix(
+                &self.buffer_text(ctx),
+                num_typeahead_chars_inserted.as_usize(),
+                typeahead,
+            )
+        {
+            log::warn!(
+                "typeahead hand-off: a report that does not extend the editor's own typeahead \
+                 was refused (replaced_prefix_chars={}, report_chars={})",
+                num_typeahead_chars_inserted.as_usize(),
+                typeahead.chars().count()
+            );
+            warpui::input_order::log_hop("handoff_insert_refused", || {
+                format!(
+                    "replaced_prefix_chars={} report={} before={}",
+                    num_typeahead_chars_inserted.as_usize(),
+                    warpui::input_order::describe_text(typeahead),
+                    warpui::input_order::describe_text(&text_before.unwrap_or_default())
+                )
+            });
+            return false;
         }
+        // #1574: the report is the shell's line, typed for the shell, and the shell has already
+        // cleared it from its own line: it is inserted (never dropped). An input whose mode is AI
+        // and stays AI for this text (locked, or no autodetection to re-decide it) would make it
+        // an agent prompt (the #1566 `4echo T93_r` that became one), so the input is switched to
+        // shell, locked, visibly: the user sees a shell line and can switch it back. An unlocked AI
+        // input with autodetection on keeps its mode: the text's typeahead provenance (#886)
+        // decides it, and a deferred Enter runs it as a shell command.
+        if self.handoff_report_input_is_ai(ctx) {
+            let is_buffer_empty = self.editor.as_ref(ctx).is_empty(ctx);
+            self.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    is_buffer_empty,
+                    ctx,
+                );
+            });
+            log::info!(
+                "typeahead hand-off: a report reached an AI-mode input; it is inserted and the \
+                 input is switched to shell (report_chars={})",
+                typeahead.chars().count()
+            );
+            warpui::input_order::log_hop("handoff_insert_as_shell", || {
+                format!("report_chars={}", typeahead.chars().count())
+            });
+        }
+        self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
+        // #1393: the report's insertion into the editor, before and after, with the count of
+        // characters of an earlier report it replaced.
+        warpui::input_order::log_hop("handoff_insert", || {
+            format!(
+                "replaced_prefix_chars={} report={} before={} after={}",
+                num_typeahead_chars_inserted.as_usize(),
+                warpui::input_order::describe_text(typeahead),
+                warpui::input_order::describe_text(&text_before.unwrap_or_default()),
+                warpui::input_order::describe_text(&self.buffer_text(ctx))
+            )
+        });
         self.note_typeahead_inserted(typeahead, ctx);
+        true
+    }
+
+    /// #1574: whether the input is in AI mode for a shell report: the input type is AI and will
+    /// not be re-decided for the inserted text (the type is locked, or autodetection does not run
+    /// in this context).
+    fn handoff_report_input_is_ai(&self, ctx: &AppContext) -> bool {
+        let model = self.ai_input_model.as_ref(ctx);
+        model.is_ai_input_enabled() && !model.should_run_input_autodetection(ctx)
     }
 
     pub fn focus_input_box(&self, ctx: &mut ViewContext<Self>) {
@@ -8265,7 +8806,18 @@ impl Input {
         }
     }
 
+    /// Invalidates every pending async completion/suggestion result. Results already queued
+    /// for delivery are dropped by the generation check in their handlers (#1165).
+    fn bump_input_generation(&mut self) {
+        self.input_generation = self.input_generation.wrapping_add(1);
+    }
+
     fn editor_escape(&mut self, ctx: &mut ViewContext<Self>) {
+        // Esc cancels a pending completion: abort it and drop a result already queued.
+        self.bump_input_generation();
+        if let Some(abort_handle) = self.completions_abort_handle.take() {
+            abort_handle.abort();
+        }
         let vim_mode = self.editor.as_ref(ctx).vim_mode(ctx);
         let has_attached_context = {
             let context_model = self.ai_context_model.as_ref(ctx);
@@ -8565,9 +9117,17 @@ impl Input {
     fn maybe_generate_autosuggestion(&mut self, ctx: &mut ViewContext<Self>) {
         let editor = self.editor.as_ref(ctx);
 
+        let ai_input_model = self.ai_input_model.as_ref(ctx);
+        // #1284: an UNLOCKED AI input is autodetection's guess, not the user's choice. In an agent
+        // view the live type is the previous submit's (AI) until Enter settles the line, so gating
+        // on it alone suppressed every history ghost for a shell line typed there. Only a locked
+        // AI input (or autodetection off) means the user is writing a prompt.
+        let ai_input_is_a_guess = ai_input_model.is_ai_input_enabled()
+            && !ai_input_model.is_input_type_locked()
+            && ai_input_model.should_run_input_autodetection(ctx);
         let should_generate_autosuggestion = !editor.active_autosuggestion()
             && self.enable_autosuggestions_setting
-            && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled();
+            && (!ai_input_model.is_ai_input_enabled() || ai_input_is_a_guess);
 
         if should_generate_autosuggestion {
             let buffer_text = editor.buffer_text(ctx);
@@ -8584,6 +9144,7 @@ impl Input {
         completer_data: CompleterData,
         ctx: &mut ViewContext<Self>,
     ) {
+        warpui::profiling::zone!("autosuggest_request");
         if buffer_text.is_empty() {
             return;
         }
@@ -8593,7 +9154,15 @@ impl Input {
         };
         self.abort_latest_autosuggestion_future();
 
-        if FeatureFlag::PartialNextCommandSuggestions.is_enabled() && is_next_command_enabled(ctx) {
+        // #1284: generated while the input is (still) an unlocked AI guess: offer only a command
+        // this shell ran before. The completer fallback and the next-command model would put
+        // file-path or AI ghosts on prose.
+        let history_only = self.ai_input_model.as_ref(ctx).is_ai_input_enabled();
+
+        if !history_only
+            && FeatureFlag::PartialNextCommandSuggestions.is_enabled()
+            && is_next_command_enabled(ctx)
+        {
             let Some(session) = self.active_session(ctx) else {
                 return;
             };
@@ -8601,6 +9170,7 @@ impl Input {
             if let Some(last_user_block_completed) =
                 completer_data.last_user_block_completed.clone()
             {
+                self.next_command_request_generation = self.input_generation;
                 self.next_command_model.update(ctx, |model, ctx| {
                     model.generate_next_command_suggestion_with_prefix(
                         Some(buffer_text),
@@ -8616,10 +9186,11 @@ impl Input {
             }
         }
 
-        let completion_context = completer_data.completion_session_context(ctx);
-        let completion_session = completion_context
-            .as_ref()
-            .map(|completion_context| completion_context.session.clone());
+        // Per keystroke: on a remote session a directory listing here would be a command on the
+        // shared ssh connection, so serve only what is already cached (#1295).
+        let completion_context = completer_data
+            .completion_session_context(ctx)
+            .map(SessionContext::for_background);
 
         // Get current ignored shell commands to filter during generation. They are also
         // excluded from the history scan below so they never take up one of its bounded
@@ -8627,8 +9198,10 @@ impl Input {
         // harmless).
         let ignored_suggestions = IgnoredSuggestionsModel::as_ref(ctx)
             .get_ignored_suggestions_for_type(SuggestionType::ShellCommand);
+        // Walks only the newest slice of history here; a prefix that needs more (few matches)
+        // is finished inside the future below, off the UI thread (#1140).
         let reverse_chronological_potential_autosuggestions =
-            NextCommandModel::get_reverse_chronological_potential_autosuggestions(
+            NextCommandModel::get_potential_autosuggestions_within_budget(
                 &buffer_text,
                 &completer_data,
                 &ignored_suggestions,
@@ -8640,6 +9213,8 @@ impl Input {
         });
         #[cfg(feature = "local_fs")]
         let conn = self.conn.clone();
+        #[cfg(feature = "local_fs")]
+        let similar_history_context_cache = self.similar_history_context_cache.clone();
         // Resolve the last completed block's lazily-computed fields now, synchronously, since the
         // spawned future below doesn't have access to the terminal model to resolve them later.
         #[cfg(feature = "local_fs")]
@@ -8657,7 +9232,7 @@ impl Input {
                             })
                             .to_owned(),
                         block
-                            .serialized_block
+                            .serialized_block_without_output
                             .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
@@ -8665,6 +9240,7 @@ impl Input {
                             .clone(),
                     )
                 });
+        let generation = self.input_generation;
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
@@ -8675,26 +9251,35 @@ impl Input {
                         if let Some((last_command, last_serialized_block)) =
                             &last_user_block_completed_data
                         {
-                            let similar_history_contexts = {
-                                let mut conn = conn.lock();
-                                NextCommandModel::get_similar_history_context(
-                                    &mut conn,
+                            let similar_history_contexts = similar_history_context_cache
+                                .get_or_compute(
                                     last_command,
                                     &last_serialized_block.pwd,
                                     last_serialized_block.exit_code,
                                     last_serialized_block.shell_host.as_ref(),
-                                    0,
-                                )
-                            };
+                                    || {
+                                        let mut conn = conn.lock();
+                                        NextCommandModel::get_similar_history_context(
+                                            &mut conn,
+                                            last_command,
+                                            &last_serialized_block.pwd,
+                                            last_serialized_block.exit_code,
+                                            last_serialized_block.shell_host.as_ref(),
+                                            0,
+                                        )
+                                    },
+                                );
                             if !similar_history_contexts.is_empty() {
                                 let mut history_next_command_counts =
                                     counter::Counter::<String>::new();
                                 // Find the most likely next command after a similar context, out of those that have a matching prefix and aren't ignored.
-                                for history_context in &similar_history_contexts {
+                                for history_context in similar_history_contexts.iter() {
                                     if history_context
                                         .next_command
                                         .command
                                         .starts_with(&buffer_text)
+                                        // #1284: the bare prefix has no suffix to offer.
+                                        && history_context.next_command.command != buffer_text
                                         && !ignored_suggestions
                                             .contains(&history_context.next_command.command)
                                     {
@@ -8714,6 +9299,7 @@ impl Input {
                                     .await
                                     {
                                         return AutoSuggestionResult {
+                                            generation: Some(generation),
                                             buffer_text,
                                             autosuggestion_result: Some(
                                                 most_likely_next_command.clone(),
@@ -8728,7 +9314,8 @@ impl Input {
                     // If we have no suggestion from similar historical context, fallback to the most recent
                     // command with a matching prefix run in the same pwd (if exists, otherwise just most recent command anywhere with matching prefix).
                     for reverse_chronological_command in
-                        reverse_chronological_potential_autosuggestions.unwrap_or_default()
+                        reverse_chronological_potential_autosuggestions
+                            .resolve(&buffer_text, &ignored_suggestions)
                     {
                         if !ignored_suggestions.contains(&reverse_chronological_command.command)
                             && is_command_valid(
@@ -8739,6 +9326,7 @@ impl Input {
                             .await
                         {
                             return AutoSuggestionResult {
+                                generation: Some(generation),
                                 buffer_text,
                                 autosuggestion_result: Some(
                                     reverse_chronological_command.command.clone(),
@@ -8750,14 +9338,16 @@ impl Input {
                     // If we have no command anywhere in history with a matching prefix, fallback to the first completer result.
                     // The completer parses one command line, so on a multi-line buffer (e.g. a paste)
                     // it yields a ghost fragment such as `-E` for the last line (#1013).
-                    if !completer_autosuggestion_allowed(&buffer_text) {
+                    if history_only || !completer_autosuggestion_allowed(&buffer_text) {
                         return AutoSuggestionResult {
+                            generation: Some(generation),
                             buffer_text,
                             autosuggestion_result: None,
                         };
                     }
                     let Some(completion_context) = completion_context else {
                         return AutoSuggestionResult {
+                            generation: Some(generation),
                             buffer_text,
                             autosuggestion_result: None,
                         };
@@ -8794,15 +9384,17 @@ impl Input {
                     });
 
                     AutoSuggestionResult {
+                        generation: Some(generation),
                         buffer_text,
                         autosuggestion_result: autosuggestion,
                     }
                 },
                 Self::on_autosuggestion_result,
                 move |_, _| {
-                    if let Some(session) = completion_session {
-                        session.cancel_active_commands();
-                    }
+                    // Superseding this job drops its future, which cancels exactly the in-band commands it
+                    // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
+                    // its own process group). Do NOT call `cancel_active_commands()` here: it is session-wide
+                    // and would also kill other jobs' in-flight Tab completions (#1352).
                 },
             )
             .abort_handle();
@@ -8902,6 +9494,12 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) -> Option<ExpansionInfo> {
         let session_context = self.completion_session_context(ctx)?;
+        // A buffer over the parse cap gets no alias or abbreviation expansion (#1604): the lexer
+        // and parser below walk the whole buffer on the UI thread, on every Space and at Enter,
+        // and a buffer that size is a paste, whose aliases the shell expands itself.
+        if self.buffer_exceeds_background_job_cap(ctx) {
+            return None;
+        }
         let editor = self.editor.as_ref(ctx);
         editor.single_cursor_to_point(ctx)?;
         let buffer_text = editor.buffer_text(ctx);
@@ -9016,6 +9614,16 @@ impl Input {
             return false;
         }
         let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        // `@(` / `@{` in terminal mode is shell syntax (PowerShell arrays and hashtables,
+        // `git log @{u}`), never a context query (#1337).
+        if !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+            && buffer
+                .get(at_symbol_position + 1..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|c| matches!(c, '(' | '{'))
+        {
+            return true;
+        }
         let cursor_pos = self
             .editor
             .as_ref(ctx)
@@ -9228,7 +9836,21 @@ impl Input {
         ))
     }
 
+    /// Times the editor-event handler's synchronous work for a typed edit (#1491), at the
+    /// `warp::input_order` debug target only: `hop=kh_edit_sync us=N` per edit, so a Mac run can
+    /// say how much of key->paint is spent here versus in the render of the views it dirties.
     fn handle_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
+        let started = (warpui::input_order::enabled() && matches!(event, EditorEvent::Edited(_)))
+            .then(Instant::now);
+        self.handle_editor_event_inner(event, ctx);
+        if let Some(started) = started {
+            warpui::input_order::log_key_hop("kh_edit_sync", || {
+                format!("us={}", started.elapsed().as_micros())
+            });
+        }
+    }
+
+    fn handle_editor_event_inner(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
         // We want to clear the token description hover on any editor action
         self.hide_x_ray(ctx);
 
@@ -9248,7 +9870,8 @@ impl Input {
             && FeatureFlag::PredictAMQueries.is_enabled()
             && AISettings::as_ref(ctx).is_natural_language_autosuggestions_enabled(ctx)
             && is_ai_input_enabled
-            && !self.buffer_text(ctx).is_empty()
+            // Not `buffer_text(ctx).is_empty()`: that copied the whole buffer on every edit (#1191).
+            && !self.editor.as_ref(ctx).is_empty(ctx)
         {
             // Cancel any pending requests for AM ghosted text predictions.
             if let Some(future_handle) = self.predict_am_queries_future_handle.take() {
@@ -9344,8 +9967,6 @@ impl Input {
                 });
 
                 let is_alias_expansion_enabled = self.should_expand_aliases(ctx);
-                let session_context = self.completion_session_context(ctx);
-
                 self.editor.read(ctx, |editor, editor_ctx| {
                     let last_action = editor.get_last_action(editor_ctx);
                     if Some(PlainTextEditorViewAction::Space) == last_action
@@ -9361,6 +9982,8 @@ impl Input {
                         && *edit_origin == EditOrigin::UserTyped
                     {
                         let buffer_text = editor.buffer_text(ctx);
+                        // Built only here: every edit used to pay for it (#1133).
+                        let session_context = self.completion_session_context(ctx);
                         let should_enable = self.should_enable_ai_context(
                             &buffer_text,
                             cursor_position.as_usize(),
@@ -9486,6 +10109,27 @@ impl Input {
                     EditOrigin::SystemEdit => false,
                 };
 
+                // #1205: a key typed behind an Enter that waits for its verdict or Tab completion
+                // is not an edit of the line that Enter submits. It is moved behind the Enter at
+                // once (#1016), which puts the waiting line back in the buffer, and it requests no
+                // detection: the waiting line's request and parse stay as they are, for the Enter
+                // to release on. The restore's own edit arrives here too, with the buffer equal to
+                // the waiting line. An edit of the waiting line itself takes the normal path and
+                // voids the wait at its next reconcile.
+                let typed_behind_waiting_enter = self.reconcile_edit_behind_waiting_enter(ctx);
+                let should_run_ai_input_detection =
+                    should_run_ai_input_detection && !typed_behind_waiting_enter;
+                // An edit of the waiting line itself voids the Enter. Settle that on the next
+                // turn of the event loop (this handler may be nested inside the wait's own
+                // bookkeeping), instead of leaving it to a polling tick (#1351).
+                if !typed_behind_waiting_enter && let Some(id) = self.verdict_wait_id() {
+                    ctx.spawn(futures::future::ready(()), move |me, _, ctx| {
+                        if me.verdict_wait_id() == Some(id) {
+                            me.reconcile_verdict_wait(ctx);
+                        }
+                    });
+                }
+
                 // Abort any autodetection work on the old buffer state, and record that this
                 // buffer's input type is now undecided until its own verdict lands (#833). The
                 // background path only classifies a parse whose text is still requested; see
@@ -9500,23 +10144,41 @@ impl Input {
                     .as_ref(ctx)
                     .has_typeahead_provenance()
                     .then(|| self.buffer_text(ctx));
-                self.ai_input_model.update(ctx, |controller, _| {
-                    controller.abort_in_progress_detection();
-                    if let Some(buffer_text) = buffer_text_for_typeahead {
-                        controller.note_buffer_edited(&buffer_text);
-                    }
-                    if let Some(buffer_text) = buffer_text_for_detection {
-                        controller.note_detection_requested(buffer_text);
-                    }
-                });
+                let user_typed_edit = matches!(edit_origin, EditOrigin::UserTyped);
+                if !typed_behind_waiting_enter {
+                    self.ai_input_model.update(ctx, |controller, _| {
+                        // #1604: a job already classifying exactly this text (the paste path
+                        // requested it before this `Edited` event, #1335) is kept, with the
+                        // clock a waiting Enter measures it on; any other job is for old text.
+                        controller.abort_in_progress_detection_unless_for(
+                            buffer_text_for_detection.as_deref(),
+                        );
+                        if let Some(buffer_text) = buffer_text_for_typeahead {
+                            controller.note_buffer_edited(&buffer_text);
+                        }
+                        if let Some(buffer_text) = buffer_text_for_detection {
+                            // Typed text is the user's own question to autodetection: an
+                            // explicit write that no edit has claimed yet (the agent view's
+                            // entry, a mode toggle) was made for the buffer before it, and
+                            // must not cover what is typed next -- a whole line typed or
+                            // delivered at once right after entry (`ssh host`) was then
+                            // never classified and went to the agent from an unready shell.
+                            if user_typed_edit {
+                                controller.release_unclaimed_explicit_write();
+                            }
+                            controller.note_detection_requested(buffer_text);
+                        }
+                    });
+                }
                 // Abort any inflight request to generate a Next Command suggestion.
                 self.next_command_model.update(ctx, |model, _| {
                     model.abort_inflight_request();
                 });
 
-                if self.should_apply_decorations(ctx)
-                    || should_run_ai_input_detection
-                    || is_ai_input_enabled
+                if !typed_behind_waiting_enter
+                    && (self.should_apply_decorations(ctx)
+                        || should_run_ai_input_detection
+                        || is_ai_input_enabled)
                 {
                     let mut mode = InputBackgroundJobOptions::default();
 
@@ -9531,7 +10193,7 @@ impl Input {
                     if short_circuit_highlighting {
                         self.run_input_background_jobs(mode, ctx);
                     } else {
-                        let _ = self.debounce_input_background_tx.try_send(mode);
+                        self.queue_input_background_job(mode, ctx);
                     }
                 }
 
@@ -9740,7 +10402,6 @@ impl Input {
                         // as an edit). Thus, when using the two features together, we only
                         // recompute the result set if the selected item doesn't match the
                         // current word span.
-                        let old_buffer_text_original = buffer_text_original.clone();
                         if *trigger == CompletionsTrigger::AsYouType
                             && (!self.is_classic_completions_enabled(ctx)
                                 || (self.is_classic_completions_enabled(ctx)
@@ -9753,32 +10414,14 @@ impl Input {
                             self.open_completion_suggestions(CompletionsTrigger::AsYouType, ctx);
                             self.maybe_generate_autosuggestion(ctx);
 
-                            // Since tab completions are async, we should close the
-                            // menu if it's been some time and the menu still hasn't updated,
-                            // otherwise the user will see an old completions menu even while
-                            // the buffer text has changed. We wait with a delay so that way
-                            // the menu doesn't close right away and open away right after if
-                            // the completions finish quickly, since that causes a jittery UX.
-                            let _ = ctx.spawn(
-                                async move {
-                                    warpui::r#async::Timer::after(Duration::from_millis(750)).await;
-                                    old_buffer_text_original
-                                },
-                                move |input, old_buffer_text_original, ctx| {
-                                    if let InputSuggestionsMode::CompletionSuggestions {
-                                        buffer_text_original,
-                                        ..
-                                    } = input.suggestions_mode_model.as_ref(ctx).mode()
-                                    {
-                                        // The menu hasn't changed since last time so
-                                        // close it for now. If the menu is truly delayed,
-                                        // the completions callback will eventually open it.
-                                        if old_buffer_text_original == *buffer_text_original {
-                                            input.close_input_suggestions(true, ctx);
-                                        }
-                                    }
-                                },
-                            );
+                            // The keystroke invalidated the menu on screen (it lists the
+                            // results for the OLD text). It stays up, so there is no flicker,
+                            // but is marked stale: accepting it is disabled (Tab, Enter and
+                            // clicks act as if no menu were open, see
+                            // `drop_stale_completion_menu`) so a stale item can't be inserted
+                            // (#1355). The new request's results replace it and clear the
+                            // flag; if they are empty, the menu closes then. No timer.
+                            self.completion_menu_stale = true;
                         } else {
                             let buffer_text_original = buffer_text_original.clone();
                             let completion_results = completion_results.clone();
@@ -10149,6 +10792,8 @@ impl Input {
             EditorEvent::CtrlEnter => self.input_ctrl_enter(ctx),
             EditorEvent::Escape => self.editor_escape(ctx),
             EditorEvent::CtrlC { cleared_buffer_len } => {
+                // #1571: ^C voids an Enter held for an unready shell (never run later).
+                self.cancel_unready_enter("editor_interrupt", ctx);
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
 
                 self.ai_input_model.update(ctx, |ai_input_model, ctx| {
@@ -10273,6 +10918,9 @@ impl Input {
             }
             EditorEvent::MiddleClickPaste => {
                 ctx.emit(Event::InputFocusedFromMiddleClick);
+            }
+            EditorEvent::MiddleClickPasteRequested => {
+                self.process_middle_click_paste_event(ctx);
             }
             EditorEvent::Focused => ctx.emit(Event::EditorFocused),
             EditorEvent::ProcessingAttachedImages(is_processing) => {
@@ -10508,11 +11156,167 @@ impl Input {
         }
     }
 
+    /// A middle click on the input: reads the primary selection off the UI thread where the
+    /// platform can (#1331); an inline platform answers its request at once (#1405).
+    fn process_middle_click_paste_event(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let reader = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
+                selection.background_reader_for_middle_click_paste(ctx)
+            });
+            if let Some(reader) = reader {
+                self.start_background_middle_click_paste(
+                    reader,
+                    PasteSource::EditorMiddleClick,
+                    ctx,
+                );
+                return;
+            }
+        }
+        // No worker reader: the paste is disabled (nothing to read) or the platform reads inline,
+        // so the request is already answered. Never a blocking read (#1405).
+        let request = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
+            selection.request_middle_click_read(ctx)
+        });
+        let Some(request) = request else {
+            return;
+        };
+        match request.start {
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.insert_middle_click_outcome(outcome, ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, |me, outcome, ctx| {
+                    me.insert_middle_click_outcome(outcome, ctx)
+                });
+            }
+        }
+    }
+
+    fn insert_middle_click_outcome(
+        &mut self,
+        outcome: warpui::clipboard::ReadOutcome,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let content = outcome.into_content();
+        // An empty selection pastes nothing.
+        if !content.is_empty() {
+            self.editor.update(ctx, |editor, ctx| {
+                editor.insert_middle_click_content(content, ctx)
+            });
+        }
+    }
+
     /// Process paste event by checking clipboard for images and handling appropriately.
     fn process_paste_event(&mut self, ctx: &mut ViewContext<Self>) {
-        // Read from app clipboard
-        let content = ctx.clipboard().read();
+        // Where the platform can read the clipboard off the UI thread it does (#1300): a clipboard
+        // owner that ignores the html/image probes would otherwise freeze the window for seconds.
+        // Keys typed meanwhile are held by the editor and applied behind the pasted text.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(reader) = ctx.clipboard().background_full_reader() {
+            self.start_background_paste(reader, ctx);
+            return;
+        }
+        // The platform reads inline (or this is wasm): the request is already answered. Never a
+        // blocking read (#1405).
+        let request =
+            warpui::clipboard::request_read(ctx.clipboard(), warpui::clipboard::ReadKind::Full);
+        match request.start {
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.offer_answered_paste(outcome.into_content(), ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, |me, outcome, ctx| {
+                    me.offer_answered_paste(outcome.into_content(), ctx)
+                });
+            }
+        }
+    }
 
+    /// A paste whose clipboard read the platform answered without the background reader (macOS
+    /// reads inline). It is an entry of the pane queue, not a direct insert (#1453): with an
+    /// Enter's gate or a pending read held ahead of it, it takes its place behind them, and an
+    /// Enter typed right after it is queued behind IT, so the paste is never inserted past the
+    /// previous line's gate and then discarded by that line's submit.
+    pub(crate) fn offer_answered_paste(
+        &mut self,
+        content: ClipboardContent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.offer_ready_paste(content, PasteSource::Clipboard, ctx);
+    }
+
+    /// Reads the clipboard on a worker thread; the paste's queue entry inserts it (`paste_queue`).
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.start_background_paste_with_backstop(reader, paste_backstop(), ctx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste_with_backstop(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        backstop: Option<Duration>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.start_background_read(reader, backstop, PasteSource::Clipboard, ctx);
+    }
+
+    /// Middle-click paste of the primary selection, read off the UI thread like any paste
+    /// (#1331): same hold, 2 s reader budget and backstop, so a selection owner that never
+    /// answers neither freezes the window nor loses the keys typed meanwhile.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn start_background_middle_click_paste(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        source: PasteSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.start_background_read(reader, paste_backstop(), source, ctx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_read(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        backstop: Option<Duration>,
+        source: PasteSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // The paste is an entry of the pane's input queue (#1353).
+        self.start_queued_read(reader, backstop, source, ctx);
+    }
+
+    /// Requests input-type detection for the text a background paste just inserted, before the
+    /// keys held behind it are replayed (#1335). The editor reports the insert as an `Edited`
+    /// event one effect hop after the model's own, while a replayed Enter's event is emitted
+    /// directly; so the Enter reaches this view BEFORE the paste's edit does, finds no detection
+    /// pending, and submits the pasted line on the inherited input type (the agent's, in a fresh
+    /// agent view). Typing never races this: the edit is handled before the next key arrives.
+    /// The edit's own request that follows is for the same text and supersedes this one.
+    #[cfg(not(target_family = "wasm"))]
+    fn request_detection_for_pasted_text(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.buffer_text(ctx).trim().is_empty()
+            || self
+                .suggestions_mode_model
+                .as_ref(ctx)
+                .is_inline_menu_open()
+            || !self
+                .ai_input_model
+                .as_ref(ctx)
+                .should_run_input_autodetection(ctx)
+        {
+            return;
+        }
+        self.request_input_detection_for_current_buffer(ctx);
+    }
+
+    /// Inserts (or attaches) what the clipboard held.
+    fn process_paste_content(&mut self, content: ClipboardContent, ctx: &mut ViewContext<Self>) {
         // If AI is disabled, attachment isn't possible
         if !AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
             self.insert_clipboard_text_content(ctx, content);
@@ -10565,6 +11369,7 @@ impl Input {
         let clipboard_content_str = self
             .editor
             .read(ctx, |editor, _| editor.clipboard_text_content(content));
+        self.forget_explicit_input_type_for_paste(&clipboard_content_str, ctx);
         self.editor.update(ctx, |editor, ctx| {
             editor.user_initiated_insert(
                 &clipboard_content_str,
@@ -10888,7 +11693,7 @@ impl Input {
         &self,
         replacement_start: usize,
         buffer_text_original: &str,
-        completion_results: &SuggestionResults,
+        completion_results: &Arc<SuggestionResults>,
         is_user_edit: bool,
         ctx: &mut ViewContext<Input>,
     ) -> bool {
@@ -10945,16 +11750,15 @@ impl Input {
             // If the user continues to type with the tab suggestions open, we perform a
             // prefix search on the original results to filter the suggestions.
             let should_close = self.input_suggestions.update(ctx, |suggestions, ctx| {
-                suggestions.prefix_search_for_tab_completion(
+                // Large result sets are filtered off the UI thread; the previous list stays up
+                // until the result lands (and an empty result closes the menu then).
+                // We should close the menu now only if the (inline) filter left no results.
+                suggestions.refilter_tab_completions(
                     current_word,
                     completion_results,
                     TabCompletionsPreselectOption::Unchanged,
                     ctx,
-                );
-
-                // We should close the menu if there aren't any results
-                // after filtering.
-                suggestions.items().is_empty()
+                )
             });
 
             ctx.notify();
@@ -11207,14 +12011,23 @@ impl Input {
             return false;
         }
 
-        // Check if '@' is at beginning of line or after non-alphanumeric
+        // Check if '@' is at beginning of line or after non-alphanumeric. In shell mode `@` is
+        // ordinary syntax (`$x=@(1,2)`, `a,@b`, `user@host`, `@{u}`), so only a word start
+        // (line start or after whitespace) can open the picker there (#1337).
+        let is_shell_input = !self.ai_input_model.as_ref(app).is_ai_input_enabled();
         let is_valid_context = if cursor_position == 1 {
             true // '@' is the first character
         } else {
             buffer_text
                 .chars()
                 .nth(cursor_position.saturating_sub(2))
-                .is_some_and(|c| !c.is_alphanumeric())
+                .is_some_and(|c| {
+                    if is_shell_input {
+                        c.is_whitespace()
+                    } else {
+                        !c.is_alphanumeric()
+                    }
+                })
         };
 
         if !is_valid_context {
@@ -11361,11 +12174,12 @@ impl Input {
             _ => CompletionsFallbackStrategy::None,
         };
 
-        if self.is_completions_while_typing_turned_on(ctx) {
-            if let Some(last_abort_handle) = self.completions_abort_handle.take() {
-                last_abort_handle.abort();
-            }
+        // Always supersede the previous run, not only when completions-while-typing is on: its
+        // result would be dropped anyway, but its work (and remote commands) would keep running.
+        if let Some(last_abort_handle) = self.completions_abort_handle.take() {
+            last_abort_handle.abort();
         }
+        self.tab_completion_request = None;
 
         let input_type = self.ai_input_model.as_ref(ctx).input_type();
 
@@ -11402,10 +12216,39 @@ impl Input {
         };
 
         let completion_session = completion_context.session.clone();
+        let generation = self.input_generation;
+        let completion_compute = ComputeClock::default();
+        // An explicit Tab always asks the remote again, even for a directory that failed to list
+        // a moment ago (#1295); the as-you-type menu waits out a burst of keystrokes instead
+        // of listing for each one. The wait is abortable: the next keystroke supersedes it.
+        let remote_debounce = if completion_session.is_local() {
+            None
+        } else if completions_trigger == CompletionsTrigger::Keybinding {
+            crate::completer::forget_failed_remote_listings(completion_session.id());
+            None
+        } else if completions_trigger == CompletionsTrigger::AsYouType {
+            Some(REMOTE_AS_YOU_TYPE_DEBOUNCE)
+        } else {
+            None
+        };
+        if completions_trigger == CompletionsTrigger::Keybinding {
+            self.tab_completion_request = Some(TabCompletionRequest {
+                generation,
+                snapshot: editor_snapshot.clone(),
+                local: completion_session.is_local(),
+                compute: completion_compute.clone(),
+            });
+        }
 
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
+                    if let Some(debounce) = remote_debounce {
+                        Timer::after(debounce).await;
+                    }
+                    // The completer's own compute starts here, not when the Enter arrived or the
+                    // job was queued (#1351).
+                    let _compute = completion_compute.begin();
                     let suggestions = completer::suggestions(
                         before_cursor_text.as_str(),
                         cursor_position,
@@ -11448,8 +12291,9 @@ impl Input {
 
                     (suggestions, completions_trigger, editor_snapshot)
                 },
-                |input, (suggestions, completions_trigger, editor_model), ctx| {
-                    input.handle_completion_suggestions_results(
+                move |input, (suggestions, completions_trigger, editor_model), ctx| {
+                    input.deliver_completion_suggestions_results(
+                        generation,
                         suggestions,
                         completions_trigger,
                         editor_model,
@@ -11457,7 +12301,10 @@ impl Input {
                     )
                 },
                 move |_, _| {
-                    completion_session.cancel_active_commands();
+                    // Superseding this job drops its future, which cancels exactly the in-band commands it
+                    // issued (`InBandCommandExecutor::execute_command`'s `on_cancel`; the local executor kills
+                    // its own process group). Do NOT call `cancel_active_commands()` here: it is session-wide
+                    // and would also kill other jobs' in-flight Tab completions (#1352).
                 },
             )
             .abort_handle();
@@ -11476,6 +12323,7 @@ impl Input {
             self.suggestions_mode_model.update(ctx, |m, ctx| {
                 m.set_dynamic_enum_status(DynamicEnumSuggestionStatus::Pending, ctx);
             });
+            let generation = self.input_generation;
             let abort_handle = ctx
                 .spawn(
                     async move {
@@ -11488,7 +12336,12 @@ impl Input {
                         (variants, editor_snapshot)
                     },
                     move |input, (variants, editor_model), ctx| {
-                        input.handle_enum_completion_results(variants, editor_model, ctx);
+                        input.deliver_enum_completion_results(
+                            generation,
+                            variants,
+                            editor_model,
+                            ctx,
+                        );
                     },
                 )
                 .abort_handle();
@@ -11496,6 +12349,79 @@ impl Input {
             self.completions_abort_handle = Some(abort_handle);
             ctx.notify();
         }
+    }
+
+    /// #1165: an Enter that is deferred (verdict wait, typeahead hand-off) submits exactly the
+    /// text visible when it was pressed. A completion still pending, or already queued, for that
+    /// text must not land meanwhile: the deferred-Enter bookkeeping reads anything that joins the
+    /// buffer after the Enter as text typed behind it (#1016) and replays it into the NEXT prompt
+    /// (`git checkout fe` + Tab + Enter ran, then `at` was prepended to the next command). The
+    /// first #1165 fix bumped the generation only when the command was written to the pty, which
+    /// a deferred Enter reaches after the completion has already been applied.
+    fn cancel_pending_completions_for_deferred_enter(&mut self) {
+        self.bump_input_generation();
+        if let Some(abort_handle) = self.completions_abort_handle.take() {
+            abort_handle.abort();
+        }
+    }
+
+    /// Whether a result requested under `generation` was invalidated since (#1165).
+    fn is_stale_generation(&self, generation: u64) -> bool {
+        generation != self.input_generation
+    }
+
+    /// Delivers a completion result to [`Self::handle_completion_suggestions_results`] unless an
+    /// Esc, submit, clear or block completion happened since the request started.
+    fn deliver_completion_suggestions_results(
+        &mut self,
+        generation: u64,
+        results: Option<SuggestionResults>,
+        completions_trigger: CompletionsTrigger,
+        editor_snapshot_when_completer_was_ran: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.is_stale_generation(generation) {
+            return;
+        }
+        if let Some(wait) = self.verdict_wait.as_ref() {
+            // #1165: the Tab completion an Enter holds for. Anything else that lands while an
+            // Enter waits is dropped.
+            if wait.holds_for_tab_completion()
+                && completions_trigger == CompletionsTrigger::Keybinding
+            {
+                self.finish_completion_hold(
+                    Some((results, editor_snapshot_when_completer_was_ran)),
+                    ctx,
+                );
+            }
+            return;
+        }
+        if completions_trigger == CompletionsTrigger::Keybinding {
+            // The Tab is answered: an Enter after this has nothing to hold for. Left in place, a
+            // result that changed nothing (no match) made the next Enter wait out the whole
+            // completion budget for an answer that had already come.
+            self.tab_completion_request = None;
+        }
+        self.handle_completion_suggestions_results(
+            results,
+            completions_trigger,
+            editor_snapshot_when_completer_was_ran,
+            ctx,
+        );
+    }
+
+    /// Same as [`Self::deliver_completion_suggestions_results`] for dynamic enum results.
+    fn deliver_enum_completion_results(
+        &mut self,
+        generation: u64,
+        results: anyhow::Result<Vec<String>>,
+        editor_snapshot_when_completer_was_ran: EditorSnapshot,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.is_stale_generation(generation) || self.verdict_wait.is_some() {
+            return;
+        }
+        self.handle_enum_completion_results(results, editor_snapshot_when_completer_was_ran, ctx);
     }
 
     /// When the command finishes running, update the input suggestions menu with the suggestions.
@@ -11643,6 +12569,8 @@ impl Input {
         {
             return;
         }
+        // These results answer the current buffer: they replace (or close) any stale menu.
+        self.completion_menu_stale = false;
 
         match results {
             None => {
@@ -11743,7 +12671,10 @@ impl Input {
                         InputSuggestionsMode::CompletionSuggestions {
                             replacement_start: results.replacement_span.start(),
                             buffer_text_original,
-                            completion_results: results.clone(),
+                            // Moved, not cloned: `results` is not read again, and a deep copy
+                            // of a large listing (thousands of files) cost main-thread time
+                            // before the menu's first frame.
+                            completion_results: Arc::new(results),
                             trigger: completions_trigger,
                             menu_position,
                         },
@@ -12095,7 +13026,70 @@ impl Input {
     ///
     /// If tab is not bound to "open completion suggestions menu" nor is the suggestions menu
     /// already open, inserts a tab char into the input editor.
+    /// Makes the open completion menu's list match the current text before a key acts on it:
+    /// a background refilter that has not landed yet is redone inline (never act on a stale
+    /// list). Closes the menu if the current text matches nothing.
+    fn flush_pending_suggestion_refilter(&mut self, ctx: &mut ViewContext<Self>) {
+        let flushed = self
+            .input_suggestions
+            .update(ctx, |suggestions, ctx| suggestions.flush_pending_refilter(ctx));
+        if flushed == Some(true)
+            && matches!(
+                self.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            )
+        {
+            self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
+        }
+    }
+
+    /// True when an open as-you-type completion menu answers text the buffer no longer holds,
+    /// before the edit that changed it has been handled (#1452). The editor reports an insert as
+    /// an `Edited` event one effect hop after the model's own, so an Enter replayed or typed right
+    /// behind the last character can arrive while the menu still lists the results for the
+    /// previous text and `completion_menu_stale` is not yet set. Accepting that menu on Enter
+    /// replaces the word with a stale item and consumes the Enter: the line is not submitted and
+    /// the next one is appended to it. The menu opened with `buffer_text_original` (the text up to
+    /// the cursor); an as-you-type menu always answers exactly that text (typing recomputes it
+    /// and marks it stale), so any difference means an edit the menu has not seen yet. Classic
+    /// completions are exempt: cycling rewrites the buffer on purpose.
+    fn as_you_type_menu_lags_buffer(&self, ctx: &ViewContext<Self>) -> bool {
+        let InputSuggestionsMode::CompletionSuggestions {
+            buffer_text_original,
+            trigger,
+            ..
+        } = self.suggestions_mode_model.as_ref(ctx).mode()
+        else {
+            return false;
+        };
+        if *trigger != CompletionsTrigger::AsYouType || self.is_classic_completions_enabled(ctx) {
+            return false;
+        }
+        let editor_text = self.editor.as_ref(ctx).buffer_text(ctx);
+        let cursor = self.start_byte_index_of_last_selection(ctx).as_usize();
+        editor_text.get(..cursor) != Some(buffer_text_original.as_str())
+    }
+
+    /// If the open completion menu is stale (#1355), closes it so the action that follows (Tab,
+    /// Enter, a click) behaves exactly as if no menu were open. True if it was closed.
+    fn drop_stale_completion_menu(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !self.completion_menu_stale && !self.as_you_type_menu_lags_buffer(ctx) {
+            return false;
+        }
+        self.completion_menu_stale = false;
+        if matches!(
+            self.suggestions_mode_model.as_ref(ctx).mode(),
+            InputSuggestionsMode::CompletionSuggestions { .. }
+        ) {
+            self.close_input_suggestions(/*should_focus_input=*/ false, ctx);
+            return true;
+        }
+        false
+    }
+
     fn input_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        self.drop_stale_completion_menu(ctx);
+        self.flush_pending_suggestion_refilter(ctx);
         if matches!(
             self.suggestions_mode_model.as_ref(ctx).mode(),
             InputSuggestionsMode::AIContextMenu { .. }
@@ -12233,6 +13227,7 @@ impl Input {
 
     #[cfg(test)]
     fn user_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
+        warpui::profiling::zone!("editor_edit");
         self.insert_internal(text, EditOrigin::UserTyped, ctx)
     }
 
@@ -12247,15 +13242,86 @@ impl Input {
     // should be inputted into the input area (i.e. arrow keys should not be
     // included in the string).
     pub fn system_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
+        // #1434: ordered with the keys the pane queue holds for the editor.
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::Insert(text.to_owned()), ctx) {
+            return true;
+        }
         self.insert_internal(text, EditOrigin::UserInitiated, ctx)
+    }
+
+    /// Inserts text the user pasted (#1335). A paste into an empty buffer is a new question for
+    /// autodetection even when it lands inside the window of an explicit input-type write (an
+    /// agent view just entered, a mode toggle): the first edit inside that window is otherwise
+    /// claimed as the text the explicit write accompanied, which suppresses the verdict for the
+    /// whole pasted line and leaves Enter to submit it on the inherited type (the agent's). Typed
+    /// text only ever claims one character. A non-empty buffer keeps the explicit choice.
+    pub fn paste_insert(&mut self, text: &str, ctx: &mut ViewContext<Self>) -> bool {
+        self.forget_explicit_input_type_for_paste(text, ctx);
+        self.system_insert(text, ctx)
+    }
+
+    fn forget_explicit_input_type_for_paste(&self, text: &str, ctx: &mut ViewContext<Self>) {
+        if self.editor.as_ref(ctx).is_empty(ctx) && !text.trim().is_empty() {
+            self.ai_input_model
+                .update(ctx, |model, _| model.clear_explicit_input_type_set());
+        }
     }
 
     pub fn has_pending_command(&self) -> bool {
         self.has_pending_command
     }
 
+    /// The command [`Self::set_pending_command`] was asked to run, until it starts (#1450).
+    pub(crate) fn pending_command_text(&self) -> Option<&str> {
+        self.pending_command_text.as_deref()
+    }
+
+    /// #1588: the 2 s net for a pending command found no prompt. The command is NOT run by the
+    /// timer: its text is made visible in the input (when the input holds nothing else), the next
+    /// Enter is consumed once with the "check the line" toast, and the pending state is kept for
+    /// the prompt's own event (`execute_pending_command`). Returns whether a command is waiting.
+    pub(crate) fn show_pending_command_after_give_up(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.has_pending_command || self.held_unready_enter {
+            return false;
+        }
+        let Some(text) = self.pending_command_text.clone() else {
+            return false;
+        };
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        let shown = if buffer.is_empty() {
+            self.editor
+                .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+            true
+        } else {
+            buffer == text
+        };
+        if shown {
+            // F6 (#1594): `execute_pending_command` runs the REQUESTED text, never an edit of it
+            // (#1435). While the command is shown and waiting it is therefore read-only, so no
+            // edit can look like it will run. `execute_pending_command` restores `Editable`.
+            if self.editor.as_ref(ctx).interaction_state(ctx) == InteractionState::Editable {
+                self.editor.update(ctx, |editor, ctx| {
+                    editor.set_interaction_state(InteractionState::Selectable, ctx);
+                });
+                self.pending_command_shown_read_only = true;
+            }
+            self.arm_ssh_handover_enter_guard(text);
+        }
+        true
+    }
+
+    /// The command [`Self::set_pending_command`] was last asked to run, for tests.
+    #[cfg(test)]
+    pub(crate) fn pending_command_text_for_test(&self) -> Option<&str> {
+        self.pending_command_text.as_deref()
+    }
+
     pub fn set_pending_command(&mut self, exec: &str, ctx: &mut ViewContext<Self>) {
         self.has_pending_command = true;
+        self.pending_command_text = Some(exec.to_owned());
         self.system_insert(exec, ctx);
     }
 
@@ -12286,9 +13352,11 @@ impl Input {
 
         // At this point, we know completions as you type is enabled and classic completions
         // is disabled. Accept the completion unless the buffer already matches the selected item
-        // (in which case, just execute the command).
+        // (in which case, just execute the command). With NOTHING selected there is nothing the
+        // user saw highlighted to accept: confirming would only close the menu and swallow the
+        // Enter, so the line submits (#1452).
         let current_buffer_text = self.editor.as_ref(app).buffer_text(app);
-        selected_item.is_none_or(|selected_item| {
+        selected_item.is_some_and(|selected_item| {
             let Some(replacement) = &current_buffer_text.get(*replacement_start..) else {
                 log::error!("Failed to get replacement range in current buffer text");
                 return true;
@@ -12404,6 +13472,14 @@ impl Input {
         // has been applied must not run the line as a shell command.
         self.redetect_slash_command_before_submit(ctx);
         let buffer_text = self.buffer_text(ctx);
+        // #1184: `/mod` left in the agent input after Esc closed the slash menu is not a slash
+        // command (the redetect above found none) and not a path: it goes to the agent as text,
+        // never to the shell. Runs on every Enter route (this is reached before any submit).
+        if self.ai_input_model.update(ctx, |model, ctx| {
+            model.route_unmatched_slash_line_to_agent(&buffer_text, ctx)
+        }) {
+            return;
+        }
         let snapshot = match &self.last_parsed_tokens {
             Some(parsed) if parsed.buffer_text == buffer_text => parsed.clone(),
             _ => decorations::ParsedTokensSnapshot {
@@ -12417,7 +13493,11 @@ impl Input {
         // while a command is running (a non-warpified ssh, `docker exec`, `sudo -s`,
         // `nix-shell`, or the gap before a subshell/ssh session bootstraps all leave the previous
         // session as the active one) and not before bootstrap completes.
-        let prompt_session_is_the_target = {
+        // #1604: a buffer over the sync routing cap is decided by its background job; the session
+        // facts below are only gathered for the synchronous rules (`effective_head_word` and the
+        // #965 request shapes split the whole text into words, and the exact-history lookup
+        // hashes all of it, on this thread).
+        let prompt_session_is_the_target = !routes_off_thread(&snapshot.buffer_text) && {
             let model = self.model.lock();
             model.block_list().is_bootstrapped()
                 && !model
@@ -12427,15 +13507,26 @@ impl Input {
         };
         // #1019: look the head up on `$PATH` first, so a program installed since the bootstrap
         // scan is not reported unknown.
+        // Enter must never wait on the `$PATH` stat (a slow or stale NFS entry stalls it for
+        // seconds), so a word not yet probed is probed in the background and, as the answer is
+        // not in yet, is not reported unknown ("do not guess").
+        let mut head_probe_pending = false;
         if prompt_session_is_the_target {
             if let (Some(word), Some(session)) = (
                 snapshot.buffer_text.split_whitespace().next(),
                 self.active_session(ctx),
             ) {
-                session.discover_command_word(word);
+                if session.command_word_needs_probe(word) {
+                    head_probe_pending = true;
+                    let word = word.to_owned();
+                    ctx.background_executor()
+                        .spawn(async move { session.probe_command_word(&word) })
+                        .detach();
+                }
             }
         }
         let head_unknown_to_shell = prompt_session_is_the_target
+            && !head_probe_pending
             && snapshot
                 .buffer_text
                 .split_whitespace()
@@ -12447,14 +13538,36 @@ impl Input {
             && input_classifier::util::effective_head_word(&snapshot.buffer_text)
                 .zip(self.active_session(ctx))
                 .is_some_and(|(word, session)| session.knows_command_word(&word) == Some(true));
+        // #1203: a line this session's shell ran before, verbatim and successfully, is a command
+        // (#965's request shapes excepted). Decided here, synchronously, instead of by the history
+        // matcher the Enter would otherwise wait up to its budget for.
+        let ran_before_exactly = prompt_session_is_the_target
+            && self.active_block_session_id().is_some_and(|session_id| {
+                history_says_ran_before(History::as_ref(ctx), session_id, &snapshot.buffer_text)
+            });
+        // #1234: the shell's syntax family, for the rules that are not POSIX (PowerShell cmdlets
+        // and `$variable` assignments, nushell keywords and pipelines, fish builtins).
+        let shell = self
+            .active_session(ctx)
+            .map(|session| shell_family(session.shell().shell_type()))
+            .unwrap_or_default();
         self.ai_input_model.update(ctx, |model, ctx| {
             model.settle_pending_detection_for_submit(
                 &snapshot,
                 head_unknown_to_shell,
                 head_known_to_shell,
+                ran_before_exactly,
+                shell,
                 ctx,
             );
         });
+    }
+
+    /// The status of the active conversation's front pending agent action, if any.
+    fn pending_action_status(&self, ctx: &AppContext) -> Option<AIActionStatus> {
+        let action_model = self.ai_action_model.as_ref(ctx);
+        let action = action_model.get_pending_action(ctx)?;
+        action_model.get_action_status(&action.id)
     }
 
     /// Handles the user's 'Enter' keypress.
@@ -12465,6 +13578,39 @@ impl Input {
     /// is an active and long running command; in such a state, the enter keypress should be
     /// handled by the ongoing process corresponding to the active/long running command.
     pub(crate) fn input_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.hold_back_enter_after_ssh_handover(ctx) {
+            return;
+        }
+        // #1571: an Enter is held because the shell was not ready, and the buffer still shows its
+        // line: this Enter belongs to the line typed AFTER it. It never submits the buffer (that
+        // ran `ssh fakeecho ...`); it queues behind the held one, in order.
+        if !self.running_deferred_enter && self.unready_enter_gate_open() {
+            if self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
+                warpui::input_order::log_hop("enter_queued_behind_held", String::new);
+            } else if self.enter_queue_handle_is_draining(ctx) {
+                log::error!(
+                    "input queue: an Enter delivered by a drain met the gate of an Enter held for \
+                     an unready shell; not submitted (#1571)"
+                );
+            } else {
+                // The gate is gone from the queue (nothing can release it): hand the held line
+                // back rather than leave it pending, and do not submit it here.
+                self.give_up_unready_enter("gate_gone", ctx);
+            }
+            return;
+        }
+        self.drop_stale_completion_menu(ctx);
+        self.flush_pending_suggestion_refilter(ctx);
+        warpui::input_order::log_hop("enter_begin", || {
+            // #1393: the text and input type the Enter is about to route, so a line that went to
+            // the agent can be told from one the editor held wrongly.
+            format!(
+                "deferred={} buffer={} input_type={:?}",
+                self.running_deferred_enter,
+                warpui::input_order::describe_text(&self.buffer_text(ctx)),
+                self.input_type(ctx)
+            )
+        });
         if CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id) {
             // If the @ context menu is open, Enter selects the highlighted item
             // instead of submitting the CLI agent input.
@@ -12534,8 +13680,6 @@ impl Input {
             self.input_enter_as_shell_command(ctx);
             return;
         }
-        let command = self.editor.as_ref(ctx).buffer_text(ctx);
-
         ctx.emit(Event::Enter);
 
         if self
@@ -12562,6 +13706,40 @@ impl Input {
             self.inline_prompts_menu_view
                 .update(ctx, |view, ctx| view.accept_selected_item(ctx));
             return;
+        }
+
+        // In terminal mode an @ picker with nothing to select (e.g. `@(1,2,3)` in PowerShell)
+        // must never swallow Enter: close it and submit the line (#1337).
+        let typed_at_filter = match self.suggestions_mode_model.as_ref(ctx).mode() {
+            InputSuggestionsMode::AIContextMenu { filter_text, .. } => filter_text.clone(),
+            _ => String::new(),
+        };
+        if self.suggestions_mode_model.as_ref(ctx).is_ai_context_menu()
+            && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+            && !self.editor.update(ctx, |editor, ctx| {
+                editor.ai_context_menu().is_some_and(|menu| {
+                    menu.as_ref(ctx)
+                        .has_selectable_item(&typed_at_filter, ctx)
+                })
+            })
+        {
+            self.close_ai_context_menu(ctx);
+        }
+
+        // In terminal mode a slash menu that does not answer the typed text (no rows, still
+        // loading, or listing older text because Enter beat the last keystroke's edit) must never
+        // swallow Enter: close it, stop slash parsing for this line and submit it, so a fast
+        // `/usr/bin/env` or `/tmp/x.sh` runs in the shell (#1459).
+        if self.suggestions_mode_model.as_ref(ctx).is_slash_commands()
+            && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+            && !self
+                .inline_slash_commands_view
+                .as_ref(ctx)
+                .answers_current_buffer(ctx)
+        {
+            self.slash_command_model
+                .update(ctx, |model, ctx| model.disable(ctx));
+            self.close_slash_commands_menu(ctx);
         }
 
         if self.should_insert_newline_on_enter(ctx) {
@@ -12631,6 +13809,15 @@ impl Input {
                 view.accept_selected_item(false, ctx);
             });
             return;
+        } else if empty_enter_focuses_pending_action(
+            self.editor.as_ref(ctx).is_empty(ctx),
+            self.pending_action_status(ctx).as_ref(),
+        ) {
+            // Move focus to the card (its Enter binding and Run hint then apply) instead of
+            // approving: an habitual empty Enter must not run an unreviewed command. Never falls
+            // through to submit an empty command or query (#1180).
+            ctx.emit(Event::FocusPendingAgentAction);
+            return;
         } else if self
             .queued_prompts_panel
             .as_ref()
@@ -12653,6 +13840,8 @@ impl Input {
             {
                 self.send_queued_row_immediately(conversation_id, query_id, text, is_command, ctx);
             }
+            return;
+        } else if self.hold_enter_for_tab_completion(ctx) {
             return;
         } else if self.defer_enter_for_classification(ctx) {
             return;
@@ -12694,95 +13883,6 @@ impl Input {
                     },
                     ctx
                 );
-            }
-
-            // Check if we're configuring an ambient agent and spawn it instead of submitting a regular AI query.
-            if self
-                .ambient_agent_view_model
-                .as_ref(ctx)
-                .is_configuring_ambient_agent()
-            {
-                let prompt = command.trim().to_owned();
-                if prompt.is_empty() {
-                    return;
-                }
-
-                // Collect pending files for the spawn request. Cloud mode image attachments are disabled in Zap.
-                let attachments: Vec<AttachmentInput> = if false {
-                    let mut inputs: Vec<AttachmentInput> = self
-                        .ai_context_model
-                        .as_ref(ctx)
-                        .pending_images()
-                        .iter()
-                        .map(|image| AttachmentInput {
-                            file_name: image.file_name.clone(),
-                            mime_type: image.mime_type.clone(),
-                            data: image.data.clone(),
-                        })
-                        .collect();
-
-                    let mut skipped_files: Vec<String> = Vec::new();
-                    for file in self.ai_context_model.as_ref(ctx).pending_files() {
-                        match std::fs::read(&file.file_path) {
-                            Ok(bytes) => {
-                                if bytes.len() > MAX_ATTACHMENT_SIZE_BYTES {
-                                    skipped_files.push(file.file_name.clone());
-                                    continue;
-                                }
-                                inputs.push(AttachmentInput {
-                                    file_name: file.file_name.clone(),
-                                    mime_type: file.mime_type.clone(),
-                                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                                });
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to read file {}: {e}",
-                                    file.file_path.display()
-                                );
-                            }
-                        }
-                    }
-
-                    if !skipped_files.is_empty() {
-                        let window_id = ctx.window_id();
-                        let message = if skipped_files.len() == 1 {
-                            format!(
-                                "{} was not attached — exceeds 10MB limit.",
-                                skipped_files[0]
-                            )
-                        } else {
-                            format!(
-                                "{} files were not attached — exceed 10MB limit.",
-                                skipped_files.len()
-                            )
-                        };
-                        ToastStack::handle(ctx).update(ctx, |ts, ctx| {
-                            ts.add_ephemeral_toast(
-                                DismissibleToast::error(message),
-                                window_id,
-                                ctx,
-                            );
-                        });
-                    }
-
-                    inputs
-                } else {
-                    vec![]
-                };
-
-                // Clear the buffer and pending attachments after collecting them.
-                self.editor.update(ctx, |editor, ctx| {
-                    editor.clear_buffer(ctx);
-                });
-                self.ai_context_model.update(ctx, |context_model, ctx| {
-                    context_model.clear_pending_attachments(ctx);
-                });
-
-                self.ambient_agent_view_model.update(ctx, |state, ctx| {
-                    state.spawn_agent(prompt, attachments, ctx);
-                });
-                return;
             }
 
             self.submit_ai_query(None, ctx);
@@ -12852,9 +13952,18 @@ impl Input {
                 return;
             }
             warpui::input_order::log_submit(&command);
+            let submit_started = Instant::now();
             // Read how this submit is routed before the submit resets the input config (#835).
             let route_reason = self.ai_input_model.as_ref(ctx).submit_route_reason();
-            if !self.try_execute_command(&command, ctx) {
+            let executed = self.try_execute_command(&command, ctx);
+            warpui::input_order::log_hop("try_execute_done", || {
+                format!(
+                    "executed={executed} took_ms={:.1}",
+                    submit_started.elapsed().as_secs_f64() * 1000.
+                )
+            });
+            if !executed {
+                self.hold_refused_unready_enter(ctx);
                 return;
             }
             self.last_enter_submitted_shell_command = true;
@@ -12906,11 +14015,16 @@ impl Input {
             self.model.lock().set_is_input_dirty(false);
         }
 
-        AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-            // Don't show the quota banner once a user has run a command or AI query.
-            ai_settings.mark_quota_banner_as_dismissed(ctx);
-            ctx.notify();
-        });
+        // #1203: only when a banner is actually waiting. The update below writes a setting and
+        // notifies every observer of AISettings, on the UI thread, before the effects queued by
+        // the submit (the pty write among them) are delivered.
+        if AISettings::as_ref(ctx).quota_banner_needs_dismissal() {
+            AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+                // Don't show the quota banner once a user has run a command or AI query.
+                ai_settings.mark_quota_banner_as_dismissed(ctx);
+                ctx.notify();
+            });
+        }
     }
 
     /// Runs Enter as a shell command: for this one submit the input is locked to shell, in
@@ -13016,43 +14130,82 @@ impl Input {
             .is_detection_pending_for(&text, ctx)
     }
 
+    /// The buffer's length in chars, from the editor's cached size: no copy (#1604). A lower bound
+    /// of its byte length, which the large-text compute allowances are measured in.
+    pub(crate) fn buffer_char_len(&self, ctx: &AppContext) -> usize {
+        self.editor.as_ref(ctx).buffer_size(ctx).as_usize()
+    }
+
+    /// #1174: the classifier did not answer in time. Decide on everything known now, then drop
+    /// the request so a late verdict cannot land after the submit.
+    pub(crate) fn give_up_pending_detection_for_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        self.settle_pending_input_detection_for_submit(ctx);
+        self.ai_input_model
+            .update(ctx, |model, _| model.abandon_pending_detection());
+    }
+
     /// #933: an Enter on text that reads as English, whose classification verdict has not landed
     /// and which the Enter-time rules could not decide, waits for the verdict instead of
     /// submitting on the inherited input type: prose must never
     /// be run by the shell because Enter beat the classifier. Typeahead for a running command
     /// keeps its shell rules; typeahead that began right after a command is classified like
-    /// anything typed. If no verdict comes (the classifier cannot answer), the text stays in the
-    /// editor unsubmitted, and a second Enter submits it as the rules decide.
+    /// anything typed. The wait is bounded by `ENTER_VERDICT_BUDGET` (#1158); if the verdict is
+    /// late the Enter submits on the Enter-time rules above and the late verdict is dropped. It is
+    /// never kept in the editor, and never waits on remote I/O (the classification parse runs no
+    /// generators).
     fn defer_enter_for_classification(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         // #1016: an Enter is already waiting. This one belongs to the line typed after it: it
         // queues behind that Enter (after the text typed before it), and never submits the
         // buffer, which still holds the first line.
         if self.verdict_wait.is_some() && self.reconcile_verdict_wait(ctx) {
-            if let Some(wait) = self.verdict_wait.as_mut() {
-                wait.queued.push(AfterEnterInput::Enter);
-            }
+            // On the input queue (#1353 phase 3) when its gate holds the Enter, else on the wait.
+            self.queue_enter_behind_wait(ctx);
             return true;
         }
         // The deferred Enter has run but its replay has not drained: this Enter follows it.
         // (Not the deferred Enter's own submit: the replay is open ahead of it so nothing typed
         // overtakes the queue, and that submit must run, not queue itself behind the text it was
         // waiting to precede -- which submitted 'trueec' for 'true' + Enter + 'echo ...'.)
-        if self.after_enter_replay_open && !self.running_deferred_enter {
-            self.queue_after_enter_replay(AfterEnterInput::Enter);
+        if !self.running_deferred_enter && self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
             return true;
         }
+        let Some(text) = self.verdict_needed_before_submit(ctx) else {
+            return false;
+        };
+        warpui::input_order::log_hop("verdict_wait_start", String::new);
+        self.ai_input_model
+            .update(ctx, |model, _| model.clear_typeahead_provenance());
+        let since = Instant::now();
+        let wait_id = self.start_verdict_wait(text.clone(), EnterHold::Verdict { since }, ctx);
+        self.open_enter_gate(
+            wait_id,
+            crate::terminal::input_queue::GateKind::EnterVerdict,
+            ctx,
+        );
+        self.cancel_pending_completions_for_deferred_enter();
+        self.begin_deferred_enter_activity(ctx);
+        // Released by the verdict landing (the input model's notification); see
+        // `watch_hold_compute` for the give-up nets.
+        self.watch_hold_compute(ctx);
+        self.wait_for_verdict_then_enter(text, ctx);
+        true
+    }
+
+    /// Settles what the Enter-time rules can decide, then returns the buffer text if the Enter
+    /// must wait for its classification verdict (#933); `None` if it submits now.
+    fn verdict_needed_before_submit(&mut self, ctx: &mut ViewContext<Self>) -> Option<String> {
         // What the Enter-time rules can decide without a verdict is decided now, exactly as
         // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
         // a request to the agent settles to AI. Settling clears the pending verdict, so only
         // text those rules leave undecided waits below.
-        // #1036: text over the background-job cap is never parsed, so no verdict can land;
-        // the debounced job that would clear the request may not have run before this Enter.
-        if self.buffer_exceeds_background_job_cap(ctx) {
-            self.ai_input_model
-                .update(ctx, |model, _| model.abandon_pending_detection());
-        }
         self.settle_pending_input_detection_for_submit(ctx);
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        // #1604: a buffer over the sync routing cap is decided by its background job, never by
+        // the rules on this thread (`has_no_prose_evidence` is linear in the text, and a 10 MB
+        // scan here is a frame): it counts as prose evidence, so the Enter waits for the verdict.
+        let off_thread = routes_off_thread(&text);
+        let has_prose_evidence =
+            off_thread || !input_classifier::util::has_no_prose_evidence(&text);
         let model = self.ai_input_model.as_ref(ctx);
         let provenance = if model.has_typeahead_provenance() && !model.typeahead_is_young() {
             EnterProvenance::ShellTypeahead
@@ -13060,22 +14213,432 @@ impl Input {
             EnterProvenance::Classifiable
         };
         if !should_wait_for_verdict_before_submit(
-            !input_classifier::util::has_no_prose_evidence(&text),
+            has_prose_evidence,
             self.buffer_is_slash_command(ctx),
             model.is_detection_pending_for(&text, ctx),
             provenance,
-            self.verdict_wait_gave_up_on.as_deref() == Some(text.as_str()),
+            false,
         ) {
-            self.verdict_wait_gave_up_on = None;
+            return None;
+        }
+        // The verdict this Enter waits for comes from the job that classifies the text without a
+        // parse (#1604); over `MAX_EAGER_ROUTING_BYTES` nothing but an Enter starts it.
+        if off_thread {
+            self.start_detection_for_unparsed_buffer(true, ctx);
+        }
+        Some(text)
+    }
+
+    /// #1165: an Enter that arrives while the Tab completion for the exact current buffer and
+    /// cursor is in flight holds for it, as a real shell runs the completed line. The result is
+    /// applied (a single match), or the visible text is submitted (several matches, none, an
+    /// error, or no answer within `TAB_COMPLETION_ENTER_BUDGET`). A remote completer cannot
+    /// answer quickly: it is cancelled and the Enter submits the visible text at once. Keys typed
+    /// during the hold queue behind the Enter through the verdict wait's bookkeeping (#1016).
+    /// Returns whether the Enter was taken.
+    fn hold_enter_for_tab_completion(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if self.running_deferred_enter || self.enter_queue_awaits_route(ctx) {
             return false;
         }
-        self.ai_input_model
-            .update(ctx, |model, _| model.clear_typeahead_provenance());
+        if self
+            .verdict_wait
+            .as_ref()
+            .is_some_and(VerdictWait::holds_for_tab_completion)
+        {
+            if self.reconcile_verdict_wait(ctx) {
+                self.queue_enter_behind_wait(ctx);
+                return true;
+            }
+            return false;
+        }
+        if self.verdict_wait.is_some() {
+            return false;
+        }
+        let Some(request) = self.tab_completion_request.as_ref() else {
+            return false;
+        };
+        if self.is_stale_generation(request.generation) {
+            self.tab_completion_request = None;
+            return false;
+        }
+        let current = self
+            .editor
+            .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
+        if request.snapshot.text() != current.text()
+            || request.snapshot.selections() != current.selections()
+        {
+            return false;
+        }
+        if !request.local {
+            // Never wait on remote I/O: submit the visible text now.
+            log::info!("Enter not held for a remote Tab completion; completion cancelled");
+            self.tab_completion_request = None;
+            self.cancel_pending_completions_for_deferred_enter();
+            return false;
+        }
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        let wait_id = self.start_verdict_wait(
+            text,
+            EnterHold::TabCompletion {
+                since: Instant::now(),
+            },
+            ctx,
+        );
+        self.open_enter_gate(
+            wait_id,
+            crate::terminal::input_queue::GateKind::TabCompletion,
+            ctx,
+        );
+        self.begin_deferred_enter_activity(ctx);
+        // Released by the completion result (`deliver_completion_suggestions_results`).
+        self.watch_hold_compute(ctx);
+        true
+    }
+
+    /// Starts the wait of the Enter just pressed on `text`, held for `hold`, and returns its id
+    /// (#1206).
+    fn start_verdict_wait(
+        &mut self,
+        text: String,
+        hold: EnterHold,
+        ctx: &ViewContext<Self>,
+    ) -> u64 {
+        self.next_verdict_wait_id = self.next_verdict_wait_id.wrapping_add(1);
+        let id = self.next_verdict_wait_id;
+        let cursor = self
+            .start_byte_index_of_last_selection(ctx)
+            .as_usize()
+            .min(text.len());
+        let compute = match hold {
+            EnterHold::Verdict { .. } => self.ai_input_model.as_ref(ctx).detection_clock(),
+            EnterHold::TabCompletion { .. } => self
+                .tab_completion_request
+                .as_ref()
+                .map(|request| request.compute.clone())
+                .unwrap_or_default(),
+        };
         self.verdict_wait = Some(VerdictWait {
-            text: text.clone(),
-            queued: Vec::new(),
+            id,
+            text,
+            hold,
+            compute,
+            watch_epoch: 0,
+            cursor,
         });
-        self.wait_for_verdict_then_enter(text, Instant::now(), ctx);
+        id
+    }
+
+    /// The id of the Enter currently waiting, if any.
+    fn verdict_wait_id(&self) -> Option<u64> {
+        self.verdict_wait.as_ref().map(|wait| wait.id)
+    }
+
+    /// Starts watching the job the current wait is held for (#1351). Nothing here polls:
+    ///
+    /// * the wait is RELEASED by the result event (the verdict notification, the delivered
+    ///   completion), however late the main thread gets to it;
+    /// * when a stage of the job starts running on the clock, that event arms ONE timer for the
+    ///   rest of the hold's compute cap ([`Self::arm_compute_cap`]), a give-up net for a job that
+    ///   is slow, measured on the job's own compute and never on the age of the Enter;
+    /// * one backstop timer ([`EnterHold::backstop`]) covers a result that never arrives and
+    ///   no job that ever starts. Both are logged when they fire.
+    fn watch_hold_compute(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref() else {
+            return;
+        };
+        let (id, backstop, clock) = (
+            wait.id,
+            wait.hold.backstop(wait.text.len()),
+            wait.compute.clone(),
+        );
+        if let Some(wait) = self.verdict_wait.as_mut() {
+            wait.watch_epoch = wait.watch_epoch.wrapping_add(1);
+        }
+        let (tx, rx) = async_channel::unbounded::<()>();
+        clock.notify_on_stage_start(tx);
+        let _ = ctx.spawn_stream_local(
+            rx,
+            move |me, (), ctx| {
+                if me.verdict_wait_id() == Some(id) {
+                    me.arm_compute_cap(id, ctx);
+                } else {
+                    // The wait ended: close the stream.
+                    clock.stop_notifying();
+                }
+            },
+            |_, _| {},
+        );
+        // A stage may already be running.
+        self.arm_compute_cap(id, ctx);
+        self.arm_hold_timer(id, backstop, "hold backstop", ctx);
+    }
+
+    /// Arms the give-up timer for the rest of the compute cap, if a stage is running now. When
+    /// none is, no timer is needed: the stage's start, or the result, is an event of its own.
+    fn arm_compute_cap(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
+            return;
+        };
+        if !wait.compute.is_running() {
+            return;
+        }
+        let remaining = wait
+            .hold
+            .compute_cap(wait.text.len())
+            .saturating_sub(wait.compute.spent());
+        self.arm_hold_timer(id, remaining, "compute cap", ctx);
+    }
+
+    /// Arms a one-shot give-up timer of wait `id`. It finds another wait, or none, when the wait
+    /// it was armed for was voided or released since, and must not touch it (#1206).
+    fn arm_hold_timer(
+        &mut self,
+        id: u64,
+        delay: std::time::Duration,
+        timer: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        #[cfg(test)]
+        self.hold_timers_armed_for_test.push((timer, delay));
+        let Some(epoch) = self.verdict_wait.as_ref().map(|wait| wait.watch_epoch) else {
+            return;
+        };
+        let deadline = Instant::now() + delay;
+        ctx.spawn(Timer::after(delay), move |me, _, ctx| {
+            log_late_timer_wake(timer, deadline);
+            // Armed by an earlier watch of this wait (its hold has since changed kind): not ours.
+            if !me
+                .verdict_wait
+                .as_ref()
+                .is_some_and(|wait| wait.id == id && wait.watch_epoch == epoch)
+            {
+                return;
+            }
+            if timer == "hold backstop" {
+                me.hold_backstop_fired(id, ctx);
+            } else {
+                me.compute_cap_fired(id, ctx);
+            }
+        });
+    }
+
+    /// The compute-cap timer of wait `id`: gives up on the job only if its own compute reached the
+    /// cap. A stage that finished meanwhile, or a cap not yet reached, leaves the wait to the
+    /// result event (and to the timer the next stage start arms).
+    fn compute_cap_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
+            return;
+        };
+        if wait.compute.spent() < wait.hold.compute_cap(wait.text.len()) {
+            self.arm_compute_cap(id, ctx);
+            return;
+        }
+        let (text, hold) = (wait.text.clone(), wait.hold);
+        match hold {
+            EnterHold::Verdict { .. } => self.wait_for_verdict_then_enter(text, ctx),
+            EnterHold::TabCompletion { .. } => self.give_up_completion_hold(ctx),
+        }
+    }
+
+    /// The backstop of wait `id`: no result arrived at all. Gives up like the compute cap.
+    fn hold_backstop_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
+            return;
+        };
+        let (text, hold, spent) = (wait.text.clone(), wait.hold, wait.compute.spent());
+        log::warn!(
+            "Enter hold backstop fired after {} ms: no {} arrived (job compute {} ms)",
+            hold.backstop(text.len()).as_millis(),
+            match hold {
+                EnterHold::Verdict { .. } => "input-type verdict",
+                EnterHold::TabCompletion { .. } => "Tab completion",
+            },
+            spent.as_millis()
+        );
+        if !self.reconcile_verdict_wait(ctx) {
+            return;
+        }
+        match hold {
+            EnterHold::Verdict { .. } => {
+                let pending = self
+                    .ai_input_model
+                    .as_ref(ctx)
+                    .is_detection_pending_for(&text, ctx);
+                if pending {
+                    self.submit_without_verdict(&text, spent, ctx);
+                } else {
+                    // The verdict landed after all: it decides.
+                    self.submit_held_enter(ctx);
+                }
+            }
+            EnterHold::TabCompletion { .. } => self.give_up_completion_hold(ctx),
+        }
+    }
+
+    /// The Tab completer spent its compute cap (or never answered): the visible text is submitted
+    /// and a late result is dropped.
+    fn give_up_completion_hold(&mut self, ctx: &mut ViewContext<Self>) {
+        // Void (Ctrl-C, an edit of the text): the completion is cancelled with it.
+        if !self.reconcile_verdict_wait(ctx) {
+            return;
+        }
+        self.cancel_pending_completions_for_deferred_enter();
+        self.finish_completion_hold(None, ctx);
+    }
+
+    /// Ends the hold of an Enter on the Tab completion and runs the Enter. `result` is the
+    /// completion that landed, `None` when the wait timed out. A single match is applied first;
+    /// the verdict for the COMPLETED text then decides the route (the partial line's verdict is
+    /// dropped), within the usual verdict budget.
+    fn finish_completion_hold(
+        &mut self,
+        result: Option<(Option<SuggestionResults>, EditorSnapshot)>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.tab_completion_request = None;
+        // Moves keys typed during the hold out of the buffer; false: the Enter was voided.
+        if !self.reconcile_verdict_wait(ctx) {
+            return;
+        }
+        let Some(held_since) = self
+            .verdict_wait
+            .as_ref()
+            .and_then(VerdictWait::tab_completion_since)
+        else {
+            return;
+        };
+        let waited = held_since.elapsed();
+        let compute_spent = self
+            .verdict_wait
+            .as_ref()
+            .map(|wait| wait.compute.spent())
+            .unwrap_or_default();
+        let before = self.editor.as_ref(ctx).buffer_text(ctx);
+        let mut outcome = "timed out";
+        if let Some((results, snapshot)) = result {
+            outcome = "no match";
+            let current = self
+                .editor
+                .read(ctx, |editor, ctx| editor.snapshot_model(ctx));
+            if snapshot.text() == current.text()
+                && snapshot.selections() == current.selections()
+                && let Some(results) = results
+                && !results.suggestions.is_empty()
+            {
+                outcome = "ambiguous";
+                let query = results.replacement_span.slice(&before);
+                if let ExplicitTabCompletion::InsertSingle {
+                    suggestion,
+                    replacement_span,
+                } = results.explicit_tab_completion(query, self.path_separators(ctx).all)
+                {
+                    outcome = "applied";
+                    self.insert_completion_result_into_editor(
+                        &suggestion.suggestion.replacement,
+                        replacement_span.start(),
+                        Executing::No,
+                        ctx,
+                    );
+                }
+            }
+        }
+        if waited > TAB_COMPLETION_ENTER_WARN {
+            log::warn!(
+                "Enter held {} ms for a local Tab completion ({outcome}; completer compute {} ms, cap {} ms)",
+                waited.as_millis(),
+                compute_spent.as_millis(),
+                TAB_COMPLETION_ENTER_BUDGET.as_millis()
+            );
+        }
+        // Nothing the completion started may land after this point, in this or the next prompt.
+        self.cancel_pending_completions_for_deferred_enter();
+        let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        if text != before {
+            // A verdict requested for the partial line must not route the completed one.
+            self.ai_input_model
+                .update(ctx, |model, _| model.abandon_pending_detection());
+            if self.can_classify_buffer(ctx) {
+                self.request_input_detection_for_current_buffer(ctx);
+            }
+        }
+        let since = Instant::now();
+        // The completion's clock is done with; the completed line's verdict has its own.
+        let completion_clock = self.verdict_wait.as_ref().map(|wait| wait.compute.clone());
+        if let Some(clock) = completion_clock {
+            clock.stop_notifying();
+        }
+        let verdict_clock = self.ai_input_model.as_ref(ctx).detection_clock();
+        if let Some(wait) = self.verdict_wait.as_mut() {
+            wait.hold = EnterHold::Verdict { since };
+            wait.text = text.clone();
+            wait.compute = verdict_clock;
+        }
+        if self.verdict_needed_before_submit(ctx).is_some() {
+            self.ai_input_model
+                .update(ctx, |model, _| model.clear_typeahead_provenance());
+            self.watch_hold_compute(ctx);
+            self.wait_for_verdict_then_enter(text, ctx);
+        } else {
+            self.submit_held_enter(ctx);
+        }
+    }
+
+    /// #1181: holds the macOS activity assertion while an Enter is deferred, with a hard cap in
+    /// case no release path runs. A no-op elsewhere.
+    fn begin_deferred_enter_activity(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(generation) = self.deferred_enter_activity.begin() {
+            ctx.spawn(
+                Timer::after(DEFERRED_ENTER_ACTIVITY_CAP),
+                move |me, _, _| {
+                    me.deferred_enter_activity.end_generation(generation);
+                },
+            );
+        }
+    }
+
+    /// Releases the assertion taken by [`Self::begin_deferred_enter_activity`].
+    fn end_deferred_enter_activity(&mut self) {
+        self.deferred_enter_activity.end();
+    }
+
+    /// #1181: the observer of the input model, which notifies when a pending detection settles.
+    /// If the waiting Enter's verdict has landed, run it now rather than at the next timer tick.
+    /// The release is [`Self::wait_for_verdict_then_enter`] itself, which takes `verdict_wait`:
+    /// whichever of this and a give-up timer runs second finds nothing to release, so the Enter
+    /// runs exactly once. Never arms a timer (a still-pending verdict is waited for as an event).
+    fn release_verdict_wait_if_settled(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(wait) = self.verdict_wait.as_ref() else {
+            return;
+        };
+        if wait.holds_for_tab_completion() {
+            return;
+        }
+        let text = wait.text.clone();
+        if self
+            .ai_input_model
+            .as_ref(ctx)
+            .is_detection_pending_for(&text, ctx)
+        {
+            return;
+        }
+        self.wait_for_verdict_then_enter(text, ctx);
+    }
+
+    /// #1205: whether the edit just made left the buffer holding the line a waiting Enter
+    /// submits, possibly with keys typed behind that Enter, which are moved behind it here
+    /// (#1016). False when no Enter waits, or the user edited the waiting line itself.
+    fn reconcile_edit_behind_waiting_enter(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(wait) = self.verdict_wait.as_ref() else {
+            return false;
+        };
+        let current = self.buffer_text(ctx);
+        if current == wait.text {
+            return true;
+        }
+        if keys_typed_behind_waiting_enter(&current, wait).is_none() {
+            return false;
+        }
+        self.reconcile_verdict_wait(ctx);
         true
     }
 
@@ -13092,28 +14655,39 @@ impl Input {
         if current == wait.text {
             return true;
         }
-        match current.strip_prefix(wait.text.as_str()) {
-            Some(suffix) if !suffix.is_empty() => {
-                let suffix = suffix.to_string();
+        match keys_typed_behind_waiting_enter(&current, wait) {
+            Some(suffix) => {
                 let text = wait.text.clone();
-                if let Some(wait) = self.verdict_wait.as_mut() {
-                    match wait.queued.last_mut() {
-                        Some(AfterEnterInput::Text(queued)) => queued.push_str(&suffix),
-                        _ => wait.queued.push(AfterEnterInput::Text(suffix)),
-                    }
+                // Keys that reached the buffer anyway (an insertion that did not come through the
+                // editor's key handler) go behind the Enter on the queue (#1353). If the queue
+                // cannot take them (mid-drain, which user input never reaches) they stay in the
+                // buffer rather than being lost.
+                if self.queue_behind_enter(AfterEnterInput::Text(suffix), ctx) {
+                    self.editor
+                        .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+                } else {
+                    log::warn!("input queue: keys typed behind a waiting Enter stay in the buffer");
                 }
-                self.editor
-                    .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
                 true
             }
-            _ => {
+            None => {
                 // The user edited the waiting text itself: the Enter is void. Keep what was
                 // typed behind it in the editor rather than losing it.
-                let rest = self
-                    .verdict_wait
-                    .take()
-                    .map(|wait| wait.queued_text())
-                    .unwrap_or_default();
+                let wait = self.verdict_wait.take();
+                if let Some(wait) = wait.as_ref() {
+                    wait.compute.stop_notifying();
+                }
+                if wait
+                    .as_ref()
+                    .is_some_and(VerdictWait::holds_for_tab_completion)
+                {
+                    // The held Enter is void (Ctrl-C, an edit): so is its completion.
+                    self.tab_completion_request = None;
+                    self.cancel_pending_completions_for_deferred_enter();
+                    self.end_deferred_enter_activity();
+                }
+                // Typed behind the void Enter on the queue: kept in the editor too.
+                let rest = self.void_enter_gate(ctx);
                 if !rest.is_empty() {
                     self.system_insert(&rest, ctx);
                 }
@@ -13122,117 +14696,126 @@ impl Input {
         }
     }
 
-    fn wait_for_verdict_then_enter(
-        &mut self,
-        text: String,
-        started: Instant,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    /// #1577: whether the input's shell-or-agent type is already decided (locked by the user, or
+    /// autodetection is off for this context), so that an Enter needs no verdict. When it is not,
+    /// a timer must not pick a destination by the clock.
+    pub(crate) fn input_type_is_decided(&self, ctx: &AppContext) -> bool {
+        !self
+            .ai_input_model
+            .as_ref(ctx)
+            .should_run_input_autodetection(ctx)
+    }
+
+    /// #1577: the Enter held for its verdict / Tab completion is given up by a timer: the wait is
+    /// dropped (nothing will submit it) and its completion is cancelled. The caller hands the line
+    /// back to the editor.
+    fn void_verdict_wait_for_give_up(&mut self) {
+        let wait = self.verdict_wait.take();
+        if let Some(wait) = wait.as_ref() {
+            wait.compute.stop_notifying();
+        }
+        if wait
+            .as_ref()
+            .is_some_and(VerdictWait::holds_for_tab_completion)
+        {
+            self.tab_completion_request = None;
+            self.cancel_pending_completions_for_deferred_enter();
+        }
+        self.end_deferred_enter_activity();
+    }
+
+    /// Runs the Enter that waited (verdict or completion hold): opens the replay for what was
+    /// typed behind it (#1016), submits, and hands the replay to the view.
+    fn submit_held_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let wait = self.verdict_wait.take();
+        if let Some(wait) = wait.as_ref() {
+            wait.compute.stop_notifying();
+        }
+        self.end_deferred_enter_activity();
+        self.last_enter_submitted_shell_command = false;
+        self.running_deferred_enter = true;
+        self.input_enter(ctx);
+        self.running_deferred_enter = false;
+        if self.enter_gate.is_some() {
+            // #1353 phase 3: what was typed behind this Enter is queued behind its gate. The gate
+            // stays closed until the route the Enter took has settled; with nothing behind it,
+            // it closes now.
+            let awaits_pty = self.last_enter_submitted_shell_command;
+            if self.finish_enter_gate_after_submit(awaits_pty, ctx) {
+                self.emit_replay_after_deferred_enter(ctx);
+            }
+        }
+    }
+
+    /// Runs the waiting Enter if its verdict has landed, or if the classifier has spent its compute
+    /// cap on it (#1351). Called from the verdict's own event ([`Self::release_verdict_wait_if_settled`])
+    /// and from the compute-cap timer; it never arms a timer, a still-pending verdict within the
+    /// cap is waited for as an event. The cap is the classifier's compute from when its job started
+    /// running, never the age of the Enter, so a main-thread stall that delays this call cannot
+    /// make a verdict that is already computed (or queued) lose to the Enter-time rules.
+    fn wait_for_verdict_then_enter(&mut self, text: String, ctx: &mut ViewContext<Self>) {
         // The user edited the text meanwhile (Ctrl-C clears it): the Enter is void. Text typed
         // behind the Enter is moved out of the buffer first (#1016).
         if !self.reconcile_verdict_wait(ctx) {
             self.verdict_wait = None;
+            self.end_deferred_enter_activity();
             return;
         }
         let pending = self
             .ai_input_model
             .as_ref(ctx)
             .is_detection_pending_for(&text, ctx);
-        match young_submit_decision(true, pending, started.elapsed()) {
-            YoungSubmit::Submit => {
-                let queued = self
-                    .verdict_wait
-                    .take()
-                    .map(|wait| wait.queued)
-                    .unwrap_or_default();
-                // Open the replay before the submit so nothing typed from here on can be routed
-                // ahead of the queue (#1016); the view drains it once the pty route is settled.
-                let has_queued = !queued.is_empty();
-                if has_queued {
-                    self.after_enter_replay = queued;
-                    self.after_enter_replay_open = true;
-                    self.after_enter_replay_awaits_pty = false;
+        let spent = self
+            .verdict_wait
+            .as_ref()
+            .map(|wait| wait.compute.spent())
+            .unwrap_or_default();
+        let decision = enter_verdict_wait_decision_for(pending, spent, text.len());
+        if decision != EnterVerdictWait::Wait {
+            let waited = self.verdict_wait.as_ref().map(|wait| match wait.hold {
+                EnterHold::Verdict { since } | EnterHold::TabCompletion { since } => {
+                    since.elapsed()
                 }
-                self.last_enter_submitted_shell_command = false;
-                self.running_deferred_enter = true;
-                self.input_enter(ctx);
-                self.running_deferred_enter = false;
-                if has_queued {
-                    self.after_enter_replay_awaits_pty = self.last_enter_submitted_shell_command;
-                    ctx.emit(Event::ReplayAfterDeferredEnter);
-                }
+            });
+            warpui::input_order::log_hop("verdict_wait_end", || {
+                format!(
+                    "decision={decision:?} waited_ms={:.1} compute_ms={:.1}",
+                    waited.unwrap_or_default().as_secs_f64() * 1000.,
+                    spent.as_secs_f64() * 1000.
+                )
+            });
+        }
+        match decision {
+            EnterVerdictWait::Submit => self.submit_held_enter(ctx),
+            EnterVerdictWait::SubmitWithoutVerdict => {
+                self.submit_without_verdict(&text, spent, ctx)
             }
-            YoungSubmit::Wait => {
-                ctx.spawn(
-                    Timer::after(std::time::Duration::from_millis(10)),
-                    move |me, _, ctx| me.wait_for_verdict_then_enter(text, started, ctx),
-                );
-            }
-            YoungSubmit::KeepInEditor => {
-                // Everything typed behind the Enter that gave up stays in the editor, in order
-                // (a queued Enter has nothing to submit yet).
-                let rest = self
-                    .verdict_wait
-                    .take()
-                    .map(|wait| wait.queued_text())
-                    .unwrap_or_default();
-                self.verdict_wait_gave_up_on = Some(format!("{text}{rest}"));
-                if !rest.is_empty() {
-                    self.system_insert(&rest, ctx);
-                }
-            }
+            EnterVerdictWait::Wait => {}
         }
     }
 
-    /// Whether input typed after a deferred Enter is still waiting to be routed (#1016): new
-    /// keys must queue behind it rather than overtake it.
-    pub(crate) fn after_enter_replay_open(&self) -> bool {
-        self.after_enter_replay_open
-    }
-
-    /// Whether the replay must wait for the pty to take the submitted shell command.
-    pub(crate) fn after_enter_replay_awaits_pty(&self) -> bool {
-        self.after_enter_replay_awaits_pty
-    }
-
-    /// Appends `input` behind what is already waiting; adjacent text is merged.
-    pub(crate) fn queue_after_enter_replay(&mut self, input: AfterEnterInput) {
-        match (self.after_enter_replay.last_mut(), input) {
-            (Some(AfterEnterInput::Text(queued)), AfterEnterInput::Text(more)) => {
-                queued.push_str(&more)
-            }
-            (_, input) => self.after_enter_replay.push(input),
-        }
-    }
-
-    /// Takes the whole replay queue and closes the replay: the caller routes it in order.
-    pub(crate) fn take_after_enter_replay(&mut self) -> Vec<AfterEnterInput> {
-        self.after_enter_replay_open = false;
-        self.after_enter_replay_awaits_pty = false;
-        std::mem::take(&mut self.after_enter_replay)
-    }
-
-    /// Opens a replay holding `queued`, as a submitted deferred Enter does.
-    #[cfg(test)]
-    pub(crate) fn open_after_enter_replay_for_test(
+    /// The classifier did not answer within its compute cap (or the backstop fired): submit on the
+    /// Enter-time rules and drop the verdict so it cannot land after the submit. Logged.
+    fn submit_without_verdict(
         &mut self,
-        queued: Vec<AfterEnterInput>,
-        awaits_pty: bool,
+        text: &str,
+        classifier_compute: std::time::Duration,
+        ctx: &mut ViewContext<Self>,
     ) {
-        self.after_enter_replay = queued;
-        self.after_enter_replay_open = true;
-        self.after_enter_replay_awaits_pty = awaits_pty;
-    }
-
-    /// The replay queue, for tests.
-    #[cfg(test)]
-    pub(crate) fn after_enter_replay_for_test(&self) -> &[AfterEnterInput] {
-        &self.after_enter_replay
-    }
-
-    /// Drops the replay (the user interrupted).
-    pub(crate) fn clear_after_enter_replay(&mut self) {
-        let _ = self.take_after_enter_replay();
+        log_late_enter_verdict(text, classifier_compute);
+        // #1577: the clock never chooses between the shell and the agent. With the input type
+        // undecided (autodetection running) the Enter is not submitted: the line stays in the
+        // editor with what was typed behind it, and the next Enter submits it.
+        if !self.input_type_is_decided(ctx) {
+            self.hand_back_unsubmitted_enter("verdict_cap", ctx);
+            return;
+        }
+        // The parse may have landed since the Enter: decide on everything known now, then drop
+        // the verdict so it cannot land after the submit.
+        self.settle_pending_input_detection_for_submit(ctx);
+        self.ai_input_model
+            .update(ctx, |model, _| model.abandon_pending_detection());
+        self.submit_held_enter(ctx);
     }
 
     /// Marks the typeahead the hand-off just inserted as young (#933).
@@ -13267,6 +14850,93 @@ impl Input {
         self.last_enter_submitted_shell_command
     }
 
+    /// Arms the guard of [`Self::hold_back_enter_after_ssh_handover`]: typed text was handed back
+    /// to this editor, unexecuted, because the ssh connect ended without a remote shell.
+    /// `baseline` is the editor text the hand-back left; the guard only applies while the line
+    /// still starts with it.
+    /// Keeps handed-back ssh text that could not go into the editor (a command runs) until a block
+    /// completes. Several hand-backs are kept, each on its own line.
+    pub(crate) fn stash_handed_back_text(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        self.handed_back_text = Some(match self.handed_back_text.take() {
+            Some(earlier) => format!("{earlier}\n{text}"),
+            None => text,
+        });
+    }
+
+    /// Puts the stashed handed-back text into the editor, after whatever it holds on a line of
+    /// its own, with the hand-back's Enter guard armed over the whole buffer: it is shown, never
+    /// run, and the first Enter on it is held.
+    fn restore_handed_back_text(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(text) = self.handed_back_text.take() else {
+            return;
+        };
+        let existing = self.editor.as_ref(ctx).buffer_text(ctx);
+        let restored = if existing.is_empty() {
+            text
+        } else {
+            format!("{existing}\n{text}")
+        };
+        self.editor
+            .update(ctx, |editor, ctx| editor.set_buffer_text(&restored, ctx));
+        self.is_editor_empty_on_last_edit = false;
+        self.arm_ssh_handover_enter_guard(restored);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handed_back_text_for_test(&self) -> Option<&str> {
+        self.handed_back_text.as_deref()
+    }
+
+    pub(crate) fn arm_ssh_handover_enter_guard(&mut self, baseline: String) {
+        // #1456: nothing handed back means nothing to protect; an empty baseline would match every
+        // later line (`starts_with("")`) and swallow the first Enter of whatever is typed next.
+        self.ssh_handover_enter_guard = (!baseline.is_empty()).then_some(baseline);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ssh_handover_enter_guard_armed(&self) -> bool {
+        self.ssh_handover_enter_guard.is_some()
+    }
+
+    /// The first Enter after typed text was handed back to the editor (ssh ended without a remote
+    /// shell) is consumed, not executed: a line meant for the remote machine must never run
+    /// locally because the connect ended mid-line. Decided by the hand-back event, not by timing.
+    /// An empty buffer has nothing to run, so the guard is simply dropped.
+    fn hold_back_enter_after_ssh_handover(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(baseline) = self.ssh_handover_enter_guard.take() else {
+            return false;
+        };
+        if self.editor.as_ref(ctx).is_empty(ctx) {
+            return false;
+        }
+        // #1395: the user replaced the handed-back line (cleared it, ran something else, typed a
+        // new command). This Enter belongs to the new line: swallowing it merged the next typed
+        // text into that line. Only a line that still starts with the handed-back text is held.
+        if !self.editor.as_ref(ctx).buffer_text(ctx).starts_with(&baseline) {
+            return false;
+        }
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return true;
+        }
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                DismissibleToast::new(
+                    "Enter was held back: the SSH session ended while this was being typed. \
+                     Check the line, then press Enter to run it here"
+                        .to_string(),
+                    ToastFlavor::Default,
+                ),
+                window_id,
+                ctx,
+            );
+        });
+        true
+    }
+
     /// Remembers a submit for the misroute recovery (#835).
     fn record_misroute_memory(
         &mut self,
@@ -13294,7 +14964,11 @@ impl Input {
     /// chosen that route explicitly (so it is recorded as locked and never offered a recovery of
     /// its own). The buffer must be empty. If nothing was submitted (the submit was refused), the
     /// previous input config is restored exactly, including its lock flag.
-    fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn resubmit_locked_to_shell(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        // #1434: not while an Enter waits for its verdict or an editor paste is read.
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::ResubmitToShell(text.to_owned()), ctx) {
+            return;
+        }
         let (previous_config, previous_lock_flag) =
             self.ai_input_model.as_ref(ctx).input_config_snapshot();
         self.ai_input_model.update(ctx, |model, ctx| {
@@ -13326,7 +15000,11 @@ impl Input {
     /// input to AI, so `input_enter` would see Shell and run the text in the shell again (#907).
     /// Whatever the buffer holds when the submit is refused is cleared, since the buffer was
     /// empty before.
-    fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn send_text_to_agent(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        // #1434: not while an Enter waits for its verdict or an editor paste is read.
+        if self.defer_programmatic_edit(enter_queue::DeferredEdit::SendToAgent(text.to_owned()), ctx) {
+            return;
+        }
         self.editor.update(ctx, |editor, ctx| {
             editor.set_buffer_text(text, ctx);
         });
@@ -13428,6 +15106,13 @@ impl Input {
         self.shell_command_submit_pending = true;
     }
 
+    /// Whether the next Enter runs as a shell command ([`Self::submit_next_enter_as_shell_command`]),
+    /// for tests.
+    #[cfg(test)]
+    pub(crate) fn shell_command_submit_pending_for_test(&self) -> bool {
+        self.shell_command_submit_pending
+    }
+
     /// Defers this Enter while the typeahead hand-off waits for the shell's report of what the
     /// user typed before the editor took over, so the buffer is submitted (or accepted by an open
     /// menu, or sent to the agent) with that text in front of it rather than as a fragment
@@ -13438,95 +15123,42 @@ impl Input {
         }
         // #1016: an Enter has already been deferred and the editor still received this one (keys
         // can reach the focused editor before the terminal takes them). It follows everything
-        // typed before it: what the editor took joins the held keys, in order, and this Enter
-        // goes behind them. It never submits the buffer, which holds the first line.
+        // typed before it, as an entry behind the same gate (arrival order is the order), and
+        // never submits the buffer, which holds the first line.
         if self
             .model
             .lock()
             .typeahead_handoff()
             .holds_keys_behind_deferred_enter()
         {
-            self.hold_text_typed_after_deferred_enter(ctx);
-            self.model
-                .lock()
-                .typeahead_handoff_mut()
-                .on_user_bytes(b"\r");
+            self.queue_enter_behind_deferred_enter(ctx);
             return true;
         }
         let deferred = self.model.lock().typeahead_handoff_mut().defer_enter();
         if deferred {
+            self.cancel_pending_completions_for_deferred_enter();
+            self.begin_deferred_enter_activity(ctx);
             self.note_handoff_enter(ctx);
             ctx.emit(Event::TypeaheadHandoffEnterDeferred);
         }
         deferred
     }
 
-    /// Records where the editor's text ends at an Enter the typeahead hand-off deferred (or held
-    /// as a young Enter), so keys that reach the editor after it never join the line it submits
-    /// (#1016).
-    pub(crate) fn note_handoff_enter(&mut self, ctx: &mut ViewContext<Self>) {
-        let text = self.buffer_text(ctx);
-        let len = text.chars().count();
-        let tail_start = text
-            .char_indices()
-            .rev()
-            .nth(7)
-            .map(|(index, _)| index)
-            .unwrap_or(0);
-        self.handoff_enter_mark = Some(HandoffEnterMark {
-            len,
-            tail: text[tail_start..].to_string(),
-            inserted_delta: 0,
-        });
+    /// Records when an Enter was deferred behind the typeahead hand-off (or a young Enter held),
+    /// to log a long hold (#1192).
+    pub(crate) fn note_handoff_enter(&mut self, _ctx: &mut ViewContext<Self>) {
+        self.handoff_enter_started = Some(Instant::now());
     }
 
-    /// Forgets the boundary recorded by [`Self::note_handoff_enter`].
-    pub(crate) fn clear_handoff_enter_mark(&mut self) {
-        self.handoff_enter_mark = None;
-    }
-
-    /// Splits off what reached the editor after the Enter the typeahead hand-off deferred
-    /// (#1016): the buffer is cut back to the text the Enter submits (what was typed before it,
-    /// behind the shell's report) and the rest is returned. Does nothing, conservatively, when
-    /// no boundary is recorded or the buffer no longer lines up with it.
-    pub(crate) fn split_off_text_typed_after_handoff_enter(
-        &mut self,
-        ctx: &mut ViewContext<Self>,
-    ) -> Option<String> {
-        let mark = self.handoff_enter_mark.as_ref()?;
-        let boundary = usize::try_from(mark.len as isize + mark.inserted_delta).ok()?;
-        let current = self.buffer_text(ctx);
-        if current.chars().count() <= boundary {
-            return None;
+    /// Ends the hold recorded by [`Self::note_handoff_enter`].
+    pub(crate) fn clear_handoff_enter_hold(&mut self) {
+        if let Some(started) = self.handoff_enter_started.take() {
+            log_slow_enter_hold(
+                "deferred behind the typeahead report / young-line classification",
+                started.elapsed(),
+            );
         }
-        let split_at = current
-            .char_indices()
-            .nth(boundary)
-            .map(|(index, _)| index)?;
-        let (head, rest) = current.split_at(split_at);
-        if !head.ends_with(mark.tail.as_str()) {
-            return None;
-        }
-        let (head, rest) = (head.to_string(), rest.to_string());
-        self.editor
-            .update(ctx, |editor, ctx| editor.set_buffer_text(&head, ctx));
-        Some(rest)
-    }
-
-    /// Moves the text that reached the editor after a deferred Enter to the front of the keys
-    /// held behind that Enter; puts it back if no Enter is deferred after all.
-    pub(crate) fn hold_text_typed_after_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(text) = self.split_off_text_typed_after_handoff_enter(ctx) else {
-            return;
-        };
-        let held = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .prepend_held_keys(text.as_bytes());
-        if !held {
-            self.system_insert(&text, ctx);
-        }
+        self.end_deferred_enter_activity();
     }
 
     /// Submits the rich-input buffer on Ctrl+Enter when `submit_on_ctrl_enter` is enabled;
@@ -13631,7 +15263,6 @@ impl Input {
                         .cloned()
                 };
 
-
                 if let Some(command) = cmd_enter_slash_command {
                     self.select_slash_command(&command, SlashCommandTrigger::keybinding(), ctx);
                     return;
@@ -13676,7 +15307,7 @@ impl Input {
             return;
         }
         let block = block.as_ref().unwrap();
-        let serialized_block = block.serialized_block.get_with(|compute| {
+        let serialized_block = block.serialized_block_without_output.get_with(|compute| {
             let model = self.model.lock();
             compute(model.block_list())
         });
@@ -13735,12 +15366,15 @@ impl Input {
             return;
         };
 
+        let generation = self.input_generation;
         self.predict_am_queries_future_handle = Some(ctx.spawn(
             async move { crate::ai::agent_providers::active_ai::nld_predict::run(rendered).await },
             move |me: &mut Self, maybe_suggestion: Option<String>, ctx: &mut ViewContext<Self>| {
                 // Only set the autosuggestion if the input buffer hasn't changed, since we made the original request
                 // i.e. verify the suggestion is still relevant.
-                if am_query_input_buffer != me.editor.as_ref(ctx).buffer_text(ctx) {
+                if me.is_stale_generation(generation)
+                    || am_query_input_buffer != me.editor.as_ref(ctx).buffer_text(ctx)
+                {
                     return;
                 }
 
@@ -13916,13 +15550,11 @@ impl Input {
     }
 
     /// The queued prompts panel, when [`FeatureFlag::QueueSlashCommand`] is enabled.
-    #[allow(dead_code)] // consumed by the panel render + focus wiring in a follow-up increment
     pub(crate) fn queued_prompts_panel(&self) -> Option<&ViewHandle<QueuedPromptsPanelView>> {
         self.queued_prompts_panel.as_ref()
     }
 
     /// Whether this input's queued-prompt inline editor is currently focused.
-    #[allow(dead_code)] // consumed by the focus wiring in a follow-up increment
     pub(crate) fn is_queued_prompt_inline_editor_focused(&self, ctx: &AppContext) -> bool {
         self.queued_prompts_panel
             .as_ref()
@@ -14154,6 +15786,21 @@ impl Input {
             prompt
         };
 
+        // #1299: a line that is queued instead of run or sent is logged, so a line that
+        // "vanished" from the input can be told from one that was lost.
+        warpui::input_order::log_hop("enter_queued", || {
+            format!(
+                "origin={} is_command={is_command} chars={}",
+                if queued_for_pending_lrc {
+                    "pending_lrc"
+                } else if queued_for_lrc && !is_command {
+                    "lrc"
+                } else {
+                    "toggle"
+                },
+                prompt.chars().count()
+            )
+        });
         self.ai_input_model.update(ctx, |model, ctx| {
             model.handle_input_buffer_submitted(ctx);
         });
@@ -14194,6 +15841,7 @@ impl Input {
         zero_state_prompt_suggestion_type: Option<ZeroStatePromptSuggestionType>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.bump_input_generation();
         // A command (or any other action) awaiting the user's approve/reject decision must be
         // resolved via its own card first. Without this, submitting here would fall through to
         // the ordinary "a follow-up interrupts whatever's in flight" behavior
@@ -14245,6 +15893,12 @@ impl Input {
             });
             self.editor.update(ctx, |editor, ctx| {
                 editor.clear_buffer(ctx);
+            });
+            warpui::input_order::log_hop("enter_queued", || {
+                format!(
+                    "origin=pending_approval is_command=false chars={}",
+                    prompt.chars().count()
+                )
             });
             let attachments = self.ai_context_model.update(ctx, |context_model, ctx| {
                 context_model.take_pending_attachments(ctx)
@@ -14541,23 +16195,6 @@ impl Input {
         }
     }
 
-    /// Applies an input config update from an external source (e.g., session sharing).
-    pub fn apply_external_input_config_update(
-        &mut self,
-        config: InputConfig,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // do nothing if the config is the same as the current config
-        if config == self.ai_input_model.as_ref(ctx).input_config() {
-            return;
-        }
-
-        let is_input_buffer_empty = self.editor.as_ref(ctx).buffer_text(ctx).is_empty();
-        self.ai_input_model.update(ctx, |model, ctx| {
-            model.set_input_config(config, is_input_buffer_empty, ctx);
-        });
-    }
-
     /// Returns true if the input is locked in shell mode
     fn is_locked_in_shell_mode(&self, ctx: &ViewContext<Self>) -> bool {
         let ai_input_model = self.ai_input_model.as_ref(ctx);
@@ -14647,33 +16284,6 @@ impl Input {
         self.latest_buffer_operations.iter()
     }
 
-    /// Applies the `operations` if the block ID of this buffer
-    /// is equal to `block_id`. Otherwise, queues up these operations
-    /// to be processed eventually when the block IDs are equal.
-    pub fn process_remote_edits(
-        &mut self,
-        block_id: &BlockId,
-        operations: Vec<CrdtOperation>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // We check the `block_id` against the cached latest block ID
-        // rather than the latest terminal model state because the terminal
-        // model can be updated off of the main thread. This can cause
-        // scenarios where the terminal model has a new active block ID but
-        // we haven't processed block completed events yet.
-        //
-        // Although we're checking against a potentially old block ID here,
-        // we'll flush the right ops when we handle the block completed events.
-        if block_id == &self.deferred_remote_operations.latest_block_id {
-            self.editor.update(ctx, |editor, ctx| {
-                editor.apply_remote_operations(operations, ctx);
-            });
-        } else {
-            self.deferred_remote_operations
-                .defer(block_id.clone(), operations);
-        }
-    }
-
     /// Updates the latest block ID to be equal to the latest block ID known to the terminal model
     /// and flushes any previously-deferred operations for this new block ID.
     pub fn refresh_deferred_remote_operations(&mut self, ctx: &mut ViewContext<Self>) {
@@ -14704,7 +16314,10 @@ impl Input {
         &mut self,
         ctx: &mut ViewContext<Self>,
     ) -> Option<String> {
-        if !FeatureFlag::TypeaheadHandoff.is_enabled()
+        // Text typed into a pending command is kept with it whether or not the typeahead hand-off
+        // is enabled (#1451); other newer text is the hand-off's.
+        let from_pending = std::mem::take(&mut self.editor_submission_from_pending);
+        if !(FeatureFlag::TypeaheadHandoff.is_enabled() || from_pending)
             || self
                 .model
                 .lock()
@@ -14724,6 +16337,12 @@ impl Input {
         block_completed_event: BlockCompletedEvent,
         ctx: &mut ViewContext<Self>,
     ) {
+        // The finished command may have created or removed files (#1130).
+        if let Some(session_id) = self.active_block_session_id() {
+            crate::completer::invalidate_shared_directory_cache(session_id);
+        }
+        // The buffer is reinitialized below and the session may have changed (bootstrap blocks).
+        self.bump_input_generation();
         // We clear the input box after executing a command here instead of where we
         // execute a command to avoid the input box flashing when its contents are
         // cleared. For the multiline input box case, this also caused contents to go
@@ -14781,6 +16400,9 @@ impl Input {
                     self.deferred_remote_operations.latest_block_id = latest_block_id;
                 }
             }
+            // Text an ssh hand-back kept while this command ran comes back now, after the text the
+            // user typed meanwhile, not run.
+            self.restore_handed_back_text(ctx);
 
             // Make sure the viewer's interaction state is correct based on their role.
             // We may have locked up their input if they tried to execute a command.
@@ -14838,7 +16460,7 @@ impl Input {
                     compute(model.block_list())
                 });
                 let exit_code = block_completed
-                    .serialized_block
+                    .serialized_block_without_output
                     .get_with(|compute| {
                         let model = self.model.lock();
                         compute(model.block_list())
@@ -14882,7 +16504,7 @@ impl Input {
                             })
                             .to_owned();
                         let serialized_block =
-                            block_completed.serialized_block.get_with(|compute| {
+                            block_completed.serialized_block_without_output.get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
                             });
@@ -14939,6 +16561,8 @@ impl Input {
     ) {
         start_trace!("command_execution:start");
 
+        // Drop any result already queued: it must not land in the buffer of the next prompt.
+        self.bump_input_generation();
         // Abort running completions since we're about to execute a command.
         if let Some(abort_handle) = self.completions_abort_handle.take() {
             abort_handle.abort();
@@ -14947,9 +16571,12 @@ impl Input {
 
         self.cancel_decorations_job();
 
-        let session_id = self
-            .active_block_session_id()
-            .expect("session_id should be set (via bootstrap) before executing command");
+        let Some(session_id) = self.command_session_id() else {
+            // `try_execute_command_from_source` refuses before getting here; never crash on it.
+            log::error!("start_block_and_write_command_to_pty: no session id, command not run");
+            return;
+        };
+        crate::completer::invalidate_shared_directory_cache(session_id);
 
         // If the SelectedWorkflowState is populated with a workflow, we count this as a workflow execution.
         let (workflow_id, workflow_command) = {
@@ -15480,9 +17107,12 @@ impl Input {
     /// Returns whether the buffer contains any attachment patterns (blocks, drive objects, or diffs).
     /// These patterns indicate the user is referencing context that requires AI mode.
     fn buffer_contains_attachment_patterns(buffer_text: &str) -> bool {
-        BLOCK_CONTEXT_ATTACHMENT_REGEX.is_match(buffer_text)
-            || DRIVE_OBJECT_ATTACHMENT_REGEX.is_match(buffer_text)
-            || DIFF_HUNK_ATTACHMENT_REGEX.is_match(buffer_text)
+        // Every pattern opens with `<`; the byte search runs at memory speed, so an edit of a
+        // large paste without one skips the three regex passes (#1604).
+        buffer_text.contains('<')
+            && (BLOCK_CONTEXT_ATTACHMENT_REGEX.is_match(buffer_text)
+                || DRIVE_OBJECT_ATTACHMENT_REGEX.is_match(buffer_text)
+                || DIFF_HUNK_ATTACHMENT_REGEX.is_match(buffer_text))
     }
 
     /// Shows the AI command search panel.
@@ -15584,6 +17214,7 @@ impl TypedActionView for Input {
         match action {
             InputAction::FocusInputBox => {
                 ActionAccessibilityContent::Custom(AccessibilityContent::new(
+
                     translate_input_key(INPUT_A11Y_LABEL_KEY),
                     // TODO (a11y) use bindings from user settings
                     translate_input_key(INPUT_A11Y_HELPER_KEY),
@@ -15802,6 +17433,10 @@ impl View for Input {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        // #1345: the input taking focus (and passing it to the editor) at the remote prompt.
+        warpui::input_order::log_key_hop("kh_focus_input", || {
+            format!("self_focused={}", focus_ctx.is_self_focused())
+        });
         if focus_ctx.is_self_focused() {
             if self.is_voltron_open {
                 ctx.focus(&self.voltron_view);
@@ -15817,9 +17452,17 @@ impl View for Input {
                 ctx.notify();
             }
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
+            // Showing this tab restarts the git/slow chip polls that were parked while it was
+            // hidden, so the chips are fresh the moment the tab is on screen.
+            let dynamic_prompt = match self.prompt_type.as_ref(ctx) {
+                PromptType::Dynamic { prompt } => Some(prompt.clone()),
+                PromptType::Static { .. } => None,
+            };
+            if let Some(prompt) = dynamic_prompt {
+                prompt.update(ctx, |prompt, ctx| prompt.resume_parked_polls(ctx));
+            }
         }
     }
-
 
     fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
         let mut ctx = Self::default_keymap_context();
@@ -16017,6 +17660,23 @@ pub(crate) fn typeahead_prefix_byte_len(buffer: &str, chars: usize) -> usize {
         .map_or(buffer.len(), |(index, _)| index)
 }
 
+/// Whether `typeahead` extends the first `chars` characters of `buffer`, the front an earlier
+/// report put there (#1569): every one of those characters is also the report's, in place. A
+/// buffer shorter than `chars` (the user deleted some) is compared as far as it goes. A report
+/// shorter than the front it would replace, or one that differs inside it, is another line.
+pub(crate) fn typeahead_extends_buffer_prefix(buffer: &str, chars: usize, typeahead: &str) -> bool {
+    let mut buffer = buffer.chars();
+    let mut report = typeahead.chars();
+    for _ in 0..chars {
+        match (buffer.next(), report.next()) {
+            (Some(held), Some(reported)) if held == reported => {}
+            (Some(_), _) => return false,
+            (None, _) => return true,
+        }
+    }
+    true
+}
+
 /// Where a single cursor at byte `cursor` belongs after the first `replaced_bytes` bytes of the
 /// buffer were replaced by `inserted_bytes` bytes of typeahead (#1089). A cursor in the user's own
 /// text (at or past the replaced front) keeps its place in that text; `None` for one inside the
@@ -16056,10 +17716,33 @@ pub(crate) fn end_past_auto_paired_closing_quote(
     }
 }
 
+/// Whether Enter in the agent input should focus the pending approval card instead of
+/// submitting: only with an empty input and an action still `Blocked` on the user's decision. A
+/// running or finished action never takes Enter (#871), and a non-empty input keeps queueing or
+/// steering (#1180). It never approves.
+pub(crate) fn empty_enter_focuses_pending_action(
+    input_is_empty: bool,
+    pending_action_status: Option<&AIActionStatus>,
+) -> bool {
+    input_is_empty && pending_action_status.is_some_and(AIActionStatus::is_blocked)
+}
+
 /// Whether the completer may be asked for an autosuggestion for `buffer_text`. It is not for a
-/// multi-line buffer: the completer tokenizes a single command line (#1013).
+/// multi-line buffer: the completer tokenizes a single command line (#1013). Nor for a buffer
+/// past the background-parse caps (#1191): the completer's lexer/parser/alias expansion cost
+/// grows with the text, is synchronous (an abort cannot stop it), and every keystroke of a
+/// 1 MB single-line paste started another run, which kept ~2 cores at 100% on the blocking pool
+/// (30 CPU-seconds in 14 s, 97% of the background time in the round-18 profile) and starved the
+/// UI thread through allocator contention. History-based suggestions are unaffected; only the
+/// completer fallback is skipped, for text nobody types by hand.
 pub(crate) fn completer_autosuggestion_allowed(buffer_text: &str) -> bool {
     !buffer_text.contains('\n')
+        && buffer_text
+            .chars()
+            .take(decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS + 1)
+            .count()
+            <= decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS
+        && !decorations::text_exceeds_background_job_token_cap(buffer_text)
 }
 
 impl Autosuggester for Input {
@@ -16068,6 +17751,13 @@ impl Autosuggester for Input {
         result: AutoSuggestionResult,
         ctx: &mut ViewContext<Self>,
     ) {
+        warpui::profiling::zone!("autosuggest_result");
+        if result
+            .generation
+            .is_some_and(|g| self.is_stale_generation(g))
+        {
+            return;
+        }
         let buffer_text = result.buffer_text;
         if self.editor.as_ref(ctx).buffer_text(ctx) != buffer_text {
             return;
@@ -16086,6 +17776,12 @@ impl Autosuggester for Input {
                 },
                 ctx,
             );
+        } else {
+            // The request for this exact buffer finished with nothing to show: a remembered
+            // Right/End accept (#1355) must not fire on some later ghost.
+            self.editor.update(ctx, |editor, _| {
+                editor.discard_pending_autosuggestion_accept();
+            });
         }
     }
 
@@ -16214,14 +17910,40 @@ impl Input {
             .as_ref(app)
             .displayed_chip_kinds(app)
     }
+}
 
-    pub fn cli_footer_chip_kinds(
-        &self,
-        app: &AppContext,
-    ) -> Vec<crate::context_chips::ContextChipKind> {
-        self.agent_input_footer
-            .as_ref(app)
-            .cli_display_chip_kinds(app)
+/// Decides whether a hint-affecting history event needs a placeholder rebuild. Always records
+/// the status the hint is derived from; a streaming delta is skipped when it is unchanged
+/// (#1137), every other event always rebuilds.
+fn hint_inputs_changed(
+    last: &mut Option<Option<crate::ai::agent::conversation::ConversationStatus>>,
+    now: Option<crate::ai::agent::conversation::ConversationStatus>,
+    is_streaming_delta: bool,
+) -> bool {
+    let unchanged = last.as_ref() == Some(&now);
+    *last = Some(now);
+    !(is_streaming_delta && unchanged)
+}
+
+/// The user-facing message for a failed `/export` write.
+#[cfg(not(target_family = "wasm"))]
+fn export_error_message(file_path: &std::path::Path, e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::PermissionDenied => format!(
+            "Permission denied writing to {}. Check file permissions.",
+            file_path.display()
+        ),
+        std::io::ErrorKind::NotFound => format!(
+            "Directory not found: {}",
+            file_path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        ),
+        std::io::ErrorKind::AlreadyExists => {
+            format!("File {} already exists", file_path.display())
+        }
+        _ => format!("Failed to export to {}: {}", file_path.display(), e),
     }
 }
 

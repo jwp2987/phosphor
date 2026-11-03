@@ -8,7 +8,6 @@ use crate::terminal::model::ansi::{Color, CursorShape, CursorStyle};
 use crate::terminal::model::cell::{Cell, Flags};
 use crate::terminal::{color, SizeInfo};
 
-use crate::terminal::model::grid::Dimensions;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::selection::SelectionPoint;
 use crate::terminal::model::{ObfuscateSecrets, SecretHandle};
@@ -19,6 +18,8 @@ use crate::util::color::{ContrastingColor, MinimumAllowedContrast};
 use core::mem;
 use lazy_static::lazy_static;
 use num_traits::Float as _;
+use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::ops::Range;
 use std::{collections::HashMap, ops::RangeInclusive};
@@ -39,13 +40,14 @@ use warpui::text_layout::{Line, StyleAndFont, TextStyle, DEFAULT_TOP_BOTTOM_RATI
 use warpui::units::{IntoLines as _, Lines, Pixels};
 use warpui::{AppContext, Element, EntityId, PaintContext, Scene, SingletonEntity};
 
-pub use self::cell_glyph_cache::CellGlyphCache;
+pub use self::cell_glyph_cache::{CellGlyphCache, SharedCellGlyphCache};
 use self::cell_type::{CellType, IsFocused, Secret};
 
 use super::block_filter::{BLOCK_FILTER_DOTTED_LINE_DASH, BLOCK_FILTER_DOTTED_LINE_WIDTH};
 use super::blockgrid_renderer::GridRenderParams;
 use super::model::char_or_str::CharOrStr;
-use super::model::grid::grid_handler::{ContainsPoint, GridHandler, Link};
+use super::model::grid::grid_handler::{ContainsPoint, Link};
+use super::model::grid::grid_source::GridSource;
 use super::model::grid::RespectDisplayedOutput;
 use super::model::image_map::{ImagePlacementData, StoredImageMetadata};
 use super::model::terminal_model::RangeInModel;
@@ -290,8 +292,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn render_grid<'a>(
-    grid: &GridHandler,
+pub fn render_grid<'a, G: GridSource>(
+    grid: &G,
     start_row: usize,
     end_row: usize,
     colors: &color::List,
@@ -468,8 +470,8 @@ pub fn render_grid<'a>(
 
 // TODO (kevin): Solidify highlighted_url and link_tool_tip into one single struct.
 #[allow(clippy::too_many_arguments)]
-fn render_grid_without_ligatures<'a>(
-    grid: &GridHandler,
+fn render_grid_without_ligatures<'a, G: GridSource>(
+    grid: &G,
     start_row: usize,
     end_row: usize,
     visible_rows: impl Iterator<Item = usize>,
@@ -518,7 +520,10 @@ fn render_grid_without_ligatures<'a>(
     // to the cache only when needed.
     let mut font_id_cache = FontIdCache::new(default_font_id);
 
-    let mut minimal_contrast_cache = MinimalContrastCache::new();
+    // Reuse last frame's scratch buffers and contrast map (see `RenderScratch`).
+    let mut scratch = take_render_scratch();
+    let mut minimal_contrast_cache =
+        MinimalContrastCache::from_map(mem::take(&mut scratch.contrast_map));
 
     let baseline_position = calculate_grid_baseline_position(
         ctx.font_cache,
@@ -552,8 +557,8 @@ fn render_grid_without_ligatures<'a>(
     // don't get drawn cell-by-cell as individual rects. They get "batched" together for efficiency.
     // The batch doesn't get drawn until the background color changes in a later iteration of the
     // loop. When it does, we go back and draw it, likely over cells in previous loop iterations.
-    let mut cell_decorations = Vec::new();
-    let mut native_glyphs_to_render = Vec::new();
+    let mut cell_decorations = mem::take(&mut scratch.cell_decorations);
+    let mut native_glyphs_to_render = mem::take(&mut scratch.native_glyphs);
     let mut cached_background_color: Option<CachedBackgroundColor> = None;
 
     let mut prev_row = None;
@@ -561,6 +566,9 @@ fn render_grid_without_ligatures<'a>(
 
     let hovered_secret_range = hovered_secret
         .and_then(|handle| grid.secret_by_handle(handle).map(|secret| secret.range()));
+    // With no secrets in the grid the per-cell lookup below can only return `None`, so don't run
+    // it for every cell of every frame.
+    let redact_secrets = obfuscate_secrets.should_redact_secret() && grid.has_secrets();
     let marked_text = grid.marked_text();
     let mut marked_text = marked_text
         .iter()
@@ -804,7 +812,7 @@ fn render_grid_without_ligatures<'a>(
                 has_seen_cell_in_link = true;
             }
 
-            if obfuscate_secrets.should_redact_secret() {
+            if redact_secrets {
                 if let Some((handle, secret)) =
                     grid.secret_at_displayed_point(Point::new(offset_row, col))
                 {
@@ -892,20 +900,25 @@ fn render_grid_without_ligatures<'a>(
     // and cell decorations to ensure that they sit on top of the merged background
     // rects.  (This is not needed for glyphs, as the rendering stack currently always
     // renders glyphs above rects within a given layer.)
-    for native_glyph in native_glyphs_to_render {
+    for native_glyph in native_glyphs_to_render.drain(..) {
         render_native_glyph(native_glyph, ctx, app);
     }
-    for data in cell_decorations {
+    for data in cell_decorations.drain(..) {
         ctx.scene
             .draw_rect_without_hit_recording(RectF::new(data.origin, data.size))
             .with_background(Fill::Solid(data.color));
     }
+
+    scratch.cell_decorations = cell_decorations;
+    scratch.native_glyphs = native_glyphs_to_render;
+    scratch.contrast_map = minimal_contrast_cache.into_map();
+    return_render_scratch(scratch);
 }
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
-fn render_cell(
-    grid: &GridHandler,
+fn render_cell<G: GridSource>(
+    grid: &G,
     offset_row: usize,
     col: usize,
     cell: &Cell,
@@ -993,8 +1006,8 @@ fn render_cell(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_grid_with_ligatures<'a>(
-    grid: &GridHandler,
+fn render_grid_with_ligatures<'a, G: GridSource>(
+    grid: &G,
     start_row: usize,
     end_row: usize,
     visible_rows: impl Iterator<Item = usize>,
@@ -1035,7 +1048,10 @@ fn render_grid_with_ligatures<'a>(
     let mut font_id_cache = HashMap::new();
     font_id_cache.insert(FontStyle::Default, default_font_id);
 
-    let mut minimal_contrast_cache = MinimalContrastCache::new();
+    // Reuse last frame's scratch buffers and contrast map (see `RenderScratch`).
+    let mut scratch = take_render_scratch();
+    let mut minimal_contrast_cache =
+        MinimalContrastCache::from_map(mem::take(&mut scratch.contrast_map));
 
     let baseline_position = calculate_grid_baseline_position(
         ctx.font_cache,
@@ -1069,8 +1085,8 @@ fn render_grid_with_ligatures<'a>(
     // don't get drawn cell-by-cell as individual rects. They get "batched" together for efficiency.
     // The batch doesn't get drawn until the background color changes in a later iteration of the
     // loop. When it does, we go back and draw it, likely over cells in previous loop iterations.
-    let mut cell_decorations = Vec::new();
-    let mut native_glyphs_to_render = Vec::new();
+    let mut cell_decorations = mem::take(&mut scratch.cell_decorations);
+    let mut native_glyphs_to_render = mem::take(&mut scratch.native_glyphs);
     let mut cached_background_color: Option<CachedBackgroundColor> = None;
 
     let mut prev_row = None;
@@ -1078,6 +1094,9 @@ fn render_grid_with_ligatures<'a>(
 
     let hovered_secret_range = hovered_secret
         .and_then(|handle| grid.secret_by_handle(handle).map(|secret| secret.range()));
+    // With no secrets in the grid the per-cell lookup below can only return `None`, so don't run
+    // it for every cell of every frame.
+    let redact_secrets = obfuscate_secrets.should_redact_secret() && grid.has_secrets();
     let marked_text = grid.marked_text();
     let mut marked_text = marked_text
         .iter()
@@ -1355,7 +1374,7 @@ fn render_grid_with_ligatures<'a>(
                 has_seen_cell_in_link = true;
             }
 
-            if obfuscate_secrets.should_redact_secret() {
+            if redact_secrets {
                 if let Some((handle, secret)) =
                     grid.secret_at_displayed_point(Point::new(offset_row, col))
                 {
@@ -1525,14 +1544,19 @@ fn render_grid_with_ligatures<'a>(
         );
     }
 
-    for native_glyph in native_glyphs_to_render {
+    for native_glyph in native_glyphs_to_render.drain(..) {
         render_native_glyph(native_glyph, ctx, app);
     }
-    for data in cell_decorations {
+    for data in cell_decorations.drain(..) {
         ctx.scene
             .draw_rect_without_hit_recording(RectF::new(data.origin, data.size))
             .with_background(Fill::Solid(data.color));
     }
+
+    scratch.cell_decorations = cell_decorations;
+    scratch.native_glyphs = native_glyphs_to_render;
+    scratch.contrast_map = minimal_contrast_cache.into_map();
+    return_render_scratch(scratch);
 }
 
 fn paint_line(
@@ -1546,7 +1570,7 @@ fn paint_line(
         let glyph_color = run.styles.foreground_color.unwrap_or_default();
 
         for glyph in &run.glyphs {
-            let glyph_x = character_index_to_cell_map[glyph.index] as f32 * cell_width;
+            let glyph_x = character_index_to_cell_map[glyph.char_index()] as f32 * cell_width;
             let glyph_origin = baseline + vec2f(glyph_x, 0.);
 
             scene.draw_glyph(
@@ -1591,10 +1615,47 @@ struct CellColors {
     foreground_color: ColorU,
 }
 
+/// Buffers the grid renderers rebuild every frame, kept per thread (rendering is single-threaded)
+/// so their allocations survive from one frame to the next. A renderer takes the scratch, uses
+/// and empties it, and hands it back; a renderer that re-enters just finds an empty one.
+#[derive(Default)]
+struct RenderScratch {
+    cell_decorations: Vec<DecorationData>,
+    native_glyphs: Vec<NativeGlyph>,
+    /// [`MinimalContrastCache::map`]. The mapping is a pure function of the two colors (it does
+    /// not read the theme), so entries stay correct across frames and theme changes; only the
+    /// size is bounded.
+    contrast_map: FxHashMap<CellColors, ColorU>,
+}
+
+/// Bounds on what a [`RenderScratch`] keeps between frames, so one unusual frame (a huge
+/// grid, a truecolor image dump) doesn't pin memory forever.
+const MAX_RETAINED_CONTRAST_ENTRIES: usize = 4096;
+const MAX_RETAINED_SCRATCH_ITEMS: usize = 8192;
+
+thread_local! {
+    static RENDER_SCRATCH: RefCell<RenderScratch> = RefCell::new(RenderScratch::default());
+}
+
+fn take_render_scratch() -> RenderScratch {
+    RENDER_SCRATCH.with(|scratch| mem::take(&mut *scratch.borrow_mut()))
+}
+
+fn return_render_scratch(mut scratch: RenderScratch) {
+    scratch.cell_decorations.clear();
+    scratch.cell_decorations.shrink_to(MAX_RETAINED_SCRATCH_ITEMS);
+    scratch.native_glyphs.clear();
+    scratch.native_glyphs.shrink_to(MAX_RETAINED_SCRATCH_ITEMS);
+    if scratch.contrast_map.len() > MAX_RETAINED_CONTRAST_ENTRIES {
+        scratch.contrast_map.clear();
+    }
+    RENDER_SCRATCH.with(|slot| *slot.borrow_mut() = scratch);
+}
+
 struct MinimalContrastCache {
     /// A mapping from a pair of cell colors to a foreground color that has the
     /// required minimum contrast against the provided background.
-    map: HashMap<CellColors, ColorU>,
+    map: FxHashMap<CellColors, ColorU>,
 
     /// The last set of cell colors that were queried, and the value they map
     /// to.
@@ -1607,7 +1668,7 @@ struct MinimalContrastCache {
 }
 
 impl MinimalContrastCache {
-    fn new() -> Self {
+    fn from_map(map: FxHashMap<CellColors, ColorU>) -> Self {
         // Default the last colors to a map from transparent/transparent to
         // transparent.  This is a reasonable default because it's not likely
         // to actually occur, and if it does, this is the correct mapping.
@@ -1616,9 +1677,13 @@ impl MinimalContrastCache {
             background_color: ColorU::transparent_black(),
         };
         Self {
-            map: Default::default(),
+            map,
             last: (transparent, ColorU::transparent_black()),
         }
+    }
+
+    fn into_map(self) -> FxHashMap<CellColors, ColorU> {
+        self.map
     }
 
     fn get_or_insert(&mut self, colors: CellColors) -> ColorU {
@@ -1770,7 +1835,14 @@ fn render_cell_glyph(
     let font_id = font_id_cache.font_ids[font_style as usize]
         .get_or_insert_with(|| ctx.font_cache.select_font(font_family, properties));
 
+    // Handle special unicode characters that will look better with native
+    // rendering instead of using glyphs from the font.
+    let native_glyph = native_glyph_for_cell(cell);
+
     let glyph_and_font = match cell_content {
+        // Natively rendered cells never use the font glyph, so don't look one up (which for a
+        // character the primary font lacks would walk the fallback fonts).
+        _ if native_glyph.is_some() => None,
         // Special-case whitespace, which doesn't need rendering.  We
         // explicitly check these two chars instead of using
         // `char::is_whitespace` for performance reasons.
@@ -1800,9 +1872,7 @@ fn render_cell_glyph(
 
     let origin = grid_origin + glyph_offset + baseline_position;
 
-    // Handle special unicode characters that will look better with native
-    // rendering instead of using glyphs from the font.
-    match native_glyph_for_cell(cell) {
+    match native_glyph {
         Some(glyph_type) => {
             native_glyphs_to_render.push(NativeGlyph {
                 cell_bounds: RectF::new(grid_origin + glyph_offset, cell_size),
@@ -1930,9 +2000,19 @@ fn render_image(
             warn_image_once(image_id, 2, "Image was evicted from the image cache");
             return;
         }
-        DeferredImage::Pending { stale } => {
-            // Poll until the background raster lands; paint-only, the layout is unchanged.
-            ctx.repaint_after_paint_only(std::time::Duration::from_millis(33));
+        DeferredImage::Pending {
+            stale,
+            wait,
+            give_up_at,
+        } => {
+            // Redrawn by the raster worker's completion signal (paint-only: the layout is
+            // unchanged), not by polling.
+            ctx.repaint_after_raster(wait);
+            // One-shot give-up for a worker that never answers; the cache then marks the image
+            // failed and logs it. Not a poll: it fires once, at the deadline.
+            if let Some(at) = give_up_at {
+                ctx.repaint_at_paint_only(at);
+            }
             if let Some(stale) = stale {
                 if let Image::Static(image) = stale.image.as_ref() {
                     let from = stale.from_bounds.to_f32();
@@ -2927,8 +3007,8 @@ struct DottedLineInfo {
 
 /// Renders dotted line(s) around a row to represent skipped lines when a block
 /// filter is active, if rows are skipped.
-fn maybe_render_dotted_lines(
-    grid: &GridHandler,
+fn maybe_render_dotted_lines<G: GridSource>(
+    grid: &G,
     row: usize,
     prev_row: Option<usize>,
     offset_row: usize,

@@ -9,13 +9,11 @@ use std::{
 };
 
 use futures::channel::oneshot;
-use warp_completer::completer::CommandOutput;
 use warp_core::command::ExitCode;
 use warp_util::path::ShellDialect;
 use warpui::{r#async::FutureExt, AppContext, Entity, ModelContext, ModelHandle, ViewHandle};
 
 use crate::ai::agent::redaction::redact_secrets;
-use crate::terminal::model::session::ExecuteCommandOptions;
 
 use crate::{
     ai::ambient_agents::AmbientAgentTaskId,
@@ -147,6 +145,7 @@ impl TerminalDriver {
     /// Unlike [`Self::create`], this does not open a new window — it reuses an
     /// existing view (e.g. a docker sandbox pane). Session sharing is disabled
     /// and no task ID is associated.
+    #[cfg(test)]
     pub(crate) fn create_from_existing_view(
         terminal_view: ViewHandle<TerminalView>,
         ctx: &mut AppContext,
@@ -233,6 +232,7 @@ impl TerminalDriver {
         model
             .block_list()
             .block_with_id(block_id)
+            .filter(|block| !block.is_restore_pending())
             .map(SerializedBlock::from)
     }
 
@@ -352,35 +352,6 @@ impl TerminalDriver {
         })
     }
 
-    /// Execute a command through the active session's in-band command
-    /// executor, without adding a block to the user-visible blocklist.
-    ///
-    /// Intended for silent probes (e.g. `test -d`) that the agent needs to
-    /// drive through the terminal session (so they run against the correct
-    /// filesystem, including inside a Docker sandbox) but should not clutter
-    /// the user's command history.
-    pub fn execute_silent_command(
-        &self,
-        command: String,
-        ctx: &ModelContext<Self>,
-    ) -> impl Future<Output = Result<CommandOutput, AgentDriverError>> + use<> {
-        let session = self.terminal_view.read(ctx, |terminal, app| {
-            terminal
-                .active_block_session_id()
-                .and_then(|id| terminal.sessions_model().as_ref(app).get(id))
-        });
-        async move {
-            let session = session.ok_or(AgentDriverError::InvalidRuntimeState)?;
-            session
-                .execute_command(&command, None, None, ExecuteCommandOptions::default())
-                .await
-                .map_err(|e| {
-                    log::warn!("silent command failed: {e:#}");
-                    AgentDriverError::InvalidRuntimeState
-                })
-        }
-    }
-
     /// Returns the shell type of the active terminal session, if known.
     pub fn active_session_shell_type(&self, ctx: &AppContext) -> Option<ShellType> {
         self.terminal_view
@@ -389,10 +360,9 @@ impl TerminalDriver {
 
     /// Build the shell-aware `cd <escaped>` command for the active session.
     ///
-    /// Shared between [`Self::cd`] and [`Self::cd_silent`] so both paths use
-    /// the same [`ShellDialect::shell_escape`] logic (backslash escaping, with
+    /// Uses the [`ShellDialect::shell_escape`] logic (backslash escaping, with
     /// control characters spelled per shell: `$'..'` for bash/zsh, fish's `\xHH`,
-    /// pwsh `$([char]..)`) and don't drift.
+    /// pwsh `$([char]..)`).
     fn build_cd_command(&self, target: &str, ctx: &AppContext) -> String {
         let shell_dialect = self.terminal_view.read(ctx, |terminal, app| {
             terminal
@@ -413,23 +383,6 @@ impl TerminalDriver {
     {
         let cd_command = self.build_cd_command(target, ctx);
         self.execute_command(&cd_command, ctx)
-    }
-
-    /// Change directory within the active terminal session, silently — no
-    /// visible block is added to the user-facing blocklist.
-    ///
-    /// Uses the same shell-aware escaping as [`Self::cd`] but dispatches
-    /// through [`Self::execute_silent_command`]. Intended for callers that
-    /// need to position the session's CWD as an implementation detail of a
-    /// larger setup step (e.g. positioning the session before running
-    /// silent probes).
-    pub fn cd_silent(
-        &self,
-        target: &str,
-        ctx: &ModelContext<Self>,
-    ) -> impl Future<Output = Result<CommandOutput, AgentDriverError>> + use<> {
-        let cd_command = self.build_cd_command(target, ctx);
-        self.execute_silent_command(cd_command, ctx)
     }
 
     /// The current working directory of the active terminal session, if known.

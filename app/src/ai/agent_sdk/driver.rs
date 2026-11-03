@@ -903,83 +903,6 @@ impl AgentDriver {
         })
     }
 
-    /// Wait for all file-based MCP servers with the given UUIDs to reach a terminal state
-    /// (`Running` or `FailedToStart`). Non-fatal: always completes without returning an error.
-    ///
-    /// **Sequencing note:** `AgentDriver` supports only one active subscription to
-    /// [`TemplatableMCPServerManager`] at a time. This function, [`Self::start_mcp_servers`],
-    /// and [`Self::start_ephemeral_mcp_servers`] must therefore run sequentially, never
-    /// concurrently.
-    fn wait_for_file_based_mcps_running(
-        &self,
-        uuids: Vec<Uuid>,
-        ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = ()> + use<> {
-        // Filter out UUIDs that have already reached a terminal state.
-        let mut pending_uuids: HashSet<Uuid> = {
-            let templatable_manager = TemplatableMCPServerManager::as_ref(ctx);
-            uuids
-                .into_iter()
-                .filter(|uuid| {
-                    !matches!(
-                        templatable_manager.get_server_state(*uuid),
-                        Some(MCPServerState::Running) | Some(MCPServerState::FailedToStart)
-                    )
-                })
-                .collect()
-        };
-
-        if pending_uuids.is_empty() {
-            log::info!("All file-based MCP servers are already running; proceeding");
-            return Either::Right(future::ready(()));
-        }
-
-        let (tx, rx) = oneshot::channel::<()>();
-        let mut tx = Some(tx);
-
-        let templatable_manager_handle = TemplatableMCPServerManager::handle(ctx);
-        let manager_clone = templatable_manager_handle.clone();
-
-        ctx.subscribe_to_model(&templatable_manager_handle, move |_me, event, ctx| {
-            if let TemplatableMCPServerManagerEvent::StateChanged { uuid, state } = event {
-                if !pending_uuids.contains(uuid) {
-                    return;
-                }
-                match state {
-                    MCPServerState::Running | MCPServerState::FailedToStart => {
-                        pending_uuids.remove(uuid);
-                    }
-                    _ => {
-                        return;
-                    }
-                }
-                if pending_uuids.is_empty() {
-                    log::info!("All file-based MCP servers reached a terminal state; proceeding");
-                    if let Some(sender) = tx.take() {
-                        let _ = sender.send(());
-                    }
-                    ctx.unsubscribe_from_model(&manager_clone);
-                }
-            }
-        });
-
-        Either::Left(async move {
-            match rx.with_timeout(MCP_SERVER_STARTUP_TIMEOUT).await {
-                Ok(Ok(())) => {}
-                Ok(Err(Canceled)) => {
-                    log::warn!(
-                        "File-based MCP server readiness subscription dropped early; proceeding"
-                    );
-                }
-                Err(TimeoutError) => {
-                    log::warn!(
-                        "Timed out waiting for file-based MCP servers to reach a terminal state; proceeding without"
-                    );
-                }
-            }
-        })
-    }
-
     /// Load skills from the `WARP_SKILL_DIRS` environment variable as personal (home) tier skills.
     ///
     /// `WARP_SKILL_DIRS` is a comma-separated list of paths; each entry is itself a skills directory
@@ -1117,14 +1040,15 @@ impl AgentDriver {
                         AgentDriverError::InvalidRuntimeState
                     })?;
 
-                // Pause before returning to make sure that all conversation events are transmitted before the session is closed.
-                // TODO: This is a bit of a bandaid fix, and it would be better if we explicitly waited for the session to end before terminating.
-                // The way we could do that is through having the driver wait for all in-flight streams to be finished before terminating
-                // and then call stop_sharing_session when they're done. To know when streams are finished, we would need to modify start_ordered_terminal_events_listener
-                // to send a message when the streams are finished, flushed, and the websocket is disconnected. For now, we'll just sleep for a second, as this seems
-                // to be enough time for the streams to be finished and the events to be flushed.
-                warpui::r#async::Timer::after(Duration::from_secs(1)).await;
-
+                // The pin slept 1 s here so the shared-session event streams (the cloud session
+                // viewer) could flush before the session closed. This fork has no shared session
+                // (`should_share` is always false, `--share` is refused; DECLINED.md "Agent
+                // session sharing"), hence no stream to flush, so the sleep waited on nothing
+                // (#1364). Local state that must outlive the run -- conversation/exchange files
+                // written synchronously by `execute_run`'s history subscription, and the sqlite
+                // writer -- is drained by the will-terminate hook when the app exits (#637).
+                // Do not re-add a timed pause; if a shared session is ever ported, wait on its
+                // "streams flushed and disconnected" signal instead.
                 conversation_status.into_result()
             }
             HarnessKind::ThirdParty(harness) => {

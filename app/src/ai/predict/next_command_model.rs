@@ -1,14 +1,15 @@
 use crate::ai::api_error::AIApiError;
 use crate::ai::block_context::BlockContext;
-use crate::ai_assistant::execution_context::WarpAiExecutionContext;
+use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::completer::SessionContext;
 use crate::report_error;
 use crate::settings::AISettings;
-#[cfg(feature = "local_fs")]
-use crate::terminal::ShellHost;
 use crate::terminal::event::UserBlockCompleted;
+use crate::terminal::history::VisibleHistorySnapshot;
 use crate::terminal::input::{CompleterData, IntelligentAutosuggestionResult};
 use crate::terminal::model::session::Sessions;
+#[cfg(feature = "local_fs")]
+use crate::terminal::ShellHost;
 use crate::terminal::{History, HistoryEntry, TerminalModel};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use chrono::Utc;
@@ -34,6 +35,8 @@ use warp_core::features::FeatureFlag;
 use warpui::r#async::FutureExt;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
+#[cfg(feature = "local_fs")]
+use super::generate_ai_input_suggestions::HistoryContext;
 use super::generate_ai_input_suggestions::{
     create_generate_ai_input_suggestions_request, get_context_messages,
     GenerateAIInputSuggestionsRequest, GenerateAIInputSuggestionsResponseV2, NextCommandContext,
@@ -119,8 +122,25 @@ async fn byop_generate_input_suggestions(
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 const NUM_ADDITIONAL_PREV_COMMAND_CONTEXT_LLM: usize = 2;
 
+/// Give-up for an arg-validation generator that never answers (#1381). The validation runs in
+/// the background and its answer is the generator finishing, so this is a safety net for a
+/// generator that hangs, not a latency budget: it sits just above the completer's own
+/// 20 s generator run bound, which ends the run first. Previously 150 ms, after which the arg was
+/// ASSUMED valid, so any generator slower than that (a cold `git branch`) vouched for whatever
+/// the history suggested.
 #[cfg(feature = "local_fs")]
-const ARG_GENERATOR_VALIDATION_TIMEOUT: Duration = Duration::from_millis(150);
+const ARG_GENERATOR_VALIDATION_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// A generator validation that gave up is "unknown", and an unknown arg is not validated: the
+/// suggestion is skipped rather than shown on the strength of an answer we never got.
+#[cfg(feature = "local_fs")]
+fn generator_validation_gave_up(arg: &str, command: &str) -> bool {
+    log::warn!(
+        "Generator validation for arg `{arg}` in command `{command}` gave up after \
+         {ARG_GENERATOR_VALIDATION_TIMEOUT:?}; not treating the arg as valid"
+    );
+    false
+}
 
 pub fn is_next_command_enabled(app: &warpui::AppContext) -> bool {
     AISettings::as_ref(app).is_intelligent_autosuggestions_enabled(app)
@@ -336,7 +356,7 @@ impl NextCommandModel {
         #[cfg(feature = "local_fs")]
         if let Some(conn) = conn {
             let mut conn = conn.lock();
-            let serialized_block = block_completed.serialized_block.get_with(|compute| {
+            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
                 let model = terminal_model.lock();
                 compute(model.block_list())
             });
@@ -416,6 +436,49 @@ impl NextCommandModel {
         ))
     }
 
+    /// Like [`Self::get_reverse_chronological_potential_autosuggestions`], for the per-keystroke
+    /// call on the UI thread: it only walks the newest [`MAIN_THREAD_AUTOSUGGESTION_SCAN_BUDGET`]
+    /// visible entries here. A prefix with few matches would otherwise walk the whole history
+    /// (hundreds of thousands of entries) before the keystroke can paint, so when the budget
+    /// runs out the scan comes back as a [`DeferredHistoryScan`] the caller finishes on its
+    /// background future (#1140). Either way the candidates, their order and the dedupe are
+    /// exactly those of the synchronous function.
+    pub fn get_potential_autosuggestions_within_budget(
+        prefix: &str,
+        completer_data: &CompleterData,
+        excluded_commands: &HashSet<String>,
+        app: &AppContext,
+    ) -> PotentialAutosuggestions {
+        let Some(session_id) = completer_data.active_block_session_id() else {
+            return PotentialAutosuggestions::Ready(None);
+        };
+        let history = History::as_ref(app);
+        let Some(history_entries) = history.visible_commands(session_id) else {
+            return PotentialAutosuggestions::Ready(None);
+        };
+        let working_dir = completer_data
+            .active_block_metadata
+            .as_ref()
+            .and_then(|block_metadata| block_metadata.current_working_directory());
+        if let Some(candidates) = scan_history_for_autosuggestions(
+            history_entries,
+            prefix,
+            working_dir,
+            excluded_commands,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+            Some(MAIN_THREAD_AUTOSUGGESTION_SCAN_BUDGET),
+        ) {
+            return PotentialAutosuggestions::Ready(Some(candidates));
+        }
+        match history.visible_commands_snapshot(session_id) {
+            Some(snapshot) => PotentialAutosuggestions::Deferred(DeferredHistoryScan {
+                snapshot,
+                working_dir: working_dir.map(str::to_owned),
+            }),
+            None => PotentialAutosuggestions::Ready(None),
+        }
+    }
+
     /// Generates a next command suggestion with a prefix in the input.
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     #[expect(clippy::too_many_arguments)]
@@ -450,10 +513,12 @@ impl NextCommandModel {
         };
         // The profile's per-prompt override for the next-command system prompt must
         // also be resolved pre-spawn (the render runs where `&AppContext` is gone).
-        let next_command_prompt_override =
-            byop_next_command::resolve_prompt_override(ctx, None);
+        let next_command_prompt_override = byop_next_command::resolve_prompt_override(ctx, None);
 
-        let completion_context = completer_data.completion_session_context(ctx);
+        // Cached listings only on a remote session: this runs per keystroke (#1295).
+        let completion_context = completer_data
+            .completion_session_context(ctx)
+            .map(crate::completer::SessionContext::for_background);
         // This is only needed if we have a prefix.
         let reverse_chronological_potential_autosuggestions = if let Some(prefix) = &prefix {
             Self::get_reverse_chronological_potential_autosuggestions(
@@ -785,8 +850,8 @@ async fn is_arg_valid(
             // unclassified command, and a generator timeout all return `true` -- and a stale
             // suggestion beats suppressing every suggestion.
             //
-            // Generators are deliberately NOT covered by this: `completer::suggestions` already
-            // branches on session type and runs the generator on the remote, so it stays exact.
+            // Generators are covered too (#1130): running one on a remote session costs a command
+            // on the shared ssh connection per candidate per keystroke, so they fail open as well.
             let can_validate_paths_locally = ctx.session.is_local();
             let mut skipped_remote_path_validation = false;
             for arg_type in arg_types_to_validate {
@@ -822,6 +887,13 @@ async fn is_arg_valid(
                         }
                     }
                     ArgType::Generator(_) => {
+                        // A generator on a non-local session is a command on the shared ssh
+                        // connection, run once per candidate per keystroke (#1130). Fail open,
+                        // like paths above (#621).
+                        if !can_validate_paths_locally {
+                            skipped_remote_path_validation = true;
+                            continue;
+                        }
                         has_generator_arg_type = true;
                     }
                 };
@@ -851,11 +923,10 @@ async fn is_arg_valid(
                     ctx,
                 );
 
-                // If the completions call times out, assume the arg is valid.
-                // This is necessary because some generators can hang (e.g. kubectl commands if the cluster isn't running).
+                // Some generators can hang (e.g. kubectl commands if the cluster isn't running):
+                // that is bounded by a give-up, and a give-up is "unknown", not "valid".
                 let Ok(completion_result) = completions_future.with_timeout(ARG_GENERATOR_VALIDATION_TIMEOUT).await else {
-                    log::debug!("Generator validation for arg `{}` in command `{}` timed out - assuming it's valid", arg.value().as_str(), full_command);
-                    return true;
+                    return generator_validation_gave_up(arg.value().as_str(), full_command);
                 };
 
                 let Some(completion_result) = completion_result else {
@@ -975,15 +1046,55 @@ fn find_potential_autosuggestions_from_history<'a>(
     excluded_commands: &HashSet<String>,
     limit: usize,
 ) -> Vec<Arc<HistoryEntry>> {
+    scan_history_for_autosuggestions(
+        history_entries,
+        buffer_text,
+        working_dir,
+        excluded_commands,
+        limit,
+        None,
+    )
+    .unwrap_or_default()
+}
+
+/// How many of the newest visible history entries the per-keystroke autosuggestion scan may
+/// look at on the UI thread before handing the rest to its background future. At a few tens
+/// of nanoseconds an entry this is well under a millisecond.
+const MAIN_THREAD_AUTOSUGGESTION_SCAN_BUDGET: usize = 8192;
+
+/// The scan behind [`find_potential_autosuggestions_from_history`]. With
+/// `max_entries_visited` set it gives up and returns `None` once it has looked at that many
+/// entries without finishing; with `None` it always finishes.
+fn scan_history_for_autosuggestions<'a>(
+    history_entries: impl DoubleEndedIterator<Item = &'a Arc<HistoryEntry>>,
+    buffer_text: &str,
+    working_dir: Option<&str>,
+    excluded_commands: &HashSet<String>,
+    limit: usize,
+    max_entries_visited: Option<usize>,
+) -> Option<Vec<Arc<HistoryEntry>>> {
     if limit == 0 {
-        return vec![];
+        return Some(vec![]);
     }
     let mut commands_in_same_dir: Vec<&Arc<HistoryEntry>> = vec![];
     let mut commands_in_other_dirs: Vec<&Arc<HistoryEntry>> = vec![];
     let mut seen_in_same_dir: HashSet<&str> = HashSet::new();
     let mut seen_in_other_dirs: HashSet<&str> = HashSet::new();
+    let mut visited = 0usize;
     for entry in history_entries.rev() {
-        if !entry.command.starts_with(buffer_text) || excluded_commands.contains(&entry.command) {
+        if let Some(max_entries_visited) = max_entries_visited {
+            if visited >= max_entries_visited {
+                return None;
+            }
+            visited += 1;
+        }
+        // #1284: an entry equal to the buffer has nothing to suggest. Kept, it is the newest match
+        // as soon as the bare prefix has run once (a single missed accept), and its empty suffix
+        // shadowed every longer command for the rest of the session.
+        if !entry.command.starts_with(buffer_text)
+            || entry.command == buffer_text
+            || excluded_commands.contains(&entry.command)
+        {
             continue;
         }
         let same_dir = entry
@@ -1004,12 +1115,139 @@ fn find_potential_autosuggestions_from_history<'a>(
             break;
         }
     }
-    commands_in_same_dir
-        .into_iter()
-        .chain(commands_in_other_dirs)
-        .take(limit)
-        .cloned()
-        .collect()
+    Some(
+        commands_in_same_dir
+            .into_iter()
+            .chain(commands_in_other_dirs)
+            .take(limit)
+            .cloned()
+            .collect(),
+    )
+}
+
+/// The result of [`NextCommandModel::get_potential_autosuggestions_within_budget`].
+pub enum PotentialAutosuggestions {
+    /// The scan finished within the UI-thread budget (`None`: the session has no history yet).
+    Ready(Option<Vec<Arc<HistoryEntry>>>),
+    /// The scan needs to walk more of the history than the budget allows; finish it with
+    /// [`DeferredHistoryScan::run`] off the UI thread.
+    Deferred(DeferredHistoryScan),
+}
+
+impl PotentialAutosuggestions {
+    /// The ranked candidates, finishing a deferred scan if need be. Call off the UI thread.
+    pub fn resolve(
+        self,
+        prefix: &str,
+        excluded_commands: &HashSet<String>,
+    ) -> Vec<Arc<HistoryEntry>> {
+        match self {
+            PotentialAutosuggestions::Ready(candidates) => candidates.unwrap_or_default(),
+            PotentialAutosuggestions::Deferred(scan) => scan.run(prefix, excluded_commands),
+        }
+    }
+}
+
+/// An autosuggestion history scan that outgrew the UI-thread budget, holding an owned
+/// snapshot of the session's visible history so it can finish on a background thread.
+pub struct DeferredHistoryScan {
+    snapshot: VisibleHistorySnapshot,
+    working_dir: Option<String>,
+}
+
+impl DeferredHistoryScan {
+    /// Runs the whole scan over the snapshot: the candidates the synchronous function would
+    /// have returned for the same history.
+    pub fn run(&self, prefix: &str, excluded_commands: &HashSet<String>) -> Vec<Arc<HistoryEntry>> {
+        find_potential_autosuggestions_from_history(
+            self.snapshot.iter(),
+            prefix,
+            self.working_dir.as_deref(),
+            excluded_commands,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+        )
+    }
+}
+
+/// Remembers the result of [`NextCommandModel::get_similar_history_context`] for the last
+/// completed block. That query costs one SQLite lookup plus one more per match, and its answer
+/// depends only on the block that just finished, yet the autosuggestion path ran it again on
+/// every keystroke (#1140).
+///
+/// The database is written by a separate thread (a block's finished-state update can land just
+/// after its first keystroke), so an entry is valid only while the writer's commit epoch is the
+/// one read before the query: the write event invalidates it, not a time window (#1371).
+#[cfg(feature = "local_fs")]
+#[derive(Default)]
+pub struct SimilarHistoryContextCache {
+    entry: Mutex<Option<SimilarHistoryContextCacheEntry>>,
+}
+
+#[cfg(feature = "local_fs")]
+struct SimilarHistoryContextCacheEntry {
+    command: String,
+    pwd: Option<String>,
+    exit_code: ExitCode,
+    shell_host: Option<ShellHost>,
+    commands_epoch: u64,
+    contexts: Arc<Vec<HistoryContext>>,
+}
+
+#[cfg(feature = "local_fs")]
+impl SimilarHistoryContextCache {
+    /// Returns the cached contexts for this block if they are fresh, otherwise runs `compute`
+    /// (without holding the cache lock) and remembers its result.
+    pub fn get_or_compute(
+        &self,
+        command: &str,
+        pwd: &Option<String>,
+        exit_code: ExitCode,
+        shell_host: Option<&ShellHost>,
+        compute: impl FnOnce() -> Vec<HistoryContext>,
+    ) -> Arc<Vec<HistoryContext>> {
+        self.get_or_compute_at(
+            crate::persistence::commands::commands_write_epoch,
+            command,
+            pwd,
+            exit_code,
+            shell_host,
+            compute,
+        )
+    }
+
+    fn get_or_compute_at(
+        &self,
+        epoch: impl Fn() -> u64,
+        command: &str,
+        pwd: &Option<String>,
+        exit_code: ExitCode,
+        shell_host: Option<&ShellHost>,
+        compute: impl FnOnce() -> Vec<HistoryContext>,
+    ) -> Arc<Vec<HistoryContext>> {
+        // Read before querying: a write that commits during the query leaves the stored epoch
+        // behind, so the next lookup recomputes instead of trusting a result without that row.
+        let commands_epoch = epoch();
+        if let Some(entry) = self.entry.lock().as_ref() {
+            if entry.command == command
+                && entry.pwd == *pwd
+                && entry.exit_code == exit_code
+                && entry.shell_host.as_ref() == shell_host
+                && entry.commands_epoch == commands_epoch
+            {
+                return entry.contexts.clone();
+            }
+        }
+        let contexts = Arc::new(compute());
+        *self.entry.lock() = Some(SimilarHistoryContextCacheEntry {
+            command: command.to_owned(),
+            pwd: pwd.clone(),
+            exit_code,
+            shell_host: shell_host.cloned(),
+            commands_epoch,
+            contexts: contexts.clone(),
+        });
+        contexts
+    }
 }
 
 #[cfg(test)]

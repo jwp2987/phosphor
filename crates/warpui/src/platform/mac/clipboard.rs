@@ -6,8 +6,11 @@ use anyhow::Result;
 use cocoa::base::id;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
-use objc2_foundation::{NSArray, NSData, NSString, ns_string};
-use warpui_core::clipboard::{ClipboardContent, ImageData};
+use objc2_foundation::{ns_string, NSArray, NSData, NSString};
+use warpui_core::clipboard::{
+    Availability, ClipboardContent, ClipboardReader, ClipboardTarget, ImageData, ReadKind,
+    ReadOutcome,
+};
 
 unsafe extern "C" {
     fn getFilePathsFromPasteboard() -> id;
@@ -70,7 +73,80 @@ impl crate::Clipboard for Clipboard {
         }
     }
 
-    fn read(&mut self) -> ClipboardContent {
+    fn availability(&mut self, _target: ClipboardTarget) -> Availability {
+        // `availableTypeFromArray:` consults the declared type list only; it never asks the owner
+        // to materialise (or us to decode) any data, so a lazy promise from another app cannot
+        // block it (#1306). Covers the types `read` consumes.
+        unsafe {
+            let types = NSArray::from_slice(&[
+                NSPasteboardTypeString,
+                NSPasteboardTypeHTML,
+                ns_string!("public.file-url"),
+                ns_string!("NSFilenamesPboardType"),
+                ns_string!("public.png"),
+                ns_string!("public.jpeg"),
+                ns_string!("public.gif"),
+                ns_string!("public.webp"),
+                ns_string!("public.svg-image"),
+                ns_string!("com.compuserve.gif"),
+            ]);
+            if self.0.availableTypeFromArray(&types).is_some() {
+                Availability::HasContent
+            } else {
+                Availability::Empty
+            }
+        }
+    }
+
+    fn reader(&mut self, kind: ReadKind) -> ClipboardReader {
+        // NSPasteboard reads can block on a lazy promise from the owning app; they run on a
+        // worker (#1305). The general pasteboard is a process-wide singleton, so a fresh handle
+        // reads the same data. There is no first-answer deadline to apply (a promise has no
+        // event or timeout); the blocked-reader cap and the consumer's backstop bound the wait.
+        Box::new(move || {
+            objc2::rc::autoreleasepool(|_| match Clipboard::new() {
+                Ok(mut clipboard) => ReadOutcome::Content(match kind {
+                    ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
+                    // No separate primary selection on macOS: it is the pasteboard.
+                    ReadKind::Full | ReadKind::Primary => clipboard.read(),
+                }),
+                Err(_) => ReadOutcome::Unavailable,
+            })
+        })
+    }
+}
+
+/// The blocking read primitives, run only inside the reader on a worker thread (#1405).
+impl Clipboard {
+    pub(crate) fn read_text_and_paths(&mut self) -> ClipboardContent {
+        // Skips the HTML and image reads (the latter decodes and copies every image flavor).
+        unsafe { self.read_text_and_paths_inner() }
+    }
+
+    pub(crate) fn read(&mut self) -> ClipboardContent {
+        unsafe {
+            let mut content = self.read_text_and_paths_inner();
+
+            let html = self.0.stringForType(NSPasteboardTypeHTML);
+            if let Some(html) = html.as_deref() {
+                content.html = Some(
+                    CStr::from_ptr(html.UTF8String())
+                        .to_str()
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            }
+
+            // Try to read image data from clipboard
+            content.images = self.read_image_data_from_pasteboard();
+
+            content
+        }
+    }
+}
+
+impl Clipboard {
+    unsafe fn read_text_and_paths_inner(&mut self) -> ClipboardContent {
         unsafe {
             // Try getting file paths from the clipboard. If we end up with an empty
             // array of file paths, fallback to getting the string from the pasteboard.
@@ -101,20 +177,6 @@ impl crate::Clipboard for Clipboard {
                         .collect::<Vec<String>>(),
                 );
             }
-
-            let html = self.0.stringForType(NSPasteboardTypeHTML);
-            if let Some(html) = html.as_deref() {
-                content.html = Some(
-                    CStr::from_ptr(html.UTF8String())
-                        .to_str()
-                        .unwrap_or("")
-                        .to_string(),
-                )
-            }
-
-            // Try to read image data from clipboard
-            content.images = self.read_image_data_from_pasteboard();
-
             content
         }
     }

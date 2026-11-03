@@ -24,14 +24,19 @@
 #
 # Once the stapling is done, the app can be shared.
 #
-# Three passwords are read from GCP Secret Manager (or from env if --read-passwords-from-env is set) if you are codesigning.
-# 1) WARP_NOTARIZATION_PASSWORD:  This is an "app-specific password" that
-#    is tied to the zach@warp.dev account.  See https://support.apple.com/en-us/HT204397
-# 2) WARP_DEVELOPER_ID_CERT_PASSWORD: This is a password tied to the private key
-#    of our cert - it is needed to use the cert to sign our binary.
-# 3) WARP_CODESIGN_KEYCHAIN_PASSWORD: This is an arbitrary password only used
-#    in the lifetime of this app for creating the keychain used to sign.  Can
-#    be anything.
+# Signing is OPT-IN. With no signing identity provided the app is signed ad-hoc (`codesign -s -`), which gives
+# it a cdhash but no Developer ID and no notarization, so builds keep working unsigned. Developer ID signing and
+# notarization run only when --read-passwords-from-env is given AND all of these are set (see docs/release-signing.md):
+#   PHOSPHOR_APPLE_TEAM_ID              Apple Developer Team ID (10 characters)
+#   PHOSPHOR_APPLE_SIGNING_IDENTITY     e.g. "Developer ID Application: Name (TEAMID)"
+#   PHOSPHOR_DEVELOPER_ID_CERT          base64 of the exported .p12 (certificate + private key)
+#   PHOSPHOR_DEVELOPER_ID_CERT_PASSWORD password of that .p12
+#   PHOSPHOR_CODESIGN_KEYCHAIN_PASSWORD arbitrary password for the throwaway keychain created for the job
+# plus either notarytool credentials
+#   PHOSPHOR_NOTARIZATION_APPLE_ID, PHOSPHOR_NOTARIZATION_PASSWORD (an app-specific password)
+# or a profile already stored on the signing Mac with `xcrun notarytool store-credentials`:
+#   PHOSPHOR_NOTARY_PROFILE
+# Nothing here has a default value: no team id or identity is baked into the repository.
 #
 # See
 # https://github.com/burtonageo/cargo-bundle
@@ -118,6 +123,7 @@ cleanup_codesign_keychain() {
     if [[ "${CODESIGN:-false}" = true && -n "${CODESIGN_KEYCHAIN_NAME:-}" ]]; then
         echo "Cleaning up by deleting $CODESIGN_KEYCHAIN_NAME keychain."
         security delete-keychain "$CODESIGN_KEYCHAIN_NAME" || echo "No keychain to delete or already deleted."
+        [[ -n "${SIGN_ENTITLEMENTS:-}" ]] && rm -f "$SIGN_ENTITLEMENTS"
     fi
 }
 
@@ -142,6 +148,7 @@ DEBUG=false
 ARTIFACT="app"
 CODESIGN=true
 SELFSIGN=false
+FORCE_ADHOC=false
 OPEN_AFTER_BUNDLE=false
 READ_PASSWORDS_FROM_ENV=false
 
@@ -173,8 +180,8 @@ while (( "$#" )); do
       SELFSIGN=false
       shift
       ;;
-    # Sign with a local Apple Development cert instead of the official Phosphor cert.
-    # Useful for local debug builds when you don't have access to the company signing key.
+    # Sign with a local Apple Development cert instead of the Phosphor Developer ID cert.
+    # Useful for local debug builds when you don't have the Developer ID signing key.
     # Falls back to ad-hoc signing if no Apple Development cert is found.
     --selfsign)
       echo "Self-signing enabled."
@@ -428,6 +435,13 @@ fi
 # If we're building a universal bundle for the app artifact, make sure the additional target is available.
 if [[ $UNIVERSAL_BINARY = true ]]; then
     rustup target add "$ADDITIONAL_TARGET"
+fi
+
+# The Tracy `profiling` feature is for the manual build-*-profiling CI jobs only (#1169).
+# Never ship it: refuse here rather than discover it in a release.
+if [[ ",$FEATURES," == *",profiling,"* ]]; then
+  echo "ERROR: the 'profiling' cargo feature must never be part of a bundle (FEATURES=$FEATURES)" >&2
+  exit 1
 fi
 
 # If we only want to check that compilation will succeed, perform the checks
@@ -716,46 +730,49 @@ fi
 ## Step 2: Create code-signing keychain ##
 ##########################################
 
-if [[ $READ_PASSWORDS_FROM_ENV != true ]]; then
-  echo "Skipping code-signing because passwords are not available in environment."
-  CODESIGN=false
+# Developer ID signing needs every credential below. When any is missing we do NOT fail: the build falls back to
+# ad-hoc signing (`codesign -s -`), exactly like an unconfigured checkout. --nosign still skips signing entirely.
+if [[ $CODESIGN = true ]]; then
+  missing=()
+  [[ $READ_PASSWORDS_FROM_ENV = true ]] || missing+=("--read-passwords-from-env")
+  for v in PHOSPHOR_APPLE_TEAM_ID PHOSPHOR_APPLE_SIGNING_IDENTITY PHOSPHOR_DEVELOPER_ID_CERT \
+           PHOSPHOR_DEVELOPER_ID_CERT_PASSWORD PHOSPHOR_CODESIGN_KEYCHAIN_PASSWORD; do
+    [[ -n "${!v:-}" ]] || missing+=("$v")
+  done
+  if [[ -z "${PHOSPHOR_NOTARY_PROFILE:-}" && ( -z "${PHOSPHOR_NOTARIZATION_APPLE_ID:-}" || -z "${PHOSPHOR_NOTARIZATION_PASSWORD:-}" ) ]]; then
+    missing+=("PHOSPHOR_NOTARY_PROFILE or PHOSPHOR_NOTARIZATION_APPLE_ID+PHOSPHOR_NOTARIZATION_PASSWORD")
+  fi
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "No Developer ID signing configured (missing: ${missing[*]}); signing ad-hoc instead."
+    CODESIGN=false
+    SELFSIGN=true
+    FORCE_ADHOC=true
+  fi
 fi
 
 if [[ $CODESIGN = true ]]; then
-  # TODO - does this need to change per user?  Seems like it's tied to the WARP_NOTARIZATION_PASSWORD password.
-  APPLE_TEAM_ID="2BBY89MBSN"
-  CODESIGN_KEYCHAIN_NAME="warp-codesign-keychain"
+  APPLE_TEAM_ID="$PHOSPHOR_APPLE_TEAM_ID"
+  CODESIGN_KEYCHAIN_NAME="phosphor-codesign-keychain"
 
   echo "Starting codesigning..."
 
-  if [[ $READ_PASSWORDS_FROM_ENV = true ]]; then
-    if [ -z "$WARP_NOTARIZATION_PASSWORD" ] ; then
-      echo "WARP_NOTARIZATION_PASSWORD must be set for code signing"
-      exit 1
-    fi
-
-    if [ -z "$WARP_DEVELOPER_ID_CERT_PASSWORD" ] ; then
-      echo "WARP_DEVELOPER_ID_CERT_PASSWORD must be set for code signing"
-      exit 1
-    fi
-
-    if [ -z "$WARP_CODESIGN_KEYCHAIN_PASSWORD" ] ; then
-      echo "WARP_CODESIGN_KEYCHAIN_PASSWORD must be set for code signing"
-      exit 1
-    fi
-  fi
+  # The checked-in Entitlements.plist is not used verbatim: it must not claim an App Group (those are
+  # team-prefixed and need a provisioning profile; Warp's group belongs to Warp's team).
+  SIGN_ENTITLEMENTS="$(mktemp -t phosphor-entitlements).plist"
+  cp script/Entitlements.plist "$SIGN_ENTITLEMENTS"
+  plutil -remove com.apple.security.application-groups "$SIGN_ENTITLEMENTS" 2>/dev/null || true
 
   security delete-keychain $CODESIGN_KEYCHAIN_NAME || echo "No existing keychain to clean up".
 
   echo "Creating $CODESIGN_KEYCHAIN_NAME keychain."
-  security create-keychain -p "$WARP_CODESIGN_KEYCHAIN_PASSWORD" $CODESIGN_KEYCHAIN_NAME
+  security create-keychain -p "$PHOSPHOR_CODESIGN_KEYCHAIN_PASSWORD" $CODESIGN_KEYCHAIN_NAME
   security list-keychains -s $CODESIGN_KEYCHAIN_NAME
   security set-keychain-settings -t 3600 -u $CODESIGN_KEYCHAIN_NAME
 
   echo "Unlocking keychain and setting cert."
-  security unlock-keychain -p "$WARP_CODESIGN_KEYCHAIN_PASSWORD" $CODESIGN_KEYCHAIN_NAME
-  security import <(echo "$WARP_DEVELOPER_ID_CERT" | base64 -d) -f pkcs12 -P "$WARP_DEVELOPER_ID_CERT_PASSWORD" -k $CODESIGN_KEYCHAIN_NAME -T /usr/bin/codesign
-  security set-key-partition-list -S "apple-tool:,apple:" -s -k "$WARP_CODESIGN_KEYCHAIN_PASSWORD" $CODESIGN_KEYCHAIN_NAME
+  security unlock-keychain -p "$PHOSPHOR_CODESIGN_KEYCHAIN_PASSWORD" $CODESIGN_KEYCHAIN_NAME
+  security import <(echo "$PHOSPHOR_DEVELOPER_ID_CERT" | base64 -d) -f pkcs12 -P "$PHOSPHOR_DEVELOPER_ID_CERT_PASSWORD" -k $CODESIGN_KEYCHAIN_NAME -T /usr/bin/codesign
+  security set-key-partition-list -S "apple-tool:,apple:" -s -k "$PHOSPHOR_CODESIGN_KEYCHAIN_PASSWORD" $CODESIGN_KEYCHAIN_NAME
 fi
 
 ##############################
@@ -763,7 +780,11 @@ fi
 ##############################
 
 if [[ $SELFSIGN = true ]]; then
-  SIGNING_CERT="$(security find-identity -p codesigning -v | grep "Apple Development" | awk '{print $2}' | head -1)"
+  if [[ $FORCE_ADHOC = true ]]; then
+    SIGNING_CERT=""
+  else
+    SIGNING_CERT="$(security find-identity -p codesigning -v | grep "Apple Development" | awk '{print $2}' | head -1)"
+  fi
   if [[ -z "$SIGNING_CERT" ]]; then
     echo "No Apple Development cert found, falling back to ad-hoc signing."
     SIGNING_CERT="-"
@@ -781,10 +802,10 @@ elif [[ $CODESIGN = true ]]; then
   if [[ "$ARTIFACT" == app ]]; then
     echo "Codesigning $BUNDLE_DIR/$WARP_APP_NAME.app..."
     # Use --deep so we sign bundled frameworks as well
-    codesign_with_retry --deep -f -o runtime --timestamp -s "$APPLE_TEAM_ID" "$BUNDLE_DIR/$WARP_APP_NAME.app" --entitlements script/Entitlements.plist
+    codesign_with_retry --deep -f -o runtime --timestamp -s "$PHOSPHOR_APPLE_SIGNING_IDENTITY" "$BUNDLE_DIR/$WARP_APP_NAME.app" --entitlements "$SIGN_ENTITLEMENTS"
   elif [[ "$ARTIFACT" == cli ]]; then
     echo "Codesigning $OUT_DIR/$WARP_BIN..."
-    codesign_with_retry -f -o runtime --timestamp -s "$APPLE_TEAM_ID" "$OUT_DIR/$WARP_BIN" --entitlements script/Entitlements.plist
+    codesign_with_retry -f -o runtime --timestamp -s "$PHOSPHOR_APPLE_SIGNING_IDENTITY" "$OUT_DIR/$WARP_BIN" --entitlements "$SIGN_ENTITLEMENTS"
 
     # Create the .zip for notarization in a separate location - otherwise, Apple's codesigning
     # tools decide that it's a sealed resource that belongs to the binary and needs to also be signed.
@@ -872,7 +893,7 @@ if [[ "$ARTIFACT" = app ]]; then
     create_warp_dmg "$DMG_DIR"
 
     echo "Codesigning $DMG_DIR/$DMG_NAME..."
-    codesign_with_retry -f -s "$APPLE_TEAM_ID" --timestamp "$DMG_DIR/$DMG_NAME"
+    codesign_with_retry -f -s "$PHOSPHOR_APPLE_SIGNING_IDENTITY" --timestamp "$DMG_DIR/$DMG_NAME"
 
     NOTARIZATION_ARTIFACT="$DMG_DIR/$DMG_NAME"
     STAPLE_TICKET=true
@@ -893,7 +914,11 @@ fi
 
 if [[ $CODESIGN = true ]]; then
   echo "Uploading $NOTARIZATION_ARTIFACT to Apple for notarization..."
-  xcrun notarytool submit "$NOTARIZATION_ARTIFACT" --apple-id "$WARP_NOTARIZATION_APPLE_ID" --password "$WARP_NOTARIZATION_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+  if [[ -n "${PHOSPHOR_NOTARY_PROFILE:-}" ]]; then
+    xcrun notarytool submit "$NOTARIZATION_ARTIFACT" --keychain-profile "$PHOSPHOR_NOTARY_PROFILE" --wait
+  else
+    xcrun notarytool submit "$NOTARIZATION_ARTIFACT" --apple-id "$PHOSPHOR_NOTARIZATION_APPLE_ID" --password "$PHOSPHOR_NOTARIZATION_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+  fi
 
   if [[ $STAPLE_TICKET = true ]]; then
     echo "Attempting to staple the notarization ticket to $NOTARIZATION_ARTIFACT..."

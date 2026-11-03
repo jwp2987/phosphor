@@ -6,6 +6,7 @@
 mod background_task;
 mod work_queue;
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
@@ -79,6 +80,10 @@ pub enum FindTaskMessage {
         view_id: EntityId,
         total_index: TotalIndex,
     },
+    /// The initial block list the background task collected for a full scan
+    /// (#1320). Sent before any result for those blocks; the main thread records
+    /// each block's `TotalIndex` so results can be ordered.
+    BlocksCollected(Vec<BlockInfo>),
     /// The work queue has drained (current batch of work is complete).
     Done,
 }
@@ -315,9 +320,49 @@ pub(crate) struct BlockFindResults {
     terminal_total_indices: HashMap<BlockIndex, TotalIndex>,
     /// TotalIndex for each AI block that has been scanned.
     ai_total_indices: HashMap<EntityId, TotalIndex>,
+    /// Running count of visible matches (see [`Self::total_match_count`]), updated by every
+    /// mutation so reading it is O(1) instead of a pass over every stored match (#1327).
+    visible_count: Cell<usize>,
 }
 
+// Free functions so a caller holding a `&mut` into a match map can still adjust the count.
+fn count_add(count: &Cell<usize>, n: usize) {
+    count.set(count.get() + n);
+}
+
+fn count_sub(count: &Cell<usize>, n: usize) {
+    count.set(count.get().saturating_sub(n));
+}
+
+fn visible_in(matches: &[AbsoluteMatch]) -> usize {
+    matches.iter().filter(|m| !m.is_filtered).count()
+}
+
+/// Match count above which dropping stored results is handed to a background thread.
+const BACKGROUND_DROP_THRESHOLD: usize = 20_000;
+
 impl BlockFindResults {
+    /// Empties the results and drops the old storage off the calling (UI) thread when it is big.
+    /// Freeing a million-match scan is tens of milliseconds, paid on every keystroke of a new
+    /// query otherwise (#1327).
+    fn clear_off_thread(&mut self) -> bool {
+        let big = self.visible_count.get() > BACKGROUND_DROP_THRESHOLD;
+        let old = std::mem::take(self);
+        if !big {
+            drop(old);
+            return false;
+        }
+        {
+            // If the thread cannot start, the closure (and `old`) is dropped right here.
+            let _ = std::thread::Builder::new()
+                .name("find-drop".into())
+                .spawn(move || drop(old));
+        }
+        #[cfg(target_family = "wasm")]
+        drop(old);
+        true
+    }
+
     /// Returns the total number of *visible* matches across all blocks.
     ///
     /// Output matches hidden by an active block filter (`is_filtered`) are
@@ -325,6 +370,26 @@ impl BlockFindResults {
     /// treated as if they don't exist for search. Command and AI matches are
     /// never filtered.
     fn total_match_count(&self) -> usize {
+        // Tests edit the match maps directly, bypassing the running count, so they recount.
+        #[cfg(test)]
+        {
+            self.recount_visible()
+        }
+        #[cfg(not(test))]
+        {
+            self.visible_count.get()
+        }
+    }
+
+    /// The running visible-match count, which production reads via [`Self::total_match_count`].
+    #[cfg(test)]
+    pub(crate) fn running_visible_count(&self) -> usize {
+        self.visible_count.get()
+    }
+
+    /// Counts visible matches by scanning every stored match; the ground truth for
+    /// `visible_count`.
+    pub(crate) fn recount_visible(&self) -> usize {
         let terminal_count: usize = self
             .terminal_matches
             .values()
@@ -334,12 +399,21 @@ impl BlockFindResults {
         terminal_count + ai_count
     }
 
+    fn count_add(&self, n: usize) {
+        count_add(&self.visible_count, n);
+    }
+
+    fn count_sub(&self, n: usize) {
+        count_sub(&self.visible_count, n);
+    }
+
     /// Clears all results.
     fn clear(&mut self) {
         self.terminal_matches.clear();
         self.ai_matches.clear();
         self.terminal_total_indices.clear();
         self.ai_total_indices.clear();
+        self.visible_count.set(0);
     }
 
     /// Removes all results for a specific block index.
@@ -351,6 +425,13 @@ impl BlockFindResults {
             .terminal_matches
             .iter()
             .any(|((idx, _), matches)| *idx == block_index && !matches.is_empty());
+        let removed_visible: usize = self
+            .terminal_matches
+            .iter()
+            .filter(|((idx, _), _)| *idx == block_index)
+            .map(|(_, matches)| visible_in(matches))
+            .sum();
+        self.count_sub(removed_visible);
         self.terminal_matches
             .retain(|(idx, _), _| *idx != block_index);
         self.terminal_total_indices.remove(&block_index);
@@ -380,11 +461,13 @@ impl BlockFindResults {
             .terminal_matches
             .entry((block_index, grid_type))
             .or_default();
+        let new_visible = visible_in(&new_matches);
 
         // If there are no current matches, just insert the new ones.
         if matches.is_empty() {
             let changed = !new_matches.is_empty();
             *matches = new_matches;
+            count_add(&self.visible_count, new_visible);
             return changed;
         }
 
@@ -397,6 +480,7 @@ impl BlockFindResults {
                 return false;
             }
             matches.splice(0..0, new_matches);
+            count_add(&self.visible_count, new_visible);
             return true;
         }
 
@@ -409,21 +493,20 @@ impl BlockFindResults {
                 return false;
             }
             matches.extend(new_matches);
+            count_add(&self.visible_count, new_visible);
             return true;
         }
 
         // Find the range of matches that overlap with the dirty range.
         // A match overlaps if: match.start <= dirty.end AND match.end >= dirty.start
-        let replace_start = matches
-            .iter()
-            .position(|m| m.end_row() >= *dirty_range.start())
-            .unwrap_or(matches.len());
+        // Matches are sorted and do not overlap, so both predicates are monotone and binary
+        // search finds the same positions as a linear scan without touching every match.
+        let replace_start = matches.partition_point(|m| m.end_row() < *dirty_range.start());
 
-        let replace_end = matches
-            .iter()
-            .rposition(|m| m.start_row() <= *dirty_range.end())
-            .map(|pos| pos + 1)
-            .unwrap_or(replace_start);
+        let replace_end = match matches.partition_point(|m| m.start_row() <= *dirty_range.end()) {
+            0 => replace_start,
+            end => end,
+        };
 
         let replace_range = if replace_start <= replace_end {
             replace_start..replace_end
@@ -437,7 +520,10 @@ impl BlockFindResults {
             return false;
         }
 
+        let old_visible = visible_in(&matches[replace_range.clone()]);
         matches.splice(replace_range, new_matches);
+        count_sub(&self.visible_count, old_visible);
+        count_add(&self.visible_count, new_visible);
 
         // Assert that matches are still in ascending order.
         debug_assert!(
@@ -784,11 +870,6 @@ impl AsyncFindController {
         self.rich_content_views.insert(view_id, handle);
     }
 
-    /// Unregisters a rich content view.
-    pub(crate) fn unregister_rich_content_view(&mut self, view_id: EntityId) {
-        self.rich_content_views.remove(&view_id);
-    }
-
     /// Starts a new find operation with the given options.
     ///
     /// If a find operation is already in progress, it will be cancelled first.
@@ -825,54 +906,16 @@ impl AsyncFindController {
 
         self.current_config = Some(config.clone());
         self.block_sort_direction = block_sort_direction;
-        self.block_results.clear();
+        self.block_results.clear_off_thread();
         self.focused_match_index = None;
         self.cached_focused_match = None;
         self.current_find_options = Some(options.clone());
         self.status = AsyncFindStatus::Scanning;
 
-        // Build the work queue from the current block list.
+        // The work queue is filled by the background task itself: collecting the block list
+        // walks every block, which must not happen on the UI thread (#1320).
         let queue = FindWorkQueue::new();
-        let block_info = {
-            let mut model = self.terminal_model.lock();
-            let info = collect_block_info(model.block_list(), &config);
-            // Clear stale dirty ranges on the active block, since the full scan
-            // covers all of its current content. Without this, the first
-            // incremental update could redundantly re-scan already-covered rows.
-            if let Some(output_grid) = model
-                .block_list_mut()
-                .active_block_mut()
-                .grid_of_type_mut(GridType::Output)
-            {
-                output_grid.grid_handler_mut().take_find_dirty_rows_range();
-            }
-            info
-        };
-        queue.enqueue_full_scan(&block_info);
         self.work_queue = Some(queue.clone());
-
-        // Populate TotalIndex maps from the block info so that
-        // compute_focused_terminal_match can order results correctly.
-        for info in &block_info {
-            match info {
-                BlockInfo::Terminal {
-                    block_index,
-                    total_index,
-                } => {
-                    self.block_results
-                        .terminal_total_indices
-                        .insert(*block_index, *total_index);
-                }
-                BlockInfo::RichContent {
-                    view_id,
-                    total_index,
-                } => {
-                    self.block_results
-                        .ai_total_indices
-                        .insert(*view_id, *total_index);
-                }
-            }
-        }
 
         // Create result channel and spawn streams.
         let (result_tx, result_rx) = async_channel::unbounded();
@@ -885,6 +928,7 @@ impl AsyncFindController {
             self.terminal_model.clone(),
             queue,
             result_tx,
+            true,
             ctx,
         ));
     }
@@ -930,11 +974,17 @@ impl AsyncFindController {
                             .insert(block_index, total_index);
                     }
 
-                    self.block_results
+                    let stored = self
+                        .block_results
                         .terminal_matches
                         .entry((block_index, grid_type))
-                        .or_default()
-                        .extend(matches);
+                        .or_default();
+                    // Only the appended tail is new: re-flagging every earlier match on each
+                    // chunk made a many-match scan quadratic on the UI thread (#1327).
+                    let first_new = stored.len();
+                    let added_visible = visible_in(&matches);
+                    stored.extend(matches);
+                    self.block_results.count_add(added_visible);
 
                     // Auto-select the first match when results first arrive.
                     if self.focused_match_index.is_none() {
@@ -944,7 +994,7 @@ impl AsyncFindController {
                     // Mark any of the newly-arrived output matches that fall in
                     // filter-hidden rows so they're excluded from the count,
                     // focus, and highlights (also re-clamps focus).
-                    self.recompute_filtered_for_block(block_index);
+                    self.recompute_filtered_for_block_from(block_index, first_new);
                     true
                 }
             }
@@ -993,7 +1043,14 @@ impl AsyncFindController {
                         view_id
                     );
                     if !match_ids.is_empty() {
-                        self.block_results.ai_matches.insert(view_id, match_ids);
+                        let new_len = match_ids.len();
+                        let old_len = self
+                            .block_results
+                            .ai_matches
+                            .insert(view_id, match_ids)
+                            .map_or(0, |old| old.len());
+                        self.block_results.count_sub(old_len);
+                        self.block_results.count_add(new_len);
                         self.block_results
                             .ai_total_indices
                             .insert(view_id, total_index);
@@ -1002,6 +1059,31 @@ impl AsyncFindController {
                     }
                 }
                 changed
+            }
+            FindTaskMessage::BlocksCollected(block_info) => {
+                for info in &block_info {
+                    match info {
+                        BlockInfo::Terminal {
+                            block_index,
+                            total_index,
+                        } => {
+                            self.block_results
+                                .terminal_total_indices
+                                .entry(*block_index)
+                                .or_insert(*total_index);
+                        }
+                        BlockInfo::RichContent {
+                            view_id,
+                            total_index,
+                        } => {
+                            self.block_results
+                                .ai_total_indices
+                                .entry(*view_id)
+                                .or_insert(*total_index);
+                        }
+                    }
+                }
+                false
             }
             FindTaskMessage::Done => {
                 let changed = self.status != AsyncFindStatus::Complete;
@@ -1044,7 +1126,7 @@ impl AsyncFindController {
     pub fn clear_results(&mut self, ctx: &mut ModelContext<TerminalFindModel>) {
         self.cancel_current_find();
         self.current_config = None;
-        self.block_results.clear();
+        self.block_results.clear_off_thread();
         self.focused_match_index = None;
         self.cached_focused_match = None;
         self.status = AsyncFindStatus::Idle;
@@ -1132,11 +1214,6 @@ impl AsyncFindController {
             .get(&(block_index, grid_type))
     }
 
-    /// Returns matches for a specific AI block.
-    pub fn matches_for_ai_block(&self, view_id: EntityId) -> Option<&Vec<RichContentMatchId>> {
-        self.block_results.ai_matches.get(&view_id)
-    }
-
     /// Prunes truncated matches for a specific block and grid type.
     ///
     /// This removes matches whose start row has been truncated from scrollback,
@@ -1170,9 +1247,16 @@ impl AsyncFindController {
         else {
             return false;
         };
-        let len_before = matches.len();
-        matches.retain(|m| !m.is_truncated(num_lines_truncated));
-        matches.len() != len_before
+        // Matches are sorted and do not overlap, so the truncated ones are a prefix: find it by
+        // binary search instead of re-counting every stored match (#1327).
+        let truncated = matches.partition_point(|m| m.is_truncated(num_lines_truncated));
+        if truncated == 0 {
+            return false;
+        }
+        let removed_visible = visible_in(&matches[..truncated]);
+        matches.drain(..truncated);
+        count_sub(&self.block_results.visible_count, removed_visible);
+        true
     }
 
     /// Recomputes `is_filtered` for the Output-grid matches of `block_index`,
@@ -1187,6 +1271,11 @@ impl AsyncFindController {
     /// Returns `true` if any match's filtered flag flipped or the focused match
     /// index moved as a result.
     pub(crate) fn recompute_filtered_for_block(&mut self, block_index: BlockIndex) -> bool {
+        self.recompute_filtered_for_block_from(block_index, 0)
+    }
+
+    /// [`Self::recompute_filtered_for_block`] for the Output matches from index `first` on.
+    fn recompute_filtered_for_block_from(&mut self, block_index: BlockIndex, first: usize) -> bool {
         let mut flags_changed = false;
         {
             let model = self.terminal_model.lock();
@@ -1200,7 +1289,7 @@ impl AsyncFindController {
                 .terminal_matches
                 .get_mut(&(block_index, GridType::Output))
             {
-                for absolute_match in matches.iter_mut() {
+                for absolute_match in matches.iter_mut().skip(first) {
                     // Convert the absolute row back to the grid's *original*
                     // (unfiltered) row index and check whether that row is
                     // currently displayed. We intentionally do NOT use
@@ -1215,7 +1304,14 @@ impl AsyncFindController {
                             // Truncated from scrollback — treat as hidden/gone.
                             None => true,
                         };
-                    flags_changed |= absolute_match.is_filtered != is_filtered;
+                    if absolute_match.is_filtered != is_filtered {
+                        flags_changed = true;
+                        if is_filtered {
+                            count_sub(&self.block_results.visible_count, 1);
+                        } else {
+                            count_add(&self.block_results.visible_count, 1);
+                        }
+                    }
                     absolute_match.is_filtered = is_filtered;
                 }
             }
@@ -1267,51 +1363,16 @@ impl AsyncFindController {
 
         self.current_config = Some(config.clone());
         self.block_sort_direction = block_sort_direction;
-        self.block_results.clear();
+        self.block_results.clear_off_thread();
         self.focused_match_index = None;
         self.cached_focused_match = None;
         self.current_find_options = Some(options.clone());
         self.status = AsyncFindStatus::Scanning;
 
-        // Build the work queue from the current block list.
+        // The work queue is filled by the background task itself: collecting the block list
+        // walks every block, which must not happen on the UI thread (#1320).
         let queue = FindWorkQueue::new();
-        let block_info = {
-            let mut model = self.terminal_model.lock();
-            let info = collect_block_info(model.block_list(), &config);
-            // Clear stale dirty ranges (same rationale as in start_find).
-            if let Some(output_grid) = model
-                .block_list_mut()
-                .active_block_mut()
-                .grid_of_type_mut(GridType::Output)
-            {
-                output_grid.grid_handler_mut().take_find_dirty_rows_range();
-            }
-            info
-        };
-        queue.enqueue_full_scan(&block_info);
         self.work_queue = Some(queue.clone());
-
-        // Populate TotalIndex maps from the block info.
-        for info in &block_info {
-            match info {
-                BlockInfo::Terminal {
-                    block_index,
-                    total_index,
-                } => {
-                    self.block_results
-                        .terminal_total_indices
-                        .insert(*block_index, *total_index);
-                }
-                BlockInfo::RichContent {
-                    view_id,
-                    total_index,
-                } => {
-                    self.block_results
-                        .ai_total_indices
-                        .insert(*view_id, *total_index);
-                }
-            }
-        }
 
         // Create result channel and spawn streams.
         let (result_tx, result_rx) = async_channel::unbounded();
@@ -1324,6 +1385,7 @@ impl AsyncFindController {
             self.terminal_model.clone(),
             queue,
             result_tx,
+            true,
             ctx,
         ));
     }
@@ -1399,6 +1461,26 @@ impl AsyncFindController {
 /// An empty old_query is not considered a valid refinement base.
 fn is_query_refinement(old_query: &str, new_query: &str) -> bool {
     !old_query.is_empty() && new_query.starts_with(old_query) && new_query.len() > old_query.len()
+}
+
+/// Collects the blocks for a full scan and clears the active block's stale find dirty ranges,
+/// both under the caller's single hold of the model lock. Runs on the find background task
+/// (#1320): the O(blocks) walk must not happen on the UI thread.
+pub(crate) fn collect_block_info_for_full_scan(
+    model: &mut crate::terminal::model::TerminalModel,
+    config: &AsyncFindConfig,
+) -> Vec<BlockInfo> {
+    let info = collect_block_info(model.block_list(), config);
+    // The full scan covers all of the active block's current content, so the first
+    // incremental update must not redundantly re-scan already-covered rows.
+    if let Some(output_grid) = model
+        .block_list_mut()
+        .active_block_mut()
+        .grid_of_type_mut(GridType::Output)
+    {
+        output_grid.grid_handler_mut().take_find_dirty_rows_range();
+    }
+    info
 }
 
 /// Collects information about blocks to search.

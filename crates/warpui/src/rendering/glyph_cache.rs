@@ -8,9 +8,52 @@ use pathfinder_geometry::{
     rect::RectF,
     vector::{Vector2F, Vector2I},
 };
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+use std::time::{Duration, Instant};
 
 const ATLAS_SIZE: usize = 1024;
+
+/// Default time a single frame may spend rasterising new glyphs before the rest wait for the next
+/// frame (#1168 F6). Generous: a key's glyphs are cached or tiny, so only a first-seen screen of
+/// emoji / CJK ever reaches it.
+const DEFAULT_RASTER_BUDGET: Duration = Duration::from_millis(8);
+
+/// Environment variable overriding the per-frame rasterisation budget in milliseconds. `0`
+/// turns the cap off (the kill switch): every missing glyph is rasterised in the frame that
+/// needs it, as before.
+const RASTER_BUDGET_ENV: &str = "PHOSPHOR_GLYPH_RASTER_BUDGET_MS";
+
+thread_local! {
+    /// Set when the render in progress left glyphs unrasterised; the window layer takes it after
+    /// drawing and asks for another frame (see [`take_deferred_redraw`]). Rendering is
+    /// single-threaded per frame, so the flag is scoped to ONE window's render call: it is
+    /// cleared by [`begin_window_render`] before the draw and taken right after it, so an early
+    /// return (a failed draw) cannot leave it set for whichever window renders next (#1379).
+    static DEFERRED_REDRAW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Starts one window's render: forgets any deferral flag a previous render left behind.
+pub(crate) fn begin_window_render() {
+    DEFERRED_REDRAW.with(|flag| flag.set(false));
+}
+
+/// Whether the render since [`begin_window_render`] deferred glyph rasterisation, clearing the
+/// flag. The caller requests another frame (keeping the scene) when this is true.
+pub(crate) fn take_deferred_redraw() -> bool {
+    DEFERRED_REDRAW.with(|flag| flag.replace(false))
+}
+
+fn raster_budget_from_env() -> Option<Duration> {
+    static BUDGET: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| match std::env::var(RASTER_BUDGET_ENV) {
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(ms) => Some(Duration::from_millis(ms)),
+            Err(_) => Some(DEFAULT_RASTER_BUDGET),
+        },
+        Err(_) => Some(DEFAULT_RASTER_BUDGET),
+    })
+}
 
 /// Callback to create a texture at a given size.
 type CreateTextureCallback<'a, T> = dyn Fn(usize) -> T + 'a;
@@ -36,9 +79,18 @@ pub(crate) type RasterizeGlyphFn<'a> = dyn Fn(
 /// A cache that caches glyphs in a texture atlas.  
 pub struct GlyphCache<Texture> {
     textures: Vec<Texture>,
-    cache: HashMap<GlyphCacheKey, GlyphTextureOffset>,
+    /// `None` records a glyph with nothing to draw (zero-size raster bounds, e.g. a blank glyph
+    /// such as a no-break space) so it is not re-measured on every frame.
+    cache: FxHashMap<GlyphCacheKey, Option<GlyphTextureOffset>>,
     glyph_config: rendering::GlyphConfig,
     atlas_manager: atlas::Manager,
+    /// Time one frame may spend rasterising new glyphs; `None` = unlimited.
+    raster_budget: Option<Duration>,
+    /// Rasterisation time spent and glyphs rasterised in the current frame.
+    frame_raster_time: Duration,
+    frame_rasterized: u32,
+    /// A glyph was left for a later frame in the current frame.
+    deferred: bool,
 }
 
 #[derive(Hash, PartialEq, Eq)]
@@ -71,10 +123,37 @@ impl<Texture> GlyphCache<Texture> {
     pub(crate) fn new(glyph_config: rendering::GlyphConfig) -> Self {
         GlyphCache {
             textures: Vec::new(),
-            cache: HashMap::new(),
+            cache: FxHashMap::default(),
             glyph_config,
             atlas_manager: atlas::Manager::new(ATLAS_SIZE),
+            raster_budget: raster_budget_from_env(),
+            frame_raster_time: Duration::ZERO,
+            frame_rasterized: 0,
+            deferred: false,
         }
+    }
+
+    /// Starts a new frame's rasterisation budget. Called once per frame by the renderers (via
+    /// [`Self::update_config`]).
+    fn begin_frame(&mut self) {
+        self.frame_raster_time = Duration::ZERO;
+        self.frame_rasterized = 0;
+        self.deferred = false;
+    }
+
+    /// Whether the current frame left glyphs to be rasterised in a later one.
+    #[cfg(test)]
+    pub(crate) fn has_deferred(&self) -> bool {
+        self.deferred
+    }
+
+    /// Whether this frame has used up its rasterisation budget. At least one glyph is always
+    /// rasterised per frame so a backlog keeps shrinking and nothing stays blank for good.
+    fn over_budget(&self) -> bool {
+        self.frame_rasterized > 0
+            && self
+                .raster_budget
+                .is_some_and(|budget| self.frame_raster_time >= budget)
     }
 
     pub(crate) fn update_config(&mut self, glyph_config: &rendering::GlyphConfig) {
@@ -83,6 +162,7 @@ impl<Texture> GlyphCache<Texture> {
         if *glyph_config != self.glyph_config {
             *self = GlyphCache::new(*glyph_config);
         }
+        self.begin_frame();
     }
 
     /// Returns the texture identified by [`TextureId`].
@@ -110,10 +190,19 @@ impl<Texture> GlyphCache<Texture> {
 
         match self.cache.get(&cache_key) {
             None => {
+                if self.over_budget() {
+                    // Not cached, so the next frame retries it; the caller is told to draw
+                    // again and the glyph is simply absent from this frame.
+                    self.deferred = true;
+                    DEFERRED_REDRAW.with(|flag| flag.set(true));
+                    return Ok(None);
+                }
+                let started = Instant::now();
                 let bounds =
                     raster_bounds_fn(glyph_key, Vector2F::splat(scale_factor), &self.glyph_config)?;
 
                 if bounds.size() == Vector2I::zero() {
+                    self.cache.insert(cache_key, None);
                     return Ok(None);
                 }
 
@@ -141,10 +230,16 @@ impl<Texture> GlyphCache<Texture> {
                     allocated_region: texture_offset.allocated_region,
                 };
 
-                self.cache.insert(cache_key, glyph_texture_offset);
+                self.frame_raster_time += started.elapsed();
+                self.frame_rasterized += 1;
+                self.cache.insert(cache_key, Some(glyph_texture_offset));
                 Ok(Some(glyph_texture_offset))
             }
-            Some(gto) => Ok(Some(*gto)),
+            Some(gto) => Ok(*gto),
         }
     }
 }
+
+#[cfg(test)]
+#[path = "glyph_cache_tests.rs"]
+mod tests;

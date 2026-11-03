@@ -199,7 +199,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_restore_snapshot_with_background_output);
     register_test!(test_restore_snapshot_with_notebooks);
     register_test!(test_restore_snapshot_with_workflows);
-    register_test!(test_restore_snapshot_with_test_json_object);
     register_test!(test_restore_snapshot_with_common_shareable_metadata_ids);
     register_test!(test_restore_snapshot_with_markdown_file);
     register_test!(test_restore_snapshot_with_code_file);
@@ -275,6 +274,8 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_ssh_into_sh);
     register_test!(test_ssh_into_ash);
     register_test!(test_ssh_with_shell_override);
+    register_test!(test_ssh_remote_bash_bootstrapped_hook);
+    register_test!(test_ssh_typeahead_during_connect_runs_remotely_once);
     register_test!(test_custom_open_completions_menu_binding);
     register_test!(test_color_overrides_in_prompt_dont_crash);
     register_test!(test_copy_prompt_from_block_honor_ps1_disabled);
@@ -326,7 +327,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
 
     register_test!(test_can_auto_bootstrap);
 
-    register_test!(test_ask_warp_ai_keybinding_for_selected_block);
     register_test!(test_tab_behavior_setting);
 
     register_test!(test_private_public_settings_routing_with_flag_enabled);

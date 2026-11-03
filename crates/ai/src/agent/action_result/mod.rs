@@ -176,6 +176,10 @@ pub enum RequestCommandOutputResult {
         start_ts: Option<DateTime<Local>>,
         /// When the command finished, taken from the block's `completed_ts`.
         completed_ts: Option<DateTime<Local>>,
+        /// Whether the user or Phosphor interrupted the command (a ^C was written to it).
+        /// Only then does exit code 130 count as a cancellation; a command that exits 130 by
+        /// itself is an ordinary result the agent must continue from (#1178).
+        interrupted: bool,
     },
     LongRunningCommandSnapshot {
         block_id: BlockId,
@@ -185,7 +189,7 @@ pub enum RequestCommandOutputResult {
         is_alt_screen_active: bool,
     },
     /// A running command canceled via ctrl-c
-    /// would have Completed result with exit code 130.
+    /// would have Completed result with exit code 130 and `interrupted` set.
     CancelledBeforeExecution,
     /// The command was denied because it was present on the denylist.
     Denylisted { command: String },
@@ -771,7 +775,9 @@ impl AIAgentActionResultType {
                 true
             }
             Self::RequestCommandOutput(RequestCommandOutputResult::Completed {
-                exit_code, ..
+                exit_code,
+                interrupted: true,
+                ..
             }) if exit_code.value() == 130 => true,
             Self::RequestFileEdits(RequestFileEditsResult::Cancelled)
             | Self::ReadFiles(ReadFilesResult::Cancelled)
@@ -805,7 +811,7 @@ impl AIAgentActionResultType {
 
     pub fn is_cancelled_during_requested_command_execution(&self) -> bool {
         matches!(self, Self::RequestCommandOutput(RequestCommandOutputResult::Completed {
-            exit_code, ..
+            exit_code, interrupted: true, ..
         }) if exit_code.value() == 130)
     }
 
@@ -820,24 +826,6 @@ impl AIAgentActionResultType {
 
     pub fn is_call_mcp_tool(&self) -> bool {
         matches!(self, AIAgentActionResultType::CallMCPTool(_))
-    }
-
-    /// Returns `true` if this result will cause the server to route the next
-    /// turn to a subagent (e.g. the CLI subagent) rather than the orchestrator.
-    /// LRC snapshot variants are the current indicators of this.
-    pub fn triggers_server_subagent(&self) -> bool {
-        matches!(
-            self,
-            Self::RequestCommandOutput(
-                RequestCommandOutputResult::LongRunningCommandSnapshot { .. }
-            ) | Self::WriteToLongRunningShellCommand(
-                WriteToLongRunningShellCommandResult::Snapshot { .. }
-            ) | Self::ReadShellCommandOutput(
-                ReadShellCommandOutputResult::LongRunningCommandSnapshot { .. }
-            ) | Self::TransferShellCommandControlToUser(
-                TransferShellCommandControlToUserResult::Snapshot { .. }
-            )
-        )
     }
 }
 
@@ -1238,3 +1226,7 @@ impl Display for SendMessageToAgentResult {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

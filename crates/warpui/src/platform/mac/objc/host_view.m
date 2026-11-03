@@ -1,6 +1,10 @@
 #import "host_view.h"
 
 #import <Metal/Metal.h>
+#import <os/signpost.h>
+#import <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
 
 void warp_view_did_change_backing_properties(WarpHostView *, BOOL);
 void warp_view_set_frame_size(WarpHostView *, NSSize, BOOL);
@@ -16,6 +20,78 @@ NSRect warp_ime_position(WarpHostView *, NSRect *);
 id warp_get_accessibility_contents(WarpHostView *);
 void warp_marked_text_updated(WarpHostView *, NSString *, NSRange);
 void warp_marked_text_cleared(WarpHostView *);
+void warp_frame_presented(uint64_t, uint64_t, BOOL);
+
+// Draw-latency instrumentation (#1148). Intervals/events show up in Instruments under
+// "Points of Interest": keyDown -> displayLayer -> nextDrawable -> presented.
+static os_log_t warpDrawLog(void) {
+    static os_log_t log;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+      log = os_log_create("dev.phosphor.draw", "PointsOfInterest");
+    });
+    return log;
+}
+
+// Same clock as MTLDrawable.presentedTime (mach absolute time, in seconds), as nanoseconds.
+static uint64_t warpNowNs(void) {
+    return (uint64_t)(CACurrentMediaTime() * 1e9);
+}
+
+// Time of the earliest key press that has not yet been attached to a frame (0 = none). Written on
+// the main thread; a stale value (no frame followed the key) is overwritten after 500 ms.
+static _Atomic uint64_t warpPendingKeyNs = 0;
+
+// Cause tag for the next frame: set by a key press (any key, Return included), consumed by the
+// first `displayLayer:` after it. A frame invalidated by key input presents with display sync off;
+// every other frame (idle output, command output, scrolling, the debounced follow-up frame) keeps
+// vsync. The cause travels with the frame, so no wall-clock "recently typed" window decides
+// anything (#1379; it replaced the 150 ms / 25 ms windows of #1298). If a key produces no frame
+// the tag stays set until the next frame, which then presents unsynced once: harmless and bounded.
+// Main thread only; atomic just to match the other statics.
+static _Atomic BOOL warpNextFrameFromKey = NO;
+
+// While the user is typing, present without waiting for vsync (`CAMetalLayer.displaySyncEnabled =
+// NO`), so the frame carrying a keystroke is not held to the next refresh; idle output and
+// command output and scrolling after Return keep vsync (Return's own frame is unsynced, the output
+// frames that follow are not), so only small in-place text edits are ever presented unsynced.
+// Measured on an M1 Pro ProMotion display (#1298/#1160): key ->
+// first on-screen change 45.5 ms median with vsync, 30.6 ms without (Terminal.app: 38.1 ms), because
+// the panel idles at a low refresh rate and a synced present waits for its next tick (and the
+// following frame then blocks the main thread in nextDrawable for 8-27 ms). On by default;
+// PHOSPHOR_MAC_DISPLAY_SYNC_OFF_WHILE_TYPING=0 restores vsync always.
+static BOOL warpDisplaySyncOffWhileTyping(void) {
+    static dispatch_once_t once;
+    static BOOL enabled = YES;
+    dispatch_once(&once, ^{
+      const char *value = getenv("PHOSPHOR_MAC_DISPLAY_SYNC_OFF_WHILE_TYPING");
+      enabled = value == NULL || strcmp(value, "0") != 0;
+    });
+    return enabled;
+}
+
+// Called on the main thread, after nextDrawable and before the drawable is presented. Attaches the
+// pending key press (if any) to this frame and reports key -> presented latency from the
+// drawable's presented handler. `waitNs` is how long nextDrawable blocked.
+void warp_frame_track_drawable(id<MTLDrawable> drawable, uint64_t waitNs) {
+    uint64_t keyNs = atomic_exchange(&warpPendingKeyNs, 0);
+    os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "nextDrawable", "wait_us=%llu",
+                           waitNs / 1000);
+    if (@available(macOS 10.15.4, *)) {
+        if ([drawable respondsToSelector:@selector(addPresentedHandler:)]) {
+            [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
+              CFTimeInterval presentedTime = presented.presentedTime;
+              uint64_t presentedNs = (uint64_t)(presentedTime * 1e9);
+              BOOL wasPresented = presentedTime > 0;
+              uint64_t keyToPresentedNs =
+                  (wasPresented && keyNs > 0 && presentedNs > keyNs) ? presentedNs - keyNs : 0;
+              os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "presented",
+                                     "key_to_presented_us=%llu", keyToPresentedNs / 1000);
+              warp_frame_presented(keyToPresentedNs, waitNs, wasPresented);
+            }];
+        }
+    }
+}
 
 @implementation NSPasteboard (Warp)
 
@@ -63,6 +139,13 @@ void warp_marked_text_cleared(WarpHostView *);
     // new in-progress text) in the same keystroke. Without this, the trailing
     // unmarkText in keyDownImpl would clobber that new marked text.
     BOOL imeTouchedMarkedTextDuringInterpret;
+
+    // The key-down that WarpWindow's performKeyEquivalent: already ran through keyDownImpl
+    // without Warp handling it (so AppKit will deliver it again via keyDown:). Identified by
+    // timestamp + keyCode; cleared once the redelivery is skipped. See skipRedeliveryOf:.
+    BOOL hasPreDeliveredKeyDown;
+    NSTimeInterval preDeliveredTimestamp;
+    unsigned short preDeliveredKeyCode;
 }
 
 - (BOOL)acceptsFirstResponder {
@@ -146,7 +229,17 @@ void warp_marked_text_cleared(WarpHostView *);
 
 - (void)displayLayer:(CALayer *)layer {
     if (!testMode && self.readyForWarp) {
+        if (warpDisplaySyncOffWhileTyping() && [layer isKindOfClass:[CAMetalLayer class]]) {
+            CAMetalLayer *metalLayer = (CAMetalLayer *)layer;
+            // This frame's cause: consumed here so it applies to this frame only.
+            BOOL typing = atomic_exchange(&warpNextFrameFromKey, NO);
+            if (metalLayer.displaySyncEnabled == typing) {
+                metalLayer.displaySyncEnabled = !typing;
+            }
+        }
+        os_signpost_interval_begin(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "displayLayer");
         warp_update_layer(self);
+        os_signpost_interval_end(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "displayLayer");
     }
 }
 
@@ -159,11 +252,49 @@ void warp_marked_text_cleared(WarpHostView *);
 }
 
 - (void)keyDown:(NSEvent *)event {
+    WARP_LOG_ENTER(event, "key_down",
+                   @"keycode=%u ts=%.9f key_window=%d has_pre_delivered=%d pre_ts=%.9f pre_keycode=%u",
+                   (unsigned)[event keyCode], (double)[event timestamp],
+                   (int)[[self window] isKeyWindow], (int)hasPreDeliveredKeyDown,
+                   (double)preDeliveredTimestamp, (unsigned)preDeliveredKeyCode);
+    // performKeyEquivalent: may already have delivered this exact event via keyDownImpl (text
+    // inserted, KeyDown dispatched) and then returned NO, making AppKit call keyDown: for it.
+    // Delivering it again would type the character twice.
+    if (hasPreDeliveredKeyDown) {
+        hasPreDeliveredKeyDown = NO;
+        if ([event timestamp] == preDeliveredTimestamp && [event keyCode] == preDeliveredKeyCode) {
+            WARP_LOG_ENTER(event, "key_down_skipped_as_redelivery",
+                           @"keycode=%u ts=%.9f pre_ts=%.9f pre_keycode=%u",
+                           (unsigned)[event keyCode], (double)[event timestamp],
+                           (double)preDeliveredTimestamp, (unsigned)preDeliveredKeyCode);
+            return;
+        }
+    }
     [self keyDownImpl:event];
 }
 
+- (void)skipRedeliveryOf:(NSEvent *)event {
+    hasPreDeliveredKeyDown = YES;
+    preDeliveredTimestamp = [event timestamp];
+    preDeliveredKeyCode = [event keyCode];
+}
+
 - (BOOL)keyDownImpl:(NSEvent *)event {
+    uint64_t keyNowNs = warpNowNs();
+    // Tag the frame this key invalidates (see `warpNextFrameFromKey`). Return starts command
+    // output that scrolls: only its own frame is tagged, the output frames after it are not.
+    atomic_store(&warpNextFrameFromKey, YES);
+    uint64_t pendingKeyNs = atomic_load(&warpPendingKeyNs);
+    if (pendingKeyNs == 0 || keyNowNs - pendingKeyNs > 500000000ull) {
+        atomic_store(&warpPendingKeyNs, keyNowNs);
+    }
+    os_signpost_event_emit(warpDrawLog(), OS_SIGNPOST_ID_EXCLUSIVE, "keyDown");
+
     BOOL wasComposing = [self hasMarkedText];
+    WARP_LOG_ENTER(event, "key_down_impl_entry",
+                   @"keycode=%u ts=%.9f key_window=%d was_composing=%d ready_for_warp=%d",
+                   (unsigned)[event keyCode], (double)[event timestamp],
+                   (int)[[self window] isKeyWindow], (int)wasComposing, (int)self.readyForWarp);
     [textToInsert setString:@""];
     imeTouchedMarkedTextDuringInterpret = NO;
 
@@ -173,10 +304,18 @@ void warp_marked_text_cleared(WarpHostView *);
     [self interpretKeyEvents:[NSArray arrayWithObject:event]];
     interpretingKeyEvents = NO;
 
+    WARP_LOG_ENTER(event, "after_interpret_key_events",
+                   @"keycode=%u ts=%.9f has_marked_text=%d text_to_insert_len=%lu",
+                   (unsigned)[event keyCode], (double)[event timestamp], (int)[self hasMarkedText],
+                   (unsigned long)[textToInsert length]);
+
     BOOL handled = NO;
     if (self.readyForWarp) {
         handled = warp_handle_view_event(self, event, wasComposing || [self hasMarkedText]);
     }
+    WARP_LOG_ENTER(event, "after_handle_view_event", @"keycode=%u ts=%.9f handled=%d composing=%d",
+                   (unsigned)[event keyCode], (double)[event timestamp], (int)handled,
+                   (int)(wasComposing || [self hasMarkedText]));
 
     // It's possible to have keybinding conflicts between terminal apps which use the meta key and
     // MacOS "dead keys". Dead keys are used to add diacritical marks to other characters, and they
@@ -205,6 +344,10 @@ void warp_marked_text_cleared(WarpHostView *);
         }
     }
 
+    WARP_LOG_ENTER(event, "key_down_impl_exit",
+                   @"keycode=%u ts=%.9f handled=%d text_to_insert_len=%lu has_marked_text=%d",
+                   (unsigned)[event keyCode], (double)[event timestamp], (int)handled,
+                   (unsigned long)[textToInsert length], (int)[self hasMarkedText]);
     return handled;
 }
 
@@ -276,7 +419,12 @@ void warp_marked_text_cleared(WarpHostView *);
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.device = metalDevice;
-    layer.allowsNextDrawableTimeout = NO;
+    // Two drawables (default 3): at most one stale frame can queue ahead of the one carrying the
+    // latest keystroke. Documented range is 2-3.
+    layer.maximumDrawableCount = 2;
+    // nextDrawable gives up after ~1 s and returns nil instead of blocking the main thread (and
+    // with it all input handling) indefinitely; the renderer skips that frame and re-arms a redraw.
+    layer.allowsNextDrawableTimeout = YES;
     layer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
     layer.needsDisplayOnBoundsChange = YES;
     layer.presentsWithTransaction = NO;

@@ -11,13 +11,8 @@ pub enum FeatureFlag {
     CrashReporting,
     DebugMode,
     Autoupdate,
-    WithSandboxTelemetry,
     RecordAppActiveEvents,
 
-    WelcomeTips,
-    ThinStrokes,
-    WelcomeBlock,
-    KnowledgeSidebar,
 
     RuntimeFeatureFlags,
 
@@ -37,8 +32,6 @@ pub enum FeatureFlag {
     /// menu bar.
     ToggleBootstrapBlock,
 
-    /// Enabling context chips functionality for prompt
-    ContextChips,
 
     /// Ligature Support in the Editor and Grid
     Ligatures,
@@ -52,12 +45,7 @@ pub enum FeatureFlag {
     /// to get a sense of PTY throughput over time.
     RecordPtyThroughput,
 
-    /// Whether to fetch generic string objects from the server.
-    FetchGenericStringObjects,
 
-    /// Enables a setting on Intel Dual-GPU Macs to enable use of the integrated GPU over the
-    /// discrete GPU.
-    IntegratedGPU,
 
     /// Defaults Windows builds to the high-performance GPU with Vulkan as the preferred backend.
     WindowsHighPerformanceGpuDefault,
@@ -106,8 +94,6 @@ pub enum FeatureFlag {
     /// Enable dynamic enum parameter types for workflow arguments
     DynamicWorkflowEnums,
 
-    /// Enables next action prediction within Zap, powered by AI.
-    AgentPredict,
 
     /// Enables receiving shared Zap Drive objects.
     SharedWithMe,
@@ -162,8 +148,6 @@ pub enum FeatureFlag {
     SshDragAndDrop,
     DragTabsToWindows,
 
-    /// Enables the overflow menu on AI blocks.
-    AIBlockOverflowMenu,
 
     /// Enables cycling through the next command suggestions with down arrow.
     CycleNextCommandSuggestion,
@@ -183,7 +167,6 @@ pub enum FeatureFlag {
     /// Enables partial next command suggestions with a prefix.
     PartialNextCommandSuggestions,
 
-    AIGeneratedOnboardingSuggestions,
 
     /// Enables iTerm image rendering
     ITermImages,
@@ -206,8 +189,6 @@ pub enum FeatureFlag {
     /// Enables support for Zap Packs.
     WarpPacks,
 
-    /// Enables auto-generated AI memories.
-    AIMemories,
 
     /// Enables the XML output system prompt for the primary (terminal) agent in Agent Mode.
     AgentModePrimaryXML,
@@ -478,9 +459,6 @@ pub enum FeatureFlag {
     /// Enables global search
     GlobalSearch,
 
-    /// Enables embedded code review comments.
-    EmbeddedCodeReviewComments,
-
     /// Enables the revert to checkpoints feature.
     RevertToCheckpoints,
 
@@ -551,9 +529,6 @@ pub enum FeatureFlag {
     ///
     /// If disabled, the server will send None as the SkillsContext.
     ListSkills,
-
-    /// When enabled, we expose LSP as a tool to the agent.
-    LSPAsATool,
 
     /// Enables conversation artifacts.
     ConversationArtifacts,
@@ -817,10 +792,9 @@ pub const LOCAL_FLAGS: &[FeatureFlag] = &[FeatureFlag::LocalClaudeCodexChildHarn
 ///
 /// **This fork ships no binary that *enables* the flags in this list, or in
 /// [`LOCAL_FLAGS`] or [`PREVIEW_FLAGS`].** Upstream's channel binaries pass them to
-/// `with_additional_features`, and the only such call sites left here are
-/// `crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`, which never compile:
-/// `crates/warp_tui/Cargo.toml` sets `autobins = false` and declares one `[[bin]]`,
-/// and those files reference a crate that is not in the workspace. `app/Cargo.toml`
+/// `with_additional_features`; the fork's former equivalents
+/// (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compiled and were
+/// removed. `app/Cargo.toml`
 /// builds `phosphor-oss` (which adds `DEBUG_FLAGS`, debug builds only) and
 /// `generate_settings_schema`. So membership here enables nothing at runtime; it
 /// only tells the schema/default-settings generators which channel a flag belongs

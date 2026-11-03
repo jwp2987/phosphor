@@ -38,7 +38,7 @@ use warpui::{
     },
     platform::LineStyle,
     text_layout::CaretPosition,
-    text_layout::{Line, TextFrame},
+    text_layout::{Line, StyleAndFont, TextFrame},
     text_selection_utils::{
         NewlineTickParams, calculate_tick_width, create_newline_tick_rect,
         selection_crosses_newline_offset_based,
@@ -48,6 +48,7 @@ use warpui::{
 
 pub use self::location::{HitTestOptions, Location};
 pub use self::offset_map::{OffsetMap, SelectableTextRun};
+pub use self::parked::ParkedLines;
 pub use self::positioned::Positioned;
 use self::{
     location::WrapDirection,
@@ -86,8 +87,10 @@ pub mod bounds;
 pub(crate) mod debug;
 mod char_cell_display;
 pub use self::char_cell_display::{DisplayLattice, DisplayRow, DisplayRowKind};
+pub(crate) mod hydration;
 mod location;
 mod offset_map;
+pub(crate) mod parked;
 mod positioned;
 pub mod saved_positions;
 pub mod table_offset_map;
@@ -429,7 +432,16 @@ impl<'a> RenderContentTreeRef<'a> {
         }
         let mut cursor = self.0.cursor::<LineCount, LayoutSummary>();
         cursor.seek_clamped(&line, SeekBias::Right);
-        (cursor.start().height as f32).into_pixels()
+        let mut height = cursor.start().height;
+        if let Some(BlockItem::ParkedLines(chunk)) = cursor.item() {
+            // The line is inside a parked chunk: every line of it is one stride tall.
+            let into_chunk = line
+                .as_usize()
+                .saturating_sub(cursor.start().lines.as_usize())
+                .min(chunk.len().saturating_sub(1));
+            height += into_chunk as f64 * f64::from(chunk.stride().as_f32());
+        }
+        (height as f32).into_pixels()
     }
 }
 
@@ -476,6 +488,9 @@ pub struct RenderState {
 
     /// Whether we are performing a lazy layout.
     lazy_layout: bool,
+
+    /// Bookkeeping for lazily laid-out (dehydrated) paragraphs. See [`hydration`].
+    hydration: hydration::HydrationState,
 
     pending_edits: Mutex<Vec<PendingLayout>>,
     pending_selection_change: Mutex<Option<PendingSelectionUpdate>>,
@@ -927,6 +942,11 @@ pub enum BlockItem {
     Table(Box<LaidOutTable>),
     TrailingNewLine(Cursor),
     Hidden(HiddenBlockConfig),
+    /// Many consecutive dehydrated single-line plain-text paragraphs stored as one tree item
+    /// (#1340 P5, see [`parked`]). Only the lazy-layout code editor produces these; the
+    /// hydration pass expands the ones near the viewport and the selections into ordinary
+    /// paragraphs, so on-screen and edited lines are never chunks.
+    ParkedLines(ParkedLines),
 }
 
 pub struct EmbeddedItemHTMLRepresentation<'a> {
@@ -1049,7 +1069,7 @@ impl ParagraphBlock {
     pub fn height(&self) -> Pixels {
         self.paragraphs
             .iter()
-            .map(|paragraph| paragraph.height.as_f32())
+            .map(|paragraph| paragraph.metrics.height.as_f32())
             .sum::<f32>()
             .into_pixels()
     }
@@ -1059,7 +1079,7 @@ impl ParagraphBlock {
         let width = self
             .paragraphs
             .iter()
-            .map(|paragraph| paragraph.frame.max_width())
+            .map(|paragraph| paragraph.metrics.width.as_f32())
             .reduce(f32::max)
             .unwrap_or(0.);
         vec2f(width, self.height().as_f32())
@@ -1084,15 +1104,124 @@ impl ParagraphBlock {
     }
 }
 
+/// Everything needed to lay a paragraph out again from scratch (#1340): the exact inputs of
+/// [`TextLayout::layout_text`]. Cheap to keep (text plus style runs, no glyphs or carets).
+#[derive(Clone, Debug)]
+pub struct LineSource {
+    text: Arc<str>,
+    paragraph_style: ParagraphStyles,
+    spacing: BlockSpacing,
+    style_runs: Arc<[(Range<usize>, StyleAndFont)]>,
+}
+
+impl LineSource {
+    pub fn new(
+        text: &str,
+        paragraph_style: ParagraphStyles,
+        spacing: BlockSpacing,
+        style_runs: &[(Range<usize>, StyleAndFont)],
+    ) -> Self {
+        Self {
+            text: Arc::from(text),
+            paragraph_style,
+            spacing,
+            style_runs: Arc::from(style_runs),
+        }
+    }
+
+    /// Lays this source out. Deterministic: laying out the source a paragraph was built from
+    /// yields the frame it had.
+    pub fn layout(&self, text_layout: &TextLayout) -> Arc<TextFrame> {
+        text_layout.layout_text(
+            &self.text,
+            &self.paragraph_style,
+            &self.spacing,
+            &self.style_runs,
+        )
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn paragraph_style(&self) -> &ParagraphStyles {
+        &self.paragraph_style
+    }
+
+    pub fn spacing(&self) -> &BlockSpacing {
+        &self.spacing
+    }
+}
+
+/// The metrics of a paragraph that the rest of the model reads without needing glyphs. They are
+/// cached on [`Paragraph`] so a dehydrated paragraph still answers them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParagraphMetrics {
+    /// Sum of the line heights of the frame.
+    pub height: Pixels,
+    /// Max line width of the frame.
+    pub width: Pixels,
+    /// Number of (soft-wrapped) lines in the frame.
+    pub lines: usize,
+    /// Whether the frame has no drawn runs.
+    pub is_empty: bool,
+    /// Height of the first line, or the whole height if there are no lines.
+    pub first_line_height: f32,
+    /// `false` when `width` is an estimate that a real layout may change (set by lazy layout);
+    /// always `true` for metrics measured from a frame.
+    pub width_exact: bool,
+}
+
+impl ParagraphMetrics {
+    pub fn from_frame(frame: &TextFrame) -> Self {
+        let height = frame
+            .lines()
+            .iter()
+            .fold(0f32, |acc, line| acc + line_height(line))
+            .into_pixels();
+        let lines = frame.lines();
+        Self {
+            height,
+            width: frame.max_width().into_pixels(),
+            lines: lines.len(),
+            is_empty: lines.is_empty() || lines.iter().all(|line| line.runs.is_empty()),
+            first_line_height: lines.first().map(line_height).unwrap_or(height.as_f32()),
+            width_exact: true,
+        }
+    }
+}
+
+/// Whether a paragraph currently holds its laid-out frame.
+#[derive(Clone)]
+enum ParagraphLayout {
+    /// Glyphs and carets are present.
+    Hydrated(Arc<TextFrame>),
+    /// No glyphs. Holds one glyph-less placeholder line carrying the right font size, line
+    /// height and (estimated) width, so y-axis geometry and `Positioned<Paragraph>::lines()`
+    /// stay well-formed. The cached [`ParagraphMetrics`] answer all geometry reads.
+    Dehydrated(Box<Line>),
+}
+
+/// Builds the glyph-less placeholder line of a dehydrated paragraph.
+fn placeholder_line(style: &ParagraphStyles, width: Pixels) -> Box<Line> {
+    let mut line = Line::empty(style.font_size, style.line_height_ratio, 0);
+    line.caret_positions = Vec::new();
+    line.width = width.as_f32();
+    Box::new(line)
+}
+
 #[derive(Clone)]
 pub struct Paragraph {
-    /// Laid-out text content of this paragraph.
-    frame: Arc<TextFrame>,
+    /// Laid-out text content of this paragraph, or a glyph-less placeholder.
+    layout: ParagraphLayout,
+    /// What it takes to lay this paragraph out again. Present on every paragraph built by a
+    /// lazy-layout-capable editor (hydrated ones included, so they can be evicted); `None` for
+    /// eager paragraphs, which are never dehydrated.
+    source: Option<Box<LineSource>>,
     /// Mapping between [`TextFrame`] characters and content characters.
     offsets: OffsetMap,
-    /// Cached height of this paragraph's text frame.
-    height: Pixels,
-    width: Pixels,
+    /// Cached metrics of the text frame; valid in both layout states.
+    metrics: ParagraphMetrics,
     /// Content length of this paragraph, in `char`s.
     content_length: CharOffset,
     detected_url: Vec<ParsedUrl>,
@@ -1101,6 +1230,76 @@ pub struct Paragraph {
 }
 
 impl Paragraph {
+    /// Builds a hydrated paragraph from an existing frame.
+    pub fn hydrated(
+        frame: Arc<TextFrame>,
+        offsets: OffsetMap,
+        content_length: CharOffset,
+        active_url: Vec<ParsedUrl>,
+        spacing: BlockSpacing,
+        minimum_height: Option<Pixels>,
+    ) -> Self {
+        let metrics = ParagraphMetrics::from_frame(&frame);
+        Self {
+            layout: ParagraphLayout::Hydrated(frame),
+            source: None,
+            offsets,
+            metrics,
+            content_length,
+            detected_url: active_url,
+            spacing,
+            minimum_height,
+        }
+    }
+
+    /// Like [`Self::hydrated`], but keeps `source` so the paragraph can be evicted later.
+    pub fn hydrated_with_source(
+        frame: Arc<TextFrame>,
+        source: LineSource,
+        offsets: OffsetMap,
+        content_length: CharOffset,
+        active_url: Vec<ParsedUrl>,
+        spacing: BlockSpacing,
+        minimum_height: Option<Pixels>,
+    ) -> Self {
+        let mut paragraph = Self::hydrated(
+            frame,
+            offsets,
+            content_length,
+            active_url,
+            spacing,
+            minimum_height,
+        );
+        paragraph.source = Some(Box::new(source));
+        paragraph
+    }
+
+    /// Builds a dehydrated paragraph: no frame, `metrics` supplied by the caller.
+    pub fn dehydrated(
+        source: LineSource,
+        metrics: ParagraphMetrics,
+        offsets: OffsetMap,
+        content_length: CharOffset,
+        active_url: Vec<ParsedUrl>,
+        spacing: BlockSpacing,
+        minimum_height: Option<Pixels>,
+    ) -> Self {
+        Self {
+            layout: ParagraphLayout::Dehydrated(placeholder_line(
+                &source.paragraph_style,
+                metrics.width,
+            )),
+            source: Some(Box::new(source)),
+            offsets,
+            metrics,
+            content_length,
+            detected_url: active_url,
+            spacing,
+            minimum_height,
+        }
+    }
+
+    /// Alias of [`Self::hydrated`], kept for the many existing call sites.
     pub fn new(
         frame: Arc<TextFrame>,
         offsets: OffsetMap,
@@ -1109,58 +1308,116 @@ impl Paragraph {
         spacing: BlockSpacing,
         minimum_height: Option<Pixels>,
     ) -> Self {
-        let height = frame
-            .lines()
-            .iter()
-            .fold(0f32, |acc, line| acc + line_height(line))
-            .into_pixels();
-
-        let width = frame.max_width().into_pixels();
-        Self {
+        Self::hydrated(
             frame,
             offsets,
-            height,
-            width,
             content_length,
-            detected_url: active_url,
+            active_url,
             spacing,
             minimum_height,
+        )
+    }
+
+    /// Drops the frame, keeping `source` and the cached metrics. Returns the previous frame.
+    pub fn dehydrate(&mut self, source: LineSource) -> Option<Arc<TextFrame>> {
+        let placeholder = placeholder_line(&source.paragraph_style, self.metrics.width);
+        self.source = Some(Box::new(source));
+        match std::mem::replace(&mut self.layout, ParagraphLayout::Dehydrated(placeholder)) {
+            ParagraphLayout::Hydrated(frame) => Some(frame),
+            ParagraphLayout::Dehydrated(_) => None,
         }
     }
 
+    /// Drops the frame using the retained source (eviction). Returns whether anything changed;
+    /// `false` for paragraphs that are already dehydrated or have no source.
+    pub fn evict(&mut self) -> bool {
+        let Some(source) = &self.source else {
+            return false;
+        };
+        if !self.is_hydrated() {
+            return false;
+        }
+        self.layout = ParagraphLayout::Dehydrated(placeholder_line(
+            &source.paragraph_style,
+            self.metrics.width,
+        ));
+        true
+    }
+
+    /// Installs a laid-out frame and refreshes the cached metrics from it (the frame is the
+    /// source of truth). Returns whether the height or width changed, which callers must treat as
+    /// a layout invalidation (scroll extents depend on both).
+    pub fn hydrate(&mut self, frame: Arc<TextFrame>) -> bool {
+        let metrics = ParagraphMetrics::from_frame(&frame);
+        let changed = metrics.height != self.metrics.height || metrics.width != self.metrics.width;
+        self.metrics = metrics;
+        self.layout = ParagraphLayout::Hydrated(frame);
+        changed
+    }
+
+    /// Hydrates and reports only whether the *height* changed (see [`Self::hydrate`]).
+    pub fn hydrate_height_changed(&mut self, frame: Arc<TextFrame>) -> bool {
+        let before = self.metrics.height;
+        self.hydrate(frame);
+        self.metrics.height != before
+    }
+
+    pub fn is_hydrated(&self) -> bool {
+        matches!(self.layout, ParagraphLayout::Hydrated(_))
+    }
+
+    /// The source to lay this paragraph out again, if it kept one.
+    pub fn line_source(&self) -> Option<&LineSource> {
+        self.source.as_deref()
+    }
+
+    pub fn metrics(&self) -> ParagraphMetrics {
+        self.metrics
+    }
+
     pub fn first_line_height(&self) -> f32 {
-        self.frame
-            .lines()
-            .first()
-            .map(line_height)
-            .unwrap_or(self.height.as_f32())
+        self.metrics.first_line_height
     }
 
     pub fn spacing(&self) -> BlockSpacing {
         self.spacing
     }
 
-    pub(super) fn frame(&self) -> &TextFrame {
-        &self.frame
+    /// The laid-out frame, or `None` while dehydrated. Painting callers skip dehydrated
+    /// paragraphs; the lazy-layout hook hydrates everything visible before painting.
+    pub(super) fn frame(&self) -> Option<&TextFrame> {
+        match &self.layout {
+            ParagraphLayout::Hydrated(frame) => Some(frame),
+            ParagraphLayout::Dehydrated(_) => None,
+        }
+    }
+
+    /// The laid-out lines. While dehydrated this is the single glyph-less placeholder line
+    /// (right row and height, estimated width, no carets): geometry stays well-formed but x
+    /// positions are NOT meaningful, so x-dependent callers must have hydrated first.
+    fn text_lines(&self) -> &[Line] {
+        match &self.layout {
+            ParagraphLayout::Hydrated(frame) => frame.lines().as_slice(),
+            ParagraphLayout::Dehydrated(line) => std::slice::from_ref(&**line),
+        }
     }
 
     /// Whether or not this paragraph is effectively empty.
     pub(super) fn is_empty(&self) -> bool {
-        let lines = self.frame.lines();
-        lines.is_empty() || lines.iter().all(|line| line.runs.is_empty())
+        self.metrics.is_empty
     }
 
     /// The height of this paragraph.
     pub fn height(&self) -> Pixels {
-        self.height
+        self.metrics.height
     }
 
     pub fn width(&self) -> Pixels {
-        self.width
+        self.metrics.width
     }
 
     fn lines(&self) -> LineCount {
-        LineCount(self.frame.lines().len())
+        LineCount(self.metrics.lines)
     }
 }
 
@@ -1217,12 +1474,12 @@ impl CellLayout {
             let char_start = line
                 .caret_positions
                 .first()
-                .map(|cp| cp.start_offset)
+                .map(|cp| cp.start())
                 .unwrap_or(0);
             let char_end = line
                 .caret_positions
                 .last()
-                .map(|cp| cp.last_offset + 1)
+                .map(|cp| cp.last() + 1)
                 .unwrap_or(char_start);
             line_char_ranges.push(CharOffset::from(char_start)..CharOffset::from(char_end));
         }
@@ -1261,7 +1518,7 @@ impl CellLayout {
         }
         if carets
             .first()
-            .is_some_and(|caret| char_offset < caret.start_offset)
+            .is_some_and(|caret| char_offset < caret.start())
         {
             0.0
         } else {
@@ -1311,7 +1568,7 @@ impl CellLayout {
         for caret in carets {
             let distance = (caret.position_in_line - x).abs();
             if distance <= closest_distance {
-                closest = CharOffset::from(caret.start_offset).clamp(range.start, range.end);
+                closest = CharOffset::from(caret.start()).clamp(range.start, range.end);
                 closest_distance = distance;
             }
         }
@@ -1924,6 +2181,7 @@ impl RenderState {
             saved_positions: SavedPositions::new(entity_id),
             buffer_version: RefCell::new(Default::default()),
             lazy_layout,
+            hydration: Default::default(),
             pending_edits: Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-util"))]
             outstanding_layouts: Default::default(),
@@ -2108,7 +2366,19 @@ impl RenderState {
 
         Self::move_cursor_to_location(&mut cursor, location);
 
-        Some(cursor.positioned_item()?.start_y_offset - self.viewport().scroll_top())
+        let positioned = cursor.positioned_item()?;
+        let mut y_offset = positioned.start_y_offset;
+        if let (BlockItem::ParkedLines(chunk), RenderLineLocation::Current(line)) =
+            (positioned.item, location)
+        {
+            // A line inside a parked chunk: offset by whole strides from the chunk start.
+            let into_chunk = line
+                .as_usize()
+                .saturating_sub(positioned.start_line.as_usize())
+                .min(chunk.len().saturating_sub(1));
+            y_offset += (into_chunk as f32 * chunk.stride().as_f32()).into_pixels();
+        }
+        Some(y_offset - self.viewport().scroll_top())
     }
 
     fn move_cursor_to_location<'a>(
@@ -2241,6 +2511,13 @@ impl RenderState {
             };
 
             self.styles = new_styles;
+            if matches!(action, StyleUpdateAction::Relayout) {
+                // Parked (dehydrated) paragraphs hold widths estimated from the OLD font until the
+                // relayout the caller now submits replaces them. Say so at the style change
+                // itself (#1340): content sizing is refreshed with the next element update
+                // instead of relying on a hydration to notice the difference.
+                self.note_restyled_for_parked_paragraphs();
+            }
             return action;
         }
         StyleUpdateAction::None
@@ -2431,6 +2708,21 @@ impl RenderState {
         ctx.notify();
     }
 
+    /// Drops the laid-out content (every paragraph's glyphs and carets, ~100x the file size for a
+    /// large file), the decorations, selections and queued layout work, leaving the empty initial
+    /// document. For an editor that is being closed (#1407): the memory goes now, even if
+    /// something still references this model.
+    pub fn release_layout(&mut self) {
+        *self.content.get_mut() =
+            SumTree::from_item(Self::final_trailing_newline_cursor(&self.styles));
+        self.has_final_trailing_newline.set(true);
+        self.decorations = Default::default();
+        *self.selections.get_mut() = Default::default();
+        self.pending_edits.lock().clear();
+        *self.pending_selection_change.lock() = None;
+        self.hydration = Default::default();
+    }
+
     /// The current render-time decorations, sorted by end offset.
     pub fn decorations(&self) -> &RenderDecoration {
         &self.decorations
@@ -2544,6 +2836,9 @@ impl RenderState {
                         });
                     } else {
                         *self.selections.borrow_mut() = selections;
+                        // The rows around the new selection must have glyphs before anything
+                        // queries caret geometry (cursor movement, autoscroll, popups).
+                        self.hydrate_pinned(ctx);
                         ctx.notify();
                     }
                 }
@@ -2642,6 +2937,7 @@ impl RenderState {
                     self.update_content_sizing();
 
                     self.flush_pending_selection_update(Some(buffer_version));
+                    self.hydrate_pinned(ctx);
                 }
                 self.buffer_version.borrow_mut().next_render_version = Some(buffer_version);
                 ctx.emit(RenderEvent::LayoutUpdated);
@@ -2717,6 +3013,7 @@ impl RenderState {
             },
         )
         .with_container_scrolls_horizontally(self.container_scrolls_horizontally())
+        .with_lazy_capable(self.lazy_paragraphs_enabled())
     }
 
     /// If we are performing layout lazily, call this to flush the pending edits and selection changes
@@ -2751,8 +3048,16 @@ impl RenderState {
     fn apply_element_update(&mut self, update: ElementUpdate, ctx: &mut ModelContext<Self>) {
         // Clear up the remaining pending edits state after layout is completed. Also make sure we have the updated
         // content sizing.
-        if self.lazy_layout {
+        let (hydration_resized, hydration_more_pending) = self.take_hydration_flags();
+        if self.lazy_layout || hydration_resized {
             self.update_content_sizing();
+            if hydration_resized {
+                ctx.notify();
+            }
+        }
+        if hydration_more_pending {
+            // The per-frame hydration budget ran out with rows still to do.
+            ctx.notify();
         }
         if update.pending_edits_flushed {
             ctx.emit(RenderEvent::PendingEditsFlushed);
@@ -2816,6 +3121,16 @@ impl RenderState {
 
     /// Replace all temporary blocks in the BlockItem cache with a new set of temporary
     fn reset_temporary_block(&self, mut blocks: HashMap<LineCount, Vec<BlockItem>>) {
+        // Temporary blocks are inserted at line boundaries; a parked chunk straddling one is
+        // split there first (#1340 P5), otherwise the block would never find its position.
+        let lines: Vec<LineCount> = blocks.keys().copied().collect();
+        let split = {
+            let content = self.content.borrow();
+            parked::split_parked_at_lines(&content, &lines)
+        };
+        if let Some(split) = split {
+            *self.content.borrow_mut() = split;
+        }
         let mut new_tree = SumTree::new();
         {
             let content = self.content.borrow();
@@ -2847,6 +3162,17 @@ impl RenderState {
         *self.content.borrow_mut() = new_tree;
     }
 
+    /// Splits any parked chunk that strictly contains one of the tree offsets `offsets`.
+    fn split_parked_chunks_at(&self, offsets: &[CharOffset]) {
+        let split = {
+            let content = self.content.borrow();
+            parked::split_parked_at(&content, offsets)
+        };
+        if let Some(split) = split {
+            *self.content.borrow_mut() = split;
+        }
+    }
+
     /// Update the render state with laid out new edits.
     fn layout_pending_edit(
         &self,
@@ -2866,18 +3192,24 @@ impl RenderState {
         );
 
         let hidden_range_clone = hidden_ranges.clone();
+        // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
+        let effective_start = pending_edit
+            .old_offset
+            .start
+            .saturating_sub(&CharOffset::from(1));
+        let effective_end = pending_edit
+            .old_offset
+            .end
+            .saturating_sub(&CharOffset::from(1));
+        // A parked chunk straddling either end of the replaced range is split at that line
+        // boundary first, so the splice below only ever cuts between items (#1340 P5).
+        self.split_parked_chunks_at(&[effective_start, effective_end]);
         let mut new_tree = SumTree::new();
         {
             let content = self.content.borrow();
 
             log::trace!("Initial blocks:\n{}", content.describe());
             let mut cursor = content.cursor::<CharOffset, CharOffset>();
-
-            // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
-            let effective_start = pending_edit
-                .old_offset
-                .start
-                .saturating_sub(&CharOffset::from(1));
 
             // Push blocks that are not affected by the change. We don't need to recompute them.
             new_tree.push_tree(cursor.slice(&effective_start, SeekBias::Right));
@@ -2901,12 +3233,6 @@ impl RenderState {
                 }
                 new_tree.push(item);
             }
-
-            // TODO(CLD-558): Ideally, we'd use the content-level offset as is.
-            let effective_end = pending_edit
-                .old_offset
-                .end
-                .saturating_sub(&CharOffset::from(1));
 
             let sub_tree_start = *cursor.start();
             let sub_tree = cursor.slice(&effective_end, SeekBias::Left);
@@ -2982,6 +3308,15 @@ impl RenderState {
         // Hidden range updates could be incremental. This means we might end with duplicate adjacent hidden blocks.
         // This step ensures these are merged into one.
         if let Some(hidden_ranges) = hidden_ranges {
+            // `dedupe_hidden_ranges` slices at each range's (start - 1) and end: no chunk may
+            // straddle those.
+            let boundaries: Vec<CharOffset> = hidden_ranges
+                .iter()
+                .flat_map(|range| [range.start.saturating_sub(&CharOffset::from(1)), range.end])
+                .collect();
+            if let Some(split) = parked::split_parked_at(&new_tree, &boundaries) {
+                new_tree = split;
+            }
             new_tree = Self::dedupe_hidden_ranges(new_tree, hidden_ranges);
         }
         log::trace!("Resulting blocks:\n{}", new_tree.describe());
@@ -3067,6 +3402,20 @@ impl RenderState {
 
     /// Perform an autoscroll action based on the mode.
     pub fn autoscroll(&mut self, mode: AutoScrollMode, ctx: &mut ModelContext<Self>) {
+        // Autoscroll reads caret geometry at the target, which may be far outside the hydrated
+        // window (go-to-line, find-next, LSP reveal).
+        match &mode {
+            AutoScrollMode::ScrollOffsetsIntoViewport(offsets) => {
+                self.hydrate_around_offsets(&[offsets.start, offsets.end], ctx)
+            }
+            AutoScrollMode::ScrollToExactVertical {
+                character_offset, ..
+            } => self.hydrate_around_offsets(&[*character_offset], ctx),
+            AutoScrollMode::PositionOffsetInViewportCenter(offset) => {
+                self.hydrate_around_offsets(&[*offset], ctx)
+            }
+            AutoScrollMode::ScrollToActiveSelections { .. } => self.hydrate_pinned(ctx),
+        }
         let table_scroll_changed = self.reveal_autoscroll_offsets_in_tables(&mode);
         let ((in_line_selection_start, in_line_selection_end), vertical_autoscroll_only) =
             match mode {
@@ -3763,6 +4112,7 @@ impl BlockItem {
             BlockItem::Table(laid_out_table) => laid_out_table.height().as_f32(),
             BlockItem::Embedded(embedded_item) => embedded_item.height().as_f32(),
             BlockItem::Hidden(config) => config.height().as_f32(),
+            BlockItem::ParkedLines(chunk) => chunk.first_line_height(),
         }
     }
 
@@ -3787,6 +4137,7 @@ impl BlockItem {
             BlockItem::Table(laid_out_table) => laid_out_table.spacing(),
             BlockItem::Embedded(embedded_item) => embedded_item.spacing(),
             BlockItem::Hidden { .. } => BlockSpacing::default(),
+            BlockItem::ParkedLines(chunk) => chunk.spacing(),
         }
     }
 
@@ -3794,7 +4145,7 @@ impl BlockItem {
     pub fn content_height(&self) -> Pixels {
         match self {
             BlockItem::Paragraph(paragraph) | BlockItem::Header { paragraph, .. } => {
-                let mut height = paragraph.height;
+                let mut height = paragraph.metrics.height;
                 if let Some(minimum_height) = paragraph.minimum_height {
                     height = height.max(minimum_height);
                 }
@@ -3823,6 +4174,7 @@ impl BlockItem {
             BlockItem::Image { config, .. } => config.height,
             BlockItem::Table(laid_out_table) => laid_out_table.height(),
             BlockItem::Hidden(config) => config.height(),
+            BlockItem::ParkedLines(chunk) => chunk.total_height() - chunk.spacing().y_axis_offset(),
         }
     }
 
@@ -3847,15 +4199,25 @@ impl BlockItem {
             BlockItem::Image { config, .. } => config.width,
             BlockItem::Table(laid_out_table) => laid_out_table.width(),
             BlockItem::Hidden(_) => MIN_HIDDEN_BLOCK_WIDTH,
+            BlockItem::ParkedLines(chunk) => {
+                chunk.max_item_width() - chunk.spacing().x_axis_offset()
+            }
         }
     }
 
     /// The total height of this item, including content, padding, and margins.
     pub fn height(&self) -> Pixels {
+        if let BlockItem::ParkedLines(chunk) = self {
+            // Exactly the chunk's lines stacked; avoids `a - x + x` rounding.
+            return chunk.total_height();
+        }
         self.content_height() + self.spacing().y_axis_offset()
     }
 
     pub fn width(&self) -> Pixels {
+        if let BlockItem::ParkedLines(chunk) = self {
+            return chunk.max_item_width();
+        }
         self.content_width() + self.spacing().x_axis_offset()
     }
 
@@ -3878,6 +4240,7 @@ impl BlockItem {
             | BlockItem::Image { .. } => CharOffset::from(1),
             BlockItem::Table(laid_out_table) => laid_out_table.content_length(),
             BlockItem::Hidden(config) => config.content_length(),
+            BlockItem::ParkedLines(chunk) => chunk.content_length(),
         }
     }
 
@@ -3900,6 +4263,7 @@ impl BlockItem {
             | BlockItem::Image { .. } => LineCount(1),
             BlockItem::Table(laid_out_table) => laid_out_table.lines(),
             BlockItem::Hidden(config) => config.line_count(),
+            BlockItem::ParkedLines(chunk) => chunk.lines(),
         }
     }
 
@@ -3922,7 +4286,8 @@ impl BlockItem {
             | BlockItem::HorizontalRule(_)
             | BlockItem::Image { .. }
             | BlockItem::Table(_)
-            | BlockItem::TemporaryBlock { .. } => false,
+            | BlockItem::TemporaryBlock { .. }
+            | BlockItem::ParkedLines(_) => false,
             // The trailing newline placeholder and hidden blocks are always considered empty.
             BlockItem::TrailingNewLine(_) | BlockItem::Hidden { .. } => true,
         }
@@ -3976,6 +4341,20 @@ impl Positioned<'_, BlockItem> {
                     })
             }
             BlockItem::MermaidDiagram { .. } => self.start_char_offset,
+            BlockItem::ParkedLines(chunk) => {
+                // Row picks the line; without glyphs the column cannot be resolved, so this is
+                // the line start (what a dehydrated paragraph answers too).
+                hydration::report_dehydrated_lines();
+                let row = point.row() as usize;
+                let first_row = self.start_line.as_usize();
+                if row < first_row {
+                    self.start_char_offset
+                } else if row - first_row >= chunk.len() {
+                    self.end_char_offset()
+                } else {
+                    self.start_char_offset + chunk.line_start(row - first_row)
+                }
+            }
             BlockItem::TrailingNewLine(_)
             | BlockItem::Embedded(_)
             | BlockItem::HorizontalRule(_)
@@ -4040,6 +4419,22 @@ impl Positioned<'_, BlockItem> {
             }
             BlockItem::MermaidDiagram { .. } => {
                 SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
+            }
+            BlockItem::ParkedLines(chunk) => {
+                hydration::report_dehydrated_lines();
+                if offset < self.start_char_offset {
+                    SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
+                } else {
+                    let relative = (offset - self.start_char_offset).as_usize();
+                    if relative >= chunk.content_length().as_usize() {
+                        SoftWrapPoint::new(self.end_line().as_u32(), ColumnUnit::pixels_zero())
+                    } else {
+                        SoftWrapPoint::new(
+                            self.start_line.as_u32() + chunk.line_at_offset(relative) as u32,
+                            ColumnUnit::Pixels(self.style.left_offset()),
+                        )
+                    }
+                }
             }
             BlockItem::TrailingNewLine(_)
             | BlockItem::Embedded(_)
@@ -4127,7 +4522,28 @@ impl Positioned<'_, BlockItem> {
                 Some(RectF::new(origin, embedded_item.size()))
             }
             BlockItem::TemporaryBlock { .. } | BlockItem::Hidden { .. } => None,
+            BlockItem::ParkedLines(chunk) => {
+                hydration::report_dehydrated_lines();
+                if offset < self.start_char_offset || offset >= self.end_char_offset() {
+                    None
+                } else {
+                    let index = chunk.line_at_offset((offset - self.start_char_offset).as_usize());
+                    // Row-exact, x at the line start: there are no carets to resolve a column.
+                    Some(RectF::new(
+                        self.parked_line_origin(chunk, index),
+                        vec2f(0., chunk.text_height().as_f32()),
+                    ))
+                }
+            }
         }
+    }
+
+    /// Where line `index` of a parked chunk draws its text (the same box a centered
+    /// per-line paragraph would use), relative to the buffer origin.
+    fn parked_line_origin(&self, chunk: &ParkedLines, index: usize) -> Vector2F {
+        let top = self.start_y_offset + (index as f32 * chunk.stride().as_f32()).into_pixels();
+        let gap = chunk.line_content_height() - chunk.text_height();
+        bounds::content_origin(top + gap / 2.0.into_pixels(), &self.style)
     }
 
     /// The bounds of the first line of this item, relative to the buffer origin.
@@ -4185,6 +4601,13 @@ impl Positioned<'_, BlockItem> {
                 RectF::new(origin, embedded_item.first_line_bound())
             }
             BlockItem::TemporaryBlock { .. } | BlockItem::Hidden { .. } => return None,
+            BlockItem::ParkedLines(chunk) => {
+                hydration::report_dehydrated_lines();
+                RectF::new(
+                    self.parked_line_origin(chunk, 0),
+                    vec2f(chunk.line_width(0), chunk.first_line_height()),
+                )
+            }
         };
 
         // At the block level, we want to include any space for list bullets and other
@@ -4198,6 +4621,16 @@ impl sum_tree::Item for BlockItem {
     type Summary = LayoutSummary;
 
     fn summary(&self) -> Self::Summary {
+        if let BlockItem::ParkedLines(chunk) = self {
+            return LayoutSummary {
+                content_length: chunk.content_length(),
+                // N x stride in f64: the exact sum of the per-line summaries this chunk replaces.
+                height: chunk.summary_height(),
+                width: chunk.max_item_width(),
+                lines: chunk.lines(),
+                item_count: 1,
+            };
+        }
         LayoutSummary {
             content_length: self.content_length(),
             // We use f64 to represent heights to avoid cumulative precision error from iteratively adding
@@ -4214,7 +4647,13 @@ impl sum_tree::Item for BlockItem {
 impl<'a> Positioned<'a, Paragraph> {
     /// Iterator over the lines of a paragraph, along with positioning information.
     fn lines(&self) -> impl Iterator<Item = Positioned<'a, Line>> + '_ {
-        self.item.frame.lines().iter().scan(
+        if !self.item.is_hydrated() {
+            // Glyph/caret geometry was requested before hydration: the placeholder line has the
+            // right row and height but no carets. Counted, warned, and a debug_assert in strict
+            // mode; see `hydration`.
+            hydration::report_dehydrated_lines();
+        }
+        self.item.text_lines().iter().scan(
             (
                 self.start_y_offset + self.style.top_offset(),
                 self.start_line,
@@ -4266,7 +4705,7 @@ impl<'a> Positioned<'a, Paragraph> {
     }
 
     pub fn end_y_offset(&self) -> Pixels {
-        self.start_y_offset + self.item.height + self.style.top_offset()
+        self.start_y_offset + self.item.height() + self.style.top_offset()
     }
 
     /// The bounding box of the character at `offset`, if within this paragraph.
@@ -4741,7 +5180,7 @@ impl<'a> Positioned<'a, ParagraphBlock> {
                     item: paragraph,
                 });
                 *char_offset_acc += paragraph.content_length;
-                *y_offset_acc += paragraph.height;
+                *y_offset_acc += paragraph.metrics.height;
                 *line_acc += paragraph.lines();
                 positioned
             },
@@ -4787,10 +5226,11 @@ impl<'a> sum_tree::Dimension<'a, LayoutSummary> for LineCount {
 impl fmt::Debug for Paragraph {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Paragraph")
-            .field("lines", &self.frame.lines().len())
+            .field("lines", &self.metrics.lines)
+            .field("hydrated", &self.is_hydrated())
             .field("offsets", &self.offsets)
-            .field("max_width", &self.frame.max_width())
-            .field("height", &self.height)
+            .field("max_width", &self.metrics.width)
+            .field("height", &self.metrics.height)
             .field("content_length", &self.content_length)
             .finish()
     }

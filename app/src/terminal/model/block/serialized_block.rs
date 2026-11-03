@@ -1,4 +1,7 @@
 use std::collections::HashSet;
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::Mutex;
 
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::task::TaskId;
@@ -8,6 +11,8 @@ use crate::terminal::model::block::{
     has_block_failed, AgentViewVisibility, Block, BlockState, PromptInfo,
     MAX_SERIALIZED_STYLIZED_OUTPUT_LINES,
 };
+use crate::terminal::model::blockgrid::BlockGrid;
+use crate::terminal::model::header_grid::CommandSnapshot;
 use crate::terminal::model::session::SessionId;
 use crate::terminal::model::BlockId;
 use crate::terminal::ShellHost;
@@ -278,19 +283,58 @@ impl SerializedBlock {
     }
 }
 
-/// We should only be serializing a block that has finished.
-impl From<&Block> for SerializedBlock {
-    fn from(block: &Block) -> Self {
-        let stylized_command = block
-            .command_with_secrets_unobfuscated(true /*include_escape_sequences*/)
-            .into_bytes();
-        let stylized_output = block
+impl SerializedBlock {
+    /// Serializes everything except the command and the output grids: `stylized_command` and
+    /// `stylized_output` are left empty. Both are by far the expensive part (a 1 MB command takes
+    /// about 60 ms, the output up to `MAX_SERIALIZED_STYLIZED_OUTPUT_LINES` lines), and this runs
+    /// on the UI thread under the model lock, so consumers that only read metadata (exit code,
+    /// pwd, timestamps, ...) should use this. Only persistence and restore read the command and
+    /// output bytes, and they get them from [`DeferredBlockContent`]. Never persist the result.
+    pub fn from_block_metadata_only(block: &Block) -> Self {
+        Self::from_block(block, false, false)
+    }
+
+    /// Drops the output from an already-built block (see `from_block_metadata_only`).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn without_output(&self) -> Self {
+        Self {
+            stylized_output: Vec::new(),
+            ..self.clone()
+        }
+    }
+
+    /// `self` with the command and output bytes filled in.
+    fn with_content(&self, stylized_command: Vec<u8>, stylized_output: Vec<u8>) -> Self {
+        Self {
+            stylized_command,
+            stylized_output,
+            ..self.clone()
+        }
+    }
+
+    fn stylized_output_of(block: &Block) -> Vec<u8> {
+        block
             .output_grid()
             .contents_to_string_with_secrets_unobfuscated(
                 true, /*include_escape_sequences*/
                 Some(MAX_SERIALIZED_STYLIZED_OUTPUT_LINES),
             )
-            .into_bytes();
+            .into_bytes()
+    }
+
+    fn from_block(block: &Block, include_command: bool, include_output: bool) -> Self {
+        let stylized_command = if include_command {
+            block
+                .command_with_secrets_unobfuscated(true /*include_escape_sequences*/)
+                .into_bytes()
+        } else {
+            Vec::new()
+        };
+        let stylized_output = if include_output {
+            Self::stylized_output_of(block)
+        } else {
+            Vec::new()
+        };
         let ps1 =
             (!block.is_prompt_empty()).then(|| hex::encode(block.prompt_contents_to_string(true)));
         let rprompt = (!block.rprompt_grid().is_empty()).then(|| {
@@ -352,6 +396,125 @@ impl From<&Block> for SerializedBlock {
             is_local: None,
             agent_view_visibility: Some(block.agent_view_visibility().clone().into()),
         }
+    }
+}
+
+/// The command and output of a finished block, captured so the slow text conversion can run off
+/// the UI thread.
+///
+/// [`Self::capture`] copies the two grids while the model lock is held (a grid copy, a small
+/// fraction of the cost of converting it to text); [`Self::materialize`] then does the conversion
+/// with exactly the code `SerializedBlock::from` uses, so the bytes are identical. Persistence
+/// calls it on the SQLite writer thread, which also keeps blocks saved in the order they finished.
+#[derive(Clone)]
+pub struct DeferredBlockContent(Arc<DeferredInner>);
+
+struct DeferredInner {
+    /// Taken by the first `materialize`.
+    content: Mutex<Option<DeferredContent>>,
+    /// `(stylized_command, stylized_output)`, kept so a retried save (#971) sees the same bytes.
+    bytes: OnceLock<(Vec<u8>, Vec<u8>)>,
+}
+
+enum DeferredContent {
+    /// Grids copied from the live block; converted to text by `materialize`.
+    Grids {
+        command: CommandSnapshot,
+        output: BlockGrid,
+    },
+    /// Bytes that are already final (tests, and the fallback for a block that no longer exists).
+    Bytes {
+        stylized_command: Vec<u8>,
+        stylized_output: Vec<u8>,
+    },
+}
+
+impl DeferredBlockContent {
+    /// Copies the grids for a later conversion. An output grid over the serialized bound
+    /// (`MAX_SERIALIZED_STYLIZED_OUTPUT_LINES`) is converted here instead, as before this type
+    /// existed: the conversion of that many rows is what the lock paid then, while a copy of a
+    /// 100k-row grid is not bounded by anything (#1262). The bytes are the same either way.
+    pub fn capture(block: &Block) -> Self {
+        if block.output_grid().len() > MAX_SERIALIZED_STYLIZED_OUTPUT_LINES {
+            return Self::from_bytes(
+                block
+                    .command_with_secrets_unobfuscated(true /*include_escape_sequences*/)
+                    .into_bytes(),
+                SerializedBlock::stylized_output_of(block),
+            );
+        }
+        Self::new(DeferredContent::Grids {
+            command: block.command_snapshot_with_secrets_unobfuscated(),
+            output: block.output_grid().clone(),
+        })
+    }
+
+    /// Whether the content is already bytes (converted at capture) rather than copied grids.
+    #[cfg(test)]
+    pub(crate) fn holds_bytes(&self) -> bool {
+        matches!(
+            self.0.content.lock().as_ref(),
+            Some(DeferredContent::Bytes { .. })
+        )
+    }
+
+    pub fn from_bytes(stylized_command: Vec<u8>, stylized_output: Vec<u8>) -> Self {
+        Self::new(DeferredContent::Bytes {
+            stylized_command,
+            stylized_output,
+        })
+    }
+
+    fn new(content: DeferredContent) -> Self {
+        Self(Arc::new(DeferredInner {
+            content: Mutex::new(Some(content)),
+            bytes: OnceLock::new(),
+        }))
+    }
+
+    /// `metadata_only` with its command and output filled in. Does the slow conversion the first
+    /// time: call it off the UI thread. Later calls (a retried save) reuse the result.
+    pub fn materialize(&self, metadata_only: &SerializedBlock) -> SerializedBlock {
+        let (stylized_command, stylized_output) = self.0.bytes.get_or_init(|| {
+            // Taken out of the lock first so the conversion does not hold it.
+            let content = self.0.content.lock().take();
+            match content {
+                Some(DeferredContent::Grids { command, output }) => (
+                    command.into_stylized_string().into_bytes(),
+                    output
+                        .contents_to_string_with_secrets_unobfuscated(
+                            true, /*include_escape_sequences*/
+                            Some(MAX_SERIALIZED_STYLIZED_OUTPUT_LINES),
+                        )
+                        .into_bytes(),
+                ),
+                Some(DeferredContent::Bytes {
+                    stylized_command,
+                    stylized_output,
+                }) => (stylized_command, stylized_output),
+                None => (Vec::new(), Vec::new()),
+            }
+        });
+        metadata_only.with_content(stylized_command.clone(), stylized_output.clone())
+    }
+}
+
+impl Default for DeferredBlockContent {
+    fn default() -> Self {
+        Self::from_bytes(Vec::new(), Vec::new())
+    }
+}
+
+impl std::fmt::Debug for DeferredBlockContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeferredBlockContent(..)")
+    }
+}
+
+/// We should only be serializing a block that has finished.
+impl From<&Block> for SerializedBlock {
+    fn from(block: &Block) -> Self {
+        Self::from_block(block, true, true)
     }
 }
 

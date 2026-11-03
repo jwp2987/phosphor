@@ -290,4 +290,166 @@ mod unix {
             assert_eq!(String::from_utf8_lossy(output.output()), "3");
         });
     }
+
+    /// Writes an executable shell script `name` into `dir`.
+    fn write_fake_program(dir: &Path, name: &str, script: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{script}\n")).expect("write program");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod program");
+    }
+
+    /// The per-prompt PowerShell chip commands that are one external program run that program
+    /// themselves (#1230). The shell path below does not exist, so only a direct run can succeed.
+    #[test]
+    fn powershell_chip_commands_run_without_a_powershell_process() {
+        futures_lite::future::block_on(async {
+            let bin = tempfile::tempdir().expect("create temp dir");
+            write_fake_program(bin.path(), "kubectl", r#"printf '%s' "ctx:$*""#);
+            write_fake_program(
+                bin.path(),
+                "git",
+                r#"printf '%s' "locks=$GIT_OPTIONAL_LOCKS:$*""#,
+            );
+            let executor =
+                LocalCommandExecutor::new(Some("/nonexistent/pwsh".into()), ShellType::PowerShell);
+            let env = || {
+                Some(HashMap::from([
+                    ("PATH".to_owned(), bin.path().display().to_string()),
+                    // The wrapper this replaces set GIT_OPTIONAL_LOCKS after the session's own.
+                    ("GIT_OPTIONAL_LOCKS".to_owned(), "1".to_owned()),
+                ]))
+            };
+
+            let kubectl = executor
+                .execute_local_command(
+                    "kubectl config current-context",
+                    None,
+                    env(),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect("kubectl runs directly");
+            assert!(kubectl.success());
+            assert_eq!(
+                String::from_utf8_lossy(kubectl.output()),
+                "ctx:config current-context"
+            );
+
+            let diff_command = crate::context_chips::builtins::shell_git_line_changes();
+            let diff_command = diff_command
+                .command()
+                .for_shell(ShellType::PowerShell)
+                .expect("PowerShell supported")
+                .to_owned();
+            let git = executor
+                .execute_local_command(&diff_command, None, env(), ExecuteCommandOptions::default())
+                .await
+                .expect("git runs directly");
+            assert!(git.success());
+            assert_eq!(
+                String::from_utf8_lossy(git.output()),
+                "locks=0:-c diff.autoRefreshIndex=false diff --shortstat HEAD"
+            );
+        });
+    }
+
+    /// Anything that is not exactly a chip command still goes through the shell, and so does a
+    /// chip command whose program is not on the session's PATH.
+    #[test]
+    fn other_powershell_commands_still_go_through_the_shell() {
+        futures_lite::future::block_on(async {
+            let bin = tempfile::tempdir().expect("create temp dir");
+            write_fake_program(bin.path(), "kubectl", "printf direct");
+            let executor =
+                LocalCommandExecutor::new(Some("/nonexistent/pwsh".into()), ShellType::PowerShell);
+            let path_env = HashMap::from([("PATH".to_owned(), bin.path().display().to_string())]);
+
+            // Not a chip command: needs the shell, which does not exist here.
+            executor
+                .execute_local_command(
+                    "kubectl config get-contexts",
+                    None,
+                    Some(path_env.clone()),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect_err("must have tried to start PowerShell");
+
+            // A chip command whose program is not on PATH: also falls back to the shell.
+            let empty = tempfile::tempdir().expect("create temp dir");
+            executor
+                .execute_local_command(
+                    "kubectl config current-context",
+                    None,
+                    Some(HashMap::from([(
+                        "PATH".to_owned(),
+                        empty.path().display().to_string(),
+                    )])),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect_err("must have tried to start PowerShell");
+        });
+    }
+
+    /// The branch chips are two git calls; run directly they give what the PowerShell text gave.
+    #[test]
+    fn powershell_git_branch_chips_run_without_a_powershell_process() {
+        futures_lite::future::block_on(async {
+            let bin = tempfile::tempdir().expect("create temp dir");
+            // A detached HEAD: `symbolic-ref` fails, `rev-parse` answers. `branch` and `worktree`
+            // print one line each.
+            write_fake_program(
+                bin.path(),
+                "git",
+                r#"case "$*" in
+  "symbolic-ref --short HEAD") exit 1 ;;
+  "rev-parse --short HEAD") echo abc1234 ;;
+  "--no-optional-locks branch --no-color --sort=-committerdate") echo "* main" ;;
+  "--no-optional-locks worktree list --porcelain") echo "worktree /w" ;;
+  *) echo "unexpected: $*"; exit 9 ;;
+esac"#,
+            );
+            let executor = LocalCommandExecutor::new(
+                Some("/nonexistent/pwsh".into()),
+                ShellType::PowerShell,
+            );
+            let env = || Some(HashMap::from([("PATH".to_owned(), bin.path().display().to_string())]));
+            let text = |generator: crate::context_chips::context_chip::ShellCommandGenerator| {
+                generator
+                    .command()
+                    .for_shell(ShellType::PowerShell)
+                    .expect("PowerShell supported")
+                    .to_owned()
+            };
+
+            let branch = executor
+                .execute_local_command(
+                    &text(crate::context_chips::builtins::shell_git_branch()),
+                    None,
+                    env(),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect("runs directly");
+            assert!(branch.success());
+            assert_eq!(String::from_utf8_lossy(branch.output()), "abc1234\n");
+
+            let others = executor
+                .execute_local_command(
+                    &text(crate::context_chips::builtins::shell_other_git_branches()),
+                    None,
+                    env(),
+                    ExecuteCommandOptions::default(),
+                )
+                .await
+                .expect("runs directly");
+            assert!(others.success());
+            assert_eq!(
+                String::from_utf8_lossy(others.output()),
+                "* main\n\u{1e}\nworktree /w\n"
+            );
+        });
+    }
 }

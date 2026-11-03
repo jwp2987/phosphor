@@ -7,11 +7,12 @@
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crate::terminal::model::grid::Dimensions;
 use futures_lite::future::yield_now;
 use instant::Instant;
 use parking_lot::FairMutex;
-use crate::terminal::model::grid::Dimensions;
 use warpui::{Entity, ModelContext};
 
 use super::work_queue::{FindWorkItem, FindWorkQueue};
@@ -23,11 +24,36 @@ use crate::terminal::model::grid::grid_handler::GridHandler;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::BlockIndex;
 
-/// Maximum time (in milliseconds) to hold the terminal model lock during a find chunk.
-const MAX_LOCK_DURATION_MS: u64 = 5;
+/// Longest the terminal model lock is meant to be held for one scan slice. The UI thread takes
+/// the same lock to paint and to apply results, so a slice that runs long stalls the frame behind
+/// it (#1327: 1000-row slices of a many-match scan took tens of milliseconds each).
+const TARGET_LOCK_HOLD: Duration = Duration::from_millis(2);
 
-/// Number of rows to scan per chunk within a terminal block.
+/// Rows scanned in the first slice of a grid; later slices adapt to [`TARGET_LOCK_HOLD`].
+const INITIAL_ROWS_PER_SLICE: usize = 64;
+
+/// Smallest slice the adaptation shrinks to.
+const MIN_ROWS_PER_SLICE: usize = 4;
+
+/// Number of rows to accumulate before results are sent to the main thread. Slices are small to
+/// keep the lock hold short; the results of several are batched so the main thread handles a few
+/// large messages rather than many tiny ones.
 const ROWS_PER_CHUNK: usize = 1000;
+
+/// Longest a batch of finished slices waits before being sent, so a many-match scan still shows
+/// progress.
+const MAX_BATCH_AGE: Duration = Duration::from_millis(20);
+
+/// Picks the size of the next scan slice from how long the last one held the lock.
+pub(super) fn next_slice_rows(current: usize, lock_held: Duration) -> usize {
+    if lock_held > TARGET_LOCK_HOLD {
+        (current / 2).max(MIN_ROWS_PER_SLICE)
+    } else if lock_held < TARGET_LOCK_HOLD / 4 {
+        (current * 2).min(ROWS_PER_CHUNK)
+    } else {
+        current
+    }
+}
 
 /// Spawns a background find task that pulls work from the given queue.
 ///
@@ -37,10 +63,23 @@ pub fn spawn_find_task<E: Entity>(
     terminal_model: Arc<FairMutex<TerminalModel>>,
     queue: FindWorkQueue,
     result_tx: async_channel::Sender<FindTaskMessage>,
+    collect_initial_scan: bool,
     ctx: &mut ModelContext<E>,
 ) -> warpui::r#async::SpawnedFutureHandle {
     ctx.spawn(
         async move {
+            if collect_initial_scan {
+                // Collect the blocks to scan here, off the UI thread (#1320), and tell the main
+                // thread about them before any result for those blocks can arrive.
+                let block_info = {
+                    let mut model = terminal_model.lock();
+                    super::collect_block_info_for_full_scan(&mut model, &config)
+                };
+                let _ = result_tx
+                    .send(FindTaskMessage::BlocksCollected(block_info.clone()))
+                    .await;
+                queue.enqueue_full_scan(&block_info);
+            }
             run_find_task_loop(config, terminal_model, queue, result_tx).await;
         },
         |_me, (), _ctx| {
@@ -193,86 +232,144 @@ async fn scan_grid_chunked(
     result_tx: &async_channel::Sender<FindTaskMessage>,
 ) {
     let mut current_row = start_row;
+    let mut slice_rows = INITIAL_ROWS_PER_SLICE;
+    // Matches of finished slices not yet sent, covering rows `batch_start..current_row`.
+    let mut batch: Vec<AbsoluteMatch> = Vec::new();
+    let mut batch_start = start_row;
+    let mut batch_began = Instant::now();
 
     loop {
-        let chunk_result = {
+        let slice_result = {
             let lock_start = Instant::now();
             let model = terminal_model.lock();
 
-            let Some(block) = model.block_list().block_at(block_index) else {
-                // Block no longer exists.
-                return;
-            };
+            let scanned = (|| {
+                let block = model.block_list().block_at(block_index)?;
+                let grid = match grid_type {
+                    GridType::Output => block.output_grid(),
+                    GridType::PromptAndCommand => block.prompt_and_command_grid(),
+                    _ => return None,
+                };
 
-            let grid = match grid_type {
-                GridType::Output => block.output_grid(),
-                GridType::PromptAndCommand => block.prompt_and_command_grid(),
-                _ => return,
-            };
+                let grid_handler = grid.grid_handler();
+                let total_rows = grid_handler.total_rows();
+                let effective_end = end_row.unwrap_or(total_rows).min(total_rows);
 
-            let grid_handler = grid.grid_handler();
-            let total_rows = grid_handler.total_rows();
-            let effective_end = end_row.unwrap_or(total_rows).min(total_rows);
+                if current_row >= effective_end {
+                    return None;
+                }
 
-            if current_row >= effective_end {
-                return;
-            }
+                let chunk_end = (current_row + slice_rows).min(effective_end);
+                // Do not cut a soft-wrapped logical line in two: a match spanning the cut would
+                // be found by neither slice.
+                let mut chunk_end = chunk_end;
+                while chunk_end < effective_end
+                    && chunk_end - current_row < slice_rows + ROWS_PER_CHUNK
+                    && grid_handler.row_soft_wraps(chunk_end - 1)
+                {
+                    chunk_end += 1;
+                }
 
-            let chunk_end = (current_row + ROWS_PER_CHUNK).min(effective_end);
+                let point_matches = scan_grid_range(grid_handler, dfas, current_row, chunk_end);
+                let matches: Vec<AbsoluteMatch> = point_matches
+                    .iter()
+                    .map(|range| AbsoluteMatch::from_range(range, grid_handler))
+                    .collect();
+                Some((matches, chunk_end, effective_end))
+            })();
 
-            let point_matches = scan_grid_range(grid_handler, dfas, current_row, chunk_end);
-            let matches: Vec<AbsoluteMatch> = point_matches
-                .iter()
-                .map(|range| AbsoluteMatch::from_range(range, grid_handler))
-                .collect();
-
-            let elapsed = lock_start.elapsed();
-            (matches, chunk_end, effective_end, elapsed)
+            scanned.map(|(matches, chunk_end, effective_end)| {
+                (matches, chunk_end, effective_end, lock_start.elapsed())
+            })
         };
 
-        let (mut matches, chunk_end, effective_end, elapsed) = chunk_result;
+        let Some((mut matches, chunk_end, effective_end, elapsed)) = slice_result else {
+            // The block or the rest of the range is gone: report what was scanned so far.
+            if current_row > batch_start {
+                send_batch(
+                    &mode,
+                    block_index,
+                    grid_type,
+                    batch_start,
+                    current_row,
+                    std::mem::take(&mut batch),
+                    result_tx,
+                )
+                .await;
+            }
+            return;
+        };
 
         // find_in_range returns matches in descending order; reverse to ascending.
         matches.reverse();
+        batch.extend(matches);
 
-        // Send chunk results based on mode.
-        match &mode {
-            ScanResultMode::FullBlock => {
-                if !matches.is_empty() {
-                    let _ = result_tx
-                        .send(FindTaskMessage::BlockGridMatches {
-                            block_index,
-                            grid_type,
-                            matches,
-                        })
-                        .await;
-                }
-            }
-            ScanResultMode::DirtyRange {
-                num_lines_truncated,
-            } => {
-                let absolute_start = current_row as u64 + num_lines_truncated;
-                let absolute_end = (chunk_end - 1) as u64 + num_lines_truncated;
+        let done = chunk_end >= effective_end;
+        if done
+            || chunk_end - batch_start >= ROWS_PER_CHUNK
+            || batch_began.elapsed() >= MAX_BATCH_AGE
+        {
+            send_batch(
+                &mode,
+                block_index,
+                grid_type,
+                batch_start,
+                chunk_end,
+                std::mem::take(&mut batch),
+                result_tx,
+            )
+            .await;
+            batch_start = chunk_end;
+            batch_began = Instant::now();
+        }
+
+        if done {
+            break;
+        }
+
+        current_row = chunk_end;
+        slice_rows = next_slice_rows(slice_rows, elapsed);
+
+        // Always give the main thread (and an abort) a turn between slices.
+        yield_now().await;
+    }
+}
+
+/// Sends the matches found in rows `first_row..end_row` based on the scan mode.
+async fn send_batch(
+    mode: &ScanResultMode,
+    block_index: BlockIndex,
+    grid_type: GridType,
+    first_row: usize,
+    end_row: usize,
+    matches: Vec<AbsoluteMatch>,
+    result_tx: &async_channel::Sender<FindTaskMessage>,
+) {
+    match mode {
+        ScanResultMode::FullBlock => {
+            if !matches.is_empty() {
                 let _ = result_tx
-                    .send(FindTaskMessage::DirtyRangeMatches {
+                    .send(FindTaskMessage::BlockGridMatches {
                         block_index,
                         grid_type,
-                        dirty_range: absolute_start..=absolute_end,
                         matches,
                     })
                     .await;
             }
         }
-
-        if chunk_end >= effective_end {
-            break;
-        }
-
-        current_row = chunk_end;
-
-        // Yield to let other tasks run if we held the lock for a while.
-        if elapsed.as_millis() > MAX_LOCK_DURATION_MS as u128 / 2 {
-            yield_now().await;
+        ScanResultMode::DirtyRange {
+            num_lines_truncated,
+        } => {
+            let absolute_start = first_row as u64 + num_lines_truncated;
+            let absolute_end = (end_row - 1) as u64 + num_lines_truncated;
+            let _ = result_tx
+                .send(FindTaskMessage::DirtyRangeMatches {
+                    block_index,
+                    grid_type,
+                    dirty_range: absolute_start..=absolute_end,
+                    matches,
+                })
+                .await;
         }
     }
 }

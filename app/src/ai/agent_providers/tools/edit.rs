@@ -233,10 +233,28 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
     };
     let value = match &r.result {
         Some(ApplyR::Success(s)) => {
-            let updated: Vec<&str> = s
+            // Per-file detail the model needs to avoid re-reading blindly (#1277): the
+            // post-edit context range and text, and whether the user changed the diff
+            // before accepting it (so what landed may differ from what was proposed).
+            let updated: Vec<Value> = s
                 .updated_files_v2
                 .iter()
-                .filter_map(|u| u.file.as_ref().map(|f| f.file_path.as_str()))
+                .filter_map(|u| {
+                    let f = u.file.as_ref()?;
+                    let mut entry = json!({
+                        "path": f.file_path,
+                        "edited_by_user": u.was_edited_by_user,
+                        "content": f.content,
+                    });
+                    if let Some(r) = &f.line_range {
+                        entry["line_range"] = json!({ "start": r.start, "end": r.end });
+                    }
+                    let notes = edit_notes_for(&f.file_path);
+                    if !notes.is_empty() {
+                        entry["notes"] = json!(notes);
+                    }
+                    Some(entry)
+                })
                 .collect();
             let deleted: Vec<&str> = s
                 .deleted_files
@@ -253,6 +271,34 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
         None => json!({ "status": "cancelled_or_rejected" }),
     };
     Some(value)
+}
+
+/// Notes the edit applier wants the model to see next to a file's successful result (for
+/// example "applied via loose whitespace match at lines 3–5"), keyed by the resolved file path.
+/// `RequestFileEditsResult::Success` has no field for them, and the applier and this adapter
+/// run in the same process, so they travel here. An entry is replaced / cleared the next time
+/// the applier handles that file, so a note never outlives the edit it describes.
+type EditNotes = std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>;
+static EDIT_NOTES: std::sync::LazyLock<EditNotes> = std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn record_edit_note(path: &str, note: String) {
+    if let Ok(mut notes) = EDIT_NOTES.lock() {
+        notes.entry(path.to_owned()).or_default().push(note);
+    }
+}
+
+pub(crate) fn clear_edit_notes(path: &str) {
+    if let Ok(mut notes) = EDIT_NOTES.lock() {
+        notes.remove(path);
+    }
+}
+
+pub(crate) fn edit_notes_for(path: &str) -> Vec<String> {
+    EDIT_NOTES
+        .lock()
+        .ok()
+        .and_then(|notes| notes.get(path).cloned())
+        .unwrap_or_default()
 }
 
 pub static APPLY_FILE_DIFFS: OpenAiTool = OpenAiTool {

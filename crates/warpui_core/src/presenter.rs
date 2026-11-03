@@ -20,6 +20,7 @@ use crate::{
 };
 use instant::Instant;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
@@ -97,6 +98,8 @@ pub struct PaintContext<'a> {
     /// skip layout for that wake. See issue #703.
     repaint_needs_layout: bool,
     pending_assets: HashSet<AssetHandle>,
+    /// Background image rasters this frame is waiting on; see [`Self::repaint_after_raster`].
+    pending_rasters: HashSet<crate::image_cache::RasterWait>,
     /// Keep track of all the views that were actually painted in this scene.
     views_painted: EntityIdSet,
 }
@@ -158,13 +161,13 @@ pub enum CursorUpdate {
 #[derive(Default, Clone)]
 pub struct PositionCache {
     /// A stack of pending positions to cache
-    pending_positions: Vec<HashMap<String, RectF>>,
+    pending_positions: Vec<FxHashMap<String, RectF>>,
 
     /// The positions that have been committed to the cache.
-    committed_positions: HashMap<String, RectF>,
+    committed_positions: FxHashMap<String, RectF>,
 
     /// Positions that are only cached for a single frame
-    single_frame_positions: HashSet<String>,
+    single_frame_positions: FxHashSet<String>,
 
     /// Positions for a drop target. These positions are always cleared on every frame.
     drop_target_positions: Vec<DropTargetPosition>,
@@ -182,7 +185,7 @@ impl PositionCache {
 
     /// Starts a new namespace for position id caching.
     pub fn start(&mut self) {
-        self.pending_positions.push(HashMap::new());
+        self.pending_positions.push(FxHashMap::default());
     }
 
     /// Ends the current namespace for position id caching, and commits all
@@ -199,8 +202,8 @@ impl PositionCache {
     /// cached until it's explicitly cleared.
     pub fn cache_position_indefinitely(&mut self, position_id: String, bounds: RectF) {
         if let Some(last) = self.pending_positions.last_mut() {
-            last.insert(position_id.clone(), bounds);
-            self.single_frame_positions.remove(&position_id);
+            self.single_frame_positions.remove(position_id.as_str());
+            last.insert(position_id, bounds);
         }
     }
 
@@ -396,6 +399,17 @@ impl Presenter {
     /// it used to get is still owed — and everything before the first layout,
     /// when nothing is mounted yet.
     ///
+    /// Why this re-renders eagerly instead of marking the view dirty and rendering it when a
+    /// parent mounts it (audited for #1213, deliberately left as is): the eager render runs in the
+    /// effect flush, where views are allowed to read and mutate models, set ambient render state
+    /// and register position/focus data. A deferred render would run inside `layout`, a new
+    /// calling context for every `View::render`, and `ChildView::layout` would have to render on
+    /// demand. Many views also notify from observers and rely on their element tree being current
+    /// for `after_layout`/`dispatch_event` before they are next shown. None of that is provably
+    /// safe across the ~hundreds of view types, so the cost is addressed at its sources (a hidden
+    /// view's `render` must be cheap, and a model must not notify when nothing changed) rather
+    /// than by deferral. No kill switch is offered because there is no deferred path to switch to.
+    ///
     /// Returns whether anything was taken out.
     pub(crate) fn render_unmounted_updates(
         &mut self,
@@ -437,6 +451,7 @@ impl Presenter {
     }
 
     /// Whether the last layout pass visited `view_id`. See issue #805.
+    #[cfg(test)]
     pub(crate) fn is_view_mounted(&self, view_id: EntityId) -> bool {
         self.mounted_views.contains(&view_id)
     }
@@ -517,6 +532,7 @@ impl Presenter {
         ctx: &mut AppContext,
         skip_layout: bool,
     ) -> Rc<Scene> {
+        crate::profiling::zone!("frame");
         self.position_cache.clear_single_frame_positions();
 
         // Scale the window size by the zoom factor. We implement zoom by faking a window size that
@@ -538,17 +554,19 @@ impl Presenter {
             self.after_layout(ctx);
             self.layout_current = true;
         }
-        let (scene, repaint_at, repaint_needs_layout, pending_assets) = self.paint(
-            zoomed_scale_factor,
-            zoomed_window_size,
-            max_texture_dimension_2d,
-            ctx,
-        );
+        let (scene, repaint_at, repaint_needs_layout, pending_assets, pending_rasters) = self
+            .paint(
+                zoomed_scale_factor,
+                zoomed_window_size,
+                max_texture_dimension_2d,
+                ctx,
+            );
         // After paint, collect a delayed repaint if it exists and start the timer.
         if let Some(repaint_at) = repaint_at {
             ctx.manage_delayed_repaint_timers(self.window_id, repaint_at, repaint_needs_layout);
         }
         ctx.manage_pending_assets(self.window_id, pending_assets);
+        ctx.manage_pending_rasters(self.window_id, pending_rasters);
         let scene = Rc::new(scene);
         self.scene = Some(scene.clone());
         // Times the frame that shows pty output read after a keystroke (#1092).
@@ -570,6 +588,7 @@ impl Presenter {
     }
 
     fn layout(&mut self, window_size: Vector2F, app: &AppContext) {
+        crate::profiling::zone!("layout");
         if let Some(root_view_id) = app.root_view_id(self.window_id) {
             // Rebuilt from scratch by this pass: whatever it does not visit is not
             // in the tree. See issue #805.
@@ -609,11 +628,27 @@ impl Presenter {
         window_size: Vector2F,
         max_texture_dimension_2d: Option<u32>,
         ctx: &mut AppContext,
-    ) -> (Scene, Option<Instant>, bool, HashSet<AssetHandle>) {
-        let mut scene = Scene::new(scale_factor, ctx.rendering_config());
+    ) -> (
+        Scene,
+        Option<Instant>,
+        bool,
+        HashSet<AssetHandle>,
+        HashSet<crate::image_cache::RasterWait>,
+    ) {
+        crate::profiling::zone!("paint");
+        // Layers are the same shape frame to frame, so the last scene says how big to make them.
+        let mut scene = match self.scene.as_deref() {
+            Some(previous) => Scene::with_capacity_hints(
+                scale_factor,
+                ctx.rendering_config(),
+                previous.capacity_hints(),
+            ),
+            None => Scene::new(scale_factor, ctx.rendering_config()),
+        };
         let mut repaint_at = None;
         let mut repaint_needs_layout = false;
         let mut pending_assets = HashSet::new();
+        let mut pending_rasters = HashSet::new();
 
         if let Some(root_view_id) = ctx.root_view_id(self.window_id) {
             let mut paint_ctx = PaintContext {
@@ -629,6 +664,7 @@ impl Presenter {
                 repaint_at: None,
                 repaint_needs_layout: false,
                 pending_assets: HashSet::new(),
+                pending_rasters: HashSet::new(),
                 views_painted: EntityIdSet::default(),
             };
             paint_ctx.paint(root_view_id, Vector2F::zero(), ctx);
@@ -636,6 +672,7 @@ impl Presenter {
             repaint_at = paint_ctx.repaint_at;
             repaint_needs_layout = paint_ctx.repaint_needs_layout;
             pending_assets.extend(paint_ctx.pending_assets);
+            pending_rasters.extend(paint_ctx.pending_rasters);
 
             // If the cursor shape had been changed by a view and that view is no longer being
             // rendered, reset the cursor.
@@ -664,7 +701,13 @@ impl Presenter {
             }
         }
 
-        (scene, repaint_at, repaint_needs_layout, pending_assets)
+        (
+            scene,
+            repaint_at,
+            repaint_needs_layout,
+            pending_assets,
+            pending_rasters,
+        )
     }
 
     pub fn ancestors(&self, mut view_id: EntityId) -> Vec<EntityId> {
@@ -722,17 +765,7 @@ impl Presenter {
     }
 
     pub fn dispatch_event(&mut self, event: Event, app: &AppContext) -> DispatchResult {
-        match &event {
-            Event::KeyDown { keystroke, .. } => crate::input_order::log_key_down(
-                &keystroke.key,
-                keystroke.ctrl,
-                keystroke.alt,
-                keystroke.shift,
-                keystroke.cmd,
-            ),
-            Event::TypedCharacters { chars } => crate::input_order::log_typed_characters(chars),
-            _ => {}
-        }
+        crate::profiling::zone!("input_dispatch");
         // Translate all events to be in the coordinate space after factoring in the
         // zoom factor.
         let event = event.scale_down(app.zoom_factor());
@@ -781,10 +814,6 @@ impl Presenter {
 
     pub fn set_highlighted_view(&mut self, view_id: EntityId) {
         self.highlighted_view = Some(view_id);
-    }
-
-    pub fn clear_highlighted_view(&mut self) {
-        self.highlighted_view = None;
     }
 
     pub fn text_layout_cache(&self) -> &LayoutCache {
@@ -919,6 +948,12 @@ impl PaintContext<'_> {
 
     pub fn repaint_after_load(&mut self, asset: AssetHandle) {
         self.pending_assets.insert(asset);
+    }
+
+    /// Redraws this window (once) when a background image raster finishes, instead of polling
+    /// with a repaint timer. See [`crate::image_cache::DeferredImage::Pending`].
+    pub fn repaint_after_raster(&mut self, wait: crate::image_cache::RasterWait) {
+        self.pending_rasters.insert(wait);
     }
 }
 

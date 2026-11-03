@@ -29,6 +29,7 @@ struct MockHandler {
     should_validate_dcs_hook_session_id: bool,
     allow_tmux_control_mode: bool,
     tmux_starting_events: usize,
+    setup_line_markers: Vec<(u64, usize)>,
 }
 
 impl Handler for MockHandler {
@@ -254,6 +255,21 @@ impl Handler for MockHandler {
         self.d_proto_hooks.push(DProtoHook::InitSsh { value: data })
     }
 
+    fn line_editor_reading(&mut self, data: LineEditorMarkerValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::LineEditorReading { value: data })
+    }
+
+    fn continuation_prompt(&mut self, data: LineEditorMarkerValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::ContinuationPrompt { value: data })
+    }
+
+    fn command_file_failed(&mut self, data: CommandFileFailedValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::CommandFileFailed { value: data })
+    }
+
     fn sourced_rc_file(&mut self, data: SourcedRcFileForWarpValue) {
         self.d_proto_hooks
             .push(DProtoHook::SourcedRcFileForWarp { value: data })
@@ -269,6 +285,10 @@ impl Handler for MockHandler {
 
     fn set_current_working_directory(&mut self, path: String) {
         self.cwd_updates.push(path);
+    }
+
+    fn setup_line_consumed(&mut self, token: u64, index: usize) {
+        self.setup_line_markers.push((token, index));
     }
 
     fn set_keyboard_enhancement_flags(
@@ -309,6 +329,7 @@ impl Default for MockHandler {
             should_validate_dcs_hook_session_id: false,
             allow_tmux_control_mode: false,
             tmux_starting_events: 0,
+            setup_line_markers: Vec::new(),
         }
     }
 }
@@ -604,6 +625,7 @@ fn parse_dcs_ssh() {
                 session_id: Some(167303092612201),
                 remote_session_id: Some(167303092612202),
                 external_control_master: false,
+                raw_bootstrap: false,
             }
         ),
         _ => panic!("incorrect dcs value"),
@@ -636,10 +658,142 @@ fn parse_dcs_ssh_with_external_control_master() {
                 session_id: Some(167303092612201),
                 remote_session_id: Some(167303092612202),
                 external_control_master: true,
+                raw_bootstrap: false,
             }
         ),
         _ => panic!("incorrect dcs value"),
     };
+}
+
+#[test]
+fn parse_dcs_ssh_with_raw_bootstrap() {
+    // #1172: the remote reports it can take the bootstrap as a counted raw read.
+    let bytes = hex_encoded_dcs_string(
+        r#"{
+                "hook": "SSH",
+                "value": {
+                    "socket_path": "/home/user/.ssh/cm-user@host:22",
+                    "remote_shell": "bash",
+                    "session_id": 167303092612201,
+                    "remote_session_id": 167303092612202,
+                    "external_control_master": false,
+                    "raw_bootstrap": true
+                }
+            }"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+
+    assert_eq!(handler.d_proto_hooks.len(), 1);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::SSH { value } => {
+            assert!(value.raw_bootstrap);
+            assert!(!value.external_control_master);
+        }
+        _ => panic!("incorrect dcs value"),
+    };
+}
+
+/// #1353 phase 6: the shell's per-session hook counter rides on both Precmd variants, and a Precmd
+/// from a bootstrap that predates it parses with none.
+#[test]
+fn parse_dcs_precmd_carries_the_shells_sequence_number() {
+    let with_metadata = hex_encoded_dcs_string(
+        r#"{"hook": "Precmd", "value": {"pwd": "/", "exit_code": 0, "next_block_id": "b", "session_id": 1, "seq": 42}}"#,
+    );
+    let (_, handler) = parse_bytes(&with_metadata);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::WithCompletionMetadata(value),
+        } => assert_eq!(value.prompt_metadata.seq, Some(42)),
+        other => panic!("unexpected hook {other:?}"),
+    }
+
+    let prompt_only = hex_encoded_dcs_string(
+        r#"{"hook": "Precmd", "value": {"pwd": "/", "session_id": 1, "seq": 7}}"#,
+    );
+    let (_, handler) = parse_bytes(&prompt_only);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::PromptOnly(value),
+        } => assert_eq!(value.seq, Some(7)),
+        other => panic!("unexpected hook {other:?}"),
+    }
+
+    let old_bootstrap = hex_encoded_dcs_string(
+        r#"{"hook": "Precmd", "value": {"pwd": "/", "exit_code": 0, "next_block_id": "b", "session_id": 1}}"#,
+    );
+    let (_, handler) = parse_bytes(&old_bootstrap);
+    match handler.d_proto_hooks.first().unwrap() {
+        DProtoHook::Precmd {
+            value: PrecmdHookValue::WithCompletionMetadata(value),
+        } => assert_eq!(value.prompt_metadata.seq, None),
+        other => panic!("unexpected hook {other:?}"),
+    }
+
+    // Preexec carries one too; it is accepted and ignored (the distance between two Precmds
+    // already counts the Preexecs between them).
+    let preexec = hex_encoded_dcs_string(
+        r#"{"hook": "Preexec", "value": {"command": "ls", "session_id": 1, "seq": 8}}"#,
+    );
+    let (_, handler) = parse_bytes(&preexec);
+    assert!(matches!(
+        handler.d_proto_hooks.first(),
+        Some(DProtoHook::Preexec { .. })
+    ));
+}
+
+/// #1390, #1391: the shells send the line-editor markers unencoded, as one OSC, with the session's
+/// sequence number. The exact bytes below are what the bootstraps print.
+#[test]
+fn parse_osc_line_editor_markers_carry_session_and_sequence_number() {
+    let reading = b"\x1b]9278;f;{\"hook\": \"LineEditorReading\", \"value\": {\"session_id\": 7, \"seq\": 12}}\x07";
+    let (_, handler) = parse_bytes_with_registered_sessions(reading, [SessionId::from(7)]);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::LineEditorReading { value }] => {
+            assert_eq!(value.session_id, Some(7));
+            assert_eq!(value.seq, Some(12));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+
+    let continuation = b"\x1b]9278;f;{\"hook\": \"ContinuationPrompt\", \"value\": {\"session_id\": 7, \"seq\": 13}}\x07";
+    let (_, handler) = parse_bytes_with_registered_sessions(continuation, [SessionId::from(7)]);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::ContinuationPrompt { value }] => {
+            assert_eq!(value.session_id, Some(7));
+            assert_eq!(value.seq, Some(13));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+}
+
+/// A marker from a bootstrap without sequence numbers parses with `seq: None`, and a marker for a
+/// session this terminal did not register is dropped like every other hook.
+#[test]
+fn parse_osc_line_editor_marker_without_seq_and_for_unknown_session() {
+    let bytes =
+        b"\x1b]9278;f;{\"hook\": \"LineEditorReading\", \"value\": {\"session_id\": 7}}\x07";
+    let (_, handler) = parse_bytes_with_registered_sessions(bytes, [SessionId::from(7)]);
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::LineEditorReading { value }] => assert_eq!(value.seq, None),
+        other => panic!("unexpected hooks {other:?}"),
+    }
+
+    let (_, handler) = parse_bytes_with_registered_sessions(bytes, [SessionId::from(8)]);
+    assert!(handler.d_proto_hooks.is_empty());
+}
+
+/// The hex-encoded DCS form (an older or alternative sender) reaches the same handler.
+#[test]
+fn parse_dcs_line_editor_markers_hex_encoded() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook": "ContinuationPrompt", "value": {"session_id": 3, "seq": 4}}"#,
+    );
+    let (_, handler) = parse_bytes(&bytes);
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::ContinuationPrompt { value }] if value.seq == Some(4)
+    ));
 }
 
 #[test]
@@ -687,6 +841,7 @@ fn parse_dcs_precmd_classifies_payload_with_completion_metadata() {
                     ps1_is_encoded: None,
                     ignore_prompt_markers: None,
                     is_after_in_band_command: false,
+                    seq: None,
                 },
             })
         ),
@@ -1098,6 +1253,7 @@ fn parse_dcs_bootstrapped() {
             BootstrappedValue {
                 session_id: Some(167303092612201),
                 histfile: Some("/Users/andy/.zsh_history".to_string()),
+                history_sqlite: None,
                 shell: "bash".to_string(),
                 home_dir: Some("/Users/andy".to_string()),
                 path: Some("/usr/sbin:/usr/bin".to_string()),
@@ -1827,4 +1983,64 @@ fn tmux_control_mode_dcs_honoured_when_initiated() {
     let (parser, handler) = parse_tmux_dcs(true);
     assert!(parser.state.tmux_control_mode.is_some());
     assert_eq!(handler.tmux_starting_events, 1);
+}
+
+/// #1354: the marker OSC a typed setup line prints reaches the handler, with either terminator;
+/// a malformed one is ignored.
+#[test]
+fn parse_setup_line_marker_osc() {
+    let (_, handler) = parse_bytes(b"\x1b]7771;4242;3\x07\x1b]7771;18446744073709551615;12\x1b\\");
+    assert_eq!(handler.setup_line_markers, vec![(4242, 3), (u64::MAX, 12)]);
+    let (_, handler) = parse_bytes(b"\x1b]7771;x;3\x07\x1b]7771;1\x07\x1b]7771;1;2;3\x07");
+    assert!(handler.setup_line_markers.is_empty());
+}
+
+/// #1582: `Warp-Preexec` builds its JSON by hand instead of `ConvertTo-Json`. The payload below is
+/// exactly what that code produces for the command `echo "a\b"<TAB>x <LF> y é 世` (backslash and
+/// double quote escaped, control characters as `\u00XX`, non-ASCII passed through), and must
+/// decode to the original command.
+#[test]
+fn parse_dcs_preexec_decodes_the_hand_built_powershell_json() {
+    let payload = "{\"hook\":\"Preexec\",\"value\":{\"session_id\":7,\"command\":\"echo \\\"a\\\\b\\\"\\u0009x \\u000a y \u{e9} \u{4e16}\",\"seq\":3}}";
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(payload));
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::Preexec { value }] => {
+            assert_eq!(value.command, "echo \"a\\b\"\tx \n y \u{e9} \u{4e16}");
+            assert_eq!(value.session_id, Some(7));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+
+    // The empty command and a command that is only escapes.
+    let empty = "{\"hook\":\"Preexec\",\"value\":{\"session_id\":7,\"command\":\"\",\"seq\":4}}";
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(empty));
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::Preexec { value }] if value.command.is_empty()
+    ));
+}
+
+/// #1581: the insert chord's failure report is a hex-encoded JSON hook with the session id only.
+#[test]
+fn parse_dcs_command_file_failed_carries_the_session() {
+    let payload = r#"{"hook":"CommandFileFailed","value":{"session_id":7}}"#;
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(payload));
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::CommandFileFailed { value }] => assert_eq!(value.session_id, Some(7)),
+        other => panic!("unexpected hooks {other:?}"),
+    }
+}
+
+/// #1581: the failure report is not dropped for a session id the app did not register, or the
+/// command it reports would be lost; the pty controller retypes for its outstanding chord.
+#[test]
+fn command_file_failed_is_delivered_for_an_unregistered_session() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook":"CommandFileFailed","value":{"session_id":99}}"#,
+    );
+    let (_, handler) = parse_bytes_with_registered_sessions(&bytes, [SessionId::from(7)]);
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::CommandFileFailed { .. }]
+    ));
 }

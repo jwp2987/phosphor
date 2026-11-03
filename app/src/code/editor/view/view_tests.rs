@@ -77,3 +77,65 @@ fn test_interaction_state_prevents_editing() {
         assert_eq!(text.as_str(), "abc");
     });
 }
+
+/// #1380: keys typed while a paste is being read off the UI thread are held and applied after the
+/// pasted text, in typing order.
+#[test]
+fn test_keys_typed_during_a_paste_read_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        let (_window, editor_view) = initialize_editor(&mut app);
+        let text = editor_view.update(&mut app, |view, ctx| {
+            let id = view.paste_gate.begin();
+            view.handle_action(&CodeEditorViewAction::UserTyped(UserInput::new("x")), ctx);
+            view.handle_action(&CodeEditorViewAction::UserTyped(UserInput::new("y")), ctx);
+            assert_eq!(view.text(ctx).as_str(), "", "typed keys wait for the paste");
+            view.finish_paste(
+                id,
+                warpui::clipboard::BackgroundTextRead::Content(
+                    warpui::clipboard::ClipboardContent::plain_text("PASTE".into()),
+                ),
+                ctx,
+            );
+            view.text(ctx)
+        });
+        assert_eq!(text.as_str(), "PASTExy");
+    });
+}
+
+/// #1380: a read that failed pastes nothing and still applies the held keys; a second paste asked
+/// for during the read queues behind it.
+#[test]
+fn test_failed_paste_read_keeps_the_keys_in_the_code_editor() {
+    App::test((), |mut app| async move {
+        let (_window, editor_view) = initialize_editor(&mut app);
+        let text = editor_view.update(&mut app, |view, ctx| {
+            let id = view.paste_gate.begin();
+            view.handle_action(&CodeEditorViewAction::UserTyped(UserInput::new("a")), ctx);
+            view.handle_action(&CodeEditorViewAction::Paste, ctx);
+            view.handle_action(&CodeEditorViewAction::UserTyped(UserInput::new("b")), ctx);
+            view.finish_paste(id, warpui::clipboard::BackgroundTextRead::TimedOut, ctx);
+            view.text(ctx)
+        });
+        assert_eq!(text.as_str(), "ab");
+    });
+}
+
+/// #1409: on Linux the code editor's `Paste` custom action is `ctrl-shift-v`, so plain `ctrl-v`
+/// needs the compensating `WindowsPaste` binding in the `CodeEditorView` context.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn test_ctrl_v_pastes_in_the_code_editor() {
+    use crate::util::bindings::CustomAction;
+    use warpui::keymap::Context;
+
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let mut context = Context::default();
+        context.set.insert("CodeEditorView");
+        let bound = app.read(|ctx| {
+            ctx.binding_for_custom_action(CustomAction::WindowsPaste.into(), vec![context])
+                .is_some()
+        });
+        assert!(bound, "ctrl-v must be bound in CodeEditorView");
+    });
+}

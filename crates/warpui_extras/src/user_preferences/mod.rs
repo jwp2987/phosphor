@@ -12,12 +12,15 @@ pub enum ReloadOutcome {
     /// The file looks deleted and the store holds settings. Nothing was changed; re-check
     /// after [`RESTORE_CONFIRM_DELAY`] with [`UserPreferences::restore_if_still_deleted`].
     DeletionPending,
+    /// The file changed only because this store wrote it (the watcher's echo of our own
+    /// background write). The in-memory settings are already current; nothing to reload.
+    OwnWrite,
 }
 
+#[cfg(any(feature = "user_preferences-toml", feature = "user_preferences-file"))]
+mod background_writer;
 pub mod file_backed;
 pub mod in_memory;
-#[cfg(target_family = "wasm")]
-pub mod local_storage;
 #[cfg(target_os = "windows")]
 pub mod registry_backed;
 #[cfg(feature = "user_preferences-toml")]
@@ -120,6 +123,11 @@ pub trait UserPreferences {
     fn restore_if_still_deleted(&self) -> bool {
         false
     }
+
+    /// Blocks until every change made so far is on disk. Backends that write in the
+    /// background (the TOML settings file) must be flushed on quit and before anything
+    /// that reads the file; the default is a no-op for backends that write inline.
+    fn flush_pending_writes(&self) {}
 
     /// Marks a key as write-inhibited so that subsequent writes and removes
     /// for this key are silently skipped.

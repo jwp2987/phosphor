@@ -7,7 +7,6 @@ use crate::{
     util::bindings::trigger_to_keystroke,
 };
 
-use chrono::{DateTime, FixedOffset};
 
 mod main_page;
 pub mod utils;
@@ -191,15 +190,6 @@ pub struct ContentSectionData {
     pub items: Vec<ContentItem>,
 }
 
-#[derive(Clone)]
-pub struct ChangelogSectionData {
-    pub section_name: FeatureSection,
-    pub date: DateTime<FixedOffset>,
-    pub new_features_markdown: String,
-    pub improvements_markdown: String,
-    pub coming_soon_markdown: String,
-}
-
 #[derive(Default)]
 pub struct TipsCompleted {
     pub features_used: HashSet<Tip>,
@@ -294,10 +284,6 @@ impl TipsCompleted {
         }
 
         is_new_value
-    }
-
-    pub fn serialized_tips(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self.features_used)
     }
 
     pub fn completed_count(&self) -> usize {

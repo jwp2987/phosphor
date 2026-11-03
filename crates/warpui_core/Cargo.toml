@@ -7,6 +7,8 @@ publish.workspace = true
 license = "MIT"
 
 [features]
+# Tracy instrumentation (#1169). Never enabled in release bundles; see src/profiling.rs.
+profiling = ["dep:tracy-client"]
 traces = []
 # Headless terminal-UI (ratatui) rendering runtime, used by the warp_tui
 # front-end. Off by default; the GUI build never pulls ratatui or the runtime
@@ -26,6 +28,8 @@ settings_value = ["dep:settings_value"]
 test-util = []
 
 [dependencies]
+# Pinned: must match the Tracy viewer version (docs/profiling.md). Vendored C++ client.
+tracy-client = { version = "=0.18.2", optional = true, default-features = false, features = ["enable", "ondemand", "only-localhost"] }
 anyhow = "1.0"
 async-broadcast.workspace = true
 async-channel.workspace = true
@@ -95,12 +99,26 @@ warp_util.workspace = true
 [dev-dependencies]
 command = { workspace = true, features = ["test-util"] }
 concat-idents.workspace = true
+# Reviewed snapshot tests (`cargo insta review`).
+insta = "1.41.1"
 tempfile = "3.2.0"
 ctor = "0.1.19"
 rust-embed.workspace = true
 simplelog.workspace = true
 # Enable the `test-util` feature for our own package when running tests.
 warpui_core = { path = ".", features = ["test-util"] }
+
+# Randomized concurrency testing (`RUSTFLAGS="--cfg shuttle"`; see src/sync_shim.rs). The cfg is
+# never set in a normal or release build, so nothing here is compiled or shipped.
+[target.'cfg(shuttle)'.dependencies]
+shuttle = "0.8.0"
+
+# Exhaustive interleaving checks of tiny primitives (`RUSTFLAGS="--cfg loom"`).
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)', 'cfg(loom)'] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-io.workspace = true

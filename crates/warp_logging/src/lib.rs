@@ -38,21 +38,31 @@ pub struct LogConfig {
     pub max_file_size_bytes: Option<u64>,
 }
 
-#[cfg_attr(not(target_family = "wasm"), path = "native.rs")]
-#[cfg_attr(target_family = "wasm", path = "wasm.rs")]
+/// In-session size cap for the GUI log (#1187). Without it a long-running GUI session grows
+/// the log without bound (~10 MB/h under heavy use). Rotation keeps the newest
+/// `MAX_FILES_IN_GUI_ROTATION` chunks, so disk use is bounded to roughly six times this.
+pub const GUI_MAX_LOG_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// The in-session size cap to configure for `frontend`. Only the GUI sets one: the TUI and
+/// CLI processes are short-lived and keep the existing unbounded-within-session behaviour.
+pub fn default_max_file_size_bytes(frontend: LogFrontend) -> Option<u64> {
+    match frontend {
+        LogFrontend::Gui => Some(GUI_MAX_LOG_FILE_SIZE_BYTES),
+        LogFrontend::Tui | LogFrontend::Cli => None,
+    }
+}
+
+#[path = "native.rs"]
 mod imp;
 
-#[cfg(not(target_family = "wasm"))]
 mod rotation;
 
 pub use imp::init;
-#[cfg(not(target_family = "wasm"))]
 pub use imp::{
     ExtraFile, InlineFile, LogBundleExtras, create_log_bundle_zip, default_log_bundle_filename,
     log_directory, log_file_path, rotate_log_files, write_log_bundle_zip_to,
 };
 
-#[cfg(not(target_family = "wasm"))]
 pub use imp::{
     init_for_crash_recovery_process, init_logging_for_unit_tests, on_crash_recovery_process_killed,
     on_parent_process_crash,
@@ -60,7 +70,6 @@ pub use imp::{
 
 /// Tap on the unit-test logger, for tests that must assert on what a production
 /// call site actually emitted. See [`set_unit_test_log_tap`].
-#[cfg(not(target_family = "wasm"))]
 pub use imp::{UnitTestLogTap, set_unit_test_log_tap, unit_test_log_tap_is_available};
 
 /// Why log-file setup failed and logging fell back to the terminal (#861).
@@ -77,7 +86,6 @@ static LOG_FALLBACK_NOTICE: std::sync::Mutex<Option<LogFallbackNotice>> =
 
 /// Records that logging fell back to the terminal. Called by the logger
 /// before any UI exists; the UI takes it with [`take_log_fallback_notice`].
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn record_log_fallback(directory: std::path::PathBuf, reason: String) {
     if let Ok(mut slot) = LOG_FALLBACK_NOTICE.lock() {
         *slot = Some(LogFallbackNotice { directory, reason });
@@ -105,5 +113,21 @@ mod fallback_notice_tests {
         assert_eq!(notice.directory, std::path::PathBuf::from("/state"));
         assert!(notice.reason.contains("Permission denied"));
         assert!(take_log_fallback_notice().is_none());
+    }
+}
+
+#[cfg(test)]
+mod size_cap_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_gui_gets_an_in_session_size_cap() {
+        assert_eq!(
+            default_max_file_size_bytes(LogFrontend::Gui),
+            Some(GUI_MAX_LOG_FILE_SIZE_BYTES)
+        );
+        assert!(GUI_MAX_LOG_FILE_SIZE_BYTES > 0);
+        assert_eq!(default_max_file_size_bytes(LogFrontend::Tui), None);
+        assert_eq!(default_max_file_size_bytes(LogFrontend::Cli), None);
     }
 }

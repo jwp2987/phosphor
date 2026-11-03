@@ -36,6 +36,7 @@ use warpui_core::windowing::WindowCallbacks;
 use warpui_core::{DisplayId, DisplayIdx, Event, OptionalPlatformWindow, Scene, WindowId};
 
 use super::delegate::DispatchDelegate;
+use super::frame_latency;
 use super::rendering::{self, Device, RendererManager, is_integrated_gpu};
 use super::{RectFExt as _, app};
 
@@ -484,6 +485,7 @@ pub struct WindowState {
     window_id: WindowId,
     callbacks: WindowCallbacks,
     next_scene: RefCell<Option<Rc<Scene>>>,
+    draw_owed: frame_latency::DrawOwed,
     device: Option<Device>,
     renderer_manager: Option<Rc<RefCell<RendererManager>>>,
     synthetic_drag_counter: Cell<usize>,
@@ -614,6 +616,7 @@ impl Window {
                 window_id,
                 callbacks,
                 next_scene: Default::default(),
+                draw_owed: Default::default(),
                 renderer_manager: Some(renderer_manager),
                 device,
                 synthetic_drag_counter: Cell::new(0),
@@ -1112,6 +1115,14 @@ impl WindowState {
         }
     }
 
+    /// Asks AppKit to run another draw pass on the next runloop turn, keeping any cached scene
+    /// (unlike `request_redraw`, which discards it and forces a rebuild).
+    pub fn schedule_redraw(&self) {
+        // `setNeedsDisplayAsync` is a custom WarpWindow selector.
+        // SAFETY: messaging a valid window.
+        let _: () = unsafe { msg_send![self.window(), setNeedsDisplayAsync] };
+    }
+
     /// Returns the window's backing `CAMetalLayer`.
     pub fn metal_layer(&self) -> Retained<CAMetalLayer> {
         let view = self
@@ -1403,8 +1414,28 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
             "Tried to update window's backing CAMetalDrawable but app was already mutably borrowed!\nStack trace:\n{:#}",
             std::backtrace::Backtrace::force_capture()
         );
+        // The draw was dropped, not done. Record that one is owed and queue a single flush on
+        // the foreground executor; it runs from the main queue after the outer app borrow is
+        // released and requests the redraw then. No per-turn re-arm.
+        // SAFETY: `this` is the WarpHostView invoking its layer delegate.
+        let window = unsafe { get_window_state(this) };
+        if window.draw_owed.note_deferred() {
+            let weak_window_state = Rc::downgrade(window);
+            window
+                .executor
+                .spawn(async move {
+                    if let Some(window_state) = weak_window_state.upgrade() {
+                        if window_state.draw_owed.take_for_flush() {
+                            window_state.schedule_redraw();
+                        }
+                    }
+                })
+                .detach();
+        }
         return;
     }
+    // SAFETY: as above.
+    unsafe { get_window_state(this) }.draw_owed.note_draw_ran();
 
     unsafe {
         let window = get_window_state(this);
@@ -1447,14 +1478,40 @@ extern "C-unwind" fn warp_update_layer(this: &Object) {
             .borrow_mut();
         let renderer = renderer_manager.renderer_for_device(device, window.physical_size());
 
+        crate::rendering::glyph_cache::begin_window_render();
         app::callback_dispatcher().with_mutable_app_context(|ctx| {
             renderer.render(&scene, window.as_ref(), ctx.font_cache());
         });
+        // Glyphs left unrasterised by the per-frame budget (#1168 F6) need another frame.
+        if crate::rendering::glyph_cache::take_deferred_redraw() {
+            window.schedule_redraw();
+        }
 
         app::callback_dispatcher()
             .for_window(&Window(window.clone()))
             .frame_drawn();
     }
+}
+
+/// Logs one stage of a Return/Enter key press as seen by the Objective-C layer (#1482), as
+/// `input_order hop=mac_enter stage=<stage> <detail>`. `detail` is flags, counts and times only,
+/// never typed text. Called only for key codes 36 and 76.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_log_enter(
+    stage: *const std::ffi::c_char,
+    detail: *const std::ffi::c_char,
+) {
+    let to_string = |ptr: *const std::ffi::c_char| -> String {
+        if ptr.is_null() {
+            String::new()
+        } else {
+            // SAFETY: the caller passes a NUL-terminated C string that outlives this call.
+            unsafe { std::ffi::CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    warpui_core::input_order::log_enter("mac_enter", &to_string(stage), || to_string(detail));
 }
 
 /// Returns whether this event was handled.

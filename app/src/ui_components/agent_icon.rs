@@ -135,6 +135,7 @@ pub(crate) fn agent_icon_variant_for_run(
 /// run concept at all, so `is_cloud_agent_run()` is hard-coded `false` there. Calling it here
 /// is still correct (conversation-list entries in this fork are always local), it just can
 /// never return `true` today.
+#[cfg(test)]
 pub(crate) fn agent_conversation_entry_icon_variant(
     entry: &AgentConversationEntry,
 ) -> IconWithStatusVariant {

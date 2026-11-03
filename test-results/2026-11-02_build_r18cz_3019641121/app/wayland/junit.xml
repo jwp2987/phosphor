@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="33" failures="5" skipped="8">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.20">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="42.70">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="0.50">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="54.10">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="17.50">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="99.40">
+<skipped message="NO-REFERENCE (not a pass): no reference: absolute only (Ctrl-C): no reference terminal available"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="40.20">
+<failure message="ssh_connect_typing (gap 0.2 s): T131_kjy2zh never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)">ssh_connect_typing (gap 0.2 s): T131_kjy2zh never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)
+remote shell received 8/9 typed-ahead commands exactly (missing 1)
+remote rec.log lacks the exact typed command for some trials</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="7.10">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="5.80">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="30.90">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.34 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="14.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="30.10">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="99.70">
+<failure message="nu: 12 typed lines: expected ['t166_qxcepqz9sf', 't167_kr0fis9qpn', 't168_r4d6tn8e9u', 't169_s7ic2xcbu0', 't170_9c71lmohi6', 't171_r3mdx3vwoa', 't172_5ckq9caof7', 't173_c7mn2sp56x', 't174_zemlmt14xb',">nu: 12 typed lines: expected ['t166_qxcepqz9sf', 't167_kr0fis9qpn', 't168_r4d6tn8e9u', 't169_s7ic2xcbu0', 't170_9c71lmohi6', 't171_r3mdx3vwoa', 't172_5ckq9caof7', 't173_c7mn2sp56x', 't174_zemlmt14xb', 't175_bg1vve0m65', 't176_24kr7tz8qq', 't177_ac33wo62n4'], got ['t166_qxcepqz9sft167_kr0fis9qpnt168_r4d6tn8e9ut169_s7ic2xcbu0t170_9c71lmohi6t171_r3mdx3vwoat172_5ckq9caof7t173_c7mn2sp56xt174_zemlmt14xbt175_bg1vve0m65t176_24kr7tz8qqt177_ac33wo62n4']
+nu: pasted lines + instant Enter: expected ['t178_jy1dhwaq8d', 't179_tyauvtdnfv', 't180_heis0vobl6', 't181_xtsy073em0'], got ['t178_jy1dhwaq8dt179_tyauvtdnfvt180_heis0vobl6t181_xtsy073em0']
+nu: nested nu, exit to the outer nu, next line: expected ['t182_ocpopzyn', 't183_jtxat25k', 't184_jbx19v65'], got ['t182_ocpopzynt183_jtxat25kt184_jbx19v65']
+nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane
+nu app log: 2026-11-02T22:00:14Z [DEBUG] frame 1: updated=["AutosuggestionIgnore", "DisplayChip", "EditorView", "EditorView", "AcceptAutosuggestionKeybinding", "FeaturePopup", "EditorView", "GlobalSearchView", "A</failure>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="3.40">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.60">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.30">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.20">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="6.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="17.50">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="101.00">
+<skipped message="NO-REFERENCE (not a pass): no reference: absolute only (Ctrl-C): no reference terminal available"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="37.80">
+<failure message="ssh_connect_typing (gap 0.2 s): T93_r43xyf never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)">ssh_connect_typing (gap 0.2 s): T93_r43xyf never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: (empty)
+remote shell received 7/8 typed-ahead commands exactly (missing 1)
+remote rec.log lacks the exact typed command for some trials</failure>
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="7.20">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="6.00">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="31.70">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.78 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="14.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_latency_key_log" time="0.00">
+<failure message="after latency_key_log the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no">after latency_key_log the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="28.60">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="21.50">
+<failure message="nu never executed a probe line after start (wait 4.0s + 4 probes)">nu never executed a probe line after start (wait 4.0s + 4 probes)
+nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane</failure>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="3.80">
+</testcase>
+</testsuite>

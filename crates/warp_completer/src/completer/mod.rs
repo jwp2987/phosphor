@@ -22,9 +22,6 @@ pub use suggest::{
     SuggestionTypeName,
 };
 
-#[cfg(feature = "v2")]
-pub use context::{JsExecutionContext, JsExecutionError};
-
 fn get_path_separators(ctx: &dyn CompletionContext) -> PathSeparators {
     ctx.path_completion_context()
         .map(|ctx| ctx.path_separators())

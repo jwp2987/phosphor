@@ -13,7 +13,9 @@ use crate::ai::agent::{
     conversation::AIConversationId,
 };
 use crate::ai::blocklist::BlocklistAIPermissions;
-use crate::ai::paths::{host_native_absolute_path, join_paths, shell_native_absolute_path};
+use crate::ai::paths::{
+    PathHost, host_native_absolute_path_for, join_paths_for, shell_native_absolute_path_for,
+};
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::{
@@ -82,8 +84,14 @@ impl FileGlobExecutor {
             .current_working_directory()
             .cloned();
         let shell = self.active_session.as_ref(ctx).shell_launch_data(ctx);
+        // Fail closed on a `~` we cannot resolve on a remote session (#1288).
+        if super::session_tilde_unresolved(self.active_session.as_ref(ctx), &path, ctx) {
+            return false;
+        }
+        let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
         let absolute_path =
-            host_native_absolute_path(path.as_str(), &shell, &current_working_directory);
+            host_native_absolute_path_for(&path, &shell, &current_working_directory, remote);
 
         BlocklistAIPermissions::as_ref(ctx)
             .can_read_files_with_conversation(
@@ -123,10 +131,13 @@ impl FileGlobExecutor {
             .as_ref(ctx)
             .current_working_directory()
             .cloned();
-        let absolute_path = shell_native_absolute_path(
+        let path = super::expand_session_tilde(self.active_session.as_ref(ctx), &path, ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
+        let absolute_path = shell_native_absolute_path_for(
             path.as_str(),
             shell_launch_data.as_ref(),
             current_working_directory.as_ref(),
+            remote,
         );
 
         let session = self.active_session.as_ref(ctx).session(ctx);
@@ -144,9 +155,15 @@ impl FileGlobExecutor {
         };
         ActionExecution::new_async(
             async move {
-                match run_file_glob(patterns_clone, absolute_path, session, shell_launch_data)
-                    .with_timeout(FILE_GLOB_TIMEOUT)
-                    .await
+                match run_file_glob(
+                    patterns_clone,
+                    absolute_path,
+                    session,
+                    shell_launch_data,
+                    remote,
+                )
+                .with_timeout(FILE_GLOB_TIMEOUT)
+                .await
                 {
                     Ok(result) => {
                         result.map(|glob_result| apply_result_limit(glob_result, result_limit))
@@ -226,7 +243,26 @@ fn apply_result_limit(result: FileGlobV2Result, limit: Option<usize>) -> FileGlo
             mut matched_files,
             warnings,
         } => {
+            let total = matched_files.len();
+            if total <= limit {
+                return FileGlobV2Result::Success {
+                    matched_files,
+                    warnings,
+                };
+            }
             matched_files.truncate(limit);
+            // Said here, in the result: `glob_result_to_json`'s own marker compares the list
+            // against ITS cap, which this truncation never exceeds, so without this note a
+            // shortened list went to the model as the whole answer and it concluded the other
+            // files do not exist.
+            let note = format!(
+                "Only the first {limit} of {total} matching files are listed. Narrow `patterns` \
+                 or `search_dir` and search again for the rest."
+            );
+            let warnings = Some(match warnings {
+                Some(existing) if !existing.trim().is_empty() => format!("{note}\n{existing}"),
+                _ => note,
+            });
             FileGlobV2Result::Success {
                 matched_files,
                 warnings,
@@ -241,6 +277,7 @@ async fn run_file_glob(
     absolute_path: String,
     session: Option<Arc<Session>>,
     shell_launch_data: Option<ShellLaunchData>,
+    remote: PathHost,
 ) -> anyhow::Result<FileGlobV2Result> {
     if patterns.is_empty() {
         return Err(anyhow::anyhow!("No patterns provided to file_glob"));
@@ -265,6 +302,7 @@ async fn run_file_glob(
             session.as_ref(),
             shell_launch_data,
             shell_type,
+            remote,
         )
         .await
     } else if shell_type == ShellType::PowerShell {
@@ -281,12 +319,14 @@ async fn run_git_ls_files_command(
     session: &Session,
     shell_launch_data: Option<ShellLaunchData>,
     shell_type: ShellType,
+    remote: PathHost,
 ) -> anyhow::Result<FileGlobV2Result> {
     let command = build_git_ls_files_command(
         patterns,
         target_path,
         shell_launch_data.as_ref(),
         shell_type,
+        remote,
     );
 
     let command_output = session
@@ -304,7 +344,11 @@ async fn run_git_ls_files_command(
         // `find` and PowerShell implementations, convert to absolute paths.
         let absolute_paths = non_empty_lines(&output)
             .map(|relative_path| {
-                join_paths(&[target_path, relative_path], shell_launch_data.as_ref())
+                join_paths_for(
+                    &[target_path, relative_path],
+                    shell_launch_data.as_ref(),
+                    remote,
+                )
             })
             .map(|path| FileGlobV2Match { file_path: path });
 
@@ -393,15 +437,16 @@ fn build_git_ls_files_command(
     target_path: &str,
     shell_launch_data: Option<&ShellLaunchData>,
     shell_type: ShellType,
+    remote: PathHost,
 ) -> String {
     let pattern_args = patterns
         .iter()
         .flat_map(|pattern| {
             [
                 // Matches on files in the target path.
-                join_paths(&[target_path, pattern], shell_launch_data),
+                join_paths_for(&[target_path, pattern], shell_launch_data, remote),
                 // Matches on files in any subdirectory of the target path.
-                join_paths(&[target_path, "*", pattern], shell_launch_data),
+                join_paths_for(&[target_path, "*", pattern], shell_launch_data, remote),
             ]
         })
         // Patterns are model-controlled action input. Quote after joining with
@@ -412,12 +457,26 @@ fn build_git_ls_files_command(
 }
 
 fn build_find_command(patterns: &[String], target_path: &str, shell_type: ShellType) -> String {
-    // Preserve the existing `find` expression while making each model-provided
-    // pattern a quoted `-name` argument instead of shell syntax.
+    // Each model-provided pattern is a quoted `-name` argument instead of shell syntax.
+    // `-name` only sees the basename, so a leading `**/` (the tool description's own example,
+    // `**/*.rs`) is dropped: the search is already recursive. Without that it never matched.
     let pattern_args = patterns
         .iter()
-        .map(|pattern| format!("-name {}", shell_quote_arg(pattern, shell_type)))
+        .map(|pattern| {
+            let mut pattern = pattern.as_str();
+            while let Some(rest) = pattern.strip_prefix("**/") {
+                pattern = rest;
+            }
+            format!("-name {}", shell_quote_arg(pattern, shell_type))
+        })
         .join(" -o ");
+    // `-a` binds tighter than `-o`, so without grouping `-type f -name A -o -name B` applied the
+    // file-type test to the first pattern only and returned directories for the rest.
+    let pattern_args = if patterns.len() > 1 {
+        format!("\\( {pattern_args} \\)")
+    } else {
+        pattern_args
+    };
     format!(
         "find {} -type f {pattern_args}",
         shell_quote_arg(target_path, shell_type)

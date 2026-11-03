@@ -45,12 +45,8 @@ cfg_if::cfg_if! {
         use repo_metadata::{RepositoryIdentifier, StandingQueryContent};
         use ignore::gitignore::Gitignore;
         use async_channel::Sender;
-        // `instant::Instant` is this repo's global convention for a cross-platform
-        // (including WASM) time origin, replacing `std::time::Instant`. Enforced via
-        // `disallowed_types` in `clippy.toml`.
-        use instant::Instant;
         use std::sync::Arc;
-        use std::time::{Duration, SystemTime};
+        use std::time::SystemTime;
 
         const MAX_SCAN_DEPTH: usize = 3;
         const MAX_FILES_TO_SCAN: usize = 5000;
@@ -59,22 +55,25 @@ cfg_if::cfg_if! {
         //
         // Main purpose: in the time window after `cd`-ing into a new git repo,
         // before the async `index_and_store_rules` completes, `pending_context`
-        // synchronously calls this fast-path to directly stat + read the rule
-        // files in cwd and its ancestor directories, ensuring AGENTS.md / WARP.md /
+        // reads this fast-path cache, ensuring AGENTS.md / WARP.md /
         // CLAUDE.md **never get dropped due to async race conditions**.
         // Once the normal path (`find_applicable_rules`) becomes available, the
         // fast-path steps aside and clears its cache.
         //
-        // UI-never-stutters guarantees:
-        //   - Worst case per call: `MAX_WALK_DEPTH * RULES_FILE_PATTERN.len()` metadata
+        // The cache is filled by an async scan started when the cwd changes
+        // (`prewarm_fast_path`, #1364), so by the time a request is built the answer is
+        // normally already cached. A request that beats the scan does NOT scan on the
+        // calling (UI) thread: `pending_context` builds without project rules, and the
+        // send awaits the scan's completion (`request_rules_wait`, #1364) and adds the
+        // rules before the request goes out. The scan is complete, never time-truncated
+        // (it used to carry a 20 ms budget that silently dropped rule files on a slow
+        // disk), and bounded structurally:
+        //   - Worst case per scan: `MAX_WALK_DEPTH * RULES_FILE_PATTERN.len()` metadata
         //     calls + `read_to_string` on hit files (rule files are typically a few KB,
         //     Windows NTFS < 1ms/file).
-        //   - `FAST_PATH_BUDGET` hard-caps the time budget; on timeout it immediately
-        //     returns what's been collected so far, never blocking.
         //   - Steady-state hits (directory unchanged) only stat, never re-read files;
         //     any change in mtime / size / parent-dir-mtime triggers a rescan.
         const MAX_WALK_DEPTH: usize = 6;
-        const FAST_PATH_BUDGET: Duration = Duration::from_millis(20);
     }
 }
 
@@ -165,6 +164,25 @@ impl RuleAtPath {
             .or(self.agents_md.as_ref())
             .or(self.claude_md.as_ref())
     }
+}
+
+/// What is known about a directory's project rules without scanning.
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+enum RulesLookup {
+    /// Known: the rules, or `None` when the directory has none.
+    Ready(Option<ProjectRulesResult>),
+    /// Not known yet: the off-thread fast-path scan has to land first.
+    Pending,
+}
+
+/// The outcome of [`ProjectContextModel::request_rules_wait`].
+#[cfg(feature = "local_fs")]
+#[derive(Debug)]
+pub enum RulesWait {
+    /// Known now (layered with the global rules).
+    Ready(Option<ProjectRulesResult>),
+    /// Resolves with the layered rules when the scan lands.
+    Pending(futures::channel::oneshot::Receiver<Option<ProjectRulesResult>>),
 }
 
 #[derive(Debug, Default, Clone)]
@@ -360,6 +378,11 @@ impl ProjectRules {
 pub struct ProjectContextModel {
     /// Mapping from directory path to list of rule files found in that directory
     path_to_rules: HashMap<PathBuf, ProjectRules>,
+    /// Roots whose rules scan failed with "Repo size exceeded max file limit".
+    /// Such a repo stays over the limit for the session, so
+    /// `index_and_store_rules` skips it instead of re-walking it (and
+    /// re-logging) on every prompt. #1193.
+    over_limit_roots: HashSet<PathBuf>,
     /// Queued repository updates for paths that have an in-flight
     /// `process_repository_updates` task in `register_watcher_for_path`'s
     /// stream handler. The presence of a key indicates an active async task
@@ -396,6 +419,18 @@ pub struct ProjectContextModel {
     /// `pending_context(&self, app: &AppContext)`.
     #[cfg(feature = "local_fs")]
     fast_path_cache: RefCell<HashMap<PathBuf, FastPathEntry>>,
+    /// Canonical cwds with an async fast-path scan in flight (see `prewarm_fast_path`).
+    #[cfg(feature = "local_fs")]
+    fast_path_in_flight: HashSet<PathBuf>,
+    /// Test-only: the spawned fast-path scans, so a test awaits the scan's completion event
+    /// (`ctx.await_spawned_future`) instead of sleeping or polling.
+    #[cfg(all(test, feature = "local_fs"))]
+    fast_path_spawned: Vec<warpui::r#async::FutureId>,
+    /// Sends waiting for the fast-path scan of a canonical cwd (see `request_rules_wait`);
+    /// each gets the layered rules when the scan lands, or `None`-rules if it failed.
+    #[cfg(feature = "local_fs")]
+    fast_path_waiters:
+        HashMap<PathBuf, Vec<futures::channel::oneshot::Sender<Option<ProjectRulesResult>>>>,
     /// File-based global rules (e.g. `~/.agents/AGENTS.md`) and their local
     /// watcher state. Kept separate from `path_to_rules`, which is
     /// project-scoped. `pub(super)` (matching the pin) because
@@ -567,7 +602,8 @@ impl ProjectContextModel {
         root_path: PathBuf,
         ctx: &mut ModelContext<Self>,
     ) -> Result<()> {
-        if self.path_to_rules.contains_key(&root_path) {
+        if self.path_to_rules.contains_key(&root_path) || self.over_limit_roots.contains(&root_path)
+        {
             return Ok(());
         }
         #[cfg(feature = "local_fs")]
@@ -605,16 +641,39 @@ impl ProjectContextModel {
                         me.path_to_rules.insert(root_clone, rule_files);
                         ctx.emit(ProjectContextModelEvent::PathIndexed);
                     }
-                    Err(e) => log::warn!(
-                        "Couldn't index rules for path {}: {}",
-                        root_clone.display(),
-                        e
-                    ),
+                    Err(e) => {
+                        me.record_index_failure(root_clone, &e);
+                    }
                 },
             );
         }
 
         Ok(())
+    }
+
+    /// Handles a failed rules scan. An over-limit repo is remembered and logged
+    /// once; it will not be retried this session. Other errors keep warning
+    /// (they may be transient). Returns true when the root was newly marked
+    /// over-limit. #1193.
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    fn record_index_failure(&mut self, root: PathBuf, err: &anyhow::Error) -> bool {
+        let over_limit = matches!(
+            err.downcast_ref::<repo_metadata::entry::BuildTreeError>(),
+            Some(repo_metadata::entry::BuildTreeError::ExceededMaxFileLimit)
+        );
+        if !over_limit {
+            log::warn!("Couldn't index rules for path {}: {}", root.display(), err);
+            return false;
+        }
+        let newly_marked = self.over_limit_roots.insert(root.clone());
+        if newly_marked {
+            log::warn!(
+                "Couldn't index rules for path {}: {} (not retrying this session)",
+                root.display(),
+                err
+            );
+        }
+        newly_marked
     }
 
     // Zap: `try_initialize_and_register_watcher` used to be the entry point
@@ -917,24 +976,85 @@ impl ProjectContextModel {
     /// subdirectory rules + real-time watcher updates).
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     pub fn find_rules_with_fast_path(&self, cwd: &Path) -> Option<ProjectRulesResult> {
-        let project_result = if let Some(found) = self.find_applicable_rules(cwd) {
+        match self.rules_lookup(cwd) {
+            RulesLookup::Ready(project_result) => self.layer_global_rules(project_result),
+            // Never scans here (UI thread): the global rules go out now and the send adds the
+            // project rules when the scan lands (`request_rules_wait`).
+            RulesLookup::Pending => self.layer_global_rules(None),
+        }
+    }
+
+    /// The project rules for `cwd` if they are known without any scan: from the normal
+    /// (indexed) path, or from a still-valid fast-path cache entry (stat-only validation).
+    /// `Pending` when neither has them, i.e. a scan has to land first.
+    fn rules_lookup(&self, cwd: &Path) -> RulesLookup {
+        if let Some(found) = self.find_applicable_rules(cwd) {
             #[cfg(feature = "local_fs")]
             {
                 // Normal path is now available; drop the fast-path cache (avoid stale data later).
                 self.fast_path_cache.borrow_mut().remove(cwd);
             }
-            Some(found)
-        } else {
-            #[cfg(feature = "local_fs")]
-            {
-                self.fast_path_lookup(cwd)
+            return RulesLookup::Ready(Some(found));
+        }
+        #[cfg(feature = "local_fs")]
+        {
+            if let Some(entry) = self.fast_path_cache.borrow().get(cwd).cloned() {
+                if Self::fast_path_entry_still_valid(&entry) {
+                    return RulesLookup::Ready(Self::result_from_fast_path_entry(&entry));
+                }
             }
-            #[cfg(not(feature = "local_fs"))]
-            {
-                None
-            }
+            RulesLookup::Pending
+        }
+        #[cfg(not(feature = "local_fs"))]
+        {
+            RulesLookup::Ready(None)
+        }
+    }
+
+    /// For the agent send path (#1364): the project + global rules for the local directory
+    /// `cwd`, or a receiver that yields them once the (off-thread) scan lands. Never scans on the
+    /// calling thread. `None` when the rules are not needed (no local scan applies).
+    ///
+    /// The receiver resolves with the layered result when the scan completes; it is dropped
+    /// unresolved only if the model goes away. Callers must still carry their own logged
+    /// give-up.
+    #[cfg(feature = "local_fs")]
+    pub fn request_rules_wait(&mut self, cwd: &Path, ctx: &mut ModelContext<Self>) -> RulesWait {
+        let Ok(canonical) = cwd.canonicalize() else {
+            return RulesWait::Ready(self.layer_global_rules(None));
         };
-        self.layer_global_rules(project_result)
+        match self.rules_lookup(&canonical) {
+            RulesLookup::Ready(project) => RulesWait::Ready(self.layer_global_rules(project)),
+            RulesLookup::Pending => {
+                let (tx, rx) = futures::channel::oneshot::channel();
+                self.fast_path_waiters
+                    .entry(canonical.clone())
+                    .or_default()
+                    .push(tx);
+                // Starts the scan if the cd-time prewarm is not already running for this path.
+                self.prewarm_fast_path(&canonical, ctx);
+                RulesWait::Pending(rx)
+            }
+        }
+    }
+
+    /// Resolves every send waiting on `canonical`'s scan with the now-cached rules.
+    ///
+    /// `scanned` is the entry the scan just produced: it is used as-is rather than re-validated
+    /// through the cache (an ancestor directory's mtime moving between the scan and this
+    /// callback would otherwise resolve the send with no project rules at all).
+    #[cfg(feature = "local_fs")]
+    fn notify_rules_waiters(&mut self, canonical: &Path, scanned: Option<&FastPathEntry>) {
+        let Some(waiters) = self.fast_path_waiters.remove(canonical) else {
+            return;
+        };
+        let project = self
+            .find_applicable_rules(canonical)
+            .or_else(|| scanned.and_then(Self::result_from_fast_path_entry));
+        let layered = self.layer_global_rules(project);
+        for waiter in waiters {
+            let _ = waiter.send(layered.clone());
+        }
     }
 
     /// Like [`Self::find_applicable_rules`], but layers file-based global
@@ -996,40 +1116,54 @@ impl ProjectContextModel {
         })
     }
 
-    /// Fast-path synchronous lookup + read of rule files in cwd and ancestor
-    /// directories. Only called when the normal path returns None.
-    ///
-    /// Return semantics match `find_applicable_rules`:
-    ///   - Some(ProjectRulesResult) with at least 1 active rule
-    ///   - None means no rules found at all (negative cache written; subsequent
-    ///     calls with identical stamps skip IO)
+    /// Starts an async fast-path scan for `cwd` (canonicalized on the worker) so a request built
+    /// after a `cd` finds the rule files already cached instead of walking the disk on the UI
+    /// thread (#1364). The result lands via the model's own callback; nothing waits or polls.
+    /// No-op when the normal path already knows the directory, a scan is already in flight, or
+    /// the path does not exist. A completed scan replaces any older cache entry for the path.
     #[cfg(feature = "local_fs")]
-    fn fast_path_lookup(&self, cwd: &Path) -> Option<ProjectRulesResult> {
-        // 1) Cache-hit path: stat all stamps; if they all still match, reuse the cache (no re-reading files).
-        if let Some(entry) = self.fast_path_cache.borrow().get(cwd).cloned() {
-            if Self::fast_path_entry_still_valid(&entry) {
-                return Self::result_from_fast_path_entry(&entry);
-            }
+    pub fn prewarm_fast_path(&mut self, cwd: &Path, ctx: &mut ModelContext<Self>) {
+        if self.find_applicable_rules(cwd).is_some() {
+            return;
         }
-
-        // 2) Cache miss / invalidated: synchronous scan. `FAST_PATH_BUDGET` hard-caps the time, so the UI never stalls.
-        let entry = Self::scan_fast_path(cwd);
-        let result = Self::result_from_fast_path_entry(&entry);
-        self.fast_path_cache
-            .borrow_mut()
-            .insert(cwd.to_path_buf(), entry);
-        result
+        let cwd = cwd.to_path_buf();
+        if !self.fast_path_in_flight.insert(cwd.clone()) {
+            return;
+        }
+        let _scan = ctx.spawn(
+            async move {
+                let scanned = cwd.canonicalize().ok().map(|canonical| {
+                    let entry = Self::scan_fast_path(&canonical);
+                    (canonical, entry)
+                });
+                (cwd, scanned)
+            },
+            |me, (requested, scanned), _ctx| {
+                me.fast_path_in_flight.remove(&requested);
+                let Some((canonical, entry)) = scanned else {
+                    // The path is gone: nothing to cache, but sends waiting on it must not
+                    // hang (they proceed with the global rules only).
+                    me.notify_rules_waiters(&requested, None);
+                    return;
+                };
+                // Requests look the cache up by the canonical path (`pending_context`).
+                me.notify_rules_waiters(&canonical, Some(&entry));
+                me.fast_path_cache
+                    .borrow_mut()
+                    .insert(canonical.clone(), entry);
+            },
+        );
+        #[cfg(test)]
+        self.fast_path_spawned.push(_scan.future_id());
     }
 
     /// Synchronously stat + read rule files level by level upward from `start`.
-    /// Aligned with opencode's `findUp`, but adds the dual safeguard of
-    /// `MAX_WALK_DEPTH` + `FAST_PATH_BUDGET` so the UI never blocks.
+    /// Aligned with opencode's `findUp`, bounded structurally by `MAX_WALK_DEPTH`.
     ///
     /// At each level, picks the first hit per `RULES_FILE_PATTERN` (WARP.md >
     /// AGENTS.md), aligned with `RuleAtPath::respected_rule()` semantics.
     #[cfg(feature = "local_fs")]
     fn scan_fast_path(start: &Path) -> FastPathEntry {
-        let deadline = Instant::now() + FAST_PATH_BUDGET;
         let mut rules = Vec::new();
         let mut stamps = Vec::new();
         let mut walked_dir_stamps = Vec::new();
@@ -1037,10 +1171,6 @@ impl ProjectContextModel {
         let mut current: PathBuf = start.to_path_buf();
 
         for _ in 0..MAX_WALK_DEPTH {
-            if Instant::now() >= deadline {
-                break;
-            }
-
             // Record the directory mtime, so we can later detect the two kinds
             // of change: "a rule file was added/removed in this directory".
             if let Ok(meta) = std::fs::metadata(&current) {
@@ -1051,9 +1181,6 @@ impl ProjectContextModel {
 
             // Find the first rule file at this level by priority. Aligned with RuleAtPath::respected_rule() semantics.
             for filename in RULES_FILE_PATTERN {
-                if Instant::now() >= deadline {
-                    break;
-                }
                 let candidate = current.join(filename);
                 let Ok(meta) = std::fs::metadata(&candidate) else {
                     continue;
@@ -1094,14 +1221,10 @@ impl ProjectContextModel {
     /// - Hit-file mtime/size unchanged → content can be reused
     /// - Walked-directory mtime unchanged → no rule file was added/removed
     ///
-    /// Bounded by `FAST_PATH_BUDGET`; a timeout during stat-ing is treated as invalidated and triggers a rescan.
+    /// A stat failure is treated as invalidated and triggers a rescan.
     #[cfg(feature = "local_fs")]
     fn fast_path_entry_still_valid(entry: &FastPathEntry) -> bool {
-        let deadline = Instant::now() + FAST_PATH_BUDGET;
         for (path, mtime, size) in &entry.stamps {
-            if Instant::now() >= deadline {
-                return false;
-            }
             let Ok(meta) = std::fs::metadata(path) else {
                 return false;
             };
@@ -1113,9 +1236,6 @@ impl ProjectContextModel {
             }
         }
         for (dir, mtime) in &entry.walked_dir_stamps {
-            if Instant::now() >= deadline {
-                return false;
-            }
             let Ok(meta) = std::fs::metadata(dir) else {
                 return false;
             };
@@ -1322,20 +1442,6 @@ impl ProjectContextModel {
         })
     }
 
-    /// Returns the rule file paths associated with a specific workspace root path.
-    pub fn rules_for_workspace(&self, workspace_path: &Path) -> Vec<PathBuf> {
-        self.path_to_rules
-            .get(workspace_path)
-            .into_iter()
-            .flat_map(|rules| {
-                rules.rules.iter().filter_map(|rule| {
-                    rule.respected_rule()
-                        .map(|project_rule| project_rule.path.clone())
-                })
-            })
-            .collect()
-    }
-
     /// Index all configured global rule sources (e.g. `~/.agents/AGENTS.md`).
     ///
     /// `ProjectContextModel` remains the public rule-context facade; the
@@ -1361,6 +1467,7 @@ impl ProjectContextModel {
 
     /// Absolute locations of every indexed global rule file (e.g.
     /// `~/.agents/AGENTS.md`), without their content. #575.
+    #[cfg(test)]
     pub fn global_rule_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.global_rules.paths()
     }

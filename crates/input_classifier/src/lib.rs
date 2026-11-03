@@ -7,6 +7,11 @@ mod onnx;
 mod parser;
 #[cfg(test)]
 mod request_corpus;
+#[cfg(test)]
+mod routing_corpus;
+#[cfg(test)]
+#[path = "routing_corpus_tests.rs"]
+mod routing_corpus_tests;
 mod safety_gate;
 pub mod test_utils;
 pub mod util;
@@ -67,6 +72,11 @@ pub enum InputClassifierDecisionSource {
     /// (`grep this that`, `make the build`), so the safety gate overrode it to Shell. See
     /// `util::known_command_head`.
     KnownCommandHeadNotARequest,
+    /// Fork-original, not in the pin (#1183): inside an active agent view a line goes to the shell
+    /// only on positive evidence that it is a plausible command, and this one had none (`make
+    /// commit port`, `git can memory my to`, `for tell where`), so the safety gate sent it to the
+    /// agent whatever the classifier said. See `util::lacks_command_evidence_in_agent_conversation`.
+    NoCommandEvidenceInAgentConversation,
 }
 
 /// The detected input type along with the decision source that produced it.

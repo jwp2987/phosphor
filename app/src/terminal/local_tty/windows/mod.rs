@@ -476,6 +476,12 @@ impl EventedPty for Pty {
         None
     }
 
+    /// The ConPTY pipe has one overlapped write in flight; the next write is `WouldBlock` until
+    /// the completion event, so queued keys are merged into one write.
+    fn coalesces_key_writes(&self) -> bool {
+        true
+    }
+
     fn on_resize(&mut self, size: &crate::terminal::SizeInfo) {
         if let Err(err) = unsafe { self.conpty_api.resize(self.pty_handle, size.to_coord()) } {
             log::error!("Failed to resize pseudoconsole: {err:?}");

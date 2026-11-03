@@ -1,0 +1,1499 @@
+{
+ "meta": {
+  "platform": "windows",
+  "backend": "windows",
+  "app_display": "windows",
+  "seed": "1",
+  "commit": "332fd97b",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-02T17:19:26-0800",
+ "summary": {
+  "pass": 32,
+  "fail": 19,
+  "skip": 12,
+  "noref": 1
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 1.3,
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=terminal); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal"
+   },
+   "shots": [
+    "shots\\terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.0,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 16.05,
+     "p95": 20.72,
+     "max": 27.79
+    }
+   },
+   "shots": [
+    "shots\\terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 96.7,
+   "detail": [
+    "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (powershell.exe)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": null
+      },
+      "0.25": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 1,
+       "posted": 30,
+       "lines": 29,
+       "exact_bad": null
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 52.5,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 5.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 18.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1229.1,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]); reference: 4 misses",
+    "Phosphor stopped the sleep on 0 samples; reference conhost (powershell.exe): Ctrl-C stopped it on 0 of 4 samples",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 0.117,
+    "reference_ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "reference": "conhost (powershell.exe)"
+   },
+   "shots": [
+    "shots\\terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 42.2,
+   "detail": [
+    "ssh_connect_typing (gap 0.1 s): T153_8vpgec never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:38:05 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 16:38:05 session shell None pty | 16:38:05 conpty shell pid 6552 | 16:38:06 conpty first output after 0.47 s: 68 bytes | 16:38:07 conpty output ended: 195 bytes sent to the client in total | 16:38:10 connection closed: authenticated=False channels=1; fakesshd.stderr:   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2043, in run |     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054)",
+    "remote shell received 5/6 typed-ahead commands exactly (missing 1)",
+    "remote rec.log lacks the exact typed command for some trials"
+   ],
+   "metrics": {
+    "trials": 6
+   },
+   "shots": [
+    "shots\\terminal_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 12.6,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 33.4,
+   "detail": [
+    "the line typed behind a nested ssh ran exactly once remotely: []",
+    "ssh_nested_typeahead (inner): T163_v68aku never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:38:48 connect from ('127.0.0.1', 50531) | 16:38:48 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 16:38:48 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 16:38:48 session shell None pty | 16:38:48 conpty shell pid 15344 | 16:38:48 conpty first output after 0.45 s: 68 bytes; fakesshd.stderr:   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2043, in run |     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 122.5,
+   "detail": [
+    "Enter to command start: Phosphor overhead 86.47 ms over conhost (powershell.exe) exceeds the 2 ms budget",
+    "app share of Enter->start: enter_begin -> pty_write median 1.27 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 30,
+     "p50": 93.41,
+     "p95": 107.75,
+     "max": 108.53
+    },
+    "app_enter_to_pty_write_ms": 1.27,
+    "harness_floor_ms": 0.117,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 6.94,
+     "p95": 10.07,
+     "max": 10.8
+    },
+    "reference": "conhost (powershell.exe)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 30,
+       "p50": 93.41,
+       "p95": 107.75,
+       "max": 108.53
+      },
+      "reference": {
+       "n": 30,
+       "p50": 6.94,
+       "p95": 10.07,
+       "max": 10.8
+      },
+      "reference_name": "conhost (powershell.exe)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.11680001625791192,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "overhead_ms": 86.47,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: types into a running `cat > /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 1.0,
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=terminal); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "terminal"
+   },
+   "shots": [
+    "shots\\terminal@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 6.0,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 16.0,
+     "p95": 17.31,
+     "max": 21.36
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 33.5,
+   "detail": [
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "conhost (bash)"
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 56.4,
+   "detail": [
+    "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (bash)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 48.6,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 17.2,
+   "detail": [
+    "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 14.8,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 175.3,
+   "detail": [
+    "Ctrl-C: Phosphor overhead 20.10 ms over conhost (bash) exceeds the 20 ms budget",
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 4/33 sample lines reached the shell NOT exactly as typed; e.g. characters REORDERED (a character moved: \"'\" came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt', shell received '\\'bash -c trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write; reference: 0/33 (the reference kept every line: the corruption is Phosphor-side, the same character loss/move as fast_typing)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 87.01 ms includes the input-tool spawn (harness floor 0.13080000644549727 ms)",
+    "Ctrl-C: n=26 < 30 samples (smoke/scaled run): numbers are indicative only",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 26,
+     "p50": 87.01,
+     "p95": 108.1,
+     "max": 113.27
+    },
+    "harness_floor_ms": 0.131,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 66.91,
+     "p95": 97.98,
+     "max": 103.76
+    },
+    "reference": "conhost (bash)",
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 26,
+       "p50": 87.01,
+       "p95": 108.1,
+       "max": 113.27
+      },
+      "reference": {
+       "n": 30,
+       "p50": 66.91,
+       "p95": 97.98,
+       "max": 103.76
+      },
+      "reference_name": "conhost (bash)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.13080000644549727,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 87.01 ms includes the input-tool spawn (harness floor 0.13080000644549727 ms)",
+       "n=26 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 20.1,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 32,
+      "bad": 4,
+      "examples": [
+       "characters REORDERED (a character moved: \"'\" came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt', shell received '\\'bash -c trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write",
+       "characters REORDERED (a character moved: \"'\" came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER8 >> cc.txt', shell received '\\'bash -c trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER8 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write"
+      ]
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 42.5,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 25.5,
+   "detail": [
+    "ssh_enter_then_immediate_command: T194_duje2j never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:48:47 connect from ('127.0.0.1', 50894) | 16:48:47 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 16:48:47 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 16:48:47 session shell None pty | 16:48:47 conpty shell pid 1048 | 16:48:47 conpty first output after 0.53 s: 68 bytes; fakesshd.stderr: Traceback (most recent call last): |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2043, in run |     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)",
+    "remote shell received 1/2 immediately-typed commands exactly: ['T192_vu0hbl']"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_ssh_enter_then_immediate_command_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 7.9,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 68.2,
+   "detail": [
+    "Enter to command start: Phosphor overhead 16.97 ms over conhost (bash) exceeds the 2 ms budget",
+    "app share of Enter->start: enter_begin -> pty_write median 0.88 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 30,
+     "p50": 86.64,
+     "p95": 213.15,
+     "max": 218.05
+    },
+    "app_enter_to_pty_write_ms": 0.88,
+    "harness_floor_ms": 0.131,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 69.67,
+     "p95": 77.9,
+     "max": 78.42
+    },
+    "reference": "conhost (bash)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 30,
+       "p50": 86.64,
+       "p95": 213.15,
+       "max": 218.05
+      },
+      "reference": {
+       "n": 30,
+       "p50": 69.67,
+       "p95": 77.9,
+       "max": 78.42
+      },
+      "reference_name": "conhost (bash)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.13080000644549727,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "overhead_ms": 16.97,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal@gitbash",
+   "status": "noref",
+   "seconds": 12.0,
+   "detail": [
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 3.61,
+     "p95": 10.3,
+     "max": 12.02
+    },
+    "lat": {
+     "key_to_frame": {
+      "phosphor": {
+       "n": 60,
+       "p50": 3.61,
+       "p95": 10.3,
+       "max": 12.02
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "slow-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_latency_paint.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 44.8,
+   "detail": [
+    "'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "PlainTerminal",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)"
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)"
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)"
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)"
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     }
+    ],
+    "misroutes": 1
+   },
+   "shots": [
+    "shots\\terminal@gitbash_routing_table_FAIL.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_shell_nu.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal@gitbash",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0.2,
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=agent); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "agent"
+   },
+   "shots": [
+    "shots\\agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 21.9,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 5.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 18.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1087.9,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])",
+    "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 0.17
+   },
+   "shots": [
+    "shots\\agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "left_agent_mode_after_ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots\\agent_left_agent_after_ctrl_c_d.png"
+   ],
+   "detail": [
+    "after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 48.2,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots\\agent_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 12.8,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 33.0,
+   "detail": [
+    "the line typed behind a nested ssh ran exactly once remotely: []",
+    "ssh_nested_typeahead (inner): T85_39yn2q never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 17:12:21 connect from ('127.0.0.1', 51255) | 17:12:21 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 17:12:21 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -> ok | 17:12:21 session shell None pty | 17:12:21 conpty shell pid 13964 | 17:12:22 conpty first output after 0.61 s: 68 bytes; fakesshd.stderr:     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "agent_stream_cancel",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0.2,
+   "detail": [
+    "mode machine-verified from the app log (hop=view_mode mode=agent); no OCR engine"
+   ],
+   "metrics": {
+    "log_view_mode": "agent"
+   },
+   "shots": [
+    "shots\\agent@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 19.1,
+   "detail": [
+    "ft0: shell received 31 commands, not the typed ones (first mismatch: \"echo t1_ieqh524yng >> 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run/home/<user>/proof_agent_gitbash.txt'\") -- differs (31 typed, 122 received characters): typed 'echo t2_5by1a2rogu >> r_ft0.txt', shell received \"echo t1_ieqh524yng >> 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run\"; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 11.9,
+   "detail": [
+    "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 25.0,
+   "detail": [
+    "Tab+Enter: completed file has 1/12 expected lines"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 111.5,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 14/33 sample lines reached the shell NOT exactly as typed; e.g. differs (81 typed, 80 received characters): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt', shell received 'cbash -c \\'trap \"date +%s.%N >>c.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write",
+    "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 17,
+     "p50": 72.53,
+     "p95": 108.54,
+     "max": 108.54
+    },
+    "harness_floor_ms": 0.172,
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 14,
+      "examples": [
+       "differs (81 typed, 80 received characters): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt', shell received 'cbash -c \\'trap \"date +%s.%N >>c.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write",
+       "characters REORDERED (a character moved: '%' came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER3 >> cc.txt', shell received '%N bash -c \\'trap \"date +%s.>> cc.txt; exit\" INT; sleep 30\\'; echo AFTER3 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write"
+      ]
+     },
+     "reference": null
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "left_agent_mode_after_ctrl_c_d",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots\\agent@gitbash_left_agent_after_ctrl_c_d.png"
+   ],
+   "detail": [
+    "after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 42.6,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots\\agent@gitbash_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 10.5,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 7.8,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "agent_stream_cancel",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 62.3,
+   "detail": [
+    "no model request ('[byop] opening stream') within 60 s of the prompt's Enter; prompt not routed to the agent or provider unreachable"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_agent_stream_cancel_FAIL.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 44.2,
+   "detail": [
+    "'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "command-shape (#808/#1203)"
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": "PlainTerminal",
+      "rule": "installed-head (#906/#964)"
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "PlainTerminal",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)"
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "sentence-shape (#1234)"
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "shell",
+      "surface": "AgentConversation",
+      "rule": "evidence-in-conversation (#1183)"
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "no-evidence-in-conversation (#1183)"
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": "agent",
+      "got": "agent",
+      "surface": "AgentConversation",
+      "rule": "request-shape (#834/#965)"
+     }
+    ],
+    "misroutes": 1
+   },
+   "shots": [
+    "shots\\agent@gitbash_routing_table_FAIL.png"
+   ]
+  },
+  {
+   "name": "restore",
+   "mode": "-",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+   ],
+   "metrics": {},
+   "shots": []
+  }
+ ]
+}

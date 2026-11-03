@@ -5,18 +5,42 @@ param()
 # user's history (#942). Anchored to this session's own path, never a pattern.
 $global:_warpBootstrapHistoryLines = if ($PSCommandPath) { @(". $PSCommandPath", ". '$PSCommandPath'", ". `"$PSCommandPath`"") } else { @() }
 
-# Runs a command too long to type into PSReadLine (#1106). The app writes the command to a temp file
-# and types `. (Warp-Run-LongCommand '<path>')` instead. This is deliberately NOT a script file that
-# is dot-sourced: a script block made from a string is not subject to the execution policy, which is
-# Restricted on a stock Windows install. It lives outside Warp-Module and is global so the script
-# block is not bound to the module's session state, and because `. (...)` runs in the caller's
-# scope, variables, `cd` and `exit` behave exactly as for a typed command ($PSScriptRoot is empty,
-# as when typing). The file is read (ReadAllText honours the BOM) and deleted at once, so nothing
-# stays on disk. Error positions refer to the command text, not to a file. The launcher line is
-# kept out of history (see the AddToHistoryHandler), so a long command is not on the Up arrow.
-function global:Warp-Run-LongCommand([string]$Path) {
-    $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-    try { [System.IO.File]::Delete($Path) } catch { }
+# Runs a command too long to type into PSReadLine (#1106). The app serves the command on the
+# session's named pipe ($global:_warpCmdPipe; in memory, never on disk, since commands can hold
+# secrets) and types `. (Warp-Run-LongCommand)` instead (#1592). This is deliberately NOT a script
+# file that is dot-sourced: a script block made from a string is not subject to the execution
+# policy, which is Restricted on a stock Windows install. It lives outside Warp-Module and is
+# global so the script block is not bound to the module's session state, and because `. (...)`
+# runs in the caller's scope, variables, `cd` and `exit` behave exactly as for a typed command
+# ($PSScriptRoot is empty, as when typing). Error positions refer to the command text. The
+# launcher line is kept out of history (see the AddToHistoryHandler), so a long command is not on
+# the Up arrow. Preexec has already reported the launcher; the app shows the real command.
+# It reads its own pipe (`$global:_warpCmdPipe` + '-long') so it can coexist with an outstanding
+# insert chord's pipe.
+function global:Warp-Run-LongCommand() {
+    $text = $null
+    $pipe = $null
+    try {
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', ([string]$global:_warpCmdPipe + '-long'), [System.IO.Pipes.PipeDirection]::In)
+        $pipe.Connect(5000)
+        $buffer = New-Object System.IO.MemoryStream
+        $pipe.CopyTo($buffer)
+        $text = (New-Object System.Text.UTF8Encoding($false)).GetString($buffer.ToArray())
+    } catch {
+        $text = $null
+    } finally {
+        if ($null -ne $pipe) { $pipe.Dispose() }
+    }
+    if ([string]::IsNullOrEmpty($text)) {
+        Microsoft.PowerShell.Utility\Write-Error 'Phosphor could not read the command from its pipe; nothing was run.'
+        return {}
+    }
+    # Window title: the first line, clamped (Preexec only saw the launcher).
+    try {
+        $title = ($text.Substring(0, [Math]::Min($text.Length, 400)) -replace "(?s)\r?\n.*", [string][char]0x2026)
+        if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
+        $HOST.UI.RawUI.WindowTitle = $title
+    } catch { }
     [scriptblock]::Create($text)
 }
 
@@ -37,7 +61,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     $oscEnd = "$([char]0x07)"
 
     # Writes a hex-encoded JSON message to the PTY.
-    function Warp-Send-JsonMessage([System.Collections.Hashtable]$table) {
+    function Warp-Send-JsonMessage([System.Collections.Hashtable]$table, [string]$trailer = '') {
         $json = Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject $table -Compress
         # Sends a message to the controlling terminal as an OSC control sequence.
         # TODO(CORE-2718): Determine if we need to hex encode the payload.
@@ -45,12 +69,28 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # unicode), we encode it as hexadecimal string to avoid prematurely calling unhook if
         # one of the bytes in JSON is 9c (ST) or other (CAN, SUB, ESC).
         $encodedMessage = Warp-Encode-HexString $json
-        Microsoft.PowerShell.Utility\Write-Host -NoNewline "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd"
+        # $trailer (the reset-grid OSC after Preexec and CommandFinished) goes out in the same
+        # write: every console write on ConPTY takes the console lock and can wait for a render
+        # frame, and these two sit on the Enter -> command start and command end -> prompt paths
+        # (#1280). The bytes on the wire are unchanged.
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$encodedMessage$oscEnd$trailer"
     }
 
     # This script block contains commands and constants that are needed in background threads.
     # If you want to be able to use it in a background thread, stick it in this block
     $warpCommon = {
+        # Writes control-sequence text (an OSC) straight to the console. Write-Host in Windows
+        # PowerShell 5.1 blocks for a ConPTY frame (~14 ms) on about every third call, and a prompt
+        # cycle makes eight or more of them (#1224); [Console]::Out takes ~0.1 ms every time. The
+        # fallback keeps a host without a console output stream (an embedded host) working.
+        function Warp-Write-Osc([string]$text) {
+            try {
+                [Console]::Out.Write($text)
+            } catch {
+                Microsoft.PowerShell.Utility\Write-Host -NoNewline $text
+            }
+        }
+
         # OSC used to mark the start of in-band command output.
         #
         # Printable characters received this OSC and oscEndGeneratorOutput are parsed and handled as
@@ -66,7 +106,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $oscResetGrid = "$([char]0x1b)]9279$oscEnd"
 
         function Warp-Send-ResetGridOSC() {
-            Microsoft.PowerShell.Utility\Write-Host -NoNewline $oscResetGrid
+            Warp-Write-Osc $oscResetGrid
         }
 
         # Safely attempt to get Node.js version if available. Avoid literal 'node' invocation
@@ -101,7 +141,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             $hexEncodedMessage = Warp-Encode-HexString $message
             $byteCount = [System.Text.Encoding]::ASCII.GetByteCount($hexEncodedMessage)
 
-            Microsoft.PowerShell.Utility\Write-Host -NoNewline "$oscStartGeneratorOutput$byteCount;$hexEncodedMessage$oscEndGeneratorOutput"
+            Warp-Write-Osc "$oscStartGeneratorOutput$byteCount;$hexEncodedMessage$oscEndGeneratorOutput"
             Warp-Send-ResetGridOSC
         }
 
@@ -258,38 +298,42 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     }
 
     function Warp-Preexec([string]$command) {
+        # The subshell setup lines (#1372) leave a PSConsoleHostReadLine wrapper that prints a
+        # "reading again" marker while `$global:_phMk` is set; the first command ends that.
+        $global:_phMk = $null
         # Phosphor (#935): title a multi-line command with its first line and an ellipsis.
         # Clamped: Windows PowerShell 5.1's console host throws above ~1023 characters, and a throw
         # here would keep PSConsoleHostReadLine from returning the line (#1106).
         try {
             $titleSource = $command
-            # A command too long to type (#1106) is the launcher line `. (Warp-Run-LongCommand
-            # '<path>')`; title it with the start of the real command (#1121). This runs before
-            # the function, which deletes the file, so the file is still there to read.
-            if ($command -match "^\.\s+\(Warp-Run-LongCommand\s+'(.*)'\)\s*$") {
-                $titleReader = $null
-                try {
-                    $titleReader = [System.IO.StreamReader]::new(($Matches[1] -replace "(['\u2018\u2019\u201a\u201b])\1", '$1'), [System.Text.Encoding]::UTF8)
-                    $titleBuffer = [char[]]::new(400)
-                    $titleSource = [string]::new($titleBuffer, 0, $titleReader.Read($titleBuffer, 0, 400))
-                } catch {
-                } finally {
-                    if ($titleReader) { $titleReader.Dispose() }
-                }
-            }
             $title = ($titleSource -replace "(?s)\r?\n.*", [string][char]0x2026)
             if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
+        } catch { }
+        # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
+        $script:warpSeq = ([int64]$script:warpSeq) + 1
+        # Phosphor (#1582): the JSON is built by hand (ConvertTo-Json is the most expensive
+        # statement on this path on Windows PowerShell 5.1). Escapes: backslash, double quote and
+        # every control character below 0x20 as \u00XX; everything else (non-ASCII included) is
+        # passed through and carried as UTF-8 by the hex encoding. The bytes on the wire keep the
+        # Send-JsonMessage shape: the same OSC, hex payload and $oscResetGrid trailer.
+        $escaped = ([string]$command).Replace('\', '\\').Replace('"', '\"')
+        if ($escaped -match '[\x00-\x1f]') {
+            $escapedBuilder = [System.Text.StringBuilder]::new($escaped.Length + 16)
+            foreach ($escapedChar in $escaped.ToCharArray()) {
+                if ([int]$escapedChar -lt 32) {
+                    [void]$escapedBuilder.Append('\u').Append(([int]$escapedChar).ToString('x4'))
+                } else {
+                    [void]$escapedBuilder.Append($escapedChar)
+                }
+            }
+            $escaped = $escapedBuilder.ToString()
+        }
+        $preexecJson = '{"hook":"Preexec","value":{"session_id":' + [uint64]$global:_warpSessionId + ',"command":"' + $escaped + '","seq":' + $script:warpSeq + '}}'
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$(Warp-Encode-HexString $preexecJson)$oscEnd$oscResetGrid"
+        # The title is set after the OSC: the app does not need it before the command starts.
+        try {
             $HOST.UI.RawUI.WindowTitle = $title
         } catch { }
-        $preexecMsg = @{
-            hook = 'Preexec'
-            value = @{
-                session_id = $global:_warpSessionId
-                command = $command
-            }
-        }
-        Warp-Send-JsonMessage $preexecMsg
-        Warp-Send-ResetGridOSC
 
         # If this preexec is called for user command, kill ongoing generator command jobs and clean
         # up the bookkeeping temp files used to bookkeep.
@@ -297,15 +341,52 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             Warp-Stop-ActiveThread
         }
 
-        # Clean up any completed warp jobs so they do not show up on the user's 'get-job'
-        # commands
-        Warp-Clean-CompletedThread
+        # The housekeeping that used to follow here (cleaning up completed warp jobs, scrubbing our
+        # own commands from the history) runs in Warp-Idle-Maintenance, once the next prompt is on
+        # screen: nothing about it has to happen before the command starts (#1279).
+    }
 
-        # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
-        Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
-        # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
-        Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
-        Warp-Clear-BootstrapHistory
+    # Housekeeping that does not have to happen on the way from the user's Enter to the next
+    # prompt: it ran in Warp-Preexec and Warp-Precmd, so a command's output and the next prompt
+    # waited for it, which costs several ms per cmdlet on Windows PowerShell 5.1 (#1279). It now
+    # runs at the start of the next PSConsoleHostReadLine, after the prompt has been written and
+    # the hooks have been sent. The history entries it scrubs are the same ones as before, plus
+    # the command that just ran (formerly scrubbed at the next command's preexec).
+    function Warp-Idle-Maintenance {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'Housekeeping must never keep PSConsoleHostReadLine from reading the line')]
+        param()
+        # A throw here would keep PSConsoleHostReadLine from reading the next line at all.
+        try {
+            # Clean up any completed warp jobs so they do not show up on the user's 'get-job'
+            # commands
+            Warp-Clean-CompletedThread
+
+            # Remove any instance of the 'Warp-Run-GeneratorCommand' call from the user's history
+            Microsoft.PowerShell.Core\Clear-History -CommandLine 'Warp-Run-GeneratorCommand*'
+            # ... and the agent-command wrapper (agent_shell_wrap.rs HISTORY_MARKER; #942)
+            Microsoft.PowerShell.Core\Clear-History -CommandLine ([System.Management.Automation.WildcardPattern]::Escape('. { $__phosphor_ap = @{}; foreach ($__phosphor_ap_v in @(') + '*')
+            Warp-Clear-BootstrapHistory
+
+            Warp-Configure-PSReadLine-IfChanged
+        } catch {
+        }
+    }
+
+    # Phosphor (#1390, #1391): tells the app PSReadLine is about to read a line. Sent from the
+    # PSConsoleHostReadLine wrapper, after the prompt has been written and the maintenance has run,
+    # i.e. the last thing before the real PSReadLine starts. Carries the seq of the Precmd that
+    # preceded the prompt. PSReadLine keeps an unfinished command (`if (1) {`) in the same read
+    # and paints its own ContinuationPrompt with no hook, so pwsh has no ContinuationPrompt event.
+    # Read-Host and [Console]::ReadKey do not go through PSConsoleHostReadLine, so a builtin read
+    # never sends this. One console write, no process.
+    function Warp-Send-LineEditorReading {
+        [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingEmptyCatchBlock', '', Justification = 'A marker must never keep PSConsoleHostReadLine from reading the line')]
+        param()
+        try {
+            if ($env:PHOSPHOR_LINE_EDITOR_MARKERS -eq '0') { return }
+            Warp-Write-Osc ("$([char]0x1b)" + ']9278;f;{"hook": "LineEditorReading", "value": {"session_id": ' + [uint64]$global:_warpSessionId + ', "seq": ' + [int64]$script:warpSeq + '}}' + $oscEnd)
+        } catch {
+        }
     }
 
     function Warp-Finish-Update([string]$updateId) {
@@ -364,6 +445,58 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         }
     }
 
+    # Resolves the current branch/HEAD for the prompt without spawning git (a process spawn costs
+    # ~90 ms per prompt on Windows, #1163). Walks up from $PWD to a '.git' directory or a '.git'
+    # file ('gitdir: <path>', used by worktrees and submodules) and reads HEAD.
+    # Returns a hashtable with 'Branch' (a branch name, or $null when detached), 'Head' (the
+    # branch, or the HEAD text when detached) and 'Gitdir'; returns @{ NotRepo = $true } when
+    # there is clearly no repository; returns $null whenever the answer needs git itself
+    # (GIT_DIR set, non-filesystem location, bare repo, HEAD not a plain refs/heads ref or a
+    # 40/64-hex object name, unreadable files).
+    function Warp-GitHeadInProcess {
+        try {
+            if ($env:GIT_DIR -or $env:GIT_WORK_TREE -or $env:GIT_CEILING_DIRECTORIES -or $env:GIT_DISCOVERY_ACROSS_FILESYSTEM) { return $null }
+            if ($PWD.Provider.Name -ne 'FileSystem') { return $null }
+            $dir = $PWD.ProviderPath
+            $gitdir = $null
+            while (-not [string]::IsNullOrEmpty($dir)) {
+                $candidate = [System.IO.Path]::Combine($dir, '.git')
+                if ([System.IO.Directory]::Exists($candidate)) {
+                    $gitdir = $candidate
+                    break
+                }
+                if ([System.IO.File]::Exists($candidate)) {
+                    $line = [System.IO.File]::ReadAllText($candidate).Trim()
+                    if (-not $line.StartsWith('gitdir:')) { return $null }
+                    $gitdir = [System.IO.Path]::Combine($dir, $line.Substring(7).Trim())
+                    if (-not [System.IO.Directory]::Exists($gitdir)) { return $null }
+                    break
+                }
+                $dir = [System.IO.Path]::GetDirectoryName($dir)
+            }
+            if ($null -eq $gitdir) {
+                # A bare repository (or a directory inside a '.git' dir) has no '.git' entry.
+                $here = $PWD.ProviderPath
+                if ([System.IO.File]::Exists([System.IO.Path]::Combine($here, 'HEAD')) -or [System.IO.Directory]::Exists([System.IO.Path]::Combine($here, 'refs'))) { return $null }
+                return @{ NotRepo = $true }
+            }
+            $headPath = [System.IO.Path]::Combine($gitdir, 'HEAD')
+            if (-not [System.IO.File]::Exists($headPath)) { return $null }
+            $head = [System.IO.File]::ReadAllText($headPath).Trim()
+            if ($head.StartsWith('ref: refs/heads/')) {
+                $branch = $head.Substring(16)
+                if ($branch.Length -eq 0 -or $branch -eq '.invalid') { return $null }
+                return @{ Branch = $branch; Head = $branch; Gitdir = $gitdir }
+            }
+            if ($head -match '^[0-9a-f]{40}$' -or $head -match '^[0-9a-f]{64}$') {
+                return @{ Branch = $null; Head = $head; Gitdir = $gitdir }
+            }
+            return $null
+        } catch {
+            return $null
+        }
+    }
+
     # Helper function that resets the values of '$?' and
     # $LASTEXITCODE. Note that it cannot force '$?' to $true
     # if it is currently $false
@@ -402,6 +535,36 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Set-PSReadLineKeyHandler is the PowerShell equivalent of zsh's bindkey.
         PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+2' -Function BackwardDeleteLine
 
+        # Phosphor (#1581): the app serves a single-line command on a per-session named pipe
+        # ($global:_warpCmdPipe, set once by the init script; the text never touches the disk) and
+        # sends only this chord (ESC 3), instead of ~80 typed keys. The handler reads the pipe
+        # and replaces the line with its contents in ONE Insert and accepts it, so PSReadLine
+        # renders twice instead of once per key, and the shell still echoes, records history and
+        # reports the real command to Preexec. Anything that goes wrong inserts nothing and tells
+        # the app (CommandFileFailed), which types the command the old way.
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+3' -ScriptBlock {
+            $text = $null
+            $pipe = $null
+            try {
+                $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', [string]$global:_warpCmdPipe, [System.IO.Pipes.PipeDirection]::In)
+                $pipe.Connect(500)
+                $buffer = New-Object System.IO.MemoryStream
+                $pipe.CopyTo($buffer)
+                $text = (New-Object System.Text.UTF8Encoding($false)).GetString($buffer.ToArray())
+            } catch {
+                $text = $null
+            } finally {
+                if ($null -ne $pipe) { $pipe.Dispose() }
+            }
+            if ([string]::IsNullOrEmpty($text)) {
+                Warp-Send-JsonMessage @{ hook = 'CommandFileFailed'; value = @{ session_id = $global:_warpSessionId } }
+                return
+            }
+            [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+            [Microsoft.PowerShell.PSConsoleReadLine]::Insert($text)
+            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        }
+
         # Input reporting. Note that ESC-1 is used instead of ESC-i as for all other shells. This
         # is because PowerShell on Windows does some virtual key code translation which depends on
         # the selected input language. On languages without an "i" on any key, this translation
@@ -427,7 +590,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # the contents of the early output handler when we kill the line editor's buffer.
             # However, PowerShell doesn't do this correctly due to cursor position mismatch. So,
             # we do it manually here instead.
-            Microsoft.PowerShell.Utility\Write-Host -NoNewline "$([char]0x1b)[2K"
+            Warp-Write-Osc "$([char]0x1b)[2K"
         }
 
         # Sets the prompt mode to custom prompt (PS1)
@@ -454,7 +617,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # file. The subshell bootstrap's first line installs a handler with the same filter
             # before either is typed; this one keeps them out once it has replaced that handler.
             $trimmed = $line.TrimStart()
-            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["']?\s*$' -or $trimmed.StartsWith('. (Warp-Run-LongCommand ', [System.StringComparison]::Ordinal)) {
+            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["'']?\s*$' -or $trimmed -eq '. (Warp-Run-LongCommand)') {
                 return $false
             }
             # Keep honouring the handler the user had before the subshell bootstrap replaced it.
@@ -466,6 +629,29 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
         Warp-Disable-PSPrediction
         Warp-Disable-PSErrorPrompt
+        $script:psrlConfiguredState = Warp-Get-PSReadLineState
+        $script:psrlConfiguredHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler
+    }
+
+    # What Warp-Configure-PSReadLine leaves behind that PSReadLine can report: edit mode, the
+    # prediction and prompt-text options, and (kept separately, by reference) the history handler.
+    function Warp-Get-PSReadLineState {
+        $psrlOption = PSReadLine\Get-PSReadLineOption
+        "$($psrlOption.EditMode)|$($psrlOption.PredictionSource)|$($psrlOption.PredictionViewStyle)|$($psrlOption.PromptText -join ',')"
+    }
+
+    # Runs at every prompt. Re-registering the key handlers, the history handler and the options
+    # cost 2 ms per prompt on Linux (#1231), several times that on Windows, to restate what is
+    # already set. Reconfigure only when PSReadLine no longer reports what was applied: the
+    # module was re-imported, the edit mode was switched, a profile or the user replaced the
+    # history handler or the prediction options.
+    function Warp-Configure-PSReadLine-IfChanged {
+        if ($null -ne $script:psrlConfiguredState -and
+            $script:psrlConfiguredState -ceq (Warp-Get-PSReadLineState) -and
+            [object]::ReferenceEquals((PSReadLine\Get-PSReadLineOption).AddToHistoryHandler, $script:psrlConfiguredHandler)) {
+            return
+        }
+        Warp-Configure-PSReadLine
     }
 
     # PSReadLine recolors the end of the prompt (its PromptText, '> ' taken from the default prompt)
@@ -513,7 +699,11 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Note that this is not going to be 100% accurate, as some cmdlets will fail
         # without setting a $LASTEXITCODE, meaning the $LASTEXITCODE will be stale.
         # Phosphor (#855): the agent-command wrapper leaves its captured status in these.
-        Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction Ignore
+        # (Probed with the session-state API: a cmdlet call costs ~0.3 ms on Windows PowerShell 5.1,
+        # and nothing is left behind unless the agent wrapper ran, #1280.)
+        if ($null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_ok') -or $null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_ec')) {
+            Microsoft.PowerShell.Utility\Remove-Variable __phosphor_ap_ok, __phosphor_ap_ec -Scope Global -ErrorAction Ignore
+        }
         $warpCommandNotFound = $script:commandNotFound
         $script:commandNotFound = $false
 
@@ -529,7 +719,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
         # Phosphor: the agent wrapper saved the user's $LASTEXITCODE and reset it; the code is
         # computed, so put the user's value back.
-        if (Microsoft.PowerShell.Management\Test-Path variable:global:__phosphor_ap_lecset) {
+        if ($null -ne $ExecutionContext.SessionState.PSVariable.Get('__phosphor_ap_lecset')) {
             if ($global:__phosphor_ap_lecset) {
                 $global:LASTEXITCODE = $global:__phosphor_ap_lec
             } else {
@@ -546,6 +736,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $HOST.UI.RawUI.WindowTitle = $newTitle
 
         $blockId = $script:nextBlockId++
+        $script:warpSeq = ([int64]$script:warpSeq) + 1
         $commandFinishedMsg = @{
             hook = 'CommandFinished'
             value = @{
@@ -554,10 +745,9 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 next_block_id = "precmd-${global:_warpSessionId}-$blockId"
             }
         }
-        Warp-Send-JsonMessage $commandFinishedMsg
-        Warp-Send-ResetGridOSC
+        Warp-Send-JsonMessage $commandFinishedMsg $oscResetGrid
 
-        Warp-Configure-PSReadLine
+        # Warp-Configure-PSReadLine-IfChanged runs in Warp-Idle-Maintenance (#1279).
 
         # If this is being called for a generator command, short circuit and send an unpopulated
         # precmd payload (except for pwd), since we don't re-render the prompt after generator commands
@@ -577,6 +767,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                     virtual_env = ''
                     conda_env = ''
                     session_id = $global:_warpSessionId
+                    seq = $script:warpSeq
                     is_after_in_band_command = $true
                 }
             }
@@ -596,13 +787,14 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # prompts, and we don't want to invoke 'git' before we've sourced the
             # user's rcfiles and have a fully-populated PATH.
             if ($global:WARP_BOOTSTRAPPED -eq 1) {
-                if (Microsoft.PowerShell.Management\Test-Path env:VIRTUAL_ENV) {
+                # Read the environment directly: Test-Path env:X is a provider call per variable.
+                if ($null -ne $env:VIRTUAL_ENV) {
                     $virtualEnv = $env:VIRTUAL_ENV
                 }
-                if (Microsoft.PowerShell.Management\Test-Path env:CONDA_DEFAULT_ENV) {
+                if ($null -ne $env:CONDA_DEFAULT_ENV) {
                     $condaEnv = $env:CONDA_DEFAULT_ENV
                 }
-                if (Microsoft.PowerShell.Management\Test-Path env:KUBECONFIG) {
+                if ($null -ne $env:KUBECONFIG) {
                     $kubeConfig = $env:KUBECONFIG
                 }
 
@@ -612,7 +804,18 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 # current location + PATH so we only spawn node when the directory or PATH
                 # changes (PATH changes on version-manager switches like `nvm use`).
                 $nodeChipEnabled = "$env:WARP_PROMPT_NODE_VERSION_ENABLED" -ne '0'
-                $hasNodeCommand = if ($nodeChipEnabled) { Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null } else { $null }
+                # Whether node exists is cached per session, negative results included, and
+                # re-probed only when $env:PATH changes (a failed lookup scans all of PATH,
+                # ~30 ms per prompt on Windows, #1163).
+                $hasNodeCommand = $false
+                if ($nodeChipEnabled) {
+                    if (-not $script:warpNodeProbeDone -or $script:warpNodeProbePath -ne $env:PATH) {
+                        $script:warpNodeProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application node 2>$null)
+                        $script:warpNodeProbePath = $env:PATH
+                        $script:warpNodeProbeDone = $true
+                    }
+                    $hasNodeCommand = $script:warpNodeProbeValue
+                }
                 if ($hasNodeCommand) {
                     try {
                         $nodeCacheKey = "$($PWD.Path)|$env:PATH"
@@ -663,17 +866,39 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                 # in an if statement; it thinks we are trying to do -gt incorrectly.
                 # Since this is a good warning and we do not want to turn off this lint rule,
                 # we do a little indirection here
-                $hasGitCommand = Microsoft.PowerShell.Core\Get-Command -CommandType Application git 2>$null
+                # git's presence is cached per $env:PATH like node's; the branch is read from
+                # .git/HEAD in-process, and git itself is only spawned for what that cannot answer.
+                if (-not $script:warpGitProbeDone -or $script:warpGitProbePath -ne $env:PATH) {
+                    $script:warpGitProbeValue = [bool](Microsoft.PowerShell.Core\Get-Command -CommandType Application git 2>$null)
+                    $script:warpGitProbePath = $env:PATH
+                    $script:warpGitProbeDone = $true
+                }
+                $hasGitCommand = $script:warpGitProbeValue
                 if ($hasGitCommand) {
-                    # This is deliberately not using || b/c || only works in Powershell >=7
-                    $gitBranchTmp = Warp-Git symbolic-ref --short HEAD 2>$null
-                    if ($null -ne $gitBranchTmp) {
-                        $gitBranch = $gitBranchTmp
-                        $gitHead = $gitBranchTmp
+                    $gitInfo = Warp-GitHeadInProcess
+                    if ($null -ne $gitInfo -and $gitInfo.NotRepo) {
+                        # Not in a repository: leave both empty, as git's failure did.
+                    } elseif ($null -ne $gitInfo -and $null -ne $gitInfo.Branch) {
+                        $gitBranch = $gitInfo.Branch
+                        $gitHead = $gitInfo.Head
+                    } elseif ($null -ne $gitInfo -and "$($gitInfo.Gitdir)|$($gitInfo.Head)" -eq $script:warpGitDetachedKey) {
+                        # Detached at the same commit as last prompt: reuse git's abbreviation.
+                        $gitHead = $script:warpGitDetachedValue
                     } else {
-                        $gitHeadTmp = Warp-Git rev-parse --short HEAD 2>$null
-                        if ($null -ne $gitHeadTmp) {
-                            $gitHead = $gitHeadTmp
+                        # This is deliberately not using || b/c || only works in Powershell >=7
+                        $gitBranchTmp = Warp-Git symbolic-ref --short HEAD 2>$null
+                        if ($null -ne $gitBranchTmp) {
+                            $gitBranch = $gitBranchTmp
+                            $gitHead = $gitBranchTmp
+                        } else {
+                            $gitHeadTmp = Warp-Git rev-parse --short HEAD 2>$null
+                            if ($null -ne $gitHeadTmp) {
+                                $gitHead = $gitHeadTmp
+                                if ($null -ne $gitInfo) {
+                                    $script:warpGitDetachedKey = "$($gitInfo.Gitdir)|$($gitInfo.Head)"
+                                    $script:warpGitDetachedValue = $gitHeadTmp
+                                }
+                            }
                         }
                     }
                 }
@@ -698,6 +923,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
                     conda_env = $condaEnv
                     node_version = $nodeVersion
                     session_id = $global:_warpSessionId
+                    seq = $script:warpSeq
                     kube_config = $kubeConfig
                 }
             }
@@ -711,25 +937,30 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
     # The inner runspace pool maintains a pool of runspaces that can execute
     # arbitrary commands against the user's current environment without
-    # writing to the screen. Initialize to minimum of 10 runspaces
-    # to handle double the number of context chips we currently have
-    # that use in-band commands
-    $script:innerRunspacePool = [runspacefactory]::CreateRunspacePool(10, 20)
-    $script:innerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
-    $script:innerRunspacePool.ThreadOptions = 'ReuseThread'
-    $script:innerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
-
-    # The outer runspace pool maintains a pool of runspaces that
+    # writing to the screen. The outer runspace pool maintains a pool of runspaces that
     # share the same host as the user's session. This allows them
     # to send OSC commands via Write-Host. These outer runspaces
     # handle receiving results from the inner runspaces and formatting
     # those results into OSCs.
-    # Initialized to minimum of 5 runspaces since we currently do not
-    # run more than one outer command at a time.
-    $script:outerRunspacePool = [runspacefactory]::CreateRunspacePool(5, 10, $Host)
-    $script:outerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
-    $script:outerRunspacePool.ThreadOptions = 'ReuseThread'
-    $script:outerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
+    #
+    # Neither pool is opened until the first generator command arrives (#1231). A local
+    # session never sends one (the app runs its own commands out of band), and opening
+    # 15 runspaces up front cost 54 ms of every start-up on Linux, several times that on
+    # Windows. The pools start with one runspace and grow to the same maximum as before.
+    function Warp-Ensure-RunspacePools {
+        if ($null -ne $script:innerRunspacePool) {
+            return
+        }
+        $script:innerRunspacePool = [runspacefactory]::CreateRunspacePool(1, 20)
+        $script:innerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
+        $script:innerRunspacePool.ThreadOptions = 'ReuseThread'
+        $script:innerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
+
+        $script:outerRunspacePool = [runspacefactory]::CreateRunspacePool(1, 10, $Host)
+        $script:outerRunspacePool.ApartmentState = [System.Threading.ApartmentState]::STA
+        $script:outerRunspacePool.ThreadOptions = 'ReuseThread'
+        $script:outerRunspacePool.Open() | Microsoft.PowerShell.Core\Out-Null
+    }
 
     class WarpGeneratorCommand {
         [string]$CommandId
@@ -741,6 +972,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             [WarpGeneratorCommand[]]$commands
         )
 
+        Warp-Ensure-RunspacePools
         $jobNumber = $script:inBandCommandCount++
 
         $batchNumber = 0
@@ -809,8 +1041,8 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     }
 
     function Warp-Stop-ActiveThread {
-        $script:threadInner.values | Microsoft.PowerShell.Core\ForEach-Object {
-            $_.Stop()
+        if ($script:threadInner.Count -gt 0) {
+            foreach ($t in @($script:threadInner.Values)) { $t.Stop() }
         }
     }
 
@@ -1073,10 +1305,13 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # PSConsoleHostReadLine.
         $script:oldPSConsoleHostReadLine = $function:global:PSConsoleHostReadLine
         $function:global:PSConsoleHostReadLine = {
+            Warp-Idle-Maintenance
+            Warp-Send-LineEditorReading
+
             $line = & $script:oldPSConsoleHostReadLine
 
             # A command too long to type into PSReadLine (#1106) arrives as the launcher line
-            # `. (Warp-Run-LongCommand '<path>')`. Preexec reports that line as is; the app
+            # `. (Warp-Run-LongCommand)` (#1592). Preexec reports that line as is; the app
             # recorded the real command against it (set_command_display_override) and shows that
             # in the block header, tab title and history.
             Warp-Preexec "$line"

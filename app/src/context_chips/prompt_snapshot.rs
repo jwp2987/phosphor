@@ -6,7 +6,7 @@ use crate::context_chips::ContextChipKind;
 
 use super::current_prompt::CurrentPrompt;
 use super::prompt::Prompt;
-use super::{chips_to_string, ChipResult, ChipValue};
+use super::{ChipResult, ChipValue, chips_to_string_borrowed};
 use crate::settings::WarpPromptSeparator;
 
 /// Struct that holds a point in time snapshot of a prompt (chips are no longer interactive)
@@ -39,7 +39,7 @@ impl PromptSnapshot {
                 let on_click_values = current_prompt_on_click_snapshot
                     .get(chip_kind)
                     .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or_else(super::empty_on_click_values);
                 ChipResult {
                     kind: chip_kind.clone(),
                     value,
@@ -83,6 +83,12 @@ impl PromptSnapshot {
         &self.chips
     }
 
+    /// The chips, by value: for callers that only need the chips of a snapshot they just built, so
+    /// that they do not clone every chip value a second time.
+    pub(crate) fn into_chips(self) -> Vec<ChipResult> {
+        self.chips
+    }
+
     pub(super) fn same_line_prompt_enabled(&self) -> bool {
         self.same_line_prompt_enabled
     }
@@ -94,6 +100,6 @@ impl PromptSnapshot {
 
 impl std::fmt::Display for PromptSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&chips_to_string(self.chips.clone().into_iter()))
+        f.write_str(&chips_to_string_borrowed(&self.chips))
     }
 }

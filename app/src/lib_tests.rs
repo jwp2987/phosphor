@@ -151,6 +151,9 @@ impl WillTerminateSteps for RecordedSteps {
     fn flush_notebooks(&mut self) {
         self.0.push("flush_notebooks");
     }
+    fn flush_app_snapshot(&mut self) {
+        self.0.push("flush_app_snapshot");
+    }
     fn terminate_persistence_writer(&mut self) {
         self.0.push("terminate_persistence_writer");
     }
@@ -191,6 +194,7 @@ fn will_terminate_runs_every_step_once_in_order() {
         vec![
             "begin_server_shutdown",
             "flush_notebooks",
+            "flush_app_snapshot",
             "terminate_persistence_writer",
             "tear_down_terminal_server",
             "tear_down_app_services",
@@ -198,6 +202,18 @@ fn will_terminate_runs_every_step_once_in_order() {
             "relaunch_for_autoupdate",
             "tear_down_diagnostics",
         ]
+    );
+}
+
+#[test]
+fn will_terminate_records_the_running_step_for_the_watchdog_log() {
+    // UI-A2: the quit watchdog's give-up log names the step still running. Every run ends on the
+    // last step, so this holds even with other tests running the sequence concurrently.
+    let mut steps = RecordedSteps::default();
+    run_will_terminate_steps(&mut steps);
+    assert_eq!(
+        warpui::platform::shutdown_progress::current_step(),
+        "tear_down_diagnostics"
     );
 }
 
@@ -210,6 +226,14 @@ fn will_terminate_starts_server_shutdown_before_the_writer_join() {
     assert!(
         steps.position("begin_server_shutdown") < steps.position("terminate_persistence_writer")
     );
+}
+
+#[test]
+fn will_terminate_queues_the_pending_snapshot_before_the_writer_drains() {
+    // #1363: a snapshot queued after the writer terminated is never written.
+    let mut steps = RecordedSteps::default();
+    run_will_terminate_steps(&mut steps);
+    assert!(steps.position("flush_app_snapshot") < steps.position("terminate_persistence_writer"));
 }
 
 #[test]
@@ -361,6 +385,18 @@ fn typeahead_handoff_is_enabled_by_default() {
     if std::env::var_os("ZAP_DISABLED_FEATURES").is_none() {
         assert!(enabled_features().contains(&FeatureFlag::TypeaheadHandoff));
     }
+}
+
+/// #1152: finished blocks are flattened by default. Reads process env, like the test above.
+#[test]
+fn maximize_flat_storage_is_enabled_by_default() {
+    if std::env::var_os("ZAP_DISABLED_FEATURES").is_none() {
+        assert!(enabled_features().contains(&FeatureFlag::MaximizeFlatStorage));
+    }
+    // ... and `ZAP_DISABLED_FEATURES=maximize_flat_storage` is the kill switch.
+    let mut flags: HashSet<FeatureFlag> = [FeatureFlag::MaximizeFlatStorage].into_iter().collect();
+    apply_feature_env_overrides(&mut flags, None, Some("maximize-flat-storage"));
+    assert!(!flags.contains(&FeatureFlag::MaximizeFlatStorage));
 }
 
 #[test]

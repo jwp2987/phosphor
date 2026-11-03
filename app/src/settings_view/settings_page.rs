@@ -22,16 +22,12 @@ use super::{
 };
 use crate::{
     appearance::Appearance,
-    settings::PreferencesSettings,
     themes::theme::Fill,
     ui_components::icons::Icon,
     view_components::{Dropdown, SubmittableTextInput},
 };
 use settings::Setting;
-use warp_core::{
-    settings::SyncToCloud,
-    ui::{color::blend::Blend, theme::color::internal_colors},
-};
+use warp_core::ui::{color::blend::Blend, theme::color::internal_colors};
 use warpui::{
     elements::{
         new_scrollable::{ClippedAxisConfiguration, DualAxisConfig, SingleAxisConfig},
@@ -316,7 +312,6 @@ pub fn render_sub_header_with_description(
     .finish()
 }
 
-#[cfg_attr(target_family = "wasm", allow(unused))]
 pub fn render_sub_sub_header(
     appearance: &Appearance,
     text_name: impl Into<Cow<'static, str>>,
@@ -502,41 +497,15 @@ pub enum LocalOnlyIconState {
 }
 
 impl LocalOnlyIconState {
-    /// Creates a `LocalOnlyIconState` for a given setting.
-    /// This function determines whether to show an icon indicating that a setting
-    /// is not cloud-synced based on the `SyncToCloud` value of the setting.
-    /// # Arguments
-    /// * `storage_key` - A string slice that holds the storage key for the setting.
-    /// * `sync_to_cloud` - The `SyncToCloud` value for the setting.
-    /// * `mouse_states` - A mutable reference to a `HashMap` storing `MouseStateHandle`s.
-    /// # Returns
-    /// Returns a `LocalOnlyIconState` enum variant:
-    /// - `LocalOnlyIconState::Visible` with a `MouseStateHandle` if the setting is never synced to cloud.
-    /// - `LocalOnlyIconState::Hidden` if the setting is synced to cloud.
+    /// Settings sync does not exist in this fork, so the "local only" badge is never shown.
+    /// (The `Visible` variant and the plumbing that renders it are dead and are removed in a
+    /// follow-up.)
     pub fn for_setting(
-        storage_key: &str,
-        sync_to_cloud: SyncToCloud,
-        mouse_states: &mut HashMap<String, MouseStateHandle>,
-        app: &AppContext,
+        _storage_key: &str,
+        _mouse_states: &mut HashMap<String, MouseStateHandle>,
+        _app: &AppContext,
     ) -> Self {
-        if !*PreferencesSettings::as_ref(app).settings_sync_enabled {
-            // Only show the local-only icon if settings sync is enabled.
-            return Self::Hidden;
-        }
-
-        match sync_to_cloud {
-            SyncToCloud::Never => {
-                let mouse_state = mouse_states
-                    .entry(storage_key.to_string())
-                    .or_default()
-                    .clone();
-                Self::Visible {
-                    mouse_state,
-                    custom_tooltip: None,
-                }
-            }
-            _ => Self::Hidden,
-        }
+        Self::Hidden
     }
 }
 
@@ -1499,17 +1468,6 @@ impl<V: warpui::View> PageType<V> {
                 ..
             } => {
                 *highlighted_widget_id = None;
-            }
-        }
-    }
-
-    /// Set the minimum page width for narrow panes.
-    pub fn set_min_page_width(&mut self, width: f32) {
-        match self {
-            Self::Monolith { min_page_width, .. }
-            | Self::Uncategorized { min_page_width, .. }
-            | Self::Categorized { min_page_width, .. } => {
-                *min_page_width = width;
             }
         }
     }

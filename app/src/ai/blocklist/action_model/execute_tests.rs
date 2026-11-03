@@ -194,6 +194,117 @@ mod read_file_failures {
     }
 
     #[test]
+    fn batch_over_the_file_cap_reports_the_unread_files() {
+        let locations: Vec<FileLocations> = (0..5)
+            .map(|i| location(&format!("/tmp/f{i}.txt")))
+            .collect();
+        let (kept, note) = super::super::cap_read_batch(locations, 3);
+        assert_eq!(kept.len(), 3);
+        let note = note.expect("a note for the files past the cap");
+        assert!(
+            note.message.starts_with("2 more files not read"),
+            "{}",
+            note.message
+        );
+        assert!(note.message.contains("/tmp/f3.txt") && note.message.contains("/tmp/f4.txt"));
+
+        let (kept, note) = super::super::cap_read_batch(vec![location("/tmp/a")], 3);
+        assert_eq!(kept.len(), 1);
+        assert!(note.is_none());
+    }
+
+    #[test]
+    fn files_after_the_batch_byte_budget_get_an_explicit_failure() {
+        let dir = TempDir::new().expect("create tempdir");
+        // Exactly the budget, plus the trailing newline the reader counts. A first line longer
+        // than the budget would be cut to nothing without spending any of it, leaving the
+        // allowance intact for the second file.
+        let a = write_file(&dir, "a.txt", b"01234\n");
+        let b = write_file(&dir, "b.txt", b"second\n");
+
+        // Budget of 5 bytes: the first file spends it, the second must be reported.
+        let result = block_on(read_local_file_context(
+            &[location(&a), location(&b)],
+            None,
+            None,
+            None,
+            Some(5),
+        ))
+        .expect("read_local_file_context");
+
+        assert_eq!(result.failed_files.len(), 1, "{:?}", result.failed_files);
+        assert!(result.failed_files[0].path.ends_with("b.txt"));
+        assert!(result.failed_files[0].message.contains("size limit"));
+    }
+
+    #[test]
+    fn first_line_longer_than_the_budget_is_reported_not_read_not_empty() {
+        let dir = TempDir::new().expect("create tempdir");
+        let a = write_file(
+            &dir,
+            "a.txt",
+            b"this first line is far longer than the budget\nmore\n",
+        );
+
+        let result = block_on(read_local_file_context(
+            &[location(&a)],
+            None,
+            None,
+            None,
+            Some(5),
+        ))
+        .expect("read_local_file_context");
+
+        assert!(
+            result.file_contexts.is_empty(),
+            "must not hand the model an empty file: {:?}",
+            result.file_contexts
+        );
+        assert_eq!(result.failed_files.len(), 1, "{:?}", result.failed_files);
+        assert!(result.failed_files[0].path.ends_with("a.txt"));
+        assert!(result.failed_files[0].message.contains("size limit"));
+    }
+
+    #[test]
+    fn genuinely_empty_file_is_still_read_as_empty() {
+        let dir = TempDir::new().expect("create tempdir");
+        let a = write_file(&dir, "empty.txt", b"");
+
+        let result = block_on(read_local_file_context(
+            &[location(&a)],
+            None,
+            None,
+            None,
+            Some(5),
+        ))
+        .expect("read_local_file_context");
+
+        assert!(result.failed_files.is_empty(), "{:?}", result.failed_files);
+        assert_eq!(result.file_contexts.len(), 1);
+    }
+
+    #[test]
+    fn remote_entry_without_content_is_a_failure_not_dropped() {
+        use remote_server::proto::{FileContextProto, file_context_proto::Content};
+        let with = FileContextProto {
+            file_name: "/r/a.txt".into(),
+            content: Some(Content::TextContent("hi".into())),
+            line_count: 1,
+            ..Default::default()
+        };
+        let without = FileContextProto {
+            file_name: "/r/b.txt".into(),
+            content: None,
+            ..Default::default()
+        };
+        let (files, failed) = super::super::convert_remote_file_contexts(vec![with, without]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].path, "/r/b.txt");
+        assert!(failed[0].message.contains("no content"));
+    }
+
+    #[test]
     fn describe_failed_files_groups_each_reason_per_file() {
         let failures = vec![
             ReadFilesFailedFile {
@@ -339,6 +450,61 @@ mod path_shell_quoting {
         assert_eq!(
             command,
             r#"git -C 'C:\repo$(New-Item C:\poc)$env:USERPROFILE' rev-parse"#
+        );
+    }
+}
+
+mod read_file_per_file_failures {
+    use std::io::Write as _;
+
+    use async_io::block_on;
+    use tempfile::TempDir;
+
+    use super::super::read_local_file_context;
+    use crate::ai::agent::FileLocations;
+
+    fn location(path: &str) -> FileLocations {
+        FileLocations {
+            name: path.to_string(),
+            lines: vec![],
+        }
+    }
+
+    /// One path that cannot be read as a file (here a directory: "Is a directory" from the
+    /// text reader, or an open failure on the binary path) is reported as that file's failure
+    /// and the other files are still read. Fails on the old code, where the `?` on the read
+    /// returned the error for the whole batch and the already-read file was lost.
+    #[test]
+    fn an_unreadable_path_fails_only_itself() {
+        let dir = TempDir::new().expect("create tempdir");
+        let good = dir.path().join("good.txt");
+        std::fs::File::create(&good)
+            .expect("create file")
+            .write_all(b"hello\n")
+            .expect("write file");
+        let subdir = dir.path().join("a-directory");
+        std::fs::create_dir(&subdir).expect("create dir");
+
+        let result = block_on(read_local_file_context(
+            &[
+                location(&good.to_string_lossy()),
+                location(&subdir.to_string_lossy()),
+            ],
+            None,
+            None,
+            None,
+            None,
+        ))
+        .expect("one bad path does not fail the batch");
+
+        assert_eq!(result.file_contexts.len(), 1, "the readable file is read");
+        assert_eq!(result.failed_files.len(), 1);
+        let failed = &result.failed_files[0];
+        assert_eq!(failed.path, subdir.to_string_lossy());
+        assert!(
+            failed.message.starts_with("Could not read file:"),
+            "got: {}",
+            failed.message
         );
     }
 }

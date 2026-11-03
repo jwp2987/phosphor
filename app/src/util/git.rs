@@ -248,12 +248,135 @@ pub fn list_local_branches_sync(repo_path: &Path) -> HashSet<String> {
         .output();
 
     match output {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|line| line.trim().to_string())
-            .filter(|line| !line.is_empty())
-            .collect(),
+        Ok(out) if out.status.success() => {
+            parse_branch_list(&String::from_utf8_lossy(&out.stdout))
+        }
         _ => HashSet::new(),
+    }
+}
+
+/// Parses `git branch --list --format=%(refname:short)` output.
+pub(crate) fn parse_branch_list(stdout: &str) -> HashSet<String> {
+    stdout
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// Non-blocking variant of [`list_local_branches_sync`] (#1313). Empty set on any failure.
+#[cfg(feature = "local_fs")]
+pub async fn list_local_branches(repo_path: &Path) -> HashSet<String> {
+    match run_git_command(repo_path, &["branch", "--list", "--format=%(refname:short)"]).await {
+        Ok(out) => parse_branch_list(&out),
+        Err(_) => HashSet::new(),
+    }
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn list_local_branches(_repo_path: &Path) -> HashSet<String> {
+    HashSet::new()
+}
+
+/// Per-repo cache of local branch names, filled off the UI thread. UI-thread code reads it with
+/// [`cached_local_branches`] and never runs git; a refresh result is only stored if no newer
+/// refresh was started for the same repo (generation check).
+#[derive(Default)]
+struct BranchCache {
+    branches: std::collections::HashMap<std::path::PathBuf, HashSet<String>>,
+    /// Names handed out for new worktree branches whose `git worktree add -b` may not have run
+    /// yet, so a stale or cold list cannot offer the same name twice. Dropped once a listing
+    /// contains them.
+    reserved: std::collections::HashMap<std::path::PathBuf, HashSet<String>>,
+    generation: std::collections::HashMap<std::path::PathBuf, u64>,
+}
+
+static BRANCH_CACHE: std::sync::LazyLock<std::sync::Mutex<BranchCache>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn cached_local_branches(repo_path: &Path) -> Option<HashSet<String>> {
+    let cache = BRANCH_CACHE.lock().ok()?;
+    let listed = cache.branches.get(repo_path);
+    let reserved = cache.reserved.get(repo_path);
+    match (listed, reserved) {
+        (None, None) => None,
+        (l, r) => Some(
+            l.into_iter()
+                .chain(r)
+                .flat_map(|set| set.iter().cloned())
+                .collect(),
+        ),
+    }
+}
+
+/// Remembers `name` as taken for `repo_path` until a branch listing contains it.
+pub(crate) fn reserve_branch_name(repo_path: &Path, name: &str) {
+    const MAX_RESERVED: usize = 64;
+    let Ok(mut cache) = BRANCH_CACHE.lock() else {
+        return;
+    };
+    let set = cache.reserved.entry(repo_path.to_path_buf()).or_default();
+    if set.len() >= MAX_RESERVED {
+        set.clear();
+    }
+    set.insert(name.to_owned());
+}
+
+/// Bumped whenever a repository watcher reports that `HEAD` or a local branch ref changed.
+/// Branch-list caches record it before listing and are invalid once it moves, so they follow the
+/// event instead of trusting a file mtime (coarse mtimes and same-mtime swaps go stale).
+static REFS_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn note_refs_changed() {
+    REFS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub(crate) fn refs_epoch() -> u64 {
+    REFS_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Starts a refresh for `repo_path`, returning its generation.
+pub(crate) fn begin_branch_refresh(repo_path: &Path) -> u64 {
+    let Ok(mut cache) = BRANCH_CACHE.lock() else {
+        return 0;
+    };
+    let slot = cache.generation.entry(repo_path.to_path_buf()).or_insert(0);
+    *slot += 1;
+    *slot
+}
+
+/// Stores `branches` unless a newer refresh was started. Returns whether it was stored.
+pub(crate) fn finish_branch_refresh(
+    repo_path: &Path,
+    generation: u64,
+    branches: HashSet<String>,
+) -> bool {
+    let Ok(mut cache) = BRANCH_CACHE.lock() else {
+        return false;
+    };
+    if cache.generation.get(repo_path) != Some(&generation) {
+        return false;
+    }
+    if let Some(reserved) = cache.reserved.get_mut(repo_path) {
+        reserved.retain(|name| !branches.contains(name));
+    }
+    evict_branch_cache_if_full(&mut cache, repo_path);
+    cache.branches.insert(repo_path.to_path_buf(), branches);
+    true
+}
+
+/// Most repos whose branch list is kept; one repo is evicted to make room for a new one.
+const MAX_CACHED_REPOS: usize = 64;
+
+/// Keeps the per-repo maps bounded: repos ever opened in this process would otherwise
+/// accumulate forever (#1382). An evicted repo just re-lists on its next refresh.
+fn evict_branch_cache_if_full(cache: &mut BranchCache, keep: &Path) {
+    if cache.branches.contains_key(keep) || cache.branches.len() < MAX_CACHED_REPOS {
+        return;
+    }
+    if let Some(victim) = cache.branches.keys().find(|k| k.as_path() != keep).cloned() {
+        cache.branches.remove(&victim);
+        cache.generation.remove(&victim);
     }
 }
 

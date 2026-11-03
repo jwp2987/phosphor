@@ -4,7 +4,7 @@
 //! system, implementations of the API for various platforms, testing
 //! utilities, and extension traits to improve ergonomics of using the APIs.
 
-#[cfg(not(target_family = "wasm"))]
+pub mod background;
 #[cfg_attr(target_os = "macos", path = "mac.rs")]
 #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), path = "linux.rs")]
 #[cfg_attr(target_os = "windows", path = "windows.rs")]
@@ -53,11 +53,14 @@ pub type Model = Box<dyn SecureStorage>;
 /// common scheme is reverse-DNS notation (e.g.: "dev.warp.Zap").
 #[cfg(not(target_os = "windows"))]
 pub fn register(service_name: &str, ctx: &mut warpui::AppContext) {
+    let name = service_name.to_owned();
+    background::set_factory(move || -> Model { Box::new(imp::SecureStorage::new(&name)) });
     ctx.add_singleton_model(|_| -> Model { Box::new(imp::SecureStorage::new(service_name)) });
 }
 
 /// Registers a no-op Secure Storage provider with the application.
 pub fn register_noop(service_name: &str, ctx: &mut warpui::AppContext) {
+    background::clear_factory();
     ctx.add_singleton_model(|_| -> Model { Box::new(noop::SecureStorage::new(service_name)) });
 }
 
@@ -71,6 +74,7 @@ pub fn register_noop(service_name: &str, ctx: &mut warpui::AppContext) {
 /// `initialize_app` under `LaunchMode::RemoteServerDaemon` instead
 /// (`42effe840:app/src/lib.rs:1468`), which this fork's daemon never reaches.
 pub fn register_unavailable(ctx: &mut warpui::AppContext) {
+    background::clear_factory();
     ctx.add_singleton_model(|_| -> Model { Box::new(unavailable::SecureStorage) });
 }
 
@@ -80,6 +84,13 @@ pub fn register_with_fallback(
     fallback_dir: std::path::PathBuf,
     ctx: &mut warpui::AppContext,
 ) {
+    {
+        let name = service_name.to_owned();
+        let dir = fallback_dir.clone();
+        background::set_factory(move || -> Model {
+            Box::new(imp::SecureStorage::new_with_fallback(&name, dir.clone()))
+        });
+    }
     ctx.add_singleton_model(|_| -> Model {
         Box::new(imp::SecureStorage::new_with_fallback(
             service_name,
@@ -96,6 +107,13 @@ pub fn register_with_dir(
     storage_dir: std::path::PathBuf,
     ctx: &mut warpui::AppContext,
 ) {
+    {
+        let name = service_name.to_owned();
+        let dir = storage_dir.clone();
+        background::set_factory(move || -> Model {
+            Box::new(imp::SecureStorage::new_with_path(&name, dir.clone()))
+        });
+    }
     ctx.add_singleton_model(|_| -> Model {
         Box::new(imp::SecureStorage::new_with_path(service_name, storage_dir))
     });

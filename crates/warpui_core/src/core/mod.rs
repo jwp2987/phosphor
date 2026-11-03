@@ -290,6 +290,16 @@ pub trait AnyView {
         view_id: EntityId,
     ) -> Option<AccessibilityData>;
     fn child_view_ids(&self, app: &AppContext) -> Vec<EntityId>;
+    fn is_pane_key_sink(&self) -> bool;
+    fn takes_typed_text(&self) -> bool;
+    fn on_pane_key(
+        &mut self,
+        key: &crate::pane_key::PaneKey,
+        key_ctx: &crate::pane_key::PaneKeyContext,
+        app: &mut AppContext,
+        window_id: WindowId,
+        view_id: EntityId,
+    ) -> crate::pane_key::PaneKeyOutcome;
 }
 
 impl<T> AnyView for T
@@ -394,6 +404,26 @@ where
 
     fn child_view_ids(&self, app: &AppContext) -> Vec<EntityId> {
         View::child_view_ids(self, app)
+    }
+
+    fn is_pane_key_sink(&self) -> bool {
+        View::is_pane_key_sink(self)
+    }
+
+    fn takes_typed_text(&self) -> bool {
+        View::takes_typed_text(self)
+    }
+
+    fn on_pane_key(
+        &mut self,
+        key: &crate::pane_key::PaneKey,
+        key_ctx: &crate::pane_key::PaneKeyContext,
+        app: &mut AppContext,
+        window_id: WindowId,
+        view_id: EntityId,
+    ) -> crate::pane_key::PaneKeyOutcome {
+        let mut ctx = ViewContext::new(app, window_id, view_id);
+        View::on_pane_key(self, key, key_ctx, &mut ctx)
     }
 }
 
@@ -581,7 +611,6 @@ enum TaskCallback {
         on_done: Box<ModelFromStreamDoneCallback>,
     },
     ViewFromFuture {
-        window_id: WindowId,
         view_id: EntityId,
         callback: Box<ViewFromFutureCallback>,
     },
@@ -682,12 +711,6 @@ pub enum RequestState<T> {
     RequestFailedRetryPending(Error),
     /// Request failed.
     RequestFailed(Error),
-}
-
-impl<T> RequestState<T> {
-    pub fn has_pending_retries(&self) -> bool {
-        matches!(self, RequestState::RequestFailedRetryPending(_))
-    }
 }
 
 #[cfg(test)]

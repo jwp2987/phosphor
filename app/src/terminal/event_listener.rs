@@ -1,8 +1,23 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::terminal::event::{Event as TerminalEvent, EvictionStamp};
 use async_channel::Sender;
+
+/// A request to redraw after PTY output. `AfterUserInput` marks the first output that follows a
+/// keystroke reaching the pty (its echo): the receiving throttle delivers it without waiting for
+/// the next 60 Hz slot (#1138).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wakeup {
+    Output,
+    AfterUserInput,
+}
+
+impl crate::throttle::Urgent for Wakeup {
+    fn is_urgent(&self) -> bool {
+        matches!(self, Wakeup::AfterUserInput)
+    }
+}
 
 /// A wrapper struct that emits events which originate from the PTY event loop.
 /// Instead of passing individual senders, we can pass through this struct
@@ -12,17 +27,23 @@ pub struct ChannelEventListener {
     /// We have a dedicated channel for "wakeup"s because we throttle the receiver
     /// so that we can coalesce successive wakeup events during situations of high
     /// throughput (e.g. running `yes`).
-    wakeups_tx: Sender<()>,
+    wakeups_tx: Sender<Wakeup>,
     terminal_events_tx: Sender<TerminalEvent>,
     pty_reads_tx: async_broadcast::Sender<Arc<Vec<u8>>>,
     /// Monotonic count of blocks evicted by `terminal.max_retained_lines` (#889), shared by every
     /// clone of this listener. See [`EvictionStamp`].
     evicted_blocks_total: Arc<AtomicUsize>,
+    /// Published by the model with each pty read: are these bytes countable for the throughput
+    /// recorder (not in-band output, post-bootstrap)? Lets the recorder run without ever taking
+    /// the model lock (#1377).
+    pty_read_countable: Arc<AtomicBool>,
+    /// Events go nowhere (see [`Self::detached`]).
+    sink: bool,
 }
 
 impl ChannelEventListener {
     pub fn new(
-        wakeups_tx: Sender<()>,
+        wakeups_tx: Sender<Wakeup>,
         terminal_events_tx: Sender<TerminalEvent>,
         pty_reads_tx: async_broadcast::Sender<Arc<Vec<u8>>>,
     ) -> Self {
@@ -31,6 +52,28 @@ impl ChannelEventListener {
             terminal_events_tx,
             pty_reads_tx,
             evicted_blocks_total: Arc::new(AtomicUsize::new(0)),
+            pty_read_countable: Arc::new(AtomicBool::new(false)),
+            sink: false,
+        }
+    }
+
+    /// A listener whose events go nowhere, for a scratch `BlockList` that parses saved blocks off
+    /// the UI thread (#1254). The parse finishes each block, which emits `BlockCompleted` (and
+    /// prompt and cwd events from the saved bytes); on the live terminal's listener those reached
+    /// the view mid-session, where they bumped the input generation, rescanned the find model and
+    /// redetermined focus for a block that was not completing. The blocks themselves are handed
+    /// over through the restore mailbox, not through events.
+    pub fn detached() -> Self {
+        let (wakeups_tx, _) = async_channel::bounded(1);
+        let (terminal_events_tx, _) = async_channel::bounded(1);
+        let (pty_reads_tx, _) = async_broadcast::broadcast(1);
+        ChannelEventListener {
+            wakeups_tx,
+            terminal_events_tx,
+            pty_reads_tx,
+            evicted_blocks_total: Arc::new(AtomicUsize::new(0)),
+            pty_read_countable: Arc::new(AtomicBool::new(false)),
+            sink: true,
         }
     }
 
@@ -58,12 +101,27 @@ impl ChannelEventListener {
     }
 
     pub fn send_wakeup_event(&self) {
-        if let Err(e) = self.wakeups_tx.try_send(()) {
+        self.send_wakeup(Wakeup::Output);
+    }
+
+    /// A wakeup for output that directly follows user input; see [`Wakeup::AfterUserInput`].
+    pub fn send_after_user_input_wakeup_event(&self) {
+        self.send_wakeup(Wakeup::AfterUserInput);
+    }
+
+    fn send_wakeup(&self, wakeup: Wakeup) {
+        if self.sink {
+            return;
+        }
+        if let Err(e) = self.wakeups_tx.try_send(wakeup) {
             log::warn!("Failed to send Wakeup event: {e:?}");
         }
     }
 
     pub fn send_terminal_event(&self, event: TerminalEvent) {
+        if self.sink {
+            return;
+        }
         if let Err(e) = self.terminal_events_tx.try_send(event) {
             let try_send_error_dbg = format!("{e:?}");
             log::warn!(
@@ -75,6 +133,9 @@ impl ChannelEventListener {
     }
 
     pub fn send_handler_event(&self, event: HandlerEvent) {
+        if self.sink {
+            return;
+        }
         if let Err(e) = self
             .terminal_events_tx
             .try_send(TerminalEvent::Handler(event))
@@ -83,7 +144,16 @@ impl ChannelEventListener {
         }
     }
 
-    pub fn send_pty_read_event(&self, bytes: &[u8]) {
+    /// The flag the throughput recorder reads instead of locking the model.
+    pub fn pty_read_countable_flag(&self) -> Arc<AtomicBool> {
+        self.pty_read_countable.clone()
+    }
+
+    pub fn send_pty_read_event(&self, bytes: &[u8], countable: bool) {
+        self.pty_read_countable.store(countable, Ordering::Relaxed);
+        if self.sink {
+            return;
+        }
         // Don't bother sending the event if there aren't any
         // active receivers. This avoids an unnecessary allocation of the bytes vector.
         // Note that we don't simply close the sending side since receivers

@@ -1,0 +1,63 @@
+---
+source: app/src/terminal/pane_key_snapshot_tests.rs
+expression: pane_key_typed_route_scenarios
+---
+plain key, pty takes it
+  interrupt_key=false yes=["pty_takes_input"]
+  asked: ssh_choice_card_up, ssh_setup_holds_key, enter_queue_takes_key, note_warpification_key, powershell_setup_holds, on_approval_card, on_settled_ai_target, agent_owns_typing, pty_takes_input
+  route: Deliver(TypedTail { approval_card: false, settled_ai_target: false, agent_owns_typing: false, try_pty: true })
+
+plain key, nothing takes the pty
+  interrupt_key=false yes=[]
+  asked: ssh_choice_card_up, ssh_setup_holds_key, enter_queue_takes_key, note_warpification_key, powershell_setup_holds, on_approval_card, on_settled_ai_target, agent_owns_typing, pty_takes_input
+  route: Deliver(TypedTail { approval_card: false, settled_ai_target: false, agent_owns_typing: false, try_pty: false })
+
+ssh choice card up
+  interrupt_key=false yes=["ssh_choice_card_up"]
+  asked: ssh_choice_card_up
+  route: SshChoiceCardHint
+
+ssh setup holds a plain key
+  interrupt_key=false yes=["ssh_setup_holds_key"]
+  asked: ssh_choice_card_up, ssh_setup_holds_key
+  route: SshSetupHeld
+
+interrupt held by the ssh connect
+  interrupt_key=true yes=["ssh_interrupt_held"]
+  asked: ssh_choice_card_up, ssh_interrupt_held
+  route: SshInterruptHeld
+
+interrupt passes the ssh connect
+  interrupt_key=true yes=["pty_takes_input"]
+  asked: ssh_choice_card_up, ssh_interrupt_held, ssh_interrupt_passes, enter_queue_takes_key, note_warpification_key, powershell_setup_holds, on_approval_card, on_settled_ai_target, agent_owns_typing, pty_takes_input
+  route: Deliver(TypedTail { approval_card: false, settled_ai_target: false, agent_owns_typing: false, try_pty: true })
+
+interrupt: the setup hold is not asked
+  interrupt_key=true yes=["ssh_setup_holds_key", "pty_takes_input"]
+  asked: ssh_choice_card_up, ssh_interrupt_held, ssh_interrupt_passes, enter_queue_takes_key, note_warpification_key, powershell_setup_holds, on_approval_card, on_settled_ai_target, agent_owns_typing, pty_takes_input
+  route: Deliver(TypedTail { approval_card: false, settled_ai_target: false, agent_owns_typing: false, try_pty: true })
+
+enter queue takes the key
+  interrupt_key=false yes=["enter_queue_takes_key"]
+  asked: ssh_choice_card_up, ssh_setup_holds_key, enter_queue_takes_key
+  route: QueuedBehindEnter
+
+powershell setup holds
+  interrupt_key=false yes=["powershell_setup_holds"]
+  asked: ssh_choice_card_up, ssh_setup_holds_key, enter_queue_takes_key, note_warpification_key, powershell_setup_holds
+  route: PowerShellHeld
+
+approval card wins over the pty
+  interrupt_key=false yes=["on_approval_card", "pty_takes_input"]
+  asked: ssh_choice_card_up, ssh_setup_holds_key, enter_queue_takes_key, note_warpification_key, powershell_setup_holds, on_approval_card, agent_owns_typing
+  route: Deliver(TypedTail { approval_card: true, settled_ai_target: false, agent_owns_typing: false, try_pty: false })
+
+settled ai target
+  interrupt_key=false yes=["on_settled_ai_target", "pty_takes_input"]
+  asked: ssh_choice_card_up, ssh_setup_holds_key, enter_queue_takes_key, note_warpification_key, powershell_setup_holds, on_approval_card, on_settled_ai_target, agent_owns_typing, pty_takes_input
+  route: Deliver(TypedTail { approval_card: false, settled_ai_target: true, agent_owns_typing: false, try_pty: true })
+
+agent owns typing
+  interrupt_key=false yes=["agent_owns_typing", "pty_takes_input"]
+  asked: ssh_choice_card_up, ssh_setup_holds_key, enter_queue_takes_key, note_warpification_key, powershell_setup_holds, on_approval_card, on_settled_ai_target, agent_owns_typing
+  route: Deliver(TypedTail { approval_card: false, settled_ai_target: false, agent_owns_typing: true, try_pty: false })

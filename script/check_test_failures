@@ -136,6 +136,16 @@ grep -vE '^\s*(#|$)' "$KNOWN" | tr -d ' \r' | LC_ALL=C sort -u > "$expected"
 
 new="$(comm -23 "$actual" "$expected")"
 fixed="$(comm -13 "$actual" "$expected")"
+# A filtered run (-E / TEST_FILTER, CI 'fix' tier) executes only part of the suite, so a listed
+# failure that did not run is NOT evidence it was fixed: skip the stale-entry rule. The regression
+# rule above is unchanged. A full run (candidate tier) enforces both.
+for a in "$@"; do
+    if [[ "$a" == "-E" || "$a" == "--filterset" || "$a" == "--filter-expr" || "$a" == -E* ]]; then
+        [[ -n "$fixed" ]] && echo "note: filtered run; not judging $(echo "$fixed" | wc -l | tr -d ' ') listed failure(s) that may not have run" >&2
+        fixed=""
+        break
+    fi
+done
 
 status=0
 

@@ -16,7 +16,7 @@ use crate::terminal::SizeInfo;
 use crate::terminal::block_list_element::GridType;
 use crate::terminal::find::model::block_list::run_find_on_block_list;
 use crate::terminal::find::model::{FindOptions, TerminalFindModel};
-use crate::terminal::find::{BlockListMatch, RichContentMatchId};
+use crate::terminal::find::{BlockFindRenderData, BlockListMatch, RichContentMatchId};
 use crate::terminal::model::TerminalModel;
 use crate::terminal::model::ansi::{Handler, PreexecValue};
 use crate::terminal::model::blocks::TotalIndex;
@@ -1675,4 +1675,271 @@ fn test_wakeup_after_a_dirty_range_wakeup_rescans_the_active_block_once() {
         test_model.update(&mut app, |model, ctx| model.rerun_find_on_active_grid(ctx));
         assert!(!test_model.update(&mut app, |model, _ctx| model.is_scanning()));
     });
+}
+
+#[test]
+fn test_render_data_converts_only_the_visible_rows_of_a_huge_match_set() {
+    // #1327: converting every match of a block on every paint froze the UI for seconds.
+    let terminal_model = TerminalModel::mock(None, None);
+    let block = terminal_model.block_list().active_block();
+    let grid = block.output_grid().grid_handler();
+    let matches: Vec<AbsoluteMatch> = (0..200_000u64).map(make_match).collect();
+    let data = BlockFindRenderData::Async {
+        command_matches: Vec::new(),
+        output: Some((matches.as_slice(), grid)),
+        focused_command_range: None,
+        focused_output_range: None,
+    };
+
+    let windowed = data.output_grid_matches_in_rows(Some(1000..1040)).unwrap();
+    assert_eq!(windowed.len(), 40);
+    assert_eq!(windowed[0].start().row, 1000);
+    assert_eq!(windowed[39].start().row, 1039);
+    // No window (a block filter is active) still converts everything.
+    assert_eq!(
+        data.output_grid_matches_in_rows(None).unwrap().len(),
+        matches.len()
+    );
+    // A window past the last match is empty rather than an error.
+    assert!(
+        data.output_grid_matches_in_rows(Some(300_000..300_040))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_appended_chunks_flag_only_the_new_tail_as_filtered() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let model = app.add_model(|ctx| {
+            let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+            let mut controller = AsyncFindController::new(terminal_model);
+            controller.set_test_status(AsyncFindStatus::Scanning);
+            model.async_find_controller = Some(controller);
+            model
+        });
+        model.update(&mut app, |model, ctx| {
+            let controller = model.async_find_controller.as_mut().unwrap();
+            let active = controller_active_block(controller);
+            // A stale flag on an already-stored match survives a later chunk: only the appended
+            // tail is re-evaluated.
+            for chunk in [vec![make_match(0)], vec![make_match(1), make_match(2)]] {
+                controller.process_message(
+                    FindTaskMessage::BlockGridMatches {
+                        block_index: active,
+                        grid_type: GridType::Output,
+                        matches: chunk,
+                    },
+                    ctx,
+                );
+                if let Some(stored) = controller
+                    .block_results_mut()
+                    .terminal_matches
+                    .get_mut(&(active, GridType::Output))
+                    && stored.len() == 1
+                {
+                    stored[0].is_filtered = true;
+                }
+            }
+            let stored =
+                &controller.block_results_mut().terminal_matches[&(active, GridType::Output)];
+            assert!(stored[0].is_filtered, "earlier matches are not re-flagged");
+            assert!(!stored[1].is_filtered && !stored[2].is_filtered);
+        });
+    });
+}
+
+fn controller_active_block(controller: &AsyncFindController) -> BlockIndex {
+    controller
+        .terminal_model
+        .lock()
+        .block_list()
+        .active_block_index()
+}
+
+fn flagged(mut m: AbsoluteMatch) -> AbsoluteMatch {
+    m.is_filtered = true;
+    m
+}
+
+#[test]
+fn test_running_visible_count_tracks_updates_and_removals() {
+    let mut results = BlockFindResults::default();
+    let key = (BlockIndex(0), GridType::Output);
+    let check = |results: &BlockFindResults| {
+        assert_eq!(results.running_visible_count(), results.recount_visible());
+    };
+
+    // Empty existing, prepend-less insert, filtered entries do not count.
+    results.update_dirty_matches(
+        key.0,
+        key.1,
+        0..=10,
+        vec![make_match(5), flagged(make_match(6)), make_match(7)],
+    );
+    assert_eq!(results.running_visible_count(), 2);
+    check(&results);
+
+    // Prepend and append.
+    results.update_dirty_matches(key.0, key.1, 0..=1, vec![make_match(0)]);
+    results.update_dirty_matches(key.0, key.1, 20..=21, vec![make_match(20), make_match(21)]);
+    assert_eq!(results.running_visible_count(), 5);
+    check(&results);
+
+    // Replace the middle (drops the flagged match and a visible one).
+    results.update_dirty_matches(key.0, key.1, 6..=7, vec![make_match(6)]);
+    assert_eq!(results.running_visible_count(), 5 - 1 + 1);
+    check(&results);
+
+    // A second grid, then removing the block drops both.
+    results.update_dirty_matches(
+        key.0,
+        GridType::PromptAndCommand,
+        0..=0,
+        vec![make_match(0)],
+    );
+    check(&results);
+    results.remove_block(key.0);
+    assert_eq!(results.running_visible_count(), 0);
+    check(&results);
+
+    results.update_dirty_matches(key.0, key.1, 0..=0, vec![make_match(0)]);
+    results.clear();
+    assert_eq!(results.running_visible_count(), 0);
+}
+
+#[test]
+fn test_running_count_matches_recount_after_chunks_and_invalidations() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let model = app.add_model(|ctx| {
+            let mut model = TerminalFindModel::new(terminal_model.clone(), ctx);
+            let mut controller = AsyncFindController::new(terminal_model);
+            controller.set_test_status(AsyncFindStatus::Scanning);
+            model.async_find_controller = Some(controller);
+            model
+        });
+        model.update(&mut app, |model, ctx| {
+            let controller = model.async_find_controller.as_mut().unwrap();
+            let active = controller_active_block(controller);
+            for chunk in 0..5u64 {
+                let matches = (0..10).map(|i| make_match(chunk * 10 + i)).collect();
+                controller.process_message(
+                    FindTaskMessage::BlockGridMatches {
+                        block_index: active,
+                        grid_type: GridType::Output,
+                        matches,
+                    },
+                    ctx,
+                );
+                let results = controller.block_results_mut();
+                assert_eq!(results.running_visible_count(), results.recount_visible());
+            }
+            assert_eq!(controller.match_count(), 50);
+
+            // Focus the last match, then a dirty-range rescan that removes most matches must
+            // clamp the focused index into the shrunken range.
+            controller.focused_match_index = Some(49);
+            controller.process_message(
+                FindTaskMessage::DirtyRangeMatches {
+                    block_index: active,
+                    grid_type: GridType::Output,
+                    dirty_range: 5..=49,
+                    matches: vec![],
+                },
+                ctx,
+            );
+            let results = controller.block_results_mut();
+            assert_eq!(results.running_visible_count(), results.recount_visible());
+            assert_eq!(controller.match_count(), 5);
+            assert_eq!(controller.focused_match_index(), Some(4));
+        });
+    });
+}
+
+#[test]
+fn big_results_are_dropped_off_the_calling_thread() {
+    let mut results = BlockFindResults::default();
+    let matches: Vec<AbsoluteMatch> = (0..1_000_000u64).map(make_match).collect();
+    results.count_add(matches.len());
+    results
+        .terminal_matches
+        .insert((BlockIndex(1), GridType::Output), matches);
+
+    // A new query clears the previous 1M-match scan; freeing it must not happen inline (#1327).
+    assert!(results.clear_off_thread());
+    assert_eq!(results.running_visible_count(), 0);
+    assert!(results.terminal_matches.is_empty());
+
+    // Small result sets are cheap to free and are dropped inline.
+    let mut small = BlockFindResults::default();
+    small.count_add(3);
+    small.terminal_matches.insert(
+        (BlockIndex(1), GridType::Output),
+        (0..3).map(make_match).collect(),
+    );
+    assert!(!small.clear_off_thread());
+    assert_eq!(small.running_visible_count(), 0);
+}
+
+#[test]
+fn scan_slices_adapt_to_keep_the_lock_hold_short() {
+    use super::background_task::next_slice_rows;
+    use std::time::Duration;
+
+    // A slow slice (many matches) halves the next one, down to a floor.
+    let mut rows = 1000;
+    for _ in 0..20 {
+        rows = next_slice_rows(rows, Duration::from_millis(40));
+    }
+    assert_eq!(rows, 4);
+    // A fast slice grows it back, capped at the per-message row count.
+    for _ in 0..20 {
+        rows = next_slice_rows(rows, Duration::from_micros(100));
+    }
+    assert_eq!(rows, 1000);
+    // A slice near the target is left alone.
+    assert_eq!(next_slice_rows(100, Duration::from_millis(1)), 100);
+}
+
+#[test]
+fn update_dirty_matches_binary_search_matches_overlap_semantics() {
+    let block_index = BlockIndex(1);
+    let grid_type = GridType::Output;
+    let mut results = BlockFindResults::default();
+    // One match every 10 rows: 0, 10, 20, ... 990.
+    let initial: Vec<AbsoluteMatch> = (0..100).map(|i| make_match(i * 10)).collect();
+    results.count_add(initial.len());
+    results
+        .terminal_matches
+        .insert((block_index, grid_type), initial);
+
+    // Rows 100..=300 hold matches 100, 110, ..., 300 (21 of them); replace with two.
+    let changed = results.update_dirty_matches(
+        block_index,
+        grid_type,
+        100..=300,
+        vec![make_match(150), make_match(250)],
+    );
+    assert!(changed);
+    let stored = &results.terminal_matches[&(block_index, grid_type)];
+    assert_eq!(stored.len(), 100 - 21 + 2);
+    assert_eq!(stored[9].start_row(), 90);
+    assert_eq!(stored[10].start_row(), 150);
+    assert_eq!(stored[11].start_row(), 250);
+    assert_eq!(stored[12].start_row(), 310);
+    assert_eq!(results.running_visible_count(), results.recount_visible());
+
+    // A dirty range strictly between two matches inserts without replacing.
+    let changed =
+        results.update_dirty_matches(block_index, grid_type, 311..=315, vec![make_match(312)]);
+    assert!(changed);
+    let stored = &results.terminal_matches[&(block_index, grid_type)];
+    assert_eq!(stored[12].start_row(), 310);
+    assert_eq!(stored[13].start_row(), 312);
+    assert_eq!(stored[14].start_row(), 320);
+    assert_eq!(results.running_visible_count(), results.recount_visible());
 }

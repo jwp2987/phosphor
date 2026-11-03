@@ -1,0 +1,24 @@
+{
+ "warning_count": 58,
+ "warnings_by_crate": {
+  "arboard (lib)": 2,
+  "settings (lib)": 1,
+  "warp_editor (lib)": 2,
+  "ai (lib)": 2,
+  "warp (lib)": 27,
+  "warp (lib test)": 24
+ },
+ "warning_lines_by_kind": {
+  "unused import": 23,
+  "unused imports": 6,
+  "use of deprecated type alias": 2,
+  "function": 2,
+  "unused variable": 2,
+  "method": 1,
+  "unreachable pattern": 1,
+  "build failed, waiting for other jobs to finish...": 1
+ },
+ "errors": 21,
+ "status": "failed",
+ "duration": 198.577515
+}

@@ -31,6 +31,7 @@ impl TryFrom<RequestCommandOutputResult> for api::request::input::tool_call_resu
                 exit_code,
                 start_ts,
                 completed_ts,
+                interrupted: _,
             } => Ok(
                 api::request::input::tool_call_result::Result::RunShellCommand(
                     #[allow(deprecated)]

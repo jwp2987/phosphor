@@ -573,7 +573,18 @@ pub fn parse_mcp_tool_call(
     let parsed: Value = if arguments_json.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str(arguments_json)?
+        // Values the model stringified against the tool's own input schema ("42" for an
+        // integer, a JSON-encoded array) are corrected here, like every built-in tool's
+        // arguments (#1278): the MCP server would only reject them and cost a retry. Values
+        // that already match the schema are left untouched.
+        let schema = server
+            .tools
+            .iter()
+            .find(|t| t.name == tool_name)
+            .map(|t| Value::Object((*t.input_schema).clone()));
+        let coerced = schema
+            .and_then(|schema| super::coerce::coerce_args_against_schema(arguments_json, &schema));
+        serde_json::from_str(coerced.as_deref().unwrap_or(arguments_json))?
     };
     let obj = parsed
         .as_object()
@@ -773,20 +784,59 @@ fn prost_value_to_json(v: &prost_types::Value) -> Value {
     }
 }
 
+/// Renders one MCP resource for the model: its text as text, and a binary payload as a note
+/// (inline base64 is unusable to the model and the 40k cap would cut it mid-stream).
+fn mcp_resource_to_json(resource: &api::McpResourceContent) -> Value {
+    use api::mcp_resource_content::ContentType;
+    match &resource.content_type {
+        Some(ContentType::Text(text)) => {
+            let mut v = json!({ "type": "resource", "uri": resource.uri, "text": text.content });
+            if !text.mime_type.is_empty() {
+                v["mime_type"] = json!(text.mime_type);
+            }
+            v
+        }
+        Some(ContentType::Binary(binary)) => json!({
+            "type": "resource",
+            "uri": resource.uri,
+            "mime_type": binary.mime_type,
+            "omitted": format!("binary content ({} bytes, base64) not shown", binary.data.len()),
+        }),
+        None => json!({ "type": "resource", "uri": resource.uri }),
+    }
+}
+
 /// Serialize the result of CallMcpTool or ReadMcpResource within ToolCallResult for
-/// the upstream model.
+/// the upstream model. Content is a JSON array of typed parts, not a Rust `Debug` dump (which
+/// escaped the text, wrapped it in struct syntax, and inlined base64 images).
 pub fn serialize_result(result: &api::message::tool_call_result::Result) -> Option<Value> {
     use api::call_mcp_tool_result::Result as McpR;
+    use api::call_mcp_tool_result::success::result::Result as Part;
     use api::message::tool_call_result::Result as R;
     use api::read_mcp_resource_result::Result as ReadR;
 
     if let R::CallMcpTool(r) = result {
         let value = match &r.result {
-            Some(McpR::Success(s)) => json!({
-                "status": "ok",
-                // s.content is a Vec<rmcp Content>; simplified here to a debug string.
-                "content": format!("{:?}", s),
-            }),
+            Some(McpR::Success(s)) => {
+                let parts: Vec<Value> = s
+                    .results
+                    .iter()
+                    .map(|part| match &part.result {
+                        Some(Part::Text(text)) => json!({ "type": "text", "text": text.text }),
+                        Some(Part::Image(image)) => json!({
+                            "type": "image",
+                            "mime_type": image.mime_type,
+                            "omitted": format!(
+                                "image data ({} bytes, base64) not shown",
+                                image.data.len()
+                            ),
+                        }),
+                        Some(Part::Resource(resource)) => mcp_resource_to_json(resource),
+                        None => json!({ "type": "text", "text": "" }),
+                    })
+                    .collect();
+                json!({ "status": "ok", "content": parts })
+            }
             Some(McpR::Error(e)) => json!({ "status": "error", "message": e.message }),
             None => json!({ "status": "cancelled" }),
         };
@@ -794,11 +844,10 @@ pub fn serialize_result(result: &api::message::tool_call_result::Result) -> Opti
     }
     if let R::ReadMcpResource(r) = result {
         let value = match &r.result {
-            Some(ReadR::Success(s)) => json!({
-                "status": "ok",
-                // contents is Vec<rmcp ResourceContents>; debug serialization preserves all info
-                "contents": format!("{:?}", s.contents),
-            }),
+            Some(ReadR::Success(s)) => {
+                let contents: Vec<Value> = s.contents.iter().map(mcp_resource_to_json).collect();
+                json!({ "status": "ok", "contents": contents })
+            }
             Some(ReadR::Error(e)) => json!({ "status": "error", "message": e.message }),
             None => json!({ "status": "cancelled" }),
         };

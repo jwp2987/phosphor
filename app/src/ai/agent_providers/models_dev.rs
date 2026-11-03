@@ -23,8 +23,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
 use std::sync::RwLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use http_client::Client;
@@ -122,6 +122,9 @@ pub struct ModelLimit {
 struct State {
     /// The loaded catalog. `None` means it has never loaded successfully.
     catalog: Option<Catalog>,
+    /// `quick_add_catalog(catalog)`, built lazily and dropped whenever `catalog` is
+    /// replaced, so the merge runs once per catalog load instead of once per render.
+    quick_add: Option<Arc<Catalog>>,
     /// The cache's last-modified time (used to check for staleness).
     loaded_at: Option<SystemTime>,
 }
@@ -142,6 +145,25 @@ fn cache_path() -> PathBuf {
 /// retry button.
 pub fn cached() -> Option<Catalog> {
     state().read().ok().and_then(|s| s.catalog.clone())
+}
+
+impl State {
+    /// Returns the memoized merged quick-add catalog, building it on first use after a load.
+    fn quick_add(&mut self) -> Option<Arc<Catalog>> {
+        if self.quick_add.is_none() {
+            self.quick_add = self
+                .catalog
+                .as_ref()
+                .map(|c| Arc::new(quick_add_catalog(c)));
+        }
+        self.quick_add.clone()
+    }
+}
+
+/// The Vertex-collapsed quick-add catalog (see [`quick_add_catalog`]), computed once per
+/// catalog load. Use this, not `quick_add_catalog(&cached()?)`, anywhere on a render path.
+pub fn quick_add_cached() -> Option<Arc<Catalog>> {
+    state().write().ok().and_then(|mut s| s.quick_add())
 }
 
 /// A snapshot of a model's capabilities extracted from models.dev, used by the BYOP
@@ -190,6 +212,18 @@ pub fn lookup_caps(provider_id: &str, model_id: &str) -> Option<ModelCaps> {
     None
 }
 
+/// Publishes a freshly loaded catalog together with its merged quick-add catalog. Both loaders run
+/// on a background thread, so the merge (a deep clone of the whole 6 MB catalog, ~55 ms) is built
+/// here instead of lazily by the first Settings render on the UI thread.
+fn install_loaded(catalog: Catalog, loaded_at: Option<SystemTime>) {
+    let quick_add = Arc::new(quick_add_catalog(&catalog));
+    if let Ok(mut s) = state().write() {
+        s.catalog = Some(catalog);
+        s.quick_add = Some(quick_add);
+        s.loaded_at = loaded_at;
+    }
+}
+
 /// Reads the disk cache into memory (synchronous, non-blocking; only called at
 /// process startup or the first time the UI needs it).
 /// Returns false if the disk cache doesn't exist or fails to parse; the caller
@@ -205,10 +239,7 @@ pub fn load_from_disk() -> bool {
         .and_then(|m| m.modified().ok());
     match serde_json::from_slice::<Catalog>(&bytes) {
         Ok(catalog) => {
-            if let Ok(mut s) = state().write() {
-                s.catalog = Some(catalog);
-                s.loaded_at = mtime;
-            }
+            install_loaded(catalog, mtime);
             true
         }
         Err(e) => {
@@ -216,6 +247,46 @@ pub fn load_from_disk() -> bool {
             false
         }
     }
+}
+
+/// Coalesces concurrent catalog loads (disk read + optional network refresh) so the
+/// settings page constructing the providers widget several times runs ONE background load
+/// instead of one 6 MB parse per construction.
+#[derive(Debug, Default)]
+pub struct LoadCoalescer(AtomicBool);
+
+impl LoadCoalescer {
+    pub const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// Returns true if the caller now owns the load and must call [`Self::finish`] when it
+    /// completes; false if a load is already in flight.
+    pub fn try_begin(&self) -> bool {
+        !self.0.swap(true, Ordering::AcqRel)
+    }
+
+    pub fn finish(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+static LOAD: LoadCoalescer = LoadCoalescer::new();
+
+/// See [`LoadCoalescer::try_begin`]; shared by every caller that loads the catalog.
+pub fn try_begin_load() -> bool {
+    LOAD.try_begin()
+}
+
+/// Marks the load started by a successful [`try_begin_load`] as finished.
+pub fn finish_load() {
+    LOAD.finish()
+}
+
+/// Whether a catalog is already in memory and within its TTL, so no disk read is needed.
+pub fn is_loaded_and_fresh() -> bool {
+    let loaded = state().read().map(|s| s.catalog.is_some()).unwrap_or(false);
+    loaded && !is_stale()
 }
 
 /// Whether the cache is stale — either missing or past the TTL.
@@ -266,10 +337,7 @@ pub async fn fetch_and_cache(client: Client) -> Result<(), String> {
         log::warn!("[models.dev] failed to write disk cache ({path:?}): {e}");
     }
 
-    if let Ok(mut s) = state().write() {
-        s.catalog = Some(catalog);
-        s.loaded_at = Some(SystemTime::now());
-    }
+    install_loaded(catalog, Some(SystemTime::now()));
     Ok(())
 }
 
@@ -326,15 +394,13 @@ pub fn set_search_query(q: String) {
 /// against provider.name, provider.id, or any of the provider's model names/ids -- so
 /// searching "claude" surfaces a provider you've never heard of just because it happens to
 /// serve a Claude model, without needing to already know which provider hosts it.
-/// An empty query returns all entries in order. Returns an owned Vec so the UI side
-/// can take/iter it.
-pub fn filter_catalog(catalog: &Catalog, query: &str) -> Vec<(String, Provider)> {
+/// An empty query returns all entries in order. Returns references into `catalog`: this runs
+/// on every render of the Settings page, and cloning every provider with all of its models (the
+/// whole 6 MB catalog when the query is empty) cost ~12 ms of UI-thread time per render.
+pub fn filter_catalog<'a>(catalog: &'a Catalog, query: &str) -> Vec<(&'a String, &'a Provider)> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
-        return catalog
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        return catalog.iter().collect();
     }
     catalog
         .iter()
@@ -345,7 +411,6 @@ pub fn filter_catalog(catalog: &Catalog, query: &str) -> Vec<(String, Provider)>
                     .values()
                     .any(|m| m.id.to_lowercase().contains(&q) || m.name.to_lowercase().contains(&q))
         })
-        .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }
 
@@ -467,7 +532,9 @@ pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
                     // silently vanish from the merged chip under `extend`'s last-wins
                     // semantics. Keep the first (catalog iterates providers in BTreeMap/id
                     // order, so this is deterministic) and log instead of losing it quietly.
-                    log::warn!(
+                    // Expected for models.dev (the Claude-on-Vertex ids are listed under both
+                    // vertex providers); runs once per catalog load, so debug is enough.
+                    log::debug!(
                         "quick_add_catalog: model id {model_id:?} appears in multiple Vertex-family providers (already merged before reaching {id:?}); keeping the first, dropping this one"
                     );
                     continue;
@@ -493,6 +560,10 @@ pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
     }
     merged
 }
+
+#[cfg(test)]
+#[path = "models_dev_load_tests.rs"]
+mod load_tests;
 
 #[cfg(test)]
 mod quick_add_tests {
@@ -535,6 +606,59 @@ mod quick_add_tests {
         // Anything else (Groq, OpenRouter, DeepInfra, ...) is genuinely
         // OpenAI-compatible and keeps the default.
         assert_eq!(infer_api_type("groq"), AgentProviderApiType::OpenAi);
+    }
+
+    #[test]
+    fn install_loaded_prebuilds_the_quick_add_catalog_off_the_render_path() {
+        let mut catalog = Catalog::new();
+        catalog.insert(
+            "google-vertex".to_owned(),
+            provider("Google Vertex", &["gemini-2.5-pro"]),
+        );
+        install_loaded(catalog.clone(), None);
+        // The merge must already be stored: if it were lazy, the first Settings render would
+        // pay for a deep clone of the whole catalog on the UI thread.
+        let stored = state()
+            .read()
+            .unwrap()
+            .quick_add
+            .clone()
+            .expect("quick_add built by the loader, not by the first render");
+        assert_eq!(
+            stored.keys().collect::<Vec<_>>(),
+            quick_add_catalog(&catalog).keys().collect::<Vec<_>>()
+        );
+        assert!(Arc::ptr_eq(&stored, &quick_add_cached().unwrap()));
+    }
+
+    #[test]
+    fn quick_add_is_memoized_per_catalog_load() {
+        let mut catalog = Catalog::new();
+        catalog.insert(
+            "google-vertex".to_owned(),
+            provider("Google Vertex", &["gemini-2.5-pro"]),
+        );
+        catalog.insert(
+            "google-vertex-anthropic".to_owned(),
+            provider("Google Vertex (Anthropic)", &["claude-sonnet-5"]),
+        );
+        let mut st = State::default();
+        assert!(st.quick_add().is_none());
+        st.catalog = Some(catalog.clone());
+        let first = st.quick_add().expect("loaded");
+        let second = st.quick_add().expect("loaded");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "second call must not re-merge"
+        );
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            quick_add_catalog(&catalog).keys().collect::<Vec<_>>()
+        );
+        // A reload invalidates it.
+        st.catalog = Some(catalog);
+        st.quick_add = None;
+        assert!(!Arc::ptr_eq(&first, &st.quick_add().unwrap()));
     }
 
     #[test]
@@ -656,5 +780,21 @@ mod quick_add_tests {
 
         // A query with no match anywhere (name or models) returns nothing.
         assert!(filter_catalog(&catalog, "no-such-thing-exists").is_empty());
+    }
+
+    #[test]
+    fn filter_catalog_borrows_instead_of_cloning_the_catalog() {
+        let mut catalog = Catalog::new();
+        catalog.insert("anthropic".to_owned(), provider("Anthropic", &["claude"]));
+        catalog.insert("openai".to_owned(), provider("OpenAI", &["gpt-5"]));
+        // Settings re-renders call this every time; handing back clones of every provider
+        // (and all their models) made each render cost ~12 ms on the UI thread.
+        for query in ["", "gpt"] {
+            let filtered = filter_catalog(&catalog, query);
+            assert!(!filtered.is_empty());
+            for (id, provider) in filtered {
+                assert!(std::ptr::eq(provider, catalog.get(id).unwrap()));
+            }
+        }
     }
 }

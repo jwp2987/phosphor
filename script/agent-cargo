@@ -227,6 +227,13 @@ while :; do
 
       echo "[agent-cargo] agent=$agent slot=$i jobs=$JOBS avail=$(available_mb)MB target=$CARGO_TARGET_DIR" >&2
 
+      # In-use marker (#1523): script/ci/prune_target.sh never prunes or wipes a target dir that has a live marker, so a
+      # concurrent pipeline's prune cannot delete the dir this cargo is compiling into. A dead PID's marker is ignored.
+      if [[ "$GOVERNOR" == 1 ]]; then
+        inuse_marker="$TARGET_ROOT/.inuse/$agent.$$"
+        mkdir -p "$TARGET_ROOT/.inuse" 2>/dev/null && echo "$$" >"$inuse_marker" 2>/dev/null || inuse_marker=""
+        [[ -n "$inuse_marker" ]] && trap 'rm -f "$inuse_marker"' EXIT
+      fi
       low_file="$(mktemp)"
       watch_memory "$low_file" &
       watcher=$!

@@ -1,0 +1,17 @@
+---
+source: app/src/terminal/bootstrap_snapshot_tests.rs
+expression: bootstrap_setup_lines_nu
+---
+unmarked
+[0]  $env.__wbh = $env.config.history.ignore_space_prefixed; $env.config.history.ignore_space_prefixed = true
+[1]  $env._wbs = r#'echo 'q' \ "x" é'#
+[2]  const _wbf = ($nu.cache-dir | path join 'phosphor-nu-4242.nu'); mkdir $nu.cache-dir; (if ($env.WARP_BOOTSTRAPPED? | default '' | is-not-empty) { '' } else if (($env._wbs? | default '' | str length) == 17) { $env._wbs | str replace -a '@@NL@@' (char nl) | str replace -a '@@CR@@' (char cr) } else { print $"(char nl)Phosphor: subshell setup skipped, the script arrived incomplete. Type exit to leave this shell.(char nl)" }) | save -f $_wbf
+[3]  source $_wbf
+[4]  rm -f $_wbf; hide-env -i _wbs
+
+marked (token 4242)
+[0]  $env.__wbh = $env.config.history.ignore_space_prefixed; $env.config.history.ignore_space_prefixed = true; print -n $"(ansi esc)]7771;4242;0(char bel)"
+[1]  $env._wbs = r#'echo 'q' \ "x" é'#; print -n $"(ansi esc)]7771;4242;1(char bel)"
+[2]  const _wbf = ($nu.cache-dir | path join 'phosphor-nu-4242.nu'); mkdir $nu.cache-dir; (if ($env.WARP_BOOTSTRAPPED? | default '' | is-not-empty) { '' } else if (($env._wbs? | default '' | str length) == 17) { $env._wbs | str replace -a '@@NL@@' (char nl) | str replace -a '@@CR@@' (char cr) } else { print $"(char nl)Phosphor: subshell setup skipped, the script arrived incomplete. Type exit to leave this shell.(char nl)" }) | save -f $_wbf; print -n $"(ansi esc)]7771;4242;2(char bel)"
+[3]  source $_wbf; print -n $"(ansi esc)]7771;4242;3(char bel)"
+[4]  rm -f $_wbf; hide-env -i _wbs

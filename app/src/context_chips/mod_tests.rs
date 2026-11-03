@@ -11,9 +11,13 @@
 use warp_core::ui::color::blend::Blend;
 use warp_core::ui::color::contrast::{high_enough_contrast, MinimumAllowedContrast};
 use warp_core::ui::theme::{mock_terminal_colors, Details, Fill, WarpTheme};
+use std::sync::Arc;
 use warpui::color::ColorU;
 
-use super::readable_chip_label_color;
+use super::{
+    ChipResult, ChipValue, ContextChipKind, chips_to_string, chips_to_string_borrowed,
+    readable_chip_label_color,
+};
 
 /// Builds a solid-background/foreground theme (colors as `0xRRGGBBAA`). The
 /// terminal palette does not affect text/surface contrast, so a mock is fine.
@@ -93,4 +97,71 @@ fn chip_label_color_preserves_muted_color_where_already_legible() {
         muted,
         "dark-theme chips should keep their muted (unchanged) color"
     );
+}
+
+fn chip(kind: ContextChipKind, value: Option<&str>) -> ChipResult {
+    ChipResult {
+        kind,
+        value: value.map(|value| ChipValue::Text(value.to_owned())),
+        on_click_values: Arc::from(vec!["main".to_owned(), "dev".to_owned()]),
+    }
+}
+
+/// #1194: the borrowing formatter (used for every visible block's label on every frame) and the
+/// owning one produce the same text: chips without a value are skipped, adjacent Svn chips have
+/// no space between them, and branch chips get their `git:(..)` decoration.
+#[test]
+fn chips_to_string_borrowed_matches_the_owning_formatter() {
+    let chips = vec![
+        chip(ContextChipKind::WorkingDirectory, Some("~/repo")),
+        chip(ContextChipKind::Username, None),
+        chip(ContextChipKind::ShellGitBranch, Some("main")),
+        chip(ContextChipKind::SvnBranch, Some("trunk")),
+        chip(ContextChipKind::SvnDirtyItems, Some("3")),
+    ];
+    let borrowed = chips_to_string_borrowed(&chips);
+    assert_eq!(borrowed, "~/repo git:(main) svn:(trunk)\u{b1}3");
+    assert_eq!(borrowed, chips_to_string(chips.into_iter()));
+    assert_eq!(chips_to_string_borrowed(&[]), "");
+}
+
+/// A prompt snapshot is taken for every finished block, and the git-branch chip's on-click values
+/// are one entry per branch (hundreds in a big repo). Cloning a chip or a snapshot must share that
+/// list rather than copy it, or every block in a large repo retains its own copy.
+#[test]
+fn cloning_a_chip_or_snapshot_shares_the_on_click_values() {
+    let branches: Arc<[String]> = (0..500).map(|i| format!("fix/branch-{i}")).collect();
+    let result = ChipResult {
+        kind: ContextChipKind::ShellGitBranch,
+        value: Some(ChipValue::Text("main".to_owned())),
+        on_click_values: branches.clone(),
+    };
+    let copy = result.clone();
+    assert!(Arc::ptr_eq(&result.on_click_values, &copy.on_click_values));
+    assert!(Arc::ptr_eq(&branches, &copy.on_click_values));
+    assert_eq!(copy.on_click_values().len(), 500);
+
+    let snapshot = super::prompt_snapshot::PromptSnapshot::from_chips(
+        vec![result],
+        false,
+        crate::settings::WarpPromptSeparator::None,
+    );
+    let snapshot_copy = snapshot.clone();
+    assert!(Arc::ptr_eq(
+        &snapshot.chips()[0].on_click_values,
+        &snapshot_copy.chips()[0].on_click_values
+    ));
+    assert!(Arc::ptr_eq(
+        &branches,
+        &snapshot_copy.chips()[0].on_click_values
+    ));
+}
+
+/// The shared representation still round-trips through serde (block snapshots are persisted).
+#[test]
+fn chip_result_on_click_values_round_trip_through_serde() {
+    let result = chip(ContextChipKind::ShellGitBranch, Some("main"));
+    let json = serde_json::to_string(&result).unwrap();
+    let back: ChipResult = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.on_click_values(), result.on_click_values());
 }

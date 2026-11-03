@@ -756,15 +756,25 @@ pub enum InteractivePromptShape {
     TrailingPunctuation,
 }
 
+/// How long an explicit confirmation marker (`[y/N]`, "Press any key") must sit unchanged
+/// before it counts as stalled.
+pub const INTERACTIVE_PROMPT_QUIET_EXPLICIT: std::time::Duration =
+    std::time::Duration::from_secs(3);
+/// How long a bare trailing `?` / `:` must sit unchanged: far weaker evidence, so it outlasts
+/// a progress label and a short `read -t` timeout; a real `read -p` then waits ~15s for the
+/// hand-over instead of the 30-minute backstop.
+pub const INTERACTIVE_PROMPT_QUIET_TRAILING: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
 impl InteractivePromptShape {
-    /// Consecutive once-a-second polls the prompt must sit unchanged before it counts as
-    /// stalled. A bare `?` / `:` is far weaker evidence, so it waits long enough to outlast
-    /// a progress label and a short `read -t` timeout; a real `read -p` then waits ~15s for
-    /// the hand-over instead of the 30-minute backstop.
-    pub fn required_consecutive_polls(self) -> u8 {
+    /// How long the prompt (same text, same cursor) must have been on screen, with no output
+    /// changing it, before it counts as stalled. A duration, not a number of polls: the
+    /// check is driven by terminal output and one quiet timer, so how often anything polls
+    /// cannot move it.
+    pub fn required_quiet(self) -> std::time::Duration {
         match self {
-            Self::Explicit => 3,
-            Self::TrailingPunctuation => 15,
+            Self::Explicit => INTERACTIVE_PROMPT_QUIET_EXPLICIT,
+            Self::TrailingPunctuation => INTERACTIVE_PROMPT_QUIET_TRAILING,
         }
     }
 }
@@ -808,10 +818,10 @@ pub fn interactive_prompt_shape(line_before_cursor: &str) -> Option<InteractiveP
     }
 }
 
-/// One poll's view of a possible interactive prompt: the text before the cursor, where the
-/// cursor is, and how prompt-like the text is. Two polls only count as "the same prompt" if
+/// One observation of a possible interactive prompt: the text before the cursor, where the
+/// cursor is, and how prompt-like the text is. Two observations only count as "the same prompt" if
 /// all of it matches, so any further output -- which moves the cursor or changes the line --
-/// restarts the count.
+/// restarts the clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractivePromptCandidate {
     pub text: String,
@@ -833,16 +843,16 @@ pub fn interactive_prompt_candidate(
     })
 }
 
-/// What a termios poll detected.
+/// What a termios observation detected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptDetection {
     /// Echo off with canonical input on: the password-prompt shape.
     Password,
-    /// A prompt-shaped line that has sat unchanged for its shape's debounce.
+    /// A prompt-shaped line that has sat unchanged for its shape's quiet duration.
     Interactive,
 }
 
-/// Turns the stream of termios polls for one block into prompt detections.
+/// Turns the stream of termios observations for one block into prompt detections.
 ///
 /// Each kind fires once per *episode* and re-arms when the episode ends, rather than once
 /// per block: a password prompt re-arms once termios leaves the password shape, and an
@@ -855,7 +865,8 @@ pub enum PromptDetection {
 pub struct PromptDetector {
     password_latched: bool,
     last_candidate: Option<InteractivePromptCandidate>,
-    consecutive_polls: u8,
+    /// When `last_candidate` was first observed in its current form.
+    candidate_since: Option<instant::Instant>,
     interactive_latched: bool,
 }
 
@@ -865,11 +876,14 @@ impl PromptDetector {
         *self = Self::default();
     }
 
-    /// Feeds one poll. `interactive_candidate` is only called when termios is cooked with
+    /// Feeds one observation made at `now`. Observations are made when the terminal produced
+    /// output and when the quiet timer from [`Self::next_wake`] fires -- not on a fixed tick.
+    /// `interactive_candidate` is only called when termios is cooked with
     /// echo on, the one shape an interactive prompt can have; raw-mode programs (editors,
     /// REPLs, a logged-in ssh session) are never probed.
     pub fn observe(
         &mut self,
+        now: instant::Instant,
         is_echo_on: bool,
         is_canonical: bool,
         interactive_candidate: impl FnOnce() -> Option<InteractivePromptCandidate>,
@@ -893,26 +907,43 @@ impl PromptDetector {
             self.clear_interactive();
             return None;
         };
-        if self.last_candidate.as_ref() == Some(&candidate) {
-            self.consecutive_polls = self.consecutive_polls.saturating_add(1);
-        } else {
-            self.consecutive_polls = 1;
+        if self.last_candidate.as_ref() != Some(&candidate) {
+            self.candidate_since = Some(now);
             self.interactive_latched = false;
             self.last_candidate = Some(candidate);
         }
-        let required = self.last_candidate.as_ref().map_or(u8::MAX, |candidate| {
-            candidate.shape.required_consecutive_polls()
-        });
-        if self.interactive_latched || self.consecutive_polls < required {
+        let since = *self.candidate_since.get_or_insert(now);
+        let required = self
+            .last_candidate
+            .as_ref()
+            .map_or(INTERACTIVE_PROMPT_QUIET_TRAILING, |candidate| {
+                candidate.shape.required_quiet()
+            });
+        let quiet_for = now.saturating_duration_since(since);
+        if self.interactive_latched || quiet_for < required {
             return None;
         }
         self.interactive_latched = true;
+        log::info!(
+            "interactive prompt {:?} unchanged for {quiet_for:?} (required {required:?}); handing the command to the user",
+            self.last_candidate.as_ref().map(|c| c.text.as_str())
+        );
         Some(PromptDetection::Interactive)
+    }
+
+    /// When the pending candidate will have been quiet long enough, i.e. when to observe
+    /// again if no output arrives first. `None` when there is nothing to wait for.
+    pub fn next_wake(&self) -> Option<instant::Instant> {
+        if self.interactive_latched {
+            return None;
+        }
+        let candidate = self.last_candidate.as_ref()?;
+        Some(self.candidate_since? + candidate.shape.required_quiet())
     }
 
     fn clear_interactive(&mut self) {
         self.last_candidate = None;
-        self.consecutive_polls = 0;
+        self.candidate_since = None;
         self.interactive_latched = false;
     }
 }
@@ -1015,6 +1046,18 @@ impl StallTracker {
             }
         }
     }
+
+    /// How long until the current fingerprint will have been unchanged for `threshold`, or
+    /// `None` when no stall-eligible screen is being tracked. This is what a single quiet timer
+    /// is armed with, so a streaming (ineligible) command has no timer at all (#1365).
+    pub fn time_until_stalled(
+        &self,
+        threshold: std::time::Duration,
+        now: instant::Instant,
+    ) -> Option<std::time::Duration> {
+        let (_, since) = self.current?;
+        Some(threshold.saturating_sub(now.saturating_duration_since(since)))
+    }
 }
 
 /// What the termios poller should do about a waited agent command stalled on a full-screen
@@ -1041,6 +1084,26 @@ pub struct FullscreenStallDetector {
 impl FullscreenStallDetector {
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// When the detector next has something to decide if the screen stays unchanged: the
+    /// instant to arm ONE quiet timer for, or `None` when no stall-eligible screen is tracked
+    /// or nothing is left to decide (everything already fired). Derived from the tracked
+    /// screen's first-seen timestamp, so repeated calls for an unchanged screen return the
+    /// same instant (#1365).
+    pub fn next_wake(&self, now: instant::Instant) -> Option<instant::Instant> {
+        let (_, since) = self.tracker.current?;
+        if self.handed {
+            return None;
+        }
+        let at = if self.pager_closed {
+            since + STALL_PAGER_UNRESPONSIVE_AFTER
+        } else if now < since + STALL_CLOSE_PAGER_AFTER {
+            since + STALL_CLOSE_PAGER_AFTER
+        } else {
+            since + STALL_HAND_TO_USER_AFTER
+        };
+        (at > now).then_some(at)
     }
 
     /// `fingerprint` is `Some` only while a stall-eligible screen exists (raw mode or alt

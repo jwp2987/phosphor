@@ -13,6 +13,7 @@ fn unreachable_config() -> OneshotConfig {
         api_type: AgentProviderApiType::OpenAi,
         reasoning_effort: ReasoningEffortSetting::Auto,
         extra_headers: Vec::new(),
+        pending_key: None,
     }
 }
 

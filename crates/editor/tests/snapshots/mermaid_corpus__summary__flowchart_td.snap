@@ -1,0 +1,28 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ~350
+height: ~530
+viewBox: true
+g: 0
+rect: 6
+path: 7
+circle: 1
+ellipse: 0
+polygon: 1
+polyline: 0
+line: 0
+text: 7
+tspan: 7
+marker: 2
+foreignObject: 0
+image: 0
+labels:
+  - "Is it ready?"
+  - "Finished"
+  - "Fix Things"
+  - "Ship It"
+  - "Start Node"
+  - "Yes"
+  - "No"

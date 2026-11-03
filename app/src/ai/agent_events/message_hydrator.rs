@@ -11,6 +11,7 @@ impl MessageHydrator {
         Self
     }
 
+    #[cfg(test)]
     pub(crate) async fn hydrate_event_for_recipient(
         &self,
         event: &AgentRunEvent,

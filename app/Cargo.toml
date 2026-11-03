@@ -17,6 +17,22 @@ license.workspace = true
 name = "warp"
 path = "src/lib.rs"
 
+# Criterion benches: `cargo bench -p warp --features dev-support` (see docs/dev-tooling.md).
+[[bench]]
+name = "key_path_bench"
+harness = false
+required-features = ["dev-support"]
+
+[[bench]]
+name = "ansi_bench"
+harness = false
+required-features = ["dev-support"]
+
+[[bench]]
+name = "routing_bench"
+harness = false
+required-features = ["dev-support"]
+
 # Phosphor keeps only one bin: phosphor-oss. The original warp multi-channel
 # release bins (dev/stable/preview/local) have been removed, and the separate
 # generate_settings_schema build target was folded into this one as the
@@ -37,6 +53,8 @@ test = false
 
 [dependencies]
 addr = "0.15.6"
+# Only with the dev-only `dev-support` feature (cargo-fuzz op sequences).
+arbitrary = { version = "1.4.1", features = ["derive"], optional = true }
 ai.workspace = true
 alphanumeric-sort.workspace = true
 anyhow.workspace = true
@@ -66,7 +84,6 @@ chrono.workspace = true
 clap.workspace = true
 command = { workspace = true }
 command-corrections.workspace = true
-command-signatures-v2 = { workspace = true, optional = true }
 computer_use.workspace = true
 crc.workspace = true
 content_inspector = "0.2.4"
@@ -223,7 +240,6 @@ warp-workflows.workspace = true
 warp_completer.workspace = true
 warp_core.workspace = true
 warp_editor.workspace = true
-warp_js = { workspace = true, optional = true }
 warp_util.workspace = true
 warpui = { workspace = true, features = ["schema_gen", "settings_value"] }
 warpui_core.workspace = true
@@ -246,6 +262,8 @@ counter = "0.6.0"
 typed-path.workspace = true
 urlencoding = "2.1.3"
 mime_guess = "2.0"
+# Global allocator for the static-musl CLI / remote-server build only (#1157); see `alloc.rs`.
+mimalloc = { version = "0.1.48", optional = true }
 warp_multi_agent_api.workspace = true
 remote_server.workspace = true
 repo_metadata.workspace = true
@@ -281,6 +299,7 @@ objc2-foundation = { workspace = true, features = [
 ] }
 permissions = "0.4.1"
 pprof = { workspace = true, optional = true, features = ["frame-pointer"] }
+prevent_sleep.workspace = true
 security-framework-sys = "2.0.0"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
@@ -288,7 +307,6 @@ winit = { workspace = true }
 wgpu.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-app-installation-detection.workspace = true
 async-io.workspace = true
 axum.workspace = true
 comfy-table = "7.1.4"
@@ -339,7 +357,6 @@ rmcp = { workspace = true, features = [
 # 0.2.6 floor: `SseStream::from_bytes_stream` (used here and by rmcp 2.x) needs >= 0.2.2.
 sse-stream = "0.2.6"
 notify-debouncer-full.workspace = true
-rquickjs = { workspace = true, optional = true }
 rustls.workspace = true
 syntect = "5.0"
 sysinfo.workspace = true
@@ -434,6 +451,10 @@ windows-registry = { workspace = true }
 windows-result = { workspace = true }
 winreg.workspace = true
 
+[lints.rust]
+# Model-checker builds (RUSTFLAGS="--cfg shuttle" / "--cfg loom"); see warpui_core::sync_shim.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(shuttle)', 'cfg(loom)'] }
+
 [dev-dependencies]
 ai = { workspace = true, features = ["test-util"] }
 async-process.workspace = true
@@ -443,6 +464,12 @@ command = { workspace = true, features = ["test-util"] }
 ctor = "0.1.18"
 http_client = { workspace = true, features = ["test-util"] }
 mockall = "0.13.1"
+# Shrinking model-based tests of the pane input queue (input_queue/tests/prop_model.rs).
+proptest = "1.5.0"
+# Reviewed snapshot tests (`cargo insta review`); .snap files live in `snapshots/` beside the tests.
+insta = "1.41.1"
+# Benches (`benches/`); budgets are in each bench file's header.
+criterion = { version = "0.5.1", features = ["html_reports"] }
 mockito.workspace = true
 serial_test = "0.8.0"
 sum_tree = { workspace = true, features = ["test-util"] }
@@ -458,6 +485,10 @@ warpui_core = { workspace = true, features = ["test-util"] }
 warpui_extras = { workspace = true, features = ["test-util"] }
 warp_files = { workspace = true, features = ["test-util"] }
 repo_metadata = { workspace = true, features = ["test-util"] }
+
+# Real-shell tests in a pty (tests/real_shell_markers.rs); skip cleanly without the shell.
+[target.'cfg(unix)'.dev-dependencies]
+expectrl = "0.7.1"
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time"] }
@@ -477,6 +508,9 @@ embed-resource = "3.0"
 
 # Note that we support channel-specific enables for these features
 [features]
+# Tracy instrumentation (#1169). OFF by default and rejected by the release bundle scripts.
+# Needs a C++ compiler (vendored Tracy client). See docs/profiling.md.
+profiling = ["warpui/profiling", "warpui_core/profiling"]
 ai_resume_button = []
 autoupdate = []
 # Exposes the app's test helpers (terminal/model/test_utils, model mock ctors, …)
@@ -488,6 +522,10 @@ autoupdate = []
 # `debug_text_content` override) calls trait methods warpui_core only compiles under
 # its OWN test-util feature, and app's test-util did not forward that far (#769).
 test-util = ["warp_core/test-util", "warpui/test-util", "dep:mockito"]
+# Dev-only: exposes `warp::dev_support` (the pane input queue and its model-based test runner)
+# to the criterion benches (`benches/`) and the cargo-fuzz targets (`fuzz/`). Never enabled by a
+# normal or release build.
+dev-support = ["test-util", "dep:arbitrary"]
 figma_detection = []
 bundled_skills = []
 windows_high_performance_gpu_default = []
@@ -502,11 +540,6 @@ changelog = []
 clear_autosuggestion_on_escape = []
 command_predictor = []
 context_line_review_comments = []
-completions_v2 = [
-    "plugin_host",
-    "warp_completer/v2",
-    "dep:command-signatures-v2",
-]
 crash_reporting = [
     "dep:minidumper",
     "dep:crash-handler",
@@ -721,7 +754,6 @@ dhat_heap_profiling = ["dep:dhat"]
 dynamic_workflow_enums = []
 editable_markdown_mermaid = []
 drag_tabs_to_windows = []
-embedded_code_review_comments = []
 interactive_conversation_management_view = []
 suggested_agent_mode_workflows = []
 ssh_tmux_wrapper = []
@@ -772,6 +804,10 @@ heap_usage_tracking = ["jemalloc_pprof", "crash_reporting"]
 image_as_context = []
 in_band_generators_ssh = []
 jemalloc = ["dep:tikv-jemallocator", "ai/jemalloc"]
+# mimalloc as the global allocator, only honoured on musl targets (musl's own malloc is slow under
+# the remote server's multithreaded small-object churn). Enabled by script/linux/bundle for the
+# musl CLI artifact (#1157).
+mimalloc = ["dep:mimalloc"]
 jemalloc_with_profiling = ["jemalloc", "tikv-jemallocator/profiling"]
 jemalloc_auto_heap_profiling = ["jemalloc_with_profiling"]
 jemalloc_pprof = ["jemalloc_with_profiling", "dep:jemalloc_pprof"]
@@ -806,8 +842,6 @@ mcp_server = []
 mcp_oauth = []
 mcp_debugging_ids = []
 notebook_parameter = []
-# Remote-backed tty that connects to a PTY-like interface via a server.
-remote_tty = []
 # Fix for cursor reflow bug during window resize, from Alacritty resizing logic.
 resize_fix = []
 pluggable_notifications = []
@@ -816,7 +850,6 @@ read_image_files = []
 # This feature enables plugin support in Warp. Note that its typically checked
 # directly, rather than via the `FeatureFlag` enum, because its value is
 # required early in the app lifecycle prior to `FeatureFlag` initialization.
-plugin_host = ["dep:rquickjs", "dep:warp_js", "warp_cli/plugin_host"]
 # Enable this feature to automatically perform CPU profiling via pprof.  The
 # generated profile will be written to profile.pb in the current directory.
 # NOTE: This may slow down program execution.
@@ -960,7 +993,6 @@ agent_view_conversation_list_view = ["agent_view"]
 inline_history_menu = ["agent_view"]
 inline_repo_menu = ["agent_view"]
 summarization_via_message_replacement = []
-lsp_as_a_tool = []
 inline_model_selector = ["agent_view"]
 inline_profile_selector = ["agent_view"]
 oz_platform_skills = []

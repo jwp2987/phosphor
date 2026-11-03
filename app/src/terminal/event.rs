@@ -12,7 +12,7 @@ use warp_util::lazy::Lazy;
 use crate::server::ids::SyncId;
 use crate::server::telemetry::ImageProtocol;
 use crate::terminal::model::block::BlockMetadata;
-use crate::terminal::model::block::SerializedBlock;
+use crate::terminal::model::block::{DeferredBlockContent, SerializedBlock};
 use crate::terminal::model::blocks::BlockList;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::terminal_model::HandlerEvent;
@@ -58,6 +58,11 @@ pub enum Event {
     BlockWorkingDirectoryUpdated(BlockWorkingDirectoryUpdatedEvent),
     /// Sent after a background block is started and added to the block list.
     BackgroundBlockStarted,
+    /// The running command's block became interactive / long running: a program owns the
+    /// terminal (alt screen, raw mode, foreground program). Latched once per block (#1373).
+    CommandBecameInteractive {
+        block_id: BlockId,
+    },
     ClipboardStore(ClipboardType, String),
     ClipboardLoad(
         ClipboardType,
@@ -82,9 +87,32 @@ pub enum Event {
     ExitShell {
         session_id: SessionId,
     },
+    /// The shell's line editor is about to read a line (#1390). `seq` is the shell's per-session
+    /// hook counter as of its last Precmd/Preexec (`None` from a bootstrap without sequence
+    /// numbers).
+    LineEditorReading {
+        session_id: SessionId,
+        seq: Option<u64>,
+    },
+    /// The shell is about to read a continuation line, PS2 (#1391). Same `seq` as above.
+    ContinuationPrompt {
+        session_id: SessionId,
+        seq: Option<u64>,
+    },
+    /// The pty reader applied the stream a young-Enter hold waited on and the typeahead hand-off
+    /// decided the hold again (#1614): the controller decides the request or the view writes the
+    /// held keys.
+    YoungHoldReevaluated,
+    /// The PowerShell insert chord could not read the command pipe and inserted nothing (#1581).
+    CommandFileFailed {
+        session_id: SessionId,
+    },
     /// Sent when the model detects an SSH ControlMaster error, which means that
     /// completions reliant on command execution will not work.
     SSHControlMasterError,
+    /// Input was dropped because a buffer on the way to the pty was full (#1442): the user is
+    /// told.
+    InputBufferOverflow,
     TerminalModeSwapped(TerminalMode),
     ExecutedInBandCommand(ExecutedExecutorCommandEvent),
     TmuxControlModeReady {
@@ -192,11 +220,6 @@ pub enum SshLoginStatus {
     RecheckBeforeWarpifying,
     /// We have high confidence login is complete.
     ReadyToWarpify,
-}
-
-#[derive(Clone, Debug)]
-pub struct InitShellEvent {
-    pub pending_session_info: SessionInfo,
 }
 
 #[derive(Clone, Debug)]
@@ -376,6 +399,18 @@ pub struct UserBlockCompleted {
     /// in an `Arc`.
     pub serialized_block: Lazy<Arc<SerializedBlock>, BlockList>,
 
+    /// The same block's metadata (exit code, pwd, session id, timestamps, shell host, ...) but
+    /// with `stylized_command` and `stylized_output` left empty. Building `serialized_block`
+    /// serializes the whole command and up to 5000 output lines with SGR escapes, which is wasted
+    /// work (on the main thread, under the model lock) for the many consumers that only need
+    /// metadata. Use this unless the command or output bytes are required; persistence gets them
+    /// from `persisted_content`.
+    pub serialized_block_without_output: Lazy<Arc<SerializedBlock>, BlockList>,
+
+    /// The block's command and output, copied so persistence can turn them into bytes off the UI
+    /// thread. `serialized_block_without_output` carries neither.
+    pub persisted_content: Lazy<DeferredBlockContent, BlockList>,
+
     /// The input lines for a block without any escape sequences.
     pub command: Lazy<String, BlockList>,
 
@@ -412,6 +447,8 @@ impl UserBlockCompleted {
         index: BlockIndex,
         eviction_stamp: EvictionStamp,
         serialized_block: Lazy<Arc<SerializedBlock>, BlockList>,
+        serialized_block_without_output: Lazy<Arc<SerializedBlock>, BlockList>,
+        persisted_content: Lazy<DeferredBlockContent, BlockList>,
         command: Lazy<String, BlockList>,
         command_with_obfuscated_secrets: Lazy<String, BlockList>,
         output_truncated: Lazy<String, BlockList>,
@@ -425,6 +462,8 @@ impl UserBlockCompleted {
             index,
             eviction_stamp,
             serialized_block,
+            serialized_block_without_output,
+            persisted_content,
             command,
             command_with_obfuscated_secrets,
             output_truncated,
@@ -451,10 +490,16 @@ impl UserBlockCompleted {
         num_output_lines: u64,
         num_output_lines_truncated: u64,
     ) -> Self {
+        let persisted_content = DeferredBlockContent::from_bytes(
+            serialized_block.stylized_command.clone(),
+            serialized_block.stylized_output.clone(),
+        );
         Self::new(
             index,
             EvictionStamp::default(),
+            Lazy::provided(Arc::new(serialized_block.without_output())),
             Lazy::provided(serialized_block),
+            Lazy::provided(persisted_content),
             Lazy::provided(command),
             Lazy::provided(command_with_obfuscated_secrets),
             Lazy::provided(output_truncated),
@@ -566,6 +611,7 @@ impl Debug for Event {
             ),
             Event::AfterBlockStarted { .. } => write!(f, "BlockExecutionStarted"),
             Event::BackgroundBlockStarted => write!(f, "BackgroundBlockStarted"),
+            Event::CommandBecameInteractive { .. } => write!(f, "CommandBecameInteractive"),
             Event::VisibleBootstrapBlock => write!(f, "VisibleBootstrapBlock"),
             Event::Title(title) => write!(f, "Title({title})"),
             Event::ClipboardStore(_, text) => write!(f, "ClipboardStore({text})"),
@@ -577,6 +623,7 @@ impl Debug for Event {
             Event::PreInteractiveSSHSession => write!(f, "Pre-Interactive SSH Session"),
             Event::SSH(remote_shell) => write!(f, "SSH(remote shell: {remote_shell}"),
             Event::SSHControlMasterError => write!(f, "SSH ControlMaster error"),
+            Event::InputBufferOverflow => write!(f, "Input buffer overflow"),
             Event::TerminalModeSwapped(_) => write!(f, "Terminal mode swapped"),
             Event::TmuxControlModeReady { primary_pane } => {
                 write!(f, "TmuxControlModeReady(primary_pane: {primary_pane})")
@@ -637,6 +684,22 @@ impl Debug for Event {
             Event::PluggableNotification { .. } => write!(f, "PluggableNotification"),
             Event::ExitShell { session_id } => {
                 write!(f, "ExitShell(session: {session_id:?})")
+            }
+            Event::LineEditorReading { session_id, seq } => {
+                write!(
+                    f,
+                    "LineEditorReading(session: {session_id:?}, seq: {seq:?})"
+                )
+            }
+            Event::ContinuationPrompt { session_id, seq } => {
+                write!(
+                    f,
+                    "ContinuationPrompt(session: {session_id:?}, seq: {seq:?})"
+                )
+            }
+            Event::YoungHoldReevaluated => write!(f, "YoungHoldReevaluated"),
+            Event::CommandFileFailed { session_id } => {
+                write!(f, "CommandFileFailed(session: {session_id:?})")
             }
         }
     }

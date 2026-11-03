@@ -5,16 +5,15 @@ use crate::scene::Layer;
 use crate::Scene;
 use std::borrow::Cow;
 use std::sync::{atomic::AtomicBool, Arc};
-use wgpu::util::BufferInitDescriptor;
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupLayout, ColorTargetState, Device, Extent3d,
-    FilterMode, RenderPass, RenderPipeline, Sampler, TextureDescriptor, TextureFormat,
+    FilterMode, Queue, RenderPass, RenderPipeline, Sampler, TextureDescriptor, TextureFormat,
     TextureUsages,
 };
 
 use self::shaders::{ColorModifier, ImageInstanceData};
 
-use super::util::create_buffer_init;
+use super::util::InstanceBuffers;
 use super::WGPUContext;
 
 pub(super) struct Pipeline {
@@ -24,11 +23,22 @@ pub(super) struct Pipeline {
     sampler: Sampler,
 }
 
+/// Kept across frames so the instance vector and vertex buffer are reused; see `begin_frame`.
 #[derive(Default)]
 pub(super) struct PerFrameState {
     image_data: Vec<shaders::ImageInstanceData>,
-    buffer: Option<wgpu::Buffer>,
+    buffers: InstanceBuffers,
 }
+
+impl PerFrameState {
+    pub(super) fn begin_frame(&mut self) {
+        self.image_data.clear();
+        self.buffers.begin_frame();
+    }
+}
+
+// `Queue::write_buffer` requires a size that is a multiple of `COPY_BUFFER_ALIGNMENT` (4).
+const _: () = assert!(std::mem::size_of::<shaders::ImageInstanceData>() % 4 == 0);
 
 pub(super) struct LayerState {
     start_offset: usize,
@@ -181,18 +191,16 @@ impl Pipeline {
     pub(super) fn finalize_per_frame_state(
         per_frame_state: &mut PerFrameState,
         device: &Device,
+        queue: &Queue,
         device_lost: &Arc<AtomicBool>,
     ) {
-        per_frame_state.buffer = create_buffer_init(
+        per_frame_state.buffers.upload(
+            "Image instance buffer",
             device,
+            queue,
             device_lost,
-            &BufferInitDescriptor {
-                label: Some("Image instance buffer"),
-                contents: bytemuck::cast_slice(&per_frame_state.image_data),
-                usage: wgpu::BufferUsages::VERTEX,
-            },
-        )
-        .ok();
+            bytemuck::cast_slice(&per_frame_state.image_data),
+        );
     }
 
     pub(super) fn draw<'a>(
@@ -201,7 +209,7 @@ impl Pipeline {
         layer_state: &LayerState,
         per_frame_state: &'a PerFrameState,
     ) {
-        let Some(buffer) = per_frame_state.buffer.as_ref() else {
+        let Some(buffer) = per_frame_state.buffers.vertex_buffer() else {
             return;
         };
 

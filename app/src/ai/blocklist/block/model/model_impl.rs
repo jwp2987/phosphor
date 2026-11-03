@@ -84,6 +84,19 @@ where
     }
 }
 
+/// Whether the exchange is still receiving its response. An exchange that cannot be found
+/// counts as streaming, so the caller keeps the conservative behaviour of repainting.
+fn exchange_is_streaming(
+    conversation_id: AIConversationId,
+    exchange_id: AIAgentExchangeId,
+    app: &AppContext,
+) -> bool {
+    BlocklistAIHistoryModel::as_ref(app)
+        .conversation(&conversation_id)
+        .and_then(|conversation| conversation.exchange_with_id(exchange_id))
+        .is_none_or(|exchange| exchange.output_status.is_streaming())
+}
+
 impl<V> AIBlockModel for AIBlockModelImpl<V>
 where
     V: Entity,
@@ -215,7 +228,13 @@ where
             };
             if *event_exchange_id == exchange_id {
                 callback(me, ctx);
-            } else if *event_conversation_id == conversation_id {
+            } else if *event_conversation_id == conversation_id
+                && exchange_is_streaming(conversation_id, exchange_id, ctx)
+            {
+                // A sibling exchange streamed. A finished exchange does not change because of
+                // that, and this subscription lives as long as the view, so notifying here made
+                // every earlier exchange of a long conversation re-render on every streamed
+                // update (#1259).
                 ctx.notify();
             }
         });
@@ -239,3 +258,7 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[path = "model_impl_tests.rs"]
+mod tests;

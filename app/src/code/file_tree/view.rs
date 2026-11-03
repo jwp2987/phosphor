@@ -291,6 +291,8 @@ pub struct FileTreeView {
     pending_focus_target: Option<PendingFocusTarget>,
     /// Whether to show hidden files (dotfiles) in the file tree.
     show_hidden_files: bool,
+    /// Paths whose background delete is still running; a second Delete on the same path is ignored.
+    deleting_paths: HashSet<StandardizedPath>,
 }
 
 /// Directory the file tree wants to focus once its entry becomes available.
@@ -756,6 +758,7 @@ impl FileTreeView {
             registered_lazy_loaded_paths: HashSet::new(),
             pending_focus_target: None,
             show_hidden_files: *CodeSettings::as_ref(ctx).show_hidden_files,
+            deleting_paths: HashSet::new(),
         };
 
         picker
@@ -2654,40 +2657,116 @@ impl FileTreeView {
         let path = item.path().to_local_path_lossy();
         let std_path = item.path().clone();
 
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        if let Err(e) = result {
-            log::warn!("Failed to delete {}: {e}", path.display());
-        } else {
-            // Update in-memory tree immediately so the UI reflects the deletion.
-            // Find all root directories that contain this path (could be nested roots).
-            let affected_roots: Vec<StandardizedPath> = self
-                .root_directories
-                .keys()
-                .filter(|root_path| std_path.starts_with(root_path))
-                .cloned()
-                .collect();
-
-            // Update each affected root
-            for root_path in &affected_roots {
-                let removed = self.rebuild_flattened_items_without(&std_path);
-                if !removed {
-                    log::warn!(
-                        "FileTreeView.delete: did not find {} in root {} in-memory model to remove",
-                        path.display(),
-                        root_path
-                    );
-                }
-            }
-
-            // Emit event to notify workspace that a file was deleted
-            ctx.emit(FileTreeEvent::FileDeleted { path: path.clone() });
-
-            ctx.notify();
+        if !self.deleting_paths.insert(std_path.clone()) {
+            // A delete of this path is already running.
+            return;
         }
+
+        // The delete can take seconds for a large directory (node_modules), so it runs on a
+        // worker thread; the tree is updated, or the error shown, when it finishes.
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let delete_path = path.clone();
+        let spawned = std::thread::Builder::new()
+            .name("file-tree-delete".into())
+            .spawn(move || {
+                let _ = tx.send(delete_path_blocking(&delete_path));
+            });
+        if let Err(e) = spawned {
+            log::warn!(
+                "Failed to start the delete thread for {}: {e}",
+                path.display()
+            );
+            self.deleting_paths.remove(&std_path);
+            return;
+        }
+        // The wait runs on the app-lifetime workspace registry, not on this view, so the result
+        // is never lost when the tree view is closed mid-delete: the open tabs for the deleted
+        // path are closed regardless, and the tree itself is updated only if the view is
+        // still alive (#1382). Without the registry (unit tests) it falls back to the view.
+        let delete_view = ctx.handle();
+        if ctx.has_singleton_model::<crate::workspace::WorkspaceRegistry>() {
+            crate::workspace::WorkspaceRegistry::handle(ctx).update(ctx, |_, mctx| {
+                mctx.spawn(async move { rx.await.ok() }, move |_, result, mctx| {
+                    if matches!(result, Some(Ok(()))) {
+                        let workspaces =
+                            crate::workspace::WorkspaceRegistry::as_ref(mctx).all_workspaces(mctx);
+                        for (_, workspace) in workspaces {
+                            workspace.update(mctx, |workspace, wctx| {
+                                workspace.close_tabs_with_file_path(&path, wctx);
+                            });
+                        }
+                    }
+                    if let Some(view) = delete_view.upgrade(mctx) {
+                        view.update(mctx, |me, ctx| {
+                            me.on_delete_finished(std_path, path, result, ctx)
+                        });
+                    }
+                });
+            });
+            return;
+        }
+        ctx.spawn(async move { rx.await.ok() }, move |me, result, ctx| {
+            me.on_delete_finished(std_path, path, result, ctx)
+        });
+    }
+
+    fn on_delete_finished(
+        &mut self,
+        std_path: StandardizedPath,
+        path: PathBuf,
+        result: Option<std::io::Result<()>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.deleting_paths.remove(&std_path);
+        match result {
+            Some(Ok(())) => self.finish_delete(&std_path, path, ctx),
+            Some(Err(e)) => {
+                log::warn!("Failed to delete {}: {e}", path.display());
+                let window_id = ctx.window_id();
+                let message = format!("Failed to delete {}: {e}", path.display());
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(message),
+                        window_id,
+                        ctx,
+                    );
+                });
+            }
+            None => {}
+        }
+    }
+
+    /// Updates the in-memory tree after `path` was deleted from disk.
+    fn finish_delete(
+        &mut self,
+        std_path: &StandardizedPath,
+        path: PathBuf,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // Find all root directories that contain this path (could be nested roots).
+        let affected_roots: Vec<StandardizedPath> = self
+            .root_directories
+            .keys()
+            .filter(|root_path| std_path.starts_with(root_path))
+            .cloned()
+            .collect();
+
+        // Update each affected root
+        for root_path in &affected_roots {
+            let removed = self.rebuild_flattened_items_without(std_path);
+            if !removed {
+                log::warn!(
+                    "FileTreeView.delete: did not find {} in root {} in-memory model to remove",
+                    path.display(),
+                    root_path
+                );
+            }
+        }
+
+        // Emit event to notify workspace that a file was deleted
+        ctx.emit(FileTreeEvent::FileDeleted { path });
+
+        ctx.notify();
     }
 
     /// Returns an iterator over the displayed root directories and their associated data.
@@ -3290,5 +3369,15 @@ impl TypedActionView for FileTreeView {
         }
     }
 }
+
+/// Deletes a file or a whole directory tree. Blocking: run it off the UI thread.
+fn delete_path_blocking(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
 #[cfg(test)]
 mod view_tests;

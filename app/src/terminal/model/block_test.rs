@@ -2,6 +2,7 @@ use crate::terminal::model::block::TranscriptScope;
 use std::{collections::HashMap, pin::pin, time::Duration};
 
 use super::*;
+use crate::terminal::model::block::interactive_latch::{LatchReason, TerminalOwner};
 use crate::{
     terminal::model::{
         ansi::{Attr, Handler},
@@ -41,6 +42,21 @@ impl float_cmp::ApproxEq for BlockSection {
             (a, b) => std::mem::discriminant(&a) == std::mem::discriminant(&b),
         }
     }
+}
+
+/// #1178: a ^C typed at the prompt (to clear a line) lands on the block that hosts the next
+/// command; starting that command clears it, so a command that exits 130 on its own is not
+/// reported as interrupted. A ^C after the start survives the preexec's second `start`.
+#[test]
+pub fn test_start_clears_a_ctrl_c_typed_before_the_command() {
+    let mut block = TestBlockBuilder::new().build();
+    block.mark_interrupted_by_ctrl_c();
+    block.start();
+    assert!(!block.was_interrupted_by_ctrl_c());
+
+    block.mark_interrupted_by_ctrl_c();
+    block.start();
+    assert!(block.was_interrupted_by_ctrl_c());
 }
 
 /// `should_hide_command_grid` is a layout fact, not only a painting one. A painter that
@@ -311,8 +327,11 @@ pub fn test_long_running_block_bottom_padding() {
         assert!(block.padding_bottom() > LONG_RUNNING_BOTTOM_PADDING_LINES.into_lines());
 
         // After the long running duration, the block should switch
-        let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
-        warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
+        // A program owns the terminal when the presentation debounce elapses (#1373).
+        block
+            .interactive_latch()
+            .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+        block.interactive_latch().on_settled();
 
         assert!(block.is_active_and_long_running());
         assert!(block.padding_bottom() == LONG_RUNNING_BOTTOM_PADDING_LINES.into_lines());
@@ -359,8 +378,10 @@ pub fn test_long_running_block_top_padding() {
         assert!(padding_before > LONG_RUNNING_TOP_PADDING_LINES.into_lines());
         let middle_before = block.padding_middle();
 
-        let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
-        warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
+        block
+            .interactive_latch()
+            .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+        block.interactive_latch().on_settled();
 
         // Once long-running, the top collapses so the program gets the rows the pty
         // already told it that it had.
@@ -1810,7 +1831,9 @@ fn test_mark_end_of_prompt_with_some_rows_in_flat_storage() {
     });
 
     block.start();
-    block.finish(0);
+    // Deliberately not finished: 942338093 (#1198) makes a rows-only resize of a finished grid a
+    // no-op, so a finished prompt grid would stay in flat storage. This test is about the
+    // flat-to-grid conversion of a live grid.
 
     // Resize the grid so that everything ends up in grid storage.
     let rows = block
@@ -1829,6 +1852,59 @@ fn test_mark_end_of_prompt_with_some_rows_in_flat_storage() {
     };
     assert_eq!(point, Point::new(0, 39));
     assert!(block.header_grid.prompt_and_command_grid().grid_storage()[point].is_end_of_prompt());
+}
+
+/// The finished-block counterpart of the test above (follow-up to 942338093, #1198): a rows-only
+/// resize of a FINISHED grid is a no-op, so its prompt rows stay in flat storage. The end-of-prompt
+/// marker must still be found there by the flat-storage-aware readers real code uses:
+/// `GridHandler::prompt_end_point` (the row scan that refreshes the cached prompt end),
+/// the cached `HeaderGrid::prompt_end_point`, and `prompt_contents_to_string` (what copy and
+/// selection read). Reading `grid_storage()` directly, as the live-grid test does, cannot see them.
+#[test]
+fn test_end_of_prompt_found_in_flat_storage_of_finished_block_after_rows_only_resize() {
+    use warp_terminal::model::grid::Dimensions as _;
+
+    let mut block = TestBlockBuilder::new()
+        .with_size_info(SizeInfo::new_without_font_metrics(1, 40))
+        .with_honor_ps1(true)
+        .build();
+
+    block.prompt_only_precmd(PromptMetadata {
+        ps1: Some(hex::encode("prompt1\r\n")),
+        honor_ps1: Some(true),
+        ..Default::default()
+    });
+    block.start();
+    block.finish(0);
+
+    let read_back = |block: &Block| {
+        let handler = block.header_grid.prompt_and_command_grid().grid_handler();
+        (
+            handler.prompt_end_point(),
+            block.header_grid.prompt_end_point(),
+            block.prompt_contents_to_string(false),
+        )
+    };
+    let (scanned, cached, text) = read_back(&block);
+    assert_eq!(scanned, Some(Point::new(0, 39)));
+    assert!(matches!(
+        cached,
+        Some(PromptEndPoint::PromptEnd { point, .. }) if point == Point::new(0, 39)
+    ));
+    assert_eq!(text.trim_end(), "prompt1");
+
+    // Rows-only resize of the finished block: skipped by the grid, nothing may change.
+    let rows = block
+        .header_grid
+        .prompt_and_command_grid()
+        .grid_handler()
+        .total_rows();
+    block.resize(SizeInfo::new_without_font_metrics(rows + 3, 40));
+
+    let (scanned_after, cached_after, text_after) = read_back(&block);
+    assert_eq!(scanned_after, scanned);
+    assert_eq!(cached_after, cached);
+    assert_eq!(text_after, text);
 }
 
 #[test]
@@ -2153,8 +2229,8 @@ fn interactive_prompt_shape_distinguishes_explicit_from_trailing_punctuation() {
         "a long line that happens to end in `?` is output, not a prompt"
     );
     assert!(
-        InteractivePromptShape::TrailingPunctuation.required_consecutive_polls()
-            > InteractivePromptShape::Explicit.required_consecutive_polls(),
+        InteractivePromptShape::TrailingPunctuation.required_quiet()
+            > InteractivePromptShape::Explicit.required_quiet(),
         "a bare `?`/`:` is weaker evidence and must wait longer"
     );
 }
@@ -2174,58 +2250,90 @@ const PASSWORD: (bool, bool) = (false, true);
 /// Raw mode, as a logged-in ssh session or an editor leaves it.
 const RAW: (bool, bool) = (false, false);
 
+/// One observation `at` after `t0`. Nothing here counts polls: only the time between
+/// observations matters.
 fn poll(
     detector: &mut PromptDetector,
+    t0: instant::Instant,
+    at: Duration,
     (echo, canonical): (bool, bool),
     prompt: Option<InteractivePromptCandidate>,
 ) -> Option<PromptDetection> {
-    detector.observe(echo, canonical, || prompt)
+    detector.observe(t0 + at, echo, canonical, || prompt)
 }
 
 #[test]
-fn prompt_detector_debounces_by_shape_and_fires_once_per_episode() {
-    let mut detector = PromptDetector::default();
+fn prompt_detector_fires_after_the_prompt_is_quiet_for_its_duration_not_after_n_polls() {
+    let t0 = instant::Instant::now();
+    let ms = Duration::from_millis;
+    let explicit = INTERACTIVE_PROMPT_QUIET_EXPLICIT;
     let confirm = || Some(candidate("Continue? [y/N] ", 16));
-    let explicit_polls = InteractivePromptShape::Explicit.required_consecutive_polls();
+    let mut detector = PromptDetector::default();
 
-    // Further output moves the cursor, so it restarts the count.
+    // Further output moves the cursor, so it restarts the clock.
     assert_eq!(
         poll(
             &mut detector,
+            t0,
+            ms(0),
             COOKED,
             Some(candidate("Continue? [y/N] ", 3))
         ),
         None
     );
-    for _ in 1..explicit_polls {
-        assert_eq!(poll(&mut detector, COOKED, confirm()), None);
+    assert_eq!(poll(&mut detector, t0, ms(100), COOKED, confirm()), None);
+    // Many observations (as output bursts would make) inside the window never fire.
+    for i in 1..200u32 {
+        assert_eq!(
+            poll(&mut detector, t0, ms(100) + ms(10) * i, COOKED, confirm()),
+            None
+        );
     }
     assert_eq!(
-        poll(&mut detector, COOKED, confirm()),
+        detector.next_wake(),
+        Some(t0 + ms(100) + explicit),
+        "the quiet timer is armed for exactly when the window ends"
+    );
+    // One observation at the end of the window is enough: no dependence on how many came before.
+    assert_eq!(
+        poll(&mut detector, t0, ms(100) + explicit, COOKED, confirm()),
         Some(PromptDetection::Interactive)
     );
     assert_eq!(
-        poll(&mut detector, COOKED, confirm()),
+        poll(&mut detector, t0, ms(100) + explicit * 2, COOKED, confirm()),
         None,
         "once per episode"
     );
+    assert_eq!(detector.next_wake(), None, "nothing left to wait for");
 
     // A bare trailing `:` must sit far longer: `printf "Waiting for DB:"; sleep 30`.
     let waiting = || Some(candidate("Waiting for DB:", 15));
     let mut detector = PromptDetector::default();
-    for _ in 1..InteractivePromptShape::TrailingPunctuation.required_consecutive_polls() {
-        assert_eq!(poll(&mut detector, COOKED, waiting()), None);
-    }
+    assert_eq!(poll(&mut detector, t0, ms(0), COOKED, waiting()), None);
     assert_eq!(
-        poll(&mut detector, COOKED, waiting()),
+        poll(&mut detector, t0, explicit * 2, COOKED, waiting()),
+        None
+    );
+    assert_eq!(
+        poll(
+            &mut detector,
+            t0,
+            INTERACTIVE_PROMPT_QUIET_TRAILING,
+            COOKED,
+            waiting()
+        ),
         Some(PromptDetection::Interactive)
     );
+    assert!(INTERACTIVE_PROMPT_QUIET_TRAILING > INTERACTIVE_PROMPT_QUIET_EXPLICIT);
 }
 
 /// An agent-run `ssh` stops on the host-key question, the user answers and hands control
 /// back, and it then stops on the password prompt. Both must be detected.
 #[test]
 fn prompt_detector_rearms_for_a_second_prompt_after_hand_back() {
+    let t0 = instant::Instant::now();
+    let s = Duration::from_secs;
+    let explicit = INTERACTIVE_PROMPT_QUIET_EXPLICIT;
     let mut detector = PromptDetector::default();
     let host_key = || {
         Some(candidate(
@@ -2233,50 +2341,45 @@ fn prompt_detector_rearms_for_a_second_prompt_after_hand_back() {
             70,
         ))
     };
-    let explicit_polls = InteractivePromptShape::Explicit.required_consecutive_polls();
 
-    for _ in 1..explicit_polls {
-        assert_eq!(poll(&mut detector, COOKED, host_key()), None);
-    }
+    assert_eq!(poll(&mut detector, t0, s(0), COOKED, host_key()), None);
     assert_eq!(
-        poll(&mut detector, COOKED, host_key()),
+        poll(&mut detector, t0, explicit, COOKED, host_key()),
         Some(PromptDetection::Interactive)
     );
 
     // The user holds the command: the surface reports no candidate.
-    assert_eq!(poll(&mut detector, COOKED, None), None);
+    assert_eq!(poll(&mut detector, t0, s(10), COOKED, None), None);
 
     // Handed back; ssh now asks for the password.
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(11), PASSWORD, None),
         Some(PromptDetection::Password)
     );
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(12), PASSWORD, None),
         None,
         "once per episode"
     );
 
     // Logged in (raw mode), then a second password prompt later in the same command.
-    assert_eq!(poll(&mut detector, RAW, None), None);
+    assert_eq!(poll(&mut detector, t0, s(13), RAW, None), None);
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(14), PASSWORD, None),
         Some(PromptDetection::Password)
     );
 
     // And the same interactive prompt appearing again after a hand-back fires again.
-    assert_eq!(poll(&mut detector, COOKED, None), None);
-    for _ in 1..explicit_polls {
-        assert_eq!(poll(&mut detector, COOKED, host_key()), None);
-    }
+    assert_eq!(poll(&mut detector, t0, s(20), COOKED, None), None);
+    assert_eq!(poll(&mut detector, t0, s(21), COOKED, host_key()), None);
     assert_eq!(
-        poll(&mut detector, COOKED, host_key()),
+        poll(&mut detector, t0, s(21) + explicit, COOKED, host_key()),
         Some(PromptDetection::Interactive)
     );
 
     detector.reset();
     assert_eq!(
-        poll(&mut detector, PASSWORD, None),
+        poll(&mut detector, t0, s(30), PASSWORD, None),
         Some(PromptDetection::Password),
         "a new block starts fresh"
     );
@@ -2365,6 +2468,42 @@ fn stall_tracker_measures_an_unchanged_screen_and_resets_on_change() {
     assert_eq!(tracker.observe(Some(2), sec(9)), Duration::ZERO);
 }
 
+/// #1365: the quiet timer is armed from event timestamps only while a stall-eligible screen is
+/// tracked; a streaming command (no eligible screen) has no timer at all.
+#[test]
+fn stall_tracker_arms_a_quiet_timer_only_for_an_eligible_screen() {
+    let t0 = instant::Instant::now();
+    let sec = |n| t0 + Duration::from_secs(n);
+    let after = Duration::from_secs(3);
+    let mut tracker = StallTracker::default();
+    // Streaming output: nothing eligible, nothing to schedule.
+    assert_eq!(tracker.time_until_stalled(after, sec(0)), None);
+    tracker.observe(None, sec(1));
+    assert_eq!(tracker.time_until_stalled(after, sec(1)), None);
+    // An eligible screen appears: the timer is the remaining quiet time.
+    tracker.observe(Some(9), sec(2));
+    assert_eq!(tracker.time_until_stalled(after, sec(2)), Some(after));
+    assert_eq!(
+        tracker.time_until_stalled(after, sec(4)),
+        Some(Duration::from_secs(1))
+    );
+    // Unchanged re-observation does not push it out; a change restarts it.
+    tracker.observe(Some(9), sec(4));
+    assert_eq!(
+        tracker.time_until_stalled(after, sec(4)),
+        Some(Duration::from_secs(1))
+    );
+    tracker.observe(Some(10), sec(4));
+    assert_eq!(tracker.time_until_stalled(after, sec(4)), Some(after));
+    assert_eq!(
+        tracker.time_until_stalled(after, sec(9)),
+        Some(Duration::ZERO)
+    );
+    // Back to streaming: the timer is gone again.
+    tracker.observe(None, sec(10));
+    assert_eq!(tracker.time_until_stalled(after, sec(10)), None);
+}
+
 #[test]
 fn fullscreen_detector_closes_a_known_pager_once_and_never_before_the_threshold() {
     let t0 = instant::Instant::now();
@@ -2394,6 +2533,64 @@ fn fullscreen_detector_closes_a_known_pager_once_and_never_before_the_threshold(
     assert_eq!(feed(&mut detector, Some(7), sec(20), Some(true)), None);
     // The pager is only identified after the quiet period.
     assert_eq!(asked, 1);
+}
+
+/// #1365: the detector is driven by output events plus ONE quiet timer armed from `next_wake`.
+/// Output flowing on a non-eligible screen arms nothing; an unchanged eligible screen arms the
+/// same instant however often output is observed, and the stall fires exactly once, at the
+/// instants the timer was armed for.
+#[test]
+fn fullscreen_detector_is_driven_by_output_events_and_one_quiet_timer() {
+    let t0 = instant::Instant::now();
+    let sec = |n| t0 + Duration::from_secs(n);
+    let mut detector = FullscreenStallDetector::default();
+    let mut fired = Vec::new();
+    // Output flowing, nothing stall-eligible: never a timer to arm.
+    for n in 0..10 {
+        assert_eq!(detector.observe(None, sec(n), || Some(false)), None);
+        assert_eq!(detector.next_wake(sec(n)), None);
+    }
+    // A full-screen program appears; repeated output with the same screen arms the same instant.
+    assert_eq!(detector.observe(Some(5), sec(10), || Some(false)), None);
+    assert_eq!(detector.next_wake(sec(10)), Some(sec(13)));
+    assert_eq!(detector.observe(Some(5), sec(11), || Some(false)), None);
+    assert_eq!(detector.next_wake(sec(11)), Some(sec(13)));
+    // Only the armed instants wake it: 3 s (not a pager yet decided), then 5 s (hand to user).
+    let mut now = sec(11);
+    while let Some(at) = detector.next_wake(now) {
+        now = at;
+        if let Some(stall) = detector.observe(Some(5), now, || Some(false)) {
+            fired.push((now, stall));
+        }
+    }
+    assert_eq!(fired, vec![(sec(15), FullscreenStall::HandToUser)]);
+    assert_eq!(
+        detector.next_wake(now),
+        None,
+        "fired once; nothing left to arm"
+    );
+    // A changed screen restarts the episode.
+    assert_eq!(detector.observe(Some(6), sec(20), || Some(false)), None);
+    assert_eq!(detector.next_wake(sec(20)), Some(sec(23)));
+}
+
+#[test]
+fn fullscreen_detector_next_wake_follows_a_closed_pager_to_the_handover() {
+    let t0 = instant::Instant::now();
+    let sec = |n| t0 + Duration::from_secs(n);
+    let mut detector = FullscreenStallDetector::default();
+    detector.observe(Some(7), sec(0), || Some(true));
+    assert_eq!(detector.next_wake(sec(0)), Some(sec(3)));
+    assert_eq!(
+        detector.observe(Some(7), sec(3), || Some(true)),
+        Some(FullscreenStall::ClosePager)
+    );
+    assert_eq!(detector.next_wake(sec(3)), Some(sec(8)));
+    assert_eq!(
+        detector.observe(Some(7), sec(8), || Some(true)),
+        Some(FullscreenStall::HandToUser)
+    );
+    assert_eq!(detector.next_wake(sec(8)), None);
 }
 
 #[test]
@@ -2429,4 +2626,165 @@ fn fullscreen_detector_ignores_screens_that_keep_changing_or_are_ineligible() {
         assert_eq!(detector.observe(Some(s), at, || Some(true)), None);
         assert_eq!(detector.observe(None, at, || Some(true)), None);
     }
+}
+
+// #1373: "interactive / long running" is decided by latched events, never by elapsed time.
+
+fn executing_block() -> Block {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(Default::default());
+    block.start();
+    for c in "command".chars() {
+        block.input(c);
+    }
+    block.preexec(Default::default());
+    block
+}
+
+/// A command can sit for any amount of time before `preexec` is processed (a loaded main thread,
+/// a slow shell): that alone must never flip it to interactive. Old code compared the command
+/// start time to 50 ms.
+#[test]
+fn late_preexec_does_not_flip_block_to_long_running() {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(Default::default());
+    block.start();
+    for c in "command".chars() {
+        block.input(c);
+    }
+    // Far longer than the old 50 ms threshold between start and preexec.
+    std::thread::sleep(Duration::from_millis(80));
+    assert!(!block.is_active_and_long_running());
+    block.preexec(Default::default());
+    assert!(!block.is_active_and_long_running());
+}
+
+/// A slow command that never leaves the shell and never reads input is not interactive, however
+/// long it has run (the probe says the shell still owns the terminal).
+#[test]
+fn slow_non_interactive_command_is_not_long_running() {
+    let block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Shell)));
+    std::thread::sleep(Duration::from_millis(80));
+    block.interactive_latch().on_output();
+    block.interactive_latch().on_settled();
+    assert!(!block.is_active_and_long_running());
+}
+
+/// #1373: a builtin waiting silently in the shell itself (`read x` typed at the prompt): no
+/// output, the shell is still the foreground group, but its process is blocked. The debounce
+/// consults the probe and latches, so keys go to the pty. `ls` (probe: a foreground program that
+/// exits before the debounce) never latches; vim (raw tty) latches at once.
+#[test]
+fn silent_blocked_shell_builtin_latches_at_the_debounce() {
+    let block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::ShellBlocked)));
+    assert!(!block.is_active_and_long_running());
+    block.interactive_latch().on_settled();
+    assert!(block.is_active_and_long_running());
+}
+
+#[test]
+fn fast_program_and_vim_cases_for_the_builtin_latch() {
+    // `ls`: finished before the debounce ran.
+    let mut ls = executing_block();
+    ls.interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::ShellBlocked)));
+    ls.finish(0);
+    ls.interactive_latch().on_settled();
+    assert!(!ls.is_active_and_long_running());
+    // A blocked shell printing within the debounce does not flash the presentation.
+    let early = executing_block();
+    early
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::ShellBlocked)));
+    early.interactive_latch().on_output();
+    assert!(!early.is_active_and_long_running());
+    // `read -p "x: " v`: after the debounce, output with the shell blocked latches.
+    early.interactive_latch().on_settled();
+    assert!(early.is_active_and_long_running());
+    // vim: raw tty latches immediately on output.
+    let vim = executing_block();
+    vim.interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Input)));
+    vim.interactive_latch().on_output();
+    assert!(vim.is_active_and_long_running());
+}
+
+/// #1373 follow-up: the debounce probe saw the shell not yet asleep (`Shell`); the silent `read`
+/// then blocked. The next keystroke re-probes and latches, so the key goes to the pty -- no
+/// timer, no output needed.
+#[test]
+fn key_reprobes_a_silent_builtin_that_slept_after_the_debounce() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let asleep = Arc::new(AtomicBool::new(false));
+    let block = executing_block();
+    let flag = asleep.clone();
+    block.interactive_latch().set_probe(Some(Arc::new(move || {
+        if flag.load(Ordering::SeqCst) {
+            TerminalOwner::ShellBlocked
+        } else {
+            TerminalOwner::Shell
+        }
+    })));
+    block.interactive_latch().on_settled();
+    assert!(!block.is_active_and_long_running());
+    // A key while the shell is still running does not latch.
+    assert!(block.interactive_latch().needs_key_probe());
+    block.interactive_latch().on_key();
+    assert!(!block.is_active_and_long_running());
+    asleep.store(true, Ordering::SeqCst);
+    block.interactive_latch().on_key();
+    assert!(block.is_active_and_long_running());
+    assert!(!block.interactive_latch().needs_key_probe());
+}
+
+/// A command that finished before the debounce task ran must not latch, even if the probe would
+/// still answer "program".
+#[test]
+fn finished_command_does_not_latch_on_late_settle() {
+    let mut block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+    block.finish(0);
+    block.interactive_latch().on_settled();
+    assert!(!block.interactive_latch().is_latched());
+    assert!(!block.is_active_and_long_running());
+}
+
+/// A fast program that takes over the terminal (alt screen / raw mode) is interactive at once,
+/// without waiting for any duration.
+#[test]
+fn fast_command_entering_alt_screen_or_raw_mode_is_long_running() {
+    let block = executing_block();
+    assert!(!block.is_active_and_long_running());
+    assert!(block.interactive_latch().latch(LatchReason::AltScreen));
+    assert!(block.is_active_and_long_running());
+    // Latched once.
+    assert!(!block.interactive_latch().latch(LatchReason::AltScreen));
+
+    let raw = executing_block();
+    raw.interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Input)));
+    raw.interactive_latch().on_output();
+    assert!(raw.is_active_and_long_running());
+}
+
+/// A plain foreground program (`ls`) printing within the debounce must not flash the long-running
+/// presentation; once the debounce elapsed, output with a program in the foreground latches.
+#[test]
+fn foreground_program_latches_only_after_debounce() {
+    let block = executing_block();
+    block
+        .interactive_latch()
+        .set_probe(Some(Arc::new(|| TerminalOwner::Program)));
+    block.interactive_latch().on_output();
+    assert!(!block.is_active_and_long_running());
+    block.interactive_latch().on_settled();
+    assert!(block.is_active_and_long_running());
 }

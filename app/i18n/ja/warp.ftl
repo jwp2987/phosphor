@@ -273,7 +273,6 @@ ai-inline-code-diff-review-changes = 変更をレビュー
 ai-execution-profile-name-placeholder = 例: "YOLO code"
 ai-execution-profile-delete-profile = プロファイルを削除
 ai-notifications-mark-all-as-read = すべて既読にする
-ai-assistant-copy-transcript-tooltip = 文字起こしをクリップボードにコピー
 code-comment = コメント
 code-copy-file-path = ファイルパスをコピー
 code-select-all = すべて選択
@@ -727,7 +726,6 @@ settings-keybindings-press-new-shortcut = 新しいキーボードショート�
 settings-keybindings-description = 既存のアクションに独自のキーバインドを追加できます。
 settings-keybindings-use-prefix = 使用
 settings-keybindings-use-suffix = でいつでもサイドペインからこれらのキーバインドを参照できます。
-settings-keybindings-not-synced-tooltip = キーボードショートカットはローカルに保存されます
 settings-keybindings-subheader = キーボードショートカットを設定
 settings-keybindings-command-column = コマンド
 
@@ -1369,6 +1367,7 @@ settings-appearance-pane-focus-follows-mouse-label = マウスにフォーカス
 settings-appearance-block-compact-label = コンパクトモード
 settings-appearance-block-jump-bottom-label = ブロック下部へジャンプボタンを表示
 settings-appearance-block-show-dividers-label = ブロックの区切り線を表示
+settings-appearance-block-show-duration-label = シェルプロンプト使用時にコマンドの実行時間を表示
 
 # Text / Fonts
 settings-appearance-font-agent-label = エージェントフォント
@@ -1764,7 +1763,6 @@ keybinding-desc-workspace-install-cli = Phosphor Agent CLI コマンドをイン
 keybinding-desc-workspace-uninstall-cli = Phosphor Agent CLI コマンドをアンインストール
 
 # AI assistant / agents
-keybinding-desc-workspace-toggle-ai-assistant = Phosphor AI を切り替え
 
 # Env vars / prompts
 keybinding-desc-workspace-create-personal-env-vars = 新規個人環境変数を作成
@@ -2025,9 +2023,6 @@ keybinding-desc-welcome-terminal-session = ターミナルセッション
 keybinding-desc-welcome-add-repository = リポジトリを追加
 
 # AI assistant panel binding desc
-keybinding-desc-ai-assistant-close = Phosphor AI を閉じる
-keybinding-desc-ai-assistant-focus-terminal-input = Phosphor AI からターミナル入力にフォーカス
-keybinding-desc-ai-assistant-restart = Phosphor AI を再起動
 
 # Code review binding desc
 keybinding-desc-code-review-save-all = コードレビューの未保存ファイルをすべて保存
@@ -3484,3 +3479,6 @@ workflow-enum-variant-placeholder = バリアント
 workflow-enum-variants = バリアント
 quit-warning-dont-save = 保存しない
 quit-warning-show-running-processes = 実行中のプロセスを表示
+
+# Secret redaction (#1471: matches the English meaning from #1469)
+settings-privacy-secret-redaction-description = この設定を有効にすると、Phosphor はブロック、ライブラリオブジェクトの内容、エージェントのプロンプトをスキャンして機密情報の可能性があるものを検出し、その保存や送信を防ぎます。設定したモデルプロバイダーに送信されるものはすべて、事前にマスキングされます。対象はプロンプト、会話履歴、コマンド出力、ファイルとプロジェクトのコンテキスト、ツールの結果、単発リクエスト、埋め込みです。画像とツールスキーマはスキャンされません。このリストは正規表現でカスタマイズできます。

@@ -6466,7 +6466,8 @@ fn test_vim_registers_system_clipboard() {
             view.vim_user_insert("ww\"*dd", ctx);
         });
 
-        let system_clipboard = app.update(|ctx| ctx.clipboard().read().plain_text);
+        let system_clipboard =
+            app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text);
         assert_eq!(system_clipboard, "echo hi\n");
 
         editor.update(&mut app, |view, ctx| {
@@ -7188,7 +7189,10 @@ fn test_vim_unnamed_system_clipboard() {
         });
 
         editor.update(&mut app, |view, ctx| {
-            assert_eq!(ctx.clipboard().read().plain_text, "sushi");
+            assert_eq!(
+                warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text,
+                "sushi"
+            );
             view.vim_user_insert("bge\"ap", ctx);
         });
 
@@ -7201,7 +7205,10 @@ fn test_vim_unnamed_system_clipboard() {
         });
 
         app.update(|ctx| {
-            assert_eq!(ctx.clipboard().read().plain_text, "echo ");
+            assert_eq!(
+                warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text,
+                "echo "
+            );
         });
     });
 }

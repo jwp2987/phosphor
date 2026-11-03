@@ -1,0 +1,42 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ?
+height: ?
+viewBox: true
+g: 16
+rect: 5
+path: 0
+circle: 0
+ellipse: 0
+polygon: 0
+polyline: 0
+line: 15
+text: 21
+tspan: 0
+marker: 0
+foreignObject: 0
+image: 0
+labels:
+  - "2026-01-01"
+  - "2026-01-02"
+  - "2026-01-03"
+  - "2026-01-04"
+  - "2026-01-05"
+  - "2026-01-06"
+  - "2026-01-07"
+  - "2026-01-08"
+  - "2026-01-09"
+  - "2026-01-10"
+  - "2026-01-11"
+  - "2026-01-12"
+  - "2026-01-13"
+  - "2026-01-14"
+  - "2026-01-15"
+  - "Compile"
+  - "Test"
+  - "Package"
+  - "Build"
+  - "Ship"
+  - "Release plan"

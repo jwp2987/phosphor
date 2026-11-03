@@ -34,7 +34,11 @@ impl ReadDocumentsExecutor {
     ) -> impl Into<AnyActionExecution> + use<> {
         let ExecuteActionInput { action, .. } = input;
         let AIAgentAction {
-            action: AIAgentActionType::ReadDocuments(ReadDocumentsRequest { document_ids }),
+            action:
+                AIAgentActionType::ReadDocuments(ReadDocumentsRequest {
+                    document_ids,
+                    line_ranges,
+                }),
             ..
         } = action
         else {
@@ -48,7 +52,8 @@ impl ReadDocumentsExecutor {
         let model = AIDocumentModel::handle(ctx);
         let mut documents = Vec::with_capacity(document_ids.len());
         let mut missing_documents = Vec::new();
-        for id in document_ids.iter() {
+        for (index, id) in document_ids.iter().enumerate() {
+            let requested_ranges = line_ranges.get(index).cloned().unwrap_or_default();
             let document = {
                 let model = model.as_ref(ctx);
                 model.get_document_content(id, ctx).and_then(|content| {
@@ -56,7 +61,7 @@ impl ReadDocumentsExecutor {
                     Some(DocumentContext {
                         document_id: *id,
                         content,
-                        line_ranges: vec![],
+                        line_ranges: requested_ranges,
                         document_version: version,
                     })
                 })

@@ -4,7 +4,6 @@ use crate::pane_group::CodeSource;
 use std::sync::mpsc::SyncSender;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use warp_multi_agent_api as multi_agent_api;
 
 use warpui::{
     AppContext, EntityId, ModelHandle, SingletonEntity, ViewContext, ViewHandle, WindowId,
@@ -15,7 +14,6 @@ use crate::{
         agent::conversation::AIConversationId,
         blocklist::{agent_view::AgentViewControllerEvent, BlocklistAIHistoryModel},
         llms::LLMPreferences,
-        skills::SkillManager,
     },
     app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
     pane_group::{self, Direction, Event::OpenConversationHistory, PaneGroup},
@@ -34,9 +32,7 @@ use crate::{
 #[cfg(feature = "local_fs")]
 use crate::ai::blocklist::BlocklistAIHistoryEvent;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
-#[cfg(not(target_family = "wasm"))]
 use warp_cli::agent::Harness;
 
 use warp_core::execution_mode::AppExecutionMode;
@@ -83,31 +79,6 @@ pub struct TerminalPane {
 pub(in crate::pane_group) struct RestoredTerminalState {
     pub cwd: Option<String>,
     pub shell_launch_data: Option<ShellLaunchData>,
-}
-
-fn resolve_runtime_skills(
-    skill_references: &[ai::skills::SkillReference],
-    ctx: &AppContext,
-) -> Result<Vec<String>, Vec<String>> {
-    let skill_manager = SkillManager::as_ref(ctx);
-    let mut runtime_skills = Vec::with_capacity(skill_references.len());
-    let mut unresolved_references = Vec::new();
-
-    for reference in skill_references {
-        let Some(skill) = skill_manager.skill_by_reference(reference) else {
-            unresolved_references.push(reference.to_string());
-            continue;
-        };
-        runtime_skills.push(serialize_proto_to_base64(&multi_agent_api::Skill::from(
-            skill.clone(),
-        )));
-    }
-
-    if unresolved_references.is_empty() {
-        Ok(runtime_skills)
-    } else {
-        Err(unresolved_references)
-    }
 }
 
 fn serialize_proto_to_base64<M: prost::Message>(message: &M) -> String {
@@ -288,6 +259,9 @@ impl PaneContent for TerminalPane {
 
         #[cfg(feature = "local_fs")]
         {
+            // Streaming exchanges already persisted with their current status (#1137).
+            let persisted_pending: std::rc::Rc<std::cell::RefCell<PersistedPendingExchanges>> =
+                Default::default();
             ctx.subscribe_to_model(
                 &BlocklistAIHistoryModel::handle(ctx),
                 move |group, _, event, ctx| {
@@ -311,6 +285,7 @@ impl PaneContent for TerminalPane {
                         terminal_pane_id,
                         model_event_sender,
                         is_shared_ambient_agent_session,
+                        &mut persisted_pending.borrow_mut(),
                         ctx,
                     );
                 },
@@ -701,6 +676,31 @@ fn handle_terminal_view_event(
                     return;
                 }
 
+                // Windows kills the console shells when a session end is merely queried, before
+                // the user has chosen; closing their panes would quit the app, and a cancelled
+                // restart would then have lost everything running in it. Keep the pane (it shows
+                // the shell-terminated banner) while a session end is queried, under way (so the
+                // saved session still has the tab) or just cancelled (jwp2987/phosphor#1103).
+                if warpui::platform::session_end_gate::keep_exited_pane_open() {
+                    log::info!("Keeping the pane of an exited shell open: Windows session end");
+                    return;
+                }
+
+                // Never close a pane out from under an approval card the user has not answered
+                // (#1290): the tab would vanish with the card. The shell-terminated banner is
+                // already shown; the user closes the pane after resolving the card.
+                if group
+                    .terminal_view_from_pane_id(terminal_pane_id, ctx)
+                    .is_some_and(|terminal_view| {
+                        terminal_view.as_ref(ctx).has_pending_agent_action(ctx)
+                    })
+                {
+                    log::debug!(
+                        "Keeping pane {pane_id:?} open after its shell exited: an agent approval is pending"
+                    );
+                    return;
+                }
+
                 group.close_pane(pane_id, ctx);
             }
             Event::CloseRequested => {
@@ -735,7 +735,11 @@ fn handle_terminal_view_event(
             Event::AppStateChanged => {
                 ctx.emit(pane_group::Event::AppStateChanged);
             }
-            Event::BlockCompleted { block, is_local } => {
+            Event::BlockCompleted {
+                block,
+                persisted_content,
+                is_local,
+            } => {
                 match group.terminal_session_by_id(pane_id) {
                     Some(pane) => {
                         if *GeneralSettings::as_ref(ctx).restore_session
@@ -745,6 +749,7 @@ fn handle_terminal_view_event(
                                 let block_completed_event = ModelEvent::SaveBlock(BlockCompleted {
                                     pane_id: pane.session_uuid(),
                                     block: block.clone(),
+                                    deferred_content: persisted_content.clone(),
                                     is_local: *is_local,
                                 });
 
@@ -772,12 +777,8 @@ fn handle_terminal_view_event(
             Event::OpenSettings(section) => {
                 ctx.emit(pane_group::Event::OpenSettings(*section));
             }
-            #[cfg(not(target_family = "wasm"))]
             Event::OpenPluginInstructionsPane(agent, kind) => {
                 ctx.emit(pane_group::Event::OpenPluginInstructionsPane(*agent, *kind));
-            }
-            Event::AskAIAssistant(ask_type) => {
-                ctx.emit(pane_group::Event::AskAIAssistant(ask_type.to_owned()))
             }
             Event::SyncInput(sync_event) => {
                 if SyncedInputState::as_ref(ctx)
@@ -1116,13 +1117,7 @@ fn handle_terminal_view_event(
                 parent_conversation_id,
                 argument,
             } => {
-                #[cfg(not(target_family = "wasm"))]
                 spawn_local_child_agents(group, pane_id, *parent_conversation_id, argument, ctx);
-                #[cfg(target_family = "wasm")]
-                {
-                    let _ = (parent_conversation_id, argument);
-                    log::warn!("SpawnLocalChildAgents is not supported on wasm");
-                }
             }
             Event::OpenChildAgentInNewPane { conversation_id } => {
                 // Reveals the hidden child pane as a visible sibling rather
@@ -1338,7 +1333,6 @@ fn kill_agent_conversation(
 /// each is ready, materializes it via `finish_spawning_local_child_agent`.
 /// User-invoked only -- see `TerminalAction::SpawnLocalChildAgents`'s doc
 /// comment.
-#[cfg(not(target_family = "wasm"))]
 fn spawn_local_child_agents(
     group: &mut PaneGroup,
     base_pane_id: PaneId,
@@ -1420,7 +1414,6 @@ fn spawn_local_child_agents(
 /// child up through the same `BlocklistAIHistoryModel`/`PaneGroup` state
 /// they already render restored children from -- nothing downstream needs
 /// to know a child was spawned by `/orchestrate` specifically.
-#[cfg(not(target_family = "wasm"))]
 fn finish_spawning_local_child_agent(
     group: &mut PaneGroup,
     base_pane_id: PaneId,
@@ -1470,6 +1463,33 @@ fn finish_spawning_local_child_agent(
     group.child_agent_panes.insert(child_id, new_pane_id.into());
 }
 
+/// Exchanges whose `Pending` query row is already persisted, keyed to the part of the row that
+/// can change while streaming (`inputs.len()`); everything else in the row is fixed per exchange.
+#[cfg(feature = "local_fs")]
+type PersistedPendingExchanges =
+    std::collections::HashMap<crate::ai::agent::AIAgentExchangeId, usize>;
+
+/// Whether an exchange event needs an `UpsertAIQuery`. `UpdatedStreamingExchange` fires once
+/// per streamed delta, but the persisted row is identical for every delta of a `Pending`
+/// exchange, so only the first (and any change in input count) is written. `AppendedExchange`
+/// and any non-`Pending` status always write; terminal statuses drop the entry (#1137).
+#[cfg(feature = "local_fs")]
+fn should_upsert_ai_query(
+    persisted: &mut PersistedPendingExchanges,
+    exchange_id: crate::ai::agent::AIAgentExchangeId,
+    status: &crate::ai::blocklist::AIQueryHistoryOutputStatus,
+    input_count: usize,
+    is_streaming_delta: bool,
+) -> bool {
+    if *status != crate::ai::blocklist::AIQueryHistoryOutputStatus::Pending {
+        persisted.remove(&exchange_id);
+        return true;
+    }
+    let unchanged = persisted.get(&exchange_id) == Some(&input_count);
+    persisted.insert(exchange_id, input_count);
+    !(is_streaming_delta && unchanged)
+}
+
 #[cfg(feature = "local_fs")]
 fn handle_ai_history_event(
     event: &BlocklistAIHistoryEvent,
@@ -1477,6 +1497,7 @@ fn handle_ai_history_event(
     terminal_pane_id: TerminalPaneId,
     model_event_sender: SyncSender<ModelEvent>,
     is_shared_ambient_agent_session: bool,
+    persisted_pending: &mut PersistedPendingExchanges,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
     use std::sync::Arc;
@@ -1536,16 +1557,31 @@ fn handle_ai_history_event(
                 return;
             }
 
+            let inputs: Vec<_> = exchange
+                .input
+                .iter()
+                .filter_map(|input| PersistedAIInputType::try_from(input).ok())
+                .collect();
+            let output_status = AIQueryHistoryOutputStatus::from(&exchange.output_status);
+            if !should_upsert_ai_query(
+                persisted_pending,
+                exchange.id,
+                &output_status,
+                inputs.len(),
+                matches!(
+                    event,
+                    BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
+                ),
+            ) {
+                return;
+            }
+
             let persisted_query = PersistedAIInput {
                 start_ts: exchange.start_time,
-                inputs: exchange
-                    .input
-                    .iter()
-                    .filter_map(|input| PersistedAIInputType::try_from(input).ok())
-                    .collect(),
+                inputs,
                 exchange_id: exchange.id,
                 conversation_id: *conversation_id,
-                output_status: AIQueryHistoryOutputStatus::from(&exchange.output_status),
+                output_status,
                 working_directory: exchange.working_directory.clone(),
                 // TODO(CORE-3546): shell: exchange.shell.clone(),
                 model_id: exchange.model_id.clone(),
@@ -1612,7 +1648,7 @@ fn handle_ai_history_event(
     }
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(test)]
 #[path = "terminal_pane_tests.rs"]
 mod tests;
 

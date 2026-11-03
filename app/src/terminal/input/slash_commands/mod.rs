@@ -218,6 +218,32 @@ impl SlashCommandTrigger {
     }
 }
 
+/// Result of statting the `/open-file` target (done off the UI thread).
+#[cfg(feature = "local_fs")]
+#[derive(Debug, PartialEq, Eq)]
+enum OpenFileTarget {
+    File,
+    /// A file past the code editor's size limit (its length in bytes), see
+    /// `util::file::size_guard` (#1329).
+    TooLarge(u64),
+    NotAFile,
+    Missing,
+}
+
+#[cfg(feature = "local_fs")]
+fn probe_open_file_target(path: &std::path::Path) -> OpenFileTarget {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => {
+            match crate::util::file::size_guard::too_large_for_code_editor(path) {
+                Some(len) => OpenFileTarget::TooLarge(len),
+                None => OpenFileTarget::File,
+            }
+        }
+        Ok(_) => OpenFileTarget::NotAFile,
+        Err(_) => OpenFileTarget::Missing,
+    }
+}
+
 #[cfg(feature = "local_fs")]
 fn open_file_command_path(
     session: &Session,
@@ -712,32 +738,47 @@ impl Input {
                         let (file_path, line_col) =
                             open_file_command_path(&session, &current_dir, args);
 
-                        match std::fs::metadata(&file_path) {
-                            Ok(metadata) if metadata.is_file() => {
-                                use crate::util::file::external_editor;
+                        // The stat runs off the UI thread (network volumes / privacy
+                        // prompts can stall it); the open or the error toast is handled
+                        // back on the main thread with the same messages as before.
+                        ctx.spawn(
+                            async move {
+                                let kind = probe_open_file_target(&file_path);
+                                (file_path, kind)
+                            },
+                            move |_me, (file_path, kind), ctx| match kind {
+                                OpenFileTarget::File => {
+                                    use crate::util::file::external_editor;
 
-                                ctx.dispatch_typed_action(&TerminalAction::OpenCodeInWarp {
-                                    path: file_path,
-                                    layout: external_editor::settings::EditorLayout::SplitPane,
-                                    line_col,
-                                });
-                            }
-                            Ok(_) => {
-                                show_error_toast(
-                                    "The /open-file command only works for files, not directories"
-                                        .to_owned(),
-                                    ctx,
-                                );
-                                return true;
-                            }
-                            Err(_) => {
-                                show_error_toast(
-                                    format!("File not found: {}", file_path.display()),
-                                    ctx,
-                                );
-                                return true;
-                            }
-                        }
+                                    ctx.dispatch_typed_action(&TerminalAction::OpenCodeInWarp {
+                                        path: file_path,
+                                        layout: external_editor::settings::EditorLayout::SplitPane,
+                                        line_col,
+                                    });
+                                }
+                                OpenFileTarget::TooLarge(len) => {
+                                    show_error_toast(
+                                        crate::util::file::size_guard::too_large_message(
+                                            &file_path, len,
+                                        ),
+                                        ctx,
+                                    );
+                                }
+                                OpenFileTarget::NotAFile => {
+                                    show_error_toast(
+                                        "The /open-file command only works for files, not directories"
+                                            .to_owned(),
+                                        ctx,
+                                    );
+                                }
+                                OpenFileTarget::Missing => {
+                                    show_error_toast(
+                                        format!("File not found: {}", file_path.display()),
+                                        ctx,
+                                    );
+                                }
+                            },
+                        );
                     }
                     _ => {
                         use crate::server::telemetry::PaletteSource;
@@ -808,7 +849,6 @@ impl Input {
                 }
             }
             export_to_file if command.name == commands::EXPORT_TO_FILE.name => {
-                #[cfg(not(target_family = "wasm"))]
                 {
                     self.export_conversation_to_file(
                         argument.map(|filename| filename.to_owned()),
@@ -867,27 +907,35 @@ impl Input {
                     // The pin canonicalizes and indexes the working directory itself rather
                     // than the repo root; `CodebaseIndexManager` resolves the root it actually
                     // indexes (`root_path_for_codebase`).
-                    let Ok(repo_path) = directory.canonicalize() else {
-                        show_error_toast(
-                            format!("Could not resolve {} to index", directory.display()),
-                            ctx,
-                        );
-                        return true;
-                    };
-
-                    let started = CodebaseIndexManager::handle(ctx)
-                        .update(ctx, |manager, ctx| manager.index_directory(repo_path, ctx));
-                    if !started {
-                        // `index_directory` returns false when indexing is off or the index
-                        // limit is reached, and says nothing about which. Both are conditions
-                        // the user has to fix in Code settings.
-                        show_error_toast(
-                            "Could not start indexing — check Settings > Code > Codebase Indexing"
-                                .to_owned(),
-                            ctx,
-                        );
-                        return true;
-                    }
+                    // Canonicalize off the UI thread (network volumes / privacy prompts); the
+                    // indexing start and its error toasts run back on the main thread.
+                    ctx.spawn(
+                        async move {
+                            let resolved = directory.canonicalize();
+                            (directory, resolved)
+                        },
+                        |_me, (directory, resolved), ctx| {
+                            let Ok(repo_path) = resolved else {
+                                show_error_toast(
+                                    format!("Could not resolve {} to index", directory.display()),
+                                    ctx,
+                                );
+                                return;
+                            };
+                            let started = CodebaseIndexManager::handle(ctx)
+                                .update(ctx, |manager, ctx| manager.index_directory(repo_path, ctx));
+                            if !started {
+                                // `index_directory` returns false when indexing is off or the
+                                // index limit is reached, and says nothing about which. Both are
+                                // conditions the user has to fix in Code settings.
+                                show_error_toast(
+                                    "Could not start indexing — check Settings > Code > Codebase Indexing"
+                                        .to_owned(),
+                                    ctx,
+                                );
+                            }
+                        },
+                    );
                 }
                 #[cfg(not(feature = "local_fs"))]
                 {
@@ -1448,6 +1496,38 @@ impl Input {
 mod tests {
     use super::*;
     use crate::search::slash_command_menu::static_commands::commands;
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn open_file_target_probe_classifies_file_dir_and_missing() {
+        let dir = std::env::temp_dir().join(format!("open-file-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(probe_open_file_target(&file), OpenFileTarget::File);
+        assert_eq!(probe_open_file_target(&dir), OpenFileTarget::NotAFile);
+        assert_eq!(
+            probe_open_file_target(&dir.join("missing")),
+            OpenFileTarget::Missing
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn open_file_target_probe_refuses_a_file_past_the_editor_limit() {
+        let dir = std::env::temp_dir().join(format!("open-file-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("huge.txt");
+        // Sparse: no 40 MB of disk is written.
+        let handle = std::fs::File::create(&file).unwrap();
+        handle.set_len(40 * 1024 * 1024).unwrap();
+        assert_eq!(
+            probe_open_file_target(&file),
+            OpenFileTarget::TooLarge(40 * 1024 * 1024)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// `/model` is supported in the TUI and executes immediately (no queued
     /// prompt) — it must not be classified as a prompt-submitting command.

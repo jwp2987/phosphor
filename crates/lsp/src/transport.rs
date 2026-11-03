@@ -12,6 +12,30 @@ use warp_core::report_error;
 use warpui_core::r#async::Timer;
 use warpui_core::r#async::executor::{Background, BackgroundTask};
 
+/// Give-up bound for a server to exit after SIGTERM before it is killed.
+#[cfg(unix)]
+const SIGTERM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Sends SIGTERM and returns as soon as the child has exited, which is the signal the old fixed
+/// 2 s sleep was standing in for (#1364). `grace` is only a give-up for a server that ignores
+/// SIGTERM; when it fires it is logged and the caller kills the process. Returns whether the
+/// child exited on its own.
+#[cfg(unix)]
+async fn terminate_and_reap(child: &mut Child, grace: std::time::Duration) -> bool {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+    if kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).is_err() {
+        return false;
+    }
+    futures::select! {
+        _ = child.status().fuse() => true,
+        _ = Timer::after(grace).fuse() => {
+            log::warn!("LSP: server did not exit within {grace:?} of SIGTERM; killing it.");
+            false
+        }
+    }
+}
+
 /// Transport implementation for LSP communication over process stdin/stdout.
 /// Also manages the LSP server process lifecycle with graceful shutdown capabilities.
 #[derive(Clone)]
@@ -166,18 +190,10 @@ impl Transport for ProcessTransport {
         futures::select! {
             _ = shutdown.fuse() => {},
             _ = timeout_future.fuse() => {
-                // On *nix platforms, send a SIGTERM with a 2s grace period
-                // before killing the process.
+                // On *nix platforms, send a SIGTERM and wait for the process's own exit
+                // (bounded by a logged give-up) before killing it.
                 #[cfg(unix)]
-                {
-                    use nix::sys::signal::{kill, Signal};
-                    use nix::unistd::Pid;
-                    use std::time::Duration;
-                    const SIGTERM_TIMEOUT: Duration = Duration::from_secs(2);
-                    if kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM).is_ok() {
-                        Timer::after(SIGTERM_TIMEOUT).await;
-                    }
-                }
+                terminate_and_reap(&mut child, SIGTERM_TIMEOUT).await;
 
                 let _ = child.kill();
             }
@@ -195,3 +211,7 @@ impl Transport for ProcessTransport {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "transport_tests.rs"]
+mod tests;

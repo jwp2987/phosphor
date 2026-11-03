@@ -267,7 +267,7 @@ pub fn usage_theme_creator_modal() -> Builder {
 /// keybinding. Block selection operates over the real block list, so it needs a
 /// genuine command block (a synthetically injected AI block is not a selectable
 /// participant) — hence a real shell, which is subject to the bash-preexec race
-/// in this sandbox. Mirrors `ai_assistant::test_ask_warp_ai_keybinding_for_selected_block`.
+/// in this sandbox.
 pub fn usage_block_navigation_select() -> Builder {
     new_builder()
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))

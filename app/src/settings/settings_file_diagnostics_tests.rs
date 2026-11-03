@@ -113,3 +113,20 @@ key = 3
         vec!["alpha".to_owned(), "middle".to_owned(), "zeta".to_owned()]
     );
 }
+
+/// `account.is_settings_sync_enabled` was removed along with the settings-sync badge. A
+/// `settings.toml` that still carries it must load: it was the only `account.*` setting, so the
+/// whole `[account]` table is reported as a harmless unknown section (never an error), and the
+/// settings next to it are unaffected.
+#[test]
+fn a_file_with_the_removed_settings_sync_key_loads_and_only_that_key_is_reported() {
+    let file = r#"
+[account]
+is_settings_sync_enabled = true
+
+[appearance.cursor]
+cursor_blink = true
+"#;
+    let unknown = unknown_settings_file_keys(file, &known(&["appearance.cursor.cursor_blink"]));
+    assert_eq!(unknown, vec!["account".to_owned()]);
+}

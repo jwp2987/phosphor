@@ -20,11 +20,11 @@ use rangemap::RangeMap;
 use smallvec::SmallVec;
 use std::{
     borrow::Borrow,
-    collections::HashMap,
     hash::{Hash, Hasher},
     ops::Range,
     sync::Arc,
 };
+use rustc_hash::FxHashMap;
 use vec1::{vec1, Vec1};
 
 type StyleRun = (Range<usize>, StyleAndFont);
@@ -62,16 +62,19 @@ pub enum TextAlignment {
     Right,
 }
 
+/// Two generations of laid-out text keyed by everything that affects the layout. The keys hash
+/// the whole text, so the hasher is Fx, not SipHash: every cached line on screen is looked up
+/// once per layout pass.
 struct TextCache<T> {
-    prev_frame: Mutex<HashMap<CacheKeyValue, Arc<T>>>,
-    curr_frame: RwLock<HashMap<CacheKeyValue, Arc<T>>>,
+    prev_frame: Mutex<FxHashMap<CacheKeyValue, Arc<T>>>,
+    curr_frame: RwLock<FxHashMap<CacheKeyValue, Arc<T>>>,
 }
 
 impl<T> TextCache<T> {
     pub fn new() -> Self {
         Self {
-            prev_frame: Mutex::new(HashMap::new()),
-            curr_frame: RwLock::new(HashMap::new()),
+            prev_frame: Mutex::new(FxHashMap::default()),
+            curr_frame: RwLock::new(FxHashMap::default()),
         }
     }
 
@@ -543,6 +546,14 @@ pub fn default_compute_baseline_position_fn() -> ComputeBaselinePositionFn {
     })
 }
 
+/// Narrows a character offset to the `u32` stored in [`Glyph::index`] and [`CaretPosition`],
+/// saturating at `u32::MAX`. Lines are bounded by `MAX_LAYOUT_LINE_CHARS`, so saturation is
+/// unreachable in practice; it only keeps a pathological value from wrapping.
+#[inline]
+pub fn narrow_offset(offset: usize) -> u32 {
+    u32::try_from(offset).unwrap_or(u32::MAX)
+}
+
 /// A caret position within a line. Generally, there is a caret position after
 /// every grapheme. This does not always correspond to glyphs (for example, a
 /// ligature is one glyph but contains multiple caret positions). It also does
@@ -556,9 +567,9 @@ pub struct CaretPosition {
     /// In the case of RTL text, this may not correspond to `position_in_line`.
     /// That is, a caret position that's visually to the right of another may
     /// actually have a _lower_ `start_offset`.
-    pub start_offset: usize,
+    pub start_offset: u32,
     /// The index of the last character in this caret position. This is _inclusive_.
-    pub last_offset: usize,
+    pub last_offset: u32,
 }
 
 #[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq)]
@@ -680,7 +691,7 @@ pub struct Glyph {
     /// Position of the glyph on its baseline.
     pub position_along_baseline: Vector2F,
     /// The starting index of the character in the original string where this glyph starts.
-    pub index: usize,
+    pub index: u32,
     /// The width of the glyph (its advance), in pixels.
     pub width: f32,
 }
@@ -735,7 +746,7 @@ impl TextFrame {
                 let id = blank_glyph_for(last_run.font_id).unwrap_or(last_glyph.id);
                 last_run.glyphs.push(Glyph {
                     id,
-                    index: tail_last,
+                    index: narrow_offset(tail_last),
                     position_along_baseline: vec2f(end_x, last_glyph.position_along_baseline.y()),
                     width: 0.,
                 });
@@ -743,8 +754,8 @@ impl TextFrame {
         }
         line.caret_positions.push(CaretPosition {
             position_in_line: end_x,
-            start_offset: laid_chars,
-            last_offset: tail_last,
+            start_offset: narrow_offset(laid_chars),
+            last_offset: narrow_offset(tail_last),
         });
         frame
     }
@@ -765,21 +776,23 @@ impl TextFrame {
         if total_chars <= laid_len {
             return frame;
         }
-        let delta = total_chars - laid_len;
+        let laid_head = narrow_offset(laid_head);
+        // Saturating: the rebased offsets clamp at `u32::MAX` instead of wrapping.
+        let delta = narrow_offset(total_chars - laid_len);
         for line in frame.lines.iter_mut() {
             for run in line.runs.iter_mut() {
                 for glyph in run.glyphs.iter_mut() {
                     if glyph.index >= laid_head {
-                        glyph.index += delta;
+                        glyph.index = glyph.index.saturating_add(delta);
                     }
                 }
             }
             for caret in line.caret_positions.iter_mut() {
                 if caret.start_offset >= laid_head {
-                    caret.start_offset += delta;
+                    caret.start_offset = caret.start_offset.saturating_add(delta);
                 }
                 if caret.last_offset >= laid_head {
-                    caret.last_offset += delta;
+                    caret.last_offset = caret.last_offset.saturating_add(delta);
                 }
             }
         }
@@ -799,47 +812,6 @@ impl TextFrame {
         }
     }
 
-    // Returns the absolute bounds of all hyperlinks in the frame. The position of each link is offset by the provided `origin.`
-    pub fn hyperlink_bounds(&self, origin: Vector2F) -> Vec<Vec<RectF>> {
-        let mut positions: Vec<Vec<RectF>> = Vec::new();
-        let mut height = origin.y();
-        let mut prev_hyperlink_id: Option<i32> = None;
-
-        // If the current rectangle is part of the previous hyperlink frame, just push it in a running vector. Otherwise create a new entry.
-        for line in &self.lines {
-            let mut width = origin.x() + self.line_x_offset(line);
-            for run in &line.runs {
-                if let Some(curr_hyperlink_id) = run.styles.hyperlink_id {
-                    let curr_rectangle = RectF::new(
-                        Vector2F::new(width, height),
-                        Vector2F::new(run.width, line.font_size * line.line_height_ratio),
-                    );
-
-                    let mut soft_wrapped = false;
-                    if let Some(prev_id) = prev_hyperlink_id {
-                        if prev_id == curr_hyperlink_id {
-                            positions
-                                .last_mut()
-                                .expect("Positions should be non-empty")
-                                .push(curr_rectangle);
-                            soft_wrapped = true;
-                        }
-                    }
-
-                    if !soft_wrapped {
-                        positions.push(vec![curr_rectangle]);
-                    }
-
-                    prev_hyperlink_id = Some(curr_hyperlink_id);
-                }
-                width += run.width;
-            }
-            height += line.font_size * line.line_height_ratio;
-        }
-
-        positions
-    }
-
     /// We can't mark this as cfg(test) because we need this in the warp crate tests.
     pub fn mock(text: &str) -> Self {
         let mut acc = 0;
@@ -852,7 +824,7 @@ impl TextFrame {
                     .map(|(index, _)| Glyph {
                         id: Default::default(),
                         position_along_baseline: Default::default(),
-                        index: index + acc,
+                        index: narrow_offset(index + acc),
                         width: 10.0, // dummy width
                     })
                     .collect();
@@ -895,15 +867,15 @@ impl TextFrame {
             .map(|(index, _)| Glyph {
                 id: Default::default(),
                 position_along_baseline: vec2f(index as f32 * advance, 0.0),
-                index,
+                index: narrow_offset(index),
                 width: advance,
             })
             .collect();
         let caret_positions = (0..char_count)
             .map(|index| CaretPosition {
                 position_in_line: index as f32 * advance,
-                start_offset: index,
-                last_offset: index,
+                start_offset: narrow_offset(index),
+                last_offset: narrow_offset(index),
             })
             .collect();
         let width = char_count as f32 * advance;
@@ -975,8 +947,8 @@ impl TextFrame {
         for (i, line) in self.lines.iter().enumerate() {
             if let Some(last_glyph) = line.last_glyph() {
                 let last_index_in_row = match clamp_above {
-                    true => last_glyph.index + 1,
-                    false => last_glyph.index,
+                    true => last_glyph.char_index() + 1,
+                    false => last_glyph.char_index(),
                 };
                 if last_index_in_row >= index {
                     return i;
@@ -1060,8 +1032,8 @@ impl Line {
             clip_config: None,
             caret_positions: vec![CaretPosition {
                 position_in_line: 0.0,
-                start_offset: glyph_index,
-                last_offset: glyph_index,
+                start_offset: narrow_offset(glyph_index),
+                last_offset: narrow_offset(glyph_index),
             }],
             chars_with_missing_glyphs: vec![],
         }
@@ -1093,7 +1065,7 @@ impl Line {
             .map(|(index, _)| Glyph {
                 id: Default::default(),
                 position_along_baseline: Default::default(),
-                index,
+                index: narrow_offset(index),
                 width: 10.0, // dummy width
             })
             .collect();
@@ -1123,7 +1095,7 @@ impl Line {
     pub fn x_for_index(&self, index: usize) -> f32 {
         for run in &self.runs {
             for glyph in &run.glyphs {
-                if glyph.index == index {
+                if glyph.char_index() == index {
                     return glyph.position_along_baseline.x();
                 }
             }
@@ -1137,14 +1109,14 @@ impl Line {
         let mut prev_glyph = self.runs.first().and_then(|run| run.glyphs.first())?;
         for run in &self.runs {
             for glyph in &run.glyphs {
-                if glyph.index == index + 1 {
+                if glyph.char_index() == index + 1 {
                     return Some(
                         glyph.position_along_baseline.x() - prev_glyph.position_along_baseline.x(),
                     );
                 }
                 // The zero-width placeholder of an unlaid tail (`TextFrame::with_unlaid_tail`)
                 // sits at the tail's last index, so the last laid char is followed by a gap.
-                if glyph.width == 0. && glyph.index > index + 1 && prev_glyph.index == index {
+                if glyph.width == 0. && glyph.char_index() > index + 1 && prev_glyph.char_index() == index {
                     return Some(
                         glyph.position_along_baseline.x() - prev_glyph.position_along_baseline.x(),
                     );
@@ -1176,7 +1148,7 @@ impl Line {
         if self
             .caret_positions
             .first()
-            .is_some_and(|caret| index < caret.start_offset)
+            .is_some_and(|caret| index < caret.start())
         {
             0.
         } else {
@@ -1196,7 +1168,7 @@ impl Line {
             for run in self.runs.iter().rev() {
                 for glyph in run.glyphs.iter().rev() {
                     if glyph.position_along_baseline.x() <= x {
-                        return Some(glyph.index);
+                        return Some(glyph.char_index());
                     }
                 }
             }
@@ -1258,9 +1230,9 @@ impl Line {
                 // This is the first window from the back where the left caret position starts before x.
                 if left.position_in_line <= x {
                     if (left.position_in_line - x).abs() < (right.position_in_line - x).abs() {
-                        return Some(left.start_offset);
+                        return Some(left.start());
                     } else {
-                        return Some(right.start_offset);
+                        return Some(right.start());
                     }
                 }
             }
@@ -1273,14 +1245,14 @@ impl Line {
     pub fn first_index(&self) -> usize {
         self.caret_positions
             .first()
-            .map_or(0, |caret| caret.start_offset)
+            .map_or(0, |caret| caret.start())
     }
 
     /// The last character index that's within this line (inclusive).
     pub fn last_index(&self) -> usize {
         self.caret_positions
             .last()
-            .map_or(0, |caret| caret.last_offset)
+            .map_or(0, |caret| caret.last())
     }
 
     /// The first character index that's after this line.
@@ -1662,7 +1634,7 @@ impl Line {
             };
             let mut should_stop_after_run = false;
             for glyph in glyph_iter {
-                let index = glyph.index;
+                let index = glyph.char_index();
                 let override_color = style_overrides.color.get(&index).cloned();
 
                 // If we've started truncating in ellipsis mode, draw the ellipsis and stop painting glyphs.
@@ -1746,15 +1718,44 @@ impl Line {
     }
 }
 
+impl Glyph {
+    /// [`Self::index`] as a `usize`.
+    #[inline]
+    pub fn char_index(&self) -> usize {
+        self.index as usize
+    }
+}
+
 impl CaretPosition {
     /// The number of characters covered by this caret position.
     pub fn char_count(&self) -> usize {
-        self.last_offset - self.start_offset + 1
+        self.last() - self.start() + 1
+    }
+
+    /// Builds a caret position from `usize` offsets, narrowing (saturating) to `u32`.
+    pub fn new(position_in_line: f32, start_offset: usize, last_offset: usize) -> Self {
+        Self {
+            position_in_line,
+            start_offset: narrow_offset(start_offset),
+            last_offset: narrow_offset(last_offset),
+        }
+    }
+
+    /// [`Self::start_offset`] as a `usize`.
+    #[inline]
+    pub fn start(&self) -> usize {
+        self.start_offset as usize
+    }
+
+    /// [`Self::last_offset`] as a `usize`.
+    #[inline]
+    pub fn last(&self) -> usize {
+        self.last_offset as usize
     }
 
     /// Whether or not a given character offset is within this caret position.
     pub fn contains_index(&self, index: usize) -> bool {
-        index >= self.start_offset && index <= self.last_offset
+        index >= self.start() && index <= self.last()
     }
 }
 

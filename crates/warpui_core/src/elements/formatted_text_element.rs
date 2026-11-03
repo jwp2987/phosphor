@@ -1607,6 +1607,9 @@ fn apply_secret_replacements(
     }
 }
 
+/// Drawn once per quote level in front of a quoted line.
+const QUOTE_BAR: &str = "\u{2502} ";
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum LineType {
     OrderedList,
@@ -1626,6 +1629,7 @@ impl From<&FormattedTextLine> for LineType {
             | FormattedTextLine::TaskList(_)
             | FormattedTextLine::Table(_) => LineType::FormattedLine,
             FormattedTextLine::CodeBlock(_) => LineType::CodeBlock,
+            FormattedTextLine::BlockQuote { line, .. } => LineType::from(line.as_ref()),
             FormattedTextLine::LineBreak
             | FormattedTextLine::HorizontalRule
             | FormattedTextLine::Embedded(_)
@@ -1658,8 +1662,13 @@ impl Element for FormattedTextElement {
         // We don't use the frame_index from lines.next() because this creates inconsistencies in the frame index when we have lists
         let mut frame_index = 0;
         while let Some((line_index, line)) = lines.next() {
+            // A quoted line is laid out like the line it quotes, behind a bar per quote level.
+            let (quote_depth, line) = line.unquote();
             let mut res = Vec::new();
             let (font_size, texts, indent, line_type) = match line {
+                // `unquote` returns the innermost line, never another quote; skip rather than panic if a nested
+                // quote ever reaches here.
+                FormattedTextLine::BlockQuote { .. } => continue,
                 FormattedTextLine::Heading(header) => (
                     self.heading_to_font_size_multipliers
                         .get_multiplier(header.heading_size)
@@ -1736,6 +1745,9 @@ impl Element for FormattedTextElement {
                 }
                 _ => String::new(),
             };
+            if quote_depth > 0 && !matches!(line, FormattedTextLine::CodeBlock(_)) {
+                text.insert_str(0, &QUOTE_BAR.repeat(quote_depth));
+            }
             // Offset to account for the bullet or number.
             let glyph_offset = text.chars().count();
             let byte_offset = text.len();
@@ -2433,7 +2445,7 @@ impl SelectableElement for FormattedTextElement {
                         let first_glyph = line.first_glyph()?;
                         let last_glyph = line.last_glyph()?;
                         let relative_x =
-                            if first_glyph.index <= offset && offset <= last_glyph.index + 1 {
+                            if first_glyph.char_index() <= offset && offset <= last_glyph.char_index() + 1 {
                                 line.x_for_index(offset)
                             } else if matches!(direction, SelectionDirection::Backward) {
                                 0.
@@ -2555,14 +2567,14 @@ impl SelectableElement for FormattedTextElement {
                 let first_glyph = line.first_glyph()?;
                 let last_glyph = line.last_glyph()?;
                 // Visual glyph order can oppose logical indices, and usize::clamp panics if min > max.
-                if first_glyph.index > last_glyph.index {
+                if first_glyph.char_index() > last_glyph.char_index() {
                     return None;
                 }
                 // If we clicked to the right of a line, the text_selection_bound's glyph index would be one larger than the last glyph's index.
                 // Snap it within the line's index range so we do smart selection as if we clicked on the last glyph in the line.
                 let char_offset = text_selection_bound
                     .glyph_index
-                    .clamp(first_glyph.index, last_glyph.index);
+                    .clamp(first_glyph.char_index(), last_glyph.char_index());
                 let byte_offset = raw_text.char_indices().nth(char_offset)?.0.into();
 
                 let smart_select_range = smart_select_fn(raw_text, byte_offset)?;

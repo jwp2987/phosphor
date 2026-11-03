@@ -48,9 +48,13 @@ impl SpinnerStateHandle {
 
     fn frame_idx(&self) -> usize {
         let start = *self.0.lock().expect("spinner state poisoned");
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        ((elapsed_ms / FRAME_INTERVAL_MS) as usize) % FRAMES.len()
+        frame_index_for_elapsed_ms(start.elapsed().as_millis() as u64)
     }
+}
+
+/// The frame shown `elapsed_ms` after the spinner started.
+fn frame_index_for_elapsed_ms(elapsed_ms: u64) -> usize {
+    ((elapsed_ms / FRAME_INTERVAL_MS) as usize) % FRAMES.len()
 }
 
 pub struct BrailleSpinner {
@@ -58,7 +62,8 @@ pub struct BrailleSpinner {
     color: ColorU,
     family_id: FamilyId,
     font_size: f32,
-    inner: Option<Text>,
+    /// One laid-out `Text` per entry in `FRAMES`; paint picks the current one.
+    inner: Vec<Text>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
@@ -75,7 +80,7 @@ impl BrailleSpinner {
             color: color.into(),
             family_id,
             font_size,
-            inner: None,
+            inner: Vec::new(),
             size: None,
             origin: None,
         }
@@ -89,33 +94,42 @@ impl Element for BrailleSpinner {
         ctx: &mut LayoutContext,
         app: &AppContext,
     ) -> Vector2F {
-        let frame = FRAMES[self.state.frame_idx()];
-        // Braille characters are monospace, but layout still runs once per
-        // frame to ensure font/size changes take effect immediately. The cost
-        // of laying out a single character is negligible.
-        let mut text =
-            Text::new_inline(frame, self.family_id, self.font_size).with_color(self.color);
-        let size = text.layout(constraint, ctx, app);
-        self.inner = Some(text);
+        // Every frame is laid out up front (ten single glyphs) so the frame
+        // switch happens at paint time and the animation never needs a
+        // full-window layout. The spinner's size is the largest frame's, so
+        // the choice of frame can't change layout.
+        let mut size = Vector2F::zero();
+        self.inner = FRAMES
+            .iter()
+            .map(|frame| {
+                let mut text =
+                    Text::new_inline(*frame, self.family_id, self.font_size).with_color(self.color);
+                size = size.max(text.layout(constraint, ctx, app));
+                text
+            })
+            .collect();
         self.size = Some(size);
         size
     }
 
     fn after_layout(&mut self, ctx: &mut AfterLayoutContext, app: &AppContext) {
-        if let Some(t) = self.inner.as_mut() {
+        for t in self.inner.iter_mut() {
             t.after_layout(ctx, app);
         }
     }
 
     fn paint(&mut self, origin: Vector2F, ctx: &mut PaintContext, app: &AppContext) {
         self.origin = Some(Point::from_vec2f(origin, ctx.scene.z_index()));
-        if let Some(t) = self.inner.as_mut() {
+        let frame_idx = self.state.frame_idx();
+        if let Some(t) = self.inner.get_mut(frame_idx) {
             t.paint(origin, ctx, app);
         }
         // Key detail: after each frame's paint completes, request a repaint
         // 80ms later to trigger the next frame's character switch. Without
-        // calling repaint_after, the spinner stays static — this is the animation's engine heartbeat.
-        ctx.repaint_after(Duration::from_millis(FRAME_INTERVAL_MS));
+        // calling a repaint_after variant, the spinner stays static — this is
+        // the animation's engine heartbeat. Paint-only: the frame is chosen
+        // above at paint time, so nothing about layout changes between ticks.
+        ctx.repaint_after_paint_only(Duration::from_millis(FRAME_INTERVAL_MS));
     }
 
     fn size(&self) -> Option<Vector2F> {
@@ -135,3 +149,7 @@ impl Element for BrailleSpinner {
         false
     }
 }
+
+#[cfg(test)]
+#[path = "spinner_tests.rs"]
+mod tests;

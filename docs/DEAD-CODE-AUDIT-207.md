@@ -1,5 +1,13 @@
 # `#[allow(dead_code)]` audit (#207)
 
+> **Update (#1467, 2026-11):** the project now pulls concepts, not code, from upstream and builds no
+> wasm target, so "kept for re-pin parity" and wasm-only entries below are superseded. Removed since:
+> `code/file_tree/snapshot*` (#536), the wasm-only `code/wasm.rs` and `local_code_editor_wasm.rs`,
+> `crates/lsp` `server_repo_watcher*` (with `FeatureFlag::LSPAsATool`), `code/editor/embedded_comment*`
+> (with `FeatureFlag::EmbeddedCodeReviewComments`), the code footer's never-constructed Workspace mode,
+> and the `cfg(target_family = "wasm")` / `cfg(target_arch = "wasm32")` branches in `app/src/code*`,
+> `app/src/editor`, `app/src/notebooks`, `crates/lsp` and `crates/editor` (outside `render/model`).
+
 This is the full inventory #207 asked for: every `#![allow(dead_code)]` /
 `#[allow(dead_code)]` site in the tree at the time of this audit, classified
 as **LEGITIMATE** (genuinely unused on purpose), **HIDES-UNWIRED-PORT** (real
@@ -68,7 +76,7 @@ evidence, so the actual removal PR does not have to re-derive it.
 
 | location | verdict | action |
 |---|---|---|
-| `app/src/code/file_tree/snapshot.rs:1` | **HIDES-UNWIRED-PORT** | Kept. A 368-line SumTree-based file-tree data model (`FileEntry`, `FileTreeSnapshot`) that `app/src/code/file_tree/view.rs` — the actual rendered file tree — never references; `view.rs` uses a completely different `repo_metadata::file_tree_store` model instead. Only consumer is the module's own tests. **Filed #536.** |
+| `app/src/code/file_tree/snapshot.rs:1` | **HIDES-UNWIRED-PORT** | REMOVED (#1467; concepts-not-code policy, no re-pin parity needed). A 368-line SumTree-based file-tree data model (`FileEntry`, `FileTreeSnapshot`) that `app/src/code/file_tree/view.rs` — the actual rendered file tree — never references; `view.rs` uses a completely different `repo_metadata::file_tree_store` model instead. Only consumer is the module's own tests. **Filed #536.** |
 | `app/src/terminal/model/secrets.rs:1` | STALE | **Removed.** Redundant with the `app` crate-root blanket, and every exported type (`SecretsRegex`, `ObfuscateSecrets`, `SecretLevel`, `RichContentSecretTooltipInfo`, ...) has real external callers across `ai/blocklist`, `terminal/model/*`, `settings_view`, `env_vars`. |
 | `app/src/remote_server/diff_state_proto.rs:19` | STALE | **Removed**, plus the stale comment ("non-test consumers land in following diff-state increments") — that future already landed (diff-state-over-SSH is complete per PRs #61-71). One function, `build_diff_state_file_delta`, is still genuinely test-only (the daemon's debounced per-file push path is tracked by #324); converted its coverage from the module blanket to a precise `#[allow(dead_code)]` with a reason, on that one function only. |
 | `crates/warp_completer/src/parsers/errors.rs:1` | **HIDES-UNWIRED-PORT** (uncertain) | Kept, with an added comment. `ParseError::unexpected_eof` / `::extra_tokens` / `::internal_error` and `ArgumentError::MissingMandatoryFlag` are genuinely never constructed anywhere in the tree — only `::mismatch` / `::argument_error` are live. Initially removed the blanket on the (correct-for-most-lib-crates) assumption that `pub` items in a lib crate are dead-code-exempt regardless of internal callers; reverted once the parallel per-item audit (chunk 03) surfaced the specific unconstructed variants, because that exemption's exact boundary for enum variants isn't something this session can verify without a compiler. Left as a documented blanket rather than 4 individual allows for the same reason. |

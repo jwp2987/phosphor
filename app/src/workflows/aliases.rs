@@ -60,6 +60,7 @@ impl WorkflowAliases {
         });
     }
 
+    #[cfg(test)]
     pub fn get_all_aliases(&self) -> &[WorkflowAlias] {
         &self.aliases
     }

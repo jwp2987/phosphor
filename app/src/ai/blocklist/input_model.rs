@@ -5,10 +5,16 @@
 //! exposes methods for running query autodetection, where an algorithm determines if the current
 //! input contents are an AI query or shell command, which is then used to update the input mode.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use futures::stream::AbortHandle;
+use input_classifier::util::routing::{
+    self as routing, Decision, Route, RoutingContext, ShellFamily, Surface as RoutingSurface,
+    Typeahead as RoutingTypeahead,
+};
 use input_classifier::util::{is_agent_follow_up_input, is_one_off_natural_language_word};
 use instant::Instant;
 use parking_lot::FairMutex;
@@ -20,32 +26,32 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonE
 pub use input_classifier::InputType;
 
 use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
+use super::compute_clock::ComputeClock;
 use super::context_model::BlocklistAIContextModel;
-use super::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
+use super::conversation_selection::ConversationSelectionEvent;
 use super::history_model::BlocklistAIHistoryModel;
 use super::misroute_recovery::{MisrouteMemory, MisrouteOffer, RouteReason, SubmitRoute};
 #[cfg(any(test, feature = "test-util"))]
-use super::conversation_selection::MockConversationSelection;
+use super::conversation_selection::{ConversationSelection, MockConversationSelection};
 use super::input_mode_policy::{InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
 };
-use crate::PrivacySettings;
 use warp_completer::completer::CompletionContext;
+use warp_terminal::shell::ShellType;
 
 use crate::{
     input_classifier::InputClassifierModel,
     report_if_error, send_telemetry_from_ctx,
     settings::{AISettings, AISettingsChangedEvent, InputBoxType, InputSettings},
     terminal::{
+        history::RanBefore,
         input::decorations::ParsedTokensSnapshot,
         model::{rich_content::RichContentType, session::SessionId},
         History, HistoryEntry, TerminalModel,
     },
     TelemetryEvent,
 };
-
-use super::telemetry_banner::should_collect_ai_ugc_telemetry;
 
 /// Cutoff score for deciding an user input matches a history command entry.
 const HISTORY_ENTRY_MATCH_CUTOFF: f32 = 0.9;
@@ -71,9 +77,17 @@ struct ExplicitInputTypeSet {
 }
 
 impl ExplicitInputTypeSet {
+    /// Whether the explicit choice still stands. Once a detection request has claimed it, it
+    /// stands for exactly that buffer text and ends when a request for different text arrives (an
+    /// event, see [`InputModel::is_detection_suppressed_by_explicit_set`]); no clock is involved
+    /// (#1375, INP-A2). Only an UNCLAIMED write is time-bounded: nothing ties the edit that
+    /// accompanies an explicit write to it except arriving right after, so
+    /// [`AUTODETECTION_DISABLE_DURATION_MS`] is the give-up after which a request is a new
+    /// question rather than the accompanying echo. That edit has no event of its own.
     fn is_within_window(&self) -> bool {
-        Instant::now()
-            < self.at + std::time::Duration::from_millis(AUTODETECTION_DISABLE_DURATION_MS)
+        self.buffer_text.is_some()
+            || Instant::now()
+                < self.at + std::time::Duration::from_millis(AUTODETECTION_DISABLE_DURATION_MS)
     }
 }
 
@@ -151,6 +165,25 @@ impl InputConfig {
 }
 
 /// Terminal pane-scoped model responsible for managing AI input state.
+/// An `AtomicBool` that the model's `Clone` derive can copy: a clone starts with the flag's
+/// current value instead of sharing it.
+#[derive(Default)]
+struct WakeFlag(AtomicBool);
+
+impl Clone for WakeFlag {
+    fn clone(&self) -> Self {
+        Self(AtomicBool::new(self.0.load(AtomicOrdering::Relaxed)))
+    }
+}
+
+impl std::ops::Deref for WakeFlag {
+    type Target = AtomicBool;
+
+    fn deref(&self) -> &AtomicBool {
+        &self.0
+    }
+}
+
 #[derive(Clone)]
 pub struct BlocklistAIInputModel {
     input_config: InputConfig,
@@ -174,6 +207,18 @@ pub struct BlocklistAIInputModel {
     /// yet. Submitting exactly this text now would race its verdict (see
     /// [`Self::is_detection_pending_for`]).
     pending_detection_buffer: Option<String>,
+
+    /// Set when something asked "is a verdict still pending?" and got yes, i.e. an Enter is (or
+    /// may be) held behind the verdict. Only then does settling a detection notify observers
+    /// (#1181): an unconditional notify re-rendered the message bars, status bar and terminal
+    /// view after every keystroke's verdict, an extra frame per key with nothing visible changed.
+    settle_wake_wanted: WakeFlag,
+
+    /// The input config when the pending detection was requested. A verdict that left a
+    /// different config (type or lock) changed what views render, so settling notifies even
+    /// when nobody waits: not every view that draws the mode (placeholder, colouring, icon)
+    /// is told by `InputTypeChanged` alone.
+    config_when_requested: InputConfig,
 
     /// Incremented for every spawned classification task, so a task that completed just before
     /// being replaced cannot apply its verdict (or clear the handle) over its replacement.
@@ -218,7 +263,79 @@ pub struct BlocklistAIInputModel {
     policy: InputModePolicyHandle,
 
     autodetect_abort_handle: Option<AbortHandle>,
+    /// Compute the jobs of the current detection request have spent (#1351). Replaced by each
+    /// new request.
+    detection_clock: ComputeClock,
     model: Arc<FairMutex<TerminalModel>>,
+}
+
+/// #1183: whether a command-history close match may decide the input type. Not in an agent
+/// conversation for a line with no positive command evidence: `make commit port` is a close
+/// match of an earlier `make ...` line, and a history verdict returns before the classifier's
+/// safety gate runs.
+fn history_close_match_allowed(
+    in_active_agent_view: bool,
+    snapshot: &ParsedTokensSnapshot,
+) -> bool {
+    !(in_active_agent_view
+        && input_classifier::util::lacks_command_evidence_in_agent_conversation(snapshot))
+}
+
+/// The #1234 decision procedure (`input_classifier::util::routing::route`) is the default.
+/// `PHOSPHOR_ROUTING_V1=1` keeps the rule set it replaced (the pre-filter, the typeahead rule and
+/// the Enter-time settle as separate steps), to rule the redesign in or out when a line routes
+/// unexpectedly. Read once.
+fn routing_v2_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PHOSPHOR_ROUTING_V1")
+            .ok()
+            .as_deref()
+            .is_none_or(|flag| flag == "0")
+    })
+}
+
+/// What the view knows about the session a buffer is typed into, for routing (#1234). Cheap to
+/// build on every keystroke: nothing here walks the session's command list.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RoutingSessionFacts {
+    pub shell: ShellFamily,
+}
+
+/// The syntax family routing reasons about for a session's shell.
+pub fn shell_family(shell_type: ShellType) -> ShellFamily {
+    match shell_type {
+        ShellType::Bash | ShellType::Zsh => ShellFamily::Posix,
+        ShellType::Fish => ShellFamily::Fish,
+        ShellType::PowerShell => ShellFamily::PowerShell,
+        ShellType::Nu => ShellFamily::Nu,
+    }
+}
+
+/// The deciding rule, at debug level (#1234): route, rule, surface and the first word only, since
+/// the rest of the buffer may hold a secret.
+fn log_routing_decision(
+    stage: &str,
+    surface: RoutingSurface,
+    buffer_text: &str,
+    decision: &Decision,
+) {
+    if log::log_enabled!(target: "phosphor::routing", log::Level::Debug) {
+        let head: String = buffer_text
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(32)
+            .collect();
+        log::debug!(
+            target: "phosphor::routing",
+            "{stage}: {:?} by {} ({surface:?}, head {head:?}, {} bytes)",
+            decision.route,
+            decision.rule,
+            buffer_text.len()
+        );
+    }
 }
 
 impl BlocklistAIInputModel {
@@ -256,6 +373,8 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
+            settle_wake_wanted: WakeFlag::default(),
+            config_when_requested: input_config,
             detection_generation: 0,
             typeahead_prefix: None,
             typeahead_young: false,
@@ -266,6 +385,7 @@ impl BlocklistAIInputModel {
             terminal_view_id,
             policy,
             autodetect_abort_handle: None,
+            detection_clock: ComputeClock::default(),
             model,
         })
     }
@@ -422,7 +542,7 @@ impl BlocklistAIInputModel {
                             // be sent to the agent, and if the input would otherwise trigger a
                             // false-negative classification, we'd drop the user right into shell
                             // mode.
-                            me.temporarily_disable_autodetection();
+                            me.temporarily_disable_autodetection(ctx);
                         }
                         me.set_input_config_internal(
                             InputConfig {
@@ -467,12 +587,15 @@ impl BlocklistAIInputModel {
             explicit_input_type_set: None,
             non_autodetected_input_type: input_config.input_type,
             pending_detection_buffer: None,
+            settle_wake_wanted: WakeFlag::default(),
+            config_when_requested: input_config,
             detection_generation: 0,
             typeahead_prefix: None,
             typeahead_young: false,
             was_lock_set_with_empty_buffer: false,
             misroute: MisrouteMemory::default(),
             autodetect_abort_handle: None,
+            detection_clock: ComputeClock::default(),
             model,
         }
     }
@@ -480,7 +603,7 @@ impl BlocklistAIInputModel {
     /// Applies a policy-produced config update.
     fn apply_policy_update(&mut self, update: PolicyConfigUpdate, ctx: &mut ModelContext<Self>) {
         if update.temporarily_disable_autodetection {
-            self.temporarily_disable_autodetection();
+            self.temporarily_disable_autodetection(ctx);
         }
         self.set_input_config_internal(update.config, ctx);
     }
@@ -575,7 +698,7 @@ impl BlocklistAIInputModel {
     /// Swaps between Agent/Shell input types while preserving lock state. Temporarily disables
     /// autodetection.
     pub fn set_input_type(&mut self, input_type: InputType, ctx: &mut ModelContext<Self>) {
-        self.temporarily_disable_autodetection();
+        self.temporarily_disable_autodetection(ctx);
         let current_config = self.input_config();
         self.set_input_config_internal(current_config.with_input_type(input_type), ctx);
     }
@@ -643,7 +766,13 @@ impl BlocklistAIInputModel {
             self.last_ai_autodetection_ts = None;
         }
 
-        if new_config.input_type.is_ai() {
+        // Capped: past the cap no reader's outcome changes, and every write is a persisted
+        // setting change that re-renders the settings pages (see `ENTERED_AGENT_MODE_COUNT_CAP`).
+        if new_config.input_type.is_ai()
+            && crate::settings::should_count_agent_mode_entry(
+                *AISettings::as_ref(ctx).entered_agent_mode_num_times,
+            )
+        {
             AISettings::handle(ctx).update(ctx, |settings, ctx| {
                 let new_num_times = *settings.entered_agent_mode_num_times + 1;
                 report_if_error!(settings
@@ -673,7 +802,7 @@ impl BlocklistAIInputModel {
         is_input_buffer_empty: bool,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.temporarily_disable_autodetection();
+        self.temporarily_disable_autodetection(ctx);
         self.set_input_config_internal(new_config, ctx);
         if new_config.is_locked {
             self.abort_in_progress_detection();
@@ -689,7 +818,7 @@ impl BlocklistAIInputModel {
         was_lock_set_with_empty_buffer: bool,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.temporarily_disable_autodetection();
+        self.temporarily_disable_autodetection(ctx);
         self.set_input_config_internal(new_config, ctx);
         self.abort_in_progress_detection();
         self.was_lock_set_with_empty_buffer = was_lock_set_with_empty_buffer;
@@ -735,12 +864,23 @@ impl BlocklistAIInputModel {
     /// [`ExplicitInputTypeSet`]). An explicit write also settles any pending detection: the user
     /// (or a flow acting for them) has decided, so a classifier verdict must not be waited for or
     /// override it at submission.
-    fn temporarily_disable_autodetection(&mut self) {
+    fn temporarily_disable_autodetection(&mut self, ctx: &mut ModelContext<Self>) {
         self.explicit_input_type_set = Some(ExplicitInputTypeSet {
             at: Instant::now(),
             buffer_text: None,
         });
-        self.pending_detection_buffer = None;
+        if self.pending_detection_buffer.take().is_some() {
+            // The verdict is no longer wanted: an Enter waiting on it is released by this event
+            // (#1351), not found by a timer.
+            self.wake_verdict_waiter(ctx);
+        }
+    }
+
+    /// Notifies observers if an Enter is waiting on the verdict (see [`Self::settle_detection`]).
+    fn wake_verdict_waiter(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.settle_wake_wanted.swap(false, AtomicOrdering::Relaxed) {
+            ctx.notify();
+        }
     }
 
     /// Returns `true` if a detection request for `buffer_text` falls under the explicit-write
@@ -757,7 +897,12 @@ impl BlocklistAIInputModel {
             explicit.buffer_text = Some(buffer_text.to_owned());
             return true;
         }
-        explicit.buffer_text.as_deref() == Some(buffer_text)
+        if explicit.buffer_text.as_deref() == Some(buffer_text) {
+            return true;
+        }
+        // Different text: the explicit write was for another buffer and is history.
+        self.explicit_input_type_set = None;
+        false
     }
 
     /// Whether the input is the agent's own steer/follow-up box: AI is the live type and the
@@ -773,10 +918,35 @@ impl BlocklistAIInputModel {
                 .is_some_and(|status| status.is_in_progress())
     }
 
+    /// Ends an explicit input-type write that no detection request has claimed yet, for a typed
+    /// edit: the write (the agent view's entry, a toggle) was about the buffer before this
+    /// keystroke, and the user typing is asking autodetection a new question. A claimed write
+    /// keeps its own rules (#833).
+    pub fn release_unclaimed_explicit_write(&mut self) {
+        if self
+            .explicit_input_type_set
+            .as_ref()
+            .is_some_and(|explicit| explicit.buffer_text.is_none())
+        {
+            self.explicit_input_type_set = None;
+        }
+    }
+
     /// Records that the view has requested input-type detection for `buffer_text` (an edit the
     /// user made, or a re-detection the view triggered). The view classifies a parse only while
     /// its text is still requested ([`Self::is_detection_requested_for`]) (#833).
     pub fn note_detection_requested(&mut self, buffer_text: String) {
+        // #1604: a request for the text whose job is already in flight keeps that job and its
+        // clock (#1335: a paste's `Edited` event re-requests what the paste path requested, and
+        // an Enter already waiting on that job must not see it aborted and the clock it measures
+        // reset -- for a buffer over `MAX_EAGER_ROUTING_BYTES` nothing but the next Enter would
+        // start another). Any other request supersedes the job in flight: its result must not
+        // land as a verdict, and a large buffer's Enter starts a job only when none is in flight.
+        let same_text_in_flight = self.detection_job_in_flight()
+            && self.pending_detection_buffer.as_deref() == Some(buffer_text.as_str());
+        if !same_text_in_flight {
+            self.abort_in_progress_detection();
+        }
         let explicit_state = self
             .explicit_input_type_set
             .as_ref()
@@ -789,10 +959,19 @@ impl BlocklistAIInputModel {
             Some((true, true)) => {
                 self.is_detection_suppressed_by_explicit_set(&buffer_text);
             }
-            Some((true, false)) | None => {}
+            // Claimed: different text ends the explicit write, the same text keeps it.
+            Some((true, false)) => {
+                self.is_detection_suppressed_by_explicit_set(&buffer_text);
+            }
+            None => {}
         }
         self.drop_typeahead_prefix_unless_leading(&buffer_text);
+        if same_text_in_flight {
+            return;
+        }
         self.pending_detection_buffer = Some(buffer_text);
+        self.detection_clock = ComputeClock::default();
+        self.config_when_requested = self.input_config;
     }
 
     /// Whether submitting `buffer_text` right now would race an unfinished input-type detection
@@ -806,6 +985,16 @@ impl BlocklistAIInputModel {
     /// [`Self::settle_pending_detection_for_submit`] (#886, the shell-ward half of #833's F6); it
     /// is the model's answer to "is this buffer's mode a real verdict?".
     pub fn is_detection_pending_for(&self, buffer_text: &str, app: &AppContext) -> bool {
+        let pending = self.detection_pending_for_buffer_text(buffer_text, app);
+        if pending {
+            // The asker is about to wait for the verdict; wake it when it lands (#1181).
+            self.settle_wake_wanted.store(true, AtomicOrdering::Relaxed);
+        }
+        pending
+    }
+
+    /// [`Self::is_detection_pending_for`] without registering a wait for the verdict.
+    fn detection_pending_for_buffer_text(&self, buffer_text: &str, app: &AppContext) -> bool {
         if buffer_text.trim().is_empty()
             || !self.should_run_input_autodetection(app)
             || self.is_steering_running_agent(app)
@@ -871,6 +1060,18 @@ impl BlocklistAIInputModel {
         self.typeahead_prefix.as_deref()
     }
 
+    /// Delivers the verdict `input_type` for `buffer_text` the way the classifier's result does:
+    /// applies it and settles the pending detection, notifying observers (#1351), for view tests.
+    #[cfg(test)]
+    pub(crate) fn deliver_verdict_for_test(
+        &mut self,
+        input_type: InputType,
+        buffer_text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.settle_with_route(input_type, buffer_text, ctx);
+    }
+
     /// Whether the buffer carries typeahead provenance (#886) for an edit to re-check.
     pub fn has_typeahead_provenance(&self) -> bool {
         self.typeahead_prefix.is_some()
@@ -893,6 +1094,39 @@ impl BlocklistAIInputModel {
         {
             self.typeahead_prefix = None;
         }
+    }
+
+    /// Whether the input is typed inside an active agent view (#935, #1183, #1184): the
+    /// conversation is the context, so a shell verdict needs positive evidence.
+    pub fn in_active_agent_view(&self, app: &AppContext) -> bool {
+        FeatureFlag::AgentView.is_enabled()
+            && self
+                .agent_view_controller
+                .as_ref()
+                .is_some_and(|c| c.as_ref(app).is_active())
+    }
+
+    /// #1184: in an active agent view, a line the user submits unlocked whose first word is a
+    /// slash command spelling rather than a path (`/mod` after Esc closed the slash menu) is
+    /// text for the agent, never a command: bash would run it as a path, and a path that exists
+    /// would execute. Moves an unlocked Shell input to AI and returns true. A real path
+    /// (`/usr/bin/ls`), a locked Shell input (the user chose it) and any other view are left alone.
+    pub fn route_unmatched_slash_line_to_agent(
+        &mut self,
+        buffer_text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if self.input_config.is_locked
+            || !self.input_config.is_shell()
+            || !self.in_active_agent_view(ctx)
+            || !input_classifier::util::starts_with_slash_command_not_path(buffer_text)
+        {
+            return false;
+        }
+        self.abort_in_progress_detection();
+        self.apply_autodetected_input_type(InputType::AI, ctx);
+        self.settle_detection(buffer_text, ctx);
+        true
     }
 
     /// Whether `buffer_text` is shell typeahead that may be decided Shell without a command head
@@ -933,14 +1167,78 @@ impl BlocklistAIInputModel {
         input: &ParsedTokensSnapshot,
         head_unknown_to_shell: bool,
         head_known_to_shell: bool,
+        ran_before_exactly: bool,
+        shell: ShellFamily,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        if !self.is_detection_pending_for(&input.buffer_text, ctx) {
+        if !self.detection_pending_for_buffer_text(&input.buffer_text, ctx) {
             return false;
         }
+        // #1604: text over the sync cap is routed by the background job the Enter starts (or is
+        // already waiting for): the rules are linear in the text, and a 10 MB paste would hold the
+        // UI thread for hundreds of milliseconds here. Undecided, so the Enter waits for that
+        // verdict; the clock never routes it (#1577).
+        if routes_off_thread(&input.buffer_text) {
+            return false;
+        }
+        if routing_v2_enabled() {
+            // #1234: the one procedure, with the session's own answer about the head in place of
+            // the parse that has not landed. Undecided keeps the live type, as before: the Enter
+            // then waits its budget for the verdict or submits on the inherited type.
+            let surface = self.routing_surface(ctx);
+            let typeahead = self.typeahead_for_routing(&input.buffer_text);
+            let denylisted = self.is_first_word_denylisted(&input.buffer_text, ctx);
+            let decision = routing::route(
+                input,
+                &RoutingContext {
+                    surface,
+                    shell,
+                    head_known_to_shell: if head_known_to_shell {
+                        Some(true)
+                    } else if head_unknown_to_shell {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    commands_fully_loaded: false,
+                    command_data_current: false,
+                    is_agent_follow_up: self.is_agent_follow_up(),
+                    ran_before_exactly,
+                    denylisted,
+                    typeahead,
+                },
+            );
+            log_routing_decision("enter", surface, &input.buffer_text, &decision);
+            return match decision.route {
+                Route::Shell => {
+                    self.settle_with_route(InputType::Shell, &input.buffer_text, ctx);
+                    true
+                }
+                Route::Agent => {
+                    self.settle_with_route(InputType::AI, &input.buffer_text, ctx);
+                    false
+                }
+                Route::Undecided => false,
+            };
+        }
+        // #1185: classified without a trailing comment. #1183: in an agent conversation a line
+        // with no positive evidence of being a command is not decided Shell here, and an
+        // inherited Shell moves to the agent (never for typeahead, as with requests).
+        let classify_snapshot =
+            input_classifier::util::strip_trailing_comment(input).into_owned();
+        let no_command_evidence = self.in_active_agent_view(ctx)
+            && input_classifier::util::lacks_command_evidence_in_agent_conversation(
+                &classify_snapshot,
+            );
+        // #1203: `ran_before_exactly` is the caller's statement that this exact line ran in the
+        // session's shell before and succeeded (the matcher's exact, exit-0 case, decided here
+        // synchronously instead of by the Enter waiting for it); #1183's evidence rule applies to
+        // it as to any Shell decision made here.
         let is_shell = self.is_shell_typeahead(&input.buffer_text)
             || self.is_first_word_denylisted(&input.buffer_text, ctx)
-            || input_classifier::util::is_unambiguous_shell_command(input);
+            || (!no_command_evidence
+                && (ran_before_exactly
+                    || input_classifier::util::is_unambiguous_shell_command(&classify_snapshot)));
         if !is_shell {
             // The agent-ward half of F6: prose pasted or typed fast right after a shell command
             // inherits `Shell` and Enter would run it. Only text that reads as a request in
@@ -948,14 +1246,16 @@ impl BlocklistAIInputModel {
             // never typeahead, a one-off shell keyword head (`echo a and b`) or an inherited AI.
             if self.input_config.is_shell()
                 && (self.reads_as_request(&input.buffer_text)
+                    || (no_command_evidence && self.typeahead_prefix.is_none())
                     || (head_unknown_to_shell
                         && self.reads_as_prose_with_unknown_head(&input.buffer_text)))
             {
                 self.abort_in_progress_detection();
                 self.apply_autodetected_input_type(InputType::AI, ctx);
-                self.settle_detection(&input.buffer_text);
+                self.settle_detection(&input.buffer_text, ctx);
             } else if self.input_config.input_type == InputType::AI
                 && head_known_to_shell
+                && !no_command_evidence
                 && !input.buffer_text.trim().contains('\n')
                 && !self.reads_as_request(&input.buffer_text)
             {
@@ -965,7 +1265,7 @@ impl BlocklistAIInputModel {
                 // classifier verdict.
                 self.abort_in_progress_detection();
                 self.apply_autodetected_input_type(InputType::Shell, ctx);
-                self.settle_detection(&input.buffer_text);
+                self.settle_detection(&input.buffer_text, ctx);
                 return true;
             }
             return false;
@@ -974,7 +1274,7 @@ impl BlocklistAIInputModel {
         // later is no longer requested and is dropped by the view.
         self.abort_in_progress_detection();
         self.apply_autodetected_input_type(InputType::Shell, ctx);
-        self.settle_detection(&input.buffer_text);
+        self.settle_detection(&input.buffer_text, ctx);
         true
     }
 
@@ -999,6 +1299,50 @@ impl BlocklistAIInputModel {
             && input_classifier::util::reads_as_prose_with_unknown_head(buffer_text)
     }
 
+    /// The surface routing reasons about (#1234).
+    fn routing_surface(&self, app: &AppContext) -> RoutingSurface {
+        if self.in_active_agent_view(app) {
+            RoutingSurface::AgentConversation
+        } else {
+            RoutingSurface::PlainTerminal
+        }
+    }
+
+    /// The buffer's typeahead provenance for routing (#886, #933), reconciled with the buffer
+    /// first.
+    fn typeahead_for_routing(&mut self, buffer_text: &str) -> RoutingTypeahead {
+        self.drop_typeahead_prefix_unless_leading(buffer_text);
+        match (self.typeahead_prefix.is_some(), self.typeahead_young) {
+            (false, true | false) => RoutingTypeahead::None,
+            (true, true) => RoutingTypeahead::Young,
+            (true, false) => RoutingTypeahead::Running,
+        }
+    }
+
+    /// Whether the last visible block is an agent block, so the buffer is a follow-up to it.
+    fn is_agent_follow_up(&self) -> bool {
+        let model = self.model.lock();
+        let block_list = model.block_list();
+        let block_index = block_list.last_non_hidden_block_by_index();
+        match block_list.last_non_hidden_rich_content_block_after_block(block_index) {
+            Some((_, content)) => content.content_type == Some(RichContentType::AIBlock),
+            None => false,
+        }
+    }
+
+    /// Applies a route the procedure decided for `buffer_text` and settles its detection: the
+    /// verdict in flight, if any, is superseded.
+    fn settle_with_route(
+        &mut self,
+        input_type: InputType,
+        buffer_text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.abort_in_progress_detection();
+        self.apply_autodetected_input_type(input_type, ctx);
+        self.settle_detection(buffer_text, ctx);
+    }
+
     /// Whether the first word of `buffer_text` is in the user's autodetection denylist.
     fn is_first_word_denylisted(&self, buffer_text: &str, app: &AppContext) -> bool {
         let Some(first_word) = buffer_text.split_whitespace().next() else {
@@ -1011,18 +1355,49 @@ impl BlocklistAIInputModel {
             .any(|entry| entry == first_word)
     }
 
-    /// Abandons the pending detection outright: the classifier will never answer for the
-    /// current buffer (it is over the background-job size cap, #1036), so Enter must not wait
-    /// for a verdict. Whatever the input type is now stands.
+    /// Abandons the pending detection outright: the classifier is late (#1158) or the Enter gave
+    /// up on it, so nothing must wait for its verdict any more. Whatever the input type is now
+    /// stands. (Size is no longer a reason, #1604: every buffer gets a verdict.)
     pub fn abandon_pending_detection(&mut self) {
+        // A verdict still in flight (#1158: a late one) must not land after the submit and set
+        // the input type the next command is typed into.
+        self.abort_in_progress_detection();
         self.pending_detection_buffer = None;
+    }
+
+    /// [`Self::abandon_pending_detection`] for an Enter the clock gave up on and handed back
+    /// (#1577) -- except for a buffer over the sync routing cap (#1604), whose request and job are
+    /// kept: its classification is linear and will land, and the next Enter must wait for it (or
+    /// submit on it once it has) rather than run an unclassified paste on the inherited type. A
+    /// typed line's late verdict is dropped as before, so the next Enter is the user's say-so.
+    pub fn abandon_pending_detection_after_give_up(&mut self) {
+        if self
+            .pending_detection_buffer
+            .as_deref()
+            .is_some_and(routes_off_thread)
+        {
+            return;
+        }
+        self.abandon_pending_detection();
     }
 
     /// Marks detection for `buffer_text` as settled: whatever the input type is now is the
     /// verdict for that text.
-    fn settle_detection(&mut self, buffer_text: &str) {
+    ///
+    /// #1181: notifies observers when a pending detection settles, so an Enter deferred behind
+    /// the verdict is released by the verdict landing instead of waiting for its next timer tick.
+    fn settle_detection(&mut self, buffer_text: &str, ctx: &mut ModelContext<Self>) {
         if self.pending_detection_buffer.as_deref() == Some(buffer_text) {
             self.pending_detection_buffer = None;
+            // Only wake observers when someone is waiting on the verdict (an Enter deferred
+            // behind it) or the verdict changed the input config; otherwise nothing they
+            // render has changed.
+            let waiter = self.settle_wake_wanted.swap(false, AtomicOrdering::Relaxed);
+            let verdict_changed_config = self.input_config != self.config_when_requested;
+            self.config_when_requested = self.input_config;
+            if waiter || verdict_changed_config {
+                ctx.notify();
+            }
         }
     }
 
@@ -1097,7 +1472,10 @@ impl BlocklistAIInputModel {
         } else if self
             .explicit_input_type_set
             .as_ref()
-            .is_some_and(ExplicitInputTypeSet::is_within_window)
+            .is_some_and(|explicit| {
+                // The empty claim a submit leaves behind is not a choice about any buffer.
+                explicit.is_within_window() && explicit.buffer_text.as_deref() != Some("")
+            })
         {
             RouteReason::Explicit
         } else {
@@ -1188,6 +1566,29 @@ impl BlocklistAIInputModel {
         offer
     }
 
+    /// The compute clock of the current detection request (#1351): what an Enter waiting for the
+    /// verdict measures its give-up cap on, and gets stage-start events from.
+    pub fn detection_clock(&self) -> ComputeClock {
+        self.detection_clock.clone()
+    }
+
+    /// Whether a detection job is in flight for the pending request (#1604). Every new request
+    /// aborts the previous job ([`Self::note_detection_requested`]), so an in-flight job is for
+    /// the text awaiting its verdict; the view starts a large buffer's job at Enter only when
+    /// none is.
+    pub fn detection_job_in_flight(&self) -> bool {
+        self.autodetect_abort_handle.is_some()
+    }
+
+    /// [`Self::abort_in_progress_detection`], unless the job in flight is for `buffer_text`, the
+    /// text about to be requested again (#1604; see [`Self::note_detection_requested`]).
+    pub fn abort_in_progress_detection_unless_for(&mut self, buffer_text: Option<&str>) {
+        if buffer_text.is_some_and(|text| self.pending_detection_buffer.as_deref() == Some(text)) {
+            return;
+        }
+        self.abort_in_progress_detection();
+    }
+
     /// Aborts any in progress work for autodetection.
     pub fn abort_in_progress_detection(&mut self) {
         if let Some(handle) = self.autodetect_abort_handle.take() {
@@ -1209,25 +1610,44 @@ impl BlocklistAIInputModel {
         session_id: Option<SessionId>,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.detect_and_set_input_type_with_facts(
+            input,
+            completion_context,
+            session_id,
+            RoutingSessionFacts::default(),
+            ctx,
+        );
+    }
+
+    /// [`Self::detect_and_set_input_type`] with what the view knows about the session (#1234):
+    /// the shell's syntax family. A caller without a session passes the default.
+    pub fn detect_and_set_input_type_with_facts<C: CompletionContext + Clone + Send + 'static>(
+        &mut self,
+        input: ParsedTokensSnapshot,
+        completion_context: C,
+        session_id: Option<SessionId>,
+        facts: RoutingSessionFacts,
+        ctx: &mut ModelContext<Self>,
+    ) {
         // Abort the last autodetect handle if exists.
         self.abort_in_progress_detection();
 
         // If the input mode is locked, there's no point in running autodetection.
         if !self.should_run_input_autodetection(ctx) {
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
         // #851: the agent is streaming and the input is its steer box; keep it AI.
         if self.is_steering_running_agent(ctx) {
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
-        // An explicit write in the last 250 ms keeps its input type -- for the buffer it was made
+        // An explicit write keeps its input type -- for the buffer it was made
         // for only; new text is classified (#833).
         if self.is_detection_suppressed_by_explicit_set(&input.buffer_text) {
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
         if self
@@ -1238,22 +1658,31 @@ impl BlocklistAIInputModel {
             self.explicit_input_type_set = None;
         }
 
-        // #968: a huge buffer is a paste, not a prompt. Never spend classifier time on it, and
-        // never flip the input type either way: forcing Shell would run pasted prose or logs
-        // (`$(..)`, `;`, `>`) on Enter, and forcing AI would send it all to the model. Leave
-        // whatever type the user is in.
-        if exceeds_autodetect_limit(&input.buffer_text) {
-            self.settle_detection(&input.buffer_text);
-            return;
-        }
+        // #1604: the rules see every byte of the buffer, but a buffer over the sync cap is routed
+        // in the spawned job below rather than here on the UI thread: `route` is linear in the
+        // text, microseconds for a typed line and hundreds of milliseconds for a 10 MB paste. The
+        // view starts this job at Enter for such text (never per keystroke) and the Enter waits
+        // for the verdict with a budget that grows with the text (`enter_verdict_budget_for`).
+        // Such a buffer has no completer parse (that parse is quadratic and stays capped, #1174),
+        // so its head is read from the text. The former #968 "never classify a huge paste" cap is
+        // gone: the rules decide a 10 MB script exactly as they decide its first line, and the
+        // model classifier sees a bounded opening of it (`truncate_for_model`).
+        let off_thread = routes_off_thread(&input.buffer_text);
 
-        let first_token_str = input.parsed_tokens.first().map(|t| t.token.clone());
+        // Without a parse (a buffer over the parse cap, or an Enter that beat the debounced parse)
+        // the head is read from the text, within a bounded window: a 10 MB buffer with no
+        // whitespace must not be scanned to its end for its first word.
+        let first_token_str: Option<String> = input
+            .parsed_tokens
+            .first()
+            .map(|t| t.token.as_str().to_owned())
+            .or_else(|| head_word_from_text(&input.buffer_text));
         let Some(first_token_str) = first_token_str else {
             // If the buffer is empty, short-circuit and leave input type unchanged.
             //
             // We don't know enough (anything) to be able to change the input type one way or
             // another.
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         };
 
@@ -1266,7 +1695,7 @@ impl BlocklistAIInputModel {
         // Early return if the first token is included in the denylist. No need to parse history.
         if denylist.contains(&first_token_str.as_str()) {
             self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
+            self.settle_detection(&input.buffer_text, ctx);
             return;
         }
 
@@ -1277,33 +1706,123 @@ impl BlocklistAIInputModel {
         // got a stream error instead of their command); the rules are precision-first, so
         // anything merely *probably* a command still goes through the pipeline below. See
         // `input_classifier::util::is_unambiguous_shell_command`.
-        if input_classifier::util::is_unambiguous_shell_command(&input) {
-            self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
-            return;
+        //
+        // #1185: classified without a trailing ` # comment`; #1183: in an agent conversation not
+        // without positive evidence that the line is a plausible command.
+        let in_active_agent_view = self.in_active_agent_view(ctx);
+        // Determine if the input is a follow-up to an AI block.
+        let is_agent_follow_up = self.is_agent_follow_up();
+        // The comment-stripped snapshot (a copy) and the evidence scan are made here only for text
+        // routed synchronously; for text over the sync cap the job makes them (#1604).
+        let classify_snapshot = (!off_thread)
+            .then(|| input_classifier::util::strip_trailing_comment(&input).into_owned());
+        let mut off_thread_routing: Option<(RoutingContext, RoutingSurface)> = None;
+        let mut history_may_decide = false;
+
+        if classify_snapshot.is_some() && routing_v2_enabled() {
+            // #1234: the one procedure decides every clear case here, synchronously; only an
+            // undecided line goes on to the history matcher and the classifier below. The exact
+            // history lookup is O(1) through the command index (#1203); the session is not asked
+            // about the head on the keystroke path, where the completer's description and a
+            // complete command index say what it would.
+            let surface = if in_active_agent_view {
+                RoutingSurface::AgentConversation
+            } else {
+                RoutingSurface::PlainTerminal
+            };
+            let typeahead = self.typeahead_for_routing(&input.buffer_text);
+            let ran_before_exactly = session_id.is_some_and(|session_id| {
+                History::as_ref(ctx).ran_before(session_id, input.buffer_text.trim())
+                    == RanBefore::Succeeded
+            });
+            let decision = routing::route(
+                &input,
+                &RoutingContext {
+                    surface,
+                    shell: facts.shell,
+                    head_known_to_shell: None,
+                    commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
+                    command_data_current: completion_context.top_level_command_data_is_current(),
+                    is_agent_follow_up,
+                    ran_before_exactly,
+                    denylisted: false,
+                    typeahead,
+                },
+            );
+            log_routing_decision("keystroke", surface, &input.buffer_text, &decision);
+            match decision.route {
+                Route::Shell => {
+                    self.settle_with_route(InputType::Shell, &input.buffer_text, ctx);
+                    return;
+                }
+                Route::Agent => {
+                    self.settle_with_route(InputType::AI, &input.buffer_text, ctx);
+                    return;
+                }
+                Route::Undecided => {}
+            }
+        } else if let Some(classify_snapshot) = classify_snapshot.as_ref() {
+            if input_classifier::util::is_unambiguous_shell_command(classify_snapshot)
+                && !(in_active_agent_view
+                    && input_classifier::util::lacks_command_evidence_in_agent_conversation(
+                        classify_snapshot,
+                    ))
+            {
+                self.apply_autodetected_input_type(InputType::Shell, ctx);
+                self.settle_detection(&input.buffer_text, ctx);
+                return;
+            }
+
+            // #886: text the shell handed back as typeahead was typed at the shell. A burst that
+            // the tty split or merged leaves pieces with no recognisable head (`ho b199 >>
+            // ~/blk.txt`, `b22 b23`, `b11 blk.txtecho b12`) that the classifier reads as prose,
+            // and an AI verdict here is the mode the rest of the burst is then typed into. Only a
+            // buffer with no prose evidence anywhere is decided here; anything that could be a
+            // question falls through.
+            if self.is_shell_typeahead(&input.buffer_text) {
+                self.apply_autodetected_input_type(InputType::Shell, ctx);
+                self.settle_detection(&input.buffer_text, ctx);
+                return;
+            }
+        }
+        if let Some(classify_snapshot) = classify_snapshot.as_ref() {
+            // #1183: in an agent conversation, a line with no positive command evidence is never
+            // decided Shell by the history close-match below (`make commit port` is a close match
+            // of an earlier `make ...` line, and that match returned before the classifier's gate
+            // ran).
+            history_may_decide = history_close_match_allowed(in_active_agent_view, classify_snapshot);
+        } else if routing_v2_enabled() {
+            // #1604: the same procedure, run by the job. The exact-history lookup hashes the whole
+            // text on the UI thread, so it is not made for this size (the close match in the job
+            // covers history); the session is not asked about the head on this path either.
+            let surface = if in_active_agent_view {
+                RoutingSurface::AgentConversation
+            } else {
+                RoutingSurface::PlainTerminal
+            };
+            let typeahead = self.typeahead_for_routing(&input.buffer_text);
+            off_thread_routing = Some((
+                RoutingContext {
+                    surface,
+                    shell: facts.shell,
+                    head_known_to_shell: None,
+                    commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
+                    command_data_current: completion_context.top_level_command_data_is_current(),
+                    is_agent_follow_up,
+                    ran_before_exactly: false,
+                    denylisted: false,
+                    typeahead,
+                },
+                surface,
+            ));
         }
 
-        // #886: text the shell handed back as typeahead was typed at the shell. A burst that the
-        // tty split or merged leaves pieces with no recognisable head (`ho b199 >> ~/blk.txt`,
-        // `b22 b23`, `b11 blk.txtecho b12`) that the classifier reads as prose, and an AI verdict
-        // here is the mode the rest of the burst is then typed into. Only a buffer with no prose
-        // evidence anywhere is decided here; anything that could be a question falls through.
-        if self.is_shell_typeahead(&input.buffer_text) {
-            self.apply_autodetected_input_type(InputType::Shell, ctx);
-            self.settle_detection(&input.buffer_text);
-            return;
-        }
-
-        // If we have a session, gather the command history entries allowed to force Shell for
-        // this buffer (#832, see `shell_history_candidates`). `History::commands` returns
-        // entries in ascending (oldest-first) order, so downstream matching reverses them to
-        // iterate newest-first.
-        let history_entries = session_id.map(|sid| {
-            shell_history_candidates(
-                History::as_ref(ctx).commands(sid).into_iter().flatten(),
-                &input.buffer_text,
-            )
-        });
+        // If we have a session, snapshot its command history (shared `Arc`s, oldest-first: no
+        // entry is deep-copied). The #832/#965 filtering in `shell_history_candidates` scans
+        // every entry (shell-word splitting per entry), so it runs in the spawned future below,
+        // off the main thread, not once per keystroke on it (#1137, like #811 did for
+        // autosuggestion). Matching iterates the result newest-first.
+        let history_entries = session_id.and_then(|sid| History::as_ref(ctx).commands_shared(sid));
 
         // Gather agent prompt history (ascending / oldest-first). Ported from the pin
         // (`02b53fcd8`) for #312; off by default, matching the pin's own default-off
@@ -1325,28 +1844,35 @@ impl BlocklistAIInputModel {
 
         let is_udi_enabled = InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
 
-        // Determine if the input is a follow-up to an AI block.
-        let is_agent_follow_up = {
-            let model = self.model.lock();
-            let block_list = model.block_list();
-            let block_index = block_list.last_non_hidden_block_by_index();
-            match block_list.last_non_hidden_rich_content_block_after_block(block_index) {
-                Some((_, content)) => content.content_type == Some(RichContentType::AIBlock),
-                _ => false,
-            }
-        };
-
-        // #935: only inside an active agent view does an unknown single word read as a message.
-        let in_active_agent_view = FeatureFlag::AgentView.is_enabled()
-            && self
-                .agent_view_controller
-                .as_ref()
-                .is_some_and(|c| c.as_ref(ctx).is_active());
-
         let classifier = InputClassifierModel::as_ref(ctx).classifier();
+        let compute_clock = self.detection_clock.clone();
         let handle = ctx
             .spawn(
                 async move {
+                    // The clock starts when this job runs, not when it was queued (#1351).
+                    let _compute = compute_clock.begin();
+                    // #1604: a buffer over the sync cap is routed here, off the UI thread, by the
+                    // same rules the keystroke path applies synchronously to shorter text.
+                    if let Some((routing_context, surface)) = off_thread_routing {
+                        let decision = routing::route(&input, &routing_context);
+                        log_routing_decision("background", surface, &input.buffer_text, &decision);
+                        match decision.route {
+                            Route::Shell => return InputType::Shell,
+                            Route::Agent => return InputType::AI,
+                            Route::Undecided => {}
+                        }
+                    }
+                    let (classify_snapshot, history_may_decide) = match classify_snapshot {
+                        Some(snapshot) => (snapshot, history_may_decide),
+                        None => {
+                            let snapshot =
+                                input_classifier::util::strip_trailing_comment(&input).into_owned();
+                            let allowed =
+                                history_close_match_allowed(in_active_agent_view, &snapshot);
+                            (snapshot, allowed)
+                        }
+                    };
+                    drop(input);
                     // First check if the token is a natural language word, if the user was already
                     // in AI mode before this buffer's autodetection began.
                     if matches!(shortcut_input_type, InputType::AI)
@@ -1365,7 +1891,11 @@ impl BlocklistAIInputModel {
                     // If we have history entries (i.e., a live session), check for
                     // close matches against command history and agent prompt history.
                     // TODO(vorporeal): decide if we still want to do this with NldImprovements.
-                    if let Some(history_entries) = history_entries {
+                    if let Some(history_entries) = history_entries.filter(|_| history_may_decide) {
+                        let history_entries = shell_history_candidates(
+                            history_entries.iter().map(|entry| entry.as_ref()),
+                            &buffer_cloned,
+                        );
                         // Iterate commands newest-first so the first match is the
                         // most-recent matching command.
                         let command_match = most_recent_close_match(
@@ -1413,7 +1943,8 @@ impl BlocklistAIInputModel {
                     futures_lite::future::yield_now().await;
 
                     let input =
-                        warp_completer::util::expand_aliases(input, &completion_context).await;
+                        warp_completer::util::expand_aliases(classify_snapshot, &completion_context)
+                            .await;
 
                     futures_lite::future::yield_now().await;
 
@@ -1444,7 +1975,7 @@ impl BlocklistAIInputModel {
                     // is not locked, and we should abort the autodetect future if the input is locked, but
                     // we do it anyway out of an abundance of caution.
                     if !me.should_run_input_autodetection(ctx) {
-                        me.settle_detection(&other_buffer_cloned);
+                        me.settle_detection(&other_buffer_cloned, ctx);
                         return;
                     }
                     // If the autodetect abort handle is none, it means we aborted autodetection.
@@ -1458,19 +1989,20 @@ impl BlocklistAIInputModel {
                     if me.detection_generation != detection_generation {
                         return;
                     }
+                    // #1604: a background routing job answers for the text it was started with;
+                    // a buffer edited since has asked for its own verdict.
+                    if off_thread && !me.is_detection_requested_for(&other_buffer_cloned) {
+                        me.autodetect_abort_handle = None;
+                        return;
+                    }
                     me.autodetect_abort_handle = None;
                     me.apply_autodetected_input_type(new_input_type, ctx);
-                    me.settle_detection(&other_buffer_cloned);
+                    me.settle_detection(&other_buffer_cloned, ctx);
                     if current_input_type != new_input_type {
                         let buffer_length = other_buffer_cloned.len();
-                        let input_buffer_text_for_telemetry = should_collect_ai_ugc_telemetry(
-                            ctx,
-                            PrivacySettings::as_ref(ctx).is_telemetry_enabled,
-                        )
-                        .then_some(other_buffer_cloned);
                         send_telemetry_from_ctx!(
                             TelemetryEvent::AgentModeChangedInputType {
-                                input: input_buffer_text_for_telemetry,
+                                input: None,
                                 buffer_length,
                                 is_manually_changed: false,
                                 new_input_type,
@@ -1718,7 +2250,11 @@ async fn most_recent_close_match<'a>(
     if !(0.0..=1.0).contains(&cutoff) {
         panic!("Cutoff must be greater than 0.0 and lower than 1.0");
     }
-    let mut matcher = difflib::sequencematcher::SequenceMatcher::new("", word);
+    // #1604: the matcher indexes every byte of `word` when it is built (a 10 MB paste is a
+    // 10 M-entry map), so it is built only once a candidate's length allows a match at all. The
+    // length bound is the matcher's own `real_quick_ratio`: a candidate shorter than
+    // `cutoff / (2 - cutoff)` of the buffer (or longer than its inverse) can never reach `cutoff`.
+    let mut matcher = None;
     for (idx, (candidate, start_ts)) in possibilities.enumerate() {
         // Periodically, yield to the executor so this task can be aborted if
         // requested.
@@ -1726,6 +2262,11 @@ async fn most_recent_close_match<'a>(
             futures_lite::future::yield_now().await;
         }
 
+        if !close_match_possible_by_length(candidate.len(), word.len(), cutoff) {
+            continue;
+        }
+        let matcher = matcher
+            .get_or_insert_with(|| difflib::sequencematcher::SequenceMatcher::new("", word));
         matcher.set_first_seq(candidate);
         // The fast ratio computations produce an upper bound on the value of
         // ratio, so if a faster check fails, the slower checks are guaranteed
@@ -1739,6 +2280,17 @@ async fn most_recent_close_match<'a>(
     }
 
     HistoryMatch::NoMatch
+}
+
+/// Whether two sequences of these lengths can be `cutoff`-similar at all (#1604): the matcher's
+/// ratio is `2 * matched / (a + b)` with `matched <= min(a, b)`, so this is its `real_quick_ratio`
+/// upper bound, computed before the matcher (and its index of the whole buffer) exists.
+pub(crate) fn close_match_possible_by_length(a: usize, b: usize, cutoff: f32) -> bool {
+    let total = a + b;
+    if total == 0 {
+        return true;
+    }
+    2.0 * a.min(b) as f32 / total as f32 >= cutoff
 }
 
 /// Fork-original (#832): the command-history entries that may route `buffer_text` to Shell by a
@@ -1801,6 +2353,58 @@ pub fn should_wait_for_verdict_before_submit(
         && verdict_pending
         && provenance == EnterProvenance::Classifiable
         && !gave_up_on_this_text
+}
+
+/// The most compute the jobs of a detection request may spend before an Enter that waits for the
+/// verdict gives up on it (#1158, #1351).
+///
+/// This caps the classifier's OWN work (parse without generators, alias expansion, history match,
+/// model), measured on the request's [`ComputeClock`] from when a job actually started running to
+/// now. It is never measured from the Enter: a main-thread stall (frame, reflow, big paste) that
+/// delays the Enter's handling of a verdict already computed and queued must not count against
+/// the classifier. A verdict that lands, or is already queued, always decides the route. Past the
+/// cap the classifier is slow and the Enter decides on the Enter-time rules that already ran
+/// (known head, history, syntax, request shape) instead of holding: it is never kept in the editor
+/// and never waits on I/O. It used to be 5 s, on a verdict that waited for remote completion
+/// generators (0.8-3.8 s).
+pub const ENTER_VERDICT_BUDGET: Duration = Duration::from_millis(20);
+
+/// What a waiting Enter does when it is woken (#1158).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnterVerdictWait {
+    /// The verdict for the exact buffer text has landed: submit on it.
+    Submit,
+    /// Within the compute cap: keep waiting for the verdict event.
+    Wait,
+    /// The classifier spent its compute cap: abandon it and submit on the Enter-time rules.
+    SubmitWithoutVerdict,
+}
+
+/// Decides [`EnterVerdictWait`] from whether the verdict is still pending and how much compute
+/// the classifier has spent on it. Never "keep in editor": a slow verdict is no reason to swallow
+/// the Enter.
+pub fn enter_verdict_wait_decision(
+    verdict_pending: bool,
+    classifier_compute: Duration,
+) -> EnterVerdictWait {
+    enter_verdict_wait_decision_for(verdict_pending, classifier_compute, 0)
+}
+
+/// [`enter_verdict_wait_decision`] for a buffer of `text_len` bytes: the compute cap is
+/// [`enter_verdict_budget_for`] (#1604), so a 10 MB paste's linear classification is waited for
+/// instead of handed back after the 20 ms a typed line gets.
+pub fn enter_verdict_wait_decision_for(
+    verdict_pending: bool,
+    classifier_compute: Duration,
+    text_len: usize,
+) -> EnterVerdictWait {
+    if !verdict_pending {
+        EnterVerdictWait::Submit
+    } else if classifier_compute >= enter_verdict_budget_for(text_len) {
+        EnterVerdictWait::SubmitWithoutVerdict
+    } else {
+        EnterVerdictWait::Wait
+    }
 }
 
 fn shell_history_candidates<'a>(
@@ -1889,11 +2493,65 @@ fn resolve_history_match(
     }
 }
 
-/// Buffers longer than this many bytes are never autodetected as an agent prompt (#968).
-pub(crate) const MAX_AUTODETECT_BUFFER_BYTES: usize = 16 * 1024;
+/// The longest buffer the routing rules run on synchronously, on the UI thread (#1604): per
+/// keystroke in [`BlocklistAIInputModel::detect_and_set_input_type`] and at Enter in
+/// [`BlocklistAIInputModel::settle_pending_detection_for_submit`]. The rules are linear in the
+/// text with a bounded amount of work per word, so 4 KiB is well under a millisecond; anything
+/// longer is a paste, routed by the same rules in the detection job the Enter starts and waits
+/// for. There is no size above which text is NOT classified: the former 4096-byte prefilter cap,
+/// the 16 KiB #968 autodetect cap and the parse-cap abandon all sent an over-size shell command
+/// to the agent in agent mode.
+pub(crate) const MAX_SYNC_ROUTING_BYTES: usize = 4096;
 
-pub(crate) fn exceeds_autodetect_limit(buffer_text: &str) -> bool {
-    buffer_text.len() > MAX_AUTODETECT_BUFFER_BYTES
+/// Whether `buffer_text` is routed in the background job rather than on the UI thread (#1604).
+pub(crate) fn routes_off_thread(buffer_text: &str) -> bool {
+    buffer_text.len() > MAX_SYNC_ROUTING_BYTES
+}
+
+/// The first whitespace-separated word of `buffer_text`, read from its first
+/// [`MAX_SYNC_ROUTING_BYTES`] bytes and cut to 256 chars (#1604): what the denylist and the
+/// one-off-word shortcut need when no parse describes the buffer, at a cost bounded by the window,
+/// not the text. `None` for a buffer whose window holds only whitespace.
+pub(crate) fn head_word_from_text(buffer_text: &str) -> Option<String> {
+    // Leading whitespace first: a paste opening with 4 KiB+ of blank lines still has a head word
+    // (review of #1604); `trim_start` is linear only in that whitespace.
+    let text = buffer_text.trim_start();
+    let mut end = text.len().min(MAX_SYNC_ROUTING_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end]
+        .split_whitespace()
+        .next()
+        .map(|word| word.chars().take(256).collect())
+}
+
+/// The longest buffer whose background routing job is started from the edit path, as the text is
+/// edited (#1604). Every edit aborts the job in flight, but a job inside its linear `route` cannot
+/// stop before it finishes, so a typing burst into a 10 MB buffer would stack up seconds of
+/// background CPU (#1191's blocking-pool starvation); at 256 KiB a job is ~25 ms of compute. A
+/// longer buffer is classified once, by the job its Enter starts, which the Enter waits for.
+pub(crate) const MAX_EAGER_ROUTING_BYTES: usize = 256 * 1024;
+
+/// Bytes of text per millisecond of extra classifier compute an Enter allows for a buffer over
+/// [`MAX_SYNC_ROUTING_BYTES`] (#1604): 4 KiB/ms is a floor of 4 MB/s for the linear rules plus
+/// the bounded model input, a few times slower than a release build runs them.
+const LARGE_TEXT_BYTES_PER_MS: usize = 4096;
+
+/// Extra compute the classifier is allowed on a buffer of `text_len` bytes before an Enter waiting
+/// for its verdict gives up (#1604): nothing up to [`MAX_SYNC_ROUTING_BYTES`], then one
+/// millisecond per [`LARGE_TEXT_BYTES_PER_MS`] bytes (a 1 MB paste gets ~250 ms more, 10 MB
+/// ~2.5 s). The give-up never routes the line: with autodetection live it hands the text back
+/// to the editor (#1577).
+pub fn large_text_compute_allowance(text_len: usize) -> Duration {
+    Duration::from_millis(
+        (text_len.saturating_sub(MAX_SYNC_ROUTING_BYTES) / LARGE_TEXT_BYTES_PER_MS) as u64,
+    )
+}
+
+/// [`ENTER_VERDICT_BUDGET`] plus the large-text allowance for a buffer of `text_len` bytes.
+pub fn enter_verdict_budget_for(text_len: usize) -> Duration {
+    ENTER_VERDICT_BUDGET + large_text_compute_allowance(text_len)
 }
 
 #[cfg(test)]

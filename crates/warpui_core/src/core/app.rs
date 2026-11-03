@@ -85,6 +85,62 @@ lazy_static! {
     static ref LAST_USER_ACTION_UNIX_TIMESTAMP: AtomicI64 = AtomicI64::new(0);
 }
 
+/// Anything on the UI thread that holds it this long drops a 60 Hz frame (#1146; owner budget:
+/// a UI work item should take ≤4 ms, and 16 ms is a visible hitch).
+const UI_SLOW_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// Slow-operation loggers for the UI thread. One per kind so a sustained slow
+/// frame cannot hide a slow action. Rate limited; see `warp_util::slow_log`.
+static SLOW_ACTION: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "UI action dispatch",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_EVENT: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "UI event dispatch",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_VIEW_UPDATE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "view update",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_MODEL_UPDATE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "model update",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "frame layout+paint",
+    UI_SLOW_THRESHOLD,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
+/// A frame this slow is a lockup, not a hitch: record whether the thread was computing or waiting
+/// (#1293). Rate limited like the other slow logs.
+static FROZEN_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "frozen frame",
+    std::time::Duration::from_secs(1),
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
+/// Count of key events dispatched so far (every keystroke that reached `dispatch_keystroke`).
+/// A pure ordering clock: code that must only act on a key delivered AFTER some other event
+/// (e.g. a card being painted) records [`key_dispatch_seq`] at that event and compares the
+/// seq of the key being handled against it, instead of measuring elapsed time.
+static KEY_DISPATCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The seq of the key currently being dispatched (or of the last one, outside a dispatch).
+pub fn key_dispatch_seq() -> u64 {
+    KEY_DISPATCH_SEQ.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Advances the key clock; called once per dispatched keystroke (also a test seam).
+pub fn bump_key_dispatch_seq() -> u64 {
+    KEY_DISPATCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
 #[derive(Clone)]
 pub struct App(Rc<RefCell<AppContext>>);
 
@@ -151,6 +207,16 @@ impl App {
 
     pub fn has_window_invalidations(&self, window_id: WindowId) -> bool {
         self.0.borrow().has_window_invalidations(window_id)
+    }
+
+    /// Test-only: drains the window's pending invalidation and reports whether it asks for a
+    /// full frame (a view was notified/removed or a layout redraw was requested) and whether it
+    /// asks for a paint-only frame, as `(needs_layout, paint_only)`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn take_invalidation_kind_for_test(&self, window_id: WindowId) -> (bool, bool) {
+        self.0
+            .borrow_mut()
+            .take_invalidation_kind_for_test(window_id)
     }
 
     pub fn window_bounds(&self, window_id: &WindowId) -> Option<RectF> {
@@ -229,7 +295,7 @@ impl App {
             responder_chain,
             name,
             &arg,
-            log::Level::Info,
+            log::Level::Debug,
         );
     }
 
@@ -243,7 +309,7 @@ impl App {
             window_id,
             responder_chain,
             action,
-            log::Level::Info,
+            log::Level::Debug,
         );
     }
 
@@ -260,7 +326,7 @@ impl App {
     }
 
     pub fn dispatch_standard_action(&mut self, window_id: WindowId, action: StandardAction) {
-        log::info!("Dispatching standard action {action:?}");
+        log::debug!("Dispatching standard action {action:?}");
         self.update(move |ctx| {
             let responder_chain = ctx.get_responder_chain(window_id);
             let res = ctx.dispatch_standard_action(action, window_id, &responder_chain);
@@ -618,10 +684,34 @@ pub enum RepaintTrigger {
         /// spawned task's closure reads this cell when it fires, not a value
         /// captured at spawn time, so the upgrade is visible to it.
         layout_required: Rc<Cell<bool>>,
+        /// Later deadlines (and whether each needs layout) that were requested while this
+        /// timer was pending and so were "covered" by it. A covering timer only guarantees ONE
+        /// repaint at its own deadline; an element that asked for a one-shot repaint later than
+        /// that gets nothing from it unless it happens to ask again on that paint. So when this
+        /// timer fires, every follow-up still in the future is re-requested (which re-attaches
+        /// it to the next covering timer, or arms a real one), and the request is never dropped.
+        followups: Rc<RefCell<Vec<(Instant, bool)>>>,
     },
     AssetLoaded {
         asset_handle: AssetHandle,
     },
+    /// A background image raster finished (see `ImageCache::image_deferred`).
+    RasterReady {
+        wait: crate::image_cache::RasterWait,
+    },
+}
+
+/// Most follow-up deadlines one repaint timer remembers (see `RepaintTrigger::Timer::followups`).
+const MAX_REPAINT_FOLLOWUPS: usize = 32;
+
+/// Remembers that a repaint was also wanted at `at`, merging with an entry for the same instant
+/// (a layout requirement wins over paint-only).
+fn record_followup(followups: &mut Vec<(Instant, bool)>, at: Instant, layout_required: bool) {
+    if let Some(existing) = followups.iter_mut().find(|(instant, _)| *instant == at) {
+        existing.1 |= layout_required;
+    } else if followups.len() < MAX_REPAINT_FOLLOWUPS {
+        followups.push((at, layout_required));
+    }
 }
 
 type EventMunger = dyn Fn(&mut Event, &mut AppContext);
@@ -1057,6 +1147,17 @@ impl AppContext {
         U: FnOnce(&mut rendering::Config),
     {
         update_fn(&mut self.rendering_config)
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn take_invalidation_kind_for_test(&mut self, window_id: WindowId) -> (bool, bool) {
+        let invalidation = self.take_all_invalidations_for_window(window_id);
+        (
+            !invalidation.updated.is_empty()
+                || !invalidation.removed.is_empty()
+                || invalidation.redraw_requested,
+            invalidation.paint_only_redraw_requested,
+        )
     }
 
     pub fn has_window_invalidations(&self, window_id: WindowId) -> bool {
@@ -1541,7 +1642,7 @@ impl AppContext {
         arg: &dyn Any,
     ) -> bool {
         let responder_chain = self.responder_chain_for_view(window_id, view_id);
-        self.dispatch_action(window_id, &responder_chain, name, arg, log::Level::Info)
+        self.dispatch_action(window_id, &responder_chain, name, arg, log::Level::Debug)
     }
 
     /// Returns the responder chain for `view_id` in `window_id`: the view hierarchy from
@@ -1595,7 +1696,7 @@ impl AppContext {
         action: &dyn Action,
     ) {
         let responder_chain = self.responder_chain_for_view(window_id, view_id);
-        self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Info);
+        self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Debug);
     }
 
     pub fn dispatch_action(
@@ -1607,6 +1708,7 @@ impl AppContext {
         log_level: log::Level,
     ) -> bool {
         log::log!(log_level, "dispatching action for {name:?}");
+        let slow_start = Instant::now();
         self.pending_flushes += 1;
 
         let mut any_action_handled = false;
@@ -1676,12 +1778,13 @@ impl AppContext {
         }
 
         if !any_action_handled {
-            log::warn!("Action {name:?} was dispatched, but no view handled it");
+            log::debug!("Action {name:?} was dispatched, but no view handled it");
         }
 
         self.dispatch_global_action(name, arg);
 
         self.flush_effects();
+        SLOW_ACTION.finish(slow_start, || format!("action {name:?}"));
         any_action_handled
     }
 
@@ -1702,6 +1805,7 @@ impl AppContext {
             action.type_name()
         );
 
+        let slow_start = Instant::now();
         let action_type: ActionType = action.into();
         // If there are no handlers registered for the given action, then we can return early
         // without needing to look at the responder chain at all, since no views will handle it
@@ -1763,10 +1867,13 @@ impl AppContext {
         self.typed_actions.insert(action_type, handlers);
 
         if !handled {
-            log::warn!("Action {action:?} was dispatched, but no view handled it");
+            log::debug!("Action {action:?} was dispatched, but no view handled it");
         }
 
         self.flush_effects();
+        SLOW_ACTION.finish(slow_start, || {
+            format!("typed action {}", action.type_name())
+        });
         handled
     }
 
@@ -1784,7 +1891,7 @@ impl AppContext {
         arg: &dyn Any,
     ) {
         if let Some((name, mut handlers)) = self.global_actions.remove_entry(name) {
-            if name == "workspace:save_app" {
+            if matches!(name.as_str(), "workspace:save_app" | "root_view:update_quake_mode_state") {
                 log::debug!("dispatching global action for {}", &name);
             } else {
                 log::info!("dispatching global action for {}", &name);
@@ -2045,6 +2152,7 @@ impl AppContext {
     ///
     /// This will return all editable bindings, regardless of whether or not they have
     /// associated key bindings
+    #[cfg(test)]
     pub fn editable_bindings_for_view(
         &self,
         window_id: WindowId,
@@ -2128,7 +2236,7 @@ impl AppContext {
                     window_id,
                     &responder_chain[0..=i],
                     action.as_ref(),
-                    log::Level::Info,
+                    log::Level::Debug,
                 ),
                 _ => false,
             };
@@ -2194,7 +2302,7 @@ impl AppContext {
         Action: Into<CustomTag> + Debug + Copy,
     {
         if self.key_bindings_enabled(window_id) {
-            log::info!("Dispatching custom action {action:?}");
+            log::debug!("Dispatching custom action {action:?}");
             let responder_chain = self.get_responder_chain(window_id);
             let res =
                 self.dispatch_custom_action_internal(action.into(), window_id, &responder_chain);
@@ -2247,7 +2355,7 @@ impl AppContext {
             })
             .and_then(|key_event| {
                 self.presenter(window_id).map(|presenter| {
-                    log::info!("Dispatching key event {key_event:?} for custom action {action:?}");
+                    log::debug!("Dispatching key event {key_event:?} for custom action {action:?}");
                     self.handle_non_keybound_event(key_event, window_id, presenter.clone())
                         .handled
                 })
@@ -2268,7 +2376,7 @@ impl AppContext {
                     window_id,
                     &responder_chain[0..=i],
                     action.as_ref(),
-                    log::Level::Info,
+                    log::Level::Debug,
                 ),
                 _ => false,
             };
@@ -2286,33 +2394,93 @@ impl AppContext {
         keystroke: &Keystroke,
         is_composing: bool,
     ) -> Result<bool> {
+        bump_key_dispatch_seq();
+        // #1482: an Enter that dies somewhere in the keystroke matcher leaves no `keydown` line, so
+        // every step of its walk is logged.
+        let is_enter = matches!(keystroke.key.as_str(), "enter" | "numpadenter");
         let mut context_chain = self.contexts_from_responder_chain(window_id, responder_chain)?;
+        if is_enter {
+            crate::input_order::log_enter("core_enter", "dispatch_keystroke", || {
+                format!(
+                    "chain_len={} composing={is_composing} ctrl={} alt={} shift={} cmd={}",
+                    context_chain.len(),
+                    keystroke.ctrl,
+                    keystroke.alt,
+                    keystroke.shift,
+                    keystroke.cmd
+                )
+            });
+        }
         let mut pending = false;
         for (i, ctx) in context_chain.iter_mut().enumerate().rev() {
             if is_composing {
                 ctx.set.insert("IMEOpen");
             }
-            let handled = match self.keystroke_matcher.push_keystroke(
-                keystroke.clone(),
-                responder_chain[i],
-                ctx,
-            ) {
+            let match_result =
+                self.keystroke_matcher
+                    .push_keystroke(keystroke.clone(), responder_chain[i], ctx);
+            if is_enter {
+                let (result, action) = match &match_result {
+                    MatchResult::None => ("none", String::new()),
+                    MatchResult::Pending => ("pending", String::new()),
+                    MatchResult::Action(action) => ("action", format!("{action:?}")),
+                };
+                crate::input_order::log_enter("core_enter", "match_step", || {
+                    let mut context: Vec<&str> = ctx.set.iter().copied().collect();
+                    context.sort_unstable();
+                    // The context is only worth printing for the steps that matched or went pending.
+                    let context = if result == "none" {
+                        String::new()
+                    } else {
+                        format!(
+                            " ime_open={} context={}",
+                            ctx.set.contains("IMEOpen"),
+                            context.join(",")
+                        )
+                    };
+                    format!(
+                        "step={i} view={:?} result={result} action={action}{context}",
+                        responder_chain[i]
+                    )
+                });
+            }
+            let handled = match match_result {
                 MatchResult::None => false,
                 MatchResult::Pending => {
                     pending = true;
                     false
                 }
-                MatchResult::Action(action) => self.dispatch_typed_action(
-                    window_id,
-                    &responder_chain[0..=i],
-                    action.as_ref(),
-                    log::Level::Info,
-                ),
+                MatchResult::Action(action) => {
+                    let handled = self.dispatch_typed_action(
+                        window_id,
+                        &responder_chain[0..=i],
+                        action.as_ref(),
+                        log::Level::Debug,
+                    );
+                    if is_enter {
+                        let action_ref: &dyn Action = action.as_ref();
+                        let action_type_name = action_ref.type_name();
+                        crate::input_order::log_enter("core_enter", "action_handled", || {
+                            format!("step={i} action_type={action_type_name} handled={handled}")
+                        });
+                    }
+                    handled
+                }
             };
 
             if handled {
+                if is_enter {
+                    crate::input_order::log_enter("core_enter", "dispatch_result", || {
+                        format!("handled=true pending={pending}")
+                    });
+                }
                 return Ok(true);
             }
+        }
+        if is_enter {
+            crate::input_order::log_enter("core_enter", "dispatch_result", || {
+                format!("handled={pending} pending={pending}")
+            });
         }
         Ok(pending)
     }
@@ -2645,6 +2813,7 @@ impl AppContext {
         self.platform_delegate.clipboard()
     }
 
+    #[cfg(test)]
     pub fn set_last_mouse_move_event(&mut self, window_id: WindowId, event: Event) {
         match event {
             Event::MouseMoved { .. } => {
@@ -2757,7 +2926,7 @@ impl AppContext {
 
         let callbacks = WindowCallbacks {
             standard_action_callback: Box::new(move |action, ctx| {
-                log::info!("Dispatching standard action {action:?}");
+                log::debug!("Dispatching standard action {action:?}");
                 let responder_chain = ctx.get_responder_chain(window_id);
                 let res = ctx.dispatch_standard_action(action, window_id, &responder_chain);
                 if let Err(error) = res {
@@ -2854,6 +3023,15 @@ impl AppContext {
                 match ctx.presenter(window_id) { Some(presenter) => {
                     ctx.handle_window_event(event, window_id, presenter)
                 } _ => {
+                    if let Event::KeyDown { keystroke, .. } = &event {
+                        if matches!(keystroke.key.as_str(), "enter" | "numpadenter") {
+                            crate::input_order::log_enter(
+                                "core_enter",
+                                "no_presenter",
+                                String::new,
+                            );
+                        }
+                    }
                     crate::windowing::EventDispatchResult::default()
                 }}
             }),
@@ -3185,8 +3363,23 @@ impl AppContext {
         }
     }
 
-    /// Builds a new scene for the given window.
+    /// Builds a new scene for the given window, logging (rate limited) if layout +
+    /// paint took long enough to be a visible hitch.
     fn build_scene(&mut self, window_id: WindowId, window: &dyn WindowContext) -> Rc<Scene> {
+        let slow_start = Instant::now();
+        let usage_start = warp_util::slow_log::ThreadUsage::now();
+        let scene = self.build_scene_inner(window_id, window);
+        SLOW_FRAME.finish(slow_start, || format!("window {window_id:?}"));
+        let wall = slow_start.elapsed();
+        if wall >= FROZEN_FRAME.threshold() {
+            FROZEN_FRAME.report(wall, Instant::now(), log::Level::Warn, || {
+                warp_util::slow_log::ThreadUsage::now().describe_since(&usage_start, wall)
+            });
+        }
+        scene
+    }
+
+    fn build_scene_inner(&mut self, window_id: WindowId, window: &dyn WindowContext) -> Rc<Scene> {
         // Make the window being rendered available to window-blind theme
         // accessors for the duration of this render pass (view rendering happens
         // inside the `presenter.invalidate`/`build_scene` calls below). The guard
@@ -3209,6 +3402,21 @@ impl AppContext {
         // handled on the next call to `update_windows`.
         for iter in 1..=3 {
             let invalidation = self.take_all_invalidations_for_window(window_id);
+            // `RUST_LOG=warpui::frame_cause=debug` names what asked for this frame.
+            if log::log_enabled!(target: "warpui::frame_cause", log::Level::Debug) {
+                let updated: Vec<&str> = invalidation
+                    .updated
+                    .iter()
+                    .map(|view_id| self.view_name(window_id, *view_id).unwrap_or("?"))
+                    .collect();
+                log::debug!(
+                    target: "warpui::frame_cause",
+                    "frame {iter}: updated={updated:?} removed={} redraw={} paint_only={}",
+                    invalidation.removed.len(),
+                    invalidation.redraw_requested,
+                    invalidation.paint_only_redraw_requested
+                );
+            }
 
             // Always build the scene at least once, even if there
             // are no updated views.
@@ -3310,6 +3518,46 @@ impl AppContext {
         self.build_scene(window_id, window.as_ctx());
     }
 
+    /// Asks `window_id` for a frame that re-runs paint only: the element tree and its layout from
+    /// the last frame are kept, exactly as for a paint-only timer repaint
+    /// (`PaintContext::repaint_after_paint_only`, see issue #703). For a view whose element reads
+    /// its content at paint time, this is how new content reaches the screen without the view
+    /// being re-rendered and the whole window re-laid out. If anything else invalidates the
+    /// window before the frame, that frame is a full one, as usual.
+    pub fn request_paint_only_redraw(&mut self, window_id: WindowId) {
+        self.window_invalidations
+            .entry(window_id)
+            .or_default()
+            .paint_only_redraw_requested = true;
+    }
+
+    /// Whether `view_id` is in `window_id`'s element tree as of the last frame, so a frame
+    /// built now could show a change to it. False only when the last layout is current and did
+    /// not visit the view (a hidden tab's views). Answers true whenever that is unknown (no
+    /// presenter, no layout yet, the last frame skipped layout, the presenter is borrowed), so a
+    /// caller that skips work for unreachable views only ever skips it for a view that is really
+    /// off screen.
+    pub fn is_view_reachable(&self, window_id: WindowId, view_id: EntityId) -> bool {
+        let Some(presenter) = self.presenter(window_id) else {
+            return true;
+        };
+        let Ok(presenter) = presenter.try_borrow() else {
+            return true;
+        };
+        !presenter.layout_is_current() || presenter.is_view_reachable(view_id)
+    }
+
+    /// Asks `window_id` for a frame that lays out and paints the existing element tree without
+    /// re-rendering any view (what a window resize or a loaded asset asks for). For a view whose
+    /// element reads its content at layout and paint time, this is how new content reaches the
+    /// screen without `View::render` rebuilding the tree first.
+    pub fn request_redraw(&mut self, window_id: WindowId) {
+        self.window_invalidations
+            .entry(window_id)
+            .or_default()
+            .redraw_requested = true;
+    }
+
     /// Test-only: marks the window as needing a redraw for the same reason a
     /// paint-only timer (`PaintContext::repaint_after_paint_only`/
     /// `repaint_at_paint_only`, e.g. a blinking cursor) does when it fires — lets
@@ -3317,10 +3565,7 @@ impl AppContext {
     /// a real timer. See issue #703.
     #[cfg(test)]
     pub fn simulate_paint_only_redraw(&mut self, window_id: WindowId) {
-        self.window_invalidations
-            .entry(window_id)
-            .or_default()
-            .paint_only_redraw_requested = true;
+        self.request_paint_only_redraw(window_id);
     }
 
     /// Test-only: marks a view as needing to be re-rendered, the same way
@@ -4030,7 +4275,25 @@ impl AppContext {
         std::mem::swap(&mut event_munger, &mut self.event_munger);
 
         let mut keystroke_handled = false;
-        if self.key_bindings_enabled(window_id) {
+        // #1482: the two silent ways a bound Enter skips the matcher altogether.
+        let enter_event = matches!(
+            &event,
+            Event::KeyDown { keystroke, .. } if matches!(keystroke.key.as_str(), "enter" | "numpadenter")
+        );
+        let key_bindings_enabled = self.key_bindings_enabled(window_id);
+        if enter_event {
+            let focused = self.focused_view_id(window_id);
+            crate::input_order::log_enter("core_enter", "handle_window_event", || {
+                format!(
+                    "key_bindings_enabled={key_bindings_enabled} focused_view={}",
+                    match focused {
+                        Some(id) => format!("{id:?}"),
+                        None => "none".to_string(),
+                    }
+                )
+            });
+        }
+        if key_bindings_enabled {
             // Checks (and possibly dispatches) for actions with a matching keybinding
             if let Event::KeyDown {
                 keystroke,
@@ -4080,6 +4343,19 @@ impl AppContext {
         }
     }
 
+    /// Deadlines of the repaint timers currently pending for `window_id`.
+    #[cfg(test)]
+    pub(crate) fn pending_repaint_timer_deadlines(&self, window_id: WindowId) -> Vec<Instant> {
+        self.repaint_tasks
+            .values()
+            .filter(|task| task.window_id == window_id)
+            .filter_map(|task| match &task.repaint_trigger {
+                RepaintTrigger::Timer { instant, .. } => Some(*instant),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Schedules an asynchronous task for each delayed notify. Removes any existing notify jobs that've been cancelled.
     ///
     /// `layout_required` says whether the scheduled repaint needs a full layout
@@ -4125,6 +4401,7 @@ impl AppContext {
             let RepaintTrigger::Timer {
                 instant,
                 layout_required: existing_layout_required,
+                followups,
             } = &task.repaint_trigger
             else {
                 continue;
@@ -4136,6 +4413,9 @@ impl AppContext {
             if layout_required && !existing_layout_required.get() {
                 existing_layout_required.set(true);
             }
+            if *instant < repaint_at {
+                record_followup(&mut followups.borrow_mut(), repaint_at, layout_required);
+            }
         }
         if covered_by_existing {
             return;
@@ -4144,6 +4424,8 @@ impl AppContext {
         let weak_app = self.weak_self.clone();
         let layout_required = Rc::new(Cell::new(layout_required));
         let layout_required_for_task = layout_required.clone();
+        let followups: Rc<RefCell<Vec<(Instant, bool)>>> = Rc::default();
+        let followups_for_task = followups.clone();
 
         let task_id = TaskId::new();
         let task = self.foreground.spawn(async move {
@@ -4160,6 +4442,16 @@ impl AppContext {
                         invalidation.paint_only_redraw_requested = true;
                     }
                     app.update_windows();
+                    // Re-request the later deadlines this timer was covering (see
+                    // `RepaintTrigger::Timer::followups`). Anything now in the past was served
+                    // by the repaint that just ran.
+                    let now = Instant::now();
+                    let followups = std::mem::take(&mut *followups.borrow_mut());
+                    for (at, layout) in followups {
+                        if at > now {
+                            app.manage_delayed_repaint_timers(window_id, at, layout);
+                        }
+                    }
                 }
             }
         });
@@ -4172,6 +4464,7 @@ impl AppContext {
                 repaint_trigger: RepaintTrigger::Timer {
                     instant: repaint_at,
                     layout_required: layout_required_for_task,
+                    followups: followups_for_task,
                 },
             },
         );
@@ -4230,6 +4523,51 @@ impl AppContext {
                 },
             );
         })
+    }
+
+    /// Redraws `window_id` (paint only: the layout is unchanged) once, when a background image
+    /// raster finishes, for the frame that painted `pending_rasters`. This replaces polling the
+    /// raster worker with a repaint timer. Dedups per (window, wait) like `manage_pending_assets`.
+    pub fn manage_pending_rasters(
+        &mut self,
+        window_id: WindowId,
+        pending_rasters: HashSet<crate::image_cache::RasterWait>,
+    ) {
+        for wait in pending_rasters {
+            if self.repaint_tasks.values().any(|task| {
+                task.window_id == window_id
+                    && matches!(&task.repaint_trigger, RepaintTrigger::RasterReady { wait: w } if w == &wait)
+            }) {
+                continue;
+            }
+            let ready = wait.when_ready();
+            let weak_app = self.weak_self.clone();
+            let task_id = TaskId::new();
+            let task = self.foreground.spawn(async move {
+                ready.await;
+                let Some(app) = weak_app.upgrade() else {
+                    return;
+                };
+                let mut app = app.borrow_mut();
+                // Cancelled tasks are no longer in `repaint_tasks`.
+                if app.repaint_tasks.remove(&task_id).is_some() {
+                    // The window may have closed while the raster ran; its result is simply
+                    // dropped (the cache keeps it for whoever asks next).
+                    if app.is_window_open(window_id) {
+                        app.request_paint_only_redraw(window_id);
+                        app.update_windows();
+                    }
+                }
+            });
+            self.repaint_tasks.insert(
+                task_id,
+                RepaintTask {
+                    task,
+                    window_id,
+                    repaint_trigger: RepaintTrigger::RasterReady { wait },
+                },
+            );
+        }
     }
 
     fn load_fallback_family_and_redraw(
@@ -4388,6 +4726,101 @@ impl AppContext {
         }
     }
 
+    /// Offers a key event to the pane key sink in the focus chain, if there is one. Returns
+    /// whether the sink consumed it (then no element sees the event).
+    ///
+    /// The sink is the nearest ancestor of the focused view that says it is one
+    /// ([`View::is_pane_key_sink`]). The live focus chain is handed over with the event, so the
+    /// sink decides on the focus of this moment, not on what an element captured at its last
+    /// render (#934).
+    fn offer_pane_key(
+        &mut self,
+        event: &Event,
+        window_id: WindowId,
+        presenter: &Rc<RefCell<Presenter>>,
+    ) -> bool {
+        use crate::pane_key::{
+            PaneKey, PaneKeyContext, PaneKeyKind, PaneKeyOutcome, note_event_and_is_ime_commit,
+        };
+        let kind = match event {
+            Event::KeyDown {
+                keystroke,
+                chars,
+                is_composing,
+                details,
+            } => {
+                note_event_and_is_ime_commit(false, false);
+                let printable = !chars.is_empty() && !chars.chars().all(|c| c.is_control());
+                PaneKeyKind::KeyDown {
+                    keystroke: keystroke.clone(),
+                    chars: chars.clone(),
+                    is_composing: *is_composing,
+                    will_type: printable && !keystroke.cmd,
+                    key_without_modifiers: details.key_without_modifiers.clone(),
+                }
+            }
+            Event::TypedCharacters { chars } => PaneKeyKind::Typed {
+                chars: chars.clone(),
+                ime_commit: note_event_and_is_ime_commit(false, true),
+            },
+            Event::SetMarkedText {
+                marked_text,
+                selected_range,
+            } => {
+                note_event_and_is_ime_commit(false, false);
+                PaneKeyKind::SetMarkedText {
+                    marked_text: marked_text.clone(),
+                    selected_range: selected_range.clone(),
+                }
+            }
+            Event::ClearMarkedText => {
+                note_event_and_is_ime_commit(true, false);
+                PaneKeyKind::ClearMarkedText
+            }
+            _ => return false,
+        };
+        let Some(focused) = self.focused_view_id(window_id) else {
+            return false;
+        };
+        let focus_chain = presenter.borrow().ancestors(focused);
+        let Some(sink_id) = focus_chain.iter().rev().copied().find(|view_id| {
+            self.windows
+                .get(&window_id)
+                .and_then(|window| window.views.get(view_id))
+                .is_some_and(|view| view.is_pane_key_sink())
+        }) else {
+            return false;
+        };
+        let leaf_takes_typed_text = self
+            .windows
+            .get(&window_id)
+            .and_then(|window| window.views.get(&focused))
+            .is_some_and(|view| view.takes_typed_text());
+        let key = PaneKey {
+            seq: crate::input_order::current_key_seq(),
+            kind,
+        };
+        let key_ctx = PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text,
+        };
+        let Some(mut sink) = self
+            .windows
+            .get_mut(&window_id)
+            .and_then(|window| window.views.remove(&sink_id))
+        else {
+            return false;
+        };
+        // Same discipline as a typed action: effects the sink queues flush once it is done.
+        self.pending_flushes += 1;
+        let outcome = sink.on_pane_key(&key, &key_ctx, self, window_id, sink_id);
+        if let Some(window) = self.windows.get_mut(&window_id) {
+            window.views.insert(sink_id, sink);
+        }
+        self.flush_effects();
+        outcome == PaneKeyOutcome::Consumed
+    }
+
     fn handle_non_keybound_event(
         &mut self,
         event: Event,
@@ -4402,10 +4835,37 @@ impl AppContext {
             _ => {
                 // Update last user action timestamp for non-hover events
                 App::record_last_active_timestamp();
-                log::Level::Info
+                log::Level::Debug
             }
         };
+        // Numbers and logs the key events (before the sink: a consumed event never reaches the
+        // presenter, and its `kh_*` hops carry this number).
+        match &event {
+            Event::KeyDown { keystroke, .. } => {
+                crate::profiling::mark!("key_down");
+                crate::input_order::log_key_down(
+                    &keystroke.key,
+                    keystroke.ctrl,
+                    keystroke.alt,
+                    keystroke.shift,
+                    keystroke.cmd,
+                )
+            }
+            Event::TypedCharacters { chars } => crate::input_order::log_typed_characters(chars),
+            _ => {}
+        }
+        // #1404: a pane key sink takes the key event first (the keybinding system has already had
+        // its chance at a chord), so a key reaches a terminal pane exactly once.
+        if self.offer_pane_key(&event, window_id, &presenter) {
+            return crate::windowing::EventDispatchResult {
+                handled: true,
+                soft_keyboard_requested: false,
+            };
+        }
+        let slow_start = Instant::now();
+        let event_kind = crate::event::EventDiscriminants::from(&event);
         let dispatch_result = presenter.borrow_mut().dispatch_event(event, self);
+        SLOW_EVENT.finish(slow_start, || format!("event {event_kind:?}"));
 
         // Iterate through all timers, and put a task onto the main thread for each
         // to call back and notify the view when the timer triggers.
@@ -4417,7 +4877,7 @@ impl AppContext {
                 if let Some(app) = weak_app.upgrade() {
                     let mut app = app.borrow_mut();
                     if app.notify_tasks.remove(&timer_id).is_some() {
-                        log::info!(
+                        log::debug!(
                             "notifying view observers and updating windows for timer id {timer_id}"
                         );
                         app.notify_view_observers(window_id, view_to_notify.view_id);
@@ -5223,41 +5683,43 @@ impl AppContext {
                     },
                 );
             }
-            TaskCallback::ViewFromFuture {
-                window_id,
-                view_id,
-                callback,
-            } => {
+            TaskCallback::ViewFromFuture { view_id, callback } => {
+                // The view can move windows (tab drag) while the future is in flight, so
+                // resolve its current window at delivery time, as `ViewFromStream` does.
+                // A view that no longer exists has no `view_to_window` entry: drop safely.
+                //
                 // GUI views live in `window.views`; Zap TUI views live in the
                 // `tui`-gated `window.tui_views` map. Dispatch to whichever holds it,
                 // else the spawned future's result callback is silently dropped.
-                let gui_view = self
-                    .windows
-                    .get_mut(&window_id)
-                    .and_then(|w| w.views.remove(&view_id));
-                if let Some(mut view) = gui_view {
-                    callback(view.as_any_mut(), output, self, window_id, view_id);
-                    self.windows
-                        .get_mut(&window_id)
-                        .ok_or_else(|| anyhow!("Unable to retrieve window for view"))?
-                        .views
-                        .insert(view_id, view);
-                } else {
-                    #[cfg(feature = "tui")]
-                    if let Some(mut view) = self
+                if let Some(window_id) = self.view_to_window.get(&view_id).copied() {
+                    let gui_view = self
                         .windows
                         .get_mut(&window_id)
-                        .and_then(|w| w.tui_views.remove(&view_id))
-                    {
+                        .and_then(|w| w.views.remove(&view_id));
+                    if let Some(mut view) = gui_view {
                         callback(view.as_any_mut(), output, self, window_id, view_id);
                         self.windows
                             .get_mut(&window_id)
                             .ok_or_else(|| anyhow!("Unable to retrieve window for view"))?
-                            .tui_views
+                            .views
                             .insert(view_id, view);
+                    } else {
+                        #[cfg(feature = "tui")]
+                        if let Some(mut view) = self
+                            .windows
+                            .get_mut(&window_id)
+                            .and_then(|w| w.tui_views.remove(&view_id))
+                        {
+                            callback(view.as_any_mut(), output, self, window_id, view_id);
+                            self.windows
+                                .get_mut(&window_id)
+                                .ok_or_else(|| anyhow!("Unable to retrieve window for view"))?
+                                .tui_views
+                                .insert(view_id, view);
+                        }
+                        #[cfg(not(feature = "tui"))]
+                        let _ = output;
                     }
-                    #[cfg(not(feature = "tui"))]
-                    let _ = output;
                 }
                 self.task_done(task_id);
             }
@@ -5605,10 +6067,14 @@ impl UpdateModel for AppContext {
         T: Entity,
         F: FnOnce(&mut T, &mut ModelContext<T>) -> S,
     {
+        let slow_start = Instant::now();
         let mut model = self.take_model_for_update(handle.id());
         let mut ctx = ModelContext::new(self, handle.id());
         let result = update(downcast_model_mut(&mut model), &mut ctx);
         self.finish_model_update(handle.id(), model);
+        SLOW_MODEL_UPDATE.finish(slow_start, || {
+            format!("model {}", std::any::type_name::<T>())
+        });
         result
     }
 }
@@ -5637,10 +6103,14 @@ impl UpdateView for AppContext {
     {
         let window_id = handle.window_id(self);
         let view_id = handle.id();
+        let slow_start = Instant::now();
         let mut view = self.take_view_for_update(window_id, view_id)?;
         let mut ctx = ViewContext::new(self, window_id, view_id);
         let result = update(downcast_view_mut(&mut view), &mut ctx);
         self.finish_view_update(window_id, view_id, view);
+        SLOW_VIEW_UPDATE.finish(slow_start, || {
+            format!("view {}", std::any::type_name::<T>())
+        });
         Ok(result)
     }
 }

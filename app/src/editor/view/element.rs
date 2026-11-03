@@ -2,7 +2,10 @@ use super::super::soft_wrap::{
     ClampDirection, DisplayPointAndClampDirection, FrameLayouts, SoftWrapPoint, SoftWrapState,
 };
 use super::model::MarkedTextState;
-use super::snapshot::VOICE_INPUT_ICON_CURSOR_GAP;
+use super::snapshot::{
+    LARGE_BUFFER_ROWS, VOICE_INPUT_ICON_CURSOR_GAP, editor_full_layout_forced,
+    large_buffer_real_rows, rows_cannot_wrap_measured, widest_ascii_advance_ems,
+};
 use super::{
     position_id_for_cached_point, snapshot::ViewSnapshot, CursorColors, DisplayPoint,
     DrawableSelection, EditorAction, ScrollState, SelectAction,
@@ -229,6 +232,17 @@ fn accepts_typed_characters(snapshot_focused: bool, live_focus: Option<bool>) ->
 }
 
 impl EditorElement {
+    /// Whether the pane's key sink, not this element, delivers the typed text and composition of
+    /// this editor (#1404).
+    ///
+    /// A window with no focused view at all has no sink to find, so the element decides as it
+    /// always did.
+    fn keys_from_pane_sink(&self, ctx: &EventContext) -> bool {
+        self.view_snapshot.keys_from_pane_sink
+            && crate::terminal::pane_key::sink_owns_keys()
+            && ctx.live_focus_of(self.view_snapshot.view_id).is_some()
+    }
+
     /// Creates a new editor element.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -304,12 +318,6 @@ impl EditorElement {
         if paint.rect.contains_point(position) {
             ctx.dispatch_typed_action(EditorAction::Focus);
             ctx.dispatch_typed_action(EditorAction::ClearParentSelections);
-
-            // On mobile WASM, request the soft keyboard when tapping on an editable editor.
-            #[cfg(target_family = "wasm")]
-            if self.view_snapshot.editor_model.as_ref(app).can_edit() {
-                ctx.request_soft_keyboard();
-            }
 
             if is_first_mouse {
                 // If the editor is receiving the first mouse click on activation
@@ -630,14 +638,25 @@ impl EditorElement {
     }
 
     fn typed_characters(&self, chars: &str, ctx: &mut EventContext) -> bool {
+        // #1404: the pane's key sink delivers this editor's text, exactly once.
+        if self.keys_from_pane_sink(ctx) {
+            return false;
+        }
         // The snapshot is from the last render; characters typed right after focus moved here
         // (before the next frame) would otherwise be dropped (#901). When the live focus chain
         // is known it decides alone, so a stale snapshot on the editor focus just left cannot
         // make two editors accept the same characters.
-        if accepts_typed_characters(
-            self.view_snapshot.is_focused,
-            ctx.live_focus_of(self.view_snapshot.view_id),
-        ) {
+        let live_focus = ctx.live_focus_of(self.view_snapshot.view_id);
+        let accepted = accepts_typed_characters(self.view_snapshot.is_focused, live_focus);
+        // #1345: whether this editor's element took the characters, and on what focus evidence.
+        warpui::input_order::log_key_hop("kh_editor_elem_typed", || {
+            format!(
+                "snapshot_focused={} live_focus={} accepted={accepted}",
+                self.view_snapshot.is_focused,
+                warpui::input_order::describe_opt(live_focus)
+            )
+        });
+        if accepted {
             if self.vim_mode.is_some() {
                 ctx.dispatch_typed_action(EditorAction::VimUserInsert(UserInput::new(chars)));
             } else {
@@ -655,7 +674,7 @@ impl EditorElement {
         selected_range: &Range<usize>,
         ctx: &mut EventContext,
     ) -> bool {
-        if self.view_snapshot.is_focused {
+        if self.view_snapshot.is_focused && !self.keys_from_pane_sink(ctx) {
             ctx.dispatch_typed_action(EditorAction::SetMarkedText {
                 marked_text: UserInput::new(marked_text),
                 selected_range: selected_range.clone(),
@@ -666,7 +685,7 @@ impl EditorElement {
     }
 
     fn clear_marked_text(&mut self, ctx: &mut EventContext) -> bool {
-        if self.view_snapshot.is_focused {
+        if self.view_snapshot.is_focused && !self.keys_from_pane_sink(ctx) {
             ctx.dispatch_typed_action(EditorAction::ClearMarkedText);
             return true;
         }
@@ -994,7 +1013,11 @@ impl EditorElement {
             let is_local_replica = self.is_local_replica(&replica_id, app);
             let (should_draw_cursors, colors) = if is_local_replica {
                 let data = &self.local_selection_data;
-                (data.should_draw_cursors, data.colors)
+                let blink_visible = data
+                    .blink_visible
+                    .as_ref()
+                    .is_none_or(|visible| visible.load(std::sync::atomic::Ordering::Relaxed));
+                (data.should_draw_cursors && blink_visible, data.colors)
             } else if let Some(data) = self.remote_selections_data.get(&replica_id) {
                 (data.should_draw_cursors, data.colors)
             } else {
@@ -1303,6 +1326,12 @@ impl EditorElement {
 
         let baseline_position_fn = view_snapshot.baseline_position_fn();
 
+        // Counted once per paint (#1604): `displayed_lines` walks every frame from the first, so
+        // counting it inside the loop below was O(visible rows x scroll offset) per paint, 5 M
+        // iterator steps at the end of a 10 MB multi-line paste.
+        let last_displayed_line_ix =
+            (layout.frame_layouts.num_displayed_lines() as usize).saturating_sub(1);
+
         for (ix, line) in layout.frame_layouts.displayed_lines().enumerate() {
             // Push over text content origin due to left notch, if the first line is visible.
             let text_content_origin = if ix == 0 && first_visible_row == 0 {
@@ -1344,7 +1373,7 @@ impl EditorElement {
             // If the autosuggestion is attached to a location, it belongs on the last TextFrame associated
             // with the logical line.
             let paint_autosuggestion_here = match autosuggestion_soft_wrapped_line_ix {
-                None => ix == layout.frame_layouts.displayed_lines().count() - 1,
+                None => ix == last_displayed_line_ix,
                 Some(line_ix) => line_ix == ix,
             };
 
@@ -1424,7 +1453,72 @@ impl EditorElement {
             .then_some(right_notch_origin)
     }
 
-    /// Note that we lay out all of the rows instead of only the visible ones.
+    /// #1191: for a large soft-wrapped buffer in which every row is a single visual line, the
+    /// rows that need a real layout (the viewport, the cursor and the ends, each with a margin);
+    /// the rest get empty one-line frames. `None` keeps the full layout of every row, which is
+    /// the case for small buffers, an unwrapped or unbounded editor, remote selections, many
+    /// selections, and any row that could wrap (its height is then not known without laying it
+    /// out, and the row-to-line mapping the windowing relies on would break).
+    fn real_rows_for_large_buffer(
+        &self,
+        view_snapshot: &ViewSnapshot,
+        total_rows: u32,
+        visible: std::ops::Range<u32>,
+        max_width: f32,
+        app: &AppContext,
+    ) -> Option<Vec<std::ops::Range<u32>>> {
+        /// Selections beyond this many fall back to the full layout.
+        const MAX_WINDOWED_SELECTIONS: usize = 8;
+
+        if !self.soft_wrap
+            || editor_full_layout_forced()
+            || total_rows < LARGE_BUFFER_ROWS
+            || visible.end == u32::MAX
+            || !self.remote_selections_data.is_empty()
+            || !max_width.is_finite()
+        {
+            return None;
+        }
+        // Every row, the first included (it is indented by the left notch), must provably fit on
+        // one visual line. O(1): the longest row is a fragment-tree summary, so this costs
+        // nothing per frame (a per-row scan was ~40 ms at 13,000 rows).
+        {
+            let buffer = view_snapshot.editor_model.as_ref(app).buffer(app);
+            let ascii_advance_ems = buffer.is_ascii().then(|| {
+                widest_ascii_advance_ems(
+                    app.font_cache(),
+                    view_snapshot.font_family,
+                    view_snapshot.font_properties,
+                    view_snapshot.font_size,
+                )
+            });
+            if !rows_cannot_wrap_measured(
+                view_snapshot.rightmost_point(app).column(),
+                buffer.is_ascii(),
+                buffer.is_tab_free(),
+                view_snapshot.font_size,
+                max_width,
+                ascii_advance_ems.flatten(),
+            ) {
+                return None;
+            }
+        }
+        let model = view_snapshot.editor_model.as_ref(app);
+        let selections = model.selections(app);
+        if selections.len() > MAX_WINDOWED_SELECTIONS {
+            return None;
+        }
+        let map = model.display_map(app);
+        let mut selection_rows = Vec::with_capacity(selections.len() * 2);
+        for selection in selections.iter() {
+            let range = selection.display_range(map, app);
+            selection_rows.push(range.start.row());
+            selection_rows.push(range.end.row());
+        }
+        large_buffer_real_rows(total_rows, visible, &selection_rows)
+    }
+
+    /// Lays out the rows near the viewport; for a large buffer see [`Self::real_rows_for_large_buffer`].
     fn layout_text_frames(
         &self,
         view_snapshot: &ViewSnapshot,
@@ -1437,13 +1531,7 @@ impl EditorElement {
         let line_height = view_snapshot.line_height;
 
         let max_width = if self.soft_wrap { size.x() } else { f32::MAX };
-        let frames = view_snapshot.layout_text_frames(
-            0..view_snapshot.max_point(app).row() + 1,
-            ctx.text_layout_cache,
-            max_width,
-            left_notch_layout_width_px,
-            app,
-        )?;
+        let total_rows = view_snapshot.max_point(app).row() + 1;
 
         // Determine a limit for the end line. If the size is infinite,
         // this is infinite. Otherwise, depending on the scrolling position
@@ -1459,6 +1547,22 @@ impl EditorElement {
             line_height,
             top_section_height_px,
         );
+
+        let real_rows = self.real_rows_for_large_buffer(
+            view_snapshot,
+            total_rows,
+            start_line..end_line,
+            max_width,
+            app,
+        );
+        let frames = view_snapshot.layout_text_frames_windowed(
+            0..total_rows,
+            real_rows.as_deref(),
+            ctx.text_layout_cache,
+            max_width,
+            left_notch_layout_width_px,
+            app,
+        )?;
         Ok(FrameLayouts::new(frames, start_line, end_line))
     }
 
@@ -1624,8 +1728,18 @@ impl Element for EditorElement {
             .unwrap_or(0.);
 
         // Choose what to render: placeholder takes precedence over autosuggestion
+        // The buffer is copied for the placeholder lookup only when a placeholder prefix is as
+        // long as the buffer (#1604): the lookup is an exact match, and this runs every layout
+        // pass, so a 10 MB paste must not be copied per frame for it.
+        let buffer_len = view_snapshot
+            .editor_model
+            .as_ref(app)
+            .buffer_len(app)
+            .as_usize();
         let placeholder_suggestion_text_line_layouts = if let Some(placeholder_text) = view_snapshot
-            .matching_placeholder_text(&view_snapshot.editor_model.as_ref(app).buffer_text(app))
+            .placeholder_prefix_of_len_exists(buffer_len)
+            .then(|| view_snapshot.editor_model.as_ref(app).buffer_text(app))
+            .and_then(|buffer_text| view_snapshot.matching_placeholder_text(&buffer_text))
         {
             view_snapshot.layout_placeholder_text(
                 &placeholder_text,
@@ -2389,7 +2503,7 @@ impl PaintState {
                 // If the line has no glyphs, the index is zero. Otherwise, we take one more index
                 // beyond the last start index in the line to get the last position.
                 line.last_glyph()
-                    .map_or(0, |glyph| (glyph.index + 1) as u32)
+                    .map_or(0, |glyph| glyph.index.saturating_add(1))
             } else {
                 0
             }

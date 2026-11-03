@@ -1,0 +1,68 @@
+{
+ "meta": {
+  "platform": "windows",
+  "backend": "windows",
+  "app_display": "windows",
+  "seed": "1",
+  "commit": "86aa856a",
+  "owner_settings": "None",
+  "tier": "smoke",
+  "scale": "1"
+ },
+ "generated": "2026-11-02T18:19:28-0800",
+ "summary": {
+  "pass": 1,
+  "fail": 4,
+  "skip": 0,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "harness_crash",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "the terminal pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+   ]
+  },
+  {
+   "name": "harness_crash",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "the terminal@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+   ]
+  },
+  {
+   "name": "harness_crash",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "the agent pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+   ]
+  },
+  {
+   "name": "harness_crash",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "the agent@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+   ]
+  },
+  {
+   "name": "restore",
+   "mode": "-",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+   ],
+   "metrics": {},
+   "shots": []
+  }
+ ]
+}

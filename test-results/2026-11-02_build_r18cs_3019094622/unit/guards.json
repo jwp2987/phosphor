@@ -1,0 +1,8 @@
+{
+ "failing_lines": [
+  "ERROR: Job failed: exit status 1"
+ ],
+ "job": "guards",
+ "status": "failed",
+ "duration": 76.56813
+}

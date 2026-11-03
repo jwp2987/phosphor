@@ -120,28 +120,51 @@ impl ListIndentationContext {
 }
 
 pub fn parse_markdown(markdown: &str) -> Result<FormattedText> {
-    parse_markdown_impl(markdown, false)
+    parse_markdown_impl(markdown, false, true)
 }
 
 pub fn parse_markdown_with_gfm_tables(markdown: &str) -> Result<FormattedText> {
-    parse_markdown_impl(markdown, true)
+    parse_markdown_impl(markdown, true, true)
 }
 
-fn parse_markdown_impl(markdown: &str, parse_gfm_tables: bool) -> Result<FormattedText> {
-    parse_markdown_internal::<'_, nom::error::Error<_>>(markdown, parse_gfm_tables)
-        .map(|(_, mut res)| {
-            if let Some(FormattedTextLine::LineBreak) = res.last() {
-                res.pop();
-            }
-            FormattedText { lines: res.into() }
-        })
-        .map_err(|err| {
-            if cfg!(debug_assertions) {
-                anyhow::anyhow!("Failed to parse Markdown: {err}")
-            } else {
-                anyhow::anyhow!("Failed to parse Markdown")
-            }
-        })
+/// Like [`parse_markdown`], but `>` lines are left as literal text instead of becoming
+/// [`FormattedTextLine::BlockQuote`]. For consumers that store the text and write it back (the
+/// rich-text editor), where a quote must survive an open and save byte for byte.
+pub fn parse_markdown_without_blockquotes(markdown: &str) -> Result<FormattedText> {
+    parse_markdown_impl(markdown, false, false)
+}
+
+/// [`parse_markdown_without_blockquotes`] with GFM tables.
+pub fn parse_markdown_with_gfm_tables_without_blockquotes(markdown: &str) -> Result<FormattedText> {
+    parse_markdown_impl(markdown, true, false)
+}
+
+fn parse_markdown_impl(
+    markdown: &str,
+    parse_gfm_tables: bool,
+    blockquotes: bool,
+) -> Result<FormattedText> {
+    parse_blocks::<nom::error::Error<_>>(
+        markdown,
+        &MarkdownResumePoint::default(),
+        parse_gfm_tables,
+        None,
+        blockquotes,
+    )
+    .map(|(remaining, (lines, _))| (remaining, lines))
+    .map(|(_, mut res)| {
+        if let Some(FormattedTextLine::LineBreak) = res.last() {
+            res.pop();
+        }
+        FormattedText { lines: res.into() }
+    })
+    .map_err(|err| {
+        if cfg!(debug_assertions) {
+            anyhow::anyhow!("Failed to parse Markdown: {err}")
+        } else {
+            anyhow::anyhow!("Failed to parse Markdown")
+        }
+    })
 }
 
 pub fn parse_markdown_to_raw_text(markdown: &str) -> Result<String> {
@@ -158,6 +181,7 @@ fn parse_markdown_internal<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         &MarkdownResumePoint::default(),
         parse_gfm_tables,
         None,
+        true,
     )
     .map(|(remaining, (lines, _))| (remaining, lines))
 }
@@ -228,7 +252,7 @@ pub fn parse_markdown_tail(
             "Markdown resume point is past the end of the document"
         ));
     }
-    parse_blocks::<nom::error::Error<_>>(markdown, from, parse_gfm_tables, Some(final_len))
+    parse_blocks::<nom::error::Error<_>>(markdown, from, parse_gfm_tables, Some(final_len), true)
         .map(|(_, (lines, resume))| MarkdownTail { lines, resume })
         .map_err(|err| {
             if cfg!(debug_assertions) {
@@ -247,6 +271,7 @@ fn parse_blocks<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     from: &MarkdownResumePoint,
     parse_gfm_tables: bool,
     final_len: Option<usize>,
+    blockquotes: bool,
 ) -> IResult<&'a str, (Vec<FormattedTextLine>, MarkdownResumePoint), E> {
     let mut resumed_context = ListIndentationContext::new();
     resumed_context
@@ -319,6 +344,22 @@ fn parse_blocks<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         // `<!--`, which no other block construct claims.
         if let Ok((remaining_after_comment, _)) = parse_html_comment_block::<E>(remaining) {
             remaining = remaining_after_comment;
+        } else if let Some((consumed, quoted_lines)) = blockquotes
+            .then(|| parse_blockquote(remaining, parse_gfm_tables))
+            .flatten()
+        {
+            remaining = &remaining[consumed..];
+            indentation_context.borrow_mut().clear();
+            if final_len.is_some() {
+                // A quote ends at the first line that neither carries a `>` nor lazily continues
+                // it; until a complete line follows, appended text could still extend it.
+                decided_by = decided_by.max(if remaining.is_empty() {
+                    usize::MAX
+                } else {
+                    end_of_line_at(markdown, markdown.len() - remaining.len())
+                });
+            }
+            lines.extend(quoted_lines);
         } else {
             let (remaining_after_block, mut line) = block(remaining)?;
             remaining = remaining_after_block;
@@ -401,7 +442,7 @@ fn block_final_after(markdown: &str, start: usize, end: usize, line: &FormattedT
     }
 
     let after_fence_indent = strip_leading_spaces(input, INDENT_TAG_MAX_COUNT);
-    if after_fence_indent.starts_with("```")
+    if (after_fence_indent.starts_with("```") || after_fence_indent.starts_with("~~~"))
         && !matches!(
             line,
             FormattedTextLine::CodeBlock(_)
@@ -427,6 +468,133 @@ fn block_final_after(markdown: &str, start: usize, end: usize, line: &FormattedT
     }
 
     final_after
+}
+
+/// How deeply blockquotes may nest before the remaining `>` markers are left as text; bounds the
+/// recursion on hostile input such as 100k `>` in a row.
+const BLOCKQUOTE_MAX_DEPTH: usize = 32;
+
+thread_local! {
+    static BLOCKQUOTE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The text after a blockquote marker (`>` after at most three spaces, plus one optional space),
+/// if `line` has one.
+fn blockquote_content(line: &str) -> Option<&str> {
+    let rest = strip_leading_spaces(line, 3).strip_prefix('>')?;
+    Some(rest.strip_prefix([' ', '\t']).unwrap_or(rest))
+}
+
+fn is_blank_line(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+/// Whether `line` starts a block that interrupts a paragraph (so it cannot be a lazy
+/// continuation line of a blockquote).
+fn starts_non_paragraph_block(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let mut chars = trimmed.chars().filter(|c| !c.is_whitespace());
+    let is_rule = matches!(chars.next(), Some(c @ ('-' | '*' | '_'))
+        if trimmed.chars().filter(|x| *x == c).count() >= 3
+            && trimmed.chars().all(|x| x == c || x.is_whitespace()));
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    let is_ordered_item = digits > 0
+        && digits <= 9
+        && matches!(trimmed[digits..].chars().next(), Some('.' | ')'))
+        && trimmed[digits + 1..].starts_with([' ', '\t']);
+    is_rule
+        || is_ordered_item
+        || fence_run(line).is_some()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with('>')
+        || ["- ", "* ", "+ "].iter().any(|m| trimmed.starts_with(m))
+}
+
+/// Parses a CommonMark blockquote at the start of `input`: consecutive lines that begin with `>`,
+/// plus lazy continuation lines (a line without `>` that continues the quote's open paragraph).
+/// The content is parsed as blocks of its own — so nested quotes, lists and fenced code work —
+/// and each resulting line is wrapped in a [`FormattedTextLine::BlockQuote`] (nested quotes add to
+/// its depth).
+///
+/// Returns the number of bytes consumed and the lines the quote produced.
+fn parse_blockquote(
+    input: &str,
+    parse_gfm_tables: bool,
+) -> Option<(usize, Vec<FormattedTextLine>)> {
+    blockquote_content(input.split_inclusive('\n').next()?)?;
+    if BLOCKQUOTE_DEPTH.with(|d| d.get()) >= BLOCKQUOTE_MAX_DEPTH {
+        return None;
+    }
+
+    let mut inner = String::new();
+    let mut consumed = 0;
+    // The open code fence inside the quote, and whether the last inner line is paragraph text a
+    // lazy line may continue.
+    let mut open_fence: Option<(char, usize)> = None;
+    let mut in_paragraph = false;
+    for raw_line in input.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches(['\n', '\r']);
+        if let Some(content) = blockquote_content(line) {
+            match open_fence {
+                Some((fence_char, len)) => {
+                    if is_closing_fence(content, fence_char, len, 0) {
+                        open_fence = None;
+                    }
+                    in_paragraph = false;
+                }
+                None => {
+                    open_fence = fence_run(content);
+                    in_paragraph = open_fence.is_none()
+                        && !is_blank_line(content)
+                        && !content.trim_start().starts_with('#')
+                        && !matches!(content.trim(), "---" | "***" | "___");
+                }
+            }
+            inner.push_str(content);
+        } else if open_fence.is_none()
+            && in_paragraph
+            && !is_blank_line(line)
+            && !starts_non_paragraph_block(line)
+        {
+            inner.push_str(line.trim_start());
+        } else {
+            break;
+        }
+        inner.push('\n');
+        consumed += raw_line.len();
+    }
+
+    BLOCKQUOTE_DEPTH.with(|d| d.set(d.get() + 1));
+    let parsed = parse_blocks::<nom::error::Error<_>>(
+        &inner,
+        &MarkdownResumePoint::default(),
+        parse_gfm_tables,
+        None,
+        true,
+    );
+    BLOCKQUOTE_DEPTH.with(|d| d.set(d.get() - 1));
+
+    let mut lines = parsed.ok()?.1.0;
+    while matches!(lines.last(), Some(FormattedTextLine::LineBreak)) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        lines.push(FormattedTextLine::LineBreak);
+    }
+    let lines = lines
+        .into_iter()
+        .map(|line| match line {
+            FormattedTextLine::BlockQuote { depth, line } => FormattedTextLine::BlockQuote {
+                depth: depth + 1,
+                line,
+            },
+            line => FormattedTextLine::BlockQuote {
+                depth: 1,
+                line: Box::new(line),
+            },
+        })
+        .collect();
+    Some((consumed, lines))
 }
 
 /// Strips at most `max` leading spaces.
@@ -1152,17 +1320,43 @@ fn parse_horizontal_rule_underline<'a, E: ContextError<&'a str> + ParseError<&'a
     context("horizontal_rule_underline", terminated(tag("_"), space0))(markdown)
 }
 
-/// Parse a single code block into its info string and contents.
+/// Reads a code fence opener at the start of `line` (after any leading spaces): a run of at least
+/// three backticks or tildes. Returns the fence character and the length of the run.
+fn fence_run(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start_matches(' ');
+    let fence_char = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let len = trimmed.chars().take_while(|c| *c == fence_char).count();
+    (len >= 3).then_some((fence_char, len))
+}
+
+/// Whether `line` closes a fence opened with `len` copies of `fence_char` at `opening_indent`:
+/// per CommonMark the same character, at least as many of them, nothing but blanks after, and
+/// indented less than 4 spaces relative to the opening fence.
+fn is_closing_fence(line: &str, fence_char: char, len: usize, opening_indent: usize) -> bool {
+    let line_indent = line.chars().take_while(|c| *c == ' ').count();
+    let trimmed = &line[line_indent..];
+    let run = trimmed.chars().take_while(|c| *c == fence_char).count();
+    run >= len && trimmed[run..].trim().is_empty() && line_indent.saturating_sub(opening_indent) < 4
+}
+
+/// Parse a single code block into its info string and contents. The fence is three or more
+/// backticks (```` ``` ````) or tildes (`~~~`); it closes at a line made only of the same
+/// character, at least as many times as the opening.
 fn parse_code_block<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     markdown: &'a str,
 ) -> IResult<&'a str, (&'a str, String), E> {
     context("code_block", |input| {
         let (input, indentation) = parse_indentation(input)?;
-        let (input, _) = tag("```")(input)?;
+        let Some((fence_char, fence_len)) = fence_run(input) else {
+            return Err(nom::Err::Error(E::from_error_kind(input, ErrorKind::Tag)));
+        };
+        let (input, _) = take_while_m_n(fence_len, fence_len, |c| c == fence_char)(input)?;
+        // The rest of a longer opening run is part of the fence, not of the info string.
+        let (input, _) = take_while(|c| c == fence_char)(input)?;
         let (input, lang) = parse_code_block_lang(input)?;
         let (input, lines) = terminated(
-            |i| parse_code_block_lines(i, indentation),
-            |i| parse_closing_fence(i, indentation),
+            |i| parse_code_block_lines(i, indentation, fence_char, fence_len),
+            |i| parse_closing_fence(i, indentation, fence_char, fence_len),
         )(input)?;
 
         let content = strip_indentation_from_lines(&lines, indentation);
@@ -1198,31 +1392,21 @@ fn strip_indentation_from_lines(lines: &[&str], indentation: usize) -> String {
 fn parse_code_block_lines<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     input: &'a str,
     opening_fence_indent: usize,
+    fence_char: char,
+    fence_len: usize,
 ) -> IResult<&'a str, Vec<&'a str>, E> {
-    many0(|i| parse_code_block_line(i, opening_fence_indent))(input)
+    many0(|i| parse_code_block_line(i, opening_fence_indent, fence_char, fence_len))(input)
 }
 
 /// Parse a single line of code block content (not a closing fence).
 fn parse_code_block_line<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     input: &'a str,
     opening_fence_indent: usize,
+    fence_char: char,
+    fence_len: usize,
 ) -> IResult<&'a str, &'a str, E> {
-    // Parse a line that is not a closing fence
     verify(parse_line, move |line: &str| {
-        let line_indent = line.chars().take_while(|c| *c == ' ').count();
-        let trimmed_line = line.trim_start();
-
-        // A line is a closing fence if it starts with ``` and contains only backticks
-        // and is indented less than 4 spaces relative to the opening fence
-        if trimmed_line.starts_with("```") {
-            let fence_content = trimmed_line.trim_end();
-            let is_fence = fence_content.chars().all(|c| c == '`') && fence_content.len() >= 3;
-            let relative_indent = line_indent.saturating_sub(opening_fence_indent);
-            let properly_indented = relative_indent < 4;
-            !(is_fence && properly_indented)
-        } else {
-            true
-        }
+        !is_closing_fence(line, fence_char, fence_len, opening_fence_indent)
     })(input)
 }
 
@@ -1230,6 +1414,8 @@ fn parse_code_block_line<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
 fn parse_closing_fence<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     input: &'a str,
     opening_fence_indent: usize,
+    fence_char: char,
+    fence_len: usize,
 ) -> IResult<&'a str, (), E> {
     // Closing fence can be indented up to 3 spaces more than the opening fence
     let max_indent = opening_fence_indent + 3;
@@ -1237,8 +1423,9 @@ fn parse_closing_fence<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         (),
         tuple((
             take_while_m_n(0, max_indent, |c| c == ' '),
-            tag("```"),
-            take_while(|c| c == '`'),
+            verify(take_while(move |c| c == fence_char), move |run: &str| {
+                run.len() >= fence_len
+            }),
             space0,
             alt((parse_line_ending, eof)),
         )),

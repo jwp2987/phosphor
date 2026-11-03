@@ -6,8 +6,8 @@ pub(crate) mod fonts;
 pub mod linux;
 
 mod notifications;
-#[cfg(target_family = "wasm")]
-pub mod wasm;
+#[cfg(any(target_os = "linux", target_os = "freebsd", windows))]
+mod reveal;
 
 mod window;
 

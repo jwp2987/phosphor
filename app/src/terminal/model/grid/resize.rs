@@ -36,6 +36,18 @@ impl GridHandler {
             return;
         }
 
+        // A finished grid never receives input again, so its layout is a function of the column
+        // count alone: with the columns unchanged there is nothing to reflow. Skip the
+        // push-everything-into-flat-storage / pop-it-back round trip, which clones every row of
+        // every historical block on each height-only resize (upstream warp #11794/#11798).
+        // The cursors of a finished grid are fixed, and its visible region is capped by its
+        // content, so a different `num_rows` changes nothing observable. `finish` itself shrinks
+        // storage through `resize_storage` directly and is unaffected.
+        if self.finished && old_cols == num_cols {
+            log::debug!("Term::resize skipping reflow of a finished grid: columns unchanged");
+            return;
+        }
+
         // Everything above only returned early or stored cell pixel metrics;
         // from here on the storage is resized and reflowed.
         self.content_generation.bump();

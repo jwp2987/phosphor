@@ -22,6 +22,7 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::{Arc, OnceLock};
 
 use super::find::RegexDFAs;
+use super::grid::text_snapshot::GridTextSnapshot;
 use super::grid::RespectDisplayedOutput;
 use super::image_map::StoredImageMetadata;
 use super::kitty::{KittyAction, KittyResponse};
@@ -188,6 +189,49 @@ impl BlockGrid {
         } else {
             0
         }
+    }
+
+    /// Identifies output row `row` by content rather than position: the index of the logical
+    /// (unwrapped) line it belongs to, and how many wrapped rows into that line it is. Survives a
+    /// column change, which re-wraps lines but never merges or splits them (#1328). `None` when
+    /// the row is out of range or the displayed rows differ from the stored ones (filtering).
+    pub fn row_content_anchor(&self, row: usize) -> Option<(usize, usize)> {
+        if row >= self.len() || self.len_displayed() != self.len() {
+            return None;
+        }
+        let handler = self.grid_handler();
+        let (mut line, mut line_start) = (0, 0);
+        for r in 0..row {
+            if !handler.row_wraps(r) {
+                line += 1;
+                line_start = r + 1;
+            }
+        }
+        Some((line, row - line_start))
+    }
+
+    /// Inverse of [`Self::row_content_anchor`] on the (possibly re-wrapped) grid: the row holding
+    /// the `offset`th wrapped row of logical line `line`, clamped to that line's last row.
+    pub fn row_for_content_anchor(&self, (line, offset): (usize, usize)) -> Option<usize> {
+        let total = self.len();
+        if total == 0 || self.len_displayed() != total {
+            return None;
+        }
+        let handler = self.grid_handler();
+        let mut current = 0;
+        let mut start = None;
+        for r in 0..total {
+            if current == line && start.is_none() {
+                start = Some(r);
+            }
+            if !handler.row_wraps(r) {
+                if start.is_some() {
+                    return Some((start? + offset).min(r));
+                }
+                current += 1;
+            }
+        }
+        start.map(|s| (s + offset).min(total - 1))
     }
 
     /// Returns the length of the blockgrid containing only displayed rows.
@@ -697,6 +741,41 @@ impl BlockGrid {
         )
     }
 
+    /// Plain-text contents from the top of the grid, with secrets unobfuscated, but only as many
+    /// leading rows as are needed to produce at least `min_bytes` of text (or the whole grid if
+    /// it is smaller). Returns the text and whether rows beyond it were left out.
+    ///
+    /// This bounds the work (and the time the caller holds the terminal-model lock) by the
+    /// amount of text wanted rather than by the grid's size: the full-grid equivalent,
+    /// [`Self::contents_to_string_with_secrets_unobfuscated`], costs ~1 s on a 100k-row grid
+    /// (#1190). The text is a byte-for-byte prefix of the full-grid text up to a row boundary,
+    /// because it is produced by the same code over a prefix of the rows.
+    pub fn head_contents_with_secrets_unobfuscated(&self, min_bytes: usize) -> (String, bool) {
+        if self.is_empty() {
+            return (String::new(), false);
+        }
+        let last_row = self.len() - 1;
+        let columns = self.grid_handler.columns().saturating_sub(1);
+        let mut end_row = 1023usize.min(last_row);
+        loop {
+            let text = self.grid_handler.bounds_to_string(
+                Point::new(0, 0),
+                Point::new(end_row, columns),
+                false, /* include_esc_sequences */
+                RespectObfuscatedSecrets::No,
+                false, /* force_secrets_obfuscated */
+                RespectDisplayedOutput::No,
+            );
+            if end_row >= last_row {
+                return (text, false);
+            }
+            if text.len() >= min_bytes {
+                return (text, true);
+            }
+            end_row = end_row.saturating_mul(2).min(last_row);
+        }
+    }
+
     /// Converts the grid into a string.
     /// If the include_escape_sequences field is true, we include the ansi escape sequences.
     /// Otherwise, we have a plaintext string.
@@ -744,6 +823,52 @@ impl BlockGrid {
                 point,
                 self.end_point(),
                 false, /* include_esc_sequences */
+                RespectObfuscatedSecrets::Yes,
+                false, /* force_obfuscated_secrets */
+                RespectDisplayedOutput::Yes,
+            )
+        }
+    }
+
+    /// Snapshot twin of [`Self::start_to_point_as_string`] (#1304).
+    #[cfg(test)]
+    pub fn start_to_point_text_snapshot(&self, point: Point) -> GridTextSnapshot {
+        self.range_text_snapshot(self.start_point(), point)
+    }
+
+    /// Row-chunked twin of the three snapshot methods above (#1377): appends the rows of
+    /// `start..=end` from offset `from` to `out` until `deadline`. See
+    /// [`GridHandler::bounds_to_text_snapshot_sliced`].
+    pub fn range_text_snapshot_sliced(
+        &self,
+        start: Point,
+        end: Point,
+        from: usize,
+        deadline: Option<std::time::Instant>,
+        out: &mut GridTextSnapshot,
+    ) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        self.grid_handler.bounds_to_text_snapshot_sliced(
+            start,
+            end,
+            RespectObfuscatedSecrets::Yes,
+            false, /* force_obfuscated_secrets */
+            RespectDisplayedOutput::Yes,
+            from,
+            deadline,
+            out,
+        )
+    }
+
+    fn range_text_snapshot(&self, start: Point, end: Point) -> GridTextSnapshot {
+        if self.is_empty() {
+            GridTextSnapshot::empty()
+        } else {
+            self.grid_handler.bounds_to_text_snapshot(
+                start,
+                end,
                 RespectObfuscatedSecrets::Yes,
                 false, /* force_obfuscated_secrets */
                 RespectDisplayedOutput::Yes,
@@ -820,12 +945,14 @@ impl BlockGrid {
         self.grid_handler_mut().clear_filter();
     }
 
+    /// Heap used by the grid's cells: the live grid storage plus flat storage (where a finished
+    /// grid's content lives once `MaximizeFlatStorage` compacts it).
     pub fn estimated_heap_usage_bytes(&self) -> usize {
-        self.grid_storage().estimated_heap_usage_bytes()
+        self.grid_storage().estimated_heap_usage_bytes() + self.flat_storage_bytes()
     }
 
     pub fn estimated_memory_usage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.grid_storage().estimated_heap_usage_bytes()
+        std::mem::size_of::<Self>() + self.estimated_heap_usage_bytes()
     }
 
     pub fn flat_storage_lines(&self) -> usize {
@@ -857,6 +984,10 @@ impl BlockGrid {
 
     pub(super) fn clear_marked_text(&mut self) {
         self.grid_handler.clear_marked_text();
+    }
+
+    pub(super) fn has_marked_text(&self) -> bool {
+        self.grid_handler.marked_text().is_some()
     }
 }
 

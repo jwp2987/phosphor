@@ -127,7 +127,6 @@ impl RetrievalFailure {
 /// `app::remote_server::server_model::search_remote_codebase_error_response_from_error`
 /// is the daemon-side half of this same mapping, encoding the same
 /// `RetrieveFileError` into the wire error code this reads back.
-#[cfg(not(target_family = "wasm"))]
 impl From<remote_server::proto::RemoteCodebaseSearchError> for RetrievalFailure {
     fn from(error: remote_server::proto::RemoteCodebaseSearchError) -> Self {
         use remote_server::proto::RemoteCodebaseSearchErrorCode as Code;
@@ -367,7 +366,6 @@ pub enum CodebaseRetrievalHandle {
     /// `Local` branch's storage. Wasm-excluded because its resolution depends on
     /// `RemoteCodebaseIndexModel`, which is not registered there (see
     /// `app/src/lib.rs`'s singleton registration).
-    #[cfg(not(target_family = "wasm"))]
     Remote {
         host_request_handle: remote_server::manager::HostRequestHandle,
         repo_path: Arc<PathBuf>,
@@ -382,7 +380,6 @@ impl std::fmt::Debug for CodebaseRetrievalHandle {
                 .debug_struct("CodebaseRetrievalHandle::Local")
                 .field("repo_root", repo_root)
                 .finish_non_exhaustive(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote { repo_path, .. } => f
                 .debug_struct("CodebaseRetrievalHandle::Remote")
                 .field("repo_path", repo_path)
@@ -397,7 +394,6 @@ impl CodebaseRetrievalHandle {
     pub fn repo_root(&self) -> &Path {
         match self {
             Self::Local { repo_root, .. } => repo_root.as_path(),
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote { repo_path, .. } => repo_path.as_path(),
         }
     }
@@ -430,7 +426,6 @@ impl CodebaseRetrievalHandle {
                     }
                 }
             }
-            #[cfg(not(target_family = "wasm"))]
             Self::Remote {
                 host_request_handle,
                 repo_path,
@@ -540,7 +535,6 @@ fn handle_for_remote_session(
 /// time (`CodebaseRetrievalHandle::Remote::retrieve`) is authoritative for those and
 /// cannot go stale the way a snapshot captured now (and read later, off the main
 /// thread) could.
-#[cfg(not(target_family = "wasm"))]
 fn handle_for_remote_session(
     app: &AppContext,
     session_context: &crate::ai::blocklist::SessionContext,

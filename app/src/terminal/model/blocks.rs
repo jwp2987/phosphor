@@ -58,6 +58,7 @@ use super::typed_echo::{EchoGrid, EchoMatch, EchoPoint, EchoRun, TypedEcho};
 use super::grid::grid_handler::{FragmentBoundary, GridHandler, PossiblePath};
 use super::grid::RespectDisplayedOutput;
 use super::image_map::StoredImageMetadata;
+use super::key_facts::KeyModelCell;
 use super::kitty::{KittyAction, KittyResponse};
 use super::rich_content::RichContentType;
 use super::secrets::RespectObfuscatedSecrets;
@@ -300,6 +301,20 @@ pub struct BlockList {
     #[cfg(test)]
     sumtree_rebuild_count: usize,
 
+    /// `(k, sum)`: the first `k` blocks are all finished and their `retained_lines` total
+    /// `sum`. Finished blocks' line counts only change on resize or when blocks are removed or
+    /// inserted, all of which clear this, so eviction need not re-sum the whole list on every
+    /// block start (#1321).
+    retained_lines_prefix: Option<(usize, usize)>,
+
+    /// Forces lazy reflow on regardless of `PHOSPHOR_LAZY_REFLOW` (tests).
+    #[cfg(test)]
+    lazy_reflow_forced: bool,
+
+    /// Set when a column change flagged blocks stale; cleared once a scan finds none left. Lets
+    /// the per-frame check in layout stay O(1) when nothing is stale.
+    stale_reflow_pending: bool,
+
     /// The gap height to set after a clear or ctrl-l.
     /// The view needs to tell the model this because the gap height varies based
     /// on the input mode, which is a view concept, not a model concept.
@@ -327,6 +342,11 @@ pub struct BlockList {
 
     /// The event proxy that proxies terminal events (such as wakeups) to the view.
     event_proxy: ChannelEventListener,
+
+    /// Where "the block list has a selection" is published for the key path the moment it
+    /// changes (#1411); shared with the terminal model. Every write to `selection` goes through
+    /// `set_selection` / `take_selection` so the bit is exact.
+    key_model: KeyModelCell,
 
     /// The current block list selection.
     /// Do not set this value directly - use [`Self::set_selection`] and [`Self::clear_selection`] instead.
@@ -456,6 +476,148 @@ pub struct BlockList {
     /// removed and re-appended so it stays last.
     pinned_to_bottom: Option<EntityId>,
     is_executing_oz_environment_startup_commands: bool,
+
+    /// Where background-parsed restored blocks arrive (#1254). `None` unless startup restore
+    /// deferred at least one large saved block.
+    deferred_restores: Option<Arc<DeferredRestoreMailbox>>,
+    /// Blocks whose deferred restore content was installed and which the view has not yet
+    /// been told about (find rescan, scroll compensation), see
+    /// [`Self::take_installed_restore_blocks`] (#1265).
+    installed_restore_ids: Vec<BlockId>,
+}
+
+/// Saved blocks whose command + output bytes together reach this size are restored as cheap
+/// placeholders and parsed off the UI thread (#1254). Smaller blocks parse in well under a
+/// millisecond, so they keep the original eager path.
+const LAZY_RESTORE_MIN_BYTES: usize = 64 * 1024;
+
+/// The size threshold for deferring a restored block's parse, or `None` when the
+/// `PHOSPHOR_LAZY_RESTORE=0` kill switch asks for fully eager restore.
+fn lazy_restore_min_bytes_from_env() -> Option<usize> {
+    std::env::var("PHOSPHOR_LAZY_RESTORE")
+        .map_or(true, |value| value.trim() != "0")
+        .then_some(LAZY_RESTORE_MIN_BYTES)
+}
+
+/// Lazy reflow of far-away finished blocks on a column change (#1303) is on by default;
+/// `PHOSPHOR_LAZY_REFLOW=0` is the kill switch (every block reflows under the lock, as before).
+/// Safe because `BlockListElement::layout` reflows stale blocks in and around the viewport
+/// before measuring or drawing, user-facing jumps flush everything, and the view's frame driver
+/// drains the rest in small chunks ([`BlockList::reflow_stale_blocks_within`]).
+fn lazy_reflow_enabled() -> bool {
+    std::env::var("PHOSPHOR_LAZY_REFLOW").map_or(true, |value| value.trim() != "0")
+}
+
+/// Screens' worth of lines, counted back from the newest block, that reflow immediately.
+const LAZY_REFLOW_WINDOW_SCREENS: f64 = 4.0;
+
+/// How much of `restore_block` runs on the calling thread (#1254).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RestoreMode {
+    /// Parse the saved bytes inline.
+    Full,
+    /// Everything except parsing the command and output bytes: the block gets its metadata,
+    /// timestamps and height bookkeeping now and its grids are filled in later.
+    Placeholder,
+    /// Like `Full`, but on a scratch list off the UI thread. The placeholder already sent the
+    /// block's `AfterBlockCompleted`, so this must not send a second one.
+    Detached,
+}
+
+/// Blocks parsed off-thread, waiting to be installed into their placeholders.
+#[derive(Default)]
+struct DeferredRestoreMailbox {
+    ready: std::sync::Mutex<Vec<(BlockId, Block)>>,
+    /// Mirrors `ready.len()` so the per-frame check is a single atomic load.
+    ready_count: std::sync::atomic::AtomicUsize,
+}
+
+impl DeferredRestoreMailbox {
+    fn push(&self, id: BlockId, block: Block) {
+        let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+        ready.push((id, block));
+        self.ready_count
+            .store(ready.len(), std::sync::atomic::Ordering::Release);
+    }
+
+    fn take(&self) -> Vec<(BlockId, Block)> {
+        let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+        self.ready_count
+            .store(0, std::sync::atomic::Ordering::Release);
+        std::mem::take(&mut *ready)
+    }
+
+    fn has_ready(&self) -> bool {
+        self.ready_count.load(std::sync::atomic::Ordering::Acquire) > 0
+    }
+}
+
+/// Everything a scratch [`BlockList`] needs to build a block the way the real list would.
+struct DeferredRestoreConfig {
+    sizes: BlockSize,
+    event_proxy: ChannelEventListener,
+    background_executor: Arc<Background>,
+    show_warp_bootstrap_input: bool,
+    show_in_band_command_blocks: bool,
+    show_memory_stats: bool,
+    honor_ps1: bool,
+    is_inverted: bool,
+    obfuscate_secrets: ObfuscateSecrets,
+    is_ai_ugc_telemetry_enabled: bool,
+}
+
+/// Parses `blocks` one at a time on a scratch list and hands each finished block to `mailbox`.
+/// Runs on a background thread; takes no locks other than the mailbox's.
+fn run_deferred_restore_job(
+    config: DeferredRestoreConfig,
+    blocks: Vec<SerializedBlock>,
+    mailbox: Arc<DeferredRestoreMailbox>,
+) {
+    // The scratch list's events go nowhere: finishing a block on it emits `BlockCompleted`, which
+    // on the terminal's own listener reached the view mid-session for a block that was not
+    // completing. Only the wakeup below, once a block is in the mailbox, is for the view.
+    for serialized in blocks {
+        // The pane closed: the block list (the other owner of the mailbox) is gone, so nothing
+        // will ever install what is parsed from here on (#1265).
+        if Arc::strong_count(&mailbox) <= 1 {
+            return;
+        }
+        let mut scratch = BlockList::new_internal(
+            config.sizes.clone(),
+            ChannelEventListener::detached(),
+            config.background_executor.clone(),
+            config.show_warp_bootstrap_input,
+            config.show_in_band_command_blocks,
+            config.show_memory_stats,
+            config.honor_ps1,
+            config.is_inverted,
+            config.obfuscate_secrets,
+            config.is_ai_ugc_telemetry_enabled,
+            // Its own cell, shared with nobody: the scratch list's selection must never reach the
+            // pane's key facts (#1411), for the same reason its events go nowhere.
+            KeyModelCell::default(),
+        );
+        // A panic parsing one block must not strand the blocks after it as blank placeholders.
+        let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scratch.restore_block_with_mode(
+                &serialized,
+                BootstrapStage::RestoreBlocks,
+                &mut Processor::new(),
+                RestoreMode::Detached,
+            );
+        }));
+        if parsed.is_err() {
+            log::error!(
+                "Deferred restore of block {:?} panicked; leaving it blank",
+                serialized.id
+            );
+            continue;
+        }
+        if let Some(block) = scratch.blocks.pop() {
+            mailbox.push(serialized.id.clone(), block);
+            config.event_proxy.send_wakeup_event();
+        }
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -712,6 +874,42 @@ impl BlockList {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
         is_ai_ugc_telemetry_enabled: bool,
+        key_model: KeyModelCell,
+    ) -> Self {
+        Self::new_with_lazy_restore_min_bytes(
+            restored_blocks,
+            sizes,
+            event_proxy,
+            background_executor,
+            show_warp_bootstrap_input,
+            show_in_band_command_blocks,
+            show_memory_stats,
+            honor_ps1,
+            is_inverted,
+            obfuscate_secrets,
+            is_ai_ugc_telemetry_enabled,
+            key_model,
+            lazy_restore_min_bytes_from_env(),
+        )
+    }
+
+    /// [`Self::new`] with an explicit threshold for deferring a restored block's parse to a
+    /// background job (#1254); `None` restores everything eagerly.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_with_lazy_restore_min_bytes(
+        restored_blocks: Option<&[SerializedBlockListItem]>,
+        sizes: BlockSize,
+        event_proxy: ChannelEventListener,
+        background_executor: Arc<Background>,
+        show_warp_bootstrap_input: bool,
+        show_in_band_command_blocks: bool,
+        show_memory_stats: bool,
+        honor_ps1: bool,
+        is_inverted: bool,
+        obfuscate_secrets: ObfuscateSecrets,
+        is_ai_ugc_telemetry_enabled: bool,
+        key_model: KeyModelCell,
+        lazy_restore_min_bytes: Option<usize>,
     ) -> Self {
         let mut block_list = Self::new_internal(
             sizes,
@@ -724,8 +922,9 @@ impl BlockList {
             is_inverted,
             obfuscate_secrets,
             is_ai_ugc_telemetry_enabled,
+            key_model,
         );
-        block_list.initialize(restored_blocks);
+        block_list.initialize(restored_blocks, lazy_restore_min_bytes);
         block_list
     }
 
@@ -761,6 +960,7 @@ impl BlockList {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
         is_ai_ugc_telemetry_enabled: bool,
+        key_model: KeyModelCell,
     ) -> Self {
         let bootstrap_stage = BootstrapStage::RestoreBlocks;
         let block_heights = SumTree::new();
@@ -773,6 +973,10 @@ impl BlockList {
             dirty_rich_content_items: HashSet::new(),
             #[cfg(test)]
             sumtree_rebuild_count: 0,
+            retained_lines_prefix: None,
+            #[cfg(test)]
+            lazy_reflow_forced: false,
+            stale_reflow_pending: false,
             size: sizes.size,
             next_gap_height_in_lines: None,
             max_grid_size_limit: sizes.max_block_scroll_limit,
@@ -780,6 +984,7 @@ impl BlockList {
             block_eviction_suppressed: false,
             eviction_protected_block_ids: HashSet::new(),
             event_proxy: event_proxy.clone(),
+            key_model,
             selection: None,
             rich_content_selections: Vec::new(),
             smart_select_override: None,
@@ -811,12 +1016,19 @@ impl BlockList {
             transcript_scope: TranscriptScope::Terminal,
             pinned_to_bottom: None,
             is_executing_oz_environment_startup_commands: false,
+            deferred_restores: None,
+            installed_restore_ids: Vec::new(),
         }
     }
 
     /// Must be called before the model is used. Even if no blocks are to be restored,
     /// this is necessary in the BlockList lifecycle.
-    fn initialize(&mut self, restored_blocks: Option<&[SerializedBlockListItem]>) {
+    fn initialize(
+        &mut self,
+        restored_blocks: Option<&[SerializedBlockListItem]>,
+        lazy_restore_min_bytes: Option<usize>,
+    ) {
+        let mut deferred_blocks: Vec<SerializedBlock> = Vec::new();
         if let Some(restored_blocks) = restored_blocks {
             self.is_restored_session = true;
 
@@ -832,10 +1044,23 @@ impl BlockList {
                         // For session-restoration, we only want to restore blocks
                         // that were completed.
                         if block.start_ts.is_some() && block.completed_ts.is_some() {
-                            self.restore_block(
+                            // A big saved block is parsed off the UI thread (#1254); this
+                            // placeholder carries everything but the grids' contents.
+                            let defer = lazy_restore_min_bytes.is_some_and(|min| {
+                                block.stylized_command.len() + block.stylized_output.len() >= min
+                            });
+                            if defer {
+                                deferred_blocks.push(SerializedBlock::clone(block));
+                            }
+                            self.restore_block_with_mode(
                                 block,
                                 BootstrapStage::RestoreBlocks,
                                 &mut processor,
+                                if defer {
+                                    RestoreMode::Placeholder
+                                } else {
+                                    RestoreMode::Full
+                                },
                             );
                         } else {
                             log::warn!(
@@ -847,6 +1072,7 @@ impl BlockList {
             }
         }
         self.create_warp_input_block();
+        self.spawn_deferred_restore_job(deferred_blocks);
         // Note: We no longer call start() here.
         // When shell input arrives, the block will be started (see the `input` handler).
         // This ensures sessions without a shell (like cloude mode) don't permanently trigger is_active_and_long_running()
@@ -1964,6 +2190,7 @@ impl BlockList {
     /// Startup commands are hidden while they run. Without this, they stay hidden
     /// forever once the harness block is reached -- the blocks exist, occupy no
     /// height, and never come back (#423).
+    #[cfg(test)]
     pub fn finish_oz_environment_startup_commands_at_block(
         &mut self,
         block_id: &BlockId,
@@ -1994,6 +2221,7 @@ impl BlockList {
     /// effects mirror those in [`set_agent_view_state`](Self::set_agent_view_state).
     /// An inline conversation keeps `Terminal` scope -- it renders in the
     /// terminal transcript, not a conversation-scoped one.
+    #[cfg(test)]
     pub fn enter_conversation_context(&mut self, conversation_id: AIConversationId, is_inline: bool) {
         if !self.active_block().finished() {
             if is_inline {
@@ -2027,6 +2255,7 @@ impl BlockList {
     pub(super) fn remove_background_block(&mut self) -> Option<Block> {
         let block_index = self.background_block_mut()?.index();
 
+        self.retained_lines_prefix = None;
         let block = self.blocks.remove(block_index.0);
         if block.current_filter().is_some_and(|query| query.is_active) {
             self.active_filter_count = self.active_filter_count.saturating_sub(1);
@@ -2059,6 +2288,7 @@ impl BlockList {
     fn remove_block_at_index(&mut self, block_index: BlockIndex) -> Option<Block> {
         debug_assert!(block_index != self.active_block_index());
 
+        self.retained_lines_prefix = None;
         let block = self.blocks.remove(block_index.0);
         if block.current_filter().is_some_and(|query| query.is_active) {
             self.active_filter_count = self.active_filter_count.saturating_sub(1);
@@ -2089,6 +2319,7 @@ impl BlockList {
         Some(block)
     }
 
+    #[cfg(test)]
     pub fn clear_user_executed_command_blocks_for_conversation(
         &mut self,
         conversation_id: AIConversationId,
@@ -2399,8 +2630,6 @@ impl BlockList {
         self.update_blocks_and_sumtree(None, None, |_| {}, |_| {});
     }
 
-    pub fn refresh_block_heights_for_passive_code_diff(&mut self) {}
-
     /// Associates the given blocks with a conversation, making them visible in that conversation's agent view.
     /// Returns a Vec of (block_id, visibility) for blocks that were found.
     pub fn associate_blocks_with_conversation<'a>(
@@ -2673,13 +2902,6 @@ impl BlockList {
         })
     }
 
-    /// Scans the block at `block_index` for secrets.
-    pub fn scan_block_for_secrets(&mut self, block_index: BlockIndex) {
-        if let Some(block) = self.blocks.get_mut(block_index.0) {
-            block.scan_full_block_for_secrets();
-        }
-    }
-
     pub fn block_heights(&self) -> &SumTree<BlockHeightItem> {
         &self.block_heights
     }
@@ -2931,6 +3153,12 @@ impl BlockList {
     /// here because resizing may result in a change in gap size.
     pub fn resize(&mut self, size_update: &SizeUpdate, update_old_blocks: bool) {
         let size = size_update.new_size;
+        // Reflow changes finished blocks' retained line counts.
+        self.retained_lines_prefix = None;
+        // Compare against the size this list actually had, not `size_update.last_size`, so a
+        // caller passing a stale `last_size` can never make us skip a needed rebuild.
+        let grid_dimensions_changed =
+            self.size.rows() != size.rows() || self.size.columns() != size.columns();
         self.size = size;
         if size_update.rows_or_columns_changed() {
             self.clear_selection();
@@ -2947,11 +3175,64 @@ impl BlockList {
         }
 
         let active_block_index = self.active_block_index();
+
+        // Lazy reflow (#1303): on a column change only the newest blocks (about
+        // `LAZY_REFLOW_WINDOW_SCREENS` screens of lines) reflow now; older finished blocks are
+        // flagged stale and keep their old grids and heights until
+        // `reflow_stale_blocks_in_range` / `reflow_stale_blocks` reflow them.
+        #[cfg(test)]
+        let forced = self.lazy_reflow_forced;
+        // Unit tests opt in per list (`lazy_reflow_forced`); the env default must not change them.
+        #[cfg(test)]
+        let lazy = forced;
+        #[cfg(not(test))]
+        let lazy = lazy_reflow_enabled();
+        let columns_changed = update_old_blocks && grid_dimensions_changed && lazy;
+        let lazy_window_start = if columns_changed {
+            self.lazy_reflow_window_start(size.rows())
+        } else {
+            0
+        };
+        if columns_changed {
+            for block in self.blocks.iter_mut().take(lazy_window_start) {
+                if block.finished() && block.index() != active_block_index {
+                    block.set_reflow_stale(true);
+                    self.stale_reflow_pending = true;
+                }
+            }
+        }
+
+        // Pixel-only changes (pane size, window-edge drags, panel animations) leave rows,
+        // columns and the gap alone. Block heights are a function of grid content, padding and
+        // visibility, none of which a pure pixel change touches, so the O(blocks) height-tree
+        // rebuild is wasted work. Blocks still get the new `SizeInfo` (their grids early-return
+        // when the dimensions are unchanged, and only record the cell metrics).
+        if !grid_dimensions_changed && size_update.new_gap_height.is_none() {
+            for b in self.blocks.iter_mut() {
+                if b.is_reflow_stale() {
+                    continue;
+                }
+                if active_block_index == b.index() || update_old_blocks {
+                    b.resize(size);
+                }
+            }
+            if let Some(pending_background_block) =
+                self.early_output_mut().pending_background_block_mut()
+            {
+                pending_background_block.resize(size);
+            }
+            return;
+        }
+
         self.update_blocks_and_sumtree(
             None,
             None,
             move |b| {
+                if b.is_reflow_stale() && b.index().0 < lazy_window_start {
+                    return;
+                }
                 if active_block_index == b.index() || update_old_blocks {
+                    b.set_reflow_stale(false);
                     b.resize(size);
                 }
             },
@@ -2961,6 +3242,140 @@ impl BlockList {
                 }
             },
         );
+    }
+
+    /// Index of the oldest block inside the immediate-reflow window: the newest blocks whose
+    /// heights add up to `LAZY_REFLOW_WINDOW_SCREENS * rows` lines.
+    fn lazy_reflow_window_start(&self, rows: usize) -> usize {
+        let budget = LAZY_REFLOW_WINDOW_SCREENS * rows as f64;
+        let mut lines = 0.0;
+        for (i, block) in self.blocks.iter().enumerate().rev() {
+            lines += block.height(&self.transcript_scope).as_f64();
+            if lines >= budget {
+                return i;
+            }
+        }
+        0
+    }
+
+    /// Whether any block is still waiting for its deferred reflow. O(1) when nothing is pending.
+    #[cfg(test)]
+    pub fn has_stale_reflow(&self) -> bool {
+        self.stale_reflow_pending && self.blocks.iter().any(|b| b.is_reflow_stale())
+    }
+
+    /// Cheap per-frame check: a column change flagged blocks and no scan has yet found the
+    /// list clean. May be true with nothing stale (eviction); the reflow entry points reset it.
+    pub fn stale_reflow_pending(&self) -> bool {
+        self.stale_reflow_pending
+    }
+
+    /// Reflows stale blocks with index in `first..=last` (what the view is about to draw or
+    /// measure), refreshing their heights. Returns how many were reflowed.
+    pub fn reflow_stale_blocks_in_range(&mut self, first: BlockIndex, last: BlockIndex) -> usize {
+        if !self.stale_reflow_pending || last < first {
+            return 0;
+        }
+        let end = (last.0 + 1).min(self.blocks.len());
+        let start = first.0.min(end);
+        let indices: Vec<BlockIndex> = self.blocks[start..end]
+            .iter()
+            .filter(|b| b.is_reflow_stale())
+            .map(|b| b.index())
+            .collect();
+        self.reflow_blocks_now(indices)
+    }
+
+    /// Reflows every stale block now. For user-facing jumps and searches that address blocks by
+    /// position or content and must not see heights or wraps change under them afterwards.
+    pub fn flush_all_stale_reflow(&mut self) -> usize {
+        if !self.stale_reflow_pending {
+            return 0;
+        }
+        let indices: Vec<BlockIndex> = self
+            .blocks
+            .iter()
+            .filter(|b| b.is_reflow_stale())
+            .map(|b| b.index())
+            .collect();
+        self.reflow_blocks_now(indices)
+    }
+
+    /// Background-chunk entry point: reflows up to `max_blocks` stale blocks, newest first.
+    pub fn reflow_stale_blocks(&mut self, max_blocks: usize) -> usize {
+        if !self.stale_reflow_pending {
+            return 0;
+        }
+        let indices: Vec<BlockIndex> = self
+            .blocks
+            .iter()
+            .rev()
+            .filter(|b| b.is_reflow_stale())
+            .take(max_blocks)
+            .map(|b| b.index())
+            .collect();
+        self.reflow_blocks_now(indices)
+    }
+
+    /// Frame-driver entry point: reflows stale blocks newest first until `budget` has elapsed
+    /// (always at least one if any is stale). Returns how many were reflowed; 0 means done.
+    pub fn reflow_stale_blocks_within(&mut self, budget: std::time::Duration) -> usize {
+        let started = instant::Instant::now();
+        let mut total = 0;
+        loop {
+            let n = self.reflow_stale_blocks(1);
+            total += n;
+            if n == 0 || started.elapsed() >= budget {
+                return total;
+            }
+        }
+    }
+
+    fn reflow_blocks_now(&mut self, indices: Vec<BlockIndex>) -> usize {
+        let size = self.size;
+        let count = indices.len();
+        let mut height_changed = false;
+        for index in indices {
+            let before = self
+                .blocks
+                .get(index.0)
+                .map(|b| b.height(&self.transcript_scope));
+            // Where this block starts now (earlier blocks in this batch are already refreshed),
+            // needed to re-address a selection below it.
+            let top = if self.selection.is_some() {
+                let mut cursor = self
+                    .block_heights
+                    .cursor::<BlockIndex, BlockHeightSummary>();
+                cursor.seek(&index, SeekBias::Right);
+                Some(cursor.start().height)
+            } else {
+                None
+            };
+            if let Some(block) = self.blocks.get_mut(index.0) {
+                block.set_reflow_stale(false);
+                block.resize(size);
+            }
+            let mut changed = None;
+            if let (Some(before), Some(block)) = (before, self.blocks.get(index.0)) {
+                let after = block.height(&self.transcript_scope);
+                if after != before {
+                    height_changed = true;
+                    changed = Some((before, after));
+                }
+            }
+            self.refresh_block_height(index);
+            if let (Some((before, after)), Some(top)) = (changed, top) {
+                // Reflow moves every later row, and a selection is addressed by absolute row:
+                // shift it instead of dropping it. It is cleared only when an anchor sits inside
+                // this block, where the text can no longer be located by row.
+                self.remap_selection_for_block_height_change(top, before, after);
+            }
+        }
+        if height_changed {
+            self.retained_lines_prefix = None;
+        }
+        self.stale_reflow_pending = self.blocks.iter().any(|b| b.is_reflow_stale());
+        count
     }
 
     /// Helper function to update each block--ensuring the BlockHeights sumtree is appropriately
@@ -3590,27 +4005,6 @@ impl BlockList {
         }
     }
 
-    /// Sets whether subsequent blocks (including the active block) have their grids obfuscated.
-    pub(super) fn set_obfuscate_secrets_for_subsequent_blocks(
-        &mut self,
-        obfuscate_secrets: ObfuscateSecrets,
-    ) {
-        self.obfuscate_secrets = obfuscate_secrets;
-        self.active_block_mut()
-            .set_obfuscate_secrets(obfuscate_secrets);
-    }
-
-    /// Sets whether the grids of the specified block should be obfuscated.
-    pub fn set_obfuscate_secrets_for_block(
-        &mut self,
-        block_index: BlockIndex,
-        obfuscate_secrets: ObfuscateSecrets,
-    ) {
-        if let Some(block) = self.blocks.get_mut(block_index.0) {
-            block.set_obfuscate_secrets(obfuscate_secrets);
-        }
-    }
-
     /// Inserts a fully serialized block into the block list.
     ///
     /// This is used to insert a block snapshot from a CLI agent conversation
@@ -3642,6 +4036,7 @@ impl BlockList {
         );
 
         let background_block_index = self.active_block_index();
+        self.retained_lines_prefix = None;
         self.blocks.insert(background_block_index.0, block);
         self.reset_internal_block_index(background_block_index);
         self.reset_internal_block_index(background_block_index + BlockIndex::from(1));
@@ -3685,6 +4080,36 @@ impl BlockList {
         self.update_active_block_height();
 
         self.create_warp_input_block();
+    }
+
+    /// Replaces the hidden bootstrap block left active by an `InitShell` whose bootstrap was
+    /// abandoned (#1014/#1119) with an ordinary user block, so the shell's output is drawn.
+    /// Output written to a `WarpInput` block is discarded and it is never shown, and nothing
+    /// else would move the pane off it: no `Precmd` arrives from a shell that never finished
+    /// setting up. The new block is started like one the editor sent bytes to. Returns whether
+    /// the block was replaced.
+    pub fn replace_stalled_bootstrap_block(&mut self) -> bool {
+        let active = self.active_block();
+        if active.is_for_in_band_command
+            || !matches!(
+                active.bootstrap_stage(),
+                BootstrapStage::WarpInput | BootstrapStage::ScriptExecution
+            )
+        {
+            return false;
+        }
+        self.finish_background_block();
+        self.active_block_mut().finish(0);
+        self.update_active_block_height();
+        self.create_new_block(
+            BlockId::new(),
+            BootstrapStage::PostBootstrapPrecmd,
+            None,
+            None,
+        );
+        self.start_active_block();
+        self.update_active_block_height();
+        true
     }
 
     /// Starts the active block and resets block-to-block state. For local sessions, this is called
@@ -3743,8 +4168,35 @@ impl BlockList {
         }
     }
 
+    /// Total `retained_lines` over all blocks, maintained incrementally (#1321): the leading run
+    /// of finished blocks is cached and only the tail is summed per call.
+    fn total_retained_lines(&mut self) -> usize {
+        let len = self.blocks.len();
+        let (mut k, mut sum) = self.retained_lines_prefix.unwrap_or((0, 0));
+        if k > len {
+            k = 0;
+            sum = 0;
+        }
+        while k < len && self.blocks[k].finished() {
+            sum += self.blocks[k].retained_lines();
+            k += 1;
+        }
+        self.retained_lines_prefix = Some((k, sum));
+        sum + self.blocks[k..]
+            .iter()
+            .map(|b| b.retained_lines())
+            .sum::<usize>()
+    }
+
+    /// Test hook: the incrementally maintained total and a full re-sum.
+    #[cfg(test)]
+    pub(crate) fn retained_lines_total_for_test(&mut self) -> (usize, usize) {
+        let full = self.blocks.iter().map(|b| b.retained_lines()).sum();
+        (self.total_retained_lines(), full)
+    }
+
     pub fn evict_oldest_blocks_to_budget(&mut self, line_budget: usize) -> EvictedBlocks {
-        let mut total: usize = self.blocks.iter().map(|b| b.retained_lines()).sum();
+        let mut total = self.total_retained_lines();
         let last = self.blocks.len().saturating_sub(1);
         let mut evict_count = 0;
         for (i, block) in self.blocks.iter().enumerate() {
@@ -3778,10 +4230,21 @@ impl BlockList {
             cursor.start().height
         };
         let mut block_ids = Vec::with_capacity(evict_count);
+        let prefix_before = self.retained_lines_prefix;
+        let mut evicted_lines = 0usize;
         for _ in 0..evict_count {
+            evicted_lines += self.blocks.first().map_or(0, |b| b.retained_lines());
             if let Some(block) = self.remove_block_at_index(BlockIndex::zero()) {
                 block_ids.push(block.id().clone());
             }
+        }
+        // Only finished blocks are evicted, so they were all inside the cached prefix; keep the
+        // running total instead of re-summing the survivors next time.
+        if let Some((k, sum)) = prefix_before
+            && k >= evict_count
+            && sum >= evicted_lines
+        {
+            self.retained_lines_prefix = Some((k - evict_count, sum - evicted_lines));
         }
         let removed_height = height_before - self.block_heights.summary().height;
         // Bump the monotonic counter that stamps queued PTY-thread events (still holding the
@@ -3909,6 +4372,108 @@ impl BlockList {
         bootstrap_stage: BootstrapStage,
         processor: &mut Processor,
     ) {
+        self.restore_block_with_mode(block, bootstrap_stage, processor, RestoreMode::Full);
+    }
+
+    /// Starts a background job that parses `blocks` (saved blocks restored as placeholders by
+    /// `initialize`) and later installs the result with
+    /// [`Self::install_ready_deferred_restores`] (#1254).
+    fn spawn_deferred_restore_job(&mut self, blocks: Vec<SerializedBlock>) {
+        if blocks.is_empty() {
+            return;
+        }
+        let mailbox = Arc::new(DeferredRestoreMailbox::default());
+        self.deferred_restores = Some(mailbox.clone());
+        let config = DeferredRestoreConfig {
+            sizes: self.block_size(),
+            event_proxy: self.event_proxy.clone(),
+            background_executor: self.background_executor.clone(),
+            show_warp_bootstrap_input: self.show_warp_bootstrap_block,
+            show_in_band_command_blocks: self.show_in_band_command_blocks,
+            show_memory_stats: self.show_memory_stats,
+            honor_ps1: self.honor_ps1,
+            is_inverted: self.is_inverted,
+            obfuscate_secrets: self.obfuscate_secrets,
+            is_ai_ugc_telemetry_enabled: self.is_ai_ugc_telemetry_enabled,
+        };
+        // Unit tests have no executor threads to wait on, so they run the job inline and then
+        // call `install_ready_deferred_restores` themselves.
+        #[cfg(test)]
+        run_deferred_restore_job(config, blocks, mailbox);
+        #[cfg(not(test))]
+        self.background_executor
+            .spawn(async move { run_deferred_restore_job(config, blocks, mailbox) })
+            .detach();
+    }
+
+    /// Whether background-parsed restored blocks are waiting to be installed.
+    pub fn has_ready_deferred_restores(&self) -> bool {
+        self.deferred_restores
+            .as_ref()
+            .is_some_and(|mailbox| mailbox.has_ready())
+    }
+
+    /// Drains the blocks installed by [`Self::install_ready_deferred_restores`] since the last
+    /// call, as current indices (blocks evicted meanwhile are skipped). The view uses this to
+    /// rescan them for an active Find (#1265); the placeholders had no content when the find ran.
+    pub fn take_installed_restore_blocks(&mut self) -> Vec<BlockIndex> {
+        std::mem::take(&mut self.installed_restore_ids)
+            .into_iter()
+            .filter_map(|id| self.block_id_to_block_index.get(&id).copied())
+            .collect()
+    }
+
+    /// Moves the grids of blocks parsed off-thread into their placeholders and refreshes the
+    /// placeholders' heights (#1254). One atomic load when nothing is waiting, so it is cheap
+    /// enough to call every frame and every pty chunk. Returns whether anything was installed.
+    ///
+    /// Only the parse-derived state moves (see `Block::adopt_restored_content`); anything the
+    /// view or model did to the placeholder since startup (visibility, banners, conversation
+    /// attachment) stays. A block evicted in the meantime (#889) is simply dropped.
+    pub fn install_ready_deferred_restores(&mut self) -> bool {
+        if !self.has_ready_deferred_restores() {
+            return false;
+        }
+        let Some(mailbox) = self.deferred_restores.clone() else {
+            return false;
+        };
+        let mut installed = false;
+        for (id, restored) in mailbox.take() {
+            let Some(index) = self.block_id_to_block_index.get(&id).copied() else {
+                continue;
+            };
+            let Some(placeholder) = self.blocks.get_mut(index.0) else {
+                continue;
+            };
+            if placeholder.id() != &id {
+                continue;
+            }
+            placeholder.adopt_restored_content(restored);
+            self.refresh_block_height(index);
+            self.installed_restore_ids.push(id);
+            installed = true;
+        }
+        if installed {
+            // Selection and the smart-select override hold points into the placeholder's empty
+            // grids, and the installed content changes heights and row counts under them. Drop
+            // them (as eviction does) rather than leave points that may be out of range (#1265).
+            // Find and scroll are fixed up by the view (`take_installed_restore_blocks`): it
+            // rescans the installed blocks and re-anchors a scrolled-back position (#1265).
+            if self.selection().is_some() {
+                self.clear_selection();
+            }
+            self.clear_smart_select_override();
+        }
+        installed
+    }
+
+    fn restore_block_with_mode(
+        &mut self,
+        block: &SerializedBlock,
+        bootstrap_stage: BootstrapStage,
+        processor: &mut Processor,
+        mode: RestoreMode,
+    ) {
         let prompt_metadata = PromptMetadata {
             pwd: block.pwd.clone(),
             git_head: block.git_head.clone(),
@@ -3924,6 +4489,7 @@ impl BlockList {
             ps1_is_encoded: None,
             ignore_prompt_markers: None,
             is_after_in_band_command: false,
+            seq: None,
         };
 
         self.create_new_block(
@@ -3978,14 +4544,21 @@ impl BlockList {
         // Set the start_ts to the saved start_ts _after_ `start`ing the block (which would have set its own start_ts).
         self.active_block_mut().override_start_ts(start_ts);
 
-        processor.parse_bytes(self, &block.stylized_command, &mut io::sink());
+        // A placeholder (#1254) skips both parses; the detached job does them later.
+        let parse_now = mode != RestoreMode::Placeholder;
+        if !parse_now {
+            self.active_block_mut().set_restore_pending(true);
+        }
+        if parse_now {
+            processor.parse_bytes(self, &block.stylized_command, &mut io::sink());
+        }
 
         if block.did_execute {
             let command = self.active_block_mut().command_to_string();
             self.preexec(PreexecValue { command, session_id: None });
         }
 
-        if block.did_execute || block.is_background {
+        if parse_now && (block.did_execute || block.is_background) {
             processor.parse_bytes(self, &block.stylized_output, &mut io::sink());
         }
 
@@ -4001,15 +4574,17 @@ impl BlockList {
         self.active_block_mut().finish(block.exit_code);
         self.update_active_block_height();
 
-        self.event_proxy
-            .send_terminal_event(AfterBlockCompleted(AfterBlockCompletedEvent {
-                command_finished_to_precmd_delay: None,
-                block_type: BlockType::Restored,
-                num_secrets_obfuscated: self.active_block().num_secrets_obfuscated(),
-                // We don't track if a restored block was a cloud workflow execution.
-                cloud_workflow_id: None,
-                cloud_env_var_collection_id: None,
-            }));
+        if mode != RestoreMode::Detached {
+            self.event_proxy
+                .send_terminal_event(AfterBlockCompleted(AfterBlockCompletedEvent {
+                    command_finished_to_precmd_delay: None,
+                    block_type: BlockType::Restored,
+                    num_secrets_obfuscated: self.active_block().num_secrets_obfuscated(),
+                    // We don't track if a restored block was a cloud workflow execution.
+                    cloud_workflow_id: None,
+                    cloud_env_var_collection_id: None,
+                }));
+        }
 
         // Set the completed_ts to the saved completed_ts _after_ `finish`ing the block (which would have set its own completed_ts).
         self.active_block_mut().override_completed_ts(completed_ts);
@@ -4488,6 +5063,10 @@ impl BlockList {
         active_block.clear_marked_text();
     }
 
+    pub(in crate::terminal) fn has_marked_text(&self) -> bool {
+        self.active_block().has_marked_text()
+    }
+
     pub fn last_non_hidden_ai_block_handle(&self, app: &AppContext) -> Option<ViewHandle<AIBlock>> {
         let rich_content_view_id = self
             .last_non_hidden_rich_content_block_after_block(None)?
@@ -4767,7 +5346,7 @@ impl ansi::Handler for BlockList {
                     self.block_heights = SumTree::new();
                 }
                 // Clear existing selection.
-                self.selection.take();
+                self.take_selection();
 
                 // Remove the active gap since it was removed from the block heights sum tree.
                 self.active_gap.take();
@@ -4959,6 +5538,10 @@ impl ansi::Handler for BlockList {
 
     fn on_finish_byte_processing(&mut self, input: &ansi::ProcessorInput<'_>) {
         delegate!(self.on_finish_byte_processing(input));
+
+        // Restored blocks parsed off-thread (#1254) land here too, so a tab that is not being
+        // painted still gets its content.
+        self.install_ready_deferred_restores();
 
         // After processing a chunk of data from the PTY, make sure the active
         // block and background block heights are up-to-date.  We do this once

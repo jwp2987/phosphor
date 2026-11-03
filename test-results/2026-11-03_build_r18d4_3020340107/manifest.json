@@ -1,0 +1,475 @@
+{
+ "pipeline": 3020340107,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3020340107",
+ "ref": "build/r18d4",
+ "commit": "86aa856a6b8b645a4e52bd03f6bf9dc490b44605",
+ "created_at": "2026-11-03T01:31:30.813Z",
+ "date": "2026-11-03",
+ "tier": "fix",
+ "pipeline_status": "manual",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923447,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923446,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923445,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923444,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "failed",
+   "duration": 140.430522,
+   "id": 17683923443,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos": {
+   "status": "failed",
+   "duration": 24.904945,
+   "id": 17683923442,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923441,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland": {
+   "status": "failed",
+   "duration": 17.609305,
+   "id": 17683923440,
+   "runner": ""
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923439,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923438,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923437,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "success",
+   "duration": 2109.326176,
+   "id": 17683923436,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 2072.341262,
+   "id": 17683923435,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1192.704049,
+   "id": 17683923434,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923433,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923432,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923431,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923430,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923429,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923428,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923427,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923426,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923425,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923424,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923423,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "failed",
+   "duration": 150.852759,
+   "id": 17683923422,
+   "runner": ""
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923421,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 85.31717,
+   "id": 17683923420,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "failed",
+   "duration": 353.955712,
+   "id": 17683923419,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 10.41455,
+   "id": 17683923418,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 12.66345,
+   "id": 17683923417,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923416,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923415,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923414,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17683923413,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 440.128479,
+   "id": 17683923412,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 108.034768,
+   "id": 17683923411,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-workspace-rest": {
+   "summary_line": "Summary [  25.609s] 3252 tests run: 3250 passed, 2 failed, 19 skipped",
+   "duration_s": 25.609,
+   "run": 3252,
+   "passed": 3250,
+   "failed": 2,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp_editor::mermaid_corpus",
+     "test": "invalid_diagram_outcomes_are_snapshotted",
+     "seconds": 0.243
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp_editor::mermaid_corpus",
+     "test": "valid_diagram_summaries_are_stable",
+     "seconds": 0.183
+    }
+   ],
+   "regressions": [],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-workspace-rest",
+   "status": "failed",
+   "duration": 150.852759
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   4.919s] 775 tests run: 775 passed, 7 skipped",
+   "duration_s": 4.919,
+   "run": 775,
+   "passed": 775,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 85.31717
+  },
+  "test-linux": {
+   "summary_line": null,
+   "duration_s": null,
+   "run": null,
+   "passed": 0,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 0,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [],
+   "errors": [
+    "error[E0004]: non-exhaustive patterns: `&FormattedTextLine::BlockQuote { .. }` not covered",
+    "error: could not compile `warp_tui` (lib test) due to 1 previous error",
+    "error: command `/home/<user>/.rustup/toolchains/1.92.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --message-format json-render-diagnostics --package warp --package warp_tui --lib --features war",
+    "error: nextest exited 101 (not 0=passed / 100=test failures).",
+    "ERROR: Job failed: exit status 2"
+   ],
+   "job": "test-linux",
+   "status": "failed",
+   "duration": 353.955712
+  }
+ },
+ "app": {
+  "windows": {
+   "job": "app-test-windows",
+   "job_id": 17683923443,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "harness_crash",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the terminal pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal@gitbash",
+     "name": "harness_crash",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the terminal@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "harness_crash",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the agent pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent@gitbash",
+     "name": "harness_crash",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the agent@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/junit.xml",
+    "windows/results.json",
+    "windows/summary.md"
+   ],
+   "meta": {
+    "platform": "windows",
+    "backend": "windows",
+    "app_display": "windows",
+    "seed": "1",
+    "commit": "86aa856a",
+    "owner_settings": "None",
+    "tier": "smoke",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 1,
+    "fail": 4,
+    "skip": 0,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": []
+  },
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 17683923442,
+   "status": "failed",
+   "reuse": false,
+   "cases": [],
+   "files": [],
+   "meta": {},
+   "summary": {
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "noref": 0
+   },
+   "from_trace": true,
+   "screenshots_in_ci_artifacts": []
+  },
+  "wayland": {
+   "job": "app-test-linux-wayland",
+   "job_id": 17683923440,
+   "status": "failed",
+   "reuse": false,
+   "cases": [],
+   "files": [],
+   "meta": {},
+   "summary": {
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "noref": 0
+   },
+   "from_trace": true,
+   "screenshots_in_ci_artifacts": []
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 52,
+  "warnings_by_crate": {
+   "markdown_parser (lib)": 1,
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 24,
+   "warp (lib test)": 20
+  },
+  "warning_lines_by_kind": {
+   "unused import": 82,
+   "unused imports": 23,
+   "function": 12,
+   "use of deprecated type alias": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 440.128479
+ }
+}

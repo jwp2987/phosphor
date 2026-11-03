@@ -1,0 +1,22 @@
+{
+ "lines": [
+  "Running with gitlab-runner 19.5.1 (f411f264)",
+  "Running on <runner>...",
+  "Running on CPU: Intel(R) Core(TM) i7-8700B CPU @ 3.20GHz (avx, avx2)",
+  "$ command -v cargo-fuzz >/dev/null || ./script/install_cargo_binstall",
+  "$ command -v cargo-fuzz >/dev/null || cargo binstall --force -y cargo-fuzz",
+  "$ cp Cargo.lock fuzz/Cargo.lock",
+  "[agent-cargo] agent=ci-fuzz slot=1 jobs=5 avail=30487MB target=/home/<user>/.phosphor-build/targets/ci-fuzz",
+  "error[E0433]: failed to resolve: could not find `ClipboardFormats` in `arboard`",
+  "warning: build failed, waiting for other jobs to finish...",
+  "Error: failed to build fuzz script: ASAN_OPTIONS=\"detect_odr_violation=0\" RUSTFLAGS=\" -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counter",
+  "[agent-cargo] RESULT agent=ci-fuzz exit=1 FAILED",
+  "Uploading artifacts for failed job",
+  "WARNING: fuzz/artifacts/: no matching files. Ensure that the artifact path is relative to the working directory (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor)",
+  "ERROR: Job failed: exit status 1"
+ ],
+ "truncated": 0,
+ "job": "fuzz-smoke",
+ "status": "failed",
+ "duration": 415.722664
+}

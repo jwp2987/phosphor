@@ -16,6 +16,7 @@ mod passive_suggestions;
 pub(super) use controller::RequestInput;
 pub mod history_model;
 pub mod inline_action;
+pub mod compute_clock;
 pub mod input_model;
 pub mod misroute_recovery;
 // Local (non-cloud) multi-agent orchestration core: pure helpers for walking
@@ -29,10 +30,7 @@ pub(crate) mod persistence;
 pub mod prompt;
 mod protected_paths;
 pub mod rewind_revert;
-// The persistent queued-prompts model (`QueuedQueryModel`). Ported from warp/master.
-// Consumers (slash commands, the warping indicator, the queued-prompts panel) are wired
-// in a follow-up increment; `allow(dead_code)` covers the not-yet-called API until then.
-#[allow(dead_code)]
+// The persistent queued-prompts model (`QueuedQueryModel`).
 pub(crate) mod queued_query;
 pub mod suggested_agent_mode_workflow_modal;
 pub mod suggested_rule_modal;

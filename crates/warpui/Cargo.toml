@@ -12,9 +12,9 @@ license = "MIT"
 # binary. The shaders are written to the temp directory during initialization of
 # a renderer to enable this, which could slow opening of the first window.
 enable-metal-frame-capture = []
-# Enables the font-kit rasterizer on Windows.
-fontkit-rasterizer = []
 traces = ["warpui_core/traces"]
+# Tracy instrumentation (#1169); see warpui_core::profiling.
+profiling = ["warpui_core/profiling"]
 # Headless terminal-UI (ratatui) backend passthrough. See specs/warp-oss-sync/SCOPE.md.
 tui = ["warpui_core/tui"]
 # Feature enabled only when app is compiled for integration tests.
@@ -49,6 +49,7 @@ ordered-float.workspace = true
 parking_lot.workspace = true
 pathfinder_color.workspace = true
 pathfinder_geometry.workspace = true
+rustc-hash.workspace = true
 sum_tree.workspace = true
 takecell = "0.1.1"
 thiserror.workspace = true
@@ -203,7 +204,7 @@ notify-rust = "4.10.0"
 open = "5.0.0"
 tini = "1.3.0"
 urlencoding = "2.1.3"
-x11rb.workspace = true
+x11rb = { workspace = true, features = ["xfixes"] }
 x11-dl = "2.21.0"
 zbus.workspace = true
 

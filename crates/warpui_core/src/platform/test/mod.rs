@@ -1,7 +1,5 @@
-mod app;
 mod delegate;
 
-pub use app::App;
 pub(crate) use delegate::WindowManager;
 #[cfg(test)]
 pub(crate) use delegate::set_forced_window_size;

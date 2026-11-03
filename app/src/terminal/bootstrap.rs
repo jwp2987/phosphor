@@ -14,7 +14,7 @@ use crate::{
 
 #[cfg(feature = "local_fs")]
 use super::{
-    model::session::{BootstrapSessionType, SessionInfo},
+    model::session::{BootstrapSessionType, IsLegacySSHSession, SessionInfo},
     warpify::settings::{PIPENV_SUBSHELL_COMMAND_REGEX, POETRY_SUBSHELL_COMMAND_REGEX},
 };
 
@@ -125,6 +125,323 @@ pub fn should_use_rc_file_bootstrap_method(
         }
         BootstrapSessionType::WarpifiedRemote => false,
     }
+}
+
+/// The line of the bash bootstrap (`bash.sh`) that opens the here-document holding `bash_body.sh`.
+const BASH_BOOTSTRAP_HEREDOC_OPEN: &[u8] =
+    b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n";
+/// The end of that here-document: the newline of the body's last line, then the terminator line.
+const BASH_BOOTSTRAP_HEREDOC_CLOSE: &[u8] = b"\nEOM\n";
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// #1172: rewrites the bash bootstrap so that its large body (`bash_body.sh`, about 45 of the
+/// 52 KB) is read by one `head -c <bytes>` instead of being typed, line by line, into the remote
+/// shell's line editor as a here-document. The remote spends ~200 ms reading the here-document
+/// (1,200 prompts and redraws) and ~120 ms running it; the counted read brings the first to
+/// ~15 ms (measured over ssh, 8 runs each: 330 -> 142 ms from InitShell to the Bootstrapped
+/// hook). `stty -echo` keeps the tty from echoing the 45 KB back. Returns `None` when the
+/// script does not have the expected here-document, so the caller keeps the original.
+///
+/// Only valid for a shell that is known to have a `head` with `-c`, because a failing `head`
+/// would leave the body to be executed as commands: see `SSHValue::raw_bootstrap`.
+pub fn bash_counted_read_bootstrap(script: &[u8]) -> Option<Vec<u8>> {
+    counted_read_rewrite(script, ShellType::Bash).map(|(rewritten, _)| rewritten)
+}
+
+/// The line of the zsh bootstrap (`zsh.sh`) that opens the here-document holding `zsh_body.sh`.
+/// Unlike bash, the `eval` of the body and the restore of the options the script changed are on
+/// the same line, after the `read`.
+const ZSH_BOOTSTRAP_HEREDOC_OPEN: &[u8] = b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; ";
+
+/// The lines `bash.sh` has after the here-document (comments and blank lines aside). The counted
+/// read runs them from its command line instead ([`BASH_COUNTED_READ_RUN`]), #1549.
+const BASH_BOOTSTRAP_AFTER_READ: [&str; 2] = [
+    "stty sane",
+    "eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR",
+];
+/// What the bash counted-read command line runs once `head` has read the body.
+const BASH_COUNTED_READ_RUN: &[u8] =
+    b"; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR";
+
+/// Known residual (#1253): a ^C that reaches the tty while `head -c N` is still reading kills
+/// `head`, and the rest of the raw body is then read by the shell as ordinary input lines (the
+/// same exposure the here-document form has). It is not fixable from the command line: `head`
+/// has no way to be told to survive SIGINT without a `trap`, and a `trap '' INT` would also make
+/// the wait for a wedged remote uninterruptible, which is worse (the owner rule is that keys typed
+/// while ssh connects are held, so only an explicit abort key can reach this window). The body
+/// has no tty-special bytes and no line over 999 bytes, so a stray read is inert text, and
+/// `stty -echo` keeps it from being echoed.
+///
+/// #1226: [`bash_counted_read_bootstrap`] for either shell, also returning how many leading bytes
+/// of the result end with the counted-read command line (its CR): everything after that is the
+/// raw body and nothing else (#1549), which the shell does not see until `head`
+/// reads it.
+///
+/// zsh: the command is `stty -echo; WARP_BOOTSTRAP_VAR=$(head -c N); stty echo; <the rest of the
+/// original line>`, so the `eval` still runs after the body has been read. The hook sequence and
+/// the `Bootstrapped` value are the same as the here-document's (replayed through a pty).
+pub(crate) fn counted_read_rewrite(
+    script: &[u8],
+    shell_type: ShellType,
+) -> Option<(Vec<u8>, usize)> {
+    let (open_marker, rest_of_line) = match shell_type {
+        ShellType::Bash => (BASH_BOOTSTRAP_HEREDOC_OPEN, false),
+        ShellType::Zsh => (ZSH_BOOTSTRAP_HEREDOC_OPEN, true),
+        _ => return None,
+    };
+    let open = find_subslice(script, open_marker)?;
+    let mut body_start = open + open_marker.len();
+    // zsh: what follows the here-document marker on the same line is a command that has to run
+    // after the body has been read.
+    let after_read: &[u8] = if rest_of_line {
+        let line_end = body_start + script[body_start..].iter().position(|b| *b == b'\n')?;
+        let rest = &script[body_start..line_end];
+        body_start = line_end + 1;
+        rest
+    } else {
+        &[]
+    };
+    let close = body_start + find_subslice(&script[body_start..], BASH_BOOTSTRAP_HEREDOC_CLOSE)?;
+    // The body keeps its final newline, exactly as `read -d ''` read it.
+    let body = &script[body_start..=close];
+    // #1549: nothing may follow the body in the same write. macOS `head` over-reads a tty and
+    // swallows whatever is already queued past the count, so any line sent after the body is
+    // lost and the body is never evaluated. What bash used to send after the here-document
+    // (`stty sane`, then the `eval`) therefore moves onto the command line, like zsh's `eval`.
+    // A script with anything else after the here-document is not rewritten: dropping it would
+    // lose it, and keeping it after the body would reintroduce the hazard.
+    let tail = &script[close + BASH_BOOTSTRAP_HEREDOC_CLOSE.len()..];
+    let tail_lines: Vec<&str> = std::str::from_utf8(tail)
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    let expected_tail: &[&str] = if rest_of_line {
+        &[]
+    } else {
+        &BASH_BOOTSTRAP_AFTER_READ
+    };
+    if tail_lines != expected_tail {
+        return None;
+    }
+    let mut command = format!(
+        " command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c {}); command -p stty echo",
+        body.len()
+    )
+    .into_bytes();
+    if rest_of_line {
+        command.extend_from_slice(b"; ");
+        command.extend_from_slice(after_read);
+    } else {
+        command.extend_from_slice(BASH_COUNTED_READ_RUN);
+    }
+    command.push(b'\r');
+    let mut rewritten = Vec::with_capacity(body_start + command.len() + body.len());
+    rewritten.extend_from_slice(&script[..open]);
+    rewritten.extend_from_slice(&command);
+    let prefix_len = rewritten.len();
+    rewritten.extend_from_slice(body);
+    Some((rewritten, prefix_len))
+}
+
+/// Whether the counted-read bootstrap is allowed. On by default;
+/// `PHOSPHOR_SSH_COUNTED_BOOTSTRAP=0` sends the here-document form again.
+fn counted_read_bootstrap_enabled() -> bool {
+    counted_read_bootstrap_enabled_from_env(
+        std::env::var("PHOSPHOR_SSH_COUNTED_BOOTSTRAP")
+            .ok()
+            .as_deref(),
+    )
+}
+
+pub(crate) fn counted_read_bootstrap_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// Marks the start and end of the part of `bash_body.sh` that only a local shell runs (the ssh
+/// wrapper, guarded by `WARP_IS_LOCAL_SHELL_SESSION=1`). Each is a `:` command on a line of its own.
+const LOCAL_ONLY_BEGIN: &str = ": __warp_local_only_begin";
+const LOCAL_ONLY_END: &str = ": __warp_local_only_end";
+
+/// #1164: `script` without the lines from [`LOCAL_ONLY_BEGIN`] to [`LOCAL_ONLY_END`] (both
+/// included), for a shell reached over ssh, where `WARP_IS_LOCAL_SHELL_SESSION` is not set and that
+/// block is dead code (about 12 KB of function definitions). Returns `script` unchanged unless
+/// there is exactly one begin line followed by one end line, so a malformed script is never cut.
+pub(crate) fn strip_local_only_block(script: Cow<'static, [u8]>) -> Cow<'static, [u8]> {
+    let Ok(text) = std::str::from_utf8(&script) else {
+        return script;
+    };
+    let is_marker = |line: &str, marker: &str| line.trim() == marker;
+    let mut begin = None;
+    let mut end = None;
+    for (index, line) in text.split('\n').enumerate() {
+        if is_marker(line, LOCAL_ONLY_BEGIN) {
+            if begin.replace(index).is_some() {
+                return script;
+            }
+        } else if is_marker(line, LOCAL_ONLY_END) && end.replace(index).is_some() {
+            return script;
+        }
+    }
+    let (Some(begin), Some(end)) = (begin, end) else {
+        return script;
+    };
+    if begin >= end {
+        return script;
+    }
+    let kept: Vec<&str> = text
+        .split('\n')
+        .enumerate()
+        .filter(|(index, _)| *index < begin || *index > end)
+        .map(|(_, line)| line)
+        .collect();
+    Cow::Owned(kept.join("\n").into_bytes())
+}
+
+/// The bootstrap to write into the shell: the counted-read form of the bash script
+/// ([`bash_counted_read_bootstrap`]) for an ssh session whose remote reported `raw_bootstrap`,
+/// otherwise `script` unchanged.
+pub fn bootstrap_for_session(
+    script: Cow<'static, [u8]>,
+    shell_type: ShellType,
+    session_info: &SessionInfo,
+) -> Cow<'static, [u8]> {
+    // #1164: the ssh wrapper only runs in a local shell, so a bash reached over ssh does not get it.
+    let script = if shell_type == ShellType::Bash
+        && matches!(
+            session_info.is_legacy_ssh_session,
+            IsLegacySSHSession::Yes { .. }
+        ) {
+        strip_local_only_block(script)
+    } else {
+        script
+    };
+    if shell_type != ShellType::Bash
+        || !matches!(
+            session_info.is_legacy_ssh_session,
+            IsLegacySSHSession::Yes {
+                raw_bootstrap: true,
+                ..
+            }
+        )
+        || !counted_read_bootstrap_enabled()
+    {
+        return script;
+    }
+    match bash_counted_read_bootstrap(&script) {
+        Some(rewritten) => Cow::Owned(rewritten),
+        None => script,
+    }
+}
+
+/// Whether a local bash or zsh may be handed the bootstrap as a counted raw read (#1226). On by
+/// default; `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` types the here-document into the shell again.
+pub(crate) fn local_counted_bootstrap_enabled_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// Whether this machine has the two programs the counted read runs through `command -p` (the
+/// system default PATH): `stty` and a `head` that takes `-c`. Both are POSIX tools that every
+/// Linux and macOS install has; the check is on the files so that a stripped-down system keeps the
+/// here-document, since a failing `head` would leave the body to run as commands.
+#[cfg(unix)]
+fn system_has_stty_and_head() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let found = |name: &str| {
+            ["/usr/bin", "/bin"]
+                .iter()
+                .any(|dir| std::path::Path::new(dir).join(name).is_file())
+        };
+        found("stty") && found("head")
+    })
+}
+
+#[cfg(not(unix))]
+fn system_has_stty_and_head() -> bool {
+    false
+}
+
+/// The commands whose subshells run on this host's own filesystem and tty, and that are known to
+/// start the shell through a pty of their own (`sudo -s`, `su`, `ksu`, `doas`).
+const LOCAL_COUNTED_SUBSHELL_COMMANDS: &[&str] = &["sudo", "su", "ksu", "doas"];
+
+/// Whether `session_info` describes a session whose bootstrap can go in as a counted read (#1226):
+/// a local bash or zsh on this machine, or a `sudo`/`su`/`ksu`/`doas` subshell of one, that is not
+/// reached through ssh, a container, WSL or MSYS2.
+#[cfg(feature = "local_fs")]
+pub(crate) fn local_counted_bootstrap_applies(
+    shell_type: ShellType,
+    session_info: &SessionInfo,
+) -> bool {
+    use super::ShellLaunchData;
+
+    if !matches!(shell_type, ShellType::Bash | ShellType::Zsh)
+        || session_info.session_type != BootstrapSessionType::Local
+        || session_info.is_legacy_ssh_session != IsLegacySSHSession::No
+        || session_info.tmux_control_mode
+        || session_info.wsl_name.is_some()
+        || is_container_subshell(session_info)
+        || !matches!(
+            session_info.launch_data,
+            None | Some(ShellLaunchData::Executable { .. })
+        )
+    {
+        return false;
+    }
+    if let Some(subshell) = session_info.subshell_info.as_ref() {
+        let command = super::warpify::subshell_display_name(&subshell.spawning_command)
+            .and_then(|name| name.rsplit('/').next());
+        if subshell.ssh_connection_info.is_some()
+            || !command.is_some_and(|name| LOCAL_COUNTED_SUBSHELL_COMMANDS.contains(&name))
+        {
+            return false;
+        }
+    }
+    system_has_stty_and_head()
+        && local_counted_bootstrap_enabled_from_env(
+            std::env::var("PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP")
+                .ok()
+                .as_deref(),
+        )
+}
+
+/// The counted-read form of `script` for a local session that can take it
+/// ([`local_counted_bootstrap_applies`]), with the length of its leading part that ends with the
+/// command line; `None` keeps the here-document.
+#[cfg(feature = "local_fs")]
+pub fn local_counted_bootstrap(
+    script: &[u8],
+    shell_type: ShellType,
+    session_info: &SessionInfo,
+) -> Option<(Vec<u8>, usize)> {
+    if !local_counted_bootstrap_applies(shell_type, session_info) {
+        return None;
+    }
+    counted_read_rewrite(script, shell_type)
+}
+
+/// The paced writes for a counted-read bootstrap typed into a subshell: what comes before the
+/// raw body goes out in the same [`SUBSHELL_BOOTSTRAP_CHUNK_SIZE`] pieces as before, so a shell
+/// that has not started reading yet is never handed more than its tty input queue holds (#960),
+/// and the body follows as one write. Once `stty -echo` has run, the tty echoes nothing, so a
+/// user-space pty relay (`sudo -i`) cannot be left blocked writing into a full inner tty while the
+/// inner shell blocks writing an echo the relay is not reading; `head` drains the body at the
+/// speed it arrives. (Through a blocking relay: the 52 KB unpaced here-document hangs, the
+/// paced one takes 746 ms, this takes 222 ms.)
+pub(crate) fn counted_subshell_bootstrap_chunks(script: &[u8], prefix_len: usize) -> Vec<Vec<u8>> {
+    let prefix_len = prefix_len.min(script.len());
+    let mut chunks = subshell_bootstrap_chunks(&script[..prefix_len]);
+    if prefix_len < script.len() {
+        chunks.push(script[prefix_len..].to_vec());
+    }
+    chunks
 }
 
 /// Returns the bootstrap script that should be used when initializing a shell
@@ -271,8 +588,21 @@ pub fn init_shell_script_for_shell(
         ShellType::Nu => load_script("bundled/bootstrap/nu_init_shell.nu", assets)
             .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string())),
     };
-    script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
+    let script = script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
+    if shell_type == ShellType::PowerShell {
+        // The session's command-pipe name (#1581): minted here so the shell and the controller
+        // agree on it; the shell gets it in this script and nowhere else.
+        script.replace(
+            CMD_PIPE_PLACEHOLDER,
+            &crate::terminal::writeable_pty::command_pipe::init_script_value(session_id.as_u64()),
+        )
+    } else {
+        script
+    }
 }
+
+/// Placeholder in the PowerShell init script for the session's command-pipe name (#1581).
+pub(crate) const CMD_PIPE_PLACEHOLDER: &str = "@@WARP_CMD_PIPE@@";
 
 /// Longest line (bytes, excluding the terminator) the subshell bootstrap writes to a pty.
 ///
@@ -353,6 +683,21 @@ pub fn init_subshell_command_lines(
     session_id: SessionId,
     ctx: &AppContext,
 ) -> Vec<String> {
+    init_subshell_command_lines_with_markers(shell_type, vars, session_id, false, ctx)
+}
+
+/// [`init_subshell_command_lines`], optionally with a setup-line marker after every line but the
+/// last (bash, zsh, fish, nushell and PowerShell; other shells ignore `marked`). The marker is an OSC the shell
+/// prints once it has *executed* that line (`ESC ] 7771 ; <session id> ; <line index> BEL`, see
+/// [`setup_line_marker`]), so the app can write line N+1 when line N is known to be consumed
+/// instead of after a fixed delay.
+pub fn init_subshell_command_lines_with_markers(
+    shell_type: Option<ShellType>,
+    vars: &[EnvVar],
+    session_id: SessionId,
+    marked: bool,
+    ctx: &AppContext,
+) -> Vec<String> {
     match shell_type {
         Some(ShellType::PowerShell) => {
             let subshell_script = init_subshell_script_for_shell(
@@ -371,21 +716,33 @@ pub fn init_subshell_command_lines(
             // big line below would be saved. A short first line installs an AddToHistoryHandler
             // (chained to any the user had) that refuses the bootstrap line and the line that
             // later sources the temp bootstrap file; nothing rewrites the user's history file.
+            let (history_line, policy_line) = if marked {
+                powershell_marked_setup_lines(session_id.as_u64())
+            } else {
+                (
+                    POWERSHELL_HISTORY_HANDLER_LINE.to_owned(),
+                    POWERSHELL_EXECUTION_POLICY_LINE.to_owned(),
+                )
+            };
             vec![
-                POWERSHELL_HISTORY_HANDLER_LINE.to_owned(),
-                POWERSHELL_EXECUTION_POLICY_LINE.to_owned(),
+                history_line,
+                policy_line,
                 format!(" if (-not $global:WARP_BOOTSTRAPPED) {{ {subshell_script} }}"),
             ]
         }
         Some(shell_type @ (ShellType::Bash | ShellType::Zsh | ShellType::Fish)) => {
             let raw_script =
                 init_subshell_raw_script(shell_type, &crate::ASSETS, vars, session_id, ctx);
-            chunked_eval_lines(shell_type, &raw_script)
+            chunked_eval_lines_with_markers(
+                shell_type,
+                &raw_script,
+                marked.then(|| session_id.as_u64()),
+            )
         }
         Some(ShellType::Nu) => {
             let raw_script =
                 init_subshell_raw_script(ShellType::Nu, &crate::ASSETS, vars, session_id, ctx);
-            nu_subshell_lines(&raw_script, session_id)
+            nu_subshell_lines_with_markers(&raw_script, session_id, marked)
         }
         None => vec![
             UNKNOWN_SHELL_HISTORY_PRELUDE.to_owned(),
@@ -402,7 +759,7 @@ pub fn init_subshell_command_lines(
 /// (`apikey`: lines matching its sensitive pattern are saved to memory only on PSReadLine 2.2 and
 /// later). A user-replaced handler or an older PSReadLine still saves this one short line; nothing
 /// ever rewrites or deletes history.
-const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["']?\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
+const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler; PSReadLine\Set-PSReadLineOption -AddToHistoryHandler { param([string]$l) $t = $l.TrimStart(); if ($t.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $t -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["'']?\s*$') { return $false }; if ($global:_warpPrevHistoryHandler) { return (& $global:_warpPrevHistoryHandler $l) }; return $true } } # apikey"#;
 
 /// Second line of the PowerShell subshell bootstrap (#1116): lifts a Restricted execution policy
 /// for this process, as `pwsh_init_shell.ps1` does for the app-started shell, so the ` . <tmp>.ps1`
@@ -411,6 +768,40 @@ const POWERSHELL_HISTORY_HANDLER_LINE: &str = r#" if (-not $global:WARP_BOOTSTRA
 /// subshell script is typed as one line and must stay under
 /// [`MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES`]; it starts with the guard the history handler filters.
 const POWERSHELL_EXECUTION_POLICY_LINE: &str = r#" if (-not $global:WARP_BOOTSTRAPPED) { if ($PSEdition -eq 'Desktop' -or $IsWindows) { $EP = [Microsoft.PowerShell.ExecutionPolicy]; $m = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope MachinePolicy; $u = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope UserPolicy; if ($m -eq $EP::Restricted -or $u -eq $EP::Restricted) { Microsoft.PowerShell.Utility\Write-Error 'ExecutionPolicy is Restricted. Unable to Phosphorize this session.' } elseif ((Microsoft.PowerShell.Security\Get-ExecutionPolicy) -eq $EP::Restricted -and $m -eq $EP::Undefined -and $u -eq $EP::Undefined) { $global:_warp_PSProcessExecPolicy = Microsoft.PowerShell.Security\Get-ExecutionPolicy -Scope Process; Microsoft.PowerShell.Security\Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force }} }"#;
+
+/// The marker index PowerShell prints, instead of a line's own, at a `PSConsoleHostReadLine` entry
+/// that no setup line is waiting on: "PSReadLine is about to read". The app ends the wait behind a
+/// Ctrl-C that skipped the setup on it (#1372).
+pub const POWERSHELL_READY_MARKER_INDEX: usize = 1_000_000;
+
+/// The text that makes PowerShell print setup-line markers *after* PSReadLine is ready (#1372).
+///
+/// A marker printed at the end of a line (what bash/zsh/fish do) comes before PSReadLine redraws
+/// its prompt, and a line written into that window is what crashed PSReadLine (#1047). So the line
+/// only records its index in `$global:_phMk`, and a wrapper around `PSConsoleHostReadLine` -- the
+/// function the host calls to read each line, after the prompt is written, the same hook
+/// `pwsh.ps1` wraps for preexec -- prints it when the *next* read starts. A read that follows no
+/// pending line prints [`POWERSHELL_READY_MARKER_INDEX`] instead (the read after a Ctrl-C). The
+/// wrapper is guarded so a second bootstrap does not wrap itself; `pwsh.ps1` clears `$_phMk` at the
+/// first command, which turns it into a no-op. Printed with `[Console]::Out`, as `pwsh.ps1` does.
+fn powershell_marker_install(token: u64) -> String {
+    format!(
+        "if (-not $global:_phOldRL) {{ $global:_phOldRL = $function:global:PSConsoleHostReadLine; $function:global:PSConsoleHostReadLine = {{ if ($null -ne $global:_phMk) {{ [Console]::Out.Write(\"$([char]27)]{SETUP_LINE_MARKER_OSC};{token};$($global:_phMk)$([char]7)\"); $global:_phMk = {POWERSHELL_READY_MARKER_INDEX} }}; & $global:_phOldRL }} }}; $global:_phMk = 0"
+    )
+}
+
+/// The first two PowerShell setup lines with their markers (#1372): the marker installer goes
+/// before the history line's trailing comment word, and the second line records that it ran.
+fn powershell_marked_setup_lines(token: u64) -> (String, String) {
+    const COMMENT: &str = " # apikey";
+    let base = POWERSHELL_HISTORY_HANDLER_LINE
+        .strip_suffix(COMMENT)
+        .unwrap_or(POWERSHELL_HISTORY_HANDLER_LINE);
+    (
+        format!("{base}; {}{COMMENT}", powershell_marker_install(token)),
+        format!("{POWERSHELL_EXECUTION_POLICY_LINE}; $global:_phMk = 1"),
+    )
+}
 
 /// Single-quote escapes `text` for embedding in a single-quoted word of `shell_type`.
 fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {
@@ -427,8 +818,81 @@ fn escape_for_single_quotes(shell_type: ShellType, text: &str) -> String {
 /// also stops holding input after a while (#960). It is one `printf` with the count as an argument.
 const SKIPPED_NOTICE: &str = "builtin printf '\\nPhosphor: subshell setup skipped, the script arrived incomplete (%s characters). Type exit to leave this shell.\\n' \"${#_wbs}\"";
 
+/// The OSC number of the setup-line marker (private; nothing else uses it).
+pub const SETUP_LINE_MARKER_OSC: &str = "7771";
+
+/// What a bash / zsh / fish prints after executing setup line `index` of the session `token`.
+/// `printf` is quoted so the text typed into the shell holds no escape byte.
+fn setup_line_marker(token: u64, index: usize) -> String {
+    format!(" builtin printf '\\e]{SETUP_LINE_MARKER_OSC};{token};{index}\\a'")
+}
+
+/// Whether the old timer-paced bootstrap (one fixed delay per typed line, a fixed wait before the
+/// pending command / rc-file / auto-warpify bootstrap) is wanted instead of the event-driven one:
+/// `PHOSPHOR_BOOTSTRAP_TIMED=1`. A kill switch for the events-not-timers rework (#1354).
+pub fn bootstrap_timed() -> bool {
+    static TIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TIMED.get_or_init(|| std::env::var("PHOSPHOR_BOOTSTRAP_TIMED").is_ok_and(|v| v == "1"))
+}
+
+/// Whether an ssh bootstrap that really failed (the 7 s give-up, #1494) still WRITES the held
+/// typing to the remote after a ` stty sane` line: `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1`.
+/// Off by default (owner decision, #1577): a timer never writes user bytes or a command to a pty,
+/// so the held keys are handed back to the input with a toast instead. A kill switch for #1494's
+/// old behaviour.
+pub fn ssh_bootstrap_giveup_delivers() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = giveup_delivers_forced_for_test() {
+        return forced;
+    }
+    static DELIVERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DELIVERS.get_or_init(|| {
+        std::env::var("PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS").is_ok_and(|v| v == "1")
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What a test forces [`ssh_bootstrap_giveup_delivers`] to on its own thread.
+    static GIVEUP_DELIVERS_FOR_TEST: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn giveup_delivers_forced_for_test() -> Option<bool> {
+    GIVEUP_DELIVERS_FOR_TEST.with(std::cell::Cell::get)
+}
+
+/// Restores the previous forced value when dropped.
+#[cfg(test)]
+#[must_use = "the forced value is restored when the guard drops"]
+pub struct GiveUpDeliversGuard(Option<bool>);
+
+#[cfg(test)]
+impl Drop for GiveUpDeliversGuard {
+    fn drop(&mut self) {
+        GIVEUP_DELIVERS_FOR_TEST.with(|slot| slot.set(self.0));
+    }
+}
+
+/// Forces [`ssh_bootstrap_giveup_delivers`] on the calling thread until the guard drops.
+#[cfg(test)]
+pub fn set_ssh_bootstrap_giveup_delivers_for_test(on: bool) -> GiveUpDeliversGuard {
+    GiveUpDeliversGuard(GIVEUP_DELIVERS_FOR_TEST.with(|slot| slot.replace(Some(on))))
+}
+
 /// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
 fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
+    chunked_eval_lines_with_markers(shell_type, raw_script, None)
+}
+
+/// [`chunked_eval_lines`]; with `marker_token` every line but the last ends in a
+/// [`setup_line_marker`] (the last one evaluates the script, which ends the typed setup).
+fn chunked_eval_lines_with_markers(
+    shell_type: ShellType,
+    raw_script: &str,
+    marker_token: Option<u64>,
+) -> Vec<String> {
     let mut chunks: Vec<String> = Vec::new();
     let mut current = String::new();
     for ch in raw_script.chars() {
@@ -494,6 +958,13 @@ fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
             " [ -z $WARP_BOOTSTRAPPED ] && contains -- (string length -- $_wbs) {chars} {bytes} && eval $_wbs; set -e _wbs"
         ),
     });
+    if let Some(token) = marker_token {
+        let last = lines.len().saturating_sub(1);
+        for (index, line) in lines.iter_mut().enumerate().take(last) {
+            line.push(';');
+            line.push_str(&setup_line_marker(token, index));
+        }
+    }
     lines
 }
 
@@ -503,6 +974,19 @@ const NU_SKIPPED_NOTICE: &str = "print $\"(char nl)Phosphor: subshell setup skip
 /// Marks a newline / carriage return inside a nushell chunk, which is a single typed line.
 const NU_NEWLINE_TOKEN: &str = "@@NL@@";
 const NU_CARRIAGE_RETURN_TOKEN: &str = "@@CR@@";
+
+/// What a nushell prints after executing setup line `index` of the session `token`: the same OSC
+/// as [`setup_line_marker`], built from `ansi esc` / `char bel` inside a string interpolation so
+/// the typed text holds no escape byte. `print -n` writes no newline. It follows a `;`, so the
+/// line stays one statement sequence (#1372).
+///
+/// The escape is `ansi esc`, NOT `char esc`: nushell 0.116 has no `char esc` ("error finding
+/// named character"), which fails the whole line at parse time, so no marker ever came and the
+/// setup fell back to timers on every run (#1399). Verified against nu 0.116.1: `ansi esc` and
+/// `char bel` print `ESC ] 7771;<token>;<index> BEL`.
+fn nu_setup_line_marker(token: u64, index: usize) -> String {
+    format!(" print -n $\"(ansi esc)]{SETUP_LINE_MARKER_OSC};{token};{index}(char bel)\"")
+}
 
 /// The lines typed into a running `nu` to run the stage-one subshell script `raw_script`.
 ///
@@ -518,7 +1002,18 @@ const NU_CARRIAGE_RETURN_TOKEN: &str = "@@CR@@";
 ///
 /// The script is only run when it arrived whole (its byte length matches) and the shell is not
 /// already bootstrapped; otherwise the file holds a notice, or nothing.
-fn nu_subshell_lines(raw_script: &str, session_id: SessionId) -> Vec<String> {
+///
+/// With `marked`, every line but the last ends in a [`nu_setup_line_marker`] (the last removes the
+/// temp file and the script variable; nothing after it needs pacing).
+///
+/// The unknown-shell probe (`shell_type == None`) cannot be marked: its two lines are written
+/// before the shell is identified, and a marker needs the shell's own syntax (`builtin printf`
+/// vs `print -n` vs PowerShell's `Write-Host`); the probe line is the one that identifies it.
+fn nu_subshell_lines_with_markers(
+    raw_script: &str,
+    session_id: SessionId,
+    marked: bool,
+) -> Vec<String> {
     let script = raw_script
         .replace('\r', NU_CARRIAGE_RETURN_TOKEN)
         .replace('\n', NU_NEWLINE_TOKEN);
@@ -562,6 +1057,13 @@ fn nu_subshell_lines(raw_script: &str, session_id: SessionId) -> Vec<String> {
     ));
     lines.push(" source $_wbf".to_owned());
     lines.push(" rm -f $_wbf; hide-env -i _wbs".to_owned());
+    if marked {
+        let last = lines.len().saturating_sub(1);
+        for (index, line) in lines.iter_mut().enumerate().take(last) {
+            line.push(';');
+            line.push_str(&nu_setup_line_marker(session_id.as_u64(), index));
+        }
+    }
     lines
 }
 
@@ -723,6 +1225,7 @@ pub fn raw_init_shell_script_for_shell(
     load_script(file, assets)
         .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
         .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
+        .replace(CMD_PIPE_PLACEHOLDER, "")
 }
 
 /// Returns the script in the file at `file_path` to be passed as a single-quoted argument in the
@@ -767,3 +1270,7 @@ fn load_script(file_path: &str, assets: &dyn AssetProvider) -> String {
 #[cfg(test)]
 #[path = "bootstrap_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bootstrap_snapshot_tests.rs"]
+mod snapshot_tests;

@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Regression test (#1255): the bash Preexec hook must escape a huge command in linear time.
+
+`__warp_ej_var` used parameter substitutions that are quadratic on a big value (1 MB of multi-line
+text: 5.4 s in a UTF-8 locale, 10 MB: minutes), and `__warp_preexec_impl` ran it on the whole
+$BASH_COMMAND, freezing the shell before a big paste ran. A value over 8 KiB now takes the sed
+pipeline. This extracts the real functions from bash_body.sh and runs them from a DEBUG trap (where
+the hook runs and bash holds $BASH_COMMAND at the trapped command) on
+
+  * a 3 MB multi-line command with quotes, backslashes, tabs, CRs and non-ASCII: the escaped text
+    must decode, as JSON, to exactly the command (nothing truncated or altered), in under 3 s;
+  * a 20 KB and a short command, covering the path on each side of the threshold.
+
+On the pre-fix code the 3 MB case takes minutes (the test times out and fails).
+Needs only python3 and bash; exit 0 when everything passes.
+
+USAGE
+    script/test_bash_preexec_large_command [path/to/bash]
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BODY = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap", "bash_body.sh")
+BASH = sys.argv[1] if len(sys.argv) > 1 else (shutil.which("bash") or "/bin/bash")
+text = open(BODY).read()
+
+
+def func(name):
+    m = re.search(r"^ {4}%s \(\) \{\n.*?^ {4}\}\n" % re.escape(name), text, re.S | re.M)
+    if not m:
+        sys.exit(f"FAIL: {name} not found in bash_body.sh")
+    return m.group(0)
+
+
+prelude = "\n".join(
+    func(n)
+    for n in ("warp_escape_json", "__warp_ej_var", "warp_hex_encode_string", "__warp_hex_encode_to")
+)
+failures = []
+
+
+def run(command, limit):
+    """The Preexec hook's escaping of `: <command>`; returns (decoded JSON string, seconds)."""
+    script = f"""{prelude}
+trap '__warp_ej_var escaped "$BASH_COMMAND"; __warp_hex_encode_to "$escaped"; trap - DEBUG' DEBUG
+: {command}
+printf '%s' "$__warp_hex"
+"""
+    env = dict(os.environ, LC_ALL="C.UTF-8")
+    start = time.time()
+    try:
+        r = subprocess.run(
+            [BASH], input=script, capture_output=True, text=True, env=env, timeout=limit * 5
+        )
+    except subprocess.TimeoutExpired:
+        return None, time.time() - start
+    elapsed = time.time() - start
+    if r.returncode != 0:
+        failures.append(f"bash failed: {r.stderr[:200]!r}")
+        return None, elapsed
+    escaped = bytes.fromhex(r.stdout).decode("utf-8")
+    return json.loads('"' + escaped + '"'), elapsed
+
+
+def check(label, literal, limit):
+    expected = ": " + literal
+    got, elapsed = run(literal, limit)
+    if got is None:
+        failures.append(f"{label}: no result after {elapsed:.1f}s")
+        return
+    if got != expected:
+        failures.append(f"{label}: escaped command does not round-trip")
+    if elapsed > limit:
+        failures.append(f"{label}: took {elapsed:.2f}s (limit {limit}s)")
+
+
+def lines(n):
+    return "\n".join(
+        'echo "line %d" \\ \t caf\u00e9 \r $x %s' % (i, "ab cd" * 8) for i in range(n)
+    )
+
+
+check("short", "'short'", 2)
+check("20KB", "'" + lines(300) + "'", 2)
+check("3MB", "'" + lines(40000) + "'", 3)
+
+if failures:
+    print("\n".join("FAIL: " + f for f in failures))
+    sys.exit(1)
+print("ok")

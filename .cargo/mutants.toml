@@ -1,0 +1,67 @@
+# cargo-mutants configuration (https://mutants.rs). Dev-only; never run by default CI.
+#
+#   cargo install cargo-mutants cargo-nextest
+#   cargo mutants -p warp --file app/src/terminal/pane_key.rs --file app/src/terminal/model/key_facts.rs
+#
+# A full-crate run is hours long: always narrow with --file / --re, or --in-diff <patch>. CI scope
+# (release tier, docs/testing.md "Test tiers"): job `mutants` = pane_key, key_facts, input_queue/{gates,table,facts,mod,pane,shadow}
+# + view/dest_table.rs (the #1424 table; the legacy destination.rs is out of scope) in `warp` with a test filter (MUTANTS_FILES / MUTANTS_TEST_FILTER / MUTANTS_SHARD widen or split it), and job
+# `mutants-warpui-core` = the warpui_core clipboard with its own tests.
+
+# The app's tests are only meaningful as `-p warp -p warp_tui --lib --features warp/gui`
+# (`-p warp_tui` alone fails to compile). cargo-mutants adds the package it mutates; the rest
+# goes in as extra test args. They are NOT set here (a config-file list would also apply to
+# warpui_core): pass them per target, as the CI jobs do:
+#   --cargo-test-arg=-p --cargo-test-arg=warp_tui --cargo-test-arg=--lib --cargo-test-arg=--features --cargo-test-arg=warp/gui
+#   (warpui_core: --cargo-test-arg=--features --cargo-test-arg=tui)
+test_tool = "nextest"
+
+# A mutant that makes the code loop forever is caught by the timeout; the suite is slow to start
+# (large link), so allow generous multiples of the unmutated run.
+timeout_multiplier = 3.0
+minimum_test_timeout = 120
+
+# Never mutate the tests themselves, generated code or code that only exists for a platform the
+# runner is not on.
+exclude_globs = [
+  # test code and test-support
+  "**/*_test.rs",
+  "**/*_tests.rs",
+  "**/tests.rs",
+  "**/tests/**",
+  "**/test_utils.rs",
+  "**/test_util*/**",
+  "app/src/integration_testing/**",
+  "crates/integration/**",
+  "crates/usage_suite/**",
+  "**/benches/**",
+  "fuzz/**",
+  # generated code and build output
+  "**/build.rs",
+  "**/*.generated.rs",
+  "**/generated/**",
+  "app/src/settings/schema_generation.rs",
+  # platform-only files (the Linux box cannot run their tests)
+  "**/windows/**",
+  "**/*_windows.rs",
+  "**/macos/**",
+  "**/*_macos.rs",
+  "**/wasm/**",
+  "**/*_wasm.rs",
+  "app/src/app_menus.rs",
+  # vendored crates and the wasm helpers
+  "lib/**",
+  "crates/warp_web_event_bus/**",
+]
+
+# Mutants that cannot change behavior the tests could see: logging, tracing, Display/Debug.
+exclude_re = [
+  "impl (std::fmt::)?(Debug|Display) for",
+  "::fmt\\b",
+  "\\blog_",
+  "::trace\\b",
+  "profiling",
+]
+
+# Calls whose removal is never interesting.
+skip_calls = ["log", "trace", "debug", "info", "warn"]

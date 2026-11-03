@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use warpui::text_layout;
 
-use crate::editor::{view::DisplayPoint, Point};
+use crate::editor::{Point, view::DisplayPoint};
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 pub struct SoftWrapPoint(Point);
@@ -45,18 +45,78 @@ pub enum ClampDirection {
 /// the Arc, Mutex and Option.
 ///
 /// When this is None, we haven't yet laid out the text.
-pub struct SoftWrapState(Arc<Mutex<Option<FrameLayouts>>>);
+pub struct SoftWrapState {
+    layouts: Arc<Mutex<Option<FrameLayouts>>>,
+    /// Counts the layouts stored so far. A key that reads the layout (End, Up, Down) applied after
+    /// an edit must wait for a layout newer than the edit; this is the event that says one came.
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Told (bounded, one pending) each time a layout is stored.
+    layout_waker: Arc<Mutex<Option<async_channel::Sender<()>>>>,
+    /// The buffer was edited after the last stored layout, so the stored layout describes text
+    /// that is no longer there (#1389). Cleared when the next layout is stored. A key that reads
+    /// the layout (End, Up, Down) must not apply while this is set.
+    stale: Arc<std::sync::atomic::AtomicBool>,
+    /// Test only: while set, `update` stores nothing, so a test can keep "the edit is in, no frame
+    /// has been laid out since" open against the eager scene build of unit tests.
+    #[cfg(test)]
+    hold: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl SoftWrapState {
     pub fn update(&self, new_value: FrameLayouts) {
-        *self.0.lock() = Some(new_value);
+        #[cfg(test)]
+        if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        *self.layouts.lock() = Some(new_value);
+        self.stale
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(waker) = self.layout_waker.lock().as_ref() {
+            let _ = waker.try_send(());
+        }
+    }
+
+    /// Test only: hold (or release) layout stores; see the `hold` field.
+    #[cfg(test)]
+    pub fn hold_updates_for_test(&self, hold: bool) {
+        self.hold.store(hold, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The buffer changed: the stored layout (if any) no longer describes it.
+    pub fn mark_stale(&self) {
+        self.stale.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A layout is stored and the buffer was edited since (#1389). False before the first frame
+    /// (there is no layout to be wrong) and once a frame after the edit was laid out.
+    pub fn is_stale(&self) -> bool {
+        self.is_laid_out() && self.stale.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The number of layouts stored so far.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether a layout has been stored at all (false before the first frame).
+    pub fn is_laid_out(&self) -> bool {
+        self.layouts.lock().is_some()
+    }
+
+    /// Sends on `waker` each time a layout is stored from now on.
+    pub fn set_layout_waker(&self, waker: async_channel::Sender<()>) {
+        *self.layout_waker.lock() = Some(waker);
     }
 
     pub fn read<T, F: FnOnce(anyhow::Result<&FrameLayouts>) -> T>(&self, callback: F) -> T {
-        let frame_layouts = self.0.lock();
+        let frame_layouts = self.layouts.lock();
         match &*frame_layouts {
             Some(frame_layouts) => callback(Ok(frame_layouts)),
-            None => callback(Err(anyhow!("No frame layout. This should only happen if we attempt to read before a frame of the editor has been laid out"))),
+            None => callback(Err(anyhow!(
+                "No frame layout. This should only happen if we attempt to read before a frame of the editor has been laid out"
+            ))),
         }
     }
 }
@@ -171,7 +231,7 @@ impl FrameLayouts {
         // If the row has no glyphs we can't derive column bounds from the layout
         // (this happens for un-laid-out / fontless frames). Return `None` so the
         // caller falls back to logical-line behavior.
-        let first_glyph_index = line.first_glyph()?.index as u32;
+        let first_glyph_index = line.first_glyph()?.index;
         // Derive the row's column bounds from its caret positions when present.
         // A single caret position can span multiple buffer characters (emoji,
         // ligatures, and other shaped clusters), so the row end must be one past
@@ -182,12 +242,12 @@ impl FrameLayouts {
         let start = line
             .caret_positions
             .first()
-            .map_or(first_glyph_index, |caret| caret.start_offset as u32);
+            .map_or(first_glyph_index, |caret| caret.start_offset);
         let end = line
             .caret_positions
             .last()
-            .map(|caret| caret.last_offset as u32 + 1)
-            .or_else(|| line.last_glyph().map(|glyph| glyph.index as u32 + 1))
+            .map(|caret| caret.last_offset.saturating_add(1))
+            .or_else(|| line.last_glyph().map(|glyph| glyph.index.saturating_add(1)))
             .unwrap_or(start);
         Some(start..end)
     }
@@ -207,11 +267,11 @@ impl FrameLayouts {
         }
         if let Some(line) = self.get_line(point.row() as usize) {
             if let Some(glyph) = line.last_glyph() {
-                if point.column() as usize == glyph.index + 1 {
+                if point.column() as usize == glyph.char_index() + 1 {
                     clamp_direction = ClampDirection::Up;
                 }
             } else if let Some(glyph) = line.first_glyph() {
-                if point.column() as usize == glyph.index {
+                if point.column() as usize == glyph.char_index() {
                     clamp_direction = ClampDirection::Down;
                 }
             }

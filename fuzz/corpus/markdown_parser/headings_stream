@@ -1,0 +1,13 @@
+# H1 title
+## H2 title
+### H3 with `code` and **bold**
+#### H4
+##### H5
+###### H6
+####### seven hashes is not a heading
+
+Setext one
+==========
+
+Setext two
+----------

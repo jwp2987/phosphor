@@ -1083,3 +1083,102 @@ fn test_deferred_reload_confirms_deletion_without_blocking() {
         ReloadOutcome::Reloaded
     );
 }
+
+/// #1155: with the background writer a setter returns without touching the disk, a burst
+/// is coalesced, and `flush_pending` puts the latest value in the file.
+#[test]
+fn test_background_writer_defers_then_flushes_latest_to_disk() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    let prefs = prefs.with_background_writer_debounce(std::time::Duration::from_secs(60));
+
+    for size in 10..60 {
+        prefs
+            .write_value_with_hierarchy("font_size", format!("{size}.0"), Some("font"), None)
+            .unwrap();
+    }
+    assert!(
+        !file_path.exists(),
+        "the setter must not have written the file inline"
+    );
+    prefs.flush_pending_writes();
+    let on_disk = std::fs::read_to_string(&file_path).unwrap();
+    assert!(on_disk.contains("font_size = 59.0"), "{on_disk}");
+    assert!(on_disk.parse::<DocumentMut>().is_ok());
+}
+
+/// #1155: the watcher's echo of our own write must not reload an older file over newer
+/// in-memory settings.
+#[test]
+fn test_own_write_echo_does_not_revert_newer_settings() {
+    use super::super::{ReloadOutcome, UserPreferences};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    let prefs = prefs.with_background_writer_debounce(std::time::Duration::from_secs(60));
+
+    prefs.write_value("zoom", "1".to_string()).unwrap();
+    prefs.flush_pending_writes(); // "zoom = 1" is on disk
+    prefs.write_value("zoom", "2".to_string()).unwrap(); // newer, still pending
+
+    // The watcher now reports the first write.
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::OwnWrite
+    );
+    assert_eq!(prefs.read_value("zoom").unwrap(), Some("2".to_string()));
+    prefs.flush_pending_writes();
+    assert!(
+        std::fs::read_to_string(&file_path)
+            .unwrap()
+            .contains("zoom = 2")
+    );
+}
+
+/// An edit made by someone else is reloaded, and a write that was rendered from the
+/// document it replaces is dropped instead of undoing that edit.
+#[test]
+fn test_foreign_edit_is_reloaded_and_discards_the_stale_pending_write() {
+    use super::super::{ReloadOutcome, UserPreferences};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    let prefs = prefs.with_background_writer_debounce(std::time::Duration::from_secs(60));
+
+    prefs.write_value("zoom", "1".to_string()).unwrap();
+    prefs.flush_pending_writes();
+    prefs.write_value("zoom", "2".to_string()).unwrap(); // pending
+
+    std::fs::write(&file_path, "zoom = 9\n").unwrap(); // the user edits the file
+    assert_eq!(
+        prefs.reload_from_disk_deferred().unwrap(),
+        ReloadOutcome::Reloaded
+    );
+    assert_eq!(prefs.read_value("zoom").unwrap(), Some("9".to_string()));
+    prefs.flush_pending_writes();
+    assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "zoom = 9\n");
+}
+
+/// A failed background write is reported through the #862 channel, once.
+#[test]
+fn test_background_write_failure_is_reported_asynchronously() {
+    use super::super::UserPreferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    // The parent "directory" becomes a regular file only after the store has loaded: loading a
+    // path under a file fails with ENOTDIR (not NotFound), which inhibits writes outright and
+    // would fail the setter synchronously instead of exercising the background write.
+    let blocker = dir.path().join("blocker");
+    let file_path = blocker.join("settings.toml");
+    let (prefs, _) = TomlBackedUserPreferences::new(file_path.clone());
+    std::fs::write(&blocker, "x").unwrap();
+    let prefs = prefs.with_background_writer_debounce(std::time::Duration::from_secs(60));
+
+    assert!(prefs.write_value("zoom", "1".to_string()).is_ok());
+    assert!(prefs.flush_pending().is_err());
+}

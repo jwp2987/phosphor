@@ -1,0 +1,176 @@
+{
+ "summary_line": "Summary [ 213.456s] 10551 tests run: 10529 passed (1 slow), 22 failed, 29 skipped",
+ "duration_s": 213.456,
+ "run": 10551,
+ "passed": 10529,
+ "failed": 22,
+ "timed_out": 0,
+ "skipped": 29,
+ "slow": 1,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::input_queue::facts::table_enum_tests::every_row_of_the_table_is_reachable",
+   "seconds": 0.377
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane",
+   "seconds": 0.137
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_ctrl_c_ends_the_hold",
+   "seconds": 0.131
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_ctrl_d_is_held_after_a_prompt_was_answered",
+   "seconds": 0.139
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_editor_backspace_in_the_gap_edits_the_held_text",
+   "seconds": 0.138
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys",
+   "seconds": 0.163
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped",
+   "seconds": 0.137
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole",
+   "seconds": 0.15
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_line_typed_across_gate_release_is_never_run_locally",
+   "seconds": 0.132
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it",
+   "seconds": 0.19
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_paste_with_a_pending_read_keeps_typed_order_around_it",
+   "seconds": 0.162
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_queue_enter_runs_the_held_line_once",
+   "seconds": 0.168
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_queue_interrupt_discards_the_held_keys",
+   "seconds": 0.143
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_queue_key_queued_in_the_prompt_turn_lands_after_the_held_keys",
+   "seconds": 0.131
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::ssh_queue_keys_during_connect_are_delivered_once_in_order",
+   "seconds": 0.136
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event",
+   "seconds": 0.119
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_shell_once",
+   "seconds": 0.121
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover",
+   "seconds": 0.121
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::table_mode_arrivals_reach_the_same_destinations_as_legacy",
+   "seconds": 0.567
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once",
+   "seconds": 0.136
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::text_replayed_into_a_new_ssh_connect_is_held_not_dropped",
+   "seconds": 0.135
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::typing_on_the_ssh_extension_choice_card_shows_a_hint_instead_of_vanishing",
+   "seconds": 0.136
+  }
+ ],
+ "regressions": [
+  "terminal::input_queue::facts::table_enum_tests::every_row_of_the_table_is_reachable",
+  "terminal::view::tests::ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane",
+  "terminal::view::tests::ssh_ctrl_c_ends_the_hold",
+  "terminal::view::tests::ssh_ctrl_d_is_held_after_a_prompt_was_answered",
+  "terminal::view::tests::ssh_editor_backspace_in_the_gap_edits_the_held_text",
+  "terminal::view::tests::ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys",
+  "terminal::view::tests::ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped",
+  "terminal::view::tests::ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole",
+  "terminal::view::tests::ssh_line_typed_across_gate_release_is_never_run_locally",
+  "terminal::view::tests::ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it",
+  "terminal::view::tests::ssh_paste_with_a_pending_read_keeps_typed_order_around_it",
+  "terminal::view::tests::ssh_queue_enter_runs_the_held_line_once",
+  "terminal::view::tests::ssh_queue_interrupt_discards_the_held_keys",
+  "terminal::view::tests::ssh_queue_key_queued_in_the_prompt_turn_lands_after_the_held_keys",
+  "terminal::view::tests::ssh_queue_keys_during_connect_are_delivered_once_in_order",
+  "terminal::view::tests::table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event",
+  "terminal::view::tests::table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_shell_once",
+  "terminal::view::tests::table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover",
+  "terminal::view::tests::table_mode_arrivals_reach_the_same_destinations_as_legacy",
+  "terminal::view::tests::table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once",
+  "terminal::view::tests::text_replayed_into_a_new_ssh_connect_is_held_not_dropped",
+  "terminal::view::tests::typing_on_the_ssh_extension_choice_card_shows_a_hint_instead_of_vanishing"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-linux",
+ "status": "failed",
+ "duration": 429.097366
+}

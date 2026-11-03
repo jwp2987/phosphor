@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use warpui::{
     current_render_window,
@@ -29,7 +30,9 @@ pub const DEFAULT_COMMAND_PALETTE_FONT_SIZE: f32 = 14.0;
 /// to individually listen for changes. The most prominent examples are
 /// settings related to themes and fonts.
 pub struct Appearance {
-    theme: WarpTheme,
+    /// Shared so per-frame consumers (the terminal grid renderers) can hold the theme without
+    /// cloning the whole struct; see [`Appearance::shared_theme`].
+    theme: Arc<WarpTheme>,
     monospace_font_family: FamilyId,
     monospace_font_size: f32,
     monospace_font_weight: Weight,
@@ -49,7 +52,7 @@ pub struct Appearance {
     /// Per-window theme overrides. When a window has an entry here, its rendering
     /// uses this theme instead of the global `theme`. Empty in the common case,
     /// which keeps `theme()` on a zero-cost fast path.
-    theme_overrides: HashMap<WindowId, WarpTheme>,
+    theme_overrides: HashMap<WindowId, Arc<WarpTheme>>,
     /// Per-window `UiBuilder`s, kept in lockstep with `theme_overrides` (a
     /// `UiBuilder` bakes the theme into its styles, so each override needs its own).
     ui_builder_overrides: HashMap<WindowId, UiBuilder>,
@@ -116,7 +119,7 @@ impl Appearance {
         heading_font_size_multipliers: HeadingFontSizeMultipliers,
     ) -> Self {
         Self {
-            theme: theme.clone(),
+            theme: Arc::new(theme.clone()),
             monospace_font_family,
             monospace_font_size,
             monospace_font_weight,
@@ -160,7 +163,7 @@ impl Appearance {
         let ui_font_family = FamilyId(1);
 
         Self {
-            theme: mock_theme.clone(),
+            theme: Arc::new(mock_theme.clone()),
             monospace_font_family: FamilyId(0),
             monospace_font_size: 13.,
             monospace_font_weight: Weight::Normal,
@@ -184,9 +187,9 @@ impl Appearance {
     }
 
     pub fn set_theme(&mut self, new_theme: WarpTheme, ctx: &mut ModelContext<Self>) {
-        self.theme = new_theme;
+        self.theme = Arc::new(new_theme);
         self.ui_builder = UiBuilder::new(
-            self.theme.clone(),
+            WarpTheme::clone(&self.theme),
             self.ui_font_family,
             self.ui_font_size(),
             DEFAULT_COMMAND_PALETTE_FONT_SIZE,
@@ -226,7 +229,7 @@ impl Appearance {
         self.ui_font_family = new_family;
 
         self.ui_builder = UiBuilder::new(
-            self.theme.clone(),
+            WarpTheme::clone(&self.theme),
             self.ui_font_family,
             self.ui_font_size(),
             DEFAULT_COMMAND_PALETTE_FONT_SIZE,
@@ -307,7 +310,7 @@ impl Appearance {
         let previous_font_size = self.ui_font_size;
         self.ui_font_size = new_font_size;
         self.ui_builder = UiBuilder::new(
-            self.theme.clone(),
+            WarpTheme::clone(&self.theme),
             self.ui_font_family,
             self.ui_font_size,
             DEFAULT_COMMAND_PALETTE_FONT_SIZE,
@@ -331,7 +334,7 @@ impl Appearance {
     pub fn set_ui_font_size_test(&mut self, new_font_size: f32) {
         self.ui_font_size = new_font_size;
         self.ui_builder = UiBuilder::new(
-            self.theme.clone(),
+            WarpTheme::clone(&self.theme),
             self.ui_font_family,
             self.ui_font_size,
             DEFAULT_COMMAND_PALETTE_FONT_SIZE,
@@ -352,7 +355,7 @@ impl Appearance {
         let previous_line_height_ratio = self.line_height_ratio;
         self.line_height_ratio = new_line_height_ratio;
         self.ui_builder = UiBuilder::new(
-            self.theme.clone(),
+            WarpTheme::clone(&self.theme),
             self.ui_font_family,
             self.ui_font_size,
             DEFAULT_COMMAND_PALETTE_FONT_SIZE,
@@ -379,6 +382,16 @@ impl Appearance {
     }
 
     pub fn theme(&self) -> &WarpTheme {
+        self.theme_ref()
+    }
+
+    /// The same theme as [`Appearance::theme`], as a cheap-to-clone shared handle. Use this
+    /// instead of `theme().clone()` when a value that outlives the borrow needs the theme.
+    pub fn shared_theme(&self) -> Arc<WarpTheme> {
+        Arc::clone(self.theme_ref())
+    }
+
+    fn theme_ref(&self) -> &Arc<WarpTheme> {
         if self.theme_overrides.is_empty() {
             return &self.theme;
         }
@@ -402,7 +415,7 @@ impl Appearance {
             DEFAULT_COMMAND_PALETTE_FONT_SIZE,
             self.line_height_ratio,
         );
-        self.theme_overrides.insert(window_id, theme);
+        self.theme_overrides.insert(window_id, Arc::new(theme));
         self.ui_builder_overrides.insert(window_id, ui_builder);
 
         // Only redraw the affected window; other windows keep their theme.

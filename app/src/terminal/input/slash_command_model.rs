@@ -139,7 +139,7 @@ impl SlashCommandEntryState {
         }
     }
 
-    fn is_disabled(&self) -> bool {
+    pub(crate) fn is_disabled(&self) -> bool {
         matches!(self, Self::DisabledUntilEmptyBuffer)
     }
 

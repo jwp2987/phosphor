@@ -101,11 +101,6 @@ pub const FEATURE_INTROS: &[FeatureIntro] = &[FeatureIntro {
     cta_target: None,
 }];
 
-/// Looks up a feature-intro descriptor by its id.
-pub fn feature_intro_by_id(id: FeatureIntroId) -> Option<&'static FeatureIntro> {
-    FEATURE_INTROS.iter().find(|intro| intro.id == id)
-}
-
 fn modal_background(appearance: &Appearance) -> Fill {
     appearance.theme().surface_3()
 }

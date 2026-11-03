@@ -66,7 +66,6 @@ integration_tests! {
     test_restore_snapshot_with_background_output,
     test_restore_snapshot_with_notebooks,
     test_restore_snapshot_with_workflows,
-    test_restore_snapshot_with_test_json_object,
     test_restore_snapshot_with_common_shareable_metadata_ids,
     test_restore_snapshot_with_markdown_file,
     test_restore_snapshot_with_settings_page,
@@ -185,11 +184,6 @@ integration_tests! {
     // Disabled due to flakiness on CI.
     #[ignore]
     test_create_session_with_split_pane_while_bootstrapping,
-
-    // For some reason, disabling the `AgentMode` flag does not actually disable Agent Mode in the test
-    // run. Ignore for now.
-    #[ignore]
-    test_ask_warp_ai_keybinding_for_selected_block,
 
     test_tab_behavior_setting,
 

@@ -1,33 +1,32 @@
 use warp_core::{features::FeatureFlag, send_telemetry_from_ctx, ui::appearance::Appearance};
 
-use crate::terminal::model::escape_sequences;
-use warpui::{keymap::Keystroke, EntityId, SingletonEntity, ViewContext};
+use warpui::{EntityId, SingletonEntity, ViewContext, keymap::Keystroke};
 
 use crate::{
+    TelemetryEvent,
     ai::{
         agent::conversation::AIConversationId,
         blocklist::{
+            BlocklistAIHistoryModel,
             agent_view::{
                 AgentViewEntryBlock, AgentViewEntryBlockEvent, AgentViewEntryBlockParams,
-                AgentViewEntryOrigin, AutoTriggerBehavior, DismissalStrategy, EnterAgentViewError,
-                EphemeralMessage, ENTER_OR_EXIT_CONFIRMATION_WINDOW,
+                AgentViewEntryOrigin, AutoTriggerBehavior, DismissalStrategy,
+                ENTER_OR_EXIT_CONFIRMATION_WINDOW, EnterAgentViewError, EphemeralMessage,
             },
             history_model::LoadedConversationData,
-            BlocklistAIHistoryModel,
         },
     },
     global_resource_handles::GlobalResourceHandlesProvider,
     persistence::ModelEvent,
     server::telemetry::TelemetryAgentViewEntryOrigin,
     terminal::{
+        TerminalView,
         input::message_bar::{Message, MessageItem},
         model::rich_content::RichContentType,
         view::{AgentViewEntryMetadata, RichContentInsertionPosition, RichContentMetadata},
-        TerminalView,
     },
     view_components::DismissibleToast,
     workspace::{ToastStack, WorkspaceAction},
-    TelemetryEvent,
 };
 
 pub const ENTER_AGAIN_TO_SEND_MESSAGE_ID: &str = "enter_again_to_send";
@@ -72,8 +71,8 @@ impl TerminalView {
         }
     }
 
-    /// Types a prepared local-child-harness command into this pane's PTY and
-    /// presses Enter, starting the harness CLI as though the user had typed
+    /// Runs a prepared local-child-harness command in this pane (as the pending
+    /// command until the shell is ready), starting the harness CLI as though the user had typed
     /// it themselves. Mirrors the "write to PTY so the process runs with a
     /// real shell/tty behind it" pattern used elsewhere (e.g.
     /// `run_aws_login_command`); this pane is created hidden specifically to
@@ -84,8 +83,10 @@ impl TerminalView {
         command: &str,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.clear_line_editor_and_write_to_pty(command.as_bytes().to_vec(), ctx);
-        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // A command, not raw bytes (#1449): the fresh pane may not have finished its shell
+        // bootstrap, where raw text was typed into the bootstrap or lost. This runs it once the
+        // shell can take a command and holds it as the pending command until then.
+        self.execute_command_or_set_pending(command, ctx);
     }
 
     pub fn enter_agent_view_for_new_conversation(
@@ -177,8 +178,13 @@ impl TerminalView {
             }
         } else {
             let conversation_id_copy = conversation_id;
+            if !self.conversation_restores_in_flight.insert(conversation_id) {
+                log::debug!("Restore of {conversation_id} already in flight; not restoring again");
+                return;
+            }
             let future = history_model.load_conversation_data(conversation_id_copy);
             ctx.spawn(future, move |me, conversation, ctx| {
+                me.conversation_restores_in_flight.remove(&conversation_id);
                 let Some(conversation) = conversation else {
                     me.show_error_toast(
                         format!("Failed to load conversation with id: {conversation_id}"),

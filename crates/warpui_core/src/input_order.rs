@@ -13,7 +13,7 @@
 //! after that output. Only byte counts and times are logged, never the bytes.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The log target every input-order line uses.
@@ -53,6 +53,127 @@ pub fn describe_text(text: &str) -> String {
     }
 }
 
+/// Describes raw input bytes for a log line (control sequences can carry typed text: Alt+letter is
+/// ESC + letter, kitty/CSI-u sequences carry the character, a stray paste byte stream is text): the
+/// bytes themselves only when the tester opted in with `WARP_INPUT_ORDER_LOG_TEXT=1`, else only
+/// their count (#1444).
+pub fn describe_bytes(bytes: &[u8]) -> String {
+    if text_opted_in() {
+        format!("{bytes:?}")
+    } else {
+        format!("<{} bytes>", bytes.len())
+    }
+}
+
+/// Describes raw input bytes as an escaped string (`echo\x1bi`) when the tester opted in with
+/// `WARP_INPUT_ORDER_LOG_TEXT=1`, else only their count (#1490). The exact bytes of a pty write,
+/// readable next to the shell's own record of the line.
+pub fn describe_bytes_escaped(bytes: &[u8]) -> String {
+    if text_opted_in() {
+        format!("\"{}\"", bytes.escape_ascii())
+    } else {
+        format!("<{} bytes>", bytes.len())
+    }
+}
+
+/// A shell-ready signal the typeahead hand-off acts on (#1490), stamped so every pty write can say
+/// how long after each one it happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellSignal {
+    /// The prompt's precmd hook was parsed.
+    Precmd,
+    /// A command started (preexec).
+    Preexec,
+    /// The line editor's ready signal (bracketed-paste enable) after a prompt.
+    LineEditorReady,
+    /// The input-report request (`ESC i`) was decided.
+    RequestDecided,
+    /// The shell's input report arrived.
+    ReportReceived,
+}
+
+impl ShellSignal {
+    const COUNT: usize = 5;
+
+    fn index(self) -> usize {
+        match self {
+            ShellSignal::Precmd => 0,
+            ShellSignal::Preexec => 1,
+            ShellSignal::LineEditorReady => 2,
+            ShellSignal::RequestDecided => 3,
+            ShellSignal::ReportReceived => 4,
+        }
+    }
+
+    fn label(index: usize) -> &'static str {
+        match index {
+            0 => "precmd",
+            1 => "preexec",
+            2 => "ready",
+            3 => "request",
+            _ => "report",
+        }
+    }
+}
+
+/// Epoch milliseconds of the last stamp per [`ShellSignal`]; 0 means never.
+static SHELL_SIGNAL_MS: [AtomicU64; ShellSignal::COUNT] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+fn epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Stamps `signal` as having just happened. One atomic store when input-order logging is on,
+/// nothing when it is off. A `Preexec` also logs `hop=preexec_received` (#1583 W3): the stamp
+/// alone only shows up as `since_preexec_ms` on the NEXT pty write, so the Enter latency split
+/// (pty write of the line -> the shell's preexec) could not be measured from the log.
+pub fn note_shell_signal(signal: ShellSignal) {
+    if enabled() {
+        SHELL_SIGNAL_MS[signal.index()].store(epoch_ms(), Ordering::Relaxed);
+        if signal == ShellSignal::Preexec {
+            log::debug!(target: TARGET, "{}", preexec_line());
+        }
+    }
+}
+
+/// `input_order hop=preexec_received signal=preexec t=...` (#1583 W3; parsed by the appci
+/// harness's `enter_segments`).
+fn preexec_line() -> String {
+    hop_line("preexec_received", "signal=preexec")
+}
+
+/// `since_precmd_ms=12 since_preexec_ms=none ...`: how long ago each shell-ready signal was last
+/// stamped, for the line of a pty write (#1490).
+pub fn shell_signal_ages() -> String {
+    let now = epoch_ms();
+    let mut out = String::new();
+    for (index, stamp) in SHELL_SIGNAL_MS.iter().enumerate() {
+        let at = stamp.load(Ordering::Relaxed);
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        if at == 0 {
+            out.push_str(&format!("since_{}_ms=none", ShellSignal::label(index)));
+        } else {
+            out.push_str(&format!(
+                "since_{}_ms={}",
+                ShellSignal::label(index),
+                now.saturating_sub(at)
+            ));
+        }
+    }
+    out
+}
+
 /// Describes a key name: multi-character names (`enter`) as they are, single characters like text.
 pub fn describe_key(key: &str) -> String {
     if key.chars().count() > 1 {
@@ -66,17 +187,44 @@ pub fn describe_key(key: &str) -> String {
 /// tester cannot grep the log for these lines (#1034).
 const LINE_PREFIX: &str = "input_order";
 
-fn key_down_line(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> String {
+/// Sequence number of the key being dispatched (#1345). A physical key is a `keydown` event and,
+/// for printable keys, a `typed_characters` event right after it: both carry the same number, and
+/// every `kh_*` hop the key causes prints it, so one key's path can be followed end to end.
+static KEY_SEQ: AtomicU64 = AtomicU64::new(0);
+/// A `keydown` was numbered and its `typed_characters` has not arrived yet.
+static KEYDOWN_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// The number of the key being dispatched now (0 before the first).
+pub fn current_key_seq() -> u64 {
+    KEY_SEQ.load(Ordering::Relaxed)
+}
+
+/// Numbers a `keydown` event.
+fn next_key_seq_for_keydown() -> u64 {
+    KEYDOWN_OPEN.store(true, Ordering::Relaxed);
+    KEY_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// Numbers a `typed_characters` event: the one of the `keydown` before it, else a new one.
+fn key_seq_for_typed_characters() -> u64 {
+    if KEYDOWN_OPEN.swap(false, Ordering::Relaxed) {
+        current_key_seq()
+    } else {
+        KEY_SEQ.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
+
+fn key_down_line(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool, seq: u64) -> String {
     format!(
-        "{LINE_PREFIX} keydown key={} ctrl={ctrl} alt={alt} shift={shift} cmd={cmd} t={}",
+        "{LINE_PREFIX} keydown key={} ctrl={ctrl} alt={alt} shift={shift} cmd={cmd} t={} seq={seq}",
         describe_key(key),
         now_ms()
     )
 }
 
-fn typed_characters_line(chars: &str) -> String {
+fn typed_characters_line(chars: &str, seq: u64) -> String {
     format!(
-        "{LINE_PREFIX} typed_characters text={} t={}",
+        "{LINE_PREFIX} typed_characters text={} t={} seq={seq}",
         describe_text(chars),
         now_ms()
     )
@@ -92,6 +240,23 @@ fn submit_line(buffer: &str) -> String {
 
 fn pty_write_line(bytes: usize) -> String {
     format!("{LINE_PREFIX} pty_write bytes={bytes} t={}", now_ms())
+}
+
+/// A hop line for the typeahead path (#1162): `what` names the hop, `detail` is counts and
+/// states only, never typed text.
+fn hop_line(what: &str, detail: &str) -> String {
+    format!("{LINE_PREFIX} hop={what} {detail} t={}", now_ms())
+}
+
+/// A line for one layer an Return/Enter key press passes through (#1482): `layer` is `mac_enter`
+/// (the Objective-C view/window/application) or `core_enter` (the keystroke matcher), `stage`
+/// names the point reached, `detail` is flags, counts, times and type names only, never text.
+/// Grep `hop=mac_enter` / `hop=core_enter` to see where a lost Enter stops.
+fn enter_line(layer: &str, stage: &str, detail: &str) -> String {
+    format!(
+        "{LINE_PREFIX} hop={layer} stage={stage} {detail} t={}",
+        now_ms()
+    )
 }
 
 fn pty_read_line(bytes: usize, since_write: Duration) -> String {
@@ -113,6 +278,43 @@ static FRAME_OWED_FOR_PTY_OUTPUT: AtomicBool = AtomicBool::new(false);
 pub fn log_pty_write(bytes: usize) {
     if enabled() {
         log::debug!(target: TARGET, "{}", pty_write_line(bytes));
+    }
+}
+
+/// A tri-state focus answer as a log word.
+pub fn describe_opt(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+/// Logs one hop of a typed key's path (#1345): `kh_*` names, the number of the key being
+/// dispatched, then flags and counts only (never the key). Grep `hop=kh_` and follow `seq=`.
+pub fn log_key_hop(what: &str, detail: impl FnOnce() -> String) {
+    if enabled() {
+        log::debug!(
+            target: TARGET,
+            "{}",
+            hop_line(what, &format!("seq={} {}", current_key_seq(), detail()))
+        );
+    }
+}
+
+/// Logs one hop of the typeahead -> pty path (#1162), for pinning down where a typed-ahead byte
+/// is lost or reordered on a platform that cannot be debugged live (Windows ConPTY). Takes the
+/// detail lazily so the formatting costs nothing when input-order logging is off.
+pub fn log_hop(what: &str, detail: impl FnOnce() -> String) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", hop_line(what, &detail()));
+    }
+}
+
+/// Logs one stage of an Enter key press (#1482); see [`enter_line`]. Takes the detail lazily.
+pub fn log_enter(layer: &str, stage: &str, detail: impl FnOnce() -> String) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", enter_line(layer, stage, &detail()));
     }
 }
 
@@ -141,14 +343,16 @@ pub fn log_frame_if_pty_output_pending(layout: bool) {
 /// Logs a key-down being dispatched.
 pub fn log_key_down(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) {
     if enabled() {
-        log::debug!(target: TARGET, "{}", key_down_line(key, ctrl, alt, shift, cmd));
+        let seq = next_key_seq_for_keydown();
+        log::debug!(target: TARGET, "{}", key_down_line(key, ctrl, alt, shift, cmd, seq));
     }
 }
 
 /// Logs typed characters being dispatched.
 pub fn log_typed_characters(chars: &str) {
     if enabled() {
-        log::debug!(target: TARGET, "{}", typed_characters_line(chars));
+        let seq = key_seq_for_typed_characters();
+        log::debug!(target: TARGET, "{}", typed_characters_line(chars, seq));
     }
 }
 
@@ -164,6 +368,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pty_write_bytes_and_signal_ages_do_not_leak_text_or_panic() {
+        // Not opted in (the variable is not set by the test run): bytes are redacted to a count.
+        if std::env::var("WARP_INPUT_ORDER_LOG_TEXT").is_err() {
+            let shown = describe_bytes_escaped(b"hunter2\x1bi");
+            assert_eq!(shown, "<9 bytes>");
+        }
+        let ages = shell_signal_ages();
+        for label in ["precmd", "preexec", "ready", "request", "report"] {
+            assert!(ages.contains(&format!("since_{label}_ms=")), "{ages}");
+        }
+    }
+
+    #[test]
     fn target_is_the_documented_name() {
         assert_eq!(TARGET, "warp::input_order");
     }
@@ -171,16 +388,26 @@ mod tests {
     #[test]
     fn lines_are_greppable_without_the_target_and_redact_text() {
         for line in [
-            key_down_line("a", false, false, false, false),
-            key_down_line("enter", false, false, false, false),
-            typed_characters_line("hunter2"),
+            key_down_line("a", false, false, false, false, 1),
+            key_down_line("enter", false, false, false, false, 2),
+            typed_characters_line("hunter2", 3),
             submit_line("hunter2"),
         ] {
             assert!(line.starts_with("input_order "), "{line}");
             assert!(!line.contains("hunter2"), "{line}");
         }
-        assert!(key_down_line("enter", false, false, false, false).contains("key=enter"));
-        assert!(typed_characters_line("hunter2").contains("<7 chars>"));
+        assert!(key_down_line("enter", false, false, false, false, 2).contains("key=enter"));
+        assert!(typed_characters_line("hunter2", 3).contains("<7 chars>"));
+        assert!(typed_characters_line("a", 9).ends_with(" seq=9"));
+    }
+
+    /// #1444: control-sequence bytes can carry typed text (Alt+letter is ESC + letter), so a log
+    /// line describes them by count unless the tester opted in.
+    #[test]
+    fn raw_bytes_are_described_by_count_not_content() {
+        let described = describe_bytes(b"\x1bp");
+        assert!(!described.contains("112"), "{described}");
+        assert_eq!(described, "<2 bytes>");
     }
 
     #[test]
@@ -203,6 +430,58 @@ mod tests {
     }
 
     #[test]
+    fn the_preexec_line_is_the_hop_the_latency_split_parses() {
+        // script/realapp/appci/cases.py enter_segments matches `hop=preexec_received` and ` t=`.
+        let line = preexec_line();
+        assert!(
+            line.starts_with("input_order hop=preexec_received signal=preexec t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn hop_lines_are_greppable_and_carry_the_detail() {
+        let line = hop_line("pty_write_partial", "wrote=1 of=5");
+        assert!(
+            line.starts_with("input_order hop=pty_write_partial wrote=1 of=5 t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn enter_lines_name_the_layer_and_stage_and_carry_the_detail() {
+        let line = enter_line("mac_enter", "key_down_impl_exit", "handled=false ts=1.5");
+        assert!(
+            line.starts_with(
+                "input_order hop=mac_enter stage=key_down_impl_exit handled=false ts=1.5 t="
+            ),
+            "{line}"
+        );
+        let line = enter_line("core_enter", "match_none", "step=2");
+        assert!(
+            line.starts_with("input_order hop=core_enter stage=match_none step=2 t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_keydown_and_its_typed_characters_share_a_number() {
+        let keydown = next_key_seq_for_keydown();
+        assert_eq!(key_seq_for_typed_characters(), keydown);
+        // Typed characters with no keydown before them (an input method) get their own.
+        assert!(key_seq_for_typed_characters() > keydown);
+    }
+
+    #[test]
+    fn key_hops_carry_the_sequence_and_the_detail() {
+        let line = hop_line("kh_x", "seq=4 focused=true");
+        assert!(
+            line.starts_with("input_order hop=kh_x seq=4 focused=true t="),
+            "{line}"
+        );
+    }
+
+    #[test]
     fn only_the_first_frame_after_pty_output_is_due() {
         let owed = AtomicBool::new(false);
         assert!(!take_frame_owed(&owed));
@@ -211,3 +490,7 @@ mod tests {
         assert!(!take_frame_owed(&owed));
     }
 }
+
+#[cfg(test)]
+#[path = "input_order_snapshot_tests.rs"]
+mod snapshot_tests;

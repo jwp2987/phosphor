@@ -141,7 +141,9 @@ elif [[ $RELEASE_CHANNEL = "local" || $RELEASE_CHANNEL = "dev" ]]; then
   fi
 else
   if [[ "$ARTIFACT" == "cli" ]]; then
-    CARGO_PROFILE="release-cli"
+    # The CLI artifact is the remote-server tarball downloaded once onto ssh hosts, so it is
+    # built for speed, not download size (#1157). Other release-cli users keep the size profile.
+    CARGO_PROFILE="release-remote"
   else
     CARGO_PROFILE="release-lto"
   fi
@@ -220,6 +222,12 @@ fi
 # Artifact-specific configuration
 if [[ "$ARTIFACT" == "cli" ]]; then
   FEATURES="$FEATURES,standalone"
+  # musl's malloc is slow under the remote server's multithreaded small-object churn (#1157).
+  # The feature is a no-op off musl (alloc.rs gates on target_env), so only the static musl
+  # tarball downloaded onto ssh hosts gets mimalloc.
+  if [[ "${BUILD_TARGET:-}" == *-musl ]]; then
+    FEATURES="$FEATURES,mimalloc"
+  fi
 elif [[ "$ARTIFACT" == "app" ]]; then
   FEATURES="$FEATURES,gui,nld_improvements"
 fi
@@ -249,6 +257,13 @@ CARGO_TARGET_ARG=()
 if [[ -n "$BUILD_TARGET" ]]; then
   echo "Building for Rust target $BUILD_TARGET"
   CARGO_TARGET_ARG=(--target "$BUILD_TARGET")
+fi
+
+# The Tracy `profiling` feature is for the manual build-*-profiling CI jobs only (#1169).
+# Never ship it: refuse here rather than discover it in a release.
+if [[ ",$FEATURES," == *",profiling,"* ]]; then
+  echo "ERROR: the 'profiling' cargo feature must never be part of a bundle (FEATURES=$FEATURES)" >&2
+  exit 1
 fi
 
 # If we only want to check that compilation will succeed, perform the checks
@@ -302,6 +317,10 @@ if [[ "$BUILD" == "true" ]]; then
   # macOS-only `-headerpad_max_install_names` from `[build].rustflags` is
   # deliberately not carried over; that block is already overridden on Linux.
   # Local dev builds are untouched and keep mold.
+  #
+  # Any new codegen flag (target-cpu, -C options, ...) must be added to this RUSTFLAGS line:
+  # putting it in .cargo/config.toml would be silently ignored on Linux release builds, because
+  # this variable replaces that file's rustflags entirely. The zigbuild/musl path inherits it.
   export RUSTFLAGS="-C symbol-mangling-version=v0"
 
   if [[ "${USE_ZIGBUILD:-false}" == "true" ]]; then

@@ -7,16 +7,15 @@ use crate::rendering::{GlyphCache, GlyphConfig};
 use crate::scene::{GlyphFade, Layer};
 use crate::Scene;
 use pathfinder_geometry::rect::RectF;
+use rustc_hash::FxHashMap;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, Arc};
-use wgpu::util::BufferInitDescriptor;
 use wgpu::{
-    BindGroupLayout, BufferUsages, ColorTargetState, Device, FilterMode, RenderPass,
-    RenderPipeline, Sampler,
+    BindGroupLayout, ColorTargetState, Device, FilterMode, Queue, RenderPass, RenderPipeline,
+    Sampler,
 };
 
-use super::util::create_buffer_init;
+use super::util::InstanceBuffers;
 
 pub(super) struct Pipeline {
     glyph_cache: GlyphCache<TextureWithBindGroup>,
@@ -25,11 +24,28 @@ pub(super) struct Pipeline {
     sampler: Sampler,
 }
 
+/// Kept across frames so the instance vectors and vertex buffer are reused; see `begin_frame`.
 #[derive(Default)]
 pub(super) struct PerFrameState {
     glyph_data: Vec<shaders::GlyphInstanceData>,
-    buffer: Option<wgpu::Buffer>,
+    /// The current layer's instances grouped by atlas texture. Every vector is drained into
+    /// `glyph_data` at the end of each layer, so between layers they are all empty.
+    by_texture: FxHashMap<TextureId, Vec<shaders::GlyphInstanceData>>,
+    buffers: InstanceBuffers,
 }
+
+impl PerFrameState {
+    pub(super) fn begin_frame(&mut self) {
+        self.glyph_data.clear();
+        for instances in self.by_texture.values_mut() {
+            instances.clear();
+        }
+        self.buffers.begin_frame();
+    }
+}
+
+// `Queue::write_buffer` requires a size that is a multiple of `COPY_BUFFER_ALIGNMENT` (4).
+const _: () = assert!(std::mem::size_of::<shaders::GlyphInstanceData>() % 4 == 0);
 
 pub(super) struct LayerState {
     textures: Vec<PerTextureState>,
@@ -148,8 +164,7 @@ impl Pipeline {
 
         let scale_factor = scene.scale_factor();
 
-        let mut texture_to_glyph: HashMap<TextureId, Vec<shaders::GlyphInstanceData>> =
-            HashMap::new();
+        let texture_to_glyph = &mut per_frame_state.by_texture;
         for glyph in &layer.glyphs {
             let glyph_position = glyph.position * scale_factor;
             let subpixel_alignment = SubpixelAlignment::new(glyph_position);
@@ -211,33 +226,38 @@ impl Pipeline {
                 Ok(None) => {}
                 Err(err) => {
                     log::warn!("Unable to get glyph out of glyph cache: {err:?}, {glyph:?}");
+                    // Leave nothing behind for the next layer.
+                    for instances in texture_to_glyph.values_mut() {
+                        instances.clear();
+                    }
                     return None;
                 }
             }
         }
 
-        if texture_to_glyph.is_empty() {
+        // Group order within a layer is arbitrary (as it was with a per-layer `HashMap`); only
+        // the order inside a group matters, and `append` preserves it.
+        let mut start_offset = per_frame_state.glyph_data.len();
+        let mut per_texture_data = Vec::new();
+        for (texture_id, glyph_instance_data) in texture_to_glyph.iter_mut() {
+            if glyph_instance_data.is_empty() {
+                continue;
+            }
+            let len = glyph_instance_data.len();
+            per_frame_state.glyph_data.append(glyph_instance_data);
+            per_texture_data.push(PerTextureState {
+                texture_id: *texture_id,
+                start_offset,
+                len,
+            });
+            start_offset += len;
+        }
+
+        if per_texture_data.is_empty() {
             // Early exit if there are no glyphs to render, as it causes a debug assert
             // failure in the metal code to create an empty metal buffer.
             return None;
         }
-
-        let mut start_offset = per_frame_state.glyph_data.len();
-        let per_texture_data = texture_to_glyph
-            .into_iter()
-            .map(|(texture_id, mut glyph_instance_data)| {
-                let len = glyph_instance_data.len();
-                per_frame_state.glyph_data.append(&mut glyph_instance_data);
-
-                let state = PerTextureState {
-                    texture_id,
-                    start_offset,
-                    len,
-                };
-                start_offset += len;
-                state
-            })
-            .collect();
 
         Some(LayerState {
             textures: per_texture_data,
@@ -247,18 +267,16 @@ impl Pipeline {
     pub(super) fn finalize_per_frame_state(
         per_frame_state: &mut PerFrameState,
         device: &Device,
+        queue: &Queue,
         device_lost: &Arc<AtomicBool>,
     ) {
-        per_frame_state.buffer = create_buffer_init(
+        per_frame_state.buffers.upload(
+            "Glyph instance buffer",
             device,
+            queue,
             device_lost,
-            &BufferInitDescriptor {
-                label: Some("Glyph instance buffer"),
-                contents: bytemuck::cast_slice(&per_frame_state.glyph_data),
-                usage: BufferUsages::VERTEX,
-            },
-        )
-        .ok();
+            bytemuck::cast_slice(&per_frame_state.glyph_data),
+        );
     }
 
     pub(super) fn draw<'a>(
@@ -267,7 +285,7 @@ impl Pipeline {
         layer_state: &LayerState,
         per_frame_state: &'a PerFrameState,
     ) {
-        let Some(buffer) = per_frame_state.buffer.as_ref() else {
+        let Some(buffer) = per_frame_state.buffers.vertex_buffer() else {
             return;
         };
 

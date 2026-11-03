@@ -1,5 +1,5 @@
 // TODO: restrict what we make public here.
-mod builtins;
+pub(crate) mod builtins;
 pub mod context_chip;
 pub mod current_prompt;
 pub mod directory_fetcher;
@@ -16,6 +16,7 @@ pub mod renderer;
 pub mod spacing;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use context_chip::PromptGenerator;
@@ -58,14 +59,6 @@ impl ChipValue {
         match self {
             ChipValue::Text(s) => Some(s),
             ChipValue::GitDiffStats(_) | ChipValue::GitBranchStatus(_) => None,
-        }
-    }
-
-    /// Returns the `GitLineChanges` payload, if this is the `GitDiffStats` variant.
-    pub fn as_git_diff_stats(&self) -> Option<&display_chip::GitLineChanges> {
-        match self {
-            ChipValue::GitDiffStats(g) => Some(g),
-            ChipValue::Text(_) | ChipValue::GitBranchStatus(_) => None,
         }
     }
 
@@ -139,7 +132,11 @@ const GIT_REFRESH_CONFIG: RefreshConfig =
 pub struct ChipResult {
     kind: ContextChipKind,
     value: Option<ChipValue>,
-    on_click_values: Vec<String>,
+    on_click_values: Arc<[String]>,
+}
+
+pub(crate) fn empty_on_click_values() -> Arc<[String]> {
+    Arc::from(Vec::new())
 }
 
 impl ChipResult {
@@ -631,15 +628,23 @@ pub fn git_line_changes_from_chips(chips: &[ChipResult]) -> Option<display_chip:
 /// Formats given context chips as an unstylized string.
 /// Compared to displaying individual chips, certain chips when combined are displayed differently.
 pub fn chips_to_string(chips: impl Iterator<Item = ChipResult>) -> String {
+    let chips: Vec<ChipResult> = chips.collect();
+    chips_to_string_borrowed(&chips)
+}
+
+/// [`chips_to_string`] for chips the caller keeps. Every visible block's label renders its
+/// prompt snapshot through this each frame, so it must not deep-copy the chips (and their
+/// on-click value lists) just to read their text (#1194).
+pub fn chips_to_string_borrowed(chips: &[ChipResult]) -> String {
     let mut prompt = String::new();
     let mut visible_chips = chips
-        .into_iter()
-        .filter_map(|chip_result| Some((chip_result.kind, chip_result.value?)))
+        .iter()
+        .filter_map(|chip_result| Some((&chip_result.kind, chip_result.value.as_ref()?)))
         .peekable();
     while let Some((chip_kind, current_value)) = visible_chips.next() {
         // This is temporary, until we design more generic chip formatting.
-        let next_chip_kind = visible_chips.peek().map(|(next_kind, _)| next_kind);
-        let chip_display_value = chip_kind.display_value(&current_value);
+        let next_chip_kind = visible_chips.peek().map(|(next_kind, _)| *next_kind);
+        let chip_display_value = chip_kind.display_value(current_value);
         prompt.push_str(&chip_display_value);
         match (chip_kind, next_chip_kind) {
             // Omit the space between adjacent Svn chips.

@@ -5,13 +5,14 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     error,
-    hash::{DefaultHasher, Hash, Hasher},
+    hash::{Hash, Hasher},
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, LazyLock, Mutex,
     },
 };
+use rustc_hash::FxHasher;
 use strum_macros::EnumIter;
 
 use crate::{
@@ -682,15 +683,6 @@ pub enum FitType {
     Stretch,
 }
 
-impl FitType {
-    pub fn should_retain_aspect_ratio(&self) -> bool {
-        match self {
-            FitType::Cover | FitType::Contain => true,
-            FitType::Stretch => false,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub enum ImageType {
     Svg { svg: Arc<usvg::Tree> },
@@ -1146,15 +1138,103 @@ pub struct StaleImage {
 pub enum DeferredImage {
     /// The same answer [`ImageCache::image`] would give.
     State(AssetState<Image>),
-    /// The wanted size is being rasterised off the UI thread. The caller should draw `stale` (if
-    /// any) and ask for a repaint shortly.
-    Pending { stale: Option<StaleImage> },
+    /// The wanted size is being rasterised off the UI thread (or queued behind other rasters).
+    /// The caller should draw `stale` (if any) and register `wait` with
+    /// `PaintContext::repaint_after_raster`, so the window is redrawn when a raster finishes; it
+    /// must not poll. `give_up_at` is when a started raster is abandoned: a one-shot safety net
+    /// for a worker that never answers (`PaintContext::repaint_at_paint_only`).
+    Pending {
+        stale: Option<StaleImage>,
+        wait: RasterWait,
+        give_up_at: Option<std::time::Instant>,
+    },
+}
+
+#[derive(Default)]
+struct RasterNotifyInner {
+    epoch: u64,
+    wakers: Vec<std::task::Waker>,
+}
+
+/// Cross-thread "a background raster finished (or was abandoned)" signal. The raster worker
+/// bumps the epoch and wakes everything waiting; waiters compare against the epoch they saw when
+/// they asked, so a completion between asking and waiting is never missed.
+#[derive(Clone, Default)]
+struct RasterNotify(Arc<Mutex<RasterNotifyInner>>);
+
+impl RasterNotify {
+    fn notify(&self) {
+        let wakers = {
+            let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            inner.epoch += 1;
+            std::mem::take(&mut inner.wakers)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
+    fn epoch(&self) -> u64 {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).epoch
+    }
+}
+
+/// Resolves once any background raster has finished since the [`ImageCache::image_deferred`]
+/// call that produced it. Window-agnostic; the presenter pairs it with the window that painted.
+#[derive(Clone)]
+pub struct RasterWait {
+    notify: RasterNotify,
+    seen: u64,
+}
+
+impl PartialEq for RasterWait {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.notify.0, &other.notify.0) && self.seen == other.seen
+    }
+}
+
+impl Eq for RasterWait {}
+
+impl std::hash::Hash for RasterWait {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.notify.0).hash(state);
+        self.seen.hash(state);
+    }
+}
+
+impl RasterWait {
+    /// Test-only: a wait plus a function that stands in for a raster worker finishing.
+    #[cfg(test)]
+    pub(crate) fn test_new() -> (Self, impl Fn() + Clone) {
+        let notify = RasterNotify::default();
+        let wait = Self {
+            notify: notify.clone(),
+            seen: notify.epoch(),
+        };
+        (wait, move || notify.notify())
+    }
+
+    /// A future that resolves when a raster finishes after this wait was created.
+    pub fn when_ready(&self) -> futures::future::BoxFuture<'static, ()> {
+        let (notify, seen) = (self.notify.clone(), self.seen);
+        Box::pin(futures::future::poll_fn(move |cx| {
+            let mut inner = notify.0.lock().unwrap_or_else(|e| e.into_inner());
+            if inner.epoch > seen {
+                return std::task::Poll::Ready(());
+            }
+            if !inner.wakers.iter().any(|w| w.will_wake(cx.waker())) {
+                inner.wakers.push(cx.waker().clone());
+            }
+            std::task::Poll::Pending
+        }))
+    }
 }
 
 #[derive(Default)]
 struct DeferredOut {
     pending: bool,
     stale: Option<StaleImage>,
+    give_up_at: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Default)]
@@ -1178,6 +1258,9 @@ pub struct ImageCache {
     ready: Arc<Mutex<Vec<ReadyRaster>>>,
     inflight: Arc<AtomicUsize>,
     live_threads: Arc<AtomicUsize>,
+    /// Signalled by the raster workers when a result is ready, so windows waiting on a
+    /// [`DeferredImage::Pending`] are redrawn by event instead of polling.
+    raster_notify: RasterNotify,
     /// Test hooks: 0 = none, 1 = the job fails, 2 = the job panics, 3 = the job stalls 1.5 s.
     #[cfg(test)]
     test_hook: Rc<Cell<u8>>,
@@ -1197,7 +1280,7 @@ impl ImageCache {
     pub fn evict_image(&self, asset_source: &AssetSource) {
         let mut cache = self.images.write();
 
-        let mut s = DefaultHasher::new();
+        let mut s = FxHasher::default();
         asset_source.hash(&mut s);
         let cache_key = s.finish();
 
@@ -1231,9 +1314,11 @@ impl ImageCache {
     /// `bounds` and `fit_type` must match the resolved values used as the
     /// cache key inside `image()` (i.e., after any `max_dimension`
     /// adjustment), not only the originally requested bounds.
-    // Called by the debounce eviction pass added in the main changeset.
-    /// TODO(APP-3877): remove `#[allow(dead_code)]` once the debounce eviction pass wires this up.
-    #[allow(dead_code)]
+    ///
+    /// Only tests call this directly: production eviction is driven by `insert_rendered` (the
+    /// per-asset size cap and the global byte-budget LRU, #880), which removes entries through the
+    /// same `remove_size_entry`, so rendered sizes never accumulate without bound (#1473).
+    #[cfg(test)]
     fn evict_size(
         &self,
         asset_source: &AssetSource,
@@ -1241,7 +1326,7 @@ impl ImageCache {
         fit_type: FitType,
         animated_image_behavior: AnimatedImageBehavior,
     ) {
-        let mut s = DefaultHasher::new();
+        let mut s = FxHasher::default();
         asset_source.hash(&mut s);
         let cache_key = s.finish();
 
@@ -1252,14 +1337,23 @@ impl ImageCache {
         };
 
         let mut cache = self.images.write();
-        if let Some(inner_map) = cache.get_mut(&cache_key) {
-            inner_map.remove(&rendered_key);
-            if inner_map.is_empty() {
-                cache.remove(&cache_key);
-            }
-        }
+        Self::remove_size_entry(&mut cache, (cache_key, rendered_key));
         drop(cache);
         self.forget_used((cache_key, rendered_key));
+    }
+
+    /// Removes one rendered size from the image map, dropping the asset's map when it empties.
+    /// Callers also `forget_used` the key.
+    fn remove_size_entry(
+        cache: &mut HashMap<u64, HashMap<RenderedImageCacheKey, Rc<Image>>>,
+        key: RenderedKey,
+    ) {
+        if let Some(inner) = cache.get_mut(&key.0) {
+            inner.remove(&key.1);
+            if inner.is_empty() {
+                cache.remove(&key.0);
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1300,6 +1394,9 @@ impl ImageCache {
         max_dimension: Option<u32>,
         asset_cache: &AssetCache,
     ) -> DeferredImage {
+        // Read before draining: a raster finishing after this point bumps the epoch past `seen`
+        // and wakes the waiter, even if it lands between the drain and the caller registering.
+        let seen = self.raster_notify.epoch();
         self.drain_ready();
         let mut out = DeferredOut::default();
         let state = self.image_inner(
@@ -1313,7 +1410,14 @@ impl ImageCache {
             Some(&mut out),
         );
         if out.pending {
-            DeferredImage::Pending { stale: out.stale }
+            DeferredImage::Pending {
+                stale: out.stale,
+                wait: RasterWait {
+                    notify: self.raster_notify.clone(),
+                    seen,
+                },
+                give_up_at: out.give_up_at,
+            }
         } else {
             DeferredImage::State(state)
         }
@@ -1422,12 +1526,7 @@ impl ImageCache {
             }
         }
         for victim in victims {
-            if let Some(inner) = cache.get_mut(&victim.0) {
-                inner.remove(&victim.1);
-                if inner.is_empty() {
-                    cache.remove(&victim.0);
-                }
-            }
+            Self::remove_size_entry(&mut cache, victim);
             self.forget_used(victim);
         }
     }
@@ -1480,6 +1579,8 @@ impl ImageCache {
             }
             log::warn!("Image rasterisation timed out; giving up on it");
             self.remember_failure(rendered_key, "image rasterisation timed out".to_owned());
+            // The freed slot lets queued rasters start: wake the windows waiting on them.
+            self.raster_notify.notify();
             return Some(Err(anyhow!("image rasterisation timed out")));
         }
         out.pending = true;
@@ -1496,11 +1597,12 @@ impl ImageCache {
                     to_bounds: key.bounds,
                 })
         });
-        if self.pending.borrow().contains_key(&rendered_key) {
+        if let Some(p) = self.pending.borrow().get(&rendered_key) {
+            out.give_up_at = Some(p.started + self.raster_deadline());
             return Some(Ok(()));
         }
         if self.inflight.load(Ordering::Acquire) >= MAX_INFLIGHT_RASTERS {
-            // Not started; the caller repaints shortly and asks again.
+            // Not started; a finishing raster wakes the waiting windows, which ask again.
             return Some(Ok(()));
         }
         if self.live_threads.load(Ordering::Acquire) >= MAX_LIVE_RASTER_THREADS {
@@ -1518,6 +1620,7 @@ impl ImageCache {
         let ready = self.ready.clone();
         let inflight = self.inflight.clone();
         let live = self.live_threads.clone();
+        let raster_notify = self.raster_notify.clone();
         let abandoned = Arc::new(std::sync::atomic::AtomicBool::new(false));
         #[cfg(test)]
         let max_svg_nodes = if self.test_max_svg_nodes.get() != 0 {
@@ -1574,10 +1677,13 @@ impl ImageCache {
                         inflight.fetch_sub(1, Ordering::AcqRel);
                     }
                     live.fetch_sub(1, Ordering::AcqRel);
+                    // Last, so a woken window sees the result and the freed slot.
+                    raster_notify.notify();
                 }
             });
         match spawned {
             Ok(_) => {
+                out.give_up_at = Some(std::time::Instant::now() + self.raster_deadline());
                 self.pending.borrow_mut().insert(
                     rendered_key,
                     PendingRaster {
@@ -1610,7 +1716,7 @@ impl ImageCache {
         asset_cache: &AssetCache,
         mut deferred: Option<&mut DeferredOut>,
     ) -> AssetState<Image> {
-        let mut s = DefaultHasher::new();
+        let mut s = FxHasher::default();
         asset_source.hash(&mut s);
         let cache_key = s.finish();
 

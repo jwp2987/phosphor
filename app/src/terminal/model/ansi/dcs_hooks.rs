@@ -103,6 +103,19 @@ pub(super) enum DProtoHook {
     ExitShell {
         value: ExitShellValue,
     },
+    /// The shell's line editor is about to read a line (#1390). Sent unencoded (OSC `f` form).
+    LineEditorReading {
+        value: LineEditorMarkerValue,
+    },
+    /// The shell is about to read a continuation line, PS2 (#1391). Sent unencoded (OSC `f` form).
+    ContinuationPrompt {
+        value: LineEditorMarkerValue,
+    },
+    /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command pipe, so it inserted
+    /// nothing and the buffer is empty: the app retypes the command the old way.
+    CommandFileFailed {
+        value: CommandFileFailedValue,
+    },
 }
 
 impl DProtoHook {
@@ -127,6 +140,9 @@ impl DProtoHook {
             DProtoHook::SshTmuxInstaller { .. } => "SshTmuxInstaller",
             DProtoHook::TmuxInstallFailed { .. } => "TmuxInstallFailed",
             DProtoHook::ExitShell { .. } => "ExitShell",
+            DProtoHook::LineEditorReading { .. } => "LineEditorReading",
+            DProtoHook::ContinuationPrompt { .. } => "ContinuationPrompt",
+            DProtoHook::CommandFileFailed { .. } => "CommandFileFailed",
         }
     }
 
@@ -145,6 +161,10 @@ impl DProtoHook {
             DProtoHook::InitShell { value } => Some(value.session_id),
             DProtoHook::Precmd { value } => value.session_id().map(SessionId::from),
             DProtoHook::ExitShell { value } => Some(value.session_id),
+            DProtoHook::LineEditorReading { value } | DProtoHook::ContinuationPrompt { value } => {
+                value.session_id.map(SessionId::from)
+            }
+            DProtoHook::CommandFileFailed { value } => value.session_id.map(SessionId::from),
             DProtoHook::Preexec { value } => value.session_id.map(SessionId::from),
             DProtoHook::CommandFinished { value } => value.session_id.map(SessionId::from),
             DProtoHook::Bootstrapped { value } => value.session_id.map(SessionId::from),
@@ -188,11 +208,17 @@ impl DProtoHook {
             | DProtoHook::InitSubshell { .. }
             | DProtoHook::FinishUpdate { .. }
             | DProtoHook::ExitShell { .. }
+            | DProtoHook::LineEditorReading { .. }
+            | DProtoHook::ContinuationPrompt { .. }
             | DProtoHook::InitSsh { .. }
             | DProtoHook::RemoteWarpificationIsUnavailable { .. }
             | DProtoHook::SshTmuxInstaller { .. }
             | DProtoHook::TmuxInstallFailed { .. } => true,
             DProtoHook::SourcedRcFileForWarp { .. } => false,
+            // Never dropped for its session id (#1581): the failure report must reach the pty
+            // controller even if the shell's id is not the one the app registered, or the command
+            // would be lost. The controller retypes for whatever chord it has outstanding.
+            DProtoHook::CommandFileFailed { .. } => false,
         }
     }
 
@@ -245,6 +271,9 @@ impl DProtoHook {
                 session_id: Default::default(),
             }),
             "ExitShell" => Some(DProtoHook::ExitShell {
+                value: Default::default(),
+            }),
+            "CommandFileFailed" => Some(DProtoHook::CommandFileFailed {
                 value: Default::default(),
             }),
             _ => {
@@ -371,6 +400,9 @@ impl DProtoHook {
                     value.command = v;
                 }
                 "session_id" => value.session_id = v.parse::<u64>().ok(),
+                // The shell's hook counter (#1353): only Precmd's is read, the distance between two
+                // Precmds already counts the Preexecs between them.
+                "seq" => {}
                 _ => {
                     log::warn!("Tried to add unknown field {key} to Preexec hook");
                 }
@@ -413,6 +445,7 @@ impl DProtoHook {
                 "external_control_master" => {
                     value.external_control_master = v.parse::<bool>().unwrap_or(false)
                 }
+                "raw_bootstrap" => value.raw_bootstrap = v.parse::<bool>().unwrap_or(false),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to SSH hook");
                 }
@@ -431,6 +464,12 @@ impl DProtoHook {
                 }
                 _ => {
                     log::warn!("Tried to add unknown field {key} to ExitShell hook");
+                }
+            },
+            DProtoHook::CommandFileFailed { value } => match key.as_ref() {
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
+                _ => {
+                    log::warn!("Tried to add unknown field {key} to CommandFileFailed hook");
                 }
             },
             _ => {
@@ -591,6 +630,7 @@ impl RawPrecmdValue {
             "conda_env" => self.prompt_metadata.conda_env = map_empty_to_none(value),
             "kube_config" => self.prompt_metadata.kube_config = map_empty_to_none(value),
             "session_id" => self.prompt_metadata.session_id = value.parse::<u64>().ok(),
+            "seq" => self.prompt_metadata.seq = value.parse::<u64>().ok(),
             "exit_code" => {
                 self.exit_code = RawPrecmdField::Present(value.parse::<i32>().ok().map(Into::into));
             }
@@ -807,6 +847,12 @@ pub struct PromptMetadata {
     /// Whether this prompt metadata was emitted after the completion of an in-band command.
     #[serde(default)]
     pub is_after_in_band_command: bool,
+
+    /// The shell's per-session counter of Precmd and Preexec hooks (#1353 phase 6): it grows by
+    /// one for every hook of either kind the shell sends, so the distance between two Precmds
+    /// counts the Preexecs between them. `None` from a bootstrap that predates it.
+    #[serde(default)]
+    pub seq: Option<u64>,
 }
 
 impl PromptMetadata {
@@ -838,6 +884,7 @@ impl Default for PromptMetadata {
             kube_config: Default::default(),
             session_id: Default::default(),
             is_after_in_band_command: Default::default(),
+            seq: Default::default(),
         }
     }
 }
@@ -864,6 +911,11 @@ pub struct BootstrappedValue {
 
     #[serde(deserialize_with = "empty_string_is_none")]
     pub histfile: Option<String>,
+
+    /// Nushell's sqlite history (`history.file_format = sqlite`, its default), which `histfile`
+    /// cannot carry (#1203). Only nu reports it; absent elsewhere.
+    #[serde(deserialize_with = "empty_string_is_none", default)]
+    pub history_sqlite: Option<String>,
 
     #[serde(deserialize_with = "trim_null_byte_deserializer", default)]
     pub shell: String,
@@ -988,6 +1040,11 @@ pub struct SSHValue {
     /// to `false` for hooks emitted by older bootstrap scripts.
     #[serde(default)]
     pub external_control_master: bool,
+    /// `true` when the remote is a bash whose `head` supports `-c`, so the client may send the
+    /// bootstrap as a counted raw read instead of typing it through the line editor (#1172).
+    /// Defaults to `false` for hooks emitted by older bootstrap scripts and for other shells.
+    #[serde(default)]
+    pub raw_bootstrap: bool,
 }
 
 /// Received from the pty after the shell session has been initialized, marking
@@ -1078,6 +1135,26 @@ pub struct FinishUpdateValue {
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ExitShellValue {
     pub session_id: SessionId,
+}
+
+/// Payload of `CommandFileFailed` (#1581): the PowerShell insert chord found no command file.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CommandFileFailedValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+}
+
+/// Payload of the line-editor activity markers (`LineEditorReading`, `ContinuationPrompt`; #1390,
+/// #1391). The shell sends them unencoded: `ESC ] 9278 ; f ; {"hook": "LineEditorReading",
+/// "value": {"session_id": N, "seq": M}} BEL`. `seq` is the shell's per-session counter (see
+/// [`PromptMetadata::seq`]) as of the last Precmd or Preexec it sent, so the app can order the
+/// marker against the hooks it has parsed. `None` when a bootstrap omits it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LineEditorMarkerValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+    #[serde(default)]
+    pub seq: Option<u64>,
 }
 
 /// Custom serde deserializer that trims trailing null bytes.

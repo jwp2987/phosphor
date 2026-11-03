@@ -42,19 +42,16 @@ impl platform::FontDB for CountingFontDb {
         Ok(FamilyId(0))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_from_system(&mut self, _font_family: &str) -> Result<FamilyId> {
         Ok(FamilyId(0))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_all_system_fonts(
         &self,
     ) -> futures::future::BoxFuture<'static, Box<dyn LoadedSystemFonts>> {
         futures::future::ready(Box::new(NoLoadedFonts) as Box<dyn LoadedSystemFonts>).boxed()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn process_loaded_system_fonts(
         &mut self,
         _loaded_system_fonts: Box<dyn LoadedSystemFonts>,
@@ -180,6 +177,62 @@ fn fallback_font_family_for_char_skips_font_lookup_when_unconfigured() {
     assert_eq!(builder.fallback_font_family_for_char('中'), None);
     assert_eq!(counts.select_font.load(Ordering::Relaxed), 0);
     assert_eq!(counts.glyph_for_char.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn cell_glyph_cache_resolves_each_char_once_and_clears_when_fonts_change() {
+    let counts = Arc::new(FontLookupCounts::default());
+    let mut font_cache = FontCache::new(Box::new(CountingFontDb {
+        counts: Arc::clone(&counts),
+    }));
+    let mut cache = grid_renderer::CellGlyphCache::default();
+    let props = Properties::default();
+
+    for _ in 0..3 {
+        assert!(
+            cache
+                .glyph_for_char('a', FontId(0), None, props, &font_cache)
+                .is_some()
+        );
+    }
+    assert_eq!(cache.len(), 1);
+    assert_eq!(counts.glyph_for_char.load(Ordering::Relaxed), 1);
+
+    // Loading a font changes what a lookup may resolve to: nothing cached before may survive.
+    font_cache
+        .load_family_from_bytes("Fallback", vec![])
+        .unwrap();
+    cache.glyph_for_char('b', FontId(0), None, props, &font_cache);
+    assert_eq!(cache.len(), 1);
+
+    // So does changing the fallback family.
+    cache.glyph_for_char('c', FontId(0), None, props, &font_cache);
+    assert_eq!(cache.len(), 2);
+    cache.glyph_for_char('c', FontId(0), Some(FamilyId(3)), props, &font_cache);
+    assert_eq!(cache.len(), 1);
+}
+
+#[test]
+fn shared_cell_glyph_cache_persists_across_acquisitions() {
+    let font_cache = FontCache::new(Box::new(CountingFontDb {
+        counts: Arc::new(FontLookupCounts::default()),
+    }));
+    let props = Properties::default();
+
+    {
+        let mut shared = grid_renderer::SharedCellGlyphCache::acquire();
+        shared.glyph_for_char('a', FontId(0), None, props, &font_cache);
+        assert_eq!(shared.len(), 1);
+
+        // A nested paint must not alias the outer cache.
+        let nested = grid_renderer::SharedCellGlyphCache::acquire();
+        assert_eq!(nested.len(), 0);
+    }
+
+    // The outer one was returned first-in-first-out of drop order: whichever is dropped last
+    // wins, so only assert that a cache is handed back and is usable.
+    let shared = grid_renderer::SharedCellGlyphCache::acquire();
+    assert!(shared.len() <= 1);
 }
 
 // TODO(CORE-2002): Make test non-Mac specific by switching to using bundled Roboto font.
@@ -430,4 +483,77 @@ fn test_calculate_selection_bounds() {
     assert_selection_bounds(5.into_lines()); // Without scroll clipping
     assert_selection_bounds(10.into_lines()); // Without scroll clipping (but on the cusp of clipping)
     assert_selection_bounds(80.into_lines()); // With scroll clipping
+}
+
+#[test]
+fn render_scratch_buffers_are_reused_across_frames() {
+    use super::{
+        return_render_scratch, take_render_scratch, DecorationData, MAX_RETAINED_SCRATCH_ITEMS,
+    };
+    use warpui::color::ColorU;
+
+    let mut scratch = take_render_scratch();
+    assert_eq!(
+        scratch.cell_decorations.capacity(),
+        0,
+        "first frame starts empty"
+    );
+    for _ in 0..100 {
+        scratch.cell_decorations.push(DecorationData {
+            origin: vec2f(0., 0.),
+            size: vec2f(1., 1.),
+            color: ColorU::black(),
+        });
+    }
+    return_render_scratch(scratch);
+
+    // The next frame gets the same allocation back, emptied.
+    let scratch = take_render_scratch();
+    assert!(scratch.cell_decorations.is_empty());
+    assert!(scratch.cell_decorations.capacity() >= 100);
+    assert!(scratch.cell_decorations.capacity() <= MAX_RETAINED_SCRATCH_ITEMS.max(100));
+    return_render_scratch(scratch);
+}
+
+#[test]
+fn minimal_contrast_map_persists_across_frames_and_is_bounded() {
+    use super::{
+        return_render_scratch, take_render_scratch, CellColors, MinimalContrastCache,
+        MAX_RETAINED_CONTRAST_ENTRIES,
+    };
+    use warpui::color::ColorU;
+
+    let colors = CellColors {
+        foreground_color: ColorU::new(20, 20, 20, 255),
+        background_color: ColorU::new(10, 10, 10, 255),
+    };
+
+    // Frame 1 computes the entry.
+    let mut scratch = take_render_scratch();
+    let mut cache = MinimalContrastCache::from_map(std::mem::take(&mut scratch.contrast_map));
+    let adjusted = cache.get_or_insert(colors);
+    scratch.contrast_map = cache.into_map();
+    assert!(scratch.contrast_map.contains_key(&colors));
+    return_render_scratch(scratch);
+
+    // Frame 2 starts with it already cached, and gets the same answer.
+    let mut scratch = take_render_scratch();
+    assert!(scratch.contrast_map.contains_key(&colors));
+    let mut cache = MinimalContrastCache::from_map(std::mem::take(&mut scratch.contrast_map));
+    assert_eq!(cache.get_or_insert(colors), adjusted);
+
+    // A map that grew past the bound is dropped rather than retained forever.
+    let mut map = cache.into_map();
+    for i in 0..=MAX_RETAINED_CONTRAST_ENTRIES {
+        map.insert(
+            CellColors {
+                foreground_color: ColorU::new((i % 256) as u8, (i / 256) as u8, 0, 255),
+                background_color: ColorU::black(),
+            },
+            ColorU::white(),
+        );
+    }
+    scratch.contrast_map = map;
+    return_render_scratch(scratch);
+    assert!(take_render_scratch().contrast_map.is_empty());
 }

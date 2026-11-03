@@ -16,6 +16,12 @@ use super::{model, schema};
 
 const MAX_TERMINAL_BLOCKS_TO_PERSIST_PER_SESSION: i64 = 100;
 
+/// Upper bound on the stylized output bytes persisted for one block (#1189). The line cap
+/// (`MAX_SERIALIZED_STYLIZED_OUTPUT_LINES`) alone allowed multi-MB rows (long styled lines);
+/// with 100 blocks per pane that bounded nothing per byte. Longer output keeps its head and
+/// tail halves and a one-line marker in between.
+pub(crate) const MAX_PERSISTED_OUTPUT_BYTES: usize = 256 * 1024;
+
 type PersistedBlocks = HashMap<PaneUuid, Vec<SerializedBlockListItem>>;
 
 /// An AI query read from the SQLite DB.
@@ -293,7 +299,13 @@ pub(super) fn save_block(
             }
         }
 
-        let block = create_block(pane_id, block, is_local_block);
+        let capped_output = cap_persisted_output(&block.stylized_output);
+        let block = create_block(
+            pane_id,
+            block,
+            capped_output.as_ref().unwrap_or(&block.stylized_output),
+            is_local_block,
+        );
         diesel::insert_into(schema::blocks::dsl::blocks)
             .values(block)
             .execute(conn)?;
@@ -301,18 +313,110 @@ pub(super) fn save_block(
     })
 }
 
+/// Returns `None` when `output` already fits in [`MAX_PERSISTED_OUTPUT_BYTES`]; otherwise the
+/// head and tail halves (each cut on a line boundary, so no escape sequence is split mid-way
+/// except inside an over-long single line) joined by a marker line. Stylized output separates
+/// lines with `\r\n`; the marker resets the SGR state so the head's styling cannot bleed into it.
+pub(crate) fn cap_persisted_output(output: &[u8]) -> Option<Vec<u8>> {
+    const OMITTED_MARKER: &[u8] = b"bytes of output omitted to keep the saved session small";
+    // The capped form is a little longer than the cap (marker plus resets). Capping it again
+    // would drop more output and replace the old marker, so an already-capped block is left
+    // as it is (#1253).
+    if output.len() <= MAX_PERSISTED_OUTPUT_BYTES
+        || (output.len() <= MAX_PERSISTED_OUTPUT_BYTES + 512
+            && output
+                .windows(OMITTED_MARKER.len())
+                .any(|w| w == OMITTED_MARKER))
+    {
+        return None;
+    }
+    let half = MAX_PERSISTED_OUTPUT_BYTES / 2;
+    // Head: up to and including the last '\n' within the first `half` bytes (or, when a single
+    // line is longer than that, a raw cut moved back to a character and escape boundary).
+    let head_end = output[..half]
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or_else(|| safe_head_cut(output, half), |i| i + 1);
+    // Tail: starts right after the first '\n' within the last `half` bytes (or a raw cut moved
+    // forward past a partial character or escape sequence).
+    let tail_floor = output.len() - half;
+    let tail_start = output[tail_floor..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map_or_else(|| safe_tail_cut(output, tail_floor), |i| tail_floor + i + 1);
+    let omitted = tail_start.saturating_sub(head_end);
+    let marker = format!(
+        "\x1b[0m[... {omitted} bytes of output omitted to keep the saved session small ...]\x1b[0m\r\n"
+    );
+    let mut capped = Vec::with_capacity(head_end + marker.len() + (output.len() - tail_start));
+    capped.extend_from_slice(&output[..head_end]);
+    if !capped.is_empty() && !capped.ends_with(b"\n") {
+        capped.extend_from_slice(b"\x1b[0m\r\n");
+    }
+    capped.extend_from_slice(marker.as_bytes());
+    capped.extend_from_slice(&output[tail_start..]);
+    Some(capped)
+}
+
+/// If `pos` falls inside a CSI sequence (`ESC [` parameters, not yet at its final byte), the
+/// index of the `ESC` that starts it.
+fn csi_start_containing(output: &[u8], pos: usize) -> Option<usize> {
+    let window_start = pos.saturating_sub(64);
+    let esc = output[window_start..pos].iter().rposition(|b| *b == 0x1b)? + window_start;
+    if output.get(esc + 1) != Some(&b'[') {
+        return None;
+    }
+    // Parameter and intermediate bytes only, up to `pos`; a final byte (0x40..=0x7e) ended it.
+    output[esc + 2..pos]
+        .iter()
+        .all(|b| (0x20..=0x3f).contains(b))
+        .then_some(esc)
+}
+
+/// A cut for the end of the head, at or before `cut`, that splits neither a UTF-8 character nor
+/// a CSI sequence.
+fn safe_head_cut(output: &[u8], mut cut: usize) -> usize {
+    // Back up over continuation bytes, then over the lead byte of the split character.
+    while cut > 0 && output.get(cut).is_some_and(|b| b & 0xc0 == 0x80) {
+        cut -= 1;
+    }
+    if let Some(esc) = csi_start_containing(output, cut) {
+        cut = esc;
+    }
+    cut
+}
+
+/// A cut for the start of the tail, at or after `cut`, that starts neither inside a UTF-8
+/// character nor inside a CSI sequence.
+fn safe_tail_cut(output: &[u8], mut cut: usize) -> usize {
+    if csi_start_containing(output, cut).is_some() {
+        while cut < output.len() && (0x20..=0x3f).contains(&output[cut]) {
+            cut += 1;
+        }
+        // Skip the final byte too.
+        if cut < output.len() {
+            cut += 1;
+        }
+    }
+    while cut < output.len() && output[cut] & 0xc0 == 0x80 {
+        cut += 1;
+    }
+    cut
+}
+
 // TODO(vorporeal): can move this to a `to_persisted_block()` function on `SerializedBlock`
 // to get it out of the persistence layer.
 fn create_block<'a>(
     pane_leaf_uuid: Vec<u8>,
     block: &'a SerializedBlock,
+    stylized_output: &'a Vec<u8>,
     is_local: bool,
 ) -> model::NewBlock<'a> {
     model::NewBlock {
         block_id: block.id.as_str(),
         pane_leaf_uuid,
         stylized_command: &block.stylized_command,
-        stylized_output: &block.stylized_output,
+        stylized_output,
         pwd: block.pwd.as_ref(),
         // This sqlite column still uses the legacy `git_branch` name, but it now stores the
         // block's git head for backwards compatibility with existing persisted data.
@@ -348,6 +452,32 @@ pub(super) fn delete_blocks(conn: &mut SqliteConnection, pane_id: Vec<u8>) -> Re
             .execute(conn)?;
         Ok(())
     })
+}
+
+/// How old an unreferenced block must be before the startup GC may delete it.
+/// The floor keeps the GC from racing a pane that was just created (its blocks
+/// land before the next session snapshot) or a second live instance.
+pub(super) const ORPHAN_BLOCK_MIN_AGE: chrono::Duration = chrono::Duration::days(7);
+
+/// Deletes `blocks` rows whose pane no longer exists in `terminal_panes` and that
+/// started before `older_than` (UTC, as stored). Such rows are unreachable: restore
+/// reads blocks through the panes of the saved session, and the only other deleters
+/// are an explicit pane close and the per-pane cap, so sessions that ended by quit
+/// or crash leave their blocks behind forever (#1155). Rows with no `start_ts` are
+/// kept. Returns the number of rows deleted.
+pub(super) fn delete_orphaned_blocks(
+    conn: &mut SqliteConnection,
+    older_than: NaiveDateTime,
+) -> Result<usize, Error> {
+    // Raw SQL: Diesel can't build a DELETE whose filter is a `NOT IN (subquery)`. A NULL
+    // `start_ts` or pane id never satisfies the comparisons, so such rows are kept.
+    diesel::sql_query(
+        "DELETE FROM blocks \
+         WHERE start_ts IS NOT NULL AND start_ts < ? \
+         AND pane_leaf_uuid NOT IN (SELECT uuid FROM terminal_panes)",
+    )
+    .bind::<diesel::sql_types::Timestamp, _>(older_than)
+    .execute(conn)
 }
 
 pub(super) fn update_block_agent_view_visibility(

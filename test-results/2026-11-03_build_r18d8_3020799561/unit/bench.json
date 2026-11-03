@@ -1,0 +1,33 @@
+{
+ "lines": [
+  "Running with gitlab-runner 19.5.1 (f411f264)",
+  "Running on <runner>...",
+  "Running on CPU: Intel(R) Core(TM) i7-8700B CPU @ 3.20GHz (avx, avx2)",
+  "Removing fuzz/Cargo.lock",
+  "[prune_target] ci-fuzz: 2928M -> 2928M (freed 0M), disk free 254306M -> 254306M",
+  "Compiling fuzzy-matcher v0.3.7",
+  "Compiling fuzzy_match v0.1.0 (/home/<user>/builds/r_hQtIdMf/0/winters-phosphor/phosphor/crates/fuzzy_match)",
+  "Running benches/ansi_bench.rs (/home/<user>/.phosphor-build/targets/ci-bench/release/deps/ansi_bench-732a446934716798)",
+  "Benchmarking ansi/mixed_1mb_in_4k_reads: Collecting 20 samples in estimated 6.4682 s (80 iterations)",
+  "time:   [76.153 ms 76.723 ms 77.286 ms]",
+  "Running benches/key_path_bench.rs (/home/<user>/.phosphor-build/targets/ci-bench/release/deps/key_path_bench-648d5ed1afb4689f)",
+  "Benchmarking pane_queue/idle_key: Collecting 100 samples in estimated 5.0001 s (124M iterations)",
+  "pane_queue/idle_key     time:   [43.184 ns 43.228 ns 43.278 ns]",
+  "Benchmarking pane_queue/gate_open_offer_drain: Collecting 100 samples in estimated 5.0098 s (1.2M iterations)",
+  "time:   [4.3383 \u00b5s 4.4322 \u00b5s 4.5678 \u00b5s]",
+  "Benchmarking destination_for: Collecting 100 samples in estimated 5.0001 s (199M iterations)",
+  "destination_for         time:   [25.438 ns 25.619 ns 25.847 ns]",
+  "Benchmarking table_decide: Collecting 100 samples in estimated 5.0001 s (19M iterations)",
+  "table_decide            time:   [257.86 ns 259.26 ns 260.74 ns]",
+  "Benchmarking handoff/young_submit_decision: Collecting 100 samples in estimated 5.0000 s (1.9B iterations)",
+  "time:   [2.6695 ns 2.6860 ns 2.7008 ns]",
+  "Benchmarking handoff/key_facts_load: Collecting 100 samples in estimated 5.0000 s (1.7B iterations)",
+  "handoff/key_facts_load  time:   [2.8929 ns 2.9128 ns 2.9369 ns]",
+  "Benchmarking handoff/pane_handoff_read: Collecting 100 samples in estimated 5.0001 s (352M iterations)",
+  "time:   [13.835 ns 13.943 ns 14.044 ns]"
+ ],
+ "truncated": 0,
+ "job": "bench",
+ "status": "success",
+ "duration": 1404.273136
+}

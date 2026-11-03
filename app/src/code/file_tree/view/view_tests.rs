@@ -1149,3 +1149,21 @@ fn selected_hidden_file_is_cleared_when_filtered() {
         },
     );
 }
+
+#[test]
+fn delete_path_blocking_removes_files_and_directory_trees_and_reports_errors() {
+    let dir = std::env::temp_dir().join(format!("phosphor-ft-delete-{}", std::process::id()));
+    let nested = dir.join("a/b");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("f.txt"), "x").unwrap();
+    let file = dir.join("lone.txt");
+    std::fs::write(&file, "y").unwrap();
+
+    super::delete_path_blocking(&file).unwrap();
+    assert!(!file.exists());
+    super::delete_path_blocking(&dir.join("a")).unwrap();
+    assert!(!dir.join("a").exists());
+    // A missing path is an error that the view turns into a toast.
+    assert!(super::delete_path_blocking(&dir.join("a")).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}

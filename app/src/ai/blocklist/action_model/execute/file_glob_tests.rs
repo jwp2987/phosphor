@@ -14,8 +14,22 @@ fn build_find_command_single_quotes_patterns_and_path() {
 
     assert_eq!(
         command,
-        r#"find '/tmp/repo path' -type f -name '$(touch /tmp/zap-poc)*.rs' -o -name 'owner'"'"'s*.rs'"#
+        r#"find '/tmp/repo path' -type f \( -name '$(touch /tmp/zap-poc)*.rs' -o -name 'owner'"'"'s*.rs' \)"#
     );
+}
+
+/// #1278: the `-type f` test must apply to every `-o` alternative, and `**/` (the tool
+/// description's own example) must not be handed to `-name`, where it can never match.
+#[test]
+fn build_find_command_groups_alternatives_and_strips_globstar_prefix() {
+    let patterns = vec!["**/*.rs".to_string(), "*.toml".to_string()];
+    let command = build_find_command(&patterns, "/r", ShellType::Bash);
+    assert_eq!(
+        command,
+        r#"find '/r' -type f \( -name '*.rs' -o -name '*.toml' \)"#
+    );
+    let single = build_find_command(&["**/**/x.rs".to_string()], "/r", ShellType::Bash);
+    assert_eq!(single, "find '/r' -type f -name 'x.rs'");
 }
 
 #[test]
@@ -31,6 +45,7 @@ fn build_git_ls_files_command_single_quotes_joined_patterns() {
         target_path.to_str().unwrap(),
         None,
         ShellType::Bash,
+        crate::ai::paths::PathHost::Local,
     );
 
     let expected = format!(
@@ -126,4 +141,44 @@ fn apply_result_limit_passes_non_success_results_through_unchanged() {
         apply_result_limit(FileGlobV2Result::Cancelled, Some(1)),
         FileGlobV2Result::Cancelled
     ));
+}
+
+/// A list cut to the limit says so in the result. The JSON layer's marker compares the list
+/// against its own cap, which an executor-truncated list never exceeds, so this is the only
+/// place the model learns that files were left out. Fails on the old code: `warnings` is `None`.
+#[test]
+fn apply_result_limit_reports_the_truncation_in_the_warnings() {
+    let result = FileGlobV2Result::Success {
+        matched_files: glob_matches(5),
+        warnings: Some("permission denied: /root".to_owned()),
+    };
+    let FileGlobV2Result::Success {
+        matched_files,
+        warnings,
+    } = apply_result_limit(result, Some(2))
+    else {
+        panic!("a success result stays a success result");
+    };
+    assert_eq!(matched_files.len(), 2);
+    let warnings = warnings.expect("the truncation is reported");
+    assert!(
+        warnings.contains("first 2 of 5 matching files"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("permission denied: /root"),
+        "the stderr warning is kept: {warnings}"
+    );
+}
+
+#[test]
+fn apply_result_limit_adds_no_warning_when_nothing_was_cut() {
+    let result = FileGlobV2Result::Success {
+        matched_files: glob_matches(2),
+        warnings: None,
+    };
+    let FileGlobV2Result::Success { warnings, .. } = apply_result_limit(result, Some(2)) else {
+        panic!("a success result stays a success result");
+    };
+    assert_eq!(warnings, None);
 }

@@ -433,11 +433,6 @@ impl Repository {
             .any(|subscription| subscription.mode == RepositoryWatchMode::GitRepository)
     }
 
-    /// Returns the current watcher count.
-    pub fn watcher_count(&self) -> usize {
-        self.subscribers.len()
-    }
-
     /// Starts watching this repository with the given subscriber.
     ///
     /// If this is the first subscriber, the repository root will be added to the
@@ -713,6 +708,18 @@ pub struct BufferingRepositorySubscriber<S> {
     inner: Arc<Mutex<S>>,
     state: Arc<Mutex<BufferState>>,
     debounce: Duration,
+    /// Upper bound on how long the oldest buffered update may wait: continuous changes keep
+    /// restarting the quiet-period debounce, so without it a busy repo would never flush.
+    max_wait: Duration,
+}
+
+/// Default ratio of the max wait to the debounce period.
+const BUFFER_MAX_WAIT_FACTOR: u32 = 6;
+
+/// Whether the flusher should deliver now: the repo went quiet for a full debounce period, or the
+/// oldest buffered update has already waited `max_wait`.
+fn buffer_should_flush(quiet: bool, oldest_pending_age: Duration, max_wait: Duration) -> bool {
+    quiet || oldest_pending_age >= max_wait
 }
 
 #[derive(Default)]
@@ -730,7 +737,14 @@ impl<S> BufferingRepositorySubscriber<S> {
             inner: Arc::new(Mutex::new(inner)),
             state: Arc::new(Mutex::new(BufferState::default())),
             debounce,
+            max_wait: debounce.saturating_mul(BUFFER_MAX_WAIT_FACTOR),
         }
+    }
+
+    /// Overrides the default max wait (6 x the debounce period).
+    pub fn with_max_wait(mut self, max_wait: Duration) -> Self {
+        self.max_wait = max_wait;
+        self
     }
 }
 
@@ -762,10 +776,13 @@ where
                 let inner = Arc::clone(&self.inner);
                 let state = Arc::clone(&self.state);
                 let wait = self.debounce;
+                let max_wait = self.max_wait;
 
                 st.flush_handle = Some(ctx.spawn(
                     async move {
-                        // Loop until we observe a quiet period (version stable for `wait`).
+                        // Loop until we observe a quiet period (version stable for `wait`), but
+                        // never hold the oldest buffered update past `max_wait`.
+                        let first_pending_at = std::time::Instant::now();
                         loop {
                             // Capture current version, then wait.
                             let start_version = {
@@ -780,7 +797,9 @@ where
                                 futures_lite::future::yield_now().await;
 
                                 let mut st = state.lock().unwrap();
-                                if st.version == start_version {
+                                let quiet = st.version == start_version;
+                                if buffer_should_flush(quiet, first_pending_at.elapsed(), max_wait)
+                                {
                                     st.flush_handle = None;
                                     Some(std::mem::take(&mut st.pending))
                                 } else {

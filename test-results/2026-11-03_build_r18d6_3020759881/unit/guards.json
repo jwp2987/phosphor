@@ -1,0 +1,10 @@
+{
+ "failing_lines": [
+  "FAIL test-results/2026-11-03_build_r18d4_3020340107: test-workspace-rest failure invalid_diagram_outcomes_are_snapshotted has no issue in triage.md (a line naming the test and #NNNN)",
+  "FAIL test-results/2026-11-03_build_r18d4_3020340107: test-workspace-rest failure valid_diagram_summaries_are_stable has no issue in triage.md (a line naming the test and #NNNN)",
+  "ERROR: Job failed: exit status 1"
+ ],
+ "job": "guards",
+ "status": "failed",
+ "duration": 84.680511
+}

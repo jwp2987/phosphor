@@ -5,6 +5,7 @@ mod block_banner;
 pub mod block_onboarding;
 pub(crate) mod blocklist_filter;
 mod bookmarks;
+mod fork_restore_persist;
 pub mod init;
 pub mod inline_banner;
 pub mod load_ai_conversation;
@@ -23,12 +24,14 @@ mod open_in_warp;
 mod pane_impl;
 mod passive_suggestions;
 mod pending_user_query;
-pub(crate) mod queued_prompts_panel;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod plugin_instructions_block;
+pub(crate) mod queued_prompts_panel;
 pub mod rich_content;
 mod shared_session;
 mod shell_terminated_banner;
+mod wakeup_redraw;
+use wakeup_redraw::{FooterFingerprint, RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
@@ -44,14 +47,14 @@ use warpui::clipboard_utils::get_image_filepaths_from_paths;
 
 use std::ops::Deref as _;
 
-use crate::ai::blocklist::agent_view::fork_from_last_known_good_state_exchange_id;
 use crate::ai::blocklist::agent_view::ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE;
 use crate::ai::blocklist::agent_view::conversation_selection::AgentViewConversationSelection;
+use crate::ai::blocklist::agent_view::fork_from_last_known_good_state_exchange_id;
 use crate::ai::blocklist::agent_view::{
-    agent_view_bg_fill, AgentViewController, AgentViewControllerEvent, AgentViewDisplayMode,
-    AgentViewEntryBlockParams, AgentViewEntryOrigin, AgentViewHeaderDisabledTheme,
-    AgentViewHeaderTheme, AgentViewZeroStateBlock, AgentViewZeroStateEvent, EphemeralMessageModel,
-    ExitAgentViewError, ExitConfirmationTrigger, InlineAgentViewHeader,
+    AgentViewController, AgentViewControllerEvent, AgentViewDisplayMode, AgentViewEntryBlockParams,
+    AgentViewEntryOrigin, AgentViewHeaderDisabledTheme, AgentViewHeaderTheme,
+    AgentViewZeroStateBlock, AgentViewZeroStateEvent, EphemeralMessageModel, ExitAgentViewError,
+    ExitConfirmationTrigger, InlineAgentViewHeader, agent_view_bg_fill,
 };
 use crate::ai::blocklist::conversation_selection::ConversationSelection;
 use crate::ai::conversation_utils;
@@ -73,11 +76,15 @@ use crate::view_components::action_button::{ActionButton, ButtonSize, KeystrokeS
 use use_agent_footer::UseAgentToolbar;
 use window_footer_bar::render_window_footer_bar;
 
-use super::cli_agent;
 use super::CLIAgent;
+use super::cli_agent;
+use super::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
+use super::input_queue::table::Class;
+use super::input_queue::{self, GateKeysThen, PowershellKeysThen};
+use super::paste_sequencer::{PasteFailure, paste_backstop};
 #[cfg(feature = "local_fs")]
 use crate::ai::agent::{CurrentHead, DiffBase};
-use crate::ai::ambient_agents::{conversation_output_status_from_conversation, AmbientAgentTaskId};
+use crate::ai::ambient_agents::{AmbientAgentTaskId, conversation_output_status_from_conversation};
 use crate::ai::blocklist::block::cli::{
     CLISubagentView, CLISubagentViewEvent, CLISubagentViewMode,
 };
@@ -89,21 +96,21 @@ use crate::ai::blocklist::usage::conversation_usage_view::{
     ConversationUsageInfo, ConversationUsageView, TimingInfo,
 };
 use crate::ai::blocklist::{
-    block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryId,
-    QueuedQueryEvent, QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
+    AutofireAction, QueuedQuery, QueuedQueryEvent, QueuedQueryId, QueuedQueryModel,
+    QueuedQueryOrigin, SlashCommandRequest, block_context_from_terminal_model,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
 use crate::ai::loading::shimmering_warp_loading_text;
+#[cfg(feature = "local_fs")]
+use crate::code_review::DiffSetScope;
 #[cfg(feature = "local_fs")]
 use crate::code_review::context::{
     convert_file_diffs_to_diffset_hunks, create_attachment_reference_and_key,
     register_diffset_attachment,
 };
-#[cfg(feature = "local_fs")]
-use crate::code_review::DiffSetScope;
 use crate::terminal::model::blocks::RemovableBlocklistItem;
 #[cfg(feature = "local_fs")]
-use crate::util::file::external_editor::{settings::EditorLayout, EditorSettings};
+use crate::util::file::external_editor::{EditorSettings, settings::EditorLayout};
 use crate::util::truncation::truncate_from_end;
 
 use crate::ai::agent::redaction::redact_secrets;
@@ -117,7 +124,7 @@ use crate::ai::blocklist::model::AIBlockOutputStatus;
 #[cfg(feature = "local_fs")]
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::code_review::comments::{
-    convert_insert_review_comments, AttachedReviewComment, PendingImportedReviewComment,
+    AttachedReviewComment, PendingImportedReviewComment, convert_insert_review_comments,
 };
 #[cfg(feature = "local_fs")]
 use crate::code_review::diff_state::LocalDiffStateModel;
@@ -136,12 +143,12 @@ use crate::remote_server::manager::{
 use crate::settings::ai::FocusedTerminalInfo;
 use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
 use crate::terminal::cli_agent_sessions::event::{
-    parse_event, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
-    CLI_AGENT_NOTIFICATION_SENTINEL,
+    CLI_AGENT_NOTIFICATION_SENTINEL, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource,
+    CLIAgentEventType, parse_event,
 };
-use crate::terminal::cli_agent_sessions::listener::{is_agent_supported, CLIAgentSessionListener};
+use crate::terminal::cli_agent_sessions::listener::{CLIAgentSessionListener, is_agent_supported};
 #[cfg(not(target_family = "wasm"))]
-use crate::terminal::cli_agent_sessions::plugin_manager::{plugin_manager_for, PluginModalKind};
+use crate::terminal::cli_agent_sessions::plugin_manager::{PluginModalKind, plugin_manager_for};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentRichInputCloseReason, CLIAgentSession,
     CLIAgentSessionContext, CLIAgentSessionStatus, CLIAgentSessionsModel,
@@ -167,14 +174,14 @@ pub use action::{
 };
 use ai::api_keys::{ApiKeyManager, AwsCredentialsState};
 
-use crate::terminal::shared_session::protocol::{SessionEndedReason, SessionSourceType};
-pub use block_banner::{WithinBlockBanner, BLOCK_BANNER_HEIGHT};
+use crate::terminal::shared_session::protocol::SessionEndedReason;
+pub use block_banner::{BLOCK_BANNER_HEIGHT, WithinBlockBanner};
 use block_onboarding::onboarding_agentic_suggestions_block::{
     OnboardingAgenticSuggestionsBlock, OnboardingAgenticSuggestionsBlockEvent, OnboardingChipType,
 };
 pub use init::{
-    init, CANCEL_COMMAND_KEYBINDING, TOGGLE_AUTOEXECUTE_MODE_KEYBINDING,
-    TOGGLE_HIDE_CLI_RESPONSES_KEYBINDING, TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING,
+    CANCEL_COMMAND_KEYBINDING, TOGGLE_AUTOEXECUTE_MODE_KEYBINDING,
+    TOGGLE_HIDE_CLI_RESPONSES_KEYBINDING, TOGGLE_QUEUE_NEXT_PROMPT_KEYBINDING, init,
 };
 pub use inline_banner::{NotificationsDiscoveryBannerAction, NotificationsErrorBannerAction};
 #[cfg(feature = "local_fs")]
@@ -184,15 +191,17 @@ use ssh_file_upload::{FileUpload, FileUploadEvent};
 use uuid::Uuid;
 use warp_core::channel::ChannelState;
 use warp_core::ui::theme::AnsiColorIdentifier;
-use warpui::elements::{shimmering_text::ShimmeringTextStateHandle, ChildView, MainAxisSize};
+use warpui::elements::{ChildView, MainAxisSize, shimmering_text::ShimmeringTextStateHandle};
 use warpui::fonts::Properties;
 use warpui::{ViewHandle, WeakModelHandle};
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};
 
-use crate::ai::agent::task::TaskId;
+use crate::AIRequestUsageModel;
+use crate::ActiveSession as WindowActiveSession;
 #[cfg(any(test, feature = "integration_tests"))]
 use crate::ai::agent::UserQueryMode;
+use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
     AIAgentActionType, AIAgentOutputStatus, AIAgentTextSection, EntrypointType,
     FinishedAIAgentOutput, RenderableAIError, StaticQueryType,
@@ -201,28 +210,27 @@ use crate::ai::blocklist::agent_view::agent_input_footer::toolbar_item::AgentToo
 use crate::ai::blocklist::agent_view::orchestration_conversation_links::pane_group_id_containing_terminal_view;
 use crate::ai::blocklist::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;
 use crate::ai::blocklist::suggested_rule_modal::SuggestedRuleAndId;
-use crate::ai::blocklist::{model::AIBlockModelImpl, ClientIdentifiers};
+use crate::ai::blocklist::{ClientIdentifiers, model::AIBlockModelImpl};
 use crate::ai::{
     agent::{
         AIAgentActionId, AIAgentCitation, AIAgentContext, AIAgentExchangeId, AIAgentInput,
         FileLocations, PassiveCodeDiffEntry, PassiveSuggestionResultType,
     },
     blocklist::{
-        ai_brand_color, get_ai_block_overflow_menu_element_position_id,
+        AIBlock, AIBlockEvent, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT, BlocklistAIActionEvent,
+        BlocklistAIActionModel, BlocklistAIContextEvent, BlocklistAIContextModel,
+        BlocklistAIController, BlocklistAIControllerEvent, BlocklistAIHistoryEvent,
+        BlocklistAIHistoryModel, BlocklistAIInputEvent, BlocklistAIInputModel,
+        ConversationStatusUpdate, GuiInputModePolicy, InputConfig, InputType,
+        LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
+        MaaPassiveSuggestionsModel, PRE_REWIND_PREFIX, PassiveSuggestionsModels, PendingQueryState,
+        PromptSuggestionExecutor, PromptSuggestionExecutorEvent, RequestFileEditsFormatKind,
+        ShellCommandExecutor, ShellCommandExecutorEvent, ai_brand_color,
+        get_ai_block_overflow_menu_element_position_id,
         get_attached_blocks_chip_element_position_id,
         inline_action::code_diff_view::{CodeDiffView, FileDiff},
         summarization_cancel_dialog::SummarizationCancelDialog,
         telemetry_banner::should_collect_ai_ugc_telemetry,
-        AIBlock, AIBlockEvent, BlocklistAIActionEvent, BlocklistAIActionModel,
-        BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIController,
-        BlocklistAIControllerEvent, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-        BlocklistAIInputEvent, BlocklistAIInputModel, ConversationStatusUpdate,
-        GuiInputModePolicy, InputConfig, InputType,
-        LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
-        MaaPassiveSuggestionsModel, PassiveSuggestionsModels, PendingQueryState,
-        PromptSuggestionExecutor, PromptSuggestionExecutorEvent, RequestFileEditsFormatKind,
-        ShellCommandExecutor, ShellCommandExecutorEvent, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT,
-        PRE_REWIND_PREFIX,
     },
     execution_profiles::profiles::{AIExecutionProfilesModel, ClientProfileId},
 };
@@ -230,21 +238,21 @@ use crate::auth::AuthManager;
 use crate::auth::AuthState;
 use crate::auth::AuthStateProvider;
 use crate::auth::AuthViewVariant;
-use crate::autoupdate::{self, get_update_state, AutoupdateStage};
+use crate::autoupdate::{self, AutoupdateStage, get_update_state};
 use crate::cloud_object::model::actions::ObjectActionType;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::update_manager::UpdateManager;
 use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, StoredObject};
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
+use crate::context_chips::ContextChipKind;
 use crate::context_chips::prompt::Prompt;
 use crate::context_chips::prompt_type::PromptType;
-use crate::context_chips::ContextChipKind;
-use crate::drive::settings::WarpDriveSettings;
 use crate::drive::ObjectTypeAndId;
+use crate::drive::settings::WarpDriveSettings;
 use crate::env_vars::{
-    env_var_collection_block::{EnvVarCollectionBlock, EnvVarCollectionBlockEvent},
     EnvVar, EnvVarCollectionObject,
+    env_var_collection_block::{EnvVarCollectionBlock, EnvVarCollectionBlockEvent},
 };
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::ssh_split::{PendingRemoteCd, SplitFollowUp};
@@ -260,15 +268,16 @@ use crate::settings::{
     InputModeSettings, InputModeSettingsChangedEvent, InputSettings, PaneSettings,
     PaneSettingsChangedEvent, PrivacySettings, SelectionSettings, VimBannerSettings,
 };
+use crate::settings_view::SettingsSection;
 use crate::settings_view::flags;
 use crate::settings_view::keybindings::KeybindingChangedNotifier;
-use crate::settings_view::SettingsSection;
 use crate::shell_indicator::ShellIndicatorType;
-use crate::terminal::alias::{check_for_alias_async, AliasedCommand};
+use crate::terminal::ShellLaunchData;
+use crate::terminal::alias::{AliasedCommand, check_for_alias_async};
 use crate::terminal::alt_screen_reporting::{AltScreenReporting, AltScreenReportingChangedEvent};
 use crate::terminal::block_filter::{
-    filter_button_position_id, BlockFilterEditor, BlockFilterEditorEvent, BlockFilterQuery,
-    OpenedFromClick,
+    BlockFilterEditor, BlockFilterEditorEvent, BlockFilterQuery, OpenedFromClick,
+    filter_button_position_id,
 };
 use crate::terminal::block_list_viewport::OverhangingBlock;
 use crate::terminal::block_list_viewport::ScrollPositionUpdate;
@@ -279,10 +288,11 @@ use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::grid_size_util::grid_cell_dimensions;
 use crate::terminal::host_footer_color;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
+use crate::terminal::input::log_late_timer_wake;
 use crate::terminal::input::{
     CommandExecutionSource, InputAction, InputEmptyStateChangeReason, YoungTypeaheadDetection,
 };
-use crate::terminal::ligature_settings::{should_use_ligature_rendering, LigatureSettings};
+use crate::terminal::ligature_settings::{LigatureSettings, should_use_ligature_rendering};
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_tty::get_shell_starter;
 #[cfg(feature = "local_tty")]
@@ -297,36 +307,31 @@ use crate::terminal::recorder::PtyRecorder;
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::terminal::session_settings::ToolbarChipSelection;
 use crate::terminal::session_settings::{
-    NotificationsMode, NotificationsSettings, SessionSettings,
+    DEFAULT_THRESHOLD_FOR_LONG_RUNNING_NOTIFICATION, SessionSettingsChangedEvent,
 };
 use crate::terminal::session_settings::{
-    SessionSettingsChangedEvent, DEFAULT_THRESHOLD_FOR_LONG_RUNNING_NOTIFICATION,
+    NotificationsMode, NotificationsSettings, SessionSettings,
 };
 use crate::terminal::settings::{TerminalSettings, TerminalSettingsChangedEvent};
-use crate::terminal::shared_session::{
-    SharedSessionActionSource, SharedSessionScrollbackType, SharedSessionStatus,
-};
+use crate::terminal::shared_session::{SharedSessionScrollbackType, SharedSessionStatus};
 use crate::terminal::ssh::ssh_detection::SshInteractiveSessionDetected;
 use crate::terminal::view::block_onboarding::onboarding_prompt_block::OnboardingPromptBlock;
 use crate::terminal::warpify::{
+    SubshellSource,
     render::render_subshell_separator,
     settings::{NU_SUBSHELL_COMMAND_REGEX, PWSH_SUBSHELL_COMMAND_REGEX, WarpifySettings},
-    SubshellSource,
 };
-use crate::terminal::ShellLaunchData;
 use crate::terminal::writeable_pty::{PtyIntent, PtyIntentEvent, TerminalSurface};
-use crate::terminal::{element_size_at_last_frame, HistoryEntry};
-use crate::terminal::{
-    height_in_range_approx, heights_approx_gt, heights_approx_gte, SizeUpdate,
-};
-use crate::terminal::{heights_approx_eq, CellSizeAndWindowPadding};
 use crate::terminal::{AudibleBell, SizeUpdateReason};
 use crate::terminal::{BlockListSettings, BlockListSettingsChangedEvent};
+use crate::terminal::{CellSizeAndWindowPadding, heights_approx_eq};
+use crate::terminal::{HistoryEntry, element_size_at_last_frame};
+use crate::terminal::{SizeUpdate, height_in_range_approx, heights_approx_gt, heights_approx_gte};
 use crate::themes::theme::WarpTheme;
 use crate::ui_components::icons::{self};
 use crate::util::bindings::{
-    custom_tag_to_keystroke, keybinding_name_to_display_string, keybinding_name_to_keystroke,
-    set_custom_keybinding, CustomAction,
+    CustomAction, custom_tag_to_keystroke, keybinding_name_to_display_string,
+    keybinding_name_to_keystroke, set_custom_keybinding,
 };
 use crate::util::clipboard::clipboard_content_with_escaped_paths;
 #[cfg(feature = "local_fs")]
@@ -336,8 +341,8 @@ use crate::util::openable_file_type::{
 #[cfg(feature = "local_fs")]
 use crate::util::repo_detection::RepoDetectionSessionType;
 use crate::view_components::{DismissibleToast, ToastFlavor};
-use crate::workflows::workflow::Workflow;
 use crate::workflows::WorkflowSelectionSource;
+use crate::workflows::workflow::Workflow;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_settings::{TabSettings, TabSettingsChangedEvent};
 use crate::workspace::{
@@ -345,10 +350,9 @@ use crate::workspace::{
 };
 use crate::workspace::{ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination};
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::AIRequestUsageModel;
-use crate::ActiveSession as WindowActiveSession;
-use crate::{report_if_error, AIAgentActionResultType};
+use crate::{AIAgentActionResultType, report_if_error};
 use crate::{safe_error, safe_warn};
+use warp_core::execution_mode::AppExecutionMode;
 
 use crate::terminal::shared_session::protocol::{
     ParticipantId, Role, WindowSize as SessionSharingWindowSize,
@@ -356,7 +360,7 @@ use crate::terminal::shared_session::protocol::{
 use async_channel::{Receiver, Sender};
 use chrono::{DateTime, Local, NaiveDateTime};
 use command_corrections::rules::{Rule, RuleId as CommandCorrectionsRuleId};
-use command_corrections::{correct_command, Command, Correction, HistoryItem, SessionMetadata};
+use command_corrections::{Command, Correction, HistoryItem, SessionMetadata, correct_command};
 use enclose::enclose;
 use instant::Instant;
 use itertools::Itertools;
@@ -370,18 +374,17 @@ use serde_json::json;
 use shared_session::{SharedSessionAdapter, Viewer};
 use std::any::Any;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
-use std::thread::JoinHandle;
+use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 use sum_tree::SeekBias;
 use vec1::vec1;
@@ -390,29 +393,32 @@ use warp_core::user_preferences::GetUserPreferences as _;
 #[cfg(feature = "local_fs")]
 use warp_util::path::LineAndColumnArg;
 use warp_util::path::{ShellDialect, ShellFamily};
+use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::new_scrollable::{
     AxisConfiguration, ClippedAxisConfiguration, DualAxisConfig, NewScrollableElement,
     ScrollableAppearance, SingleAxisConfig,
 };
 use warpui::elements::{
-    get_rich_content_position_id, ChildAnchor, ClippedScrollStateHandle, Container,
-    CrossAxisAlignment, DispatchEventResult, DropTarget, DropTargetData, Empty, EventHandler, Flex,
-    NewScrollable, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
-    PositionedElementAnchor, PositionedElementOffsetBounds, Radius, ScrollableElement,
-    ScrollbarWidth, Shrinkable, Text,
+    ChildAnchor, ClippedScrollStateHandle, Container, CrossAxisAlignment, DispatchEventResult,
+    DropTarget, DropTargetData, Empty, EventHandler, Flex, NewScrollable, OffsetPositioning,
+    ParentAnchor, ParentElement, ParentOffsetBounds, PositionedElementAnchor,
+    PositionedElementOffsetBounds, Radius, ScrollableElement, ScrollbarWidth, Shrinkable, Text,
+    get_rich_content_position_id,
 };
 use warpui::event::ModifiersState;
 use warpui::keymap::Keystroke;
 use warpui::notification::{NotificationSendError, RequestPermissionsOutcome, UserNotification};
+use warpui::pane_key::{PaneKey, PaneKeyContext, PaneKeyKind, PaneKeyOutcome};
 use warpui::platform::{Cursor, OperatingSystem};
-use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::windowing::WindowManager;
 
 use warpui::assets::asset_cache::{AssetCache, AssetCacheEvent};
 use warpui::image_cache::ImageType;
 use warpui::units::{IntoLines, IntoPixels, Lines, Pixels};
 use warpui::{
+    AccessibilityData, AppContext, BlurContext, Element, Entity, FocusContext, ModelHandle,
+    TypedActionView, UpdateView, View, ViewAsRef, ViewContext, WeakViewHandle,
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     elements::SavePosition,
     elements::{
@@ -421,19 +427,18 @@ use warpui::{
     },
     fonts::{Cache as FontCache, FamilyId},
     ui_components::components::UiComponent,
-    AccessibilityData, AppContext, BlurContext, Element, Entity, FocusContext, ModelHandle,
-    TypedActionView, UpdateView, View, ViewAsRef, ViewContext, WeakViewHandle,
 };
 use warpui::{
+    WindowId,
     elements::Stack,
     end_trace_after_next,
-    geometry::vector::{vec2f, Vector2F},
-    record_trace_event, WindowId,
+    geometry::vector::{Vector2F, vec2f},
+    record_trace_event,
 };
 
-use warpui::{windowing, CursorInfo, EntityId, EventContext, ModelAsRef, SingletonEntity, Tracked};
+use warpui::{CursorInfo, EntityId, EventContext, ModelAsRef, SingletonEntity, Tracked, windowing};
 
-use crate::ai_assistant::{AskAIType, ASK_AI_ASSISTANT_TEXT};
+use crate::ai::ask_ai::{ASK_AI_ASSISTANT_TEXT, AskAIType};
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::banner::{
     Banner, BannerAction, BannerEvent, BannerState, BannerTextButton, BannerTextContent,
@@ -445,10 +450,10 @@ use crate::features::FeatureFlag;
 use crate::pane_group::SplitPaneState;
 use crate::pane_group::{
     CodeReviewPanelArg, PaneConfiguration, PaneEvent, PaneGroupAction, PaneHeaderAction,
-    TerminalViewResources, TOGGLE_MAXIMIZE_PANE_BINDING_NAME,
+    TOGGLE_MAXIMIZE_PANE_BINDING_NAME, TerminalViewResources,
 };
 use crate::resource_center::{
-    mark_feature_used_and_write_to_user_defaults, Tip, TipHint, TipsCompleted,
+    Tip, TipHint, TipsCompleted, mark_feature_used_and_write_to_user_defaults,
 };
 use crate::server::telemetry::{
     self, AgentModeAttachContextMethod, AgentModeEntrypoint, AgentModeRewindEntrypoint,
@@ -461,67 +466,81 @@ use crate::server::telemetry::{
     SaveAsWorkflowModalSource, TelemetryEvent,
 };
 use crate::session_management::{CommandContext, SessionNavigationPromptElements};
+use crate::terminal::ShellHost;
 use crate::terminal::alt_screen::alt_screen_element::AltScreenElement;
+use crate::terminal::block_list_element::is_agent_shortcut_enter;
 use crate::terminal::block_list_element::{
-    render_hoverable_block_button, BlockListElement, BlockListMouseStates, BlockSelectAction,
-    BlockTextSelectAction, SnackbarHeaderState, ToolbeltButtonTooltip,
+    BlockListElement, BlockListMouseStates, BlockSelectAction, BlockTextSelectAction,
+    SnackbarHeaderState, ToolbeltButtonTooltip, render_hoverable_block_button,
 };
 use crate::terminal::block_list_viewport::AutoscrollBehavior;
 use crate::terminal::block_list_viewport::{InputMode, ScrollPosition, ViewportState};
-use crate::terminal::bootstrap::{generate_session_id, init_subshell_command_lines};
+use crate::terminal::bootstrap::{generate_session_id, init_subshell_command_lines_with_markers};
 use crate::terminal::event::TerminalMode;
 use crate::terminal::event::UserBlockCompleted;
+use crate::terminal::event_listener::Wakeup;
 use crate::terminal::find::{BlockGridMatch, BlockListMatch, TerminalFindModel};
 use crate::terminal::input::{InputState, MenuPositioning, MenuPositioningProvider};
 use crate::terminal::keys::TerminalKeybindings;
+use crate::terminal::meta_shortcuts::handle_keystroke_despite_composing;
+#[cfg(unix)]
+use crate::terminal::model::block::InteractivePromptCandidate;
+use crate::terminal::model::block::interactive_prompt_candidate;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
-#[cfg(unix)]
-use crate::terminal::model::block::{InteractivePromptCandidate, interactive_prompt_candidate};
-use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
 };
-use crate::terminal::model::escape_sequences::{self, EscCodes, ToEscapeSequence, C1};
+use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
+use crate::terminal::model::escape_sequences::{
+    self, C1, EscCodes, KeystrokeWithDetails, ToEscapeSequence,
+};
 use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
+use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::index::{Point, Side};
+use crate::terminal::model::key_facts::{
+    InputBoxFacts, KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand,
+    ModelInbox, block_id_hash, output_tail_is_input_prompt, output_tail_is_shell_prompt,
+};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
-use crate::terminal::model::session::{
-    BootstrapSessionType, SessionType, Sessions, SessionsEvent,
-};
-use crate::terminal::model::early_output::TypeaheadMode;
+use crate::terminal::model::session::{BootstrapSessionType, SessionType, Sessions, SessionsEvent};
 use crate::terminal::model::terminal_model::{BlockIndex, TerminalInputState};
 use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    HeldKeysRelease, InterruptOutcome, ReportDisposition, UserBytesRoute, YOUNG_ENTER_WINDOW,
-    YoungSubmit, forces_shell_submit, text_for_editor, young_submit_decision,
+    InterruptOutcome, PaneHandoff, ReportDisposition, UserBytesRoute, YoungSubmit,
+    forces_shell_submit, is_signal_byte, text_for_editor, young_detection_cap_for,
+    young_submit_decision_for,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
     blocks::BlockListPoint,
 };
+use crate::terminal::pane_key::{
+    self, KeyClass, KeyTarget, PaneFocusFacts, PaneKeyMode, TailAction, TypedRoute,
+};
 use crate::terminal::view::inline_banner::{
-    render_agent_mode_setup_banner, AgentModeSetupSpeedbumpBannerAction,
-    AgentModeSetupSpeedbumpBannerState, AliasExpansionBannerState,
-    NotificationsDiscoveryBannerState, NotificationsErrorBannerState, PromptSuggestionBannerState,
-    VimModeBannerState,
+    AgentModeSetupSpeedbumpBannerAction, AgentModeSetupSpeedbumpBannerState,
+    AliasExpansionBannerState, NotificationsDiscoveryBannerState, NotificationsErrorBannerState,
+    PromptSuggestionBannerState, VimModeBannerState, render_agent_mode_setup_banner,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
+use crate::terminal::view::ssh_typeahead::{
+    HeldInput, SSH_TYPEAHEAD_PRECMD_WAIT_CAP, SshTypeaheadPush, delivery_waits_for_first_precmd,
+};
 use crate::terminal::waterfall_gap_element::WaterfallGapElement;
-use crate::terminal::ShellHost;
 use crate::terminal::{
+    TerminalModel,
     block_list_element::BlockHoverAction,
     // find::{Event as FindEvent, Find, FindDirection},
     input::{
         AfterEnterInput, Event as InputEvent, INPUT_A11Y_HELPER_KEY, INPUT_A11Y_LABEL_KEY, Input,
     },
-    model::block::SerializedBlock,
+    model::block::{DeferredBlockContent, SerializedBlock},
     shell::ShellType,
     terminal_size_element::TerminalSizeElement,
-    TerminalModel,
 };
 use crate::view_components::find::{Event as FindEvent, Find, FindDirection, FindWithinBlockState};
 use settings::{Setting, ToggleableSetting};
@@ -530,11 +549,11 @@ use warpui::text::SelectionType;
 
 use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields};
 use crate::server::telemetry::{BlockLatencyInfo, BootstrappingInfo};
+use crate::terminal::{History, SizeInfo, color};
 use crate::terminal::{block_list_element::BlockListMenuSource, prompt};
-use crate::terminal::{color, History, SizeInfo};
 use crate::terminal::{color::List, model::block::TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES};
 use crate::terminal::{event::AfterBlockCompletedEvent, event::BlockLatencyData, event::BlockType};
-use crate::throttle::throttle;
+use crate::throttle::throttle_with_bypass;
 use crate::util::color::darken;
 use crate::util::links;
 use crate::{send_telemetry_from_ctx, send_telemetry_on_executor, send_telemetry_sync_from_ctx};
@@ -545,9 +564,7 @@ use super::block_list_viewport::FindMatchScrollLocation;
 use super::event::SshLoginStatus;
 use super::find::FindOptions;
 use super::model::ansi::{SystemDetails, WarpificationUnavailableReason};
-use super::model::block::{
-    BlockSection, BlocklistEnvVarMetadata, LONG_RUNNING_COMMAND_DURATION_MS,
-};
+use super::model::block::{BlockSection, BlocklistEnvVarMetadata};
 use super::model::blocks::RichContentItem;
 use super::model::completions::ShellCompletion;
 use super::model::rich_content::RichContentType;
@@ -555,44 +572,43 @@ use super::model::secrets::RichContentSecretTooltipInfo;
 use super::model::selection::ExpandedSelectionRange;
 use super::model::session::SessionBootstrappedEvent;
 use super::settings::AltScreenPaddingMode;
-use super::ssh::error::{SshErrorBlock, SshErrorBlockEvent, SSH_ERROR_BLOCK_VISIBLE_KEY};
+use super::ssh::SSH_WARPIFY_TIMEOUT_DURATION;
+use super::ssh::error::{SSH_ERROR_BLOCK_VISIBLE_KEY, SshErrorBlock, SshErrorBlockEvent};
 use super::ssh::install_tmux::{
-    install_root_tmux_script, install_tmux_script, SshInstallTmuxBlock, SshInstallTmuxBlockEvent,
-    SshKeyEvent, TmuxInstallMethod,
+    SshInstallTmuxBlock, SshInstallTmuxBlockEvent, SshKeyEvent, TmuxInstallMethod,
+    install_root_tmux_script, install_tmux_script,
 };
 use super::ssh::root_access::RootAccess;
 use super::ssh::ssh_detection::evaluate_warpify_ssh_host;
 use super::ssh::util::{
-    convert_script_to_one_line, parse_interactive_ssh_command, InteractiveSshCommand,
-    SshWarpifyCommand,
+    InteractiveSshCommand, SshWarpifyCommand, convert_script_to_one_line,
+    parse_interactive_ssh_command,
 };
 use super::ssh::warpify::{
-    begin_warpify_ssh_session_command, warpify_ssh_session_command, SshWarpifyBlock,
-    SshWarpifyBlockEvent,
+    SshWarpifyBlock, SshWarpifyBlockEvent, begin_warpify_ssh_session_command,
+    warpify_ssh_session_command,
 };
-use super::ssh::SSH_WARPIFY_TIMEOUT_DURATION;
-use super::warpify::success_block::{WarpifySuccessBlock, WarpifySuccessBlockEvent};
-use super::warpify::trigger_state::{ssh_output_is_payload_only, SshBlockState, WarpifyState};
 use super::warpify::WarpificationSource;
-use super::{should_right_click_paste, GridType, HistoryEvent};
+use super::warpify::success_block::{WarpifySuccessBlock, WarpifySuccessBlockEvent};
+use super::warpify::trigger_state::{SshBlockState, WarpifyState, ssh_output_is_payload_only};
+use super::{GridType, HistoryEvent, should_right_click_paste};
 use crate::antivirus::AntivirusInfo;
 use crate::terminal::links::should_directly_open_link;
 use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher};
 use action::RememberForWarpification;
-use block_banner::{render_warpification_banner, WarpificationMode, WarpifyBannerState};
+use block_banner::{WarpificationMode, WarpifyBannerState, render_warpification_banner};
 use bookmarks::render_floating_block_snapshot;
 use command_corrections::rules::generic::history::History as CommandCorrectionsHistoryRule;
 use init::{INPUT_BOX_VISIBLE_KEY, TOGGLE_BLOCK_FILTER_KEYBINDING};
 use inline_banner::{
-    render_alias_expansion_banner, render_aws_bedrock_login_banner,
+    AliasExpansionBanner, AliasExpansionBannerAction, AwsBedrockLoginBannerAction,
+    AwsBedrockLoginBannerState, AwsCliNotInstalledBannerAction, AwsCliNotInstalledBannerState,
+    ByoLlmAuthBannerSessionState, OpenInWarpBannerState, SSHBannerAction, SSHBannerState,
+    VimModeBannerAction, render_alias_expansion_banner, render_aws_bedrock_login_banner,
     render_aws_cli_not_installed_banner, render_inline_notifications_discovery_banner,
     render_inline_notifications_error_banner, render_inline_shared_session_ended_banner,
     render_inline_shared_session_started_banner, render_inline_ssh_wrapper_banner,
     render_open_in_warp_banner, render_shell_process_terminated_banner, render_vim_mode_banner,
-    AliasExpansionBanner, AliasExpansionBannerAction, AwsBedrockLoginBannerAction,
-    AwsBedrockLoginBannerState, AwsCliNotInstalledBannerAction, AwsCliNotInstalledBannerState,
-    ByoLlmAuthBannerSessionState, OpenInWarpBannerState, SSHBannerAction, SSHBannerState,
-    VimModeBannerAction,
 };
 use warp_core::command::ExitCode;
 
@@ -649,23 +665,147 @@ lazy_static! {
     static ref ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING: HashSet<&'static str> = HashSet::from(["k9s", "lazygit"]);
 }
 
-pub const AI_CONTROL_PANEL_MARGIN: f32 = 10.;
-
 pub const OVERFLOW_BUTTON_OFFSET_X: f32 = -3.;
 pub const MAX_WAKEUPS_PER_SECOND: u64 = 60;
 pub const WAKEUP_THROTTLE_PERIOD: Duration =
     Duration::from_micros(1000 * 1000 / MAX_WAKEUPS_PER_SECOND);
 
+/// Echo of a keystroke skips the rest of the wakeup throttle period; one arriving sooner than this
+/// after the previous wakeup is delivered when this floor ends, so output that follows a keystroke
+/// is never drawn faster than this while a flood stays at the 60 Hz cadence (#1138).
+pub const WAKEUP_BYPASS_FLOOR: Duration = Duration::from_millis(4);
+
 pub const EXECUTE_PENDING_COMMAND_DELAY: Duration = Duration::from_millis(100);
 
-/// How long after a notice banner opens/closes the find bar is redrawn so it picks up the
-/// banner's freshly saved position (#958). Must be longer than one frame.
-const FIND_BAR_BANNER_RELAYOUT_DELAY: Duration = Duration::from_millis(50);
+/// How long after a paint-only wakeup the view checks whether that paint changed a render input
+/// (see `wakeup_redraw`). Long enough for a program's screen redraw to have finished arriving.
+/// Deferred-reflow driver (#1303): after a column change the blocks outside the viewport reflow
+/// in chunks of at most `STALE_REFLOW_CHUNK_BUDGET` of model-lock time, one chunk per
+/// `STALE_REFLOW_CHUNK_INTERVAL`, until none are stale. The timer is only armed while blocks are
+/// stale, so an idle terminal runs nothing.
+const STALE_REFLOW_CHUNK_BUDGET: Duration = Duration::from_millis(4);
+const STALE_REFLOW_CHUNK_INTERVAL: Duration = Duration::from_millis(16);
+/// Lines above and below the viewport that reflow synchronously with a column change.
+const STALE_REFLOW_MARGIN_LINES: f64 = 60.;
 
-/// The delay after which the find bar must be redrawn following a banner change, if at all.
-/// Only an open find bar offsets itself by the banner.
-fn find_bar_banner_relayout_delay(find_bar_open: bool) -> Option<Duration> {
-    find_bar_open.then_some(FIND_BAR_BANNER_RELAYOUT_DELAY)
+/// What `TerminalView::reflow_stale_blocks_keeping_scroll` should reflow.
+#[derive(Clone, Copy)]
+enum StaleReflowWork {
+    NearViewport,
+    Chunk(Duration),
+    All,
+}
+
+/// The post-approval/rejection focus reclaim (#901, #1374). It is bounded by EVENTS, not time: it
+/// ends when the input is visible and focused, the action finishes, ctrl-c, or the user moves focus
+/// themselves. The last is detected by comparing the focused view with the one the reclaim itself
+/// left focus on: any difference is a user click/navigation (or another owner of focus) and the
+/// reclaim must never fight it.
+#[derive(Default)]
+struct FocusReclaim {
+    active: bool,
+    /// The view focus was left on by the reclaim; `None` until it has placed focus once.
+    placed_on: Option<EntityId>,
+}
+
+impl FocusReclaim {
+    fn start(&mut self) {
+        self.active = true;
+        self.placed_on = None;
+    }
+
+    fn end(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record_placed(&mut self, focused_now: Option<EntityId>) {
+        self.placed_on = focused_now;
+    }
+
+    /// Whether the reclaim still applies given the currently focused view. Ends it if the user
+    /// (or anything else) moved focus away from where the reclaim left it.
+    fn is_active(&mut self, focused_now: Option<EntityId>) -> bool {
+        if self.active && self.placed_on.is_some() && self.placed_on != focused_now {
+            self.end();
+        }
+        self.active
+    }
+}
+
+#[cfg(test)]
+mod focus_reclaim_tests {
+    use super::*;
+
+    #[test]
+    fn reclaim_survives_without_a_user_focus_change_and_never_lapses_by_time() {
+        let a = EntityId::new();
+        let mut r = FocusReclaim::default();
+        assert!(!r.is_active(Some(a)));
+        r.start();
+        assert!(r.is_active(Some(a)));
+        r.record_placed(Some(a));
+        // Arbitrarily later, focus is where the reclaim left it: still active.
+        assert!(r.is_active(Some(a)));
+    }
+
+    #[test]
+    fn user_click_elsewhere_ends_the_reclaim() {
+        let (a, b) = (EntityId::new(), EntityId::new());
+        let mut r = FocusReclaim::default();
+        r.start();
+        r.record_placed(Some(a));
+        assert!(!r.is_active(Some(b)), "focus the user put elsewhere stays");
+        assert!(!r.is_active(Some(a)), "and the reclaim does not come back");
+    }
+}
+
+#[cfg(test)]
+mod alt_screen_settle_tests {
+    use super::*;
+
+    #[test]
+    fn settle_check_runs_on_the_frame_signal_not_the_cap() {
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        tx.try_send(()).unwrap();
+        let start = std::time::Instant::now();
+        assert!(futures::executor::block_on(wait_frame_or_give_up(
+            rx,
+            Duration::from_secs(30)
+        )));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn settle_check_gives_up_only_at_the_cap_when_no_frame_is_drawn() {
+        let (_tx, rx) = async_channel::bounded::<()>(1);
+        assert!(!futures::executor::block_on(wait_frame_or_give_up(
+            rx,
+            Duration::from_millis(20)
+        )));
+    }
+}
+
+/// Give-up for the ssh login recheck: no re-prompt for this long after non-prompt output.
+const SSH_LOGIN_RECHECK_GIVE_UP: Duration = Duration::from_secs(3);
+
+/// How long the alt-screen winsize re-send waits for the program's first output before it gives up
+/// and re-sends anyway (and the second look for `ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS`). A safety
+/// net for output that never comes; logged when it fires (#1384 P5).
+#[cfg(feature = "local_tty")]
+const ALT_SCREEN_RESEND_GIVE_UP: Duration = Duration::from_millis(500);
+
+/// Give-up cap for the alt-screen paint-settle re-check (#1388). The re-check is driven by the
+/// frame-drawn callback of the paint-only frame; this only bounds the wait if that callback never
+/// fires (window occluded / frame dropped) and is logged when it does.
+const ALT_SCREEN_SETTLE_GIVE_UP: Duration = Duration::from_millis(500);
+
+/// Resolves `true` when `frame_rx` signals (the frame was drawn), `false` after `cap`.
+async fn wait_frame_or_give_up(frame_rx: async_channel::Receiver<()>, cap: Duration) -> bool {
+    futures_lite::future::or(async move { frame_rx.recv().await.is_ok() }, async move {
+        Timer::after(cap).await;
+        false
+    })
+    .await
 }
 
 /// How long the agent's command gets to react to an interrupt (^C) before the stop is escalated:
@@ -674,8 +814,25 @@ fn find_bar_banner_relayout_delay(find_bar_open: bool) -> Option<Duration> {
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 /// The longest input typed after a deferred Enter waits for the pty to take the command that
-/// Enter submitted, before it is routed anyway (#1016).
+/// Enter submitted, before it is handed back to the editor as text (#1016; #1577: the timer no
+/// longer routes it by the facts of that moment, which could write it to the pty).
 const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
+
+/// How long a young line's Enter waits for a verdict that never arrives at all before it gives up
+/// (#1353 phase 3). A safety net for a lost signal, never how the wait normally ends; logged when
+/// it fires. The normal give-up is
+/// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP) of
+/// classifier compute (grown with the text, #1604). #1577: a give-up
+/// with the input type undecided hands the line back to the editor (never submitted by the clock).
+const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
+
+/// [`YOUNG_DETECTION_BACKSTOP`] for a buffer of `text_len` chars: grows with the text like the
+/// compute cap (#1604, `large_text_compute_allowance`), so a large paste's linear classification
+/// is waited for rather than given up on by the lost-signal net.
+fn young_detection_backstop_for(text_len: usize) -> Duration {
+    YOUNG_DETECTION_BACKSTOP
+        + crate::ai::blocklist::input_model::large_text_compute_allowance(text_len)
+}
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
 
@@ -690,11 +847,84 @@ const BOOKMARK_MIN_GAP: f32 = 4.;
 /// Height of a bookmark indicator
 const BOOKMARK_INDICATOR_HEIGHT: f32 = 4.;
 
+/// The bytes a raw paste writes to the pty: every `\n` or `\r\n` becomes `\r`, optionally wrapped
+/// in the bracketed-paste markers. Built in a single pass into one pre-sized buffer.
+fn paste_bytes_for_pty(text: &str, bracketed: bool) -> Vec<u8> {
+    let wrap = if bracketed {
+        BRACKETED_PASTE_PREFIX.len() + BRACKETED_PASTE_SUFFIX.len()
+    } else {
+        0
+    };
+    let mut out = Vec::with_capacity(text.len() + wrap);
+    if bracketed {
+        out.extend_from_slice(BRACKETED_PASTE_PREFIX.as_bytes());
+    }
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            // A `\r` directly before the `\n` is part of the `\r\n` pair.
+            let end = if i > start && bytes[i - 1] == b'\r' {
+                i - 1
+            } else {
+                i
+            };
+            out.extend_from_slice(&bytes[start..end]);
+            out.push(b'\r');
+            start = i + 1;
+        }
+    }
+    out.extend_from_slice(&bytes[start..]);
+    if bracketed {
+        out.extend_from_slice(BRACKETED_PASTE_SUFFIX.as_bytes());
+    }
+    out
+}
+
+/// A terminal paste still being read after this long gets a "Pasting..." notice (#1255).
+#[cfg(not(target_family = "wasm"))]
+/// How long a clipboard write may run before the user is told the owner is not answering.
+const CLIPBOARD_WRITE_SLOW_TOAST_DELAY: Duration = Duration::from_secs(3);
+const PASTE_PROGRESS_TOAST_DELAY: Duration = Duration::from_millis(750);
+
 const BRACKETED_PASTE_PREFIX: &str = "\x1b[200~";
+/// Selections spanning more rows than this are stringified off the UI thread when copied
+/// (#1304); smaller ones stay inline.
+const COPY_SELECTION_DEFER_ROWS: usize = 20_000;
+
+/// Model-lock budget of one selection-snapshot slice (same target as find, #1377).
+#[cfg(not(target_family = "wasm"))]
+const SELECTION_SNAPSHOT_SLICE: Duration = Duration::from_millis(2);
+/// Selections over this many rows are not previewed (Find-bar prefill, screen-reader
+/// announcement): building their text would grow with the selection on the UI thread (#1304).
+const PREVIEW_SELECTION_MAX_ROWS: usize = 500;
+
+/// `PHOSPHOR_COPY_INLINE=1` turns the off-thread selection copy off (#1304).
+fn copy_inline_forced() -> bool {
+    std::env::var_os("PHOSPHOR_COPY_INLINE").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// A selection's text for a copy: ready now, or snapshotted and still to be rendered.
+enum SelectionCopyText {
+    Ready(Option<String>),
+    Pending(SelectionParts),
+}
+
 const BRACKETED_PASTE_SUFFIX: &str = "\x1b[201~";
+
+/// Identity of an armed bootstrap give-up timer (#1566).
+#[derive(Clone, Copy, Debug)]
+struct BootstrapTimerArm {
+    generation: u64,
+    session: Option<SessionId>,
+}
 
 /// Duration before we consider a session to have failed bootstrapping.
 const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
+/// #1566: how much longer the bootstrap give-up waits, once, when the pending session is
+/// demonstrably progressing (its bootstrap prompt's `Precmd` was seen) and only `Bootstrapped`
+/// is outstanding. A logged give-up net; `Bootstrapped` itself ends the wait.
+const BOOTSTRAP_PROGRESS_GRACE: Duration = Duration::from_secs(3);
 /// Longest typing is dropped on behalf of one pending ssh bootstrap (#983). A healthy
 /// bootstrap finishes well inside this; a stuck or stale one must not own the keyboard.
 const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
@@ -704,10 +934,35 @@ const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 /// command is a plain interactive session and every key goes to the pty.
 const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// After this long without a finished subshell bootstrap, input is no longer held back (#960).
+/// #1577: when a stalled setup is abandoned at the ceiling, the keys held through it are handed
+/// back to the editor as text, not written to the abandoned shell.
 const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
 /// How often a deferred subshell setup (#1032) re-checks whether the prompt it is waiting behind
 /// has been answered.
 const SUBSHELL_SETUP_DEFER_POLL: Duration = Duration::from_millis(250);
+/// How many rows from the end of the active block's output the deferred-setup checks look at.
+const OUTPUT_TAIL_ROWS: usize = 16;
+/// Give-up net for the event-driven subshell bootstrap (#1354): a typed setup line whose
+/// setup-line marker has not arrived this long after it was written is treated as lost, and the
+/// rest of the lines fall back to the timed pacing. Logged when it fires. Not what sequences
+/// the lines: the marker is.
+const SUBSHELL_SETUP_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
+/// Give-up net for the input queue's bootstrap-write gate (#1399): typed keys wait behind the
+/// setup lines until the last one is written. Every setup line may wait the whole marker give-up
+/// before the timed fallback takes over, so the net must outlast `lines` of those plus one more;
+/// a shorter one (it was 2 s per line) released the keys in the middle of the fallback's writes
+/// and interleaved them with the setup script.
+fn subshell_bootstrap_gate_cap(lines: usize) -> Duration {
+    SUBSHELL_SETUP_MARKER_GIVE_UP * (lines as u32 + 1) + Duration::from_secs(2)
+}
+/// Give-up net for a bootstrap trigger waiting for the subshell's first prompt (#1354): a prompt
+/// that never reads as one (an empty PS1, one ending in a newline) still gets the bootstrap.
+/// Logged when it fires.
+const SUBSHELL_FIRST_PROMPT_GIVE_UP: Duration = Duration::from_secs(5);
+/// Give-up net for a pending command / ssh `cd` waiting for the first prompt after a block
+/// completed (#1354); the prompt itself is what releases it. Logged when it fires. #1588: firing
+/// runs NOTHING; the command stays pending for the prompt (its text is shown in the input).
+const PENDING_COMMAND_PRECMD_GIVE_UP: Duration = Duration::from_secs(2);
 /// After the user answered a prompt that setup was deferred behind, the output must stay unchanged
 /// this long (the shell took the answer and went quiet) before setup is written, when the
 /// answer left no visible newline behind (#1032).
@@ -718,12 +973,19 @@ const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
 const SUBSHELL_SETUP_TYPED_HOLD_LIMIT: Duration = Duration::from_secs(90);
 /// How long the keys typed during a PowerShell subshell setup after a complete line stay held
 /// behind the command that line ran, waiting for its prompt (#1048). A command still running
-/// then is slow or interactive, and the rest is written to the pty as its typeahead.
+/// then is slow or interactive. #1577: firing only tells the user the input waits (log + toast);
+/// the keys are released by the command's prompt or by it becoming interactive, never this timer.
 const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
 /// How long after a Ctrl-C that skips a PowerShell subshell setup the keys held behind it wait
 /// (#1048): the Windows console flushes its input buffer as it processes the Ctrl-C, and keys
-/// written right behind the ^C were lost with it.
+/// written right behind the ^C were lost with it. Only the legacy timed setup
+/// (`PHOSPHOR_BOOTSTRAP_TIMED`, a kill switch) is paced by this; a marker-paced setup is not.
 const POWERSHELL_ABORT_SETTLE: Duration = Duration::from_millis(500);
+/// The give-up net behind the marker that ends the settle after a Ctrl-C skipped a marker-paced
+/// PowerShell setup (#1372): the shell prints the marker when PSReadLine is about to read again;
+/// if it never does (the Ctrl-C killed the wrapper's session, a host without the hook), the held
+/// keys are handed back to the editor as text after this (#1577: never written), with a log line.
+const POWERSHELL_ABORT_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
 /// a user needing to type in one or many secret manager passwords
@@ -745,6 +1007,14 @@ const LIVE_COMMAND_DURATION_REPAINT_INTERVAL: Duration = Duration::from_secs(1);
 /// be empty strings — Warp's docs site does not apply to this fork — which made
 /// every banner's "More info" a dead link (issue #632). The manual is this
 /// fork's documentation, so they point at it.
+/// Whether command corrections could use the repository's branch list for this finished command
+/// (#1342). Only the `git checkout <typo>` rule reads it: the input mentions `checkout` and the
+/// output is git's "pathspec ... did not match" error. This is a superset of that rule's own test
+/// (no regex, case-insensitive), so a skipped list can never change a correction.
+fn command_corrections_may_need_git_branches(input: &str, output: &str) -> bool {
+    input.contains("checkout") && output.to_ascii_lowercase().contains("pathspec")
+}
+
 fn known_issues_url() -> String {
     links::manual_url(links::MANUAL_TROUBLESHOOTING)
 }
@@ -772,10 +1042,8 @@ const MIN_DELTA_FOR_TEXT_SELECTION: f32 = 0.5;
 
 /// Notifications-specific info
 /// TODO (suraj): add documentation for notifications in gitbook
-const NOTIFICATIONS_LEARN_MORE_URL: &str =
-    "";
-pub const NOTIFICATIONS_TROUBLESHOOT_URL: &str =
-    "";
+const NOTIFICATIONS_LEARN_MORE_URL: &str = "";
+pub const NOTIFICATIONS_TROUBLESHOOT_URL: &str = "";
 
 const DEBOUNCE_PERIOD: Duration = Duration::from_millis(40);
 
@@ -1081,10 +1349,6 @@ impl PromptSuggestion {
     pub fn label(&self) -> &String {
         self.label.as_ref().unwrap_or(&self.prompt)
     }
-
-    pub fn is_static_prompt_suggestion(&self) -> bool {
-        self.static_prompt_suggestion_name.is_some()
-    }
 }
 
 /// A unique identifier for an inline banner.
@@ -1096,14 +1360,12 @@ pub enum InlineBannerType {
     NotificationsDiscovery,
     NotificationsError,
     Ssh,
-    PromptSuggestions,
     AliasExpansion,
     SharedSessionStart,
     SharedSessionEnd,
     ShellProcessTerminated,
     OpenInWarp,
     VimMode,
-    AgentModeSetup,
     AwsBedrockLogin,
     AwsCliNotInstalled,
 }
@@ -1114,10 +1376,7 @@ impl InlineBannerType {
     pub fn is_visible_in_agent_view(&self) -> bool {
         match self {
             // Agent-related banners: visible in agent view
-            Self::PromptSuggestions
-            | Self::AgentModeSetup
-            | Self::AwsBedrockLogin
-            | Self::AwsCliNotInstalled => true,
+            Self::AwsBedrockLogin | Self::AwsCliNotInstalled => true,
             // Terminal-context banners: hidden in agent view
             Self::NotificationsDiscovery
             | Self::NotificationsError
@@ -1189,13 +1448,6 @@ impl InlineBannersState {
         let next_id = self.next_banner_id;
         self.next_banner_id += 1;
         next_id
-    }
-
-    /// Returns the ID of the last inline banner inserted.
-    #[allow(dead_code)]
-    fn last_banner_id(&self) -> Option<InlineBannerId> {
-        #[allow(clippy::unnecessary_lazy_evaluations)]
-        (self.next_banner_id > 0).then(|| self.next_banner_id - 1)
     }
 }
 
@@ -1702,11 +1954,13 @@ pub enum Event {
     SendNotification(BlockNotification),
     BlockCompleted {
         block: Arc<SerializedBlock>,
+        /// When set, `block` has no command or output bytes and these hold them (to be
+        /// converted off the UI thread by the SQLite writer).
+        persisted_content: Option<DeferredBlockContent>,
         is_local: bool,
     },
     Pane(PaneEvent),
     OpenSettings(SettingsSection),
-    AskAIAssistant(AskAIType),
     /// Event propagates terminal inputs up to the workspace,
     /// to be processed on the way back down through the view hierarchy.
     SyncInput(SyncEvent),
@@ -1762,6 +2016,13 @@ pub enum Event {
     WriteBytesToPty {
         bytes: Cow<'static, [u8]>,
     },
+    /// The ssh-warpify one-line payload: the PTY controller clears the line and writes it as one
+    /// cancellable job (#1384 P3).
+    WriteLineClearSetupToPty {
+        payload: Vec<u8>,
+    },
+    /// Cut what is left of a paced setup write (#1384 P3).
+    CancelPacedSetupWrites,
     /// SIGINT to the pty's foreground process group instead of a ^C byte (#1001): ends an ssh
     /// client that is connecting even when it has already put the tty in raw mode.
     SigintForegroundToPty,
@@ -1819,14 +2080,6 @@ pub enum Event {
         open_code_review: CodeReviewPanelArg,
         comments: Vec<AttachedReviewComment>,
         diff_mode: DiffMode,
-    },
-    StartSharingCurrentSession {
-        scrollback_type: SharedSessionScrollbackType,
-        source_type: SessionSourceType,
-    },
-    FailedToShareSession {
-        reason: String,
-        cause: Option<Arc<anyhow::Error>>,
     },
     StopSharingCurrentSession {
         reason: SessionEndedReason,
@@ -2268,6 +2521,9 @@ impl BlocklistAIRenderContext {
 /// Groups together some structs to represent the state of the Terminal View for the
 /// current frame. Passed to `AltScreenElement` and `BlockListElement`.
 pub struct TerminalViewRenderContext {
+    /// The model's published key facts: the elements read the key modes from it, never the model's
+    /// lock, to encode a modifier key event (#1411).
+    pub key_model: KeyModelCell,
     pub size_info: SizeInfo,
     pub scroll_position: ScrollPosition,
     pub highlighted_url: Option<GridHighlightedLink>,
@@ -2278,7 +2534,7 @@ pub struct TerminalViewRenderContext {
     pub approval_card_view_id: Option<EntityId>,
     /// AI blocks and their settled action cards: printable keys typed while one of them holds
     /// focus are routed as if the terminal held it (#1095).
-    pub settled_ai_focus_view_ids: Vec<EntityId>,
+    pub settled_ai_focus_view_id: Option<EntityId>,
     /// The SSH-extension "Choose your experience" card, if one is showing: printable keys typed
     /// while it (or its buttons) holds focus must reach the terminal view, which turns on the
     /// card's "choose an option first" hint instead of dropping them silently (#1087).
@@ -2460,6 +2716,7 @@ enum SubagentFinishedQueueDelivery {
 /// [`TerminalView::block_completion_auto_resumes`].
 fn subagent_finished_queue_delivery(
     has_active_subagent: bool,
+    completion_report_outstanding: bool,
     skipped_turn_end: Option<SkippedTurnEndDrain>,
     conversation_cancelled: bool,
     turn_in_progress: bool,
@@ -2469,6 +2726,13 @@ fn subagent_finished_queue_delivery(
     use SubagentFinishedQueueDelivery::*;
     if has_active_subagent {
         return SendLrcRows;
+    }
+    // A report of the finished command is held for a turn end or is the running request
+    // (#1264): the rows wait for that report's own turn end, which drains them. Asked of the
+    // controller, not inferred from event order: `FinishedSubagent` can reach the view before
+    // the controller's `ResumedOnBlockCompletion`.
+    if completion_report_outstanding {
+        return Nothing;
     }
     match skipped_turn_end {
         Some(SkippedTurnEndDrain::Replayed) => Nothing,
@@ -2537,6 +2801,9 @@ struct LocalSessionCanonicalPwdCache {
 struct DeferredSubshellSetup {
     shell_type: Option<ShellType>,
     triggered_by_rc_file_snippet: bool,
+    /// #1562: setup waits for the shell's line to be ended (Enter, ^U), not for a prompt to be
+    /// answered: the line holds text the user typed, and the setup would be appended to it.
+    waits_for_line: bool,
     /// The block that showed the prompt; setup is dropped if another block takes over.
     block_id: BlockId,
     since: Instant,
@@ -2548,6 +2815,43 @@ struct DeferredSubshellSetup {
     notified: bool,
 }
 
+/// An ssh warpify write that waits for the shell's line to be ended (#1562): the line holds text
+/// the user typed, and the clear-line prefix of the write would kill it.
+enum DeferredSshWarpify {
+    Probe,
+    Continue {
+        uname: String,
+        shell_type: ShellType,
+    },
+    InstallTmux {
+        install_method: TmuxInstallMethod,
+    },
+}
+
+/// What a bootstrap trigger does once the subshell draws its first prompt (#1354).
+enum SubshellPromptTrigger {
+    /// A warpify-initiated subshell command: run the bootstrap probe.
+    AutoWarpify { shell_type: ShellType },
+    /// The subshell's rc file reported itself (`SourcedRcFileForWarp`): bootstrap it.
+    RcFile {
+        shell_type: ShellType,
+        uname: Option<String>,
+        disable_tmux: bool,
+    },
+}
+
+/// A bootstrap trigger that waits for the subshell's first prompt instead of a fixed delay
+/// (#1354). The prompt is seen as output that moved the active block's cursor and left it in
+/// unterminated text; `baseline` is the cursor state when the trigger was armed, so text printed
+/// before it (the subshell command's own echo) is not mistaken for the prompt.
+struct AwaitingSubshellPrompt {
+    trigger: SubshellPromptTrigger,
+    block_id: BlockId,
+    baseline: (usize, usize, usize),
+    /// Tells a give-up timer which arming it belongs to.
+    id: u64,
+}
+
 /// Bookkeeping for the paced subshell bootstrap write (see
 /// `TerminalView::write_init_subshell_bytes_to_pty`).
 struct SubshellBootstrapInFlight {
@@ -2556,7 +2860,17 @@ struct SubshellBootstrapInFlight {
     /// due, the shell it was meant for is gone and the remaining lines are dropped.
     block_id: BlockId,
     remaining_lines: usize,
-    held_user_bytes: Vec<Vec<u8>>,
+    /// Event-driven pacing (#1354): the lines not yet written, oldest first. Line N+1 is written
+    /// when the shell printed the setup-line marker of line N (see
+    /// `bootstrap::init_subshell_command_lines_with_markers`), not after a delay. Empty when the
+    /// lines are paced by timers instead.
+    pending_lines: VecDeque<String>,
+    /// The setup the markers belong to; `None` while the lines are paced by timers.
+    marker_token: Option<u64>,
+    /// Index of the line whose marker releases the next one.
+    awaiting_marker: usize,
+    /// Pacing used if the markers turn out not to come (the give-up net).
+    line_delay: Duration,
 }
 
 /// How the keys typed during a PowerShell subshell setup are held (#1048). See
@@ -2574,7 +2888,8 @@ enum PowerShellSetupHold {
     /// `Bootstrapped` arrived; the keys are delivered at the prompt that follows it.
     AwaitingPrompt,
     /// A held line was submitted as a command; what was typed after it stays held until that
-    /// command's prompt is back (or `POWERSHELL_HELD_LINE_GRACE` passes).
+    /// command's prompt is back (or it becomes interactive); `POWERSHELL_HELD_LINE_GRACE` only
+    /// tells the user the input waits (#1577).
     LineRunning { generation: u64 },
     /// Ctrl-C skipped the setup. The Windows console discards its pending input when it processes
     /// a Ctrl-C, so the keys held meanwhile (and any typed now) go out only once
@@ -2583,10 +2898,41 @@ enum PowerShellSetupHold {
 }
 
 pub struct TerminalView {
+    /// Conversations this view is restoring (read in flight); a second request to enter agent
+    /// view for the same one waits for that restore instead of restoring again (#1370 F6).
+    conversation_restores_in_flight: std::collections::HashSet<AIConversationId>,
     /// Image ids this view handed to the asset cache for off-thread decoding and has not yet
     /// been told finished (#880).
     pending_image_ids: std::collections::HashSet<u32>,
+    /// Bumped by every selection copy; a huge selection rendered off-thread only writes the
+    /// clipboard if no newer copy started meanwhile (#1304).
+    selection_copy_seq: u64,
+    /// Cancel flag of the in-flight background selection render; set by the next copy (#1382).
+    selection_render_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub model: Arc<FairMutex<TerminalModel>>,
+    /// The pane's typeahead hand-off, reached without the model's lock (#1403): the pty reader
+    /// holds that lock while it parses, and a user key used to wait for it.
+    handoff: PaneHandoff,
+    /// The facts of the model the user-key path decides on, published by the model.
+    key_facts: KeyFactsCell,
+    /// The rest of what a key reads from the model, published the same way (#1404).
+    key_model: KeyModelCell,
+    /// A focus redetermination a Ctrl-C asked for while the pty reader held the model: run by the
+    /// next wakeup (the key never waits for the parser, #1411).
+    global_focus_redetermine_deferred: bool,
+    terminal_focus_redetermine_deferred: bool,
+    /// Depth of user-key handling on this thread; see [`KeyPathScope`].
+    key_path_depth: Rc<Cell<u32>>,
+    /// The last answer of `active_output_ends_in_unterminated_text`, given to a key that finds the
+    /// model busy parsing (#1440).
+    unterminated_text_at_last_look: Cell<bool>,
+    /// The same for `setup_echo_is_mid_line`.
+    setup_echo_mid_line_at_last_look: Cell<bool>,
+    /// Scroll updates a key wanted while the model was busy parsing, applied in order by the
+    /// next scroll update or output wakeup that holds the model (#1440).
+    deferred_scroll_updates: Vec<ScrollPositionUpdate>,
+    /// Where the key path leaves what it used to write into the model under its lock.
+    model_inbox: ModelInbox,
     view_handle: WeakViewHandle<Self>,
 
     /// The session's size data. This is wrapped in a [`Tracked`] to
@@ -2605,6 +2951,9 @@ pub struct TerminalView {
     /// The current scroll position.
     scroll_position: ScrollState,
 
+    /// A deferred-reflow chunk timer is armed (#1303).
+    stale_reflow_driver_scheduled: bool,
+
     /// Cached scroll position from before entering agent view, used to restore on exit.
     scroll_position_before_entering_agent_view: Option<ScrollPosition>,
 
@@ -2617,6 +2966,22 @@ pub struct TerminalView {
     alt_screen_vertical_scroll_state: ScrollStateHandle,
     /// Lines from the top of the content we are scrolled in the alt screen.
     alt_screen_scroll_top: Lines,
+
+    /// The render inputs the current element tree was built from; see `wakeup_redraw`.
+    last_rendered_fingerprint: Cell<Option<RenderFingerprint>>,
+    /// The redraw the most recent terminal wakeup asked for.
+    last_wakeup_redraw: Option<WakeupRedraw>,
+    /// The footer inputs as of the last time a wakeup notified the agent footer views; see
+    /// `wakeup_redraw::FooterFingerprint`.
+    last_footer_fingerprint: Option<FooterFingerprint>,
+    /// Whether a settle check after a paint-only wakeup is already scheduled.
+    alt_screen_settle_check_pending: bool,
+    /// Bumped on every alt-screen entry and exit: a pending winsize re-send of an older
+    /// generation does nothing (#1384 P5).
+    alt_screen_resend_generation: u64,
+    /// The alt screen was entered and the program has not produced output since: its first
+    /// output sends the one winsize re-send (#1384 P5).
+    alt_screen_resend_pending: bool,
 
     /// Scroll state for scrolling horizontally.
     horizontal_clipped_scroll_state: ClippedScrollStateHandle,
@@ -2694,7 +3059,6 @@ pub struct TerminalView {
 
     last_hover_fragment_boundary: Option<WithinModel<FragmentBoundary>>,
 
-    bootstrap_start: Option<Instant>,
     is_login_shell_bootstrapped: bool,
     /// Set when a pending command is submitted to the shell. Cleared on the
     /// next `AfterBlockCompleted`, at which point `Event::PendingCommandCompleted`
@@ -2766,7 +3130,7 @@ pub struct TerminalView {
     has_shown_eviction_notice: bool,
 
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
-    file_link_scanning_join_handle: Option<JoinHandle<()>>,
+    file_link_scanning_join_handle: Option<link_detection::FileLinkScan>,
 
     /// Zap: cache of directory listings for remote SSH sessions' cwds, used to
     /// precisely validate terminal file links.
@@ -2790,7 +3154,7 @@ pub struct TerminalView {
     last_focus_ts: Option<NaiveDateTime>,
     /// Set when the user approves or rejects a requested command card, until focus has been
     /// handed back from the AI block (#901).
-    reclaim_focus_until: Option<Instant>,
+    reclaim_focus: FocusReclaim,
     /// Whether focus has already been moved off the card once; after that, an AI block holding
     /// focus means the user put it there, and the reclaim ends.
     reclaim_focus_placed: bool,
@@ -2805,13 +3169,31 @@ pub struct TerminalView {
     /// command (before the shell's preexec hook can say anything) and held until the remote
     /// session is ready, the connect shows the user a prompt, or the ceiling passes.
     ssh_connect_gate: Option<SshConnectGate>,
-    /// Line-atomic dropping (#983): set once the gate dropped any printable key or paste of the
-    /// current line. While set, every further typed key is dropped through and including the
-    /// next Enter even after the gate released, so a line typed across the release is never
-    /// split (head dropped, tail run on the remote). Ends at: the Enter that is dropped, a
-    /// Ctrl-C/D/Z or Ctrl-U, visible prompt text arriving (a prompt is a new line context, so
-    /// a typed `yes` + Enter answer is not eaten), a failed ssh block, and any new command.
-    ssh_drop_line_through_enter: bool,
+    /// #1292: set from the first key held during an ssh connect until the held keys are
+    /// delivered, discarded or turned into editor text. While set EVERY key is held, also in the
+    /// stretches where the gate itself would let keys through (a banner printed before the
+    /// remote shell is up), so the held keys are never overtaken by later ones.
+    ssh_typeahead_holding: bool,
+    /// Which restored blocks of a forked conversation still wait for their deferred restore to
+    /// install before they are persisted (#1363).
+    fork_restore_persist: fork_restore_persist::ForkRestorePersist,
+    /// Signalled on terminal output while a waited agent command exists (#1365).
+    fullscreen_output_signal: Option<async_channel::Sender<()>>,
+    /// Listeners woken on every terminal output wakeup (one coalesced signal each). Used by the
+    /// agent driver's harness output monitor (#1381).
+    output_listeners: Vec<async_channel::Sender<()>>,
+    /// The queue side of the ssh hold: the open gate and what it holds.
+    ssh_iq: ssh_queue::SshQueueState,
+    /// A held paste whose text the paste handler has still to store.
+    ssh_paste_to_hold: bool,
+    /// Since when delivery has waited for the remote shell's first Precmd to be processed, so
+    /// the held Enter is not refused as `HistoryNotAppendable` (#1332). Only the give-up cap
+    /// reads it: delivery itself is driven by the prompt's events (#1348).
+    ssh_typeahead_precmd_wait_since: Option<Instant>,
+    /// The instant the one-shot give-up timer of the held keys is armed for (#1348). Not a poll:
+    /// it guards a signal that never arrives (the gate's own ceilings, a first Precmd that never
+    /// comes), and it is re-armed only from events.
+    ssh_typeahead_deadline_armed: Option<Instant>,
     /// Whether the "interrupt held" notice was shown for the current connect window before
     /// the remote session was announced (#1001).
     ssh_interrupt_held_gate_notified: bool,
@@ -2820,19 +3202,60 @@ pub struct TerminalView {
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
-    /// #1113: printable text of lines dropped during an ssh connect (lines joined by `\n`). It is
-    /// shown in the input editor, unexecuted, once the line has ended and the editor is back, so
-    /// no typed key vanishes and none can run on the wrong host.
-    ssh_held_typing: SshHeldTyping,
-    /// The remote shell's first prompt was seen in this connect: the only point where held text
-    /// may be shown (#1113). A failed or prompt-less end of the ssh block discards it instead.
+    /// The connect window was released (by a path with no event handler of its own) while keys
+    /// are held: the next key or turn hands them over before judging anything else. Cleared by
+    /// any hand-over run (`deliver_ssh_typeahead_if_ready`).
+    ssh_handover_after_release: bool,
+    /// #1575: a next-turn hand-over for a shell prompt that appeared mid-drain is scheduled.
+    ssh_prompt_handover_scheduled: bool,
+    /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
+    /// own submit), until the block it started is seen starting.
+    ssh_submit_user_origin: Option<bool>,
+    /// #1579: the running block was started by the user's own submit. A connect gate armed at
+    /// preexec for it (an ssh the submit's text did not show, e.g. an alias) inherits it as
+    /// `user_submitted`, so keys typed in the focused editor are held for the remote (#1565) in
+    /// legacy mode too.
+    running_block_user_submitted: bool,
+    /// #1181: whether the young line's deferred Enter has been released (or none waits). The
+    /// verdict observer and the backstop timer both release it; whichever runs first sets this
+    /// and the other finds nothing to do.
+    young_enter_released: bool,
+    /// Identifies the young line's current wait (#1206); a backstop tick armed for an earlier one
+    /// must not decide for it.
+    young_enter_wait_id: u64,
+    /// The remote shell's first prompt was seen in this connect: the point where held keys are
+    /// handed to it (#1292). Without it the connect failed and they become editor text.
     ssh_remote_prompt_seen: bool,
+    /// #1577: the connect window's give-up TIMER is running the hand-over right now
+    /// (`ssh_give_up_fired`). A timer never delivers held keys to a pty: `finish_ssh_typeahead`
+    /// hands them back as text even when the remote's prompt was seen (that prompt is an event
+    /// that itself hands over; seeing it here means the hand-over missed its window).
+    ssh_give_up_in_progress: bool,
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
     ssh_bootstrap_failed_session: Option<SessionId>,
+    /// The pending session a `Precmd` was handled for before its `Bootstrapped` (#1566): the
+    /// bootstrap script's own prompt. The give-up timer must not declare such a session failed.
+    bootstrap_precmd_seen_session: Option<SessionId>,
+    /// The pending session the bootstrap give-up timer already deferred once (#1566), so the
+    /// second expiry is final.
+    bootstrap_grace_used_session: Option<SessionId>,
+    /// #1566: generation of the newest armed bootstrap give-up timer; a timer carrying an older
+    /// one was superseded by a later arm and is a no-op.
+    bootstrap_timer_generation: u64,
+    /// The arm of the timer callback currently running, so the grace re-arm keeps its identity.
+    bootstrap_timer_arm_in_flight: Option<BootstrapTimerArm>,
     /// First time input was swallowed for a pending ssh session, to bound the swallow window
     /// by `SSH_BOOTSTRAP_SWALLOW_CEILING` even if no failure timer ever fires for it.
     ssh_bootstrap_swallow_started: Option<(SessionId, Instant)>,
+    /// The edge-driven ssh phase (#1424 step 7): fed by the events that are its edges
+    /// (`view/ssh_edges.rs`); in `table` mode the facts carry its phase and the key path no longer
+    /// refreshes the connect gate.
+    ssh_phase: input_queue::SshPhaseMachine,
+    /// Releases of the ssh connect hand-over that came from a safety net (a timer) instead of the
+    /// event that ends it, each logged where it happens. The tests assert the event path leaves
+    /// this at zero.
+    ssh_give_ups: u64,
 
     /// The [`EntityId`] for this terminal view.
     view_id: EntityId,
@@ -2842,6 +3265,11 @@ pub struct TerminalView {
     /// Whether we've already emitted a chrome refresh for the active block after it crossed the
     /// long-running threshold. Reset when the active command starts and finishes.
     did_notify_long_running: bool,
+    /// Block whose CLI-agent detection waits for it to become interactive (#1373).
+    pending_cli_agent_detection: Option<BlockId>,
+    /// Agent-requested command's block whose input lock to the agent waits for it to become
+    /// interactive (#1373).
+    pending_agent_input_lock: Option<BlockId>,
 
     /// This field is an "&&" combination of two other pieces of state:
     ///   1. Whether this View (or one of its children) is the focused View.
@@ -2897,6 +3325,9 @@ pub struct TerminalView {
     /// keystrokes are held in it and delivered, in order, once the last line is out, so they can
     /// never interleave with (or land inside) the bootstrap.
     subshell_bootstrap_in_flight: Option<SubshellBootstrapInFlight>,
+    /// The pane's one input queue (#1353): orders keys typed while a large paste is read off the
+    /// main thread (#1255), and everything else that holds keys.
+    paste_queue: paste_queue::PasteQueueState,
     /// The active block and the time at which this view last typed a subshell bootstrap stage
     /// into it. Unlike the model's pending subshell session (which only exists once the shell
     /// answered with `InitShell`), this exists even when the script never ran, so a stalled
@@ -2907,12 +3338,18 @@ pub struct TerminalView {
     /// Keystrokes typed while an announced subshell setup is unfinished (#1014), in order. They
     /// are delivered once setup completes, is abandoned or aborted, or after
     /// `SUBSHELL_SETUP_TYPED_HOLD_LIMIT`; never dropped.
-    subshell_setup_held_bytes: Vec<Vec<u8>>,
     /// Where a PowerShell subshell setup is in holding the user's keys (#1048).
     powershell_setup_hold: PowerShellSetupHold,
     /// Tags each held line submitted under [`PowerShellSetupHold::LineRunning`], so a grace
     /// timer of an earlier line never ends the hold of a later one.
     powershell_setup_hold_generation: u64,
+    /// The token of the marker-paced PowerShell setup (#1372), `None` for a timed one (kill
+    /// switch, give-up). A Ctrl-C that skips the setup ends its settle on that token's
+    /// "PSReadLine is about to read" marker instead of `POWERSHELL_ABORT_SETTLE`.
+    powershell_setup_marker_token: Option<u64>,
+    /// The model's setup-marker count when the Ctrl-C was written: only a marker that arrives
+    /// after it is the shell's answer to it.
+    powershell_abort_marker_count: u64,
     /// Object id of the persistent "Phosphor setup is waiting..." toast while it is showing
     /// (#1014). The wait is a state, not an event: the toast stays until setup completes, is
     /// skipped or is abandoned.
@@ -2921,6 +3358,18 @@ pub struct TerminalView {
     /// (`Password:`, a passphrase or `read -p` prompt, #1032). Nothing of the setup is written
     /// while this is `Some`; typing goes straight to the pty, where it answers the prompt.
     subshell_setup_deferred: Option<DeferredSubshellSetup>,
+    /// An ssh warpify write waiting for the shell's line to be ended, with the block it was for
+    /// (#1562). Resumed by the hand-off's change and by output, never by a timer.
+    ssh_warpify_deferred: Option<(DeferredSshWarpify, BlockId)>,
+    /// A subshell bootstrap trigger (auto-warpify, rc-file) waiting for the subshell's first
+    /// prompt (#1354). At most one: a newer trigger replaces an older one, so a subshell is
+    /// bootstrapped once.
+    awaiting_subshell_prompt: Option<AwaitingSubshellPrompt>,
+    awaiting_subshell_prompt_id: u64,
+    /// A block completed and a pending command waits for the prompt that follows it (#1354).
+    pending_command_awaits_precmd: bool,
+    /// Same for the remote `cd` of a replayed ssh split.
+    ssh_split_cd_awaits_precmd: bool,
 
     show_snackbar: bool,
     hover_near_snackbar_area: bool,
@@ -2934,15 +3383,13 @@ pub struct TerminalView {
     pending_env_var_collection: Option<EnvVarCollectionObject>,
 
     ai_render_context: Rc<RefCell<BlocklistAIRenderContext>>,
+    /// Last structure `update_context_blocks_and_exchanges` ran for on a streaming delta (#1137).
+    streaming_render_context_signature: Option<blocklist_filter::RenderContextSignature>,
 
     // TODO(suraj): consider flattening this to the [`SharedSessionKind`]
     // and adding a `Unshared` variant to it. This would require [`SharedSessionKind::Sharer`]
     // and [`SharedSessionKind::Viewer`] to store some common struct for common fields.
     shared_session: Option<SharedSessionAdapter>,
-
-    /// Stashed source from `attempt_to_share_session` so `on_session_share_started`
-    /// can decide whether to auto-copy the link vs open the sharing dialog.
-    pending_share_source: Option<SharedSessionActionSource>,
 
     /// When true, automatically stop the shared session when the CLI agent session ends.
     /// Set when sharing is started from the remote control entrypoint.
@@ -2955,6 +3402,16 @@ pub struct TerminalView {
     /// path it was derived from. Canonicalization touches the filesystem, and
     /// the LSP idle-shutdown scan calls this for every terminal on every pass.
     canonical_session_pwd_cache: RefCell<Option<LocalSessionCanonicalPwdCache>>,
+
+    /// Memoizes `canonical_cwd_for_display` as (raw cwd, canonical cwd) so render
+    /// paths never stat or canonicalize per frame.
+    display_cwd_cache: RefCell<Option<(PathBuf, PathBuf)>>,
+
+    /// Memoizes `last_completed_command_text` as (block id, title) for the newest finished
+    /// block: the vertical tab list asks for it on every render, and rebuilding the text of a
+    /// 1 MB command each time cost ~10 ms per frame (#1191). A finished block's command does
+    /// not change.
+    last_completed_command_title_cache: RefCell<Option<(BlockId, Option<String>)>>,
 
     /// The ID of the containing window.
     window_id: WindowId,
@@ -3002,11 +3459,6 @@ pub struct TerminalView {
     /// Hover state for the window-footer-bar tooltip above. A single handle is enough:
     /// only one footer bar is ever rendered per `TerminalView`.
     window_footer_bar_tooltip_mouse_state: MouseStateHandle,
-
-    /// The keystroke bound to canceling a command.
-    /// This is cached on the view because the UI framework APIs needed to lookup keystroke for an
-    /// action only exist on `AppContext`, which is not accessible at render time. Sigh.
-    cancel_command_keystroke: Option<Keystroke>,
 
     /// Whether the terminal view is currently a drop target for a file. If it is, we render an overlay.
     is_file_drop_target: bool,
@@ -3122,9 +3574,6 @@ pub struct TerminalView {
 
     ambient_agent_view_model: ModelHandle<ambient_agent::AmbientAgentViewModel>,
 
-    /// Mouse state handle for the ambient agent cancel button in the pane header.
-    ambient_agent_cancel_mouse_state: warpui::elements::MouseStateHandle,
-
     /// Weak handle to the [`PaneStack`] this view is part of, allowing push/pop operations.
     pane_stack: Option<WeakModelHandle<crate::pane_group::pane::PaneStack<Self>>>,
 
@@ -3138,6 +3587,15 @@ pub struct TerminalView {
     /// converted to `pending_cloud_cli_login: Option<CloudProvider>` where CloudProvider
     /// is an enum with variants like Aws, Gcp, Azure.
     is_pending_aws_login: bool,
+    /// The AWS login command that was requested and has not started yet (#1450): it becomes
+    /// `is_pending_aws_login` only when that command is what starts, so a 'command not found'
+    /// from a program running meanwhile is not taken for the login's.
+    aws_login_requested: Option<String>,
+    /// Bytes of input synced from another pane (#1430) that were accepted for this pty and have
+    /// not yet reached the point where a typed key is reported to the other synced panes. The
+    /// report is skipped for exactly these bytes, or two synced panes would echo them to each
+    /// other forever. Reset whenever a synced write finds the pane queue idle.
+    synced_in_flight: usize,
     /// `true` if this view explicitly requested a PTY shutdown.
     /// Once set, this remains true for the rest of the view's lifecycle and
     /// suppresses `AgentExitedShellProcess` telemetry so manual shutdown paths
@@ -3162,10 +3620,12 @@ pub struct TerminalView {
     /// `FinishedReceivingOutput` skipped because a subagent was still active. See
     /// [`SkippedTurnEndDrain`] and [`Self::deliver_queued_prompts_after_subagent_finished`].
     skipped_turn_end_drains: HashMap<AIConversationId, SkippedTurnEndDrain>,
-    /// Conversations `on_user_block_completed` just auto-resumed on a block completion while a
-    /// subagent was active, i.e. whose subagent finish for that same block is about to be
-    /// delivered. Tells [`subagent_finished_queue_delivery`] that the in-progress turn is that
-    /// resume, which a queued follow-up would cancel. Read but NOT removed by
+    /// Conversations `on_user_block_completed` (a take-over's auto-resume) or the AI controller
+    /// (`BlocklistAIControllerEvent::ResumedOnBlockCompletion`, a monitored command the model
+    /// had stopped waiting on) just resumed on a block completion while a subagent was active,
+    /// i.e. whose subagent finish for that same block is about to be delivered. Tells
+    /// [`subagent_finished_queue_delivery`] that the in-progress turn is that resume, which a
+    /// queued follow-up would cancel. Read but NOT removed by
     /// [`Self::deliver_queued_prompts_after_subagent_finished`], because one block completion
     /// reaches it twice (the handoff retry, then `FinishedSubagent`); it is removed only by the
     /// conversation's next `FinishedReceivingOutput` -- the resumed turn's end, which drains the
@@ -3376,7 +3836,7 @@ impl TerminalView {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         resources: TerminalViewResources,
-        wakeups_rx: Receiver<()>,
+        wakeups_rx: Receiver<Wakeup>,
         model_events_handle: ModelHandle<ModelEventDispatcher>,
         model: Arc<FairMutex<TerminalModel>>,
         sessions: ModelHandle<Sessions>,
@@ -3412,10 +3872,6 @@ impl TerminalView {
                 ephemeral_message_model.clone(),
                 ctx,
             )
-        });
-
-        ctx.subscribe_to_model(&ambient_agent_view_model, |me, _, event, ctx| {
-            me.handle_ambient_agent_event(event, ctx);
         });
 
         // Prompts queued for a conversation that is then removed, deleted, or cleared come back
@@ -3833,7 +4289,11 @@ impl TerminalView {
             )
         });
         // This view handles every prompt's precmd event; the hand-off waits for it (#934).
-        model.lock().typeahead_handoff_mut().track_view_precmds();
+        {
+            let mut model = model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            handoff.track_view_precmds();
+        }
         let maa_passive_suggestions_model = ctx.add_model(|ctx| {
             MaaPassiveSuggestionsModel::new(
                 active_session.clone(),
@@ -3869,9 +4329,9 @@ impl TerminalView {
         };
 
         let find_model = ctx.add_model(|ctx| TerminalFindModel::new(model.clone(), ctx));
-        model.lock().update_max_retained_lines(
-            *TerminalSettings::as_ref(ctx).max_retained_lines.value(),
-        );
+        model
+            .lock()
+            .update_max_retained_lines(*TerminalSettings::as_ref(ctx).max_retained_lines.value());
 
         ctx.subscribe_to_model(
             &TerminalSettings::handle(ctx),
@@ -3993,7 +4453,7 @@ impl TerminalView {
         });
 
         let _ = ctx.spawn_stream_local(
-            throttle(WAKEUP_THROTTLE_PERIOD, wakeups_rx),
+            throttle_with_bypass(WAKEUP_THROTTLE_PERIOD, WAKEUP_BYPASS_FLOOR, wakeups_rx),
             Self::handle_terminal_wakeup,
             |_, _| {}, /* on_done */
         );
@@ -4005,6 +4465,14 @@ impl TerminalView {
         );
 
         let _ = ctx.spawn_stream_local(resize_rx, Self::after_terminal_view_layout, |_, _| {});
+
+        // A path probe (link tooltip: file vs folder) landed: re-render now instead of
+        // showing the default until an unrelated repaint. Ends when this view is dropped.
+        let _ = ctx.spawn_stream_local(
+            crate::util::path_probe::subscribe(),
+            |_, _, ctx| ctx.notify(),
+            |_, _| {},
+        );
 
         let menu_positioning_provider = Arc::new(TerminalViewMenuPositioningProvider {
             parent: ctx.handle(),
@@ -4066,6 +4534,47 @@ impl TerminalView {
         });
 
         let input_position_id = input.read(ctx, |input, _| input.save_position_id());
+        // #1404: this pane's key sink delivers the input editor's typed text and composition.
+        // Set here, not by the input itself, so an input mounted without a terminal view keeps
+        // its element's handling.
+        let input_editor = input.as_ref(ctx).editor().clone();
+        input_editor.update(ctx, |editor, _| editor.set_keys_from_pane_sink(true));
+        // #1353 step 3: the pane has ONE input queue. The input's editor adopts the view's, and
+        // a drain the editor side has to stop (an entry only this view can deliver) pokes the
+        // queue's waker so this view continues it. Event driven: nothing polls. A key the editor
+        // types during an ssh connect (#1400) is offered to that same queue as an entry of its own
+        // origin, so it is ordered with the terminal's by arrival, with no side buffer.
+        let paste_queue = paste_queue::PasteQueueState::new();
+        let (handoff, key_facts, key_model, model_inbox) = {
+            let model = model.lock();
+            model.publish_key_facts();
+            (
+                model.pane_handoff(),
+                model.key_facts_cell(),
+                model.key_model_cell(),
+                model.model_inbox(),
+            )
+        };
+        // #1424: every stamp of this pane reads the gen the two published cells agree on.
+        paste_queue
+            .queue
+            .route_state()
+            .set_gen_source(key_facts.clone(), key_model.clone());
+        {
+            let (drain_tx, drain_rx) = async_channel::bounded::<()>(1);
+            // Operations that find the queue busy wake the same receiver (the mailbox, #1416 ff).
+            paste_queue.queue.set_defer_waker(Some(drain_tx.clone()));
+            if let Some(mut queue) = paste_queue.queue.try_lock() {
+                queue.set_foreign_waker(Some(drain_tx));
+            }
+            let shared_queue = paste_queue.queue.clone();
+            input.update(ctx, |input, ctx| input.adopt_pane_queue(shared_queue, ctx));
+            let _ = ctx.spawn_stream_local(
+                drain_rx,
+                |me, _, ctx| me.on_pane_queue_needs_drain(ctx),
+                |_, _| {}, /* on_done */
+            );
+        }
         ctx.subscribe_to_view(&input, move |me, _, event, ctx| {
             me.handle_input_event(event, ctx);
         });
@@ -4108,6 +4617,11 @@ impl TerminalView {
             Self::handle_ai_history_model_event,
         );
         ctx.subscribe_to_model(&ai_input_model, Self::handle_ai_input_model_event);
+        // #1181: the model notifies when a pending detection settles; release an Enter deferred
+        // behind that verdict now instead of at the next timer tick.
+        ctx.observe(&ai_input_model, |me, _, ctx| {
+            me.release_deferred_enter_if_verdict_settled(ctx);
+        });
         ctx.subscribe_to_model(&ai_action_model, Self::handle_ai_action_model_event);
         ctx.subscribe_to_model(&CLIAgentSessionsModel::handle(ctx), |me, _, event, ctx| {
             if let CLIAgentSessionsModelEvent::Ended {
@@ -4142,7 +4656,9 @@ impl TerminalView {
 
         let find_bar = ctx.add_typed_action_view(|ctx| Find::new(find_model.clone(), ctx));
         let banner_position_id = Self::banner_position_id(ctx.view_id());
-        find_bar.update(ctx, |find, _| find.set_avoid_position_id(banner_position_id));
+        find_bar.update(ctx, |find, _| {
+            find.set_avoid_position_id(banner_position_id)
+        });
         ctx.subscribe_to_view(&find_bar, move |me, _, event, ctx| {
             me.handle_find_event(event, ctx);
         });
@@ -4160,7 +4676,6 @@ impl TerminalView {
         ctx.subscribe_to_view(&context_menu, move |me, _, event, ctx| {
             me.handle_menu_event(event, ctx);
         });
-
 
         let slow_bootstrap_banner = ctx.add_typed_action_view(|_| {
             Banner::<TerminalAction>::new_with_buttons(
@@ -4326,7 +4841,10 @@ impl TerminalView {
         ctx.subscribe_to_model(&block_list_settings_handle, |me, _, evt, ctx| match evt {
             BlockListSettingsChangedEvent::ShowJumpToBottomOfBlockButton { .. }
             | BlockListSettingsChangedEvent::SnackbarEnabled { .. }
-            | BlockListSettingsChangedEvent::ShowBlockDividers { .. } => ctx.notify(),
+            | BlockListSettingsChangedEvent::ShowBlockDividers { .. }
+            | BlockListSettingsChangedEvent::ShowBlockDurationWithShellPrompt { .. } => {
+                ctx.notify()
+            }
             BlockListSettingsChangedEvent::PreserveInputFocusOnBlockSelection { .. } => {
                 // Fires for every terminal view, so use the focus-gated variant to avoid
                 // stealing focus from another pane or Settings.
@@ -4367,9 +4885,6 @@ impl TerminalView {
             },
         );
         ctx.subscribe_to_model(&KeybindingChangedNotifier::handle(ctx), |me, _, _, ctx| {
-            me.cancel_command_keystroke =
-                keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx);
-
             me.refresh_pane_header(ctx);
             ctx.notify();
         });
@@ -4422,7 +4937,9 @@ impl TerminalView {
             }
             // Only views that inserted this image repaint (no terminal-model lock needed).
             AssetCacheEvent::RawAssetLoaded { id } => {
-                if let Ok(id) = id.parse::<u32>() && me.pending_image_ids.remove(&id) {
+                if let Ok(id) = id.parse::<u32>()
+                    && me.pending_image_ids.remove(&id)
+                {
                     ctx.notify();
                 }
             }
@@ -4486,10 +5003,17 @@ impl TerminalView {
             snackbar_header_state: Default::default(),
             colors,
             scroll_position: ScrollState::new(ScrollPosition::FollowsBottomOfMostRecentBlock),
+            stale_reflow_driver_scheduled: false,
             scroll_position_before_entering_agent_view: None,
             blocklist_vertical_scroll_state: Default::default(),
             alt_screen_vertical_scroll_state: Default::default(),
             alt_screen_scroll_top: Lines::zero(),
+            last_rendered_fingerprint: Cell::new(None),
+            last_wakeup_redraw: None,
+            last_footer_fingerprint: None,
+            alt_screen_settle_check_pending: false,
+            alt_screen_resend_generation: 0,
+            alt_screen_resend_pending: false,
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
             rich_content_drag_selecting: Default::default(),
@@ -4515,7 +5039,6 @@ impl TerminalView {
             find_link_tx,
             highlighted_link: HighlightedLinkOption::default(),
             last_hover_fragment_boundary: None,
-            bootstrap_start: None,
             is_login_shell_bootstrapped: false,
             awaiting_pending_command_completion: false,
             enter_agent_view_after_pending_commands: false,
@@ -4548,23 +5071,44 @@ impl TerminalView {
             ))]
             remote_dir_listing_cache: indexmap::IndexMap::new(),
             last_focus_ts: None,
-            reclaim_focus_until: None,
+            reclaim_focus: FocusReclaim::default(),
             reclaim_focus_placed: false,
             tips_completed: resources.tips_completed.clone(),
             was_ever_visible: false,
             ssh_setup_drop_notified: false,
             ssh_connect_gate: None,
-            ssh_drop_line_through_enter: false,
+            ssh_typeahead_holding: false,
+            fork_restore_persist: Default::default(),
+            fullscreen_output_signal: None,
+            output_listeners: Vec::new(),
+            ssh_iq: ssh_queue::SshQueueState::new(),
+            ssh_paste_to_hold: false,
+            ssh_typeahead_precmd_wait_since: None,
+            ssh_typeahead_deadline_armed: None,
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
-            ssh_held_typing: SshHeldTyping::default(),
+            ssh_handover_after_release: false,
+            ssh_prompt_handover_scheduled: false,
+            ssh_submit_user_origin: None,
+            running_block_user_submitted: false,
+            young_enter_released: true,
+            young_enter_wait_id: 0,
             ssh_remote_prompt_seen: false,
+            ssh_give_up_in_progress: false,
             ssh_bootstrap_failed_session: None,
+            bootstrap_precmd_seen_session: None,
+            bootstrap_grace_used_session: None,
+            bootstrap_timer_generation: 0,
+            bootstrap_timer_arm_in_flight: None,
             ssh_bootstrap_swallow_started: None,
+            ssh_phase: input_queue::SshPhaseMachine::default(),
+            ssh_give_ups: 0,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
+            pending_cli_agent_detection: None,
+            pending_agent_input_lock: None,
             is_focused_and_active: true,
             current_prompt,
             model_event_sender,
@@ -4583,12 +5127,29 @@ impl TerminalView {
             pending_env_var_collection: None,
             env_vars: Vec::new(),
             subshell_bootstrap_in_flight: None,
+            paste_queue,
+            handoff,
+            key_facts,
+            key_model,
+            global_focus_redetermine_deferred: false,
+            terminal_focus_redetermine_deferred: false,
+            key_path_depth: Rc::new(Cell::new(0)),
+            unterminated_text_at_last_look: Cell::new(false),
+            setup_echo_mid_line_at_last_look: Cell::new(false),
+            deferred_scroll_updates: Vec::new(),
+            model_inbox,
             subshell_bootstrap_announced: None,
-            subshell_setup_held_bytes: Vec::new(),
             powershell_setup_hold: PowerShellSetupHold::Off,
             powershell_setup_hold_generation: 0,
+            powershell_setup_marker_token: None,
+            powershell_abort_marker_count: 0,
             subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
+            ssh_warpify_deferred: None,
+            awaiting_subshell_prompt: None,
+            awaiting_subshell_prompt_id: 0,
+            pending_command_awaits_precmd: false,
+            ssh_split_cd_awaits_precmd: false,
             subshell_bootstrap_generation: 0,
             show_snackbar: true,
             hover_near_snackbar_area: false,
@@ -4596,11 +5157,13 @@ impl TerminalView {
             passive_suggestions_models,
             ai_action_model,
             ai_render_context,
+            streaming_render_context_signature: None,
             shared_session: None,
-            pending_share_source: None,
             auto_stop_sharing_on_cli_end: false,
             has_inserted_conversation_ended_tombstone: false,
             canonical_session_pwd_cache: RefCell::new(None),
+            display_cwd_cache: RefCell::new(None),
+            last_completed_command_title_cache: RefCell::new(None),
             ai_input_model,
             ai_context_model,
             window_id,
@@ -4614,7 +5177,6 @@ impl TerminalView {
             window_footer_bar_color: None,
             window_footer_bar_tooltip: None,
             window_footer_bar_tooltip_mouse_state: Default::default(),
-            cancel_command_keystroke: keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx),
             is_file_drop_target: false,
             is_ssh_file_uploader: false,
             ssh_file_upload,
@@ -4646,12 +5208,16 @@ impl TerminalView {
             use_agent_footer: use_agent_button_bar,
             use_agent_footer_suppressed: false,
             agent_view_controller,
+            conversation_restores_in_flight: Default::default(),
             agent_view_back_button,
             is_using_conversation_for_pane_header_title: false,
             ambient_agent_view_model,
-            ambient_agent_cancel_mouse_state: Default::default(),
+            selection_copy_seq: 0,
+            selection_render_cancel: None,
 
             is_pending_aws_login: false,
+            aws_login_requested: None,
+            synced_in_flight: 0,
             manual_pty_shutdown_requested: false,
             pane_stack: None,
             ephemeral_message_model,
@@ -4994,6 +5560,8 @@ impl TerminalView {
                         }
                     }
                     RemoteServerManagerEvent::SessionConnecting { .. }
+                    | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. }
+                    | RemoteServerManagerEvent::SessionConnectionLost { .. }
                     | RemoteServerManagerEvent::SessionReconnected { .. }
                     | RemoteServerManagerEvent::HostConnected { .. }
                     | RemoteServerManagerEvent::HostDisconnected { .. }
@@ -5128,19 +5696,6 @@ impl TerminalView {
                 controller.exit_agent_view(ctx);
             });
         }
-    }
-
-    /// Schedule a callback to run after the next
-    /// [`BlocklistAIControllerEvent::FinishedReceivingOutput`] received, regardless of whether the
-    /// conversation completed successfully, was cancelled, or encountered an error.
-    /// The callback receives the `FinishReason` to allow different handling based on how the
-    /// conversation ended.
-    pub fn on_next_conversation_finished<F>(&mut self, callback: F)
-    where
-        F: FnOnce(&mut Self, FinishReason, &mut ViewContext<Self>) + 'static,
-    {
-        self.conversation_completed_callbacks
-            .push(Box::new(callback));
     }
 
     #[cfg(feature = "local_fs")]
@@ -5482,7 +6037,8 @@ impl TerminalView {
             });
         } else {
             self.send_user_query_after_next_conversation_finished(
-                prompt, /* show_close_button */ true, /* show_send_now_button */ false, ctx,
+                prompt, /* show_close_button */ true, /* show_send_now_button */ false,
+                ctx,
             );
         }
     }
@@ -5492,7 +6048,10 @@ impl TerminalView {
     /// flight for this terminal view (so ordinary command blocks don't advance the queue).
     pub(crate) fn on_queued_command_finished(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(conversation_id) = QueuedQueryModel::as_ref(ctx)
-            .command_in_flight_for_terminal_view(self.view_id, BlocklistAIHistoryModel::as_ref(ctx))
+            .command_in_flight_for_terminal_view(
+                self.view_id,
+                BlocklistAIHistoryModel::as_ref(ctx),
+            )
         else {
             return;
         };
@@ -5532,6 +6091,19 @@ impl TerminalView {
 
         // Never deliver queued rows from a closed pane (#848); see `drain_queued_prompts`.
         if self.suspended_for_close {
+            return;
+        }
+        // Nor into a pending or running report of a finished command (#1264): the rows stay
+        // queued (unlocked) for that report's turn end.
+        if self
+            .ai_controller
+            .as_ref(ctx)
+            .completion_report_outstanding(conversation_id)
+        {
+            log::info!(
+                "Queued prompts for conversation {conversation_id} wait for the monitored \
+                 command's completion report"
+            );
             return;
         }
 
@@ -5651,10 +6223,17 @@ impl TerminalView {
         // record on the first read made the second see no record and fire `LrcAutoQueue` rows
         // into the resume -- the exact bug the record exists to prevent. Only the resumed turn's
         // own `FinishedReceivingOutput` clears it, and that turn end drains the queue.
-        let auto_resumed_on_block_completion =
-            !has_active_subagent && self.block_completion_auto_resumes.contains(&conversation_id);
+        let auto_resumed_on_block_completion = !has_active_subagent
+            && self
+                .block_completion_auto_resumes
+                .contains(&conversation_id);
+        let completion_report_outstanding = self
+            .ai_controller
+            .as_ref(ctx)
+            .completion_report_outstanding(conversation_id);
         let delivery = subagent_finished_queue_delivery(
             has_active_subagent,
+            completion_report_outstanding,
             skipped_turn_end,
             conversation_cancelled,
             // A status, not the block's finish reason: a block whose finish reason has not
@@ -5665,7 +6244,8 @@ impl TerminalView {
         );
         log::debug!(
             "Queued prompts after subagent finished: conversation={conversation_id} \
-             auto_resumed={auto_resumed_on_block_completion} delivery={delivery:?}"
+             auto_resumed={auto_resumed_on_block_completion} \
+             report_outstanding={completion_report_outstanding} delivery={delivery:?}"
         );
         // Keep the handoff retry's transition detector in step, so it does not treat this
         // already-handled finish as a fresh handoff.
@@ -6027,11 +6607,28 @@ impl TerminalView {
         if let BlocklistAIControllerEvent::SentRequest { model_id, .. } = event {
             self.maybe_insert_aws_bedrock_login_banner(model_id, ctx);
         }
+        if let BlocklistAIControllerEvent::AgentStopped { reason, .. } = event {
+            // #1178: persistent, like the queue notices: a turn that ended without a message
+            // must not look like the agent finished.
+            if ctx.has_singleton_model::<ToastStack>() {
+                let window_id = ctx.window_id();
+                let text = format!("Agent stopped: {reason}");
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_persistent_toast(DismissibleToast::error(text), window_id, ctx);
+                });
+            }
+        }
         if let BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id } = event {
             // A blocked action ended with no follow-up request, so no turn end will drain the
             // queue (#1026). Restore the head into the input like every other cancel; a Reject
             // and a Stop look the same here, so nothing is sent on the user's behalf.
             self.drain_queued_prompts(*conversation_id, FinishReason::Cancelled, ctx);
+        }
+        if let BlocklistAIControllerEvent::ResumedOnBlockCompletion { conversation_id } = event {
+            // The same record `on_user_block_completed` keeps for its own resume: the
+            // `FinishedSubagent` for this block follows, and its `LrcAutoQueue` rows must wait
+            // for this resume's end rather than cancel it and lose the command's output.
+            self.block_completion_auto_resumes.insert(*conversation_id);
         }
         if let BlocklistAIControllerEvent::FinishedReceivingOutput {
             conversation_id, ..
@@ -6104,7 +6701,15 @@ impl TerminalView {
             // read as `finish_reason() == None` and silently swallow this conversation's
             // queued prompt. `finish_reason_for_conversation` scopes the lookup to
             // `conversation_id` instead.
-            if !has_active_subagent {
+            // Nor while a report of a finished monitored command is held for a later turn end
+            // or is the request now running (#1264): that report's own turn end drains instead.
+            // The controller re-decided the hold before emitting this event, so the report's own
+            // stream end never reads as outstanding here.
+            let completion_report_outstanding = self
+                .ai_controller
+                .as_ref(ctx)
+                .completion_report_outstanding(*conversation_id);
+            if !has_active_subagent && !completion_report_outstanding {
                 if let Some(reason) =
                     self.queue_drain_reason_for_conversation(*conversation_id, ctx)
                 {
@@ -6478,14 +7083,13 @@ impl TerminalView {
         // supports it (a conversation may have been transferred to a different
         // terminal surface since this event was constructed); otherwise fall back
         // to the event's own `terminal_view_id` field (#418).
-        let should_handle = match self
-            .render_owner_for_ai_history_event(history_model.as_ref(ctx), event)
-        {
-            Some(owner_terminal_view_id) => owner_terminal_view_id == self.view_id,
-            None => !event
-                .terminal_view_id()
-                .is_some_and(|id| id != self.view_id),
-        };
+        let should_handle =
+            match self.render_owner_for_ai_history_event(history_model.as_ref(ctx), event) {
+                Some(owner_terminal_view_id) => owner_terminal_view_id == self.view_id,
+                None => !event
+                    .terminal_view_id()
+                    .is_some_and(|id| id != self.view_id),
+            };
         if !should_handle {
             return;
         }
@@ -6701,8 +7305,9 @@ impl TerminalView {
                 // Streaming exchanges can gain a displayable user query after mount. Keep the
                 // navigable-user-query flag in sync so Cmd-Up treats the segment as a stop once
                 // the query is renderable.
+                let mut is_user_query = false;
                 if let Some(ai_block) = self.ai_block_for_exchange(exchange_id).cloned() {
-                    let is_user_query = ai_block.as_ref(ctx).has_user_input(ctx);
+                    is_user_query = ai_block.as_ref(ctx).has_user_input(ctx);
                     self.model
                         .lock()
                         .block_list_mut()
@@ -6711,7 +7316,24 @@ impl TerminalView {
                             is_user_query,
                         );
                 }
-                self.update_context_blocks_and_exchanges(ctx);
+                // The context block / exchange id sets only change when the conversation's
+                // structure or the user-query flag does, not on each text delta, so skip the
+                // O(conversation) rebuild otherwise (#1137).
+                let selected_conversation =
+                    self.ai_context_model.as_ref(ctx).selected_conversation(ctx);
+                let signature_changed = match selected_conversation {
+                    Some(conversation) => {
+                        blocklist_filter::RenderContextSignature::new(conversation, is_user_query)
+                            .changed_since(&mut self.streaming_render_context_signature)
+                    }
+                    None => {
+                        self.streaming_render_context_signature = None;
+                        true
+                    }
+                };
+                if signature_changed {
+                    self.update_context_blocks_and_exchanges(ctx);
+                }
                 self.maybe_send_lrc_queued_prompts_after_subagent_handoff(*conversation_id, ctx);
             }
             BlocklistAIHistoryEvent::SetActiveConversation { .. } => {
@@ -6943,12 +7565,7 @@ impl TerminalView {
 
         let should_forward_windows_ctrl_c = is_live;
         ctx.subscribe_to_view(&subagent_view, move |me, view, event, ctx| {
-            me.handle_cli_subagent_view_event(
-                view.id(),
-                event,
-                should_forward_windows_ctrl_c,
-                ctx,
-            );
+            me.handle_cli_subagent_view_event(view.id(), event, should_forward_windows_ctrl_c, ctx);
         });
 
         if is_live {
@@ -7071,6 +7688,12 @@ impl TerminalView {
                 log::warn!("Cannot persist CLI subagent snapshot; block {block_id:?} not found");
                 return;
             };
+            if block.is_restore_pending() {
+                log::warn!(
+                    "Cannot persist CLI subagent snapshot; block {block_id:?} is still loading"
+                );
+                return;
+            }
             let metadata = block.agent_interaction_metadata();
             let conversation_id =
                 conversation_id.or_else(|| metadata.map(|metadata| *metadata.conversation_id()));
@@ -7219,18 +7842,17 @@ impl TerminalView {
                 if let Some(conversation_id) = conversation_id {
                     let should_restore = {
                         let model = self.model.lock();
-                        model.block_list().block_with_id(block_id).is_some_and(
-                            |block| {
+                        model
+                            .block_list()
+                            .block_with_id(block_id)
+                            .is_some_and(|block| {
                                 block.agent_interaction_metadata().is_some_and(|metadata| {
                                     metadata.conversation_id() == conversation_id
                                         && metadata.subagent_task_id() == Some(task_id)
                                 })
-                            },
-                        )
+                            })
                     };
-                    if should_restore
-                        && !self.cli_subagent_views.contains_key(block_id)
-                    {
+                    if should_restore && !self.cli_subagent_views.contains_key(block_id) {
                         self.create_cli_subagent_view(
                             block_id.clone(),
                             *conversation_id,
@@ -8106,25 +8728,19 @@ impl TerminalView {
                     });
                 }
 
-                // If the command turns out to be long-running, lock the input in agent mode.
-                ctx.spawn(
-                    // Command execution is triggered by a subscriber to the event above, so
-                    // give some buffer to actually determine if its long running.
-                    Timer::after(Duration::from_millis(LONG_RUNNING_COMMAND_DURATION_MS * 2)),
-                    move |me, _, ctx| {
-                        if me
-                            .model
-                            .lock()
-                            .block_list()
-                            .block_with_id(&block_id)
-                            .is_some_and(|block| block.is_active_and_long_running())
-                        {
-                            me.input.update(ctx, |input, ctx| {
-                                input.set_input_mode_agent(false, ctx);
-                            });
-                        }
-                    },
-                );
+                // If the command turns out to be long-running, lock the input in agent mode. Done
+                // when the block reports it became interactive (`CommandBecameInteractive`), not
+                // after an elapsed-time guess (#1373, INP-18).
+                self.pending_agent_input_lock = Some(block_id.clone());
+                if self
+                    .model
+                    .lock()
+                    .block_list()
+                    .block_with_id(&block_id)
+                    .is_some_and(|block| block.is_active_and_long_running())
+                {
+                    self.lock_input_for_interactive_agent_command(ctx);
+                }
 
                 if let Some(metadata) = workflow_telem_metadata {
                     send_telemetry_from_ctx!(TelemetryEvent::WorkflowExecuted(metadata), ctx);
@@ -8312,16 +8928,6 @@ impl TerminalView {
         })
     }
 
-    /// Returns the active session's launch shell, if it is specified.
-    /// Returns None if there is no active session or if the current session does not
-    /// have a launch shell.
-    pub fn active_session_shell<C: ModelAsRef>(&self, ctx: &C) -> Option<ShellLaunchData> {
-        self.active_block_session_id().and_then(|session_id| {
-            let current_session = self.sessions.as_ref(ctx).get(session_id)?;
-            current_session.launch_data().cloned()
-        })
-    }
-
     /// Returns the active session's WSL distribution information, if it exists.
     /// Returns None if there is no active session or if the current session is
     /// not a WSL session.
@@ -8346,6 +8952,16 @@ impl TerminalView {
     }
 
     pub fn active_session_path_if_local<C: ModelAsRef>(&self, ctx: &C) -> Option<PathBuf> {
+        // Checking if the pwd from the active session actually exists
+        // and if not (ie. directory was removed) - return None.
+        self.active_session_cwd_unchecked_if_local(ctx)
+            .filter(|path| path.is_dir())
+    }
+
+    /// The active local session's working directory as reported by the shell, WITHOUT
+    /// checking that it still exists. Does no filesystem access, so it is safe to call
+    /// from render paths (see `canonical_cwd_for_display`).
+    pub fn active_session_cwd_unchecked_if_local<C: ModelAsRef>(&self, ctx: &C) -> Option<PathBuf> {
         if self.active_session_is_local(ctx) == Some(true) {
             self.active_block_metadata
                 .as_ref()
@@ -8361,12 +8977,29 @@ impl TerminalView {
                                 .and_then(|data| data.maybe_convert_absolute_path(cwd))
                         })
                 })
-                // Checking if the pwd from the active session actually exists
-                // and if not (ie. directory was removed) - return None.
-                .filter(|path| path.is_dir())
         } else {
             None
         }
+    }
+
+    /// The active local session's working directory, canonicalized for display-time
+    /// matching (tab colors, review-panel repo containment). Unlike
+    /// `active_session_path_if_local` this does no `is_dir` stat, and the
+    /// `canonicalize` result is memoized against the raw cwd, so repeated render calls
+    /// touch the filesystem only when the cwd changes. Falls back to the raw path if
+    /// canonicalization fails (e.g. the directory was removed).
+    pub fn canonical_cwd_for_display<C: ModelAsRef>(&self, ctx: &C) -> Option<PathBuf> {
+        let path = self.active_session_cwd_unchecked_if_local(ctx)?;
+        if let Some((raw, canonical)) = self.display_cwd_cache.borrow().as_ref()
+            && *raw == path
+        {
+            return Some(canonical.clone());
+        }
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if let Ok(mut cache) = self.display_cwd_cache.try_borrow_mut() {
+            *cache = Some((path, canonical.clone()));
+        }
+        Some(canonical)
     }
 
     /// The active local session's working directory, canonicalized.
@@ -8407,18 +9040,6 @@ impl TerminalView {
         self.ai_input_model.as_ref(app).input_config()
     }
 
-    /// Applies an input mode update from an external source (e.g., session sharing).
-    /// This bypasses normal event emission to prevent update loops.
-    pub fn apply_external_input_mode_update(
-        &mut self,
-        config: InputConfig,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.input.update(ctx, |input, ctx| {
-            input.apply_external_input_config_update(config, ctx);
-        });
-    }
-
     pub fn ai_controller(&self) -> &ModelHandle<BlocklistAIController> {
         &self.ai_controller
     }
@@ -8433,6 +9054,14 @@ impl TerminalView {
 
     pub fn agent_view_controller(&self) -> &ModelHandle<AgentViewController> {
         &self.agent_view_controller
+    }
+
+    /// Whether an agent action is waiting for the user's approval in this terminal (#1290).
+    pub fn has_pending_agent_action(&self, app: &AppContext) -> bool {
+        self.ai_action_model
+            .as_ref(app)
+            .get_pending_action(app)
+            .is_some()
     }
 
     pub fn active_conversation_id(&self, app: &AppContext) -> Option<AIConversationId> {
@@ -8588,20 +9217,24 @@ impl TerminalView {
     }
 
     pub fn is_input_box_visible(&self, model: &TerminalModel, app: &AppContext) -> bool {
-        if model.is_read_only() {
+        self.is_input_box_visible_with(&InputBoxFacts::from_model(model), app)
+    }
+
+    /// [`Self::is_input_box_visible`] from the model facts it reads (#1440): the key path answers
+    /// it from the published snapshot when the pty reader holds the model, instead of waiting.
+    pub fn is_input_box_visible_with(&self, model: &InputBoxFacts, app: &AppContext) -> bool {
+        if model.read_only {
             return false;
         }
         if self.has_active_cli_agent_input_session(app) {
             return true;
         }
-        if model.is_alt_screen_active()
-            && !model.block_list().active_block().is_agent_in_control()
-            && !model.block_list().active_block().is_agent_tagged_in()
+        if model.alt_screen_active && !model.block_agent_in_control && !model.block_agent_tagged_in
         {
             return false;
         }
 
-        if model.shared_session_status().is_view_pending()
+        if model.shared_session_view_pending
             && !self.ambient_agent_view_model.as_ref(app).is_ambient_agent()
         {
             return false;
@@ -8620,7 +9253,7 @@ impl TerminalView {
         // Hide the input box during the entire remote-server setup flow.
         // The loading footer renders instead.
         if FeatureFlag::SshRemoteServer.is_enabled() {
-            if let Some(pending_sid) = model.pending_session_id() {
+            if let Some(pending_sid) = model.pending_session_id {
                 if self
                     .sessions
                     .as_ref(app)
@@ -8640,25 +9273,22 @@ impl TerminalView {
             return false;
         }
 
-        let active_command_block = model.block_list().active_block();
-        let is_active_and_long_running = active_command_block.is_active_and_long_running();
-        let is_running_in_band_command =
-            model.block_list().is_writing_or_executing_in_band_command();
+        let is_active_and_long_running = model.block_active_and_long_running;
+        let is_running_in_band_command = model.writing_or_executing_in_band_command;
 
         let has_active_long_running_agent_interaction =
-            active_command_block.is_agent_monitoring() || active_command_block.is_agent_tagged_in();
+            model.block_agent_monitoring || model.block_agent_tagged_in;
 
         if (active_ai_block.is_none() || has_active_long_running_agent_interaction)
             && is_active_and_long_running
             && !is_running_in_band_command
-            && model.block_list().is_bootstrapped()
+            && model.bootstrapped
         {
             // Show the input if:
             // * The agent is control of the active, long running block, so long as the agent is not blocked.
             // * OR the user has 'tagged in' the agent.
-            return (active_command_block.is_agent_in_control()
-                && !active_command_block.is_agent_blocked())
-                || active_command_block.is_agent_tagged_in();
+            return (model.block_agent_in_control && !model.block_agent_blocked)
+                || model.block_agent_tagged_in;
         }
 
         true
@@ -8736,42 +9366,6 @@ impl TerminalView {
             }
         };
         ctx.emit(Event::LongRunningCommandAgentInteractionStateChanged { state });
-    }
-
-    /// Applies a long-running command agent interaction state received from a shared session participant.
-    pub fn apply_long_running_command_agent_interaction_state(
-        &mut self,
-        state: LongRunningCommandAgentInteractionState,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        match state {
-            LongRunningCommandAgentInteractionState::InControl => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.handoff_active_command_control_to_agent(ctx);
-                });
-            }
-            LongRunningCommandAgentInteractionState::TaggedIn => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
-                });
-                self.tag_agent_in(ctx);
-            }
-            LongRunningCommandAgentInteractionState::NotInteracting => {
-                self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                    controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
-                });
-                self.tag_agent_out(ctx);
-            }
-        }
-    }
-
-    /// Shows or hides the CLI agent footer from a shared session update.
-    pub fn apply_cli_agent_footer_visibility(&mut self, show: bool, ctx: &mut ViewContext<Self>) {
-        if show {
-            self.refresh_use_agent_footer(ctx);
-        } else {
-            self.suppress_use_agent_footer(ctx);
-        }
     }
 
     pub fn has_active_env_var_block(&self, app: &AppContext) -> bool {
@@ -8884,7 +9478,9 @@ impl TerminalView {
             && active_block
                 .requested_command_action_id()
                 .is_some_and(|action_id| executor.is_awaiting_completion(action_id));
-        eligible.then(|| active_block.ai_conversation_id()).flatten()
+        eligible
+            .then(|| active_block.ai_conversation_id())
+            .flatten()
     }
 
     /// Escape while the agent's own command runs: stop the agent turn and interrupt the command.
@@ -8947,11 +9543,8 @@ impl TerminalView {
         // Keys held behind a deferred Enter (`FeatureFlag::TypeaheadHandoff`) would hold this
         // ^C too; the interrupt cancels that Enter and its keys instead, so the ^C is written.
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            let cancelled = self
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .cancel_deferred_enter();
+            let cancelled = self.handoff.write().cancel_deferred_enter();
+            self.drain_young_hold_ends(ctx);
             if cancelled {
                 self.redetermine_terminal_focus(ctx);
             }
@@ -9033,10 +9626,7 @@ impl TerminalView {
     /// -- only it, not a command from the editor queued after it. It is forgotten here at once,
     /// so an executor cancel of its action that follows does not ask again.
     fn discard_held_typeahead_command(&mut self, ctx: &mut ViewContext<Self>) {
-        self.model
-            .lock()
-            .typeahead_handoff_mut()
-            .set_held_agent_command(None);
+        self.handoff.write().set_held_agent_command(None);
         ctx.emit(Event::DiscardHeldTypeaheadCommand);
     }
 
@@ -9072,9 +9662,8 @@ impl TerminalView {
         // it would run after the stop.
         let holds_this_conversations_command = FeatureFlag::TypeaheadHandoff.is_enabled()
             && self
-                .model
-                .lock()
-                .typeahead_handoff()
+                .handoff
+                .read()
                 .held_agent_command()
                 .is_some_and(|held| held.conversation_id == conversation_id);
         if holds_this_conversations_command {
@@ -9246,6 +9835,11 @@ impl TerminalView {
     }
 
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1178: every stop / Escape / ^C path ends here, so a command that then exits 130 was
+        // interrupted rather than reporting 130 by itself.
+        // Left in the model's inbox (it applies it before it parses the next bytes), so the ^C
+        // never waits for the pty reader (#1411).
+        self.leave_user_wrote_in_model_inbox(false, true);
         if self.ssh_pre_init_abort_bytes().is_none() && self.ssh_connect_sigint_applies() {
             ctx.emit(Event::SigintForegroundToPty);
             return;
@@ -9264,10 +9858,10 @@ impl TerminalView {
     /// hook the tty is still cooked and the plain ^C reaches ssh as SIGINT.
     fn ssh_pre_init_abort_bytes(&self) -> Option<Vec<u8>> {
         let (hook_seen, pending) = {
-            let model = self.model.lock();
+            let facts = self.model_facts();
             (
-                model.has_pending_ssh_session(),
-                model.pending_session_id().is_some(),
+                facts.has_pending_ssh_session,
+                facts.pending_session_id.is_some(),
             )
         };
         ssh_pre_init_abort_bytes(hook_seen, pending)
@@ -9317,6 +9911,12 @@ impl TerminalView {
     /// Windows users expect ctrl-c to copy if there is selected text. Otherwise,
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        // A key being handled: its model reads come from the key snapshot (#1411).
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
+        // #1401: the first hop of the ^C -> next prompt chain (no typed text, state names only).
+        warpui::input_order::log_hop("ctrl_c_keydown", || {
+            format!("powershell_setup_hold={:?}", self.powershell_setup_hold)
+        });
         self.end_focus_reclaim();
         if self.powershell_setup_hold != PowerShellSetupHold::Off {
             self.ctrl_c_during_powershell_setup(ctx);
@@ -9327,63 +9927,36 @@ impl TerminalView {
         // An agent command in flight still gets its single ^C below (#850); only the deferred
         // Enter and its keys are dropped.
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            let (cancelled, agent_command_in_flight) = {
-                let mut model = self.model.lock();
-                let cancelled = model.typeahead_handoff_mut().cancel_deferred_enter();
-                let agent_command_in_flight = model
-                    .block_list()
-                    .active_block()
-                    .is_agent_requested_command_in_flight();
-                (cancelled, agent_command_in_flight)
-            };
+            // #1411: the hand-off through its own handle, the rest from the key snapshot; the
+            // Ctrl-C never waits for the pty reader.
+            let cancelled = self.handoff.write().cancel_deferred_enter();
+            let agent_command_in_flight =
+                self.read_key_snapshot().agent_requested_command_in_flight;
+            self.drain_young_hold_ends(ctx);
             if cancelled && !agent_command_in_flight {
-                self.redetermine_terminal_focus(ctx);
+                self.redetermine_terminal_focus_after_key(ctx);
                 ctx.notify();
                 return;
             }
         }
-        let (
-            has_block_list_selection,
-            has_alt_screen_selection,
-            is_long_running,
-            is_agent_in_control_of_command,
-            conversation_id_to_stop,
-        ) = {
-            let model = self.model.lock();
-            let has_alt_screen_selection = model.alt_screen().selection().is_some();
-            let has_block_list_selection = model.block_list().selection().is_some();
-            let active_block = model.block_list().active_block();
-            // An agent-requested command counts from the moment it is written to the shell --
-            // before preexec, and before `LONG_RUNNING_COMMAND_DURATION_MS` -- not only once it
-            // is long-running: in that window ctrl-c otherwise fell through to
-            // `maybe_handle_ctrl_c_in_rich_content_block`, cancelling the whole conversation
-            // while the command ran on, orphaned. Before preexec the ^C makes the shell abort
-            // the line; precmd then finishes the block and the tool call resolves with it
-            // (issue #850).
-            let is_long_running = active_block.is_active_and_long_running()
-                || active_block.is_agent_requested_command_in_flight()
-                || (FeatureFlag::TypeaheadHandoff.is_enabled()
-                    && model.typeahead_handoff().routes_keys_to_pty());
-            let is_agent_in_control_of_command = active_block.is_agent_in_control();
-            // If the user already took control via `Stop` (e.g. an earlier Ctrl-C), capture the
-            // conversation to cancel so a follow-up Ctrl-C tears down both command and conversation.
-            let conversation_id_to_stop = active_block
-                .long_running_control_state()
-                .and_then(|state| {
-                    state
-                        .user_take_over_reason()
-                        .is_some_and(UserTakeOverReason::is_stop)
-                        .then(|| active_block.ai_conversation_id())
-                })
-                .flatten();
-            (
-                has_block_list_selection,
-                has_alt_screen_selection,
-                is_long_running,
-                is_agent_in_control_of_command,
-                conversation_id_to_stop,
-            )
-        };
+        let snapshot = self.read_key_snapshot();
+        let (has_block_list_selection, has_alt_screen_selection) =
+            self.ctrl_c_selection_bits(&snapshot);
+        // An agent-requested command counts from the moment it is written to the shell --
+        // before preexec, and before `LONG_RUNNING_COMMAND_DURATION_MS` -- not only once it
+        // is long-running: in that window ctrl-c otherwise fell through to
+        // `maybe_handle_ctrl_c_in_rich_content_block`, cancelling the whole conversation
+        // while the command ran on, orphaned. Before preexec the ^C makes the shell abort
+        // the line; precmd then finishes the block and the tool call resolves with it
+        // (issue #850).
+        let is_long_running = snapshot.active_and_long_running
+            || snapshot.agent_requested_command_in_flight
+            || (FeatureFlag::TypeaheadHandoff.is_enabled()
+                && self.handoff.read().routes_keys_to_pty());
+        let is_agent_in_control_of_command = snapshot.input_box.block_agent_in_control;
+        // If the user already took control via `Stop` (e.g. an earlier Ctrl-C), the conversation
+        // to cancel, so a follow-up Ctrl-C tears down both command and conversation.
+        let conversation_id_to_stop = snapshot.conversation_to_stop;
         // #1001: an ssh command is submitted but its block is not long running yet (the first
         // 50 ms): the ^C must still reach it, not vanish. The connect gate is armed at submission.
         let is_long_running = is_long_running || self.refresh_ssh_connect_gate();
@@ -9403,8 +9976,38 @@ impl TerminalView {
         );
 
         // We want to focus the input/rich content block if it is active.
-        self.redetermine_global_focus(ctx);
+        self.redetermine_global_focus_after_key(ctx);
         ctx.notify();
+    }
+
+    /// Whether the block list / the alt screen has a text selection, for a Ctrl-C: `(block
+    /// list, alt screen)`. On Windows a selection turns the ^C into a copy and the interrupt is
+    /// never sent, so a "yes" is never taken from the published copy (#1411): the copy is at most
+    /// one parse slice behind, and in that slice the parser may have scrolled an alt-screen
+    /// selection away (`AltScreen::rotate_selection`, no event), or the previous ^C's clear may
+    /// still sit in the model's inbox. When the model is free the answer is read exactly, after
+    /// the inbox is applied; when the parser holds it and the copy says "a selection", the ^C
+    /// waits for the lock (the copy it would make has to wait for it anyway) and reads exactly;
+    /// when the copy says "none", that is trusted -- the only way it is wrong is a selection the
+    /// user made within the last `SelectedTextChanged` event, and then the ^C interrupts rather
+    /// than copies, the direction that loses nothing.
+    fn ctrl_c_selection_bits(&self, snapshot: &KeyModelSnapshot) -> (bool, bool) {
+        let exact = |model: &mut TerminalModel| {
+            model.apply_inbox();
+            let block_list = model.block_list().selection().is_some();
+            let alt_screen = model.alt_screen().selection().is_some();
+            // The copy is corrected while the lock is held (the model's own stores are under it).
+            self.key_model.store_selections(block_list, alt_screen);
+            (block_list, alt_screen)
+        };
+        match self.model.try_lock() {
+            Some(mut model) => exact(&mut model),
+            None if snapshot.has_block_list_selection || snapshot.has_alt_screen_selection => {
+                crate::terminal::model_lock_trace::note_key_path_lock();
+                exact(&mut self.model.lock())
+            }
+            None => (false, false),
+        }
     }
 
     /// Copy if there is a selection. Otherwise, we defer to the normal ctrl-c
@@ -9426,7 +10029,7 @@ impl TerminalView {
             return;
         } else if has_alt_screen_selection {
             self.copy(ctx);
-            self.model.lock().alt_screen_mut().clear_selection();
+            self.clear_alt_screen_selection_for_key();
             return;
         } else if has_copiable_block_selection {
             // If there are blocks selected, we want to copy them but
@@ -9479,6 +10082,14 @@ impl TerminalView {
         if self.is_agent_input_focused_with_text(ctx) {
             return;
         }
+        // #1195/#1350: nor from the input at all while it holds focus, typed in or not. A clock
+        // ("typed in the last second") cannot tell an idle input from a user who paused to read,
+        // and an Enter after the pause would approve a command they never read. The card stays up
+        // and the user reaches it by click, Tab, or an Enter on the empty input (which focuses it
+        // and shows the "press Enter again" hint, #1180): ordering, not timing.
+        if !approval_card_may_take_focus(self.input.as_ref(ctx).editor().as_ref(ctx).is_focused()) {
+            return;
+        }
         let target_needs_attention = block.as_ref(ctx).is_blocked_on_user_confirmation(ctx);
         if target_needs_attention || !self.is_any_ai_block_focused(ctx) {
             block.update(ctx, |block, ctx| block.try_steal_focus(ctx));
@@ -9528,6 +10139,27 @@ impl TerminalView {
             );
         }
         ids
+    }
+
+    /// The focused view, if it is one of [`Self::settled_ai_focus_view_ids`]. The render
+    /// context carries just this (the set only matters while focus is on a member), so a frame
+    /// no longer builds a Vec over every block and card (O(blocks) allocations, issue #1267).
+    /// The element still re-checks live focus on the id when a key arrives.
+    fn focused_settled_ai_target(&self, app: &AppContext) -> Option<EntityId> {
+        let window_id = self.view_handle.window_id(app)?;
+        let focused = app.focused_view_id(window_id)?;
+        let is_member = self
+            .rich_content_views
+            .iter()
+            .filter_map(|rich_content| rich_content.ai_block_metadata())
+            .any(|metadata| {
+                metadata.ai_block_handle.id() == focused
+                    || metadata
+                        .ai_block_handle
+                        .as_ref(app)
+                        .is_settled_action_card(focused, app)
+            });
+        is_member.then_some(focused)
     }
 
     /// Whether the window's focus is exactly on one of [`Self::settled_ai_focus_view_ids`].
@@ -9632,7 +10264,7 @@ impl TerminalView {
         if has_block_list_selection || has_copiable_block_selection {
             self.clear_selections_when_shell_mode_without_focusing_input(ctx);
         } else if has_alt_screen_selection {
-            self.model.lock().alt_screen_mut().clear_selection();
+            self.clear_alt_screen_selection_for_key();
         }
         self.ctrl_c_to_active_block(
             is_long_running,
@@ -9675,13 +10307,7 @@ impl TerminalView {
             // A second Ctrl+C after Stop takeover should cancel both the command and conversation.
             if let Some(conversation_id) = conversation_id_to_stop {
                 self.stop_local_agent_conversation(conversation_id, ctx);
-            } else if self
-                .model
-                .lock()
-                .block_list()
-                .active_block()
-                .is_agent_requested_command_in_flight()
-            {
+            } else if self.read_key_snapshot().agent_requested_command_in_flight {
                 // The agent's command may not have reached the shell yet (#850).
                 self.interrupt_agent_command(ctx);
             } else {
@@ -9720,12 +10346,7 @@ impl TerminalView {
         }
 
         // Cannot use ctrl-c to exit agent view if there's a long-running command.
-        let model = self.model.lock();
-        if model
-            .block_list()
-            .active_block()
-            .is_active_and_long_running()
-        {
+        if self.read_key_snapshot().active_and_long_running {
             return false;
         }
 
@@ -9788,7 +10409,91 @@ impl TerminalView {
         }
     }
 
+    /// Whether anything that orders or holds input is open: keys held by the pane queue (a gate
+    /// or a paste reading), an announced subshell setup, a paced bootstrap write in flight, or a
+    /// PowerShell setup hold. A write that must not overtake held input goes through
+    /// [`Self::write_user_bytes_to_pty`] while this is true (#1432).
+    fn pane_queue_or_setup_gate_open(&self) -> bool {
+        // (An ssh connect's own gate is not counted: it holds its keys before they get here and
+        // `ssh_connect_holds_eot` decides the EOT; a Ctrl-D that cancels a password prompt keeps
+        // the controller's started-command mark.)
+        (self
+            .paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| queue.holds_keys())
+            && !self.only_ssh_gates_open())
+            || self.subshell_bootstrap_announced.is_some()
+            || self.subshell_bootstrap_in_flight.is_some()
+            || self.powershell_setup_hold != PowerShellSetupHold::Off
+    }
+
+    /// Clears the alt screen's selection. A key being handled never waits for the pty reader: when
+    /// the model is busy the clear is left in its inbox (applied before it parses the next bytes).
+    fn clear_alt_screen_selection_for_key(&mut self) {
+        if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+            && self.model.try_lock().is_none()
+        {
+            self.model_inbox.post(ModelCommand::ClearAltScreenSelection);
+            return;
+        }
+        self.model.lock().alt_screen_mut().clear_selection();
+    }
+
+    /// As [`Self::clear_alt_screen_selection_for_key`], for the block list's text selection.
+    fn clear_block_list_selection_for_key(&mut self) {
+        if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+            && self.model.try_lock().is_none()
+        {
+            self.model_inbox.post(ModelCommand::ClearBlockListSelection);
+            return;
+        }
+        self.model.lock().block_list_mut().clear_selection();
+    }
+
+    /// Whether a key being handled may take the model's lock now without waiting for the pty
+    /// reader. (Outside a key, or with `PHOSPHOR_HANDOFF_FACTS=0`, it always may.)
+    fn key_may_lock_model_now(&self) -> bool {
+        !self.in_key_path()
+            || crate::terminal::model_lock_trace::key_path_uses_model_lock()
+            || self.model.try_lock().is_some()
+    }
+
+    /// `redetermine_global_focus` for a key being handled: when the pty reader holds the model the
+    /// focus is redetermined by the next wakeup instead (the key does not wait; the focus only
+    /// follows the key's effects).
+    fn redetermine_global_focus_after_key(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.key_may_lock_model_now() {
+            self.redetermine_global_focus(ctx);
+        } else {
+            self.global_focus_redetermine_deferred = true;
+        }
+    }
+
+    /// As [`Self::redetermine_global_focus_after_key`], for `redetermine_terminal_focus`.
+    fn redetermine_terminal_focus_after_key(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.key_may_lock_model_now() {
+            self.redetermine_terminal_focus(ctx);
+        } else {
+            self.terminal_focus_redetermine_deferred = true;
+        }
+    }
+
+    /// Runs the focus redeterminations a Ctrl-C left for the wakeup.
+    fn flush_deferred_focus_redeterminations(&mut self, ctx: &mut ViewContext<Self>) {
+        if std::mem::take(&mut self.terminal_focus_redetermine_deferred) {
+            self.redetermine_terminal_focus(ctx);
+        }
+        if std::mem::take(&mut self.global_focus_redetermine_deferred) {
+            self.redetermine_global_focus(ctx);
+        }
+    }
+
     fn ctrl_d(&mut self, ctx: &mut ViewContext<Self>) {
+        // A key being handled: its model reads come from the key snapshot (#1411).
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
         // #1111: not into an ssh connect that is still starting (before the lock below).
         if self.ssh_connect_holds_eot() {
             self.note_ssh_interrupt_held(ctx);
@@ -9797,18 +10502,20 @@ impl TerminalView {
         // #1111: an EOT written while an ssh connect is armed must never make the app ignore the
         // remote's hooks (that left an unmanaged remote shell behind).
         let ssh_connecting = self.ssh_connect_gate.is_some();
-        let arc = self.model.clone();
-        let mut model = arc.lock();
+        // #1411: nothing here waits for the pty reader. The facts come from the key snapshot (the
+        // exact state when the model is free, else the copy of its last parse), the hand-off
+        // through its own handle, and the one write into the model is left in its inbox.
+        let snapshot = self.read_key_snapshot();
 
         // Only write EOT to the PTY if the input box is not visible, which would
         // happen iff there is a long-running block. The one exception is when
         // the PTY is still bootstrapping, in which case the input would be shown
         // but we still want EOT written to the PTY in case there is a program
         // waiting for input during bootstrapping (e.g. omz update).
-        if !self.is_input_box_visible(&model, ctx)
-            || !model.block_list().is_bootstrapped()
+        if !self.is_input_box_visible_with(&snapshot.input_box, ctx)
+            || !snapshot.is_bootstrapped
             || (FeatureFlag::TypeaheadHandoff.is_enabled()
-                && model.typeahead_handoff().ctrl_d_reaches_a_reader())
+                && self.handoff.read().ctrl_d_reaches_a_reader())
         {
             // This is relevant for the case where the user enters CTRL-d while the
             // ssh wrapper command is being run. The EOT character doesn't stop
@@ -9818,17 +10525,97 @@ impl TerminalView {
             // prevent it from being processed, we keep state and clear it on
             // the next precmd (i.e. when the command completes).
             if !ssh_connecting {
-                model.ignore_bootstrapping_messages();
+                self.model_inbox
+                    .post(ModelCommand::IgnoreBootstrappingMessages);
+                if let Some(mut model) = self.model.try_lock() {
+                    model.apply_inbox();
+                }
             }
-
-            // Drop the model before writing bytes to the pty, otherwise we
-            // get a deadlock.  This model locking is a bit of a mess.
-            drop(model);
             self.write_user_bytes_to_pty(&[escape_sequences::C0::EOT][..], ctx);
         }
     }
 
+    /// The agent's command became interactive: lock the input to the agent (#1373).
+    fn lock_input_for_interactive_agent_command(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.pending_agent_input_lock.take().is_some() {
+            self.input.update(ctx, |input, ctx| {
+                input.set_input_mode_agent(false, ctx);
+            });
+        }
+    }
+
+    /// Runs the CLI-agent detection deferred from `AfterBlockStarted` for the block that just became
+    /// interactive (#1373). Takes the pending marker so it runs once per block.
+    fn run_pending_cli_agent_detection(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.pending_cli_agent_detection.take().is_none() {
+            return;
+        }
+        // Detect CLI agent and create session before
+        // showing the footer, so the session drives
+        // the footer rather than the other way around.
+        let detection = {
+            let model = self.model.lock();
+            self.detect_cli_agent_from_model(&model, ctx)
+        };
+        let view_id = self.view_id;
+        CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions_model, ctx| match detection {
+            Some((agent, ref custom_command_prefix))
+                if !sessions_model
+                    .session(view_id)
+                    .is_some_and(|s| s.agent == agent) =>
+            {
+                let remote_host = self.active_session_remote_host(ctx);
+                sessions_model.set_session(
+                    view_id,
+                    CLIAgentSession {
+                        agent,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        should_auto_toggle_input: agent.supports_cli_agent_footer()
+                            && *AISettings::as_ref(ctx).auto_open_rich_input_on_cli_agent_start,
+                        listener: None,
+                        plugin_version: None,
+                        remote_host,
+                        draft_text: None,
+                        custom_command_prefix: custom_command_prefix.clone(),
+                        received_rich_notification: false,
+                    },
+                    ctx,
+                );
+            }
+            _ => {}
+        });
+
+        // Agents that use OSC 9 notifications don't send a
+        // structured SessionStart event, so the listener is
+        // proactively created at command detection time.
+        if let Some((agent @ (CLIAgent::Codex | CLIAgent::DeepSeek), _)) = detection {
+            self.register_cli_agent_listener_without_session_start_event(agent, ctx);
+        }
+
+        self.refresh_use_agent_footer(ctx);
+        self.maybe_auto_open_cli_agent_rich_input(ctx);
+        self.input.update(ctx, |input, ctx| {
+            input
+                .universal_developer_input_button_bar()
+                .update(ctx, |bar, ctx| {
+                    bar.update_segmented_control_disabled_state(ctx);
+                })
+        });
+        // Update agent view back button state when command becomes long-running
+        if FeatureFlag::AgentView.is_enabled()
+            && self.agent_view_controller.as_ref(ctx).is_fullscreen()
+        {
+            self.update_agent_view_back_button_state(ctx);
+            self.update_agent_view_pane_header(ctx);
+        }
+    }
+
     pub fn is_long_running(&self) -> bool {
+        if self.in_key_path() {
+            return self.read_key_snapshot().is_long_running();
+        }
         let model = self.model.lock();
         model
             .block_list()
@@ -9880,22 +10667,66 @@ impl TerminalView {
     }
 
     fn user_input_sequence(&mut self, code: &[u8], ctx: &mut ViewContext<Self>) {
-        let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), code);
+        let sequence = self.build_cursor_key_sequence(code);
         self.control_sequence_on_terminal(&sequence, ctx);
     }
 
     fn control_sequence_on_terminal(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        // #1424: in `table` mode the table decides a live sequence (step 5).
+        if self.arrives_via_table()
+            && let Ok(sequence) = std::str::from_utf8(bytes)
+        {
+            self.arrive_via_table(dest_table::Arrival::Seq(sequence), ctx);
+            return;
+        }
+        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
+        let class = match bytes {
+            [0x03] => Class::Signal(input_queue::SignalKind::Interrupt),
+            [0x04] => Class::Signal(input_queue::SignalKind::Eof),
+            _ => Class::Seq,
+        };
+        let shadow = self.shadow_begin(class, ctx);
+        self.control_sequence_on_terminal_legacy(bytes, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn control_sequence_on_terminal_legacy(&mut self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
+        // #1292: during an ssh connect these are held with the typed keys, in order, not written
+        // into the bootstrap. Abort keys always pass.
+        if !is_abort_key(bytes)
+            && let Ok(sequence) = std::str::from_utf8(bytes)
+            && self.hold_input_during_ssh_connect(Some(sequence), true, ctx)
+        {
+            note_shadow_leaf(DestClass::Held);
+            return;
+        }
+        // #1179: arrows, Home/End, Page keys etc. never reach an agent-driven command's pty (the
+        // bytes would be read as typeahead by the shell after it ends and then wiped). Ctrl-C /
+        // Ctrl-D keep their own route to the command.
+        if !is_abort_key(bytes) && self.agent_owns_command_pty() {
+            safe_warn!(
+                safe: ("agent owns the command pty. ignoring control seq on terminal."),
+                full: ("agent owns the command pty. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
+            );
+            note_shadow_leaf(DestClass::Dropped);
+            return;
+        }
         if self.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(bytes))
         {
             self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_bytes(bytes)), ctx);
             self.write_user_bytes_to_pty(bytes.to_owned(), ctx);
+            // Noted after the write: a write the pane queue held noted `Held` first (first wins).
+            note_shadow_leaf(DestClass::Pty);
         } else if self.apply_key_to_editor_after_handoff(bytes, ctx) {
+            note_shadow_leaf(DestClass::Editor);
         } else {
+            note_shadow_leaf(DestClass::Dropped);
             safe_warn!(
                 safe: ("command not long-running. ignoring control seq on terminal."),
-                full: ("command not long-running. ignoring control seq on terminal: {:?}", bytes)
+                full: ("command not long-running. ignoring control seq on terminal: {}", warpui::input_order::describe_bytes(bytes))
             )
         }
     }
@@ -9905,6 +10736,19 @@ impl TerminalView {
     /// Emits if at least one terminal inputs is synced, so receivers of this
     /// event must determine how to process this event.
     /// Also emits an event for shared session viewers to notify the sharer of a write to pty request.
+    /// Whether anything consumes `emit_non_editor_typed_event`: input synced to other panes or a
+    /// shared session this one drives. Without either, a 50 MB paste is not copied for nothing
+    /// (#1255).
+    fn non_editor_typed_event_wanted(&self, ctx: &ViewContext<Self>) -> bool {
+        SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id())
+            // Never waits for the pty reader (#1403): when the model is busy the copy is made
+            // (a key is a few bytes) and dropped if nothing consumes it.
+            || self
+                .model
+                .try_lock()
+                .is_none_or(|model| model.shared_session_status().is_executor())
+    }
+
     fn emit_non_editor_typed_event(&self, chars: Vec<u8>, ctx: &mut ViewContext<Self>) {
         if SyncedInputState::as_ref(ctx).is_syncing_any_inputs(ctx.window_id()) {
             ctx.emit(Event::SyncInput(SyncEvent {
@@ -9915,9 +10759,13 @@ impl TerminalView {
             }));
         }
 
-        self.model
-            .lock()
-            .send_write_to_pty_events_for_shared_session(chars);
+        // Never waits for the pty reader (#1403): left in the model's inbox, which applies it
+        // before it parses the next bytes (in typed order); applied now when the model is free.
+        self.model_inbox
+            .post(ModelCommand::SharedSessionWrite(chars));
+        if let Some(mut model) = self.model.try_lock() {
+            model.apply_inbox();
+        }
     }
 
     fn update_scroll_position_locking(
@@ -9925,7 +10773,57 @@ impl TerminalView {
         update: ScrollPositionUpdate,
         ctx: &mut ViewContext<Self>,
     ) {
-        let mut model = self.model.lock();
+        // Jumps address a block, row or match by position: reflow what is still stale first so
+        // the target does not move when the background driver reaches it (#1303).
+        if matches!(
+            update,
+            ScrollPositionUpdate::ScrollToTopOfBlock { .. }
+                | ScrollPositionUpdate::ScrollToBottomOfBlock { .. }
+                | ScrollPositionUpdate::ScrollToBlocklistRowIfNotVisible { .. }
+                | ScrollPositionUpdate::ScrollToFindMatchIfNotVisible(_)
+                | ScrollPositionUpdate::ScrollToTopOfBlockWithBuffer { .. }
+                | ScrollPositionUpdate::ScrollToTopOfRichContent { .. }
+        ) {
+            self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::All, ctx);
+        }
+        // A key being handled never waits for the pty reader (#1440): when the model is busy
+        // parsing, the update is kept (in order, coalesced with an identical neighbour) and
+        // applied by the next update that holds the model or by the output wakeup that ends the
+        // parse.
+        let model_handle = self.model.clone();
+        let mut model = if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+        {
+            match model_handle.try_lock() {
+                Some(model) => model,
+                None => {
+                    self.defer_scroll_update(update);
+                    return;
+                }
+            }
+        } else {
+            model_handle.lock()
+        };
+        let pending = std::mem::take(&mut self.deferred_scroll_updates);
+        let mut changed = false;
+        for update in pending.into_iter().chain(std::iter::once(update)) {
+            changed |= self.apply_scroll_update(&mut model, update, ctx);
+        }
+        if changed {
+            // Dismiss any visible tooltips when the scroll position changes
+            drop(model);
+            self.dismiss_tooltips(ctx);
+        }
+    }
+
+    /// Applies one scroll update to the locked model. Returns whether the position changed (the
+    /// view is already notified).
+    fn apply_scroll_update(
+        &mut self,
+        model: &mut TerminalModel,
+        update: ScrollPositionUpdate,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         // Clear the cached pre-filter scroll position if a non-filter user
         // event is detected.
         if !matches!(
@@ -9938,21 +10836,45 @@ impl TerminalView {
         let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
         if self.scroll_position.update(viewport, update, ctx) {
             ctx.notify();
-            // Dismiss any visible tooltips when the scroll position changes
-            drop(model);
-            self.dismiss_tooltips(ctx);
+            return true;
+        }
+        false
+    }
+
+    /// Keeps a scroll update a key wanted while the model was busy. Only the updates a key
+    /// produces get here, and an update identical to the newest kept one adds nothing.
+    fn defer_scroll_update(&mut self, update: ScrollPositionUpdate) {
+        let same_as_newest = self
+            .deferred_scroll_updates
+            .last()
+            .is_some_and(|last| std::mem::discriminant(last) == std::mem::discriminant(&update));
+        let is_plain = matches!(
+            update,
+            ScrollPositionUpdate::AfterKeydownOnTerminal
+                | ScrollPositionUpdate::AfterTypedCharacters
+                | ScrollPositionUpdate::AfterWriteUserBytesToPty
+        );
+        if !(is_plain && same_as_newest) {
+            self.deferred_scroll_updates.push(update);
         }
     }
 
-    pub fn set_show_pane_accent_border(
-        &mut self,
-        show_accent_border: bool,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.pane_configuration.update(ctx, |pane_config, ctx| {
-            pane_config.set_show_accent_border(show_accent_border, ctx);
-            ctx.notify();
-        });
+    /// Applies the scroll updates keys left while the model was busy. Called when the model has
+    /// just finished a parse (the output wakeup), so waiting for its lock is the normal wait.
+    fn flush_deferred_scroll_updates(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.deferred_scroll_updates.is_empty() {
+            return;
+        }
+        let model_handle = self.model.clone();
+        let mut model = model_handle.lock();
+        let mut changed = false;
+        for update in std::mem::take(&mut self.deferred_scroll_updates) {
+            changed |= self.apply_scroll_update(&mut model, update, ctx);
+        }
+        if changed {
+            drop(model);
+            self.dismiss_tooltips(ctx);
+        }
     }
 
     /// Whether a banner that advertises "Use agent <shortcut>" is on screen: the SSH Warpifying
@@ -9995,9 +10917,46 @@ impl TerminalView {
         }
     }
 
+    /// #1373: a key arrived. If the active block executes and is not latched interactive, re-probe
+    /// the pty now, BEFORE the key is routed, so a silent builtin (`read x`) that went to sleep
+    /// after the debounce probe still gets the key. The latch handle comes from the published
+    /// key snapshot, so the key never waits for the pty reader; the probe's syscalls run outside
+    /// any lock. Nothing happens at a prompt (no
+    /// executing block): the check is two atomic loads.
+    fn reprobe_interactive_latch_on_key(&self) {
+        let Some(latch) = self.read_key_snapshot().interactive_latch else {
+            return;
+        };
+        if latch.needs_key_probe() {
+            latch.on_key();
+        }
+    }
+
     /// Receiving the warpui::Event::KeyDown event from a child element.
     /// Generally, this should be control characters rather than printable characters.
     fn keydown_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        // #1424: in `table` mode the table decides a live key (step 5).
+        if self.arrives_via_table() {
+            self.arrive_via_table(dest_table::Arrival::Key(characters), ctx);
+            return;
+        }
+        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
+        let class = match characters {
+            "\u{3}" => Class::Signal(input_queue::SignalKind::Interrupt),
+            "\u{4}" => Class::Signal(input_queue::SignalKind::Eof),
+            "\u{1a}" => Class::Signal(input_queue::SignalKind::Suspend),
+            "\u{1c}" => Class::Signal(input_queue::SignalKind::Quit),
+            "\r" | "\n" => Class::Enter,
+            _ => Class::Control,
+        };
+        let shadow = self.shadow_begin(class, ctx);
+        self.keydown_on_terminal_legacy(characters, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn keydown_on_terminal_legacy(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
+        self.reprobe_interactive_latch_on_key();
         // Ctrl-C / Ctrl-D still reach the ssh process so the user can abort.
         if is_ssh_interrupt_key(characters) {
             // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor
@@ -10007,37 +10966,53 @@ impl TerminalView {
                 || (characters == "\u{4}" && self.ssh_connect_holds_eot())
             {
                 self.note_ssh_interrupt_held(ctx);
+                // Dropped today (the toast says "held"); the table holds it (OD-5).
+                note_shadow_leaf(DestClass::Dropped);
                 return;
             }
-            self.ssh_drop_line_through_enter = false;
-            self.ssh_held_typing = SshHeldTyping::default();
+            // The interrupt passes straight through; what was typed before it is stale, as the
+            // tty's own input flush on ^C would make it.
+            self.reset_ssh_typeahead();
         } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
+            note_shadow_leaf(if self.ssh_typeahead_holding {
+                DestClass::Held
+            } else {
+                DestClass::Swallowed
+            });
             return;
         }
-        if self.input.as_ref(ctx).after_enter_replay_open() {
-            // #1016: keys after a deferred Enter wait their turn; an interrupt cancels the wait.
+        // #1353 phase 3: the same on the input queue, while an Enter's gate holds it.
+        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
             if is_abort_key(characters.as_bytes()) {
                 self.input
-                    .update(ctx, |input, _| input.clear_after_enter_replay());
+                    .update(ctx, |input, ctx| input.abort_enter_queue(ctx));
             } else if characters == "\r" || characters == "\n" {
-                self.input.update(ctx, |input, _| {
-                    input.queue_after_enter_replay(AfterEnterInput::Enter)
+                let queued = self.input.update(ctx, |input, ctx| {
+                    input.queue_behind_enter(AfterEnterInput::Enter, ctx)
                 });
-                return;
+                if queued {
+                    note_shadow_leaf(DestClass::Held);
+                    return;
+                }
             }
         }
         // #1051: a Ctrl-C during a PowerShell subshell setup has its own rules.
         if characters == "\u{3}" && self.powershell_setup_hold != PowerShellSetupHold::Off {
+            note_shadow_leaf(DestClass::Pty);
             self.ctrl_c_during_powershell_setup(ctx);
             return;
         }
         // #1048: Enter (and every other non-abort key) typed during a PowerShell subshell setup
         // joins the held keys, whatever block is active; abort keys keep their own path below.
         if !is_abort_key(characters.as_bytes()) && self.holds_keys_for_powershell_subshell_setup() {
+            note_shadow_leaf(DestClass::Held);
             self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
             return;
         }
-        if self.is_long_running()
+        // #1179: control keys (Enter, Backspace, ...) typed while the agent drives its command
+        // are not written to that command either; only Ctrl-C / Ctrl-D (stop / EOF) are.
+        let agent_owns_key = !is_abort_key(characters.as_bytes()) && self.agent_owns_command_pty();
+        if (self.is_long_running() && !agent_owns_key)
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(is_abort_key(characters.as_bytes()))
             || (is_abort_key(characters.as_bytes())
@@ -10051,6 +11026,9 @@ impl TerminalView {
                 .then(|| self.ssh_pre_init_abort_bytes())
                 .flatten();
             if characters == "\u{3}" && abort.is_none() && self.ssh_connect_sigint_applies() {
+                // #1178/#1253: the SIGINT path marks the ssh command interrupted too (left in the
+                // model's inbox, which applies it before it parses the next bytes).
+                self.leave_user_wrote_in_model_inbox(false, true);
                 ctx.emit(Event::SigintForegroundToPty);
             } else if let Some(abort) = abort {
                 self.write_user_bytes_to_pty(abort, ctx);
@@ -10058,8 +11036,12 @@ impl TerminalView {
                 self.report_possible_typeahead(characters);
                 self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
             }
+            // Noted after the write: a write the pane queue held noted `Held` first (first wins).
+            note_shadow_leaf(DestClass::Pty);
         } else if self.apply_key_to_editor_after_handoff(characters.as_bytes(), ctx) {
+            note_shadow_leaf(DestClass::Editor);
         } else {
+            note_shadow_leaf(DestClass::Dropped);
             // When it's not a long-running command, we want to clear the selected block
             // and focus the editor. We specifically don't want to insert
             // anything into the input box. Characters that belong there should go through
@@ -10077,7 +11059,7 @@ impl TerminalView {
     /// cannot form a command line, and dropping them would also eat the keys the setup dialog
     /// itself consumes. `keydown_on_terminal` / `typed_characters_on_terminal` exempt the
     /// interrupt bytes (Ctrl-C, Ctrl-D, Ctrl-Z, Ctrl-\) so the user can always abort a hung
-    /// connect. Only printable runs, Enter and pastes are dropped (#983).
+    /// connect. Only printable runs, Enter and pastes are held (#983, #1292).
     ///
     /// True while the SSH remote-server setup owns the session: the
     /// install/continue dialog is up, or the check/install/connect is in
@@ -10086,19 +11068,32 @@ impl TerminalView {
     /// user types now lands in the middle of that script. A stray Enter also
     /// completes a block, which advances the bootstrap stage machine early
     /// (the `next_stage` error storm and the pane stuck at "Starting
-    /// shell...", #917). Keystrokes are therefore dropped rather than
-    /// queued -- replaying a queued Enter into a half-bootstrapped shell is
-    /// exactly the corruption being avoided -- and focus is handed back to
-    /// the dialog so the next key drives it.
+    /// shell...", #917). Keystrokes are therefore never written to the pty
+    /// then: from the Enter on `ssh` until the remote shell shows its first
+    /// prompt they are HELD, exactly as typed, and replayed to the remote
+    /// shell once it is ready (#1292). Only while the setup DIALOG is up are
+    /// keys dropped, with focus handed back to the dialog so the next key
+    /// drives it.
     fn swallow_input_during_ssh_setup(
         &mut self,
         characters: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.hold_input_during_ssh_connect(characters, false, ctx)
+    }
+
+    /// `control_sequence` marks an escape sequence (arrows, Tab, ...): held like typing, but
+    /// never swallowed while the setup dialog is up, which consumes those keys itself.
+    fn hold_input_during_ssh_connect(
+        &mut self,
+        characters: Option<&str>,
+        control_sequence: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         // The dialog only owns input while it belongs to the pending session. A choice block left
         // behind by an earlier, abandoned connect must not swallow the keys of a later ssh
         // command (host-key / password prompts) (#976).
-        let pending_now = self.model.lock().pending_session_id();
+        let pending_now = self.model_facts().pending_session_id;
         // Any block (not just the first) may be the current one: stale ones can precede it.
         let dialog_up = choice_block_owns_input(
             self.rich_content_views
@@ -10112,16 +11107,12 @@ impl TerminalView {
             pending_now,
         );
         let setup_in_flight = FeatureFlag::SshRemoteServer.is_enabled()
-            && self
-                .model
-                .lock()
-                .pending_session_id()
-                .is_some_and(|sid| {
-                    self.sessions
-                        .as_ref(ctx)
-                        .remote_server_setup_state(sid)
-                        .is_some_and(|state| state.is_in_progress())
-                });
+            && pending_now.is_some_and(|sid| {
+                self.sessions
+                    .as_ref(ctx)
+                    .remote_server_setup_state(sid)
+                    .is_some_and(|state| state.is_in_progress())
+            });
         // #983: the window between the remote shell announcing itself (pending session) and its
         // bootstrap finishing is the same hazard as the setup itself. Without this, keys typed
         // during connect were dropped while setup was in flight but delivered once it resolved,
@@ -10133,8 +11124,13 @@ impl TerminalView {
         // swallowing for `SSH_BOOTSTRAP_SWALLOW_CEILING`, no longer swallows (a stale pending
         // session left by a failed su/sudo -i must not eat a later plain ssh's typing).
         let gate_armed = self.refresh_ssh_connect_gate();
+        // #1348: the gate released since the last event (a ceiling passed, a failed connect):
+        // hand over what is held before this key is judged, so it lands behind the held ones.
+        if !gate_armed && self.ssh_typeahead_holding {
+            self.deliver_ssh_typeahead_if_ready("key", ctx);
+        }
         let pending_sid = if gate_armed || self.has_pending_ssh_command() {
-            self.model.lock().pending_session_id()
+            self.model_facts().pending_session_id
         } else {
             None
         };
@@ -10152,175 +11148,523 @@ impl TerminalView {
         let ssh_connecting_silently = pending_now.is_none() && self.ssh_connect_gate_drops_keys();
         let gate_drops =
             dialog_up || setup_in_flight || ssh_bootstrapping || ssh_connecting_silently;
-        // Line-atomic dropping (#983). `characters` is None for a paste. Enter ends a line;
-        // anything printable (or a paste) belongs to it.
-        let is_enter = matches!(characters, Some("\r" | "\n" | "\r\n"));
-        let is_printable = characters.is_none_or(|c| c.chars().any(|ch| !ch.is_control()));
-        if !gate_drops && self.ssh_drop_line_through_enter {
-            // Visible prompt text (host key, password) arrived and the gate opened because of
-            // it: that is a new line context, so the user's answer must not be eaten by a line
-            // that was dropped blind before the prompt existed. Ctrl-U clears the line.
-            // Only an UNTERMINATED line of text is a prompt (cursor parked after text on its
-            // row: "password: ", "(yes/no)? "). A newline-terminated banner / MOTD is also
-            // visible text and opens the gate, but must not end the drop-through: the tail
-            // typed during the banner would otherwise run remotely.
-            let prompt_arrived =
-                self.ssh_connect_gate.as_ref().is_some_and(|g| {
-                    g.output_seen && !g.block_done && !g.managed && !g.saw_pending
-                }) && self.active_output_ends_in_unterminated_text();
-            if prompt_arrived || characters == Some("\u{15}") {
-                self.ssh_drop_line_through_enter = false;
-                // Text typed blind before a prompt exists (possibly a password) must not be
-                // shown later; Ctrl-U is the user erasing the line.
-                self.discard_ssh_held_typing(prompt_arrived, ctx);
-            }
+        // A host-key / password prompt appeared while keys were held: what was typed before it
+        // existed may be a password, so it is discarded, never shown or delivered (#1113).
+        if self.ssh_typeahead_holding && !gate_drops {
+            self.discard_ssh_typeahead_on_prompt(ctx);
         }
         self.log_ssh_drop_state(if gate_drops {
-            "key_gate_drops"
+            "key_gate_holds"
         } else {
             "key_gate_open"
         });
-        // #1113: keep the line being dropped (edited as the user edits it) so it can be shown,
-        // never run, once it is over. Not for the setup dialog, which owns its own keys.
-        if !dialog_up && (gate_drops || self.ssh_drop_line_through_enter) {
-            self.discard_ssh_held_if_output_changed(ctx);
-            let discarded = self.ssh_held_typing.key(characters) == SshHeldKey::DiscardedLine;
-            if self.ssh_held_typing != SshHeldTyping::default() {
-                self.ssh_held_typing.output_mark = Some(self.ssh_output_mark());
+        // #1345: the facts this key was decided on.
+        warpui::input_order::log_key_hop("kh_hold_entry", || {
+            format!(
+                "gate_drops={gate_drops} dialog_up={dialog_up} holding={} held_bytes={} \
+                 control_sequence={control_sequence} gate_armed={gate_armed} \
+                 pending_session={} output_seen={}",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes(),
+                pending_now.is_some(),
+                self.ssh_connect_gate.as_ref().is_some_and(|g| g.output_seen),
+            )
+        });
+        if dialog_up {
+            if control_sequence {
+                return false;
             }
-            if discarded {
+            // The setup dialog owns the keyboard (#917): keys are for it, not for the remote
+            // shell, so they are dropped and focus goes back to the dialog.
+            self.redetermine_global_focus(ctx);
+            if !self.ssh_setup_drop_notified {
+                self.ssh_setup_drop_notified = true;
                 self.show_ssh_typing_toast(
-                    "A line with pasted or special keys typed while the SSH session connected was discarded",
+                    "Typing is ignored while the SSH setup prompt is open",
                     ctx,
                 );
             }
-        }
-        if !gate_drops && self.ssh_drop_line_through_enter {
-            if is_enter {
-                self.ssh_drop_line_through_enter = false;
-                self.ssh_setup_drop_notified = false;
-                // #1113: the dropped line is complete: show it, unexecuted.
-                self.flush_ssh_held_typing(ctx);
-            }
             return true;
         }
-        if !gate_drops {
+        if !gate_drops && !self.ssh_typeahead_holding {
             self.ssh_setup_drop_notified = false;
+            warpui::input_order::log_key_hop("kh_hold_exit", || {
+                format!(
+                    "branch=gate_open_live gate_armed={gate_armed} pending_session={}",
+                    pending_now.is_some()
+                )
+            });
             return false;
         }
-        if is_enter {
-            // The dropped Enter ends the line: what is typed next is a new one.
-            self.ssh_drop_line_through_enter = false;
-        } else if is_printable {
-            self.ssh_drop_line_through_enter = true;
+        // #1292: hold the key. Once anything is held every later key is held too, even where the
+        // gate alone would let it through (a banner before the remote shell is up), so order is
+        // kept; the held keys go to the remote shell once it shows its first prompt.
+        // Keys the editor offered came before this one: they are already in the queue.
+        self.set_ssh_typeahead_holding(true);
+        match characters {
+            Some(chars) => {
+                let input = if control_sequence {
+                    HeldInput::Seq(chars.to_owned())
+                } else {
+                    HeldInput::from_chars(chars)
+                };
+                let outcome = self.ssh_hold_push(input, ctx);
+                self.note_ssh_typeahead_outcome(&outcome, ctx);
+            }
+            // The paste handler stores the text; only it has the clipboard.
+            None => self.ssh_paste_to_hold = true,
         }
-        if dialog_up {
-            self.redetermine_global_focus(ctx);
-        }
-        if !self.ssh_setup_drop_notified {
-            self.ssh_setup_drop_notified = true;
-            let window_id = ctx.window_id();
-            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                let toast = DismissibleToast::new(
-                    if dialog_up {
-                        "Typing is ignored while the SSH setup prompt is open".to_string()
-                    } else {
-                        "Typing is ignored while the SSH session connects".to_string()
-                    },
-                    ToastFlavor::Default,
-                );
-                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-            });
-        }
+        self.schedule_ssh_typeahead_give_up(ctx);
+        warpui::input_order::log_key_hop("kh_hold_exit", || {
+            format!("branch=held held_bytes={}", self.ssh_held_bytes())
+        });
         true
     }
 
-    /// #1113: shows the line dropped during an ssh connect in the input editor, UNEXECUTED, in
-    /// front of whatever the editor holds. Waits while a running command hides the editor.
-    fn flush_ssh_held_typing(&mut self, ctx: &mut ViewContext<Self>) {
-        self.discard_ssh_held_if_output_changed(ctx);
-        if self.ssh_held_typing.text.is_empty() || self.ssh_held_typing.tainted {
-            self.ssh_held_typing = SshHeldTyping::default();
-            return;
-        }
-        // Only after the remote shell's first prompt. A failed connect, or an ssh block that
-        // ended without one, means the text was typed for a session that never came up.
-        if !self.ssh_remote_prompt_seen {
-            self.drop_ssh_held_typing_with_notice(ctx);
-            return;
-        }
-        if self.is_long_running() {
-            return;
-        }
-        // Never concatenated with anything: only into an EMPTY editor.
-        if !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
-            self.drop_ssh_held_typing_with_notice(ctx);
-            return;
-        }
-        let held = std::mem::take(&mut self.ssh_held_typing);
-        self.input.update(ctx, |input, ctx| {
-            input.replace_buffer_content(&held.text, ctx)
-        });
-        self.show_ssh_typing_toast(
-            if held.superseded {
-                "Earlier lines typed while the SSH session connected were not run; the last one is in the input, press Enter to run it"
-            } else {
-                "Text typed while the SSH session connected is in the input; press Enter to run it"
-            },
-            ctx,
-        );
-    }
-
-    /// Discards the held text; the notice does not echo it.
-    fn drop_ssh_held_typing_with_notice(&mut self, ctx: &mut ViewContext<Self>) {
-        self.ssh_held_typing = SshHeldTyping::default();
-        self.show_ssh_typing_toast(
-            "Text typed while the SSH session connected was discarded, not run",
-            ctx,
-        );
-    }
-
-    /// The ssh block's output so far, as (block, visible length): a change means new output.
-    fn ssh_output_mark(&self) -> (BlockId, usize) {
-        let model = self.model.lock();
-        let len = model
-            .block_list()
-            .active_block()
-            .output_grid()
-            .contents_to_string(false, None)
-            .len();
-        (model.active_block_id().clone(), len)
-    }
-
-    /// #1113: held text is only ever shown if NO output arrived after it was typed: a banner, a
-    /// prompt or anything else may mean it was typed into a password prompt. Any change of the
-    /// output since the last held key discards it, with a notice that does not echo it.
-    fn discard_ssh_held_if_output_changed(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some((block, len)) = self.ssh_held_typing.output_mark.clone() else {
-            return;
-        };
-        let (now_block, now_len) = self.ssh_output_mark();
-        if now_block == block && now_len != len {
-            self.ssh_held_typing = SshHeldTyping::default();
+    /// Tells the user once that the held keys were too many to keep (#1292).
+    fn note_ssh_typeahead_outcome(
+        &mut self,
+        outcome: &SshTypeaheadPush,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if *outcome == SshTypeaheadPush::Overflowed {
             self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was discarded because output appeared",
+                "Too much text was typed while the SSH session connected; it was discarded, not run",
                 ctx,
             );
         }
     }
 
-    /// Drops the held text with a notice (a prompt arrived: it may be a password).
-    fn discard_ssh_held_typing(&mut self, notify: bool, ctx: &mut ViewContext<Self>) {
-        if self.ssh_held_typing == SshHeldTyping::default() {
+    /// Holds the text of a paste that arrived during an ssh connect (#1292), as typing is held.
+    fn hold_ssh_paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
+        let shell_dialect = Some(self.shell_dialect_from_app(ctx));
+        // A middle click reads the primary selection (the clipboard off Linux); `None` when the
+        // setting disables the paste, which holds nothing.
+        let kind = if middle_click {
+            let kind = SelectionSettings::handle(ctx)
+                .update(ctx, |selection, _| selection.middle_click_read_kind());
+            let Some(kind) = kind else {
+                return;
+            };
+            kind
+        } else {
+            warpui::clipboard::ReadKind::TextAndPaths
+        };
+        // The paste is an entry of the pane queue behind the connect gate, with a
+        // `PasteReading` gate of its own until the read answers: the keys typed meanwhile
+        // queue behind it, in order, and it is routed when it drains (#1405). An empty answer
+        // holds nothing.
+        if self.paste_queue.queue.try_peek().is_none() {
+            // A drain is running on this queue: the paste is taken up again once it returns,
+            // never dropped (#1437).
+            log::info!("ssh hold: input queue busy, the paste is held on the next update");
+            ctx.spawn(async {}, move |me, _, ctx| me.paste(middle_click, ctx));
             return;
         }
-        self.ssh_held_typing = SshHeldTyping::default();
-        if notify {
+        self.ssh_hold_ensure_gate(ctx);
+        self.start_async_paste_read(kind, false, true, shell_dialect, ctx);
+    }
+
+    /// True while a host-key / password / 2FA prompt is showing before any remote session exists:
+    /// visible text ending mid-line on an unmanaged connect. Keys then belong to ssh (#983).
+    fn ssh_prompt_has_arrived(&mut self) -> bool {
+        if self.ssh_connect_gate_drops_keys() {
+            return false;
+        }
+        // Only an UNTERMINATED line of text is a prompt (cursor parked after text on its row:
+        // "password: ", "(yes/no)? "). A newline-terminated banner / MOTD is also visible text
+        // and opens the gate, but is not a prompt.
+        self.ssh_connect_gate
+            .as_ref()
+            .is_some_and(|g| g.output_seen && !g.block_done && !g.managed && !g.saw_pending)
+            && self.active_output_ends_in_unterminated_text()
+    }
+
+    /// Discards the held keys when a prompt has arrived (they may be a password typed blind).
+    /// The notice does not echo them.
+    fn discard_ssh_typeahead_on_prompt(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !self.ssh_typeahead_holding || !self.ssh_prompt_has_arrived() {
+            return false;
+        }
+        self.discard_held_ssh_typeahead_for_prompt(ctx);
+        true
+    }
+
+    /// What happens to the held keys once a prompt is known to be up (the legacy probe above, or
+    /// the edge machine's `PromptUp` in `table` mode) (#1348, #1561).
+    ///
+    /// A credential prompt (password, passphrase, host-key question, a request for a code) or any
+    /// line that is not recognisably a shell's prompt: what was typed before it existed may be a
+    /// password typed blind, so it is discarded, never shown or delivered, as ssh's own tty flush
+    /// would. A line of a shell prompt's shape (ends in `$ # % >`, not credential-style: a nested
+    /// `ssh` into a host that is not bootstrapped): plain ssh would have the keys read by that
+    /// shell, so they are delivered to the pty, in order, exactly once (hold, don't drop). When delivery
+    /// is impossible right now (the queue is mid-drain) they are handed back to the editor as
+    /// text instead. Neither path is silent.
+    fn discard_held_ssh_typeahead_for_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        let had_keys = !self.ssh_held_is_empty();
+        if had_keys && self.ssh_prompt_is_unmanaged_shell_prompt() {
+            if self.paste_queue.queue.is_draining() {
+                log::warn!(
+                    "ssh typeahead: unexpected since #1575: a shell prompt is up but the input queue \
+                     is mid-drain; handing {} held input(s) back to the editor as text (#1561)",
+                    self.ssh_held_count()
+                );
+                self.ssh_remote_prompt_seen = false;
+            } else {
+                log::info!(
+                    "ssh typeahead: a shell prompt (not a credential prompt) is up; delivering {} \
+                     held input(s), {} byte(s), to it like plain ssh (#1561)",
+                    self.ssh_held_count(),
+                    self.ssh_held_bytes()
+                );
+                self.ssh_remote_prompt_seen = true;
+                // The shell prompt ends the connect window (an event): the machine leaves
+                // `PromptUp` BEFORE the delivery, else the table's H4 row drops every held
+                // input as "stamped before the prompt" (a password typed blind), the very
+                // keys this branch hands to the shell (#1561, r18cx). The hold ends first so
+                // the release does not leave the phase at `Holding`.
+                self.set_ssh_typeahead_holding(false);
+                self.ssh_connect_gate = None;
+                self.ssh_connect_gate_released_at = Some(Local::now());
+                self.note_ssh_gate_released(input_queue::SshRelease::ShellPrompt);
+            }
+            self.finish_ssh_typeahead(ctx);
+            return;
+        }
+        if had_keys {
+            log::info!(
+                "ssh typeahead: a credential prompt is up; discarding {} held input(s), {} byte(s) \
+                 (#1113)",
+                self.ssh_held_count(),
+                self.ssh_held_bytes()
+            );
+        }
+        // #1348: an event rule, no timing. Everything held when the prompt appeared goes; the hold
+        // ends here, so every key typed afterwards passes straight to the prompt, as in plain ssh.
+        self.reset_ssh_typeahead();
+        if had_keys {
             self.show_ssh_typing_toast(
                 "Text typed before the SSH prompt appeared was discarded",
                 ctx,
             );
         }
+    }
+
+    /// Whether the unterminated line in front of the keys is the prompt of a shell (a nested
+    /// `ssh` into a host that is not bootstrapped): a line of the shape
+    /// `output_tail_is_shell_prompt` reads that is not a credential-style prompt
+    /// (`output_tail_is_input_prompt`). Anything else (a host-key question, a request for a code,
+    /// ssh's own text, a line of unknown shape) keeps the #1113 rule: the keys may be a password
+    /// typed blind, so they are discarded. Never waits for the pty reader (#1440): a busy model,
+    /// or no readable tail, answers no, the conservative side.
+    fn ssh_prompt_is_unmanaged_shell_prompt(&self) -> bool {
+        let model = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            match self.model.try_lock() {
+                Some(model) => model,
+                None => return false,
+            }
+        } else {
+            self.model.lock()
+        };
+        let tail = model
+            .block_list()
+            .active_block()
+            .output_grid()
+            .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
+        !output_tail_is_input_prompt(&tail) && output_tail_is_shell_prompt(&tail)
+    }
+
+    fn set_ssh_typeahead_holding(&mut self, holding: bool) {
+        if self.ssh_typeahead_holding != holding {
+            warpui::input_order::log_key_hop("kh_holding_set", || format!("holding={holding}"));
+        }
+        self.ssh_typeahead_holding = holding;
+        self.paste_queue.queue.set_ssh_hold_active(holding);
+        self.ssh_edge(if holding {
+            input_queue::SshEdge::HoldStarted
+        } else {
+            input_queue::SshEdge::HoldEnded
+        });
+    }
+
+    /// Forgets every held key and the hold itself (an interrupt, a new command, a prompt).
+    fn reset_ssh_typeahead(&mut self) {
+        self.ssh_hold_clear();
+        self.set_ssh_typeahead_holding(false);
+        self.ssh_paste_to_hold = false;
+        self.ssh_typeahead_precmd_wait_since = None;
+    }
+
+    /// The single place the held keys are handed over (#1348), driven by events: the remote
+    /// shell's first `Precmd` (after the input was reset for the new prompt), the end of a failed
+    /// ssh block, the session being registered, output that shows a prompt, a key arriving after
+    /// the gate released. There is no poll: nothing here asks "is it ready yet" on a clock.
+    ///
+    /// Discards the held keys if output shows a host-key / password prompt; delivers them (or
+    /// returns them to the input as text if the connect ended without a remote shell) once the
+    /// gate has released; else leaves them held. `source` names the signal for the log.
+    /// Returns whether the hand-over ran.
+    fn deliver_ssh_typeahead_if_ready(
+        &mut self,
+        source: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.ssh_handover_after_release = false;
+        if !self.ssh_typeahead_holding {
+            return false;
+        }
+        self.refresh_ssh_connect_gate();
+        if self.discard_ssh_typeahead_on_prompt(ctx) {
+            return false;
+        }
+        if self.ssh_connect_gate.is_some() {
+            self.schedule_ssh_typeahead_give_up(ctx);
+            return false;
+        }
+        // #1332: the session refuses a command until the Precmd of the remote's first prompt has
+        // given it its history; an Enter delivered earlier would be refused. Normally that Precmd
+        // IS the signal this runs on, so the wait is over; if the session registers later, its
+        // event (or the give-up cap) delivers.
+        // #1572: the hand-over waits on the ONE readiness predicate the editor's Enter uses
+        // (`Input::shell_unready_for_submit`), whether or not keys are held yet: for a managed
+        // remote the hold ends at the event that makes the session able to take a command
+        // (`SessionBootstrapped`, which makes its history appendable, or its first Precmd,
+        // whichever is last), never in a window where the editor would own typing but refuse
+        // the Enter. An unmanaged inner shell runs inside the ssh block (a running command, so
+        // the predicate is false): its #1561 shell-prompt rule is unchanged.
+        let awaiting_first_precmd =
+            self.ssh_remote_prompt_seen && self.input.as_ref(ctx).shell_unready_for_submit(ctx);
+        let now = Instant::now();
+        let waited = if awaiting_first_precmd {
+            now.saturating_duration_since(*self.ssh_typeahead_precmd_wait_since.get_or_insert(now))
+        } else {
+            self.ssh_typeahead_precmd_wait_since = None;
+            Duration::ZERO
+        };
+        if awaiting_first_precmd && !delivery_waits_for_first_precmd(awaiting_first_precmd, waited)
+        {
+            // The registration the held keys wait for never came. A timer never delivers (it
+            // wrote the held line, Enter included, into a session that could not take it): the
+            // keys are handed back to the editor as text, not run, with the Enter guard (#1571
+            // review).
+            self.note_ssh_give_up("first_precmd_wait_cap");
+            warpui::input_order::log_key_hop("kh_finish_begin", || {
+                format!(
+                    "source={source} give_up=first_precmd_wait_cap held_bytes={}",
+                    self.ssh_held_bytes()
+                )
+            });
+            self.set_ssh_typeahead_holding(false);
+            self.ssh_paste_to_hold = false;
+            self.ssh_typeahead_precmd_wait_since = None;
+            if self.ssh_held_is_empty() {
+                self.ssh_hold_clear();
+            } else {
+                self.ssh_hold_hand_back_unexecuted_text(ctx);
+            }
+            return true;
+        }
+        if delivery_waits_for_first_precmd(awaiting_first_precmd, waited) {
+            warpui::input_order::log_key_hop("kh_handover_waits", || {
+                format!(
+                    "source={source} awaiting_first_precmd=true waited_ms={}",
+                    waited.as_millis()
+                )
+            });
+            self.schedule_ssh_typeahead_give_up(ctx);
+            return false;
+        }
+        warpui::input_order::log_hop("ssh_held_delivery", || {
+            format!("source={source} held_bytes={}", self.ssh_held_bytes())
+        });
+        warpui::input_order::log_key_hop("kh_handover", || {
+            format!(
+                "source={source} remote_prompt_seen={} held_bytes={} view_precmds_pending={}",
+                self.ssh_remote_prompt_seen,
+                self.ssh_held_bytes(),
+                self.view_precmds_pending()
+            )
+        });
+        self.finish_ssh_typeahead(ctx);
+        true
+    }
+
+    /// Safety net only (#1348): arms ONE timer for the moment the held keys must be given up on
+    /// because a signal that should have ended the hold never came: the gate's own ceilings (no
+    /// prompt ever arrives, a connect that failed silently), or the first Precmd of a released
+    /// gate. Never a poll: it is armed from events, re-armed only when the deadline moves, and
+    /// firing it runs the same hand-over as any event does.
+    fn schedule_ssh_typeahead_give_up(&mut self, ctx: &mut ViewContext<Self>) {
+        let now = Instant::now();
+        // `model_facts`: the key snapshot while a key is being handled (this runs per held key).
+        let pending = self.model_facts().pending_session_id.is_some();
+        let deadline = match self.ssh_connect_gate.as_ref() {
+            Some(gate) => gate.give_up_deadline(pending),
+            None => {
+                let since = *self.ssh_typeahead_precmd_wait_since.get_or_insert(now);
+                Some(since + SSH_TYPEAHEAD_PRECMD_WAIT_CAP)
+            }
+        };
+        let Some(deadline) = deadline else {
+            return;
+        };
+        if self
+            .ssh_typeahead_deadline_armed
+            .is_some_and(|armed| armed <= deadline)
+        {
+            return;
+        }
+        self.ssh_typeahead_deadline_armed = Some(deadline);
+        let wait = deadline.saturating_duration_since(now);
+        ctx.spawn(Timer::after(wait), move |me, _, ctx| {
+            if me.ssh_typeahead_deadline_armed == Some(deadline) {
+                me.ssh_typeahead_deadline_armed = None;
+            }
+            me.ssh_give_up_fired(ctx);
+        });
+    }
+
+    /// Delivers one held control key the way the same key typed now would be routed: to the pty
+    /// where the pty takes typed text (Enter included, as after a deferred Enter), else to the
+    /// input editor, where Enter submits the line it holds.
+    fn replay_held_key(&mut self, key: &str, ctx: &mut ViewContext<Self>) {
+        // #1424: every held key is judged with the Enter class (it goes where the text before it
+        // went, `replayed_enter_goes_to_pty`), whatever the key is.
+        let shadow = self.shadow_begin(Class::Enter, ctx);
+        self.replay_held_key_legacy(key, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn replay_held_key_legacy(&mut self, key: &str, ctx: &mut ViewContext<Self>) {
+        if self.replayed_enter_goes_to_pty(ctx) {
+            note_shadow_leaf(DestClass::Pty);
+            self.report_possible_typeahead(key);
+            self.write_user_bytes_to_pty(key.as_bytes().to_vec(), ctx);
+            return;
+        }
+        let action = match key {
+            "\r" | "\n" | "\r\n" => {
+                note_shadow_leaf(DestClass::Editor);
+                self.input.update(ctx, |input, ctx| input.input_enter(ctx));
+                return;
+            }
+            "\u{7f}" | "\u{8}" => EditorAction::Backspace,
+            "\u{15}" => EditorAction::DeleteAllLeft,
+            "\u{17}" => EditorAction::DeleteWordLeft,
+            "\u{b}" => EditorAction::DeleteAllRight,
+            _ => {
+                note_shadow_leaf(DestClass::Dropped);
+                return;
+            }
+        };
+        note_shadow_leaf(DestClass::Editor);
+        self.input.update(ctx, |input, ctx| {
+            input
+                .editor()
+                .update(ctx, |editor, ctx| editor.handle_action(&action, ctx))
+        });
+    }
+
+    /// The connect is over (#1292). With the remote shell at its first prompt the held keys are
+    /// delivered to it, exactly as if typed there now. Otherwise the connect failed or ended
+    /// without a remote shell and the keys were typed for a session that never came up: they are
+    /// shown in the input editor as text, never run, so nothing executes on the wrong host.
+    fn finish_ssh_typeahead(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::profiling::zone!("typeahead_handoff");
+        warpui::input_order::log_key_hop("kh_finish_begin", || {
+            format!(
+                "remote_prompt_seen={} held_bytes={} view_precmds_pending={}",
+                self.ssh_remote_prompt_seen,
+                self.ssh_held_bytes(),
+                self.view_precmds_pending()
+            )
+        });
+        self.set_ssh_typeahead_holding(false);
+        self.ssh_paste_to_hold = false;
+        self.ssh_typeahead_precmd_wait_since = None;
+        if self.ssh_held_is_empty() {
+            self.ssh_hold_clear();
+            warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
+            return;
+        }
+        if self.ssh_remote_prompt_seen && self.ssh_give_up_in_progress {
+            // #1577: the give-up timer never delivers; the held keys are handed back as text (the
+            // release that ended the window was already counted as a give-up).
+            warpui::input_order::log_key_hop("kh_finish_begin", || {
+                format!(
+                    "give_up=ceiling remote_prompt_seen=true held_bytes={}",
+                    self.ssh_held_bytes()
+                )
+            });
+        } else if self.ssh_remote_prompt_seen {
+            self.log_ssh_typeahead_delivery(self.ssh_held_count());
+            // #1353 phase 4: closing the `SshConnect` gate IS the delivery; the queue's one drain
+            // writes the held inputs in typed order (the legacy buffer does it in a loop).
+            self.ssh_hold_deliver(ctx);
+            // (c) of the hand-over (#1348): focus follows in the same step, so the next key is
+            // routed to the editor / live path, never into the gap between them.
+            self.redetermine_terminal_focus(ctx);
+            warpui::input_order::log_key_hop("kh_finish_end", || {
+                format!(
+                    "delivered=remote buffer_chars={}",
+                    self.input.as_ref(ctx).buffer_text(ctx).chars().count()
+                )
+            });
+            return;
+        }
+        // The held keys leave the queue (now, or as a deferred operation when it is busy) and
+        // come back through `hand_back_unexecuted_ssh_text` (#1446).
+        self.ssh_hold_hand_back_unexecuted_text(ctx);
+    }
+
+    /// The tail of [`Self::finish_ssh_typeahead`] for a connect that ended without a remote
+    /// shell: `text` is what the held keys would show, never run.
+    pub(super) fn hand_back_unexecuted_ssh_text(
+        &mut self,
+        text: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        // The ssh hand-back ends the line the held text belonged to.
+        self.request_queue_pin_clear();
+        // Never discarded, never concatenated into a line (#1566 discarded here; the Fable review
+        // of #1571 asked for no loss). Whatever happens below, an Enter typed in the same burst
+        // must not run what the user meant for the remote machine on this one: the hand-back's
+        // Enter guard covers the text wherever it lands.
+        if self.is_long_running() {
+            // A command owns the pty: the text waits on the input and comes back into the editor
+            // when that block completes (`Input::restore_handed_back_text`), guard armed then.
+            log::info!(
+                "ssh typeahead: {} handed-back char(s) kept until the running block ends",
+                text.chars().count()
+            );
+            self.input
+                .update(ctx, |input, _| input.stash_handed_back_text(text));
+            self.show_ssh_typing_toast(
+                "Text typed while the SSH session connected was kept, not run; it will be in the \
+                 input when the running command ends",
+                ctx,
+            );
+            return;
+        }
+        let existing = self.input.as_ref(ctx).buffer_text(ctx);
+        let restored = if existing.is_empty() {
+            text
+        } else {
+            // Something is in the editor already: the text goes on a line of its own after it.
+            format!("{existing}\n{text}")
+        };
+        self.input.update(ctx, |input, ctx| {
+            input.replace_buffer_content(&restored, ctx);
+            input.arm_ssh_handover_enter_guard(restored.clone());
+        });
+        self.show_ssh_typing_toast(
+            "Text typed while the SSH session connected is in the input, not run; press Enter to run it",
+            ctx,
+        );
     }
 
     fn show_ssh_typing_toast(&self, message: &str, ctx: &mut ViewContext<Self>) {
@@ -10341,10 +11685,20 @@ impl TerminalView {
         if warpui::input_order::enabled() {
             log::debug!(
                 target: warpui::input_order::TARGET,
-                "ssh_drop {what} drop_through={} held_len={} gate_armed={}",
-                self.ssh_drop_line_through_enter,
-                self.ssh_held_typing.text.chars().count(),
+                "ssh_drop {what} holding={} held_bytes={} gate_armed={}",
+                self.ssh_typeahead_holding,
+                self.ssh_held_bytes(),
                 self.ssh_connect_gate.is_some()
+            );
+        }
+    }
+
+    /// Counts only, never the held keys.
+    fn log_ssh_typeahead_delivery(&self, inputs: usize) {
+        if warpui::input_order::enabled() {
+            log::debug!(
+                target: warpui::input_order::TARGET,
+                "ssh_typeahead deliver inputs={inputs}"
             );
         }
     }
@@ -10352,19 +11706,65 @@ impl TerminalView {
     /// Arms the ssh connect gate when `command` is an interactive ssh command the user just
     /// submitted (#983). Runs at submission, so the window before the shell's preexec hook (and
     /// the 50 ms before the block counts as long running) is covered too.
-    fn note_command_submitted_for_ssh_gate(&mut self, command: &str) {
-        self.ssh_drop_line_through_enter = false;
-        self.ssh_held_typing = SshHeldTyping::default();
+    fn note_command_submitted_for_ssh_gate(&mut self, command: &str, user_submitted: bool) {
+        // #1579: the block this submit starts inherits its origin (`note_block_started_for_ssh`).
+        self.ssh_submit_user_origin = Some(user_submitted);
+        self.reset_ssh_typeahead();
         self.ssh_remote_prompt_seen = false;
         self.ssh_interrupt_held_gate_notified = false;
         if parse_interactive_ssh_command(command).is_some() {
             let block_id = self.model.lock().active_block_id().clone();
             let mut gate = SshConnectGate::new(Instant::now());
             gate.block_id = Some(block_id);
+            gate.user_submitted = user_submitted;
             self.ssh_connect_gate = Some(gate);
+            // #1609/#1614: from this submit until the ssh block ends the pty belongs to ssh and
+            // the remote shell. The hand-off needs no flag for it: the platform sample sees ssh
+            // in front (never the local shell's line editor) and the block latch calls the
+            // command interactive, so an Enter typed into it is delivered, not held.
+            self.log_ssh_pty_owner(true, "ssh_submit");
         } else {
             // A different command now owns the pty: a stale gate must not eat its typing.
             self.ssh_connect_gate = None;
+            self.log_ssh_pty_owner(false, "other_submit");
+        }
+        self.ssh_edge(input_queue::SshEdge::Submitted {
+            ssh: self.ssh_connect_gate.is_some(),
+        });
+    }
+
+    /// #1609's proof logging, kept after #1614 removed the flag it set: at every site where the
+    /// pty passes to or from an ssh the user submitted, what the hand-off will decide a young
+    /// Enter on (the sampled shell state and the block latch), so a run shows the facts that
+    /// replaced the carve-out.
+    fn log_ssh_pty_owner(&self, ssh: bool, site: &'static str) {
+        warpui::input_order::log_hop("ssh_pty_owner", || {
+            let handoff = self.handoff.read();
+            format!(
+                "ssh={ssh} site={site} prompt_fact={:?} command_interactive={} \
+                 young_hold_evidence={:?}",
+                handoff.sample_prompt_fact(),
+                handoff.command_interactive(),
+                handoff.young_hold_evidence()
+            )
+        });
+    }
+
+    /// #1579: a block started (its preexec): it is the user's when the submit that preceded it was
+    /// the user's own. Consumed here, so a later block nothing submitted (typed into a program,
+    /// run by a script) never inherits it.
+    fn note_block_started_for_ssh(&mut self) {
+        self.running_block_user_submitted = self.ssh_submit_user_origin.take().unwrap_or(false);
+    }
+
+    /// The event that shows an ssh running (preexec, the pending ssh host just set) arms the
+    /// connect window: by the edge machine in `table` mode, and in `legacy` here too, by the event
+    /// rather than the first terminal-routed key (#1565, #1424 step 7).
+    fn arm_ssh_connect_gate_at_preexec(&mut self, ctx: &mut ViewContext<Self>) {
+        if Self::ssh_events_own_the_gate() {
+            self.ssh_arm_gate_at_event(ctx);
+        } else {
+            self.refresh_ssh_connect_gate();
         }
     }
 
@@ -10372,15 +11772,12 @@ impl TerminalView {
     /// from the warpify pending-ssh state (preexec saw ssh) for a command that started after the
     /// last release, releases it when it ran its course, and records a completed ssh block.
     fn refresh_ssh_connect_gate(&mut self) -> bool {
-        let (pending, managed_ssh, block_start, active_block_id) = {
-            let model = self.model.lock();
-            (
-                model.pending_session_id().is_some(),
-                model.has_pending_ssh_session(),
-                model.block_list().active_block().start_ts().copied(),
-                model.active_block_id().clone(),
-            )
-        };
+        let facts = self.model_facts();
+        let (pending, managed_ssh, block_start) = (
+            facts.pending_session_id.is_some(),
+            facts.has_pending_ssh_session,
+            facts.active_block_start,
+        );
         if self.ssh_connect_gate.is_none() && self.has_pending_ssh_command() {
             let age = block_start
                 .and_then(|start| Local::now().signed_duration_since(start).to_std().ok());
@@ -10392,8 +11789,14 @@ impl TerminalView {
                 let now = Instant::now();
                 let armed_at = now.checked_sub(age.unwrap_or_default()).unwrap_or(now);
                 let mut gate = SshConnectGate::new(armed_at);
-                gate.block_id = Some(active_block_id);
+                // The id is cloned only when a gate is armed (once per ssh connect), which is why
+                // this one read keeps the model's lock.
+                gate.block_id = Some(self.model.lock().active_block_id().clone());
+                // #1579: armed at preexec for a command the user submitted (an ssh its text did
+                // not show): the hold owns the editor's keys as for an ssh armed at the submit.
+                gate.user_submitted = self.running_block_user_submitted;
                 self.ssh_connect_gate = Some(gate);
+                self.ssh_edge(input_queue::SshEdge::ConnectStart);
             }
         }
         let Some(gate) = self.ssh_connect_gate.as_mut() else {
@@ -10403,9 +11806,12 @@ impl TerminalView {
         if managed_ssh {
             gate.managed = true;
         }
-        if gate.should_release(Instant::now(), pending) {
+        let now = Instant::now();
+        if gate.should_release(now, pending) {
+            let how = gate.release_reason(now, pending);
             self.ssh_connect_gate = None;
             self.ssh_connect_gate_released_at = Some(Local::now());
+            self.note_ssh_gate_released(how);
             return false;
         }
         true
@@ -10416,17 +11822,48 @@ impl TerminalView {
     /// echo stops mid-line for as long as the shell is not reading (the tty input queue is full),
     /// and keys passed through on the strength of it ran inside the hidden setup block.
     fn active_output_awaits_an_answer(&self) -> bool {
-        self.active_output_ends_in_unterminated_text()
-            && !self.model.lock().is_setup_echo_mid_line()
+        self.active_output_ends_in_unterminated_text() && !self.setup_echo_is_mid_line()
+    }
+
+    /// Whether the setup script's tty echo stops mid-line. While a user key is being handled this
+    /// never waits for the pty reader (#1440), and neither does an event or timer callback
+    /// (#1447): a busy model answers with the last look, and the wakeup the parse ends with
+    /// judges again on the exact state.
+    fn setup_echo_is_mid_line(&self) -> bool {
+        let mid_line = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            match self.model.try_lock() {
+                Some(model) => model.is_setup_echo_mid_line(),
+                None => return self.setup_echo_mid_line_at_last_look.get(),
+            }
+        } else {
+            self.model.lock().is_setup_echo_mid_line()
+        };
+        self.setup_echo_mid_line_at_last_look.set(mid_line);
+        mid_line
     }
 
     /// True when the active block's output has visible text and the cursor sits after text on
     /// its row (no trailing newline): the shape of a prompt, as opposed to banner output.
     fn active_output_ends_in_unterminated_text(&self) -> bool {
-        let model = self.model.lock();
+        // This never waits for the pty reader, for a user key (#1440) or an event / timer
+        // callback (#1447): when the model is busy parsing, the answer given at the last output
+        // wakeup stands (the deferred re-check is the wakeup the parse ends with). The
+        // wakeup that follows the parse judges the held keys again on the exact state.
+        let model = if !crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            match self.model.try_lock() {
+                Some(model) => model,
+                None => return self.unterminated_text_at_last_look.get(),
+            }
+        } else {
+            self.model.lock()
+        };
         let grid = model.block_list().active_block().output_grid();
-        grid.grid_handler().cursor_point().col > 0
-            && output_has_visible_text(&grid.contents_to_string(false, None))
+        // The visible-text test needs only the end of the output (#1354): this runs on every
+        // output wakeup while a setup is deferred, and used to copy all of it each time.
+        let ends_in_text = grid.grid_handler().cursor_point().col > 0
+            && output_has_visible_text(&grid.contents_to_string(false, Some(OUTPUT_TAIL_ROWS)));
+        self.unterminated_text_at_last_look.set(ends_in_text);
+        ends_in_text
     }
 
     /// #1001: whether an interrupt falls into the connect window before the remote session is
@@ -10437,7 +11874,7 @@ impl TerminalView {
     /// remote session is pending [`Self::ssh_bootstrap_interrupt_route`] decides. Bounded by the
     /// gate's own ceiling, after which the interrupt is forwarded as usual.
     fn ssh_gate_holds_interrupt(&mut self) -> bool {
-        let pending = self.model.lock().pending_session_id().is_some();
+        let pending = self.model_facts().pending_session_id.is_some();
         if pending || !self.refresh_ssh_connect_gate() {
             return false;
         }
@@ -10465,10 +11902,10 @@ impl TerminalView {
             return true;
         }
         let (pending, hook_seen) = {
-            let model = self.model.lock();
+            let facts = self.model_facts();
             (
-                model.pending_session_id().is_some(),
-                model.has_pending_ssh_session(),
+                facts.pending_session_id.is_some(),
+                facts.has_pending_ssh_session,
             )
         };
         if pending || !self.refresh_ssh_connect_gate() {
@@ -10485,10 +11922,10 @@ impl TerminalView {
     /// remote startup instead of stopping the client; the signal ends it in cooked and raw mode.
     fn ssh_connect_sigint_applies(&mut self) -> bool {
         let (hook_seen, pending) = {
-            let model = self.model.lock();
+            let facts = self.model_facts();
             (
-                model.has_pending_ssh_session(),
-                model.pending_session_id().is_some(),
+                facts.has_pending_ssh_session,
+                facts.pending_session_id.is_some(),
             )
         };
         !hook_seen
@@ -10502,7 +11939,7 @@ impl TerminalView {
 
     /// Tells the user (once per pending remote session) that an interrupt was held (#1001).
     fn note_ssh_interrupt_held(&mut self, ctx: &mut ViewContext<Self>) {
-        let sid = self.model.lock().pending_session_id();
+        let sid = self.model_facts().pending_session_id;
         log::info!("Interrupt held until the SSH session finishes starting (session {sid:?})");
         if sid.is_none() {
             // Before the remote session is announced: once per connect window.
@@ -10537,9 +11974,11 @@ impl TerminalView {
         self.refresh_ssh_connect_gate();
         if let Some(gate) = self.ssh_connect_gate.as_mut() {
             gate.note_block_completed(Instant::now(), exit_code == 0);
-            // Deliberately no change to `ssh_drop_line_through_enter`, whatever ssh did: a line
-            // with a dropped head is dropped through its Enter, also at the local prompt a
-            // failed ssh leaves behind (#983).
+            // Deliberately no change to the held keys, whatever ssh did: the hand-over delivers
+            // them to the remote shell, or shows them unexecuted if ssh failed (#1292).
+            self.ssh_edge(input_queue::SshEdge::BlockCompleted {
+                clean: exit_code == 0,
+            });
         }
         // Release a gate that has nothing more to wait for right away, not at the next refresh.
         self.refresh_ssh_connect_gate();
@@ -10552,18 +11991,25 @@ impl TerminalView {
         let Some(gate) = self.ssh_connect_gate.as_ref() else {
             return false;
         };
-        let (alt_screen, visible) = {
+        let alt_screen = if self.in_key_path() {
+            self.read_key_facts().alt_screen
+        } else {
+            self.model.lock().is_alt_screen_active()
+        };
+        // The output is read (under the model's lock: this is the one read of the ssh connect
+        // window that needs the grid) only while nothing visible has been seen, which ends for
+        // good with the first banner or prompt.
+        let visible = if !gate.output_seen && !gate.block_done {
             let model = self.model.lock();
-            let visible = !gate.output_seen
-                && !gate.block_done
-                && output_has_visible_text(
-                    &model
-                        .block_list()
-                        .active_block()
-                        .output_grid()
-                        .contents_to_string(false, None),
-                );
-            (model.is_alt_screen_active(), visible)
+            output_has_visible_text(
+                &model
+                    .block_list()
+                    .active_block()
+                    .output_grid()
+                    .contents_to_string(false, None),
+            )
+        } else {
+            false
         };
         let gate = self.ssh_connect_gate.as_mut().expect("checked above");
         if visible {
@@ -10576,14 +12022,20 @@ impl TerminalView {
     /// is pending bootstrap (no pending session, a subshell -- see #960 -- or already
     /// bootstrapped). Otherwise the pure route for an interrupt key.
     fn ssh_bootstrap_interrupt_route(&self) -> Option<SshBootstrapInterruptRoute> {
-        let (pending, is_subshell, bootstrapped) = {
-            let model = self.model.lock();
-            (
-                model.pending_session_id(),
-                model.pending_subshell_session().is_some(),
-                model.is_active_block_bootstrapped(),
-            )
-        };
+        self.ssh_bootstrap_interrupt_route_in(&self.model_facts())
+    }
+
+    /// [`Self::ssh_bootstrap_interrupt_route`] against facts already read (the route facts read
+    /// them without waiting for the pty reader, #1424).
+    fn ssh_bootstrap_interrupt_route_in(
+        &self,
+        facts: &KeyModelSnapshot,
+    ) -> Option<SshBootstrapInterruptRoute> {
+        let (pending, is_subshell, bootstrapped) = (
+            facts.pending_session_id,
+            facts.has_pending_subshell,
+            facts.active_block_bootstrapped,
+        );
         if is_subshell || bootstrapped {
             return None;
         }
@@ -10598,15 +12050,18 @@ impl TerminalView {
         ))
     }
 
+    /// Opens the subshell gates for a setup that has just been announced (#1353 phase 2).
+    fn open_subshell_gates_for_setup(&mut self, ctx: &mut ViewContext<Self>) {
+        self.prepare_subshell_gates(&[], ctx);
+    }
+
     /// True while a subshell bootstrap (`su -`, `sudo -i`, ...) has been announced by the shell
     /// but has not finished. Input is normally held for that whole window so the user cannot
     /// interleave with the script (#960). Only Ctrl-C / Ctrl-D are exempt, see
     /// `forwards_keys_during_subshell_bootstrap`.
     fn subshell_bootstrap_pending(&self) -> bool {
-        let model = self.model.lock();
-        !model.is_read_only()
-            && model.pending_subshell_session().is_some()
-            && !model.is_active_block_bootstrapped()
+        let facts = self.model_facts();
+        !facts.read_only && facts.has_pending_subshell && !facts.active_block_bootstrapped
     }
 
     /// Whether a key must go straight to the pty although the bootstrap block is not a running
@@ -10615,10 +12070,11 @@ impl TerminalView {
     /// could type into vim, a password prompt or a remote shell. Other keys stay held so the
     /// user cannot interleave with a healthy-but-slow bootstrap script.
     fn forwards_keys_during_subshell_bootstrap(&self, abort_key: bool) -> bool {
+        let facts = self.model_facts();
         subshell_bootstrap_key_forwarded(
-            self.subshell_bootstrap_pending(),
+            !facts.read_only && facts.has_pending_subshell && !facts.active_block_bootstrapped,
             abort_key,
-            self.subshell_bootstrap_announced_age(),
+            self.subshell_bootstrap_announced_age_in(&facts),
         )
     }
 
@@ -10627,13 +12083,17 @@ impl TerminalView {
     /// session is bootstrapped/read-only. Needs no `InitShell`, so it also covers a script that
     /// the shell never ran (#960).
     fn subshell_bootstrap_announced_age(&self) -> Option<Duration> {
+        self.subshell_bootstrap_announced_age_in(&self.model_facts())
+    }
+
+    /// [`Self::subshell_bootstrap_announced_age`] against facts already read.
+    fn subshell_bootstrap_announced_age_in(&self, facts: &KeyModelSnapshot) -> Option<Duration> {
         let (block_id, at) = self.subshell_bootstrap_announced.as_ref()?;
-        let model = self.model.lock();
         subshell_bootstrap_announcement_applies(
-            model.is_read_only(),
-            model.is_active_block_bootstrapped(),
-            model.block_list().active_block().id() == block_id,
-            model.pending_subshell_session().is_some(),
+            facts.read_only,
+            facts.active_block_bootstrapped,
+            facts.active_block_hash == block_id_hash(block_id),
+            facts.has_pending_subshell,
         )
         .then(|| at.elapsed())
     }
@@ -10657,7 +12117,7 @@ impl TerminalView {
             PowerShellSetupHold::Setup
             | PowerShellSetupHold::ScriptRunning
             | PowerShellSetupHold::AwaitingPrompt => {
-                !self.model.lock().is_read_only()
+                !self.model_facts().read_only
                     && self
                         .subshell_bootstrap_announced
                         .as_ref()
@@ -10666,22 +12126,38 @@ impl TerminalView {
         }
     }
 
+    /// Whether the agent, not the user, owns the running command's pty, so user typing belongs
+    /// in the agent's input and never in the command (#1179).
+    ///
+    /// `is_agent_driving_command` is wider than `is_agent_in_control`: it covers an ordinary
+    /// agent-requested command (`seq`, `sleep`, `du`) for its whole life, because no CLI subagent
+    /// ever takes control of it. Bytes written to such a command's pty were read by the shell as
+    /// typeahead after it ended and then wiped, so the text silently vanished. It turns false
+    /// when the user takes the command over (Stop, manual take-over, or the hand-over made when
+    /// the command stops on a password / `[y/N]` prompt), and then keys go to the pty as for any
+    /// command the user holds. On the alt screen the existing #963 take-over applies instead:
+    /// the input is hidden there, so typing into the program is the user taking it over.
+    ///
+    /// Also not owned while the command sits on a prompt-shaped, newline-less line (`Password:`,
+    /// `[y/N]`, `read -p`): typing is then the answer to it, and the hand-over to the user
+    /// (`on_possible_password_prompt` / `on_stalled_interactive_prompt`) can lag the prompt by
+    /// a poll. Reading the cursor line is cheap, unlike scanning the whole output.
+    fn agent_owns_command_pty(&self) -> bool {
+        self.read_key_snapshot().agent_owns_pty
+    }
+
     fn should_write_typed_chars_to_pty(&self, ctx: &mut ViewContext<Self>) -> bool {
-        // Computed before the model lock below (it takes the same lock).
+        // Read without waiting for the pty reader (#1404): see `model_facts`.
+        let facts = self.model_facts();
         let subshell_bootstrap_stalled = self
-            .subshell_bootstrap_announced_age()
+            .subshell_bootstrap_announced_age_in(&facts)
             .is_some_and(|age| age >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
-        // Lock the model once and hold it throughout the function
-        let model = self.model.lock();
 
         // If the active block hasn't started yet, we don't want to write to the pty.
         // Note that we check block started and NOT block.is_long_running(), because
         // the block starts on enter but only becomes long running on receiving Preexec.
         // We want to make sure we capture any input between enter and receiving Preexec.
-        if !model.block_list().active_block().started()
-            && !(FeatureFlag::TypeaheadHandoff.is_enabled()
-                && model.typeahead_handoff().routes_keys_to_pty())
-        {
+        if !facts.active_block_started && !self.typeahead_handoff_routes_keys_to_pty() {
             return false;
         }
 
@@ -10692,85 +12168,362 @@ impl TerminalView {
             .sessions
             .as_ref(ctx)
             .has_pending_or_bootstrapped_session();
-        let is_shared_session_executor = model.shared_session_status().is_executor();
 
-        was_bootstrap_script_echoed || is_shared_session_executor || subshell_bootstrap_stalled
+        was_bootstrap_script_echoed || facts.shared_session_executor || subshell_bootstrap_stalled
     }
-    /// Receiving a warpui::Event::TypedCharacters event from a child element.
+
+    /// What has focus, read from the live focus chain of the key being routed (no render
+    /// snapshot, #934).
+    fn pane_focus_facts(
+        &self,
+        key_ctx: &PaneKeyContext,
+        ctx: &ViewContext<Self>,
+    ) -> PaneFocusFacts {
+        let editor_focused = key_ctx.in_focus_chain(self.input.as_ref(ctx).editor().id());
+        // The find bar and the block filter, and any other text field inside the pane (the focused
+        // view says it takes text): a key typed there is the field's.
+        let in_own_text_view = key_ctx.in_focus_chain(self.find_bar.id())
+            || key_ctx.in_focus_chain(self.block_filter_editor.id());
+        PaneFocusFacts {
+            in_text_field: !editor_focused && (in_own_text_view || key_ctx.leaf_takes_typed_text),
+            editor_focused,
+            terminal_focused: key_ctx.is_focused_exactly(self.view_id),
+            // #1565: an armed connect gate is the event that starts the hold. Keyed on the hold
+            // alone, a key typed with the agent-view editor focused went to the editor before
+            // anything had armed the hold, so the first key of the connect was never held.
+            ssh_hold_active: self.paste_queue.queue.ssh_hold_active()
+                || self
+                    .ssh_connect_gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.user_submitted),
+            // Set by the caller from the focus snap it has already taken (#1552, Fable F9).
+            settled_ai_focus: false,
+        }
+    }
+
+    /// The pane's one key entry point (#1404): every key event of a focused pane arrives here once,
+    /// from the window's key dispatch, and the destination is decided from the facts of this
+    /// moment (`pane_key::key_target`). Elements render, hit-test and select; they do not claim
+    /// keys.
+    fn on_pane_key_event(
+        &mut self,
+        key: &PaneKey,
+        key_ctx: &PaneKeyContext,
+        ctx: &mut ViewContext<Self>,
+    ) -> PaneKeyOutcome {
+        // A printable key down is not acted on: the platform follows it with a typed event unless
+        // something consumes it, and that event is the key. A key down of control characters is
+        // the key itself.
+        let class = match &key.kind {
+            PaneKeyKind::Typed { chars, .. } if !chars.is_empty() => KeyClass::Typed,
+            // #1411: every key down while the terminal itself has focus is the sink's to translate
+            // (arrows, Ctrl-letters, Alt-keys, kitty-protocol keys have no control characters);
+            // elsewhere a key down is the sink's only when it is all control characters.
+            PaneKeyKind::KeyDown { chars, .. }
+                if key_ctx.is_focused_exactly(self.view_id)
+                    || (!chars.is_empty() && chars.chars().all(|c| c.is_control())) =>
+            {
+                KeyClass::Control
+            }
+            PaneKeyKind::SetMarkedText { .. } | PaneKeyKind::ClearMarkedText => {
+                KeyClass::Composition
+            }
+            _ => return PaneKeyOutcome::NotMine,
+        };
+        // #1424: the stamp of this key. The model gen is read by every stamp taken (the pane's
+        // `PaneRouteState` reads the gen the two published cells agree on, no model lock); the
+        // focus chain is only known here, so it is noted now. Nothing decides on it yet.
+        let focus_snap = self.pane_focus_snap(key_ctx, ctx);
+        self.paste_queue.queue.route_state().note_focus(focus_snap);
+        let mut facts = self.pane_focus_facts(key_ctx, ctx);
+        // #1552 / Fable B1: a control key typed in a focus gap is the terminal's only for a settled
+        // AI target (or the ssh hold); any other pane child with focus (a pending approval card, an
+        // AI block awaiting confirmation, the ssh choice card, a question card) binds its own
+        // Enter/Tab/Escape and keeps the key. The table decides on the fact (Fable F9).
+        facts.settled_ai_focus = focus_snap == input_queue::FocusSnap::SettledAiTarget;
+        let target = pane_key::key_target(class, &facts);
+        warpui::input_order::log_key_hop("kh_pane_key", || {
+            format!(
+                "seq={} class={class:?} target={target:?} editor_focused={} terminal_focused={} \
+                 in_text_field={} ssh_hold={} shadow={}",
+                key.seq,
+                facts.editor_focused,
+                facts.terminal_focused,
+                facts.in_text_field,
+                facts.ssh_hold_active,
+                pane_key::mode() == PaneKeyMode::Shadow
+            )
+        });
+        // Shadow mode: decide and log, leave delivery to the elements.
+        if pane_key::mode() == PaneKeyMode::Shadow {
+            return PaneKeyOutcome::NotMine;
+        }
+        match (target, &key.kind) {
+            (KeyTarget::NotMine, _) => return PaneKeyOutcome::NotMine,
+            (KeyTarget::Terminal, PaneKeyKind::Typed { chars, .. }) => {
+                self.typed_characters_on_terminal(chars, ctx)
+            }
+            (KeyTarget::Editor, PaneKeyKind::Typed { chars, .. }) => {
+                let editor = self.input.as_ref(ctx).editor().clone();
+                editor.update(ctx, |editor, ctx| editor.pane_typed(chars, ctx));
+            }
+            // The terminal has focus itself (#1411): the key is translated into bytes here, from the
+            // modes the model published, and routed like a typed key.
+            (
+                KeyTarget::Terminal,
+                PaneKeyKind::KeyDown {
+                    keystroke,
+                    chars,
+                    is_composing,
+                    key_without_modifiers,
+                    will_type,
+                },
+            ) if facts.terminal_focused => {
+                if !self.terminal_key_down(
+                    keystroke,
+                    chars,
+                    key_without_modifiers.as_deref(),
+                    *is_composing,
+                    *will_type,
+                    ctx,
+                ) {
+                    return PaneKeyOutcome::NotMine;
+                }
+            }
+            // A focus gap (the ssh hold, a settled AI target): the control characters as typed.
+            (KeyTarget::Terminal, PaneKeyKind::KeyDown { chars, .. }) => {
+                self.keydown_on_terminal(chars, ctx)
+            }
+            (
+                KeyTarget::Terminal,
+                PaneKeyKind::SetMarkedText {
+                    marked_text,
+                    selected_range,
+                },
+            ) => self.set_marked_text_on_terminal(marked_text, selected_range, ctx),
+            (
+                KeyTarget::Editor,
+                PaneKeyKind::SetMarkedText {
+                    marked_text,
+                    selected_range,
+                },
+            ) => {
+                let editor = self.input.as_ref(ctx).editor().clone();
+                editor.update(ctx, |editor, ctx| {
+                    editor.pane_set_marked_text(marked_text, selected_range, ctx)
+                });
+            }
+            (KeyTarget::Terminal, PaneKeyKind::ClearMarkedText) => {
+                self.clear_marked_text_on_terminal(ctx)
+            }
+            (KeyTarget::Editor, PaneKeyKind::ClearMarkedText) => {
+                let editor = self.input.as_ref(ctx).editor().clone();
+                editor.update(ctx, |editor, ctx| editor.pane_clear_marked_text(ctx));
+            }
+            // A control key never targets the editor (its keys are its bindings); a table that
+            // said so would be a bug, and the event then simply continues to the elements.
+            (KeyTarget::Editor, PaneKeyKind::KeyDown { .. }) => return PaneKeyOutcome::NotMine,
+        }
+        PaneKeyOutcome::Consumed
+    }
+
+    /// A key down while the terminal view itself has focus (#1411): what the block list element
+    /// and the alt-screen element did with it under the model's lock, from the published key
+    /// snapshot instead (the exact state when the model is free, else the copy of its last parse;
+    /// never a wait for the pty reader). Returns whether the key was taken; an untaken key (no
+    /// escape sequence, not control characters) continues to the elements, as before.
+    ///
+    /// The rules are the elements': the block list's Ctrl-D one-off, its composing rule (a key
+    /// pressed while an input method composes is ignored unless it is a meta-letter and a command
+    /// is executing), the agent shortcut Enter; the alt screen's composing rule has no command
+    /// check and no agent shortcut. The escape sequence then goes to
+    /// `control_sequence_on_terminal`, any other control character to `keydown_on_terminal`.
+    fn terminal_key_down(
+        &mut self,
+        keystroke: &Keystroke,
+        chars: &str,
+        key_without_modifiers: Option<&str>,
+        is_composing: bool,
+        will_type: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        // A printable key without ctrl/alt/cmd/meta makes bytes only under the kitty protocol's
+        // "report all keys" mode: with the protocol off (as last published) its typed event is the
+        // key, and nothing here needs the full snapshot (#1411).
+        if will_type
+            && !keystroke.ctrl
+            && !keystroke.alt
+            && !keystroke.cmd
+            && !keystroke.meta
+            && self
+                .key_model
+                .eager_modes()
+                .is_some_and(|modes| !modes.keyboard_protocol)
+        {
+            return false;
+        }
+        let snapshot = self.read_key_snapshot();
+        let alt_screen = snapshot.input_box.alt_screen_active;
+        if !alt_screen && keystroke.normalized() == "ctrl-d" {
+            // The binding of Ctrl-D has special behaviour (see `ctrl_d`).
+            self.ctrl_d(ctx);
+            return true;
+        }
+        let may_translate = if alt_screen {
+            !is_composing || handle_keystroke_despite_composing(keystroke)
+        } else {
+            !is_composing
+                || (handle_keystroke_despite_composing(keystroke)
+                    && snapshot.active_block_executing)
+        };
+        if !may_translate {
+            return false;
+        }
+        let escape_sequence = (KeystrokeWithDetails {
+            keystroke,
+            key_without_modifiers,
+            chars: Some(chars),
+        })
+        .to_escape_sequence(&snapshot.key_modes);
+        if !alt_screen
+            && is_agent_shortcut_enter(keystroke)
+            && (escape_sequence.is_some()
+                || (!chars.is_empty() && chars.chars().all(|c| c.is_control())))
+        {
+            // Same acceptance rule as the plain paths below; the view decides whether this is the
+            // SSH banner's "Use agent" shortcut (#976).
+            self.agent_shortcut_enter(chars, escape_sequence.as_deref(), ctx);
+            return true;
+        }
+        if let Some(escape_sequence) = escape_sequence {
+            self.control_sequence_on_terminal(&escape_sequence, ctx);
+            return true;
+        }
+        if !chars.is_empty() && chars.chars().all(|c| c.is_control()) {
+            self.keydown_on_terminal(chars, ctx);
+            return true;
+        }
+        false
+    }
+
+    /// Text for the terminal destination: delivered by the pane key sink (a typed key or an IME
+    /// commit), by a key the input queue replays behind an Enter, or by a file drop (#1404).
     /// We can assume `characters` consists of all printable characters, and therefore,
     /// can go into the input box.
+    ///
+    /// The ordered rows that decide where it goes (ssh choice card, ssh interrupt, ssh setup hold,
+    /// enter queue, PowerShell setup hold, approval card, agent-owned pty, pty, hidden input box)
+    /// are `pane_key::route_typed`; this function acts on its answer.
     fn typed_characters_on_terminal(&mut self, characters: &str, ctx: &mut ViewContext<Self>) {
-        // #1087: while the SSH-extension choice card holds focus the input editor is hidden and
-        // the card only takes arrows/Enter, so printable keys went nowhere, silently. They now
-        // show the card's "choose an option first" hint. They are not buffered for the session:
-        // see `SshRemoteServerChoiceView::typed_before_choice`.
-        if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
-            choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
+        // #1424: in `table` mode the table decides live text (step 5).
+        if self.arrives_via_table() {
+            self.arrive_via_table(dest_table::Arrival::Typed(characters), ctx);
             return;
         }
-        if is_ssh_interrupt_key(characters) {
-            // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor
-            // in the connect window before the remote session is announced (#983/#1001).
-            if self.ssh_bootstrap_interrupt_route() == Some(SshBootstrapInterruptRoute::Hold)
-                || self.ssh_gate_holds_interrupt()
-                || (characters == "\u{4}" && self.ssh_connect_holds_eot())
-            {
-                self.note_ssh_interrupt_held(ctx);
+        // #1424: in `shadow` mode the table decides next to the legacy chain, which is unchanged.
+        let shadow = self.shadow_begin(Class::Typed, ctx);
+        self.typed_characters_on_terminal_legacy(characters, ctx);
+        self.shadow_end(shadow);
+    }
+
+    fn typed_characters_on_terminal_legacy(
+        &mut self,
+        characters: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
+        self.reprobe_interactive_latch_on_key();
+        // #1345: the terminal view received typed characters (a live key or the held ones being
+        // delivered); `chars` is a count, never the text.
+        warpui::input_order::log_key_hop("kh_terminal_typed_entry", || {
+            format!(
+                "chars={} ssh_holding={} gate_armed={}",
+                characters.chars().count(),
+                self.ssh_typeahead_holding,
+                self.ssh_connect_gate.is_some()
+            )
+        });
+        let route = {
+            let mut probes = TypedKeyProbes {
+                view: &mut *self,
+                ctx: &mut *ctx,
+                characters,
+            };
+            pane_key::route_typed(is_ssh_interrupt_key(characters), &mut probes)
+        };
+        let tail = match route {
+            // #1087: while the SSH-extension choice card holds focus the input editor is hidden
+            // and the card only takes arrows/Enter, so printable keys went nowhere, silently.
+            // They now show the card's "choose an option first" hint. They are not buffered for
+            // the session: see `SshRemoteServerChoiceView::typed_before_choice`.
+            TypedRoute::SshChoiceCardHint => {
+                note_shadow_leaf(DestClass::Hint);
+                if let Some(choice_card) = self.ssh_choice_card_holding_keys(ctx) {
+                    choice_card.update(ctx, |card, ctx| card.note_typed_before_choice(ctx));
+                }
                 return;
             }
-            self.ssh_drop_line_through_enter = false;
-            self.ssh_held_typing = SshHeldTyping::default();
-        } else if self.swallow_input_during_ssh_setup(Some(characters), ctx) {
-            return;
+            // Held, queued or swallowed by the probe that answered yes.
+            TypedRoute::SshInterruptHeld => {
+                // Dropped today (the toast says "held"); the table holds it (OD-5).
+                note_shadow_leaf(DestClass::Dropped);
+                return;
+            }
+            TypedRoute::SshSetupHeld => {
+                note_shadow_leaf(if self.ssh_typeahead_holding {
+                    DestClass::Held
+                } else {
+                    DestClass::Swallowed
+                });
+                return;
+            }
+            TypedRoute::QueuedBehindEnter => {
+                note_shadow_leaf(DestClass::Held);
+                return;
+            }
+            // #1048: during a PowerShell subshell setup every key joins the held keys, whatever
+            // block is active (after the setup's first `Precmd` the editor would take it and drop
+            // its Enter).
+            TypedRoute::PowerShellHeld => {
+                note_shadow_leaf(DestClass::Held);
+                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
+                return;
+            }
+            TypedRoute::Deliver(tail) => tail,
+        };
+        let mut written_to_pty = false;
+        if tail.try_pty {
+            self.highlighted_link.invalidate();
+            self.report_possible_typeahead(characters);
+            written_to_pty = self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
         }
-        // #1016: input typed after a deferred Enter is still waiting to be routed; this follows
-        // it, so it queues behind rather than overtaking it.
-        if self.input.as_ref(ctx).after_enter_replay_open() {
-            self.input.update(ctx, |input, _| {
-                input.queue_after_enter_replay(AfterEnterInput::Text(characters.to_string()))
-            });
-            return;
-        }
-        self.on_ssh_warpification_key_event(Some(SshKeyEvent::from_chars(characters)), ctx);
-
-        // The pty refuses user bytes while the agent controls the running command. Typing is
-        // then meant for the agent's input, not the void (#901): fall through to the input.
-        // #1048: during a PowerShell subshell setup every key joins the held keys, whatever block
-        // is active (after the setup's first `Precmd` the editor would take it and drop its Enter).
-        if self.holds_keys_for_powershell_subshell_setup() {
-            self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx);
-            return;
-        }
-        // #1028: while the pending approval card holds focus, printable keys are for the agent
-        // input (a follow-up), never the running command underneath, even when the pty would take
-        // them.
-        // #1095: so is an AI block that holds focus itself while one of its actions awaits
-        // confirmation (its Enter approves).
-        let typed_on_approval_card =
-            self.typed_on_approval_card(ctx) || self.typed_on_ai_block_awaiting_confirmation(ctx);
-        // #1095: focus left on a settled action card or an AI block takes no printable keys;
-        // route them as if the terminal held focus, and let focus follow them.
-        let typed_on_settled_ai_target =
-            !typed_on_approval_card && self.typed_on_settled_ai_target(ctx);
-        let written_to_pty =
-            !typed_on_approval_card && self.should_write_typed_chars_to_pty(ctx) && {
-                self.highlighted_link.invalidate();
-                self.report_possible_typeahead(characters);
-                self.write_user_bytes_to_pty(characters.as_bytes().to_vec(), ctx)
-            };
-        if written_to_pty && typed_on_settled_ai_target {
+        warpui::input_order::log_key_hop("kh_terminal_typed_routed", || {
+            format!(
+                "written_to_pty={written_to_pty} approval_card={} agent_owns_typing={}",
+                tail.approval_card, tail.agent_owns_typing
+            )
+        });
+        if written_to_pty && tail.settled_ai_target {
             self.focus_terminal(ctx);
         }
-        // The pty refused the bytes (agent in control) and the agent input is hidden: keep the
-        // old behaviour and drop them, rather than piling text up in a buffer nobody can see.
-        let refused_with_hidden_input = !written_to_pty
-            && !typed_on_approval_card
-            && self.should_write_typed_chars_to_pty(ctx)
-            && !{
-                let model = self.model.lock();
-                self.is_input_box_visible(&model, ctx)
+        // The pty refused the bytes for another reason (e.g. the alt screen) and the input is
+        // hidden: keep the old behaviour and drop them. Not when the agent owns the command
+        // (#1179): those keys are the user's steer text, buffered in the input (shown, with the
+        // text, once it is visible) instead of discarded.
+        let action = {
+            let mut probes = TypedKeyProbes {
+                view: &mut *self,
+                ctx: &mut *ctx,
+                characters,
             };
-        if !written_to_pty && !refused_with_hidden_input {
+            pane_key::after_pty_attempt(&tail, written_to_pty, &mut probes)
+        };
+        note_shadow_leaf(match action {
+            TailAction::Done => DestClass::Pty,
+            TailAction::InsertIntoEditor => DestClass::Editor,
+            TailAction::DropHiddenInput => DestClass::Dropped,
+        });
+        if action == TailAction::InsertIntoEditor {
             // We should only insert typed characters into the input box buffer.
             // When input_sequence is triggered on KeyDown, we should focus
             // on the input area and let the editor view handle the TypedCharacters
@@ -10793,12 +12546,18 @@ impl TerminalView {
             // #1028: keys typed while the approval card holds focus move focus to the input
             // with them, so a following Enter submits the follow-up instead of reaching the
             // card's Enter -> Run binding.
-            if typed_on_approval_card || typed_on_settled_ai_target {
+            if tail.approval_card || tail.settled_ai_target {
                 self.focus_input_box(ctx);
             }
             self.input
                 .update(ctx, |input, ctx| input.system_insert(characters, ctx));
-            if self.focus_reclaim_active() {
+            warpui::input_order::log_key_hop("kh_terminal_inserted", || {
+                format!(
+                    "buffer_chars={}",
+                    self.input.as_ref(ctx).buffer_text(ctx).chars().count()
+                )
+            });
+            if self.focus_reclaim_active(ctx) {
                 // Keys that arrive before the card's replacement settles keep going to the
                 // input, so focus has to follow them there.
                 self.place_focus_after_card_resolved(ctx);
@@ -10806,48 +12565,99 @@ impl TerminalView {
         }
     }
 
+    /// #1217: whether a replayed Enter goes to the pty: exactly when `typed_characters_on_terminal`
+    /// would have written the text before it there. Printable keys that belong to the agent's
+    /// input (a pending approval card or an AI block awaiting confirmation holds focus, or the
+    /// agent drives the running command, #1179) take their Enter with them to the editor.
+    fn replayed_enter_goes_to_pty(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if self.typed_on_approval_card(ctx)
+            || self.typed_on_ai_block_awaiting_confirmation(ctx)
+            || self.agent_owns_command_pty()
+        {
+            return false;
+        }
+        self.should_write_typed_chars_to_pty(ctx)
+            || self.is_long_running()
+            || self.typeahead_handoff_routes_keys_to_pty()
+    }
+
     /// Routes what the user typed behind an Enter that waited for its classification verdict
     /// (#1016), in order, once that Enter has run: the same way keys typed right after any
     /// submitted Enter are routed. An Enter goes where the text before it went: to the pty when
     /// the pty takes the typed characters, otherwise it submits the editor.
-    fn replay_after_deferred_enter(&mut self, started: Instant, ctx: &mut ViewContext<Self>) {
-        if !self.input.as_ref(ctx).after_enter_replay_open() {
-            return;
-        }
-        // The submitted shell command is not on its way to the pty until the hand-off engages;
-        // text routed before that lands in the editor, and the shell's report is later inserted
-        // in front of it (reordering the line). Everything typed meanwhile queues behind.
-        let pty_ready = self.should_write_typed_chars_to_pty(ctx)
-            || self.is_long_running()
-            || self.typeahead_handoff_routes_keys_to_pty();
-        if self.input.as_ref(ctx).after_enter_replay_awaits_pty()
-            && !pty_ready
-            && started.elapsed() < AFTER_ENTER_REPLAY_PTY_WAIT
-        {
-            ctx.spawn(Timer::after(Duration::from_millis(5)), move |me, _, ctx| {
-                me.replay_after_deferred_enter(started, ctx)
-            });
-            return;
-        }
-        let queued = self
-            .input
-            .update(ctx, |input, _| input.take_after_enter_replay());
-        for input in &queued {
-            match input {
-                AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
-                AfterEnterInput::Enter => {
-                    if self.should_write_typed_chars_to_pty(ctx)
-                        || self.is_long_running()
-                        || self.typeahead_handoff_routes_keys_to_pty()
-                    {
-                        self.report_possible_typeahead("\r");
-                        self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
-                    } else {
-                        self.input.update(ctx, |input, ctx| input.input_enter(ctx));
+    fn replay_after_deferred_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        // The keys wait behind the Enter's queue gate; the events of `settle_enter_queue` close it.
+        self.settle_enter_queue(ctx);
+    }
+
+    /// Routes one key that was typed behind an Enter that waited, as if it had just been typed.
+    /// Called by the pane queue's drain when it delivers the entry (`PtyQueueHost`), so the write
+    /// it makes passes through the paste stage (the queue is mid-drain) and the Enter it replays
+    /// that waits again hands its gate back to the drain ([`Input::take_stashed_gate`]).
+    fn route_after_enter_input(&mut self, input: &AfterEnterInput, ctx: &mut ViewContext<Self>) {
+        // Legacy-only (#1587): `PtyQueueHost::deliver_entry` (view/paste_queue.rs) reaches this only
+        // when the destination mode is not Table; Table uses `deliver_replayed_entry_table`.
+        debug_assert!(
+            input_queue::destination_mode() != input_queue::DestinationMode::Table,
+            "legacy-only path (#1587)"
+        );
+        match input {
+            AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
+            AfterEnterInput::Enter => {
+                // #1424: the shadow comparison for the replayed Enter (class Enter, origin Replay).
+                let shadow = self.shadow_begin(Class::Enter, ctx);
+                if self.replayed_enter_goes_to_pty(ctx) {
+                    // #1571: the text before this Enter went through `typed_characters_on_terminal`,
+                    // which holds it while an ssh connects (the command the held line started);
+                    // the Enter joins it there, in order, instead of reaching the tty first.
+                    if self.swallow_input_during_ssh_setup(Some("\r"), ctx) {
+                        note_shadow_leaf(DestClass::Held);
+                        self.shadow_end(shadow);
+                        return;
                     }
+                    note_shadow_leaf(DestClass::Pty);
+                    self.report_possible_typeahead("\r");
+                    self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                } else {
+                    note_shadow_leaf(DestClass::Editor);
+                    self.input.update(ctx, |input, ctx| input.input_enter(ctx));
                 }
+                self.shadow_end(shadow);
             }
         }
+    }
+
+    /// #1353 phase 3: the Enter whose gate holds keys has run. They are released (in order, by the
+    /// queue's one drain) once the route it took has settled: for a shell command, once the pty has
+    /// taken it. Event driven: called when the Enter has run, when the typeahead hand-off engages
+    /// (`TypeaheadHandoffChanged`) and when the command's block starts. The only timer is the
+    /// give-up cap for a pty that never takes the command, armed once and logged when it fires.
+    fn settle_enter_queue(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.input.as_ref(ctx).enter_queue_awaits_route(ctx) {
+            return;
+        }
+        if self.input.as_ref(ctx).enter_queue_awaits_pty() {
+            let pty_ready = self.should_write_typed_chars_to_pty(ctx)
+                || self.is_long_running()
+                || self.typeahead_handoff_routes_keys_to_pty();
+            if !pty_ready {
+                let arm = self
+                    .input
+                    .update(ctx, |input, _| input.take_enter_route_cap_arm());
+                if let Some(key) = arm {
+                    ctx.spawn(
+                        Timer::after(AFTER_ENTER_REPLAY_PTY_WAIT),
+                        move |me, _, ctx| {
+                            me.input
+                                .update(ctx, |input, ctx| input.give_up_enter_route_wait(key, ctx));
+                        },
+                    );
+                }
+                return;
+            }
+        }
+        self.input
+            .update(ctx, |input, ctx| input.release_enter_gate(ctx));
     }
 
     /// Handles a file-tree drag-and-drop onto the terminal by piping the dropped text
@@ -10879,8 +12689,13 @@ impl TerminalView {
         if !FeatureFlag::ImeMarkedText.is_enabled() {
             return;
         }
-        self.model.lock().clear_marked_text();
-        ctx.notify();
+        // The IME sends ClearMarkedText before every typed character; when no composition is in
+        // progress there is nothing to clear, and bumping the grid generation + notifying would
+        // cost a full extra frame per keystroke.
+        let had_marked_text = self.model.lock().clear_marked_text();
+        if had_marked_text {
+            ctx.notify();
+        }
     }
 
     pub(crate) fn write_to_pty<B: Into<Cow<'static, [u8]>>>(
@@ -10902,16 +12717,86 @@ impl TerminalView {
             .read(ctx, |recorder, _| recorder.inactive_pty_reads_rx())
     }
 
+    /// Which hand-over gate, if any, forbids the agent writing to the pty right now (#1431): a
+    /// subshell or PowerShell setup (announced, bootstrap lines in flight, or its queue gates
+    /// open) or the remote-setup window of an ssh connect. The ssh connect's earlier window (a
+    /// password prompt, a host-key question) is not a gate: the agent answers those.
+    fn agent_pty_write_gate(&mut self) -> Option<&'static str> {
+        let setup_gate_open = self.paste_queue.queue.try_peek().is_some_and(|queue| {
+            queue.has_gate_kind(input_queue::GateKind::SubshellSetup)
+                || queue.has_gate_kind(input_queue::GateKind::SubshellBootstrapWrite)
+                || queue.has_gate_kind(input_queue::GateKind::PowershellSetup)
+        });
+        if setup_gate_open
+            || self.subshell_bootstrap_announced.is_some()
+            || self.subshell_bootstrap_in_flight.is_some()
+            || self.powershell_setup_hold != PowerShellSetupHold::Off
+        {
+            return Some("a subshell / PowerShell setup");
+        }
+        if self.ssh_gate_holds_interrupt() {
+            return Some("the remote setup of an ssh connect");
+        }
+        None
+    }
+
     fn write_agent_bytes_to_pty<B: Into<Cow<'static, [u8]>>>(
         &mut self,
         data: B,
         mode: &AIAgentPtyWriteMode,
         ctx: &mut ViewContext<Self>,
     ) {
-        ctx.emit(Event::WriteAgentInputToPty {
-            bytes: data.into(),
-            mode: *mode,
+        let bytes: Cow<'static, [u8]> = data.into();
+        // #1424 (step 6): the agent origin's row (D13). In `table` mode the table refuses the write
+        // while a setup gate or the ssh remote setup owns the pty; in `shadow` mode it is compared
+        // with what the legacy gate below did.
+        let row = self.begin_origin_row(Class::AgentWrite, input_queue::Origin::Agent, ctx);
+        if row.refused() {
+            log::warn!(
+                "refused {} agent byte(s) for the pty: a setup owns it (#1431, row D13)",
+                bytes.len()
+            );
+            self.end_origin_row(row, false);
+            return;
+        }
+        // #1431: the agent answers a prompt (or quits a pager) in a command it drives; while an
+        // ssh connect's remote setup or a subshell / PowerShell setup owns the pty those bytes
+        // would land in the bootstrap. REFUSED, not held: the answer belongs to the prompt it was
+        // computed for, and a held answer delivered after the hand-over goes to a different
+        // program (the remote shell); the agent sees the command still waiting and asks again.
+        if let Some(gate) = self.agent_pty_write_gate() {
+            log::warn!(
+                "refused {} agent byte(s) for the pty: {gate} is in progress (#1431)",
+                bytes.len()
+            );
+            self.end_origin_row(row, false);
+            return;
+        }
+        // #1178: a ^C the agent writes into its command interrupts it.
+        if bytes.contains(&0x03) {
+            self.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .mark_interrupted_by_ctrl_c();
+        }
+        // #1580: user bytes already decided for the pty but still in the queue (a drain that
+        // stopped at a foreign entry or yielded, ops in the mailbox) go out BEFORE the agent's
+        // bytes. The agent bytes themselves are never held behind a gate (REFUSED, not held).
+        self.flush_deferred_queue_ops(ctx);
+        self.continue_stopped_drain(ctx);
+        warpui::input_order::log_key_hop("kh_agent_write", || {
+            format!(
+                "bytes={} queued={}",
+                bytes.len(),
+                self.paste_queue
+                    .queue
+                    .try_peek()
+                    .map_or(0, |queue| queue.queued_len())
+            )
         });
+        ctx.emit(Event::WriteAgentInputToPty { bytes, mode: *mode });
+        self.end_origin_row(row, true);
     }
 
     /// Writes a shared session viewer's bytes to the pty.
@@ -10924,9 +12809,13 @@ impl TerminalView {
     /// Observation never delays or drops the write itself, and never arms a
     /// window for a byte that `write_user_bytes_to_pty` rejected (e.g. the
     /// active block is under agent control).
+    #[cfg(test)]
     pub fn write_viewer_bytes_to_pty(&mut self, bytes: Vec<u8>, ctx: &mut ViewContext<Self>) {
         let is_ctrl_c = bytes == [0x03];
+        // #1424: the viewer origin (the full destination rows apply; shadow compares them).
+        let row = self.begin_origin_row(Class::Raw, input_queue::Origin::Viewer, ctx);
         let forwarded = self.write_user_bytes_to_pty(bytes, ctx);
+        self.end_origin_row(row, forwarded);
         if forwarded && is_ctrl_c && FeatureFlag::CtrlCCancelsThirdPartyHarness.is_enabled() {
             let terminal_view_id = self.view_id;
             CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
@@ -10935,30 +12824,17 @@ impl TerminalView {
         }
     }
 
-    /// Ends the current line before writing 1000 byte chunks to the pty with a small delay in
-    /// between to work around a macos pty bug.
-    fn clear_line_editor_and_write_to_pty_with_mac_workaround_hack<B: Into<Cow<'static, [u8]>>>(
+    /// Ends the current line, then writes `data` (the ssh-warpify one-line payload) as ONE job the
+    /// PTY controller owns (#1384 P3): 1000-byte chunks, back to back when the tty is
+    /// non-canonical, 10 ms apart only while it is canonical (a cooked macOS tty silently drops
+    /// input past 1 KB). It replaces the view-side timer chain and its generation; a ^C / ^D or a
+    /// cancelled warpify cuts it through [`Event::CancelPacedSetupWrites`] (#1354).
+    fn clear_line_editor_and_write_to_pty_with_mac_workaround_hack(
         &mut self,
-        data: B,
+        data: Vec<u8>,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Ctrl-u + ctrl-k clears everything before the cursor, then everything after the cursor.
-        // Ctrl-c is dangerous because it could cancel an ongoing command. We add an arbitrary space
-        // first so that the ctrl-u always clears at least one character, avoiding the audible bell.
-        let mut to_write = vec![
-            b' ',
-            escape_sequences::C0::VT,  // ctrl-k to clear forward
-            escape_sequences::C0::NAK, // ctrl-u to clear backward
-        ];
-        to_write.extend_from_slice(&data.into());
-
-        for (i, chunk) in to_write.chunks(1000).enumerate() {
-            let chunk = chunk.to_vec();
-            ctx.spawn(
-                Timer::after(Duration::from_millis(i as u64 * 10)),
-                move |me, _, ctx| me.write_to_pty(chunk, ctx),
-            );
-        }
+        ctx.emit(Event::WriteLineClearSetupToPty { payload: data });
     }
 
     /// Ends the current line before writing the given bytes to the PTY.
@@ -11010,19 +12886,167 @@ impl TerminalView {
         takes_over_agent_control: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        let mut bytes: Cow<'static, [u8]> = data.into();
-        self.note_input_for_deferred_subshell_setup(&bytes);
-        // The paced subshell bootstrap is still being written: hold the keystrokes (never drop
-        // them) and deliver them after its last line.
-        if let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() {
-            in_flight.held_user_bytes.push(bytes.into_owned());
-            return true;
+        let bytes: Cow<'static, [u8]> = data.into();
+        // #1353 phase 5: a signal or EOF goes out behind the keys the queue holds for the shell's
+        // prompt (ConPTY, #1162), as one write in typed order. Idle, this is one byte scan.
+        let bytes = self.prepend_queued_prompt_hold_to_signal(bytes, ctx);
+        // ... and a signal ends a young Enter's hold: void for ^C, ahead of a lone EOF (#933).
+        let bytes = self.settle_queued_young_hold_for_signal(bytes, ctx);
+        // A paste is still being read off the main thread (#1255): what is typed meanwhile goes
+        // out behind it, in order; an abort key cancels the paste instead. On the input queue
+        // (#1353) the paste is an entry held by a gate and these bytes queue behind it; idle, this
+        // is one borrow-flag read with no lock and no allocation.
+        // A subshell setup or its paced bootstrap holds keys too: their gates are opened here and
+        // the keys wait on the same queue.
+        let mut abort_as_entry = false;
+        match self.prepare_subshell_gates(&bytes, ctx) {
+            paste_queue::SubshellPrep::Normal => {}
+            paste_queue::SubshellPrep::HeldInOrder => abort_as_entry = true,
+            paste_queue::SubshellPrep::Stashed => return true,
+            paste_queue::SubshellPrep::Bypass => {
+                return self.write_user_bytes_to_pty_after_paste_stage(
+                    bytes,
+                    takes_over_agent_control,
+                    ctx,
+                );
+            }
         }
+        if let Some(written) =
+            self.offer_to_paste_queue(&bytes, takes_over_agent_control, abort_as_entry, ctx)
+        {
+            return written;
+        }
+        self.write_user_bytes_to_pty_after_paste_stage(bytes, takes_over_agent_control, ctx)
+    }
+
+    /// The facts of the model the user-key path decides on (#1403), without waiting for the pty
+    /// reader: the exact state when the model is free (and the published copy is refreshed from
+    /// it), else the copy the model published after its last parse -- except while that copy says
+    /// the agent is in control, which is read exactly. `PHOSPHOR_HANDOFF_FACTS=0` puts the key
+    /// path back on the model's blocking lock.
+    fn read_key_facts(&self) -> KeyFacts {
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            crate::terminal::model_lock_trace::note_key_path_lock();
+            let model = self.model.lock();
+            let facts = KeyFacts::from_model(&model);
+            self.key_facts.store(facts);
+            return facts;
+        }
+        match self.model.try_lock() {
+            Some(model) => {
+                let facts = KeyFacts::from_model(&model);
+                self.key_facts.store(facts);
+                facts
+            }
+            None => {
+                let published = self.key_facts.load();
+                if published.agent_in_control {
+                    // A key dropped because the published copy still says the agent owns the
+                    // command, after the user took it over on this thread, would be lost: that
+                    // rare case (a CLI subagent in control) is read exactly, waiting if it must.
+                    crate::terminal::model_lock_trace::note_key_path_lock();
+                    let model = self.model.lock();
+                    let facts = KeyFacts::from_model(&model);
+                    self.key_facts.store(facts);
+                    return facts;
+                }
+                published
+            }
+        }
+    }
+
+    /// The rest of what the user-key path reads from the model (#1404): the exact state when the
+    /// model is free (and the published copy is refreshed from it), else the copy the model
+    /// published after its last parse. Never waits for the pty reader.
+    /// `PHOSPHOR_HANDOFF_FACTS=0` puts the key path back on the model's blocking lock.
+    fn read_key_snapshot(&self) -> KeyModelSnapshot {
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            crate::terminal::model_lock_trace::note_key_path_lock();
+            return KeyModelSnapshot::from_model(&self.model.lock());
+        }
+        match self.model.try_lock() {
+            Some(model) => {
+                let snapshot = KeyModelSnapshot::from_model(&model);
+                self.key_model.store(snapshot.clone());
+                snapshot
+            }
+            None => self.key_model.load_exact_modes(),
+        }
+    }
+
+    /// An escape sequence for a cursor key (`code` after the C1 introducer), introduced by SS3
+    /// when the program set application cursor keys mode, else CSI. Reads the mode from the key
+    /// snapshot: the exact state when the model is free, else the copy published after its last
+    /// parse; never waits for the pty reader (#1440).
+    fn build_cursor_key_sequence(&self, code: &[u8]) -> Vec<u8> {
+        let c1 = if self.read_key_snapshot().app_cursor {
+            C1::SS3
+        } else {
+            C1::CSI
+        };
+        EscCodes::build_escape_sequence_with_c1(c1, code)
+    }
+
+    /// Whether a user key is being handled on this thread right now (`KeyPathScope`).
+    fn in_key_path(&self) -> bool {
+        self.key_path_depth.get() > 0
+    }
+
+    /// What the ssh-connect and subshell-bootstrap bookkeeping reads from the model. While a user
+    /// key is being handled this is `read_key_snapshot` (the key never waits for the pty reader);
+    /// anywhere else it is the exact state under the model's lock, as those callers always had.
+    fn model_facts(&self) -> KeyModelSnapshot {
+        if self.in_key_path() {
+            self.read_key_snapshot()
+        } else {
+            KeyModelSnapshot::from_model(&self.model.lock())
+        }
+    }
+
+    /// Leaves, for the model to apply, that the user wrote to the active block's command: its first
+    /// input (`first_input`, the block has none yet) and a ^C (#1178). The model applies it before
+    /// it parses the next bytes; when it is free right now it is applied now.
+    fn leave_user_wrote_in_model_inbox(&self, first_input: bool, ctrl_c: bool) {
+        if !first_input && !ctrl_c {
+            return;
+        }
+        self.model_inbox.post(ModelCommand::UserWrote {
+            first_input,
+            ctrl_c,
+        });
+        if first_input {
+            self.key_facts.note_received_user_input();
+        }
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            crate::terminal::model_lock_trace::note_key_path_lock();
+            self.model.lock().apply_inbox();
+        } else if let Some(mut model) = self.model.try_lock() {
+            model.apply_inbox();
+        }
+    }
+
+    /// Everything `write_user_bytes_to_pty_inner` does once the paste stage has let the bytes
+    /// through. The input queue delivers into THIS function, never the one above, so a delivered
+    /// key is not offered to the paste stage again (#1353).
+    fn write_user_bytes_to_pty_after_paste_stage(
+        &mut self,
+        bytes: Cow<'static, [u8]>,
+        takes_over_agent_control: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.note_input_for_deferred_subshell_setup(&bytes);
+        if is_queue_signal_key(&bytes) {
+            // Ctrl-C / Ctrl-D (and in `table` mode Ctrl-Z / Ctrl-\): the rest of a chunked
+            // line-clear write is dropped (#1354).
+            ctx.emit(Event::CancelPacedSetupWrites);
+        }
+        // While the paced subshell bootstrap is being written its gate holds the keystrokes (never
+        // dropped) as entries of the pane queue, delivered after its last line.
         // #1014: setup is announced but the shell has not finished it (an rc file that sleeps
         // delays it): text written now would sit in the tty ahead of the late bootstrap and run
         // inside it or vanish. Hold it here and deliver it, in order, once setup is over. Ctrl-C /
         // Ctrl-D pass at once and then release what is held.
-        if is_abort_key(&bytes) {
+        if is_queue_signal_key(&bytes) {
             // Ctrl-C / Ctrl-D skips the setup: the waiting notice no longer applies.
             self.dismiss_subshell_setup_waiting_toast(ctx);
         }
@@ -11031,26 +13055,56 @@ impl TerminalView {
             // meanwhile stays held until the console has processed it (it would be flushed).
             self.subshell_bootstrap_announced = None;
             self.powershell_setup_hold = PowerShellSetupHold::Off;
-            // Out of the way while the ^C is written, so the generic abort below does not
-            // release them right behind it.
-            let held = std::mem::take(&mut self.subshell_setup_held_bytes);
-            let written = self.write_user_bytes_to_pty_inner(bytes, takes_over_agent_control, ctx);
-            self.subshell_setup_held_bytes = held;
+            // The keys held meanwhile stay in the PowerShell gate (an abort meets it with
+            // `SignalThenKeepGate`): they are not released right behind the ^C, which is written
+            // below as plain bytes now that the hold is off.
+            let written = self.write_user_bytes_to_pty_after_paste_stage(
+                bytes,
+                takes_over_agent_control,
+                ctx,
+            );
             self.powershell_setup_hold_generation += 1;
             let generation = self.powershell_setup_hold_generation;
             self.powershell_setup_hold = PowerShellSetupHold::AfterAbort { generation };
-            ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
-                me.end_powershell_abort_wait(generation, ctx)
-            });
-            return written;
-        }
-        if is_abort_key(&bytes) && !self.subshell_setup_held_bytes.is_empty() {
-            // The user aborts the setup: the abort goes first, then what they typed meanwhile.
-            let held = std::mem::take(&mut self.subshell_setup_held_bytes);
-            self.subshell_bootstrap_announced = None;
-            let written = self.write_user_bytes_to_pty_inner(bytes, takes_over_agent_control, ctx);
-            for held_bytes in held {
-                self.write_user_bytes_to_pty(held_bytes, ctx);
+            if let Some(token) = self.powershell_setup_marker_token {
+                // #1372: the console flushes its input while it processes the Ctrl-C, so the held
+                // keys wait for the shell to say PSReadLine is reading again (the marker its
+                // read hook prints), not for a fixed time. The timer is only the give-up net.
+                self.powershell_abort_marker_count = self.model.lock().setup_line_marker_count();
+                ctx.spawn(
+                    Timer::after(POWERSHELL_ABORT_MARKER_GIVE_UP),
+                    move |me, _, ctx| {
+                        if me.powershell_setup_hold
+                            == (PowerShellSetupHold::AfterAbort { generation })
+                        {
+                            // #1577: a timer never writes the held keys to the pty. The marker
+                            // event releases them; this give-up hands them back as text.
+                            log::warn!(
+                                "PowerShell did not signal it was reading again after the Ctrl-C \
+                                 (setup token {token}); handing the held keys back (#1577)"
+                            );
+                            me.give_up_powershell_abort_wait(generation, ctx);
+                        }
+                    },
+                );
+            } else {
+                // A timed setup (the kill switch, or a host whose markers never came) has no
+                // marker token, so the shell sends nothing that says its console has processed
+                // the Ctrl-C. The settle timer is the only release there is, and it is a logged
+                // give-up like every other (#1438); a marker-paced setup never gets here.
+                ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
+                    if me.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation })
+                    {
+                        // #1577: the legacy (kill-switch, timed-setup) path: the only release there
+                        // is, and a timer write by design. Marker-paced setups never get here.
+                        log::warn!(
+                            "PowerShell setup has no read marker to wait for after the Ctrl-C; \
+                             releasing the held keys after the settle give-up (legacy timed \
+                             setup, PHOSPHOR_BOOTSTRAP_TIMED; #1577)"
+                        );
+                    }
+                    me.end_powershell_abort_wait(generation, ctx)
+                });
             }
             return written;
         }
@@ -11059,145 +13113,177 @@ impl TerminalView {
         // exemption below sent keys into the middle of the setup (in front of the
         // ` . <bootstrap file>` line, which then failed and wedged setup on "Starting shell...")
         // and, as that shape flipped from key to key, out of order. Every key is held instead.
-        if !is_abort_key(&bytes) && self.holds_keys_for_powershell_subshell_setup() {
-            self.subshell_setup_held_bytes.push(bytes.into_owned());
+        if !is_queue_signal_key(&bytes) && self.holds_keys_for_powershell_subshell_setup() {
+            input_queue::trace::hold(input_queue::trace::legacy::SUBSHELL_SETUP, bytes.len());
+            note_shadow_leaf(DestClass::Held);
+            self.hold_powershell_keys(bytes.into_owned(), takes_over_agent_control, ctx);
             return true;
         }
-        // Not while the shell is asking for something: a visible unterminated line (`Password:`,
-        // a passphrase or `read -p` prompt) means typing is the answer to it, and held text would
-        // arrive late at the wrong place. Bytes already held stay held (they were typed for the
-        // command line).
-        if subshell_setup_should_hold_typed_bytes(
-            self.subshell_bootstrap_announced_age(),
-            is_abort_key(&bytes),
-        ) && !self.active_output_awaits_an_answer()
-        {
-            self.subshell_setup_held_bytes.push(bytes.into_owned());
-            return true;
-        }
-        // #933: an EOF does not flush typeahead, so Enters held behind the young window go first.
-        if FeatureFlag::TypeaheadHandoff.is_enabled()
-            && let Some(with_held) = self
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .take_young_hold_before_eof(&bytes)
-        {
-            bytes = Cow::Owned(with_held);
-        }
+        // (A signal or EOF goes out behind the keys the queue holds for the prompt, and ends a
+        // young Enter's hold, in `write_user_bytes_to_pty_inner`, before the paste stage.)
+        // #1403: nothing here waits for the pty reader, which holds the model's lock while it
+        // parses. The facts the decision needs come from `read_key_facts` (the exact state when the
+        // model is free, else the last published); the hand-off is reached through its own handle;
+        // what used to be written into the model under its lock (the first-input and ^C marks) is
+        // left in its inbox, which it applies before it parses the next bytes. Tests count the
+        // blocking acquisitions through `crate::terminal::model_lock_trace::note_key_path_lock`.
+        let mut facts = self.read_key_facts();
         // #963: the user typing into an interactive full-screen program (pager, vim, tmux, ...)
         // the agent is driving is taking the command over. Do it the same way an explicit
         // take-over does, so the agent stops writing to the same program and the two inputs
-        // cannot interleave. This must happen before the model lock below: the switch locks it.
-        let should_take_over = takes_over_agent_control && {
-            let terminal_model = self.model.lock();
-            terminal_model.is_alt_screen_active()
-                && terminal_model
-                    .block_list()
-                    .active_block()
-                    .is_agent_in_control()
-        };
-        if should_take_over {
+        // cannot interleave.
+        if takes_over_agent_control && facts.alt_screen && facts.agent_in_control {
             self.cli_subagent_controller.update(ctx, |controller, ctx| {
                 controller.switch_control_to_user(UserTakeOverReason::Manual, ctx);
             });
+            facts = self.read_key_facts();
         }
-        let handoff_route = {
-            let mut terminal_model = self.model.lock();
-            let active_block = terminal_model.block_list().active_block();
-            // If the take-over above did not succeed the agent still owns the command.
-            if active_block.is_agent_in_control() {
-                return false;
-            }
-            if active_block.is_active_and_long_running() && !active_block.has_received_user_input()
-            {
-                terminal_model
-                    .block_list_mut()
-                    .active_block_mut()
-                    .mark_received_user_input();
-            }
-            if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                if terminal_model.is_alt_screen_active() {
-                    terminal_model
-                        .typeahead_handoff_mut()
-                        .on_user_bytes_to_full_screen_program(&bytes)
-                } else {
-                    // #1089: keys for a running command the hand-off does not own are typeahead
-                    // the shell may report at its next prompt; the hand-off takes them over
-                    // (see `TypeaheadHandoff::adopt_untracked_typeahead`).
-                    // Keys that are not adopted (an agent command, a block before the bootstrap
-                    // precmd, or a command drained behind an outstanding request, which only an
-                    // editor-owned hand-off adopts) keep the editor literal until a report
-                    // requested behind them is in. Noting is a no-op once the pty owns input.
-                    if keys_reach_a_command_the_handoff_does_not_own(&terminal_model) {
-                        let handoff = terminal_model.typeahead_handoff_mut();
-                        if !handoff.adopt_untracked_typeahead() {
-                            handoff.note_untracked_line_bytes();
-                        }
-                    } else if shell_reports_keys_left_in_its_line(&terminal_model) {
-                        terminal_model
-                            .typeahead_handoff_mut()
-                            .note_untracked_line_bytes();
+        // If the take-over above did not succeed the agent still owns the command.
+        if facts.agent_in_control {
+            return false;
+        }
+        self.leave_user_wrote_in_model_inbox(
+            !facts.received_user_input,
+            // #1178: a ^C typed into the running command interrupts it.
+            bytes.contains(&0x03),
+        );
+        let mut hold_start = HandoffHoldStart::default();
+        let handoff_route = if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            let mut handoff = self.handoff.write();
+            let route = if facts.alt_screen {
+                handoff.on_user_bytes_to_full_screen_program(&bytes)
+            } else {
+                // #1089: keys for a running command the hand-off does not own are typeahead
+                // the shell may report at its next prompt; the hand-off takes them over
+                // (see `TypeaheadHandoff::adopt_untracked_typeahead`).
+                // Keys that are not adopted (an agent command, a block before the bootstrap
+                // precmd, or a command drained behind an outstanding request, which only an
+                // editor-owned hand-off adopts) keep the editor literal until a report
+                // requested behind them is in. Noting is a no-op once the pty owns input.
+                if facts.keys_reach_a_command_the_handoff_does_not_own() {
+                    if !handoff.adopt_untracked_typeahead() {
+                        handoff.note_untracked_line_bytes();
                     }
-                    terminal_model.typeahead_handoff_mut().on_user_bytes(&bytes)
+                } else if facts.shell_reports_line {
+                    handoff.note_untracked_line_bytes();
                 }
-            } else {
-                UserBytesRoute::Write
-            }
-        };
-        if handoff_route == UserBytesRoute::Held {
-            // #933: an Enter held because the command may already have finished.
-            let hold_id = if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                self.model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .take_young_hold_started()
-            } else {
-                None
+                handoff.on_user_bytes(&bytes)
             };
-            if let Some(hold_id) = hold_id {
+            if route == UserBytesRoute::Held {
+                // What the held key started, read under this same guard.
+                hold_start.young = handoff.take_young_hold_started().map(|id| {
+                    (
+                        id,
+                        handoff.young_hold_wait(Instant::now()),
+                        handoff.queued_line_bytes_stamp(),
+                    )
+                });
+                hold_start.prompt = handoff.take_prompt_hold_started().map(|id| {
+                    (
+                        id,
+                        handoff.prompt_hold_give_up(),
+                        handoff.queued_line_bytes_stamp(),
+                    )
+                });
+                hold_start.deferred = handoff.take_deferred_key_started();
+            }
+            route
+        } else {
+            UserBytesRoute::Write
+        };
+        // #1162: which way each user write was routed, to compare with the pty-side hops.
+        warpui::input_order::log_hop("user_bytes_route", || {
+            format!("bytes={} route={handoff_route:?}", bytes.len())
+        });
+        if handoff_route == UserBytesRoute::Held {
+            input_queue::trace::hold(input_queue::trace::legacy::HANDOFF, bytes.len());
+            // #933: an Enter held because the command may already have finished.
+            if let Some((hold_id, hold_wait, stamp)) = hold_start.young {
                 // #1016: keys the editor takes while this Enter waits for the report follow it.
                 self.input
                     .update(ctx, |input, ctx| input.note_handoff_enter(ctx));
-                ctx.spawn(Timer::after(YOUNG_ENTER_WINDOW), move |me, _, ctx| {
-                    me.release_expired_young_hold(hold_id, ctx);
-                });
+                // #1353 phase 5b: the Enter and the keys behind it are entries of the input
+                // queue behind a `PromptSeen` gate; the prompt's precmd, the report, a command
+                // or a signal end the hold (events), and the gate's cap is only the give-up.
+                self.paste_queue.line_stamp.get_or_insert(stamp);
+                self.hold_young_keys_in_queue(
+                    hold_id,
+                    hold_wait,
+                    bytes.into_owned(),
+                    takes_over_agent_control,
+                    ctx,
+                );
+                return true;
+            }
+            // #1162: keys held between a prompt's precmd and its line editor's ready signal. The
+            // hold's give-up cap is the only timer (#1349): the gate's own.
+            if let Some((prompt_hold_id, prompt_hold_expiry, stamp)) = hold_start.prompt {
+                self.paste_queue.line_stamp.get_or_insert(stamp);
+                self.hold_prompt_keys_in_queue(
+                    prompt_hold_id,
+                    prompt_hold_expiry,
+                    bytes.into_owned(),
+                    takes_over_agent_control,
+                    ctx,
+                );
+            } else if let Some(gate_id) = hold_start.deferred {
+                // A key typed behind an Enter deferred for the shell's report that the queue did
+                // not take (it was idle or mid-delivery): it goes behind the Enter's gate.
+                self.hold_deferred_key_in_queue(
+                    gate_id,
+                    bytes.into_owned(),
+                    takes_over_agent_control,
+                    ctx,
+                );
             }
             return true;
         }
 
-        let bytes_vec = bytes.to_vec();
-        self.clear_selected_blocks(ctx);
-        self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
+        let bytes_vec = (!self.consume_synced_in_flight(bytes.len())
+            && self.non_editor_typed_event_wanted(ctx))
+        .then(|| bytes.to_vec());
+        // Nothing before the write waits for the pty reader (#1403): the selection reset has
+        // nothing to do unless something is selected, and the scroll update, which needs the
+        // model, runs now if it is free and right after the write is emitted if it is not.
+        if !self.selected_blocks.is_empty() || self.agent_transcript_selection.is_some() {
+            self.clear_selected_blocks(ctx);
+        }
+        let scroll_now = self.model.try_lock().is_some();
+        if scroll_now {
+            self.update_scroll_position_locking(
+                ScrollPositionUpdate::AfterWriteUserBytesToPty,
+                ctx,
+            );
+        }
+        input_queue::trace::deliver(bytes.len(), "pty");
         if handoff_route == UserBytesRoute::WriteCounted {
             ctx.emit(Event::WriteHandoffUserBytesToPty { bytes });
         } else {
             self.write_to_pty(bytes, ctx);
         }
-        self.emit_non_editor_typed_event(bytes_vec, ctx);
+        if !scroll_now {
+            ctx.spawn(async {}, |me, _, ctx| {
+                me.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterWriteUserBytesToPty,
+                    ctx,
+                );
+            });
+        }
+        if let Some(bytes_vec) = bytes_vec {
+            self.emit_non_editor_typed_event(bytes_vec, ctx);
+        }
         true
     }
 
-    /// The window of a held Enter ran out with no prompt (#933): the command is running, so the
-    /// Enter and the keys behind it go to the pty as typeahead.
-    fn release_expired_young_hold(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
-        let bytes = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .expire_young_hold(hold_id);
-        if let Some(bytes) = bytes {
-            self.input
-                .update(ctx, |input, _| input.clear_handoff_enter_mark());
-            ctx.emit(Event::WriteHandoffUserBytesToPty {
-                bytes: Cow::Owned(bytes),
-            });
-        }
-    }
-
-    /// Write to the PTY if the session has finished bootstrapping and
-    /// has an active long-running command.
-    /// Never emits a sync event.
+    /// Write input synced from another pane to the PTY if the session has finished bootstrapping
+    /// and has an active long-running command. Never emits a sync event for these bytes.
+    ///
+    /// #1430: the bytes go through [`Self::write_passive_input_to_pty`], so they are ordered with
+    /// everything else this pane's queue holds and never take over an agent's command. They are
+    /// held while a hand-over gate is open (an ssh connect, a subshell / PowerShell setup, the
+    /// queue holding keys or reading a paste) and delivered in order behind it: a broadcast copy
+    /// of keys typed in another pane must not end up in this pane's bootstrap or remote shell,
+    /// and must not be lost.
     fn write_to_pty_for_syncing_long_running_commands(
         &mut self,
         characters: Vec<u8>,
@@ -11210,13 +13296,42 @@ impl TerminalView {
         // Make sure we don't write any text to the pty until we've echoed out
         // the bootstrap script, otherwise the user could accidentally interfere
         // with bootstrap script execution.
-        if was_bootstrap_script_echoed && self.is_long_running() {
-            self.clear_selected_blocks(ctx);
-            self.update_scroll_position_locking(
-                ScrollPositionUpdate::AfterWriteUserBytesToPty,
-                ctx,
-            );
-            self.write_to_pty(characters, ctx);
+        if !(was_bootstrap_script_echoed && self.is_long_running()) {
+            return;
+        }
+        // Held in order, never dropped (#1430): the bytes take the pane's own key routing, so an
+        // ssh connect, a subshell / PowerShell setup, a waiting Enter or a paste being read hold
+        // them exactly as they hold typed keys, and they are delivered behind them.
+        let len = characters.len();
+        if !self.pane_queue_or_setup_gate_open() && self.ssh_connect_gate.is_none() {
+            // Idle: nothing synced is still on its way, so a count left over is stale.
+            self.synced_in_flight = 0;
+        }
+        self.synced_in_flight += len;
+        // #1424: the synced origin (row O-synced); the text below is judged as synced input.
+        let _synced = dest_table::set_arrival_origin(input_queue::Origin::Synced);
+        match String::from_utf8(characters) {
+            Ok(text) => self.typed_characters_on_terminal(&text, ctx),
+            Err(err) => {
+                let row = self.begin_origin_row(Class::Raw, input_queue::Origin::Synced, ctx);
+                let written =
+                    !row.refused() && self.write_passive_input_to_pty(err.into_bytes(), ctx);
+                self.end_origin_row(row, written);
+                if !written {
+                    self.synced_in_flight = self.synced_in_flight.saturating_sub(len);
+                }
+            }
+        }
+    }
+
+    /// Whether `len` bytes about to be reported as typed are the synced bytes accepted by
+    /// [`Self::write_to_pty_for_syncing_long_running_commands`] (then they are not reported).
+    fn consume_synced_in_flight(&mut self, len: usize) -> bool {
+        if self.synced_in_flight >= len && len > 0 {
+            self.synced_in_flight -= len;
+            true
+        } else {
+            false
         }
     }
 
@@ -11224,7 +13339,19 @@ impl TerminalView {
     /// The model matches the input recorded here against the actual characters
     /// echoed to the pty to determine what is typeahead.
     fn report_possible_typeahead(&mut self, input: &str) {
-        self.model.lock().push_user_input(input);
+        // Left in the model's inbox, which applies it before it parses the next bytes, so the
+        // record of the key is in place before the echo it causes; the key never waits for the
+        // pty reader (#1404). When the model is free it is applied now.
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
+            crate::terminal::model_lock_trace::note_key_path_lock();
+            self.model.lock().push_user_input(input);
+            return;
+        }
+        self.model_inbox
+            .post(ModelCommand::UserInput(input.to_owned()));
+        if let Some(mut model) = self.model.try_lock() {
+            model.apply_inbox();
+        }
     }
 
     /// Show `display` instead of `wrapped` for the command about to run (#952).
@@ -11339,13 +13466,40 @@ impl TerminalView {
         self.open_secret_tool_tip.is_some()
     }
 
+    /// #1558: run an Enter held as the pending command because the shell could not take it yet,
+    /// on each event that can make it ready (the session's registration, its first Precmd). Still
+    /// not ready: it stays held for the next one (`enter_held_still_unready`).
+    fn retry_held_unready_enter(&mut self, on: &'static str, ctx: &mut ViewContext<Self>) {
+        if self
+            .input
+            .read(ctx, |input, _| input.has_held_unready_enter())
+        {
+            warpui::input_order::log_hop("enter_held_retry", || format!("on={on}"));
+            self.execute_pending_command((), ctx);
+        }
+    }
+
     fn handle_sessions_event(&mut self, event: SessionsEvent, ctx: &mut ViewContext<Self>) {
         match event {
             SessionsEvent::SessionInitialized { .. } => {
+                self.ssh_observe_for_wakeup(ctx);
                 self.handle_session_initialized(ctx);
+                // #1571: an Enter held for an unready shell retries on every readiness event.
+                self.retry_held_unready_enter("session_initialized", ctx);
             }
             SessionsEvent::SessionBootstrapped(event) => {
+                // The remote session is registered: the machine sees the pending session gone.
+                self.ssh_observe_for_wakeup(ctx);
                 self.handle_session_bootstrapped(*event, ctx);
+                // #1348: the registration a held Enter was waiting for (#1332).
+                self.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
+                // #1558: the same registration is what a held deferred Enter waits for.
+                self.retry_held_unready_enter("session_bootstrapped", ctx);
+            }
+            // #1424 step 7: the remote-setup state of a session changed (checking, installing,
+            // connected, failed): an edge of the ssh phase.
+            SessionsEvent::RemoteServerSetupStateChanged { .. } => {
+                self.ssh_on_setup_changed(ctx);
             }
             // The "default fully-silent" legacy-SSH-fallback case (TODO.md
             // "Remote-session setup degrades silently", item 1): fired at
@@ -11432,10 +13586,9 @@ impl TerminalView {
     }
 
     /// Whether keys typed on the terminal go to the pty because the typeahead hand-off gives it
-    /// input. Takes the model lock.
+    /// input. Does not touch the model's lock.
     fn typeahead_handoff_routes_keys_to_pty(&self) -> bool {
-        FeatureFlag::TypeaheadHandoff.is_enabled()
-            && self.model.lock().typeahead_handoff().routes_keys_to_pty()
+        FeatureFlag::TypeaheadHandoff.is_enabled() && self.handoff.read().routes_keys_to_pty()
     }
 
     /// Re-evaluates focus after the typeahead hand-off changed who owns input, and inserts a
@@ -11445,6 +13598,11 @@ impl TerminalView {
     /// behind it, and the editor holds only what was typed after it -- submitting that would run
     /// a fragment. Only the report, Ctrl-C or the session ending releases it.
     fn handle_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        // The hand-off's owner may have changed: the line pinned to a destination is over.
+        self.request_queue_pin_clear();
+        // A hold the hand-off ended since (a command written, a state that outgrew it) is
+        // applied to the queue before anything decides on the keys behind it.
+        self.drain_young_hold_ends(ctx);
         let has_stashed_report = {
             let model = self.model.lock();
             model.typeahead_handoff().editor_owns_input()
@@ -11453,11 +13611,31 @@ impl TerminalView {
         if has_stashed_report {
             self.insert_typeahead_from_handoff(ctx);
         }
-        let editor_owns_input = self.model.lock().typeahead_handoff().editor_owns_input();
+        let editor_owns_input = self.handoff.read().editor_owns_input();
         if editor_owns_input {
             self.note_editor_took_over();
         }
         self.redetermine_terminal_focus(ctx);
+        // The hand-off engaging is the event the keys typed behind a submitted Enter wait for.
+        self.settle_enter_queue(ctx);
+        // #1562: the shell's line may have ended: a setup write waiting for that goes now.
+        self.resume_deferred_setup_writes(ctx);
+    }
+
+    /// #1353 phase 6 (INP-10): the hand-off decided it will not engage for the Enter that just ran as
+    /// a shell command (the flag is off, the shell cannot report its line, the command was
+    /// refused). Nothing will ever take the command into the pty's ownership, so the keys waiting
+    /// behind it are released now, by this event; the route-settle timer stays only as the logged
+    /// give-up for a pty that says nothing at all.
+    fn handle_typeahead_handoff_not_engaged(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.input.as_ref(ctx).enter_queue_awaits_route(ctx)
+            || !self.input.as_ref(ctx).enter_queue_awaits_pty()
+        {
+            return;
+        }
+        warpui::input_order::log_hop("enter_route_not_engaged", String::new);
+        self.input
+            .update(ctx, |input, ctx| input.release_enter_gate(ctx));
     }
 
     /// The shell reached a prompt: hand input back to the editor if nothing the user typed can be
@@ -11470,12 +13648,23 @@ impl TerminalView {
     /// the pty still owns input, the controller is asked to decide again (draining writes held
     /// for this prompt, or requesting); it only does while the line editor is active.
     fn commit_typeahead_handoff_at_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::input_order::log_hop("handoff_commit_source", || {
+            format!(
+                "ssh_gate_armed={} ssh_holding={} remote_prompt_seen={}",
+                self.ssh_connect_gate.is_some(),
+                self.ssh_typeahead_holding,
+                self.ssh_remote_prompt_seen
+            )
+        });
         let (committed, still_pty_owned) = {
             let mut model = self.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             let committed = handoff.try_commit_at_prompt();
             (committed, handoff.is_pty_owned())
         };
+        warpui::input_order::log_hop("handoff_commit_at_prompt", || {
+            format!("committed={committed} still_pty_owned={still_pty_owned}")
+        });
         if committed {
             self.handle_typeahead_handoff_changed(ctx);
         }
@@ -11486,7 +13675,7 @@ impl TerminalView {
 
     /// The shell started a command; if it was a typeahead line, the pty now owns input.
     fn focus_terminal_if_typeahead_handoff_wants_it(&mut self, ctx: &mut ViewContext<Self>) {
-        let wants_terminal = self.model.lock().typeahead_handoff().wants_terminal_focus();
+        let wants_terminal = self.handoff.read().wants_terminal_focus();
         if wants_terminal {
             self.redetermine_terminal_focus(ctx);
         }
@@ -11494,25 +13683,43 @@ impl TerminalView {
 
     /// Applies a shell typeahead report under the typeahead hand-off.
     fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
-        let disposition = self.model.lock().typeahead_handoff_mut().on_report();
+        let disposition = self.handoff.write().on_report();
+        // #1353 phase 5b: a young Enter held in the input queue is split here, before anything
+        // else (the editor's own keys, #1016) is put in front of the keys held behind it.
+        self.drain_young_hold_ends(ctx);
         match disposition {
-            ReportDisposition::InsertLegacy => self.handle_typeahead_event(ctx),
-            ReportDisposition::Insert | ReportDisposition::InsertYoung => {
+            ReportDisposition::InsertLegacy => {
+                self.handle_typeahead_event(ctx);
+                // #1104: bytes written behind the request this report answers are still in the
+                // shell's line; ask for them with one more request.
+                if self.handoff.read().drain_pending() {
+                    ctx.emit(Event::RetryTypeaheadHandoffRequest);
+                }
+            }
+            ReportDisposition::InsertKeepDeferred => {
                 self.insert_typeahead_from_handoff(ctx);
-                if disposition == ReportDisposition::InsertYoung {
-                    self.input.update(ctx, |input, ctx| input.mark_typeahead_young(ctx));
+                self.arm_uncovered_deferral_timer(ctx);
+                ctx.emit(Event::RetryTypeaheadHandoffRequest);
+            }
+            ReportDisposition::Insert | ReportDisposition::InsertYoung => {
+                let inserted = self.insert_typeahead_from_handoff(ctx);
+                if disposition == ReportDisposition::InsertYoung && inserted {
+                    self.input
+                        .update(ctx, |input, ctx| input.mark_typeahead_young(ctx));
                 }
                 self.note_editor_took_over();
                 self.redetermine_terminal_focus(ctx);
             }
             ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung => {
                 let young = disposition == ReportDisposition::InsertThenSubmitYoung;
-                self.insert_typeahead_from_handoff(ctx);
-                // #1016: keys that reached the editor after the Enter are not part of the line
-                // it submits; they follow it, ahead of the keys already held.
-                self.input.update(ctx, |input, ctx| {
-                    input.hold_text_typed_after_deferred_enter(ctx)
-                });
+                if !self.insert_typeahead_from_handoff(ctx) {
+                    // #1569: the editor refused the report as another line's text (it does not
+                    // extend the editor's own typeahead): the Enter must not run the fragment the
+                    // buffer holds instead. It is given up like one that cannot run; the keys held
+                    // behind it are released as for any unsubmitted Enter.
+                    self.keep_deferred_enter_text(ctx);
+                    return;
+                }
                 // #933: text the hand-off inserted was never classified (system edits do not
                 // request detection), so a line typed right after a command that reads as
                 // English is classified now, and its Enter waits for the verdict (bounded).
@@ -11526,6 +13733,8 @@ impl TerminalView {
                 match detection {
                     YoungTypeaheadDetection::NotNeeded => self.run_deferred_enter(young, ctx),
                     YoungTypeaheadDetection::Requested => {
+                        self.young_enter_released = false;
+                        self.young_enter_wait_id = self.young_enter_wait_id.wrapping_add(1);
                         self.submit_deferred_enter_after_detection(Instant::now(), ctx);
                     }
                     YoungTypeaheadDetection::CannotRun => self.keep_deferred_enter_text(ctx),
@@ -11535,9 +13744,193 @@ impl TerminalView {
         }
     }
 
+    /// Starts the patience timer of an Enter deferred behind a report that covers untracked
+    /// bytes (#1104), if one was just armed. When it fires the report is not coming (a program
+    /// ate the request): the Enter is NOT run (#1577); its text stays in the editor.
+    fn arm_uncovered_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
+        let id = self.handoff.write().take_uncovered_deferral_started();
+        if let Some(id) = id {
+            // #1192: name the wait that holds the Enter, so a multi-second hold is attributable
+            // from the input_order log alone.
+            warpui::input_order::log_hop("enter_deferred_uncovered_report", || {
+                format!(
+                    "id={id} patience_ms={}",
+                    UNCOVERED_REPORT_PATIENCE.as_millis()
+                )
+            });
+            let deadline = Instant::now() + UNCOVERED_REPORT_PATIENCE;
+            ctx.spawn(
+                Timer::after(UNCOVERED_REPORT_PATIENCE),
+                move |me, _, ctx| {
+                    log_late_timer_wake("uncovered report patience", deadline);
+                    me.uncovered_report_patience_fired(id, ctx);
+                },
+            );
+        }
+    }
+
+    /// The patience of deferral `id` ran out (#1104): the report covering the untracked line bytes
+    /// never arrived. #1577: a timer never runs the Enter. The report may still be on its way,
+    /// and the Enter's text is what the user typed: it stays in the editor, the keys held behind
+    /// it follow, and the next Enter runs it.
+    fn uncovered_report_patience_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let released = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .give_up_uncovered_deferral(id);
+        if !released {
+            return;
+        }
+        // #1192: the report covering the pasted/typed line never arrived.
+        log::warn!(
+            "Enter held {} ms: the shell's typeahead report never covered the untracked line \
+             bytes (uncovered-report patience expired); the Enter is not run (#1577)",
+            UNCOVERED_REPORT_PATIENCE.as_millis()
+        );
+        self.keep_deferred_enter_text_hand_back("uncovered_report", ctx);
+    }
+
+    /// #1215: starts the patience timer of an Enter deferred behind the hand-off's own
+    /// outstanding report, if one was just armed. When it fires the report is not coming; the
+    /// Enter is given up WITHOUT running (the shell's line still holds the head of the typed
+    /// text): the editor keeps its text, the keys held behind the Enter join it as text, and a
+    /// notice says so. A late report is then inserted in front, like any legacy report.
+    fn arm_report_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
+        let id = self.handoff.write().take_report_deferral_started();
+        let Some(id) = id else {
+            return;
+        };
+        warpui::input_order::log_hop("enter_deferred_awaiting_report", || {
+            format!(
+                "id={id} patience_ms={}",
+                TYPEAHEAD_REPORT_PATIENCE.as_millis()
+            )
+        });
+        ctx.spawn(
+            Timer::after(TYPEAHEAD_REPORT_PATIENCE),
+            move |me, _, ctx| {
+                let gate = me
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .give_up_report_deferral(id);
+                let Some(gate) = gate else {
+                    return;
+                };
+                // The keys typed behind the Enter come back to the editor as text.
+                me.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUpToEditor, ctx);
+            },
+        );
+    }
+
+    /// The tail of the report-patience give-up (#1215), with the keys that were held behind the
+    /// Enter: they join the editor as text and a notice says the Enter did not run.
+    pub(super) fn give_up_deferred_enter_keys_to_editor(
+        &mut self,
+        held: Vec<u8>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        log::warn!(
+            "Enter not run: the shell did not report its line within {} ms; the text \
+             stays in the input",
+            TYPEAHEAD_REPORT_PATIENCE.as_millis()
+        );
+        self.input.update(ctx, |input, ctx| {
+            input.clear_handoff_enter_hold();
+            let text = text_for_editor(&held);
+            if !text.is_empty() {
+                input.system_insert(&text, ctx);
+            }
+        });
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::new(
+                        "Enter not run: the shell did not report its line. The text is \
+                         in the input; press Enter to run it"
+                            .to_string(),
+                        ToastFlavor::Default,
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
+    }
+
+    /// #1577: a timer gave up on the deferred Enter before the verdict / report it waited for
+    /// (`why` names which): the Enter does not run, the text stays in the editor, the keys held
+    /// behind the Enter follow it as text, the next Enter is consumed once with a toast, and it is
+    /// logged with counts. Nothing is written to the pty, nothing is routed by the clock.
+    pub(super) fn hand_back_deferred_enter_keys_to_editor(
+        &mut self,
+        held: Vec<u8>,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let text = text_for_editor(&held);
+        log::warn!(
+            "Enter not run ({why}): the text stays in the input; {} held byte(s) handed back to \
+             the editor",
+            held.len()
+        );
+        warpui::input_order::log_key_hop("enter_verdict_give_up", || {
+            format!(
+                "{why} held_bytes={} chars={}",
+                held.len(),
+                text.chars().count()
+            )
+        });
+        self.input.update(ctx, |input, ctx| {
+            input.clear_handoff_enter_hold();
+            if !text.is_empty() {
+                input.system_insert(&text, ctx);
+            }
+            // Several lines in one buffer would submit as ONE command: the first Enter on them
+            // is held with the "check the line" toast. One line is what the user typed: the
+            // next Enter sends it.
+            let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
+            if buffer.contains('\n') {
+                input.arm_ssh_handover_enter_guard(buffer);
+            }
+        });
+        let toast = match why {
+            "uncovered_report" => "The shell did not report its line; the text stays in the input",
+            _ => "Couldn't tell shell from chat in time; press Enter again to send",
+        };
+        self.show_error_toast(toast.to_string(), ctx);
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
+    }
+
+    /// [`Self::keep_deferred_enter_text`] for a timer's give-up (#1577): the keys behind the Enter
+    /// come back to the editor as text instead of being released to the pty, and the next Enter
+    /// is consumed once with a toast.
+    fn keep_deferred_enter_text_hand_back(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        let gate = self.handoff.write().release_after_unsubmitted_enter();
+        match gate {
+            Some(gate) => {
+                self.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUpHandBack(why), ctx)
+            }
+            None => self.hand_back_deferred_enter_keys_to_editor(Vec::new(), why, ctx),
+        }
+    }
+
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
-    /// there since the request.
-    fn insert_typeahead_from_handoff(&mut self, ctx: &mut ViewContext<Self>) {
+    /// there since the request. Returns `false` only when the editor refused a report as another
+    /// line's text (#1569); an empty report inserts nothing and is not a refusal.
+    fn insert_typeahead_from_handoff(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        warpui::profiling::zone!("typeahead_handoff_insert");
         let typeahead = self
             .model
             .lock()
@@ -11548,39 +13941,225 @@ impl TerminalView {
                 (typeahead.to_owned(), num_typeahead_chars_inserted)
             });
         let Some((typeahead, num_typeahead_chars_inserted)) = typeahead else {
-            return;
+            return true;
         };
-        self.input.update(ctx, |input, ctx| {
-            input.insert_handoff_typeahead_text(num_typeahead_chars_inserted, &typeahead, ctx);
+        let inserted = self.input.update(ctx, |input, ctx| {
+            input.insert_handoff_typeahead_text(num_typeahead_chars_inserted, &typeahead, ctx)
         });
         ctx.notify();
+        inserted
     }
 
     /// Runs the deferred Enter and, if it submitted no shell command, releases the keys held
     /// behind it.
     fn run_deferred_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) {
         if !self.submit_deferred_enter(young, ctx) {
-            let release = self
-                .model
-                .lock()
-                .typeahead_handoff_mut()
-                .release_after_unsubmitted_enter();
-            if let Some(release) = release {
-                self.release_held_keys(release, ctx);
-            }
+            self.release_keys_held_behind_unsubmitted_enter(ctx);
+        }
+    }
+
+    /// The deferred Enter ran or was kept without writing a command: the keys held behind it are
+    /// released (see [`Self::release_held_keys`]).
+    fn release_keys_held_behind_unsubmitted_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        let gate = self.handoff.write().release_after_unsubmitted_enter();
+        if let Some(gate) = gate {
+            self.take_deferred_gate_keys_then(gate, GateKeysThen::Release, ctx);
         }
     }
 
     /// Waits for the verdict of the detection requested for a young line's exact text, then runs
     /// its deferred Enter (#933). It never submits on an inherited or default input type: if the
-    /// classifier cannot answer (no verdict within [`YOUNG_DETECTION_CAP`]) the text stays in the
-    /// editor, unsubmitted. Ctrl-C meanwhile cancels the Enter.
+    /// classifier does not answer (no verdict within
+    /// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP),
+    /// grown with the text, #1604) the Enter submits on
+    /// the Enter-time rules without it (#1174); it is never swallowed. With no classifier at all
+    /// the text stays in the editor. Ctrl-C meanwhile cancels the Enter.
     fn submit_deferred_enter_after_detection(
         &mut self,
         started: Instant,
         ctx: &mut ViewContext<Self>,
     ) {
-        if !self.model.lock().typeahead_handoff().deferred_submit_pending() {
+        self.finish_young_detection_wait(false, started, ctx);
+    }
+
+    /// The body of [`Self::submit_deferred_enter_after_detection`]. `force_give_up` is the backstop
+    /// timer: no verdict arrived at all, so a still-pending verdict is given up on now.
+    ///
+    /// #1353 phase 3 (`PHOSPHOR_INPUT_QUEUE_ENTER`): the give-up is measured on the classifier's
+    /// compute clock (#1351), never on the age of the Enter, so a main thread that was busy cannot
+    /// make a verdict that is already computed lose to the Enter-time rules. The wait is released
+    /// by the verdict's own event ([`Self::release_deferred_enter_if_verdict_settled`]); a pending
+    /// verdict arms give-up timers from events ([`Self::watch_young_detection`]) instead of the
+    /// 2 ms poll the legacy path re-arms.
+    fn finish_young_detection_wait(
+        &mut self,
+        force_give_up: bool,
+        started: Instant,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.young_enter_released {
+            return;
+        }
+        if !self.handoff.read().deferred_submit_pending() {
+            // Cancelled (Ctrl-C) or already run elsewhere: nothing left to release.
+            self.young_enter_released = true;
+            return;
+        }
+        // #1604: text over the parse cap is classified without a parse, by a background job the
+        // Enter starts if the edit path did not (over `MAX_EAGER_ROUTING_BYTES`), and waits for
+        // with a compute cap that grows with the text. It used to be abandoned here and the Enter
+        // ran on the inherited input type.
+        self.input.update(ctx, |input, ctx| {
+            input.start_detection_for_unparsed_buffer(true, ctx)
+        });
+        let (can_run, pending, compute, text_len) = self.input.read(ctx, |input, ctx| {
+            (
+                input.can_classify_buffer(ctx),
+                input.detection_pending_for_buffer(ctx),
+                input.detection_compute(ctx).1,
+                input.buffer_char_len(ctx),
+            )
+        });
+        // The give-up is measured on the classifier's compute, never on the age of the Enter.
+        let waited = compute;
+        let decision = if force_give_up && can_run && pending {
+            YoungSubmit::SubmitWithoutVerdict
+        } else {
+            young_submit_decision_for(can_run, pending, waited, text_len)
+        };
+        match decision {
+            YoungSubmit::Submit => {
+                self.young_enter_released = true;
+                self.run_deferred_enter(true, ctx);
+            }
+            YoungSubmit::SubmitWithoutVerdict => {
+                self.young_enter_released = true;
+                if force_give_up {
+                    log::warn!(
+                        "young Enter backstop fired after {} ms: no input-type verdict arrived \
+                         (classifier compute {} ms)",
+                        young_detection_backstop_for(text_len).as_millis(),
+                        compute.as_millis()
+                    );
+                }
+                crate::terminal::input::log_slow_enter_hold(
+                    "young line waited for the input-type verdict and gave up",
+                    started.elapsed(),
+                );
+                // #1577: the clock never chooses between the shell and the agent. With the input
+                // type already decided (locked, or autodetection off) the Enter runs as before;
+                // otherwise it is not run: the text stays in the editor and the next Enter
+                // submits it once the verdict is in.
+                let decided = self
+                    .input
+                    .read(ctx, |input, ctx| input.input_type_is_decided(ctx));
+                if decided {
+                    self.input.update(ctx, |input, ctx| {
+                        input.give_up_pending_detection_for_submit(ctx)
+                    });
+                    self.run_deferred_enter(true, ctx);
+                } else {
+                    // The late verdict is dropped: the next Enter is the user's say-so. (A large
+                    // buffer's is kept, #1604: the next Enter waits for it or submits on it.)
+                    self.input.update(ctx, |input, ctx| {
+                        input
+                            .ai_input_model()
+                            .update(ctx, |model, _| model.abandon_pending_detection_after_give_up())
+                    });
+                    self.keep_deferred_enter_text_hand_back("young_verdict_cap", ctx);
+                }
+            }
+            YoungSubmit::Wait => self.watch_young_detection(ctx),
+            YoungSubmit::KeepInEditor => {
+                self.young_enter_released = true;
+                self.keep_deferred_enter_text(ctx);
+            }
+        }
+    }
+
+    /// Watches the detection a young line's Enter waits for (#1353 phase 3). Nothing polls: the
+    /// wait is released by the verdict notification; when a stage of the classifier starts running
+    /// on its compute clock, that event arms ONE give-up timer for the rest of
+    /// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP)
+    /// (grown with the text, #1604); and one backstop ([`YOUNG_DETECTION_BACKSTOP`]) covers a verdict
+    /// that never arrives. Both are token-guarded by the wait id and logged when they give up.
+    /// (The clock has one stage-start receiver; if an editor Enter's wait takes it over meanwhile,
+    /// the backstop still ends this wait.)
+    fn watch_young_detection(&mut self, ctx: &mut ViewContext<Self>) {
+        let id = self.young_enter_wait_id;
+        let (tx, rx) = async_channel::unbounded::<()>();
+        self.input.read(ctx, |input, ctx| {
+            input.notify_on_detection_stage_start(tx, ctx)
+        });
+        let _ = ctx.spawn_stream_local(
+            rx,
+            move |me, (), ctx| {
+                if me.young_enter_wait_id == id && !me.young_enter_released {
+                    me.arm_young_compute_cap(id, ctx);
+                }
+            },
+            |_, _| {},
+        );
+        // A stage may already be running.
+        self.arm_young_compute_cap(id, ctx);
+        let text_len = self.input.read(ctx, |input, ctx| input.buffer_char_len(ctx));
+        self.arm_young_timer(id, young_detection_backstop_for(text_len), true, ctx);
+    }
+
+    /// Arms the give-up timer for the rest of the compute cap, if a stage is running now. When none
+    /// is, its start (or the verdict) is an event of its own.
+    fn arm_young_compute_cap(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let ((running, spent), text_len) = self.input.read(ctx, |input, ctx| {
+            (input.detection_compute(ctx), input.buffer_char_len(ctx))
+        });
+        if !running {
+            return;
+        }
+        self.arm_young_timer(
+            id,
+            young_detection_cap_for(text_len).saturating_sub(spent),
+            false,
+            ctx,
+        );
+    }
+
+    fn arm_young_timer(
+        &mut self,
+        id: u64,
+        delay: Duration,
+        backstop: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let deadline = Instant::now() + delay;
+        ctx.spawn(Timer::after(delay), move |me, _, ctx| {
+            log_late_timer_wake("young detection wait", deadline);
+            // #1206: only the wait this timer was armed for, and only while it still waits.
+            if me.young_enter_released || me.young_enter_wait_id != id {
+                return;
+            }
+            if backstop {
+                me.finish_young_detection_wait(true, Instant::now(), ctx);
+                return;
+            }
+            let ((_, spent), text_len) = me.input.read(ctx, |input, ctx| {
+                (input.detection_compute(ctx), input.buffer_char_len(ctx))
+            });
+            if spent < young_detection_cap_for(text_len) {
+                // A stage that finished meanwhile, or a cap not yet reached: the verdict event or
+                // the next stage start decides.
+                me.arm_young_compute_cap(id, ctx);
+            } else {
+                me.finish_young_detection_wait(false, Instant::now(), ctx);
+            }
+        });
+    }
+
+    /// #1181: the model-notification path of [`Self::submit_deferred_enter_after_detection`]. A
+    /// verdict that landed (or a buffer that can no longer be classified) releases the waiting
+    /// Enter now. While the verdict is still pending the backstop timer owns the wait, so this
+    /// never arms a second one; `young_enter_released` makes the release happen once.
+    fn release_deferred_enter_if_verdict_settled(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.young_enter_released {
             return;
         }
         let (can_run, pending) = self.input.read(ctx, |input, ctx| {
@@ -11589,15 +14168,10 @@ impl TerminalView {
                 input.detection_pending_for_buffer(ctx),
             )
         });
-        match young_submit_decision(can_run, pending, started.elapsed()) {
-            YoungSubmit::Submit => self.run_deferred_enter(true, ctx),
-            YoungSubmit::Wait => {
-                ctx.spawn(Timer::after(Duration::from_millis(10)), move |me, _, ctx| {
-                    me.submit_deferred_enter_after_detection(started, ctx);
-                });
-            }
-            YoungSubmit::KeepInEditor => self.keep_deferred_enter_text(ctx),
+        if can_run && pending {
+            return;
         }
+        self.submit_deferred_enter_after_detection(Instant::now(), ctx);
     }
 
     /// Ends a deferred Enter without submitting: the text stays in the editor for the user to
@@ -11605,15 +14179,8 @@ impl TerminalView {
     /// Enter.
     fn keep_deferred_enter_text(&mut self, ctx: &mut ViewContext<Self>) {
         self.input
-            .update(ctx, |input, _| input.clear_handoff_enter_mark());
-        let release = self
-            .model
-            .lock()
-            .typeahead_handoff_mut()
-            .release_after_unsubmitted_enter();
-        if let Some(release) = release {
-            self.release_held_keys(release, ctx);
-        }
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        self.release_keys_held_behind_unsubmitted_enter(ctx);
     }
 
     /// Runs the Enter the typeahead hand-off deferred while a report was outstanding. It runs
@@ -11627,8 +14194,6 @@ impl TerminalView {
     /// shell command.
     fn submit_deferred_enter(&mut self, young: bool, ctx: &mut ViewContext<Self>) -> bool {
         self.input.update(ctx, |input, ctx| {
-            // #1016: whatever reached the editor since the report went in follows the Enter.
-            input.hold_text_typed_after_deferred_enter(ctx);
             let submitted = if young
                 && (input.buffer_is_slash_command(ctx)
                     || !input_classifier::util::has_no_prose_evidence(&input.buffer_text(ctx)))
@@ -11637,35 +14202,39 @@ impl TerminalView {
             } else {
                 input.input_enter_as_shell_command(ctx)
             };
-            input.clear_handoff_enter_mark();
+            input.clear_handoff_enter_hold();
             submitted
         })
     }
 
-    /// Releases the keys held behind a deferred Enter whose submit wrote no command.
-    fn release_held_keys(&mut self, release: HeldKeysRelease, ctx: &mut ViewContext<Self>) {
-        match release {
-            HeldKeysRelease::ToPty(held) => self.write_to_pty(held, ctx),
-            HeldKeysRelease::ToEditor(held) => {
-                let text = text_for_editor(&held);
-                self.input.update(ctx, |input, ctx| {
-                    if forces_shell_submit(&text) {
-                        input.system_insert(&text, ctx);
-                        input.submit_next_enter_as_shell_command();
-                    }
-                });
-            }
+    /// Releases the keys held behind a deferred Enter whose submit wrote no command: shell lines
+    /// (an Enter among them) go to the pty as typed, never into the editor, where the next Enter
+    /// would submit them as one multi-line buffer -- to the agent, if natural-language detection
+    /// took it for a query (#826 N1); one unfinished line goes back into the editor.
+    fn release_held_keys(&mut self, held: Vec<u8>, ctx: &mut ViewContext<Self>) {
+        if held.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            self.write_to_pty(held, ctx);
+        } else {
+            let text = text_for_editor(&held);
+            self.input.update(ctx, |input, ctx| {
+                if forces_shell_submit(&text) {
+                    input.system_insert(&text, ctx);
+                    input.submit_next_enter_as_shell_command();
+                }
+            });
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
     }
 
     /// Records that the editor just took input over from the pty (`FeatureFlag::TypeaheadHandoff`).
+    /// Prompts the model has applied whose precmd event this view has not handled yet (#1345).
+    fn view_precmds_pending(&self) -> u32 {
+        self.handoff.read().precmds_pending_view()
+    }
+
     fn note_editor_took_over(&mut self) {
-        self.model
-            .lock()
-            .typeahead_handoff_mut()
-            .note_editor_took_over(Instant::now());
+        self.handoff.write().note_editor_took_over(Instant::now());
     }
 
     /// A non-printable key (Backspace, Delete, an arrow, Home/End) that reached the terminal just
@@ -11679,18 +14248,16 @@ impl TerminalView {
         bytes: &[u8],
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        /// Longer than the gap a busy main thread leaves between the hand-off and focus landing
-        /// (75-200 ms measured), short enough that a later key on the terminal (after a click on a
-        /// block) keeps its usual meaning.
-        const EDITOR_TAKEOVER_KEY_WINDOW: Duration = Duration::from_millis(1000);
+        /// The window ends on the focus event (or a click on the terminal), never on a clock
+        /// (#1439); this is only the logged give-up for a focus event that never comes.
+        const EDITOR_TAKEOVER_GIVE_UP: Duration = Duration::from_secs(10);
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return false;
         }
         let just_took_over = self
-            .model
-            .lock()
-            .typeahead_handoff()
-            .editor_took_over_within(EDITOR_TAKEOVER_KEY_WINDOW, Instant::now());
+            .handoff
+            .write()
+            .editor_takeover_open(EDITOR_TAKEOVER_GIVE_UP, Instant::now());
         if !just_took_over || !self.selected_blocks.is_empty() {
             return false;
         }
@@ -11720,10 +14287,7 @@ impl TerminalView {
                 .update(ctx, |editor, ctx| editor.handle_action(&action, ctx))
         });
         if !self.input.as_ref(ctx).editor().is_focused(ctx) {
-            self.model
-                .lock()
-                .typeahead_handoff_mut()
-                .note_focus_moved_by_takeover_key();
+            self.handoff.write().note_focus_moved_by_takeover_key();
         }
         self.redetermine_global_focus(ctx);
         true
@@ -11731,11 +14295,68 @@ impl TerminalView {
 
     /// A Ctrl-C was written while the typeahead hand-off gave the pty input.
     fn handle_typeahead_handoff_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
+        // Only zsh is known to run no prompt cycle after an interrupted line.
+        let prompt_cycle_expected = self.active_session_shell_type(ctx) != Some(ShellType::Zsh);
+        self.handle_typeahead_handoff_interrupt_for_shell(prompt_cycle_expected, ctx);
+    }
+
+    /// As [`Self::handle_typeahead_handoff_interrupt`], for a shell that does (or does not) run a
+    /// prompt cycle after an interrupted line.
+    fn handle_typeahead_handoff_interrupt_for_shell(
+        &mut self,
+        prompt_cycle_expected: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         /// Long enough for the prompt cycle bash and zsh run after an interrupted line, so the
-        /// editor is not reinitialized under the user after it took over.
+        /// editor is not reinitialized under the user after it took over. Only the path without
+        /// prompt sequence numbers (older bootstraps, `PHOSPHOR_PROMPT_SEQ=0`) waits this long.
         const INTERRUPT_SETTLE: Duration = Duration::from_millis(250);
-        let outcome = self.model.lock().typeahead_handoff_mut().on_interrupt();
+        /// #1353 phase 6: the one give-up of the event-driven hand-back, for a prompt cycle (or a
+        /// report) that was expected after the interrupt and never came.
+        const INTERRUPT_GIVE_UP: Duration = Duration::from_secs(2);
+        let (outcome, barrier, awaiting_cycle) = {
+            let mut handoff = self.handoff.write();
+            let outcome = handoff.on_interrupt_for_shell(prompt_cycle_expected);
+            (
+                outcome,
+                handoff.interrupt_barrier_pending(),
+                handoff.interrupt_awaiting_cycle(),
+            )
+        };
+        self.drain_young_hold_ends(ctx);
+        warpui::input_order::log_hop("ctrl_c_handoff", || {
+            format!("outcome={outcome:?} barrier={barrier} awaiting_cycle={awaiting_cycle}")
+        });
         if outcome == InterruptOutcome::NotOwned {
+            return;
+        }
+        if barrier || awaiting_cycle {
+            if barrier {
+                // zsh runs no prompt cycle after ^C at the prompt, so no Precmd would come to
+                // hand input back. A request is written behind the interrupt (when the line
+                // editor is reading) and the shell's report, in stream order after anything the
+                // interrupt made it emit, hands input back: the controller decides now.
+                ctx.emit(Event::RetryTypeaheadHandoffRequest);
+            }
+            // Otherwise the prompt cycle's Precmd hands input back
+            // (`commit_typeahead_handoff_at_prompt`). Either way this is only the logged give-up
+            // for a signal that never comes.
+            ctx.spawn(Timer::after(INTERRUPT_GIVE_UP), |me, _, ctx| {
+                let gave_up = {
+                    let mut handoff = me.handoff.write();
+                    let cycle = handoff.take_interrupt_awaiting_cycle();
+                    let barrier = handoff.take_interrupt_barrier();
+                    cycle || barrier
+                };
+                if gave_up {
+                    log::warn!(
+                        "typeahead hand-off: no prompt cycle or report after Ctrl-C within {} s; \
+                         handing input back",
+                        INTERRUPT_GIVE_UP.as_secs()
+                    );
+                    me.commit_typeahead_handoff_at_prompt(ctx);
+                }
+            });
             return;
         }
         // zsh usually runs no prompt cycle after ^C at the prompt, so no precmd or line-editor
@@ -11748,7 +14369,78 @@ impl TerminalView {
 
     /// This function is invoked every time there is some form of view event
     /// such as a state change or terminal wakeup to update the view context.
-    fn handle_terminal_wakeup(&mut self, _: (), ctx: &mut ViewContext<Self>) {
+    fn handle_terminal_wakeup(&mut self, _: Wakeup, ctx: &mut ViewContext<Self>) {
+        // #1442: bookkeeping the key path left for the model was dropped because the inbox was
+        // full (the pty reader sat in the model's lock for a very long time): tell the user.
+        if self.model_inbox.take_overflow_report() > 0 {
+            self.on_input_buffer_overflow(ctx);
+        }
+        // #1440: scroll updates keys left while the model was parsing.
+        self.flush_deferred_scroll_updates(ctx);
+        self.flush_deferred_focus_redeterminations(ctx);
+        // #1384 P5: the first output after the alt screen was entered re-sends the window size.
+        #[cfg(feature = "local_tty")]
+        if self.alt_screen_resend_pending {
+            self.resend_alt_screen_winsize_on_first_output(ctx);
+        }
+        // #1348: output is the event that shows a host-key / password prompt (or ends a connect
+        // silently); the held keys are judged on it, not on a timer or the next key.
+        self.ssh_observe_for_wakeup(ctx);
+        if self.ssh_typeahead_holding {
+            self.deliver_ssh_typeahead_if_ready("output", ctx);
+        }
+        // #1365: output is also what a waited agent command's stall detection runs on.
+        let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
+        if executor.as_ref(ctx).has_output_watchers() {
+            executor.update(ctx, |executor, _| executor.note_output());
+        }
+        self.output_listeners
+            .retain(|tx| !matches!(tx.try_send(()), Err(async_channel::TrySendError::Closed(_))));
+        // Also the signal password/interactive-prompt detection runs on (#1383), for user
+        // commands too, so it is sent whether or not an agent call is awaiting. The receiving
+        // watches gate themselves (inactive block / no stall-eligible screen => no work).
+        if let Some(tx) = &self.fullscreen_output_signal {
+            let _ = tx.try_send(());
+        }
+        // #1354: the bootstrap steps that used to wait a fixed time are judged on the output that
+        // can release them: the subshell's first prompt, the setup-line marker of the line just
+        // typed, the answer to a prompt a setup waits behind.
+        if self.awaiting_subshell_prompt.is_some() {
+            self.check_awaiting_subshell_prompt(ctx);
+        }
+        if self.subshell_bootstrap_in_flight.is_some() {
+            self.advance_subshell_bootstrap_on_marker(ctx);
+        }
+        if let PowerShellSetupHold::AfterAbort { generation } = self.powershell_setup_hold {
+            if let Some(token) = self.powershell_setup_marker_token {
+                let acknowledged = {
+                    let model = self.model.lock();
+                    powershell_abort_acknowledged(
+                        model.last_setup_line_marker(),
+                        model.setup_line_marker_count(),
+                        self.powershell_abort_marker_count,
+                        token,
+                    )
+                };
+                if acknowledged {
+                    self.end_powershell_abort_wait(generation, ctx);
+                }
+            }
+        }
+        // Before the user answered, the answer is the event and there is nothing to judge.
+        if let Some(since) = self
+            .subshell_setup_deferred
+            .as_ref()
+            .filter(|d| d.answered_at.is_some() || d.waits_for_line)
+            .map(|d| d.since)
+        {
+            self.check_deferred_subshell_setup(since, false, ctx);
+        }
+        // #1562: output is also an event on which a deferred ssh warpify write is re-judged.
+        self.resume_deferred_ssh_warpify(ctx);
+        warpui::profiling::zone!("grid_update");
+        self.install_deferred_restores_keeping_scroll(ctx);
+        self.resume_fork_restore_persist(ctx);
         // If find bar is active, we update the matches for the last/active block or the alt screen.
         if self.find_model.as_ref(ctx).is_find_bar_open() {
             self.find_model.update(ctx, |find_model, ctx| {
@@ -11756,43 +14448,227 @@ impl TerminalView {
             });
         }
 
-        // For simplicity, we simply rescan the entire block for block filter matches.
-        self.model
-            .lock()
-            .block_list_mut()
-            .maybe_refilter_active_block_output();
+        let (redraw, footer) = if crate::terminal::model_lock_trace::legacy_lock_scoping() {
+            {
+                let mut model = self.model.lock();
+                // What a key left in the inbox while the pty reader held the model (#1411: a
+                // selection a Ctrl-C cleared) lands here at the latest, one wakeup late, never
+                // "at the next byte", so it cannot wipe a selection the user makes meanwhile.
+                model.apply_inbox();
+                // For simplicity, we simply rescan the entire block for block filter matches.
+                model.block_list_mut().maybe_refilter_active_block_output();
+            }
 
-        // If the block filter editor is open on an active block we update the
-        // number of line matches.
-        if let Some(block_index) = self.active_filter_editor_block_index {
-            let model = self.model.lock();
-            let active_block_index = model.block_list().active_block_index();
-            let num_matched_lines = model
-                .block_list()
-                .num_matched_lines_in_filter_for_block(block_index);
-            if block_index == active_block_index {
+            // If the block filter editor is open on an active block we update the
+            // number of line matches.
+            if let Some(block_index) = self.active_filter_editor_block_index {
+                let model = self.model.lock();
+                let active_block_index = model.block_list().active_block_index();
+                let num_matched_lines = model
+                    .block_list()
+                    .num_matched_lines_in_filter_for_block(block_index);
+                if block_index == active_block_index {
+                    self.block_filter_editor.update(ctx, |filter_editor, ctx| {
+                        filter_editor.set_num_matched_lines(num_matched_lines);
+                        ctx.notify();
+                    });
+                }
+            }
+
+            // While nothing the element tree was built from has changed, new output needs only a
+            // paint in the alt screen (painted straight from the model) and only layout and paint in
+            // the block list (whose layout derives from block heights); see `wakeup_redraw`.
+            let (redraw, footer) = {
+                let model = self.model.lock();
+                (
+                    wakeup_redraw::decide(
+                        self.last_rendered_fingerprint.get(),
+                        self.render_fingerprint(&model, ctx),
+                    ),
+                    self.footer_fingerprint(&model, ctx),
+                )
+            };
+
+            // The active block height could have changed since the last time it was calculated, as
+            // one cause of the Wakeup signal is the long-running process timer. Make sure that the
+            // model is up-to-date with the current height information.
+            if !self.model.lock().is_alt_screen_active() {
+                let mut model = self.model.lock();
+                model.block_list_mut().update_background_block_height();
+                model.block_list_mut().update_active_block_height();
+            }
+
+            (redraw, footer)
+        } else {
+            // One lock cycle for the refilter, the filter-editor count, both fingerprints and
+            // the height refresh (was five), so the pty reader's `try_lock` is refused once per
+            // wakeup instead of up to five times. The order of the steps is unchanged; the
+            // filter editor is told after the guard is released.
+            let mut filter_matches = None;
+            let decided = {
+                let mut model = self.model.lock();
+                // Declared after `model`, so it logs a slow hold just before the guard drops.
+                let _hold =
+                    crate::terminal::model_lock_trace::HoldTimer::start("handle_terminal_wakeup");
+                // What a key left in the inbox while the pty reader held the model (#1411: a
+                // selection a Ctrl-C cleared) lands here at the latest, one wakeup late, never
+                // "at the next byte", so it cannot wipe a selection the user makes meanwhile.
+                model.apply_inbox();
+                // For simplicity, we simply rescan the entire block for block filter matches.
+                model.block_list_mut().maybe_refilter_active_block_output();
+
+                // If the block filter editor is open on an active block we update the
+                // number of line matches.
+                if let Some(block_index) = self.active_filter_editor_block_index {
+                    if block_index == model.block_list().active_block_index() {
+                        filter_matches = Some(
+                            model
+                                .block_list()
+                                .num_matched_lines_in_filter_for_block(block_index),
+                        );
+                    }
+                }
+
+                // While nothing the element tree was built from has changed, new output needs
+                // only a paint in the alt screen (painted straight from the model) and only
+                // layout and paint in the block list (whose layout derives from block heights);
+                // see `wakeup_redraw`.
+                let decided = (
+                    wakeup_redraw::decide(
+                        self.last_rendered_fingerprint.get(),
+                        self.render_fingerprint(&model, ctx),
+                    ),
+                    self.footer_fingerprint(&model, ctx),
+                );
+
+                // The active block height could have changed since the last time it was
+                // calculated, as one cause of the Wakeup signal is the long-running process
+                // timer. Make sure that the model is up-to-date with the current height
+                // information.
+                if !model.is_alt_screen_active() {
+                    model.block_list_mut().update_background_block_height();
+                    model.block_list_mut().update_active_block_height();
+                }
+                decided
+            };
+            if let Some(num_matched_lines) = filter_matches {
                 self.block_filter_editor.update(ctx, |filter_editor, ctx| {
                     filter_editor.set_num_matched_lines(num_matched_lines);
                     ctx.notify();
                 });
             }
-        }
+            decided
+        };
+        self.last_wakeup_redraw = Some(redraw);
 
-        // The active block height could have changed since the last time it was calculated, as
-        // one cause of the Wakeup signal is the long-running process timer. Make sure that the
-        // model is up-to-date with the current height information.
-        if !self.model.lock().is_alt_screen_active() {
-            let mut model = self.model.lock();
-            model.block_list_mut().update_background_block_height();
-            model.block_list_mut().update_active_block_height();
-        }
         self.maybe_emit_terminal_view_state_changed_for_long_running_block(ctx);
+
+        match redraw {
+            WakeupRedraw::Full => {
+                self.notify_use_agent_footer(footer, ctx);
+
+                // Need to re-render both the alt screen and the blocklist on keypresses.
+                ctx.notify();
+            }
+            WakeupRedraw::Relayout | WakeupRedraw::PaintOnly
+                if !ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) =>
+            {
+                // The element tree is current (that is what these two decisions mean) and this
+                // view is not in the window's tree, e.g. a hidden tab: a frame would show nothing
+                // new. Asking for one made every chunk of a hidden tab's output cost a
+                // full-window layout and paint (#1256, the regression #805 fixed for `Full`,
+                // whose `notify` the presenter absorbs). Layout and paint read the model
+                // when the view is next shown, and showing it asks for a frame. The footer views
+                // still follow their own inputs, so a change made while hidden is not missed.
+                if self.last_footer_fingerprint != Some(footer) {
+                    self.notify_use_agent_footer(footer, ctx);
+                }
+            }
+            WakeupRedraw::Relayout => {
+                if self.last_footer_fingerprint != Some(footer) {
+                    self.notify_use_agent_footer(footer, ctx);
+                }
+                let window_id = ctx.window_id();
+                ctx.request_redraw(window_id);
+            }
+            WakeupRedraw::PaintOnly => {
+                let window_id = ctx.window_id();
+                ctx.request_paint_only_redraw(window_id);
+                self.schedule_alt_screen_settle_check(ctx);
+            }
+        }
+    }
+
+    /// Re-renders the agent footer views and records the inputs they were re-rendered with.
+    fn notify_use_agent_footer(&mut self, footer: FooterFingerprint, ctx: &mut ViewContext<Self>) {
+        self.last_footer_fingerprint = Some(footer);
         self.use_agent_footer.update(ctx, |footer, ctx| {
             footer.notify_and_notify_children(ctx);
         });
+    }
 
-        // Need to re-render both the alt screen and the blocklist on keypresses.
-        ctx.notify();
+    /// A rich-content child (an AI block) re-rendered itself with new output. The block list
+    /// re-measures it in layout from the dirty mark the caller set, so this view's own tree only
+    /// needs rebuilding when one of its render inputs changed (`wakeup_redraw`); otherwise a
+    /// layout and paint of the existing tree shows the new output. A view the last layout did
+    /// not visit (a hidden tab) needs no frame at all: showing the tab lays it out (#1282).
+    fn redraw_for_rich_content_update(&mut self, ctx: &mut ViewContext<Self>) {
+        let redraw = {
+            let model = self.model.lock();
+            wakeup_redraw::decide(
+                self.last_rendered_fingerprint.get(),
+                self.render_fingerprint(&model, ctx),
+            )
+        };
+        match redraw {
+            WakeupRedraw::Full => ctx.notify(),
+            WakeupRedraw::Relayout | WakeupRedraw::PaintOnly => {
+                if ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) {
+                    let window_id = ctx.window_id();
+                    ctx.request_redraw(window_id);
+                }
+            }
+        }
+    }
+
+    /// After a paint-only wakeup, checks once the output has settled whether that paint changed a
+    /// render input, and re-renders if so. The agent footer paints with the background color
+    /// sampled during the alt screen's paint, so the color a full-screen program settles on is
+    /// only known after the frame that drew it; a program that draws its screen in one chunk and
+    /// then waits for a key would otherwise leave the footer on the previous color.
+    fn schedule_alt_screen_settle_check(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.alt_screen_settle_check_pending {
+            return;
+        }
+        self.alt_screen_settle_check_pending = true;
+        // #1388: the check runs once the paint-only frame requested above has been drawn (the
+        // frame that samples the program's background color), not after a guessed delay.
+        let (frame_tx, frame_rx) = async_channel::bounded::<()>(1);
+        ctx.on_next_frame_drawn(move || {
+            let _ = frame_tx.try_send(());
+        });
+        ctx.spawn(wait_frame_or_give_up(frame_rx, ALT_SCREEN_SETTLE_GIVE_UP), |me, drawn, ctx| {
+            if !drawn {
+                log::warn!(
+                    "alt-screen settle check: frame-drawn callback did not fire within {ALT_SCREEN_SETTLE_GIVE_UP:?}, re-checking anyway"
+                );
+            }
+            me.alt_screen_settle_check_pending = false;
+            let stale = {
+                let model = me.model.lock();
+                model.is_alt_screen_active()
+                    && me.last_rendered_fingerprint.get()
+                        != Some(me.render_fingerprint(&model, ctx))
+            };
+            if stale {
+                let footer = {
+                    let model = me.model.lock();
+                    me.footer_fingerprint(&model, ctx)
+                };
+                me.notify_use_agent_footer(footer, ctx);
+                ctx.notify();
+            }
+        });
     }
 
     /// This function is invoked whenever we detect an SSH ControlMaster error,
@@ -11845,25 +14721,140 @@ impl TerminalView {
         !has_remote_server && !self.control_master_error_banner_suppressed
     }
 
+    #[cfg(test)]
     fn read_from_clipboard(
         shell_dialect: Option<ShellDialect>,
         ctx: &mut ViewContext<Self>,
     ) -> String {
-        let content = ctx.clipboard().read();
-        clipboard_content_with_escaped_paths(content, shell_dialect, false)
+        // Image data is never used here, so don't read or decode it. The test clipboard reads
+        // inline, so the request is answered already.
+        let request = warpui::clipboard::request_read(
+            ctx.clipboard(),
+            warpui::clipboard::ReadKind::TextAndPaths,
+        );
+        let warpui::clipboard::ReadStart::Ready(outcome) = request.start else {
+            panic!("the test clipboard reads inline");
+        };
+        clipboard_content_with_escaped_paths(outcome.into_content(), shell_dialect, false)
     }
 
-    fn middle_click_paste_content(
-        shell_dialect: Option<ShellDialect>,
-        ctx: &mut ViewContext<Self>,
-    ) -> String {
-        let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
-            selection.read_for_middle_click_paste(ctx)
-        });
+    /// The (rows, cursor row, cursor column) of the active block's output: it changes whenever
+    /// something is printed, and costs no copy of the output.
+    fn active_output_position(&self) -> (usize, usize, usize) {
+        let model = self.model.lock();
+        let grid = model.block_list().active_block().output_grid();
+        let cursor = grid.grid_handler().cursor_point();
+        (grid.len(), cursor.row, cursor.col)
+    }
 
-        content
-            .map(|content| clipboard_content_with_escaped_paths(content, shell_dialect, false))
-            .unwrap_or_default()
+    /// Whether the active block's output has a prompt on its last line that was drawn after
+    /// `baseline` was taken: the cursor moved and sits in unterminated text. This is how the first
+    /// prompt of a not-yet-bootstrapped subshell is seen (#1354); no hook reports it.
+    fn active_output_shows_prompt_after(&self, baseline: (usize, usize, usize)) -> bool {
+        let position = self.active_output_position();
+        position != baseline && position.2 > 0
+    }
+
+    /// Arms a bootstrap trigger to fire at the subshell's first prompt; returns its id for the
+    /// give-up timer. A trigger armed earlier is replaced: one subshell, one bootstrap.
+    fn arm_awaiting_subshell_prompt(
+        &mut self,
+        trigger: SubshellPromptTrigger,
+        _ctx: &mut ViewContext<Self>,
+    ) -> u64 {
+        self.awaiting_subshell_prompt_id += 1;
+        let id = self.awaiting_subshell_prompt_id;
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        let baseline = self.active_output_position();
+        self.awaiting_subshell_prompt = Some(AwaitingSubshellPrompt {
+            trigger,
+            block_id,
+            baseline,
+            id,
+        });
+        id
+    }
+
+    /// Output arrived while a trigger waits for the subshell's first prompt: fires it if the
+    /// prompt is there.
+    fn check_awaiting_subshell_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(awaiting) = self.awaiting_subshell_prompt.as_ref() else {
+            return;
+        };
+        let id = awaiting.id;
+        if self.model.lock().block_list().active_block().id() != &awaiting.block_id {
+            // The subshell's command is over (or another block took over).
+            self.awaiting_subshell_prompt = None;
+            return;
+        }
+        if self.active_output_shows_prompt_after(awaiting.baseline) {
+            self.fire_awaiting_subshell_prompt(id, "first prompt", ctx);
+        }
+    }
+
+    /// Runs the trigger armed as `id`, once: a prompt, the give-up net and a replaced trigger
+    /// all end up here, and only the first for the current arming does anything.
+    fn fire_awaiting_subshell_prompt(&mut self, id: u64, why: &str, ctx: &mut ViewContext<Self>) {
+        if self.awaiting_subshell_prompt.as_ref().map(|a| a.id) != Some(id) {
+            return;
+        }
+        let Some(awaiting) = self.awaiting_subshell_prompt.take() else {
+            return;
+        };
+        if why != "first prompt" {
+            log::warn!("Subshell bootstrap started by the {why}: no prompt was seen");
+        }
+        if self.model.lock().block_list().active_block().id() != &awaiting.block_id {
+            return;
+        }
+        match awaiting.trigger {
+            SubshellPromptTrigger::AutoWarpify { shell_type } => {
+                self.warpify_state.abort_auto_warpify();
+                self.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+            }
+            SubshellPromptTrigger::RcFile {
+                shell_type,
+                uname,
+                disable_tmux,
+            } => self.start_rc_file_subshell_bootstrap(shell_type, uname, disable_tmux, ctx),
+        }
+    }
+
+    /// The subshell whose rc file reported itself is ready for its bootstrap (#1354).
+    fn start_rc_file_subshell_bootstrap(
+        &mut self,
+        shell_type: ShellType,
+        uname: Option<String>,
+        disable_tmux: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let uname = uname.unwrap_or_default();
+        let (is_ssh, is_tmux_control_mode_active, has_ai_metadata) = {
+            let lock = self.model.lock();
+            let has_ai_metadata = lock
+                .block_list()
+                .active_block()
+                .agent_interaction_metadata()
+                .is_some();
+            (
+                lock.is_ssh_block(),
+                lock.tmux_control_mode_active(),
+                has_ai_metadata,
+            )
+        };
+        // Never warpify for agent-requested commands.
+        if has_ai_metadata {
+            return;
+        }
+        // To simplify the implementation, we do not support warpifying while SSH-warpified.
+        if is_tmux_control_mode_active {
+            return;
+        }
+        if is_ssh && !disable_tmux {
+            self.continue_warpify_ssh_session(&uname, shell_type, ctx);
+        } else {
+            self.trigger_subshell_bootstrap(Some(shell_type), true, ctx);
+        }
     }
 
     /// Turns the active session into a bootstrapped subshell by writing the InitShell DCS hook
@@ -11884,7 +14875,15 @@ impl TerminalView {
         }
         if let Some(prompt_line) = self.active_output_input_prompt_line() {
             log::info!("Deferring subshell setup behind an input prompt ({prompt_line:?})");
-            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, ctx);
+            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, false, ctx);
+            return;
+        }
+        // #1562: keys delivered to this shell's prompt sit in its line; the setup text would be
+        // appended to them. Wait for the line to end (Enter, ^U), by that event.
+        if self.setup_write_must_wait_for_the_line() {
+            log::info!("setup write deferred: the shell's line holds typed text");
+            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, true, ctx);
+            self.show_setup_waits_for_line_toast(ctx);
             return;
         }
         self.trigger_subshell_bootstrap_now(shell_type, triggered_by_rc_file_snippet, ctx);
@@ -11986,6 +14985,7 @@ impl TerminalView {
     }
 
     fn cancel_bootstrap_workflow(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.emit(Event::CancelPacedSetupWrites);
         self.clear_ssh_blocks(ctx);
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
@@ -12533,7 +15533,9 @@ impl TerminalView {
                 keystroke.displayed(),
                 lowercase_title
             ),
-            None => format!("You can Phosphorize this {lowercase_title} for more Phosphor features."),
+            None => {
+                format!("You can Phosphorize this {lowercase_title} for more Phosphor features.")
+            }
         };
 
         model
@@ -13053,9 +16055,11 @@ impl TerminalView {
         }
         self.remove_vim_mode_banner(ctx);
         VimBannerSettings::handle(ctx).update(ctx, |banner_settings, model_ctx| {
-            report_if_error!(banner_settings
-                .vim_keybindings_banner_state
-                .set_value(BannerState::Dismissed, model_ctx));
+            report_if_error!(
+                banner_settings
+                    .vim_keybindings_banner_state
+                    .set_value(BannerState::Dismissed, model_ctx)
+            );
         });
     }
 
@@ -13075,7 +16079,6 @@ impl TerminalView {
             }
         }
     }
-
 
     #[cfg(feature = "local_fs")]
     fn remove_agent_setup_speedbump_banner(&mut self, ctx: &mut ViewContext<Self>) {
@@ -13118,9 +16121,11 @@ impl TerminalView {
             }
             AwsBedrockLoginBannerAction::DontShowAgain => {
                 AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-                    report_if_error!(ai_settings
-                        .aws_bedrock_login_banner_dismissed
-                        .set_value(true, ctx));
+                    report_if_error!(
+                        ai_settings
+                            .aws_bedrock_login_banner_dismissed
+                            .set_value(true, ctx)
+                    );
                 });
             }
             AwsBedrockLoginBannerAction::Dismiss => {
@@ -13148,14 +16153,16 @@ impl TerminalView {
             return;
         }
 
-        // Track that we're running an AWS login command so we can detect
-        // "command not found" if AWS CLI isn't installed
-        self.is_pending_aws_login = true;
+        // Track the AWS login command so we can detect "command not found" if AWS CLI isn't
+        // installed. Only once it starts (#1450): it may wait as the pending command behind a
+        // running program.
+        self.aws_login_requested = Some(login_command.clone());
 
-        // Write the command to the PTY and execute it
-        let command_bytes = login_command.into_bytes();
-        self.clear_line_editor_and_write_to_pty(command_bytes, ctx);
-        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
+        // Run it as a command, not as raw bytes (#1429): written raw (line clear + text + CR) it
+        // ran in whatever owned the pty -- a program, an ssh connect, a subshell bootstrap, a
+        // remote shell. `execute_command_or_set_pending` runs it only when this shell can take a
+        // command now, and holds it as the pending command until then.
+        self.execute_command_or_set_pending(&login_command, ctx);
     }
 
     /// Checks if the current model request could be served via AWS Bedrock and the user
@@ -13339,7 +16346,6 @@ impl TerminalView {
                     Some(shell_detail.into()),
                     Some(reason),
                 ),
-                _ => (None, None, None),
             };
 
             if let Some(termination_reason) = termination_reason {
@@ -13405,7 +16411,7 @@ impl TerminalView {
     /// approved or rejected card is still being replaced it does, until the input is back
     /// (#901).
     fn redetermine_focus_after_action_event(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        if !self.focus_reclaim_active() {
+        if !self.focus_reclaim_active(ctx) {
             return self.redetermine_terminal_focus(ctx);
         }
         // Having already left the card, an AI block holding focus means the user clicked or
@@ -13417,21 +16423,20 @@ impl TerminalView {
         self.place_focus_after_card_resolved(ctx)
     }
 
-    /// Whether a post-approval/rejection focus reclaim is still in effect (it lapses after a
-    /// couple of seconds so it can never linger and fight the user).
-    fn focus_reclaim_active(&mut self) -> bool {
-        match self.reclaim_focus_until {
-            Some(until) if Instant::now() < until => true,
-            Some(_) => {
-                self.end_focus_reclaim();
-                false
-            }
-            None => false,
+    /// Whether a post-approval/rejection focus reclaim is still in effect (it ends on events, never by
+    /// time, and as soon as the user moves focus so it can never fight them, #1374).
+    fn focus_reclaim_active(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let focused = ctx.focused_view_id(ctx.window_id());
+        let was_placed = self.reclaim_focus.placed_on.is_some();
+        let active = self.reclaim_focus.is_active(focused);
+        if !active && was_placed {
+            self.reclaim_focus_placed = false;
         }
+        active
     }
 
     fn end_focus_reclaim(&mut self) {
-        self.reclaim_focus_until = None;
+        self.reclaim_focus.end();
         self.reclaim_focus_placed = false;
     }
 
@@ -13440,9 +16445,9 @@ impl TerminalView {
     /// Right after an approval the input is hidden while the card's command is expanded, and
     /// `redetermine_global_focus` would then park focus on the AI block, which drops typed
     /// characters. Until the input is visible again focus stays on the terminal view itself:
-    /// the pty refuses user bytes while the agent runs the command, so
-    /// `typed_characters_on_terminal` routes them into the agent's input instead, and nothing
-    /// typed in that window is lost. Once the input is visible it gets focus and the reclaim
+    /// the pty refuses user bytes while the agent runs the command (`agent_owns_command_pty`,
+    /// #1179), so `typed_characters_on_terminal` routes them into the agent's input instead, and
+    /// nothing typed in that window is lost. Once the input is visible it gets focus and the reclaim
     /// ends. Returns whether focus was moved.
     fn place_focus_after_card_resolved(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let reset_focus = ctx.is_self_or_child_focused()
@@ -13468,6 +16473,8 @@ impl TerminalView {
             self.focus_terminal(ctx);
         }
         self.reclaim_focus_placed = true;
+        self.reclaim_focus
+            .record_placed(ctx.focused_view_id(ctx.window_id()));
         true
     }
 
@@ -13504,14 +16511,28 @@ impl TerminalView {
 
     /// Recomputes the chip values for the Zap prompt (i.e. _not_ PS1).
     fn refresh_warp_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        self.refresh_warp_prompt_after(None, ctx);
+    }
+
+    /// `completed_command` is the command of the block that just finished, when known; the git
+    /// status refresh may then be skipped or coalesced if nothing could have changed. `None`
+    /// always refreshes.
+    fn refresh_warp_prompt_after(
+        &mut self,
+        completed_command: Option<&str>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Ask the per-repo sub-model to re-fetch metadata so the chip values
         // reflect the latest git state (branch, diff stats, etc.).
         #[cfg(feature = "local_fs")]
         if let Some(handle) = &self.git_repo_status {
-            handle.update(ctx, |model, ctx| {
-                model.refresh_metadata(ctx);
+            handle.update(ctx, |model, ctx| match completed_command {
+                Some(command) => model.refresh_metadata_after_command(command, ctx),
+                None => model.refresh_metadata(ctx),
             });
         }
+        #[cfg(not(feature = "local_fs"))]
+        let _ = completed_command;
         self.input.update(ctx, |input, ctx| {
             input.update_prompt_display_chips(ctx);
         });
@@ -13660,6 +16681,9 @@ impl TerminalView {
             };
 
             self.ai_controller.update(ctx, |controller, ctx| {
+                // This resume carries the block: the monitored-completion hook that follows must
+                // not hold it behind this request and report it again at the end (#1178).
+                controller.note_block_reported(block_id);
                 controller.resume_conversation(
                     conversation_id,
                     /*is_auto_resume_after_error*/ false,
@@ -13690,11 +16714,13 @@ impl TerminalView {
     fn active_block_is_considered_remote(&self, app: &AppContext) -> bool {
         let model = self.model.lock();
         let active_block = model.block_list().active_block();
-        self.is_block_considered_remote(
-            active_block.session_id(),
-            Some(&active_block.command_to_string()),
-            app,
-        )
+        // The command text is only read by the organisation's regex policy, which never applies
+        // while AI is allowed in remote sessions (`is_block_considered_remote` returns before
+        // looking at it). Copying a huge running command for nothing was ~3% of the UI thread
+        // after a 1 MB Enter (#1191).
+        let command = (!UserWorkspaces::as_ref(app).is_ai_allowed_in_remote_sessions())
+            .then(|| active_block.command_to_string());
+        self.is_block_considered_remote(active_block.session_id(), command.as_deref(), app)
     }
 
     /// Returns true if the block is considered remote.
@@ -14120,6 +17146,16 @@ impl TerminalView {
     }
 
     fn handle_terminal_event(&mut self, event: &ModelEvent, ctx: &mut ViewContext<Self>) {
+        // #1424 step 7: the ssh phase machine sees what this event published before anything
+        // below reacts to it (the edge, not a key, moves the phase).
+        self.ssh_observe_for_event(event, ctx);
+        // A new block is a new line: the pinned destination of the previous one is over.
+        if matches!(
+            event,
+            ModelEvent::BlockCompleted(_) | ModelEvent::AfterBlockStarted { .. }
+        ) {
+            self.request_queue_pin_clear();
+        }
         // #983: observe the announced remote session (and its end) as it happens, so the gate
         // does not depend on a keystroke arriving while the session is pending.
         if self.ssh_connect_gate.is_some() {
@@ -14141,21 +17177,20 @@ impl TerminalView {
                 gate.first_prompt_seen = true;
                 self.ssh_remote_prompt_seen = true;
             }
-            // Before the gate can release in this very refresh.
-            self.discard_ssh_held_if_output_changed(ctx);
+            // A prompt that arrived discards the held keys before the gate can release in this
+            // very refresh (they may be a password typed blind).
+            self.discard_ssh_typeahead_on_prompt(ctx);
             self.refresh_ssh_connect_gate();
         }
-        // #1113: the dropped line is shown once the connect is over and the editor is back (a
-        // line still being typed is flushed by its Enter instead).
-        if self.ssh_held_typing != SshHeldTyping::default()
-            && self.ssh_connect_gate.is_none()
-            && !self.ssh_drop_line_through_enter
-        {
-            self.flush_ssh_held_typing(ctx);
+        // #1292 / #1348: the held keys go out once the connect is over, in the handler of the
+        // event that ends it (the `Precmd` arm below, after the input was reset for the prompt),
+        // not on a timer. Here the gate is only re-armed for its give-up deadline.
+        if self.ssh_typeahead_holding && self.ssh_connect_gate.is_some() {
+            self.schedule_ssh_typeahead_give_up(ctx);
         }
         match event {
             ModelEvent::TerminalClear => {
-                self.handle_terminal_wakeup((), ctx);
+                self.handle_terminal_wakeup(Wakeup::Output, ctx);
                 self.update_scroll_position_locking(ScrollPositionUpdate::AfterClear, ctx);
                 ctx.notify();
             }
@@ -14181,13 +17216,27 @@ impl TerminalView {
             ModelEvent::ClipboardLoad(_, format) => {
                 let access = *TerminalSettings::as_ref(ctx).osc52_clipboard_access;
                 if access.allows_read() {
-                    self.write_to_pty(
-                        format(&TerminalView::read_from_clipboard(
-                            Some(self.shell_dialect_from_app(ctx)),
-                            ctx,
-                        ))
-                        .into_bytes(),
+                    // Read off the UI thread (#1380); the answer is written when it arrives. An
+                    // unreadable clipboard answers empty, as before, so the program never hangs.
+                    let format = std::sync::Arc::clone(format);
+                    let shell_dialect = Some(self.shell_dialect_from_app(ctx));
+                    crate::util::clipboard::read_clipboard_for_view(
+                        self,
                         ctx,
+                        warpui::clipboard::ReadKind::TextAndPaths,
+                        move |view, read, ctx| {
+                            let text = match read {
+                                warpui::clipboard::BackgroundTextRead::Content(content) => {
+                                    clipboard_content_with_escaped_paths(
+                                        content,
+                                        shell_dialect,
+                                        false,
+                                    )
+                                }
+                                _ => String::new(),
+                            };
+                            view.write_to_pty(format(&text).into_bytes(), ctx);
+                        },
                     );
                 } else {
                     log::info!(
@@ -14292,6 +17341,15 @@ impl TerminalView {
             ModelEvent::BlockCompleted(block_completed_event) => {
                 record_trace_event!("command_execution:block_completed");
                 end_trace_after_next!("window:redraw:end");
+                // The block ended without becoming interactive: nothing left to wait for (#1373).
+                if self.pending_cli_agent_detection.as_ref()
+                    == Some(&block_completed_event.block_id)
+                {
+                    self.pending_cli_agent_detection = None;
+                }
+                if self.pending_agent_input_lock.as_ref() == Some(&block_completed_event.block_id) {
+                    self.pending_agent_input_lock = None;
+                }
                 let block_completed_event_clone = block_completed_event.clone();
                 self.input.update(ctx, |input, ctx| {
                     input.handle_block_completed_event(block_completed_event_clone, ctx);
@@ -14367,12 +17425,15 @@ impl TerminalView {
 
                 if let BlockType::User(user_completed) = &block_completed_event.block_type {
                     self.on_user_block_completed(&block_completed_event.block_id, ctx);
+                    // #1609: any user block ending returns the pty to the local shell, whether or
+                    // not an ssh gate is still open.
+                    self.log_ssh_pty_owner(false, "block_completed");
                     // #983: the ssh block ends when the remote shell's first precmd arrives, well
                     // before the remote session is registered and bootstrapped. A failed ssh ends
                     // the connect window; a clean end keeps it for the bootstrap grace period.
                     if self.ssh_connect_gate.is_some() {
                         let exit_code = user_completed
-                            .serialized_block
+                            .serialized_block_without_output
                             .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
@@ -14382,6 +17443,9 @@ impl TerminalView {
                             &block_completed_event.block_id,
                             exit_code.value(),
                         );
+                        // #1348: a failed ssh ended the connect: the typed text goes back to the
+                        // input now (reinitialized for the finished block above), not at a poll.
+                        self.deliver_ssh_typeahead_if_ready("block_completed", ctx);
                     }
 
                     // #856: an ssh command that ends after a warpification script was typed
@@ -14504,9 +17568,15 @@ impl TerminalView {
                     self.update_focused_terminal_info(ctx);
                 }
 
+                // #1579: before the in-band early return, so the origin of a submit whose block
+                // is in-band is consumed by that block and never leaks to a later one.
+                self.note_block_started_for_ssh();
                 if *is_for_in_band_command {
                     return;
                 }
+
+                // The command a submitted Enter ran has started: the pty takes keys now (#1353).
+                self.settle_enter_queue(ctx);
 
                 // Retained-line eviction (#889) runs here, on the main thread, and shifts the
                 // view's index-keyed state in the same step, so no event or render can observe
@@ -14568,15 +17638,35 @@ impl TerminalView {
                     } else if let Some(shell_type) = self.pending_auto_bootstrap_shell_type.take() {
                         // If there is a subshell we're waiting to bootstrap until we receive
                         // the preexec hook, now we can bootstrap it.
-                        let auto_warpify_abort_handle = ctx.spawn_abortable(
-                            Timer::after(Duration::from_millis(AUTO_WARPIFY_DELAY)),
-                            move |me, _, ctx| {
-                                me.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
-                            },
-                            |_, _| (),
-                        );
-                        self.warpify_state
-                            .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
+                        if crate::terminal::bootstrap::bootstrap_timed() {
+                            // PHOSPHOR_BOOTSTRAP_TIMED=1: the old fixed delay.
+                            let auto_warpify_abort_handle = ctx.spawn_abortable(
+                                Timer::after(Duration::from_millis(AUTO_WARPIFY_DELAY)),
+                                move |me, _, ctx| {
+                                    me.trigger_subshell_bootstrap(Some(shell_type), false, ctx);
+                                },
+                                |_, _| (),
+                            );
+                            self.warpify_state
+                                .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
+                        } else {
+                            // #1354: bootstrap when the subshell draws its first prompt, however
+                            // long that takes; the timer is only the give-up net for a prompt
+                            // that never reads as one.
+                            let id = self.arm_awaiting_subshell_prompt(
+                                SubshellPromptTrigger::AutoWarpify { shell_type },
+                                ctx,
+                            );
+                            let auto_warpify_abort_handle = ctx.spawn_abortable(
+                                Timer::after(SUBSHELL_FIRST_PROMPT_GIVE_UP),
+                                move |me, _, ctx| {
+                                    me.fire_awaiting_subshell_prompt(id, "give-up timer", ctx);
+                                },
+                                |_, _| (),
+                            );
+                            self.warpify_state
+                                .add_auto_warpify_abort_handle(auto_warpify_abort_handle);
+                        }
                     } else {
                         // Wait 1 second before showing the banner, just to make sure the
                         // command stays running for a bit. If the command fails instantly,
@@ -14615,6 +17705,11 @@ impl TerminalView {
                                     gate.block_id = Some(running_block_id);
                                 }
                                 self.model.lock().start_notify_on_end_of_ssh_login();
+                                // #1424 step 7: the event that shows ssh running arms the window
+                                // (and its give-up deadline) in `table` mode, not the next key;
+                                // #1565: `legacy` arms it here too, by the event, not on the
+                                // first terminal-routed key (the agent-view editor has none).
+                                self.arm_ssh_connect_gate_at_preexec(ctx);
                                 ctx.emit(Event::TerminalViewStateChanged);
                                 // A pending SSH target just appeared (host resolved
                                 // or not) -- the other half of
@@ -14625,6 +17720,7 @@ impl TerminalView {
                             // A non-ssh command started: an unmanaged ssh gate is stale (#983).
                             if self.ssh_connect_gate.as_ref().is_some_and(|g| !g.managed) {
                                 self.ssh_connect_gate = None;
+                                self.ssh_on_other_command_started(ctx);
                             }
                             // A line dropped during an ssh connect must stay dropped through
                             // its Enter: the remote session's own blocks start here too (#983).
@@ -14633,85 +17729,13 @@ impl TerminalView {
                             self.warpify_state.clear_pending_ssh_host();
                             self.recompute_window_footer_bar_color(ctx);
 
-                            ctx.spawn(
-                                Timer::after(Duration::from_millis(
-                                    LONG_RUNNING_COMMAND_DURATION_MS,
-                                )),
-                                move |me, _, ctx| {
-                                    // Detect CLI agent and create session before
-                                    // showing the footer, so the session drives
-                                    // the footer rather than the other way around.
-                                    let detection = {
-                                        let model = me.model.lock();
-                                        me.detect_cli_agent_from_model(&model, ctx)
-                                    };
-                                    let view_id = me.view_id;
-                                    CLIAgentSessionsModel::handle(ctx).update(
-                                        ctx,
-                                        |sessions_model, ctx| match detection {
-                                            Some((agent, ref custom_command_prefix))
-                                                if !sessions_model
-                                                    .session(view_id)
-                                                    .is_some_and(|s| s.agent == agent) =>
-                                            {
-                                                let remote_host =
-                                                    me.active_session_remote_host(ctx);
-                                                sessions_model.set_session(
-                                                    view_id,
-                                                    CLIAgentSession {
-                                                        agent,
-                                                        status: CLIAgentSessionStatus::InProgress,
-                                                        session_context:
-                                                            CLIAgentSessionContext::default(),
-                                                        input_state: CLIAgentInputState::Closed,
-                                                        should_auto_toggle_input: agent
-                                                            .supports_cli_agent_footer()
-                                                            && *AISettings::as_ref(ctx)
-                                                                .auto_open_rich_input_on_cli_agent_start,
-                                                        listener: None,
-                                                        plugin_version: None,
-                                                        remote_host,
-                                                        draft_text: None,
-                                                        custom_command_prefix: custom_command_prefix.clone(),
-                                                        received_rich_notification: false,
-                                                    },
-                                                    ctx,
-                                                );
-                                            }
-                                            _ => {}
-                                        },
-                                    );
-
-                                    // Agents that use OSC 9 notifications don't send a
-                                    // structured SessionStart event, so the listener is
-                                    // proactively created at command detection time.
-                                    if let Some((agent @ (CLIAgent::Codex | CLIAgent::DeepSeek), _)) =
-                                        detection
-                                    {
-                                        me.register_cli_agent_listener_without_session_start_event(
-                                            agent, ctx,
-                                        );
-                                    }
-
-                                    me.refresh_use_agent_footer(ctx);
-                                    me.maybe_auto_open_cli_agent_rich_input(ctx);
-                                    me.input.update(ctx, |input, ctx| {
-                                        input.universal_developer_input_button_bar().update(
-                                            ctx,
-                                            |bar, ctx| {
-                                                bar.update_segmented_control_disabled_state(ctx);
-                                            },
-                                        )
-                                    });
-                                    // Update agent view back button state when command becomes long-running
-                                    if FeatureFlag::AgentView.is_enabled()
-                                        && me.agent_view_controller.as_ref(ctx).is_fullscreen()
-                                    {
-                                        me.update_agent_view_back_button_state(ctx);
-                                        me.update_agent_view_pane_header(ctx);
-                                    }
-                                },
-                            );
+                            // #1373: detect the CLI agent when the command becomes interactive (a
+                            // program owns the terminal), not after an elapsed-time guess.
+                            let started_block_id = self.model.lock().active_block_id().clone();
+                            self.pending_cli_agent_detection = Some(started_block_id);
+                            if self.is_long_running() {
+                                self.run_pending_cli_agent_detection(ctx);
+                            }
                         }
                     }
 
@@ -14741,6 +17765,13 @@ impl TerminalView {
                 // future already resolved, abort has no effect. We handle this as early as possible
                 // because the abort is time sensitive.
                 self.warpify_state.abort_auto_warpify();
+                if self
+                    .awaiting_subshell_prompt
+                    .as_ref()
+                    .is_some_and(|a| matches!(a.trigger, SubshellPromptTrigger::AutoWarpify { .. }))
+                {
+                    self.awaiting_subshell_prompt = None;
+                }
 
                 // #1069: a user block completing before the replayed ssh bootstrapped means that
                 // ssh failed or exited; nothing armed by the split may outlive it. The bootstrap
@@ -14751,12 +17782,41 @@ impl TerminalView {
                     BlockType::BootstrapHidden | BlockType::BootstrapVisible(_)
                         if self.ssh_split_follow_up.has_ready_cd() =>
                     {
-                        let _ = ctx.spawn(
-                            async move {
-                                warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
-                            },
-                            |me, _, ctx| me.run_ssh_split_cd(ctx),
-                        );
+                        if crate::terminal::bootstrap::bootstrap_timed() {
+                            let _ = ctx.spawn(
+                                async move {
+                                    warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY)
+                                        .await;
+                                },
+                                |me, _, ctx| me.run_ssh_split_cd(ctx),
+                            );
+                        } else {
+                            // #1354: the `cd` goes out at the prompt this completion is
+                            // followed by (`Handler(Precmd)`), not after a fixed delay.
+                            self.ssh_split_cd_awaits_precmd = true;
+                            let _ = ctx.spawn(
+                                async move {
+                                    warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP)
+                                        .await;
+                                },
+                                |me, _, _| {
+                                    // #1588: a timer never runs a command. The remote `cd`
+                                    // stays pending: the prompt's own event (`Precmd`) runs it.
+                                    if me.ssh_split_cd_awaits_precmd {
+                                        log::warn!(
+                                            "No prompt within {} s after the ssh split bootstrap \
+                                             block; the remote cd stays pending for the next \
+                                             prompt (#1588)",
+                                            PENDING_COMMAND_PRECMD_GIVE_UP.as_secs()
+                                        );
+                                        warpui::input_order::log_key_hop(
+                                            "kh_pending_command_give_up",
+                                            || "ssh_split_cd kept".to_owned(),
+                                        );
+                                    }
+                                },
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -14788,7 +17848,7 @@ impl TerminalView {
                         // block was holding, use that.
                         BlockType::User(user_block_completed) => {
                             user_block_completed
-                                .serialized_block
+                                .serialized_block_without_output
                                 .get_with(|compute| {
                                     let model = self.model.lock();
                                     compute(model.block_list())
@@ -14803,8 +17863,9 @@ impl TerminalView {
                         let is_universal_developer_input_enabled =
                             InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
                         let is_in_agent_view = self.agent_view_controller.as_ref(ctx).is_active();
-                        let serialized_block =
-                            user_block_completed.serialized_block.get_with(|compute| {
+                        let serialized_block = user_block_completed
+                            .serialized_block_without_output
+                            .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
                             });
@@ -14892,12 +17953,27 @@ impl TerminalView {
                 // Additionally, it's possible for hooks to install themselves after the warp
                 // precmd. For example, `fig_precmd` does this.
                 if self.is_login_shell_bootstrapped {
-                    let _ = ctx.spawn(
-                        async move {
-                            warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
-                        },
-                        Self::execute_pending_command,
-                    );
+                    if crate::terminal::bootstrap::bootstrap_timed() {
+                        let _ = ctx.spawn(
+                            async move {
+                                warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
+                            },
+                            Self::execute_pending_command_after_timer,
+                        );
+                    } else {
+                        // #1354: the command is released by the prompt this completion is
+                        // followed by (`Handler(Precmd)`), and then by the pty controller's own
+                        // gate (the line editor being active). Late-installing hooks like
+                        // `fig_precmd` have no signal of their own; the line editor gate is what
+                        // covers them. The timer is only the give-up net.
+                        self.pending_command_awaits_precmd = true;
+                        let _ = ctx.spawn(
+                            async move {
+                                warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP).await;
+                            },
+                            |me, _, ctx| me.pending_command_precmd_give_up(ctx),
+                        );
+                    }
                 }
 
                 // When a block completes, we need to update the prompt for the next
@@ -14914,7 +17990,19 @@ impl TerminalView {
                         .block_list()
                         .is_bootstrapping_precmd_done()
                 {
-                    self.refresh_warp_prompt(ctx);
+                    let completed_command = match &block_type {
+                        BlockType::User(user_block_completed) => Some(
+                            user_block_completed
+                                .command
+                                .get_with(|compute| {
+                                    let model = self.model.lock();
+                                    compute(model.block_list())
+                                })
+                                .clone(),
+                        ),
+                        _ => None,
+                    };
+                    self.refresh_warp_prompt_after(completed_command.as_deref(), ctx);
 
                     // If the completed command was a `gh` or `gt` invocation, eagerly refresh PR
                     // info since these don't touch .git/ and won't be caught by the filesystem watcher.
@@ -14928,7 +18016,7 @@ impl TerminalView {
                                     compute(model.block_list())
                                 });
                                 let top_level = user_block_completed
-                                    .serialized_block
+                                    .serialized_block_without_output
                                     .get_with(|compute| {
                                         let model = self.model.lock();
                                         compute(model.block_list())
@@ -14969,10 +18057,12 @@ impl TerminalView {
                 }
 
                 if let BlockType::User(block_completed) = block_type {
-                    let serialized_block = block_completed.serialized_block.get_with(|compute| {
-                        let model = self.model.lock();
-                        compute(model.block_list())
-                    });
+                    let serialized_block = block_completed
+                        .serialized_block_without_output
+                        .get_with(|compute| {
+                            let model = self.model.lock();
+                            compute(model.block_list())
+                        });
                     if let Some(block_duration) = self.block_duration(serialized_block) {
                         self.maybe_send_block_completed_notification(
                             block_completed,
@@ -15111,14 +18201,42 @@ impl TerminalView {
 
                     // Emit the event to the parent view. This will save the block to sqlite if
                     // session restoration is enabled.
-                    ctx.emit(Event::BlockCompleted {
-                        block: serialized_block.clone(),
-                        is_local: !self.is_block_considered_remote(
-                            serialized_block.session_id,
-                            Some(block_completed.command.get_with(|compute| {
+                    // Only the SaveBlock consumer needs the command and the (up to 5000 line)
+                    // output as bytes; skip capturing them when nothing will persist them.
+                    // Mirrors the gate in `terminal_pane.rs`'s `Event::BlockCompleted` handler.
+                    // Capturing copies the two grids under the lock; the slow conversion to
+                    // text happens on the SQLite writer thread (a 1 MB command was ~60 ms here).
+                    let persisted_content = (*GeneralSettings::as_ref(ctx).restore_session
+                        && AppExecutionMode::as_ref(ctx).can_save_session())
+                    .then(|| {
+                        block_completed
+                            .persisted_content
+                            .get_with(|compute| {
                                 let model = self.model.lock();
                                 compute(model.block_list())
-                            })),
+                            })
+                            .clone()
+                    });
+                    // The command text is only read by the organisation's remote-session regex
+                    // policy; with no policy it is never looked at (see #1191).
+                    let workspaces = UserWorkspaces::as_ref(ctx);
+                    let command_for_policy = (!workspaces.is_ai_allowed_in_remote_sessions()
+                        && !workspaces.get_remote_session_regex_list().is_empty())
+                    .then(|| {
+                        block_completed
+                            .command
+                            .get_with(|compute| {
+                                let model = self.model.lock();
+                                compute(model.block_list())
+                            })
+                            .as_str()
+                    });
+                    ctx.emit(Event::BlockCompleted {
+                        block: serialized_block.clone(),
+                        persisted_content,
+                        is_local: !self.is_block_considered_remote(
+                            serialized_block.session_id,
+                            command_for_policy,
                             ctx,
                         ),
                     });
@@ -15127,6 +18245,7 @@ impl TerminalView {
                     // via a BlockCompleted event but don't affect focus or input.
                     ctx.emit(Event::BlockCompleted {
                         block: serialized_block.clone(),
+                        persisted_content: None,
                         is_local: !self.is_block_considered_remote(
                             serialized_block.session_id,
                             None,
@@ -15138,6 +18257,7 @@ impl TerminalView {
                     self.redetermine_terminal_focus(ctx);
                     ctx.emit(Event::BlockCompleted {
                         block: serialized_block.clone(),
+                        persisted_content: None,
                         is_local: !self.is_block_considered_remote(
                             serialized_block.session_id,
                             None,
@@ -15187,6 +18307,7 @@ impl TerminalView {
             ModelEvent::SSHControlMasterError => {
                 self.handle_control_master_error(ctx);
             }
+            ModelEvent::InputBufferOverflow => self.on_input_buffer_overflow(ctx),
             ModelEvent::BlockMetadataReceived(block_metadata_received_event) => {
                 self.apply_block_metadata_update(
                     &block_metadata_received_event.block_metadata,
@@ -15223,7 +18344,56 @@ impl TerminalView {
                     self.refresh_warp_prompt(ctx);
                 }
             }
+            ModelEvent::CommandBecameInteractive { block_id } => {
+                // A program took over the terminal (#1373): the event the "long running"
+                // consumers used to wait 50 ms for.
+                // #1614: the keys typed into that command are its, not a line at a prompt: the
+                // hand-off delivers an Enter typed now, and a young hold live at this moment is
+                // written as typeahead by this event. Only for the block still running (a late
+                // event for a block whose prompt is already back must not mark the next command).
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    let still_running = {
+                        let model = self.model.lock();
+                        model.active_block_id() == block_id
+                            && model.block_list().active_block().started()
+                    };
+                    if still_running {
+                        self.handoff.write().note_command_interactive();
+                        self.drain_young_hold_ends(ctx);
+                    }
+                }
+                // #1577: the held PowerShell line became a program that reads keys: the keys
+                // typed after it are its typeahead, released in order by this event (the
+                // 2 s grace no longer writes them).
+                if matches!(
+                    self.powershell_setup_hold,
+                    PowerShellSetupHold::LineRunning { .. }
+                ) {
+                    self.release_subshell_setup_held_bytes(ctx);
+                }
+                // #1490: keys the ConPTY enter window held since the Enter are typeahead for this
+                // program, not for the shell's line editor: they are released to it in typed
+                // order, by this event and not by a timer.
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    let held_for_program = self.handoff.write().release_enter_window_for_program();
+                    if let Some(hold_id) = held_for_program {
+                        self.on_prompt_hold_released(hold_id, ctx);
+                    }
+                }
+                if self.pending_agent_input_lock.as_ref() == Some(block_id) {
+                    self.lock_input_for_interactive_agent_command(ctx);
+                }
+                if self.pending_cli_agent_detection.as_ref() == Some(block_id) {
+                    self.run_pending_cli_agent_detection(ctx);
+                }
+                ctx.notify();
+            }
             ModelEvent::TerminalModeSwapped(mode) => {
+                // Leaving (or re-entering) the alt screen cancels a pending winsize re-send
+                // (#1384 P5).
+                self.alt_screen_resend_generation =
+                    self.alt_screen_resend_generation.wrapping_add(1);
+                self.alt_screen_resend_pending = false;
                 #[cfg(feature = "local_tty")]
                 {
                     let active_command = self
@@ -15368,41 +18538,42 @@ impl TerminalView {
                 let uname = event.uname.clone();
                 let disable_tmux = event.tmux == Some(false);
 
-                ctx.spawn(
-                    async {
-                        warpui::r#async::Timer::after(*TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY)
-                            .await
-                    },
-                    move |me, _, ctx| {
-                        let uname = uname.to_owned().unwrap_or_default();
-                        let (is_ssh, is_tmux_control_mode_active, has_ai_metadata) = {
-                            let lock = me.model.lock();
-                            let has_ai_metadata = lock
-                                .block_list()
-                                .active_block()
-                                .agent_interaction_metadata()
-                                .is_some();
-                            (
-                                lock.is_ssh_block(),
-                                lock.tmux_control_mode_active(),
-                                has_ai_metadata,
+                if crate::terminal::bootstrap::bootstrap_timed() {
+                    ctx.spawn(
+                        async {
+                            warpui::r#async::Timer::after(*TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY)
+                                .await
+                        },
+                        move |me, _, ctx| {
+                            me.start_rc_file_subshell_bootstrap(
+                                shell_type,
+                                uname,
+                                disable_tmux,
+                                ctx,
                             )
-                        };
-                        // Never warpify for agent-requested commands.
-                        if has_ai_metadata {
-                            return;
-                        }
-                        // To simplify the implementation, we do not support warpifying while SSH-warpified.
-                        if is_tmux_control_mode_active {
-                            return;
-                        }
-                        if is_ssh && !disable_tmux {
-                            me.continue_warpify_ssh_session(&uname, shell_type, ctx);
-                        } else {
-                            me.trigger_subshell_bootstrap(Some(shell_type), true, ctx);
-                        }
-                    },
-                );
+                        },
+                    );
+                } else {
+                    // #1354: other commands in the rc file ("poetry shell" sourcing a venv) run
+                    // before the subshell shows its prompt; the bootstrap goes in at that prompt
+                    // instead of 100 ms after the snippet. The timer is only the give-up net.
+                    let id = self.arm_awaiting_subshell_prompt(
+                        SubshellPromptTrigger::RcFile {
+                            shell_type,
+                            uname,
+                            disable_tmux,
+                        },
+                        ctx,
+                    );
+                    let _ = ctx.spawn(
+                        async {
+                            warpui::r#async::Timer::after(SUBSHELL_FIRST_PROMPT_GIVE_UP).await
+                        },
+                        move |me, _, ctx| {
+                            me.fire_awaiting_subshell_prompt(id, "give-up timer", ctx)
+                        },
+                    );
+                }
             }
             ModelEvent::PromptUpdated => {
                 self.input.update(ctx, |input, ctx| {
@@ -15444,13 +18615,26 @@ impl TerminalView {
                 }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                // #1566: a prompt on a session that has not bootstrapped yet is the session
+                // progressing; the bootstrap give-up timer must not fire on it.
+                if let Some(pending) = self.model_facts().pending_session_id {
+                    self.bootstrap_precmd_seen_session = Some(pending);
+                }
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
                     // The block this prompt finished has been handled (the editor is
                     // reinitialized); only now may the editor take keys without them being
                     // erased (#934).
-                    self.model.lock().typeahead_handoff_mut().on_precmd_viewed();
+                    self.handoff.write().on_precmd_viewed();
                     self.commit_typeahead_handoff_at_prompt(ctx);
                 }
+                // #1348: the remote shell's first prompt. The input is reset for it (above and
+                // by the finished block's `BlockCompleted`, handled before this event), so the
+                // hand-over runs HERE, in this handler: held keys in order, hold ended, input
+                // focused, with no event-loop turn between the steps. A key typed from now on is
+                // queued behind all of it by the single-threaded loop.
+                self.deliver_ssh_typeahead_if_ready("precmd", ctx);
+                // #1558: an Enter held because the shell had not processed this Precmd yet.
+                self.retry_held_unready_enter("precmd", ctx);
                 // #1014: the subshell's first prompt is drawn and the block list is in its normal
                 // state: only now are the keys held through a stalled setup delivered, so the
                 // command they spell starts an ordinary visible block. (Setup still pending:
@@ -15471,6 +18655,16 @@ impl TerminalView {
                 if !self.subshell_bootstrap_pending() {
                     self.dismiss_subshell_setup_waiting_toast(ctx);
                 }
+                // #1354: the prompt after a completed block releases the remote `cd` of an ssh
+                // split and the pending command (queued behind the line editor becoming active).
+                if self.ssh_split_cd_awaits_precmd {
+                    self.ssh_split_cd_awaits_precmd = false;
+                    self.run_ssh_split_cd(ctx);
+                }
+                if self.pending_command_awaits_precmd {
+                    self.pending_command_awaits_precmd = false;
+                    self.execute_pending_command((), ctx);
+                }
             }
             ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
                 is_subshell: true, ..
@@ -15486,6 +18680,9 @@ impl TerminalView {
             ModelEvent::Handler(AnsiHandlerEvent::Preexec)
                 if FeatureFlag::TypeaheadHandoff.is_enabled() =>
             {
+                // #1614: a young hold the Preexec ended (the shell started a command after it
+                // opened) is applied to the queue now: its keys are that command's typeahead.
+                self.drain_young_hold_ends(ctx);
                 self.focus_terminal_if_typeahead_handoff_wants_it(ctx);
             }
             ModelEvent::Handler(_) => {}
@@ -15510,6 +18707,10 @@ impl TerminalView {
                 }
             }
             ModelEvent::SelectedTextChanged => {
+                // The selection bits a Ctrl-C decides on are stored by the block list and the
+                // alt screen where the selection changes, under the model's lock they already
+                // hold (#1411): nothing to read back here, and no lock on the main thread per
+                // drag step.
                 ctx.emit(Event::SelectedTextChanged);
             }
             ModelEvent::ShellSpawned(shell_type) => {
@@ -15620,6 +18821,12 @@ impl TerminalView {
             }
             // Handled by RemoteServerController via model subscription.
             ModelEvent::SshInitShell { .. } => {}
+            // Consumed by the typeahead hand-off (#1390, #1391, #1614), not by the view itself.
+            ModelEvent::LineEditorReading { .. }
+            | ModelEvent::ContinuationPrompt { .. }
+            | ModelEvent::YoungHoldReevaluated => {}
+            // Consumed by the pty controller (#1581).
+            ModelEvent::CommandFileFailed { .. } => {}
             ModelEvent::RemoteServerBlockRequested { session_id } => {
                 self.show_ssh_remote_server_choice_block(*session_id, ctx);
             }
@@ -15906,7 +19113,6 @@ impl TerminalView {
         });
     }
 
-
     /// Creates the [`SshRemoteServerChoiceView`] and inserts it as a
     /// rich content block pinned to the bottom of the block list.
     fn show_ssh_remote_server_choice_block(
@@ -15968,6 +19174,8 @@ impl TerminalView {
         );
 
         self.redetermine_global_focus(ctx);
+        // The dialog now owns input: an edge of the ssh phase.
+        self.ssh_on_setup_changed(ctx);
     }
 
     /// Returns a clone of the `SshRemoteServerChoiceView` handle for the
@@ -16163,6 +19371,8 @@ impl TerminalView {
         drop(model);
         self.rich_content_views
             .retain(|rich_content| !view_ids_to_remove.contains(&rich_content.view_id()));
+        // The dialog no longer owns input: an edge of the ssh phase.
+        self.ssh_on_setup_changed(ctx);
         ctx.notify();
     }
 
@@ -16669,13 +19879,17 @@ impl TerminalView {
         // whose bootstrap already reports the complete set — which today is all
         // four of them; see `Session::load_all_function_names` for what this
         // fork has not taken from the pin, and why.
-        ctx.background_executor()
-            .spawn(async move { session_clone.load_all_function_names().await })
-            .detach();
+        // Not for a local PowerShell session (#1230): there each would start a `pwsh -NoProfile`
+        // process to list names the Bootstrapped hook already carried.
+        if !session_clone.deferred_name_enumeration_is_redundant() {
+            ctx.background_executor()
+                .spawn(async move { session_clone.load_all_function_names().await })
+                .detach();
 
-        ctx.background_executor()
-            .spawn(async move { session_clone2.load_all_builtins().await })
-            .detach();
+            ctx.background_executor()
+                .spawn(async move { session_clone2.load_all_builtins().await })
+                .detach();
+        }
 
         // If we were waiting for a successful warpification, it's come. Stop the timeout.
         self.warpify_state.abort_ssh_warpify_timeout();
@@ -17231,11 +20445,7 @@ impl TerminalView {
             .editor()
             .as_ref(ctx)
             .selected_text(ctx);
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        if text.is_empty() { None } else { Some(text) }
     }
 }
 
@@ -17289,6 +20499,14 @@ fn fork_label_for_query(query: &str) -> String {
 }
 
 impl TerminalView {
+    /// A signal that fires after terminal output (coalesced: at most one pending). The event
+    /// the agent driver's harness output monitor runs on instead of sampling (#1381).
+    pub fn subscribe_output(&mut self) -> async_channel::Receiver<()> {
+        let (tx, rx) = async_channel::bounded(1);
+        self.output_listeners.push(tx);
+        rx
+    }
+
     fn start_agent_onboarding_tutorial(
         &mut self,
         version: AgentOnboardingVersion,
@@ -17469,9 +20687,11 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            report_if_error!(settings
-                .nld_in_terminal_enabled_internal
-                .set_value(enable, ctx));
+            report_if_error!(
+                settings
+                    .nld_in_terminal_enabled_internal
+                    .set_value(enable, ctx)
+            );
         });
     }
 
@@ -17560,53 +20780,110 @@ impl TerminalView {
     // padding that the alt-screen doesn't. So we do this to avoid a race condition between
     // (1) resizing right after swapping terminal modes, and
     // (2) the alt-screen app registering its resize handler
+    //
+    // #1384 P5: the re-send is driven by the program's first output after the alt screen was
+    // entered (`handle_terminal_wakeup` -> `resend_alt_screen_winsize_on_first_output`): output
+    // is the signal that the program is up and has registered what it is going to register.
+    // The 500 ms timer left is a give-up net for a program that stays silent (logged when it
+    // fires), and a second look for the apps in `ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS`. Leaving
+    // the alt screen cancels it (generation). `PHOSPHOR_PTY_WRITE_QUEUE=0` restores the two
+    // unconditional 500 ms re-sends.
     #[cfg(feature = "local_tty")]
     fn resize_alt_screen_redundantly(&mut self, ctx: &mut ViewContext<Self>) {
         use futures_lite::StreamExt;
 
-        // Resize twice, half a second apart.
-        ctx.spawn_stream_local(
-            async_io::Timer::interval(Duration::from_millis(500)).take(2),
-            |view, _, ctx| {
-                let model = view.model.lock();
+        if !crate::terminal::writeable_pty::pty_controller::write_queue_enabled() {
+            // Resize twice, half a second apart.
+            ctx.spawn_stream_local(
+                async_io::Timer::interval(Duration::from_millis(500)).take(2),
+                |view, _, ctx| view.resend_alt_screen_winsize(ctx),
+                |_, _| {},
+            );
+            return;
+        }
 
-                // If the alt-screen was exited since the timer expired,
-                // there's nothing to do.
-                if !model.is_alt_screen_active() {
-                    return;
-                }
-
-                let correct_size_info = *view.size_info;
-                let active_command = model
-                    .block_list()
-                    .active_block()
-                    .top_level_command(view.sessions.as_ref(ctx));
-
-                // Drop the lock since the resize methods will take an explicit lock.
-                drop(model);
-
-                // This is a workaround for alt-screen programs that _cache_ resizes during init
-                // but don't actually redraw the contents. For example, we've seen this happen with
-                // certain emacs setups. So we fake a winsize before immediately correcting it to
-                // invalidate that cache.
-                if active_command
-                    .is_some_and(|cmd| ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS.contains(cmd.as_str()))
-                {
-                    let mut wrong_size_info = *view.size_info;
-                    wrong_size_info.pane_width_px += 1.;
-                    view.resize_internal(
-                        SizeUpdateBuilder::for_refresh(wrong_size_info).build(view, ctx),
-                        ctx,
-                    );
-                }
-
-                // Send the resize as a refresh to force a size update.
-                view.resize_internal(
-                    SizeUpdateBuilder::for_refresh(correct_size_info).build(view, ctx),
-                    ctx,
+        self.alt_screen_resend_generation = self.alt_screen_resend_generation.wrapping_add(1);
+        let generation = self.alt_screen_resend_generation;
+        self.alt_screen_resend_pending = true;
+        ctx.spawn(Timer::after(ALT_SCREEN_RESEND_GIVE_UP), move |me, _, ctx| {
+            if me.alt_screen_resend_generation != generation {
+                return;
+            }
+            let silent = std::mem::take(&mut me.alt_screen_resend_pending);
+            let problem_app = me.alt_screen_app_has_resize_problems(ctx);
+            if silent {
+                // No event came: the program printed nothing since entering the alt screen.
+                log::info!(
+                    "alt-screen winsize re-send: no program output within {ALT_SCREEN_RESEND_GIVE_UP:?}, giving up waiting"
                 );
-            },
-            |_, _| {},
+            } else if problem_app {
+                log::info!("alt-screen winsize re-send: second send for a known problem app");
+            } else {
+                return;
+            }
+            me.resend_alt_screen_winsize(ctx);
+        });
+    }
+
+    /// The first program output after the alt screen was entered: the one event-driven re-send
+    /// of the window size (#1384 P5). A no-op unless a re-send is pending.
+    #[cfg(feature = "local_tty")]
+    fn resend_alt_screen_winsize_on_first_output(&mut self, ctx: &mut ViewContext<Self>) {
+        if !std::mem::take(&mut self.alt_screen_resend_pending) {
+            return;
+        }
+        log::debug!("alt-screen winsize re-send: first program output after entering");
+        self.resend_alt_screen_winsize(ctx);
+    }
+
+    #[cfg(feature = "local_tty")]
+    fn alt_screen_app_has_resize_problems(&self, ctx: &ViewContext<Self>) -> bool {
+        let model = self.model.lock();
+        model
+            .block_list()
+            .active_block()
+            .top_level_command(self.sessions.as_ref(ctx))
+            .is_some_and(|cmd| ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS.contains(cmd.as_str()))
+    }
+
+    /// Re-sends the current window size to the alt-screen program, if it is still there.
+    #[cfg(feature = "local_tty")]
+    fn resend_alt_screen_winsize(&mut self, ctx: &mut ViewContext<Self>) {
+        let model = self.model.lock();
+
+        // If the alt-screen was exited since, there's nothing to do.
+        if !model.is_alt_screen_active() {
+            return;
+        }
+
+        let correct_size_info = *self.size_info;
+        let active_command = model
+            .block_list()
+            .active_block()
+            .top_level_command(self.sessions.as_ref(ctx));
+
+        // Drop the lock since the resize methods will take an explicit lock.
+        drop(model);
+
+        // This is a workaround for alt-screen programs that _cache_ resizes during init
+        // but don't actually redraw the contents. For example, we've seen this happen with
+        // certain emacs setups. So we fake a winsize before immediately correcting it to
+        // invalidate that cache.
+        if active_command
+            .is_some_and(|cmd| ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS.contains(cmd.as_str()))
+        {
+            let mut wrong_size_info = *self.size_info;
+            wrong_size_info.pane_width_px += 1.;
+            self.resize_internal(
+                SizeUpdateBuilder::for_refresh(wrong_size_info).build(self, ctx),
+                ctx,
+            );
+        }
+
+        // Send the resize as a refresh to force a size update.
+        self.resize_internal(
+            SizeUpdateBuilder::for_refresh(correct_size_info).build(self, ctx),
+            ctx,
         );
     }
 
@@ -17618,6 +20895,12 @@ impl TerminalView {
         session: Option<Arc<Session>>,
         history_commands: Vec<HistoryEntry>,
     ) -> Vec<Correction> {
+        // An empty Enter has nothing to correct; skip the session metadata work, including the
+        // `git branch` spawn (#1342).
+        if command.trim().is_empty() {
+            return vec![];
+        }
+
         // Create the command
         let (input, output, working_dir) =
             (command.as_str(), output_truncated.as_str(), pwd.as_deref());
@@ -17650,7 +20933,11 @@ impl TerminalView {
             session_metadata.set_functions(session.function_names());
             session_metadata.set_builtins(session.builtin_names());
             session_metadata.set_platform_type(session.host_info().platform_type());
-            if let Some(working_dir) = working_dir {
+            // #1342: the branch list feeds only the `git checkout <typo>` rule; any other
+            // command skips the `git branch` spawn (the first command after a `cd` paid it).
+            if let Some(working_dir) =
+                working_dir.filter(|_| command_corrections_may_need_git_branches(input, output))
+            {
                 git_branches = Some(
                     session
                         .git_branches_for_command_corrections(working_dir)
@@ -17690,7 +20977,7 @@ impl TerminalView {
             .block_list()
             .active_block()
             .output_grid()
-            .contents_to_string(false, None);
+            .contents_to_string(false, Some(OUTPUT_TAIL_ROWS));
         output_tail_is_input_prompt(&contents).then(|| {
             contents
                 .trim_end_matches('\n')
@@ -17701,19 +20988,23 @@ impl TerminalView {
         })
     }
 
+    /// The last rows of the active block's output, which is all a deferred setup compares
+    /// (#1354): copying the whole output on every poll held the model lock on the UI thread for
+    /// as long as the output was long.
     fn active_output_snapshot(&self) -> String {
         self.model
             .lock()
             .block_list()
             .active_block()
             .output_grid()
-            .contents_to_string(false, None)
+            .contents_to_string(false, Some(OUTPUT_TAIL_ROWS))
     }
 
     fn defer_subshell_setup(
         &mut self,
         shell_type: Option<ShellType>,
         triggered_by_rc_file_snippet: bool,
+        waits_for_line: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         let now = Instant::now();
@@ -17721,6 +21012,7 @@ impl TerminalView {
         self.subshell_setup_deferred = Some(DeferredSubshellSetup {
             shell_type,
             triggered_by_rc_file_snippet,
+            waits_for_line,
             block_id,
             since: now,
             answered_at: None,
@@ -17742,8 +21034,22 @@ impl TerminalView {
     /// shell moved on, drops it if another block took over. Never aborts the shell and never
     /// types into the prompt.
     fn poll_deferred_subshell_setup(&mut self, since: Instant, ctx: &mut ViewContext<Self>) {
+        self.check_deferred_subshell_setup(since, true, ctx);
+    }
+
+    /// The check behind [`Self::poll_deferred_subshell_setup`]. Run on output (the event: the
+    /// shell took the answer and printed its next prompt, #1354) with `reschedule` false, and by
+    /// the slow timer, which is left as the net for the one case no output shows: an answer after
+    /// which the shell prints nothing, so the prompt text stays on screen (the quiet rule).
+    fn check_deferred_subshell_setup(
+        &mut self,
+        since: Instant,
+        reschedule: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let output = self.active_output_snapshot();
         let prompt_visible = self.active_output_input_prompt_line().is_some();
+        let line_dirty = self.setup_write_must_wait_for_the_line();
         let block_id = self.model.lock().block_list().active_block().id().clone();
         let now = Instant::now();
         let Some(deferred) = self.subshell_setup_deferred.as_mut() else {
@@ -17759,6 +21065,20 @@ impl TerminalView {
         }
         if deferred.last_output != output {
             deferred.last_output = output;
+            deferred.unchanged_since = now;
+        }
+        if deferred.waits_for_line {
+            // #1562: only the line ending (a fact the hand-off reports) resumes the setup; a
+            // timer keeps the deferral alive and never writes.
+            if line_dirty || reschedule {
+                if reschedule {
+                    self.schedule_subshell_setup_poll(since, ctx);
+                }
+                return;
+            }
+            // The line ended: the user's Enter / ^U is the answer; the ordinary checks go on.
+            deferred.waits_for_line = false;
+            deferred.answered_at = Some(now);
             deferred.unchanged_since = now;
         }
         let ready = subshell_setup_defer_ready(
@@ -17792,18 +21112,25 @@ impl TerminalView {
                 });
             }
         }
-        self.schedule_subshell_setup_poll(since, ctx);
+        if reschedule {
+            self.schedule_subshell_setup_poll(since, ctx);
+        }
     }
 
     /// Notes what the user sends while a subshell setup is deferred (#1032): a line sent to the
     /// pty is the answer to the prompt; an abort key skips the setup. The bytes themselves are
     /// not touched, they go to the pty like any typing.
     fn note_input_for_deferred_subshell_setup(&mut self, bytes: &[u8]) {
+        if self.ssh_warpify_deferred.is_some() && is_abort_key(bytes) {
+            self.ssh_warpify_deferred = None;
+        }
         let Some(deferred) = self.subshell_setup_deferred.as_mut() else {
             return;
         };
         if is_abort_key(bytes) {
             self.subshell_setup_deferred = None;
+        } else if deferred.waits_for_line {
+            // The line-ending key is judged by the hand-off's change event, not here.
         } else if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
             let now = Instant::now();
             deferred.answered_at = Some(now);
@@ -17823,7 +21150,32 @@ impl TerminalView {
         // short pace so a shell that has not started reading yet is never handed more than its
         // tty input queue holds.
         let line_delay = crate::terminal::bootstrap::subshell_bootstrap_line_delay(shell_type);
-        let all_lines = init_subshell_command_lines(shell_type, &self.env_vars, session_id, ctx);
+        // #1354/#1372: bash, zsh, fish, nushell and PowerShell print a marker once they ran a line
+        // (PowerShell: once PSReadLine is about to read again); the next line is written when it
+        // arrives, not after `line_delay`, which stays as the give-up pacing. Other shells (and
+        // PHOSPHOR_BOOTSTRAP_TIMED=1) keep the timer pacing.
+        // PowerShell (#1372): its marker is printed when PSReadLine is about to read, i.e. after
+        // the redraw that a marker at the end of the line would race (#1047).
+        let marked = !crate::terminal::bootstrap::bootstrap_timed()
+            && matches!(
+                shell_type,
+                Some(
+                    ShellType::Bash
+                        | ShellType::Zsh
+                        | ShellType::Fish
+                        | ShellType::Nu
+                        | ShellType::PowerShell
+                )
+            );
+        self.powershell_setup_marker_token =
+            (marked && shell_type == Some(ShellType::PowerShell)).then(|| session_id.as_u64());
+        let all_lines = init_subshell_command_lines_with_markers(
+            shell_type,
+            &self.env_vars,
+            session_id,
+            marked,
+            ctx,
+        );
         // A bootstrap still in flight belongs to an older shell: release what it held first.
         self.finish_subshell_bootstrap(ctx);
         // The tty echoes these lines as soon as they are written, whether or not the shell reads
@@ -17833,6 +21185,7 @@ impl TerminalView {
         {
             let mut model = self.model.lock();
             model.clear_setup_echo();
+            model.clear_setup_line_marker();
             if shell_type != Some(ShellType::PowerShell) {
                 // The first line goes out behind ` ^K ^U`, whose echo comes first.
                 if crate::terminal::bootstrap::subshell_bootstrap_clears_line_editor(shell_type) {
@@ -17879,7 +21232,8 @@ impl TerminalView {
             Timer::after(SUBSHELL_BOOTSTRAP_STALL_CEILING),
             move |me, _, ctx| me.note_subshell_setup_waiting(announced_at, ctx),
         );
-        // Whatever the user typed meanwhile is delivered at the latest when the hold limit passes.
+        // Whatever the user typed meanwhile is HANDED BACK to the input when the hold limit passes: a
+        // timer never writes held keys to the pty (#1577, owner rule).
         ctx.spawn(
             Timer::after(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
             move |me, _, ctx| {
@@ -17887,14 +21241,21 @@ impl TerminalView {
                 if subshell_setup_hold_limit_releases(
                     current,
                     announced_at,
-                    !me.subshell_setup_held_bytes.is_empty(),
+                    me.subshell_setup_gate_open() || me.powershell_gate_open(),
                 ) {
-                    me.release_subshell_setup_held_bytes(ctx);
+                    log::warn!(
+                        "subshell setup did not finish within the typed-input hold limit; \
+                         handing the held keys back to the input"
+                    );
+                    me.give_up_setup_gates_to_editor("hold_limit", ctx);
                 }
             },
         );
         let rest: Vec<String> = lines.collect();
         if rest.is_empty() {
+            // The setup gate opens now, not at the first key: whatever is queued from here on
+            // waits for the setup's end (#1353 phase 2).
+            self.open_subshell_gates_for_setup(ctx);
             return;
         }
         self.subshell_bootstrap_generation += 1;
@@ -17903,13 +21264,111 @@ impl TerminalView {
             generation,
             block_id: self.model.lock().block_list().active_block().id().clone(),
             remaining_lines: rest.len(),
-            held_user_bytes: Vec::new(),
+            pending_lines: if marked {
+                rest.clone().into()
+            } else {
+                VecDeque::new()
+            },
+            marker_token: marked.then(|| session_id.as_u64()),
+            awaiting_marker: 0,
+            line_delay,
         });
+        // The gates open with the setup, so a paste read started meanwhile (it queues behind
+        // them) and every key typed from here on wait for the bootstrap's last line.
+        self.open_subshell_gates_for_setup(ctx);
+        if marked {
+            // The first line is out; the shell's marker for it releases the second.
+            self.arm_subshell_marker_give_up(generation, 0, ctx);
+            return;
+        }
         for (index, line) in rest.into_iter().enumerate() {
             ctx.spawn(
                 Timer::after(line_delay * (index as u32 + 1)),
                 move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
             );
+        }
+    }
+
+    /// The give-up net behind the setup-line markers: if the marker of line `awaiting` has not
+    /// come by `SUBSHELL_SETUP_MARKER_GIVE_UP`, it is not coming (the shell swallowed it, or never
+    /// ran the line) and the remaining lines are written on the timed pacing instead.
+    fn arm_subshell_marker_give_up(
+        &mut self,
+        generation: u64,
+        awaiting: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.spawn(
+            Timer::after(SUBSHELL_SETUP_MARKER_GIVE_UP),
+            move |me, _, ctx| me.subshell_marker_given_up(generation, awaiting, ctx),
+        );
+    }
+
+    fn subshell_marker_given_up(
+        &mut self,
+        generation: u64,
+        awaiting: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() else {
+            return;
+        };
+        if in_flight.generation != generation
+            || in_flight.marker_token.is_none()
+            || in_flight.awaiting_marker != awaiting
+        {
+            return;
+        }
+        log::warn!(
+            "Setup line {awaiting} was not acknowledged by the shell; writing the rest of the \
+             subshell setup on timers"
+        );
+        in_flight.marker_token = None;
+        // A PowerShell whose markers do not come will not answer a Ctrl-C with one either.
+        self.powershell_setup_marker_token = None;
+        let line_delay = in_flight.line_delay;
+        let lines: Vec<String> = in_flight.pending_lines.drain(..).collect();
+        for (index, line) in lines.into_iter().enumerate() {
+            ctx.spawn(
+                Timer::after(line_delay * (index as u32 + 1)),
+                move |me, _, ctx| me.write_subshell_bootstrap_line(generation, line, ctx),
+            );
+        }
+    }
+
+    /// Output arrived during an event-paced subshell setup: when the shell printed the marker of
+    /// the line just written, the next line goes out (#1354). Never before, however long it has
+    /// been.
+    fn advance_subshell_bootstrap_on_marker(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_ref() else {
+            return;
+        };
+        let Some(token) = in_flight.marker_token else {
+            return;
+        };
+        let awaited = in_flight.awaiting_marker;
+        if self.model.lock().last_setup_line_marker() != Some((token, awaited)) {
+            return;
+        }
+        self.write_next_marked_subshell_line(ctx);
+    }
+
+    /// Writes the next pending setup line of an event-paced setup and waits for its marker.
+    fn write_next_marked_subshell_line(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(in_flight) = self.subshell_bootstrap_in_flight.as_mut() else {
+            return;
+        };
+        let Some(line) = in_flight.pending_lines.pop_front() else {
+            return;
+        };
+        in_flight.awaiting_marker += 1;
+        let generation = in_flight.generation;
+        let awaiting = in_flight.awaiting_marker;
+        let more = !in_flight.pending_lines.is_empty();
+        // Also ends the bootstrap (releasing held keys) when this was the last line.
+        self.write_subshell_bootstrap_line(generation, line, ctx);
+        if more {
+            self.arm_subshell_marker_give_up(generation, awaiting, ctx);
         }
     }
 
@@ -17998,18 +21457,19 @@ impl TerminalView {
 
     /// Ends the in-flight subshell bootstrap and delivers the keystrokes held behind it.
     fn finish_subshell_bootstrap(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Some(in_flight) = self.subshell_bootstrap_in_flight.take() {
-            for bytes in in_flight.held_user_bytes {
-                self.write_user_bytes_to_pty(bytes, ctx);
-            }
-        }
+        self.subshell_bootstrap_in_flight = None;
+        // The bootstrap's event: its last line is out (or it was abandoned). The aborts typed
+        // meanwhile go first, then what was typed behind it, in order (#1353 phase 2).
+        self.settle_subshell_bootstrap_gate(ctx);
     }
 
     /// Delivers the keystrokes held through a stalled setup (#1014) once no subshell bootstrap is
     /// pending any more. Safe to call at any block completion: it does nothing while the setup
     /// is still pending or when nothing is held, so the keys are delivered exactly once.
     fn release_held_setup_input_if_subshell_ready(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.subshell_setup_held_bytes.is_empty() && !self.subshell_bootstrap_pending() {
+        if (self.subshell_setup_gate_open() || self.powershell_gate_open())
+            && !self.subshell_bootstrap_pending()
+        {
             self.release_subshell_setup_held_bytes(ctx);
         }
     }
@@ -18021,9 +21481,10 @@ impl TerminalView {
         self.powershell_setup_hold = PowerShellSetupHold::Off;
         self.subshell_bootstrap_announced = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
-        for bytes in std::mem::take(&mut self.subshell_setup_held_bytes) {
-            self.write_user_bytes_to_pty(bytes, ctx);
-        }
+        // Setup is over: the keys held on the input queue follow, in order (#1353 phase 2): the
+        // PowerShell gate's first (its hold is a state of its own), then the generic setup gate.
+        self.close_powershell_gate(ctx);
+        self.close_subshell_setup_gate(ctx);
     }
 
     /// Delivers the keys held through a PowerShell subshell setup (#1048), at a prompt: the first
@@ -18040,7 +21501,15 @@ impl TerminalView {
     fn deliver_powershell_setup_keys(&mut self, ctx: &mut ViewContext<Self>) {
         self.subshell_bootstrap_announced = None;
         self.dismiss_subshell_setup_waiting_toast(ctx);
-        let mut held: Vec<u8> = std::mem::take(&mut self.subshell_setup_held_bytes).concat();
+        self.take_powershell_held_then(PowershellKeysThen::Deliver, ctx);
+    }
+
+    /// The keys held through the PowerShell setup, taken: see [`Self::deliver_powershell_setup_keys`].
+    pub(super) fn deliver_powershell_held_bytes(
+        &mut self,
+        mut held: Vec<u8>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         loop {
             let Some((line, raw_line, rest)) = split_first_held_line(&mut held) else {
                 self.powershell_setup_hold = PowerShellSetupHold::Off;
@@ -18068,12 +21537,13 @@ impl TerminalView {
                 }
                 return;
             }
-            if !held.is_empty() {
-                self.subshell_setup_held_bytes.push(held);
-            }
             self.powershell_setup_hold_generation += 1;
             let generation = self.powershell_setup_hold_generation;
             self.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation };
+            if !held.is_empty() {
+                // What was typed after the line waits behind it, as entries of the queue.
+                self.hold_powershell_keys(held, true, ctx);
+            }
             ctx.spawn(
                 Timer::after(POWERSHELL_HELD_LINE_GRACE),
                 move |me, _, ctx| me.end_powershell_held_line_wait(generation, ctx),
@@ -18100,11 +21570,7 @@ impl TerminalView {
             .is_some_and(|(_, at)| at.elapsed() >= SUBSHELL_BOOTSTRAP_STALL_CEILING);
         match powershell_setup_ctrl_c_route(self.powershell_setup_hold, stalled) {
             PowerShellSetupCtrlC::CancelHeldLine => {
-                let mut held = std::mem::take(&mut self.subshell_setup_held_bytes).concat();
-                held.truncate(held_bytes_through_last_enter(&held));
-                if !held.is_empty() {
-                    self.subshell_setup_held_bytes.push(held);
-                }
+                self.take_powershell_held_then(PowershellKeysThen::CancelHeldLine, ctx);
             }
             PowerShellSetupCtrlC::StopProfiles => {
                 self.dismiss_subshell_setup_waiting_toast(ctx);
@@ -18125,12 +21591,32 @@ impl TerminalView {
         }
     }
 
+    /// #1577: the marker never came within `POWERSHELL_ABORT_MARKER_GIVE_UP`. A timer never writes
+    /// user bytes to the pty: the keys held behind the ^C come back to the editor as text, with
+    /// the Enter guard and a toast. Nothing happens if a later Ctrl-C restarted the wait.
+    fn give_up_powershell_abort_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        if self.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation }) {
+            self.give_up_setup_gates_to_editor("abort_marker_give_up", ctx);
+        }
+    }
+
     /// The held line `generation` ran was still running after `POWERSHELL_HELD_LINE_GRACE`
-    /// (#1048): a slow or interactive command. What was typed after it is its typeahead, written
-    /// to the pty in order as if typed while it ran. Nothing happens if its prompt already came.
+    /// (#1048): a slow or interactive command. #1577: a timer never writes the keys typed after
+    /// it. They stay held, a toast and a log line say the input waits for the command's prompt,
+    /// and the events release them in order: its prompt (`Precmd`), or the command becoming
+    /// interactive (`CommandBecameInteractive`: a program that reads keys, for which the held
+    /// keys are typeahead). Nothing happens if its prompt already came.
     fn end_powershell_held_line_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
         if self.powershell_setup_hold == (PowerShellSetupHold::LineRunning { generation }) {
-            self.release_subshell_setup_held_bytes(ctx);
+            log::warn!(
+                "PowerShell held line still running after {} ms; the keys typed after it stay \
+                 held for its prompt (#1577)",
+                POWERSHELL_HELD_LINE_GRACE.as_millis()
+            );
+            warpui::input_order::log_key_hop("kh_powershell_held_line_grace", || {
+                "kept held".to_owned()
+            });
+            self.show_error_toast("Input is waiting for the command's prompt".to_string(), ctx);
         }
     }
 
@@ -18863,10 +22349,13 @@ impl TerminalView {
                     compute(model.block_list())
                 })
                 .to_owned();
-            let serialized_block = block_completed.serialized_block.get_with(|compute| {
-                let model = self.model.lock();
-                compute(model.block_list())
-            });
+            let serialized_block =
+                block_completed
+                    .serialized_block_without_output
+                    .get_with(|compute| {
+                        let model = self.model.lock();
+                        compute(model.block_list())
+                    });
             let exit_code = serialized_block.exit_code;
             let pwd = serialized_block.pwd.clone();
 
@@ -18971,7 +22460,7 @@ impl TerminalView {
         let notification_settings = session_settings_handle.notifications.value().clone();
         let long_running_trigger = NotificationsTrigger::LongRunningCommand(
             !block
-                .serialized_block
+                .serialized_block_without_output
                 .get_with(|compute| {
                     let model = self.model.lock();
                     compute(model.block_list())
@@ -19139,9 +22628,59 @@ impl TerminalView {
         }
     }
 
+    /// #1588: the `PENDING_COMMAND_PRECMD_GIVE_UP` net fired with no prompt seen. A timer never
+    /// runs a command: the pending command stays pending (`pending_command_awaits_precmd` stays
+    /// set, so the `Precmd` that finally comes runs it exactly once), its text is made visible in
+    /// the input with the Enter guard, and a toast says it waits for the shell.
+    fn pending_command_precmd_give_up(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.pending_command_awaits_precmd {
+            return;
+        }
+        let waiting = self.input.update(ctx, |input, ctx| {
+            input.show_pending_command_after_give_up(ctx)
+        });
+        log::warn!(
+            "No prompt within {} s after a completed block; the pending command stays pending \
+             for the next prompt (#1588) (waiting={waiting})",
+            PENDING_COMMAND_PRECMD_GIVE_UP.as_secs()
+        );
+        warpui::input_order::log_key_hop("kh_pending_command_give_up", || {
+            format!("kept waiting={waiting}")
+        });
+        if waiting && ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(
+                        "The shell showed no prompt; the queued command waits for it".to_string(),
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
+    }
+
+    /// [`Self::execute_pending_command`] from a timer (a settling delay or a give-up net). An Enter
+    /// held because the shell was not ready (#1571) is never run by a timer: only the readiness
+    /// events run it (`retry_held_unready_enter`), and its own net hands it back instead.
+    fn execute_pending_command_after_timer(&mut self, _: (), ctx: &mut ViewContext<Self>) {
+        if self
+            .input
+            .read(ctx, |input, _| input.has_held_unready_enter())
+        {
+            log::info!("a timer found a held unready Enter; left for the readiness event (#1571)");
+            return;
+        }
+        self.execute_pending_command((), ctx);
+    }
+
     /// Executes a command that was submitted by the user and not yet sent to the shell.
     pub fn execute_pending_command(&mut self, _: (), ctx: &mut ViewContext<Self>) {
         let had_pending = self.input.read(ctx, |input, _| input.has_pending_command());
+        let pending_text = self.input.read(ctx, |input, _| {
+            input.pending_command_text().map(str::to_owned)
+        });
         self.input.update(ctx, |input, ctx| {
             input.execute_pending_command(ctx);
         });
@@ -19149,6 +22688,12 @@ impl TerminalView {
         // for the resulting block to complete.
         if had_pending && !self.input.read(ctx, |input, _| input.has_pending_command()) {
             self.awaiting_pending_command_completion = true;
+            // #1450: the pending command started. If it is the AWS login, its block is the one
+            // whose 'command not found' means the CLI is missing; if another pending command
+            // replaced the login, the request is stale.
+            if let Some(requested) = self.aws_login_requested.take() {
+                self.is_pending_aws_login = pending_text.as_deref() == Some(requested.as_str());
+            }
         }
     }
 
@@ -19191,7 +22736,7 @@ impl TerminalView {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    pub(super) fn on_shell_determined(&self, ctx: &mut ViewContext<Self>) {
+    pub(super) fn on_shell_determined(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.model.lock().shared_session_status().is_viewer() {
             // Start a timer for the initial session bootstrapping, so that we can log and show a
             // banner to the user if the bootstrapping takes too long
@@ -19266,10 +22811,6 @@ impl TerminalView {
         }
     }
 
-    pub fn set_enter_agent_view_after_ssh_bootstrap(&mut self) {
-        self.enter_agent_view_after_ssh_bootstrap = true;
-    }
-
     #[cfg(not(target_family = "wasm"))]
     pub(super) fn on_pty_spawn_failed(
         &mut self,
@@ -19284,14 +22825,54 @@ impl TerminalView {
         ctx.notify();
     }
 
-    /// Start a timer so that we can detect when a session does not bootstrap in a timely manner
-    fn start_bootstrap_timer(&self, duration: Duration, ctx: &mut ViewContext<Self>) {
+    /// Start a timer so that we can detect when a session does not bootstrap in a timely manner.
+    /// #1566: the timer carries the identity of what armed it (a generation, plus the pending
+    /// session when one is known), so a timer left over from an earlier connect never acts on a
+    /// later one. A new arm supersedes every earlier timer.
+    fn start_bootstrap_timer(&mut self, duration: Duration, ctx: &mut ViewContext<Self>) {
+        self.bootstrap_timer_generation = self.bootstrap_timer_generation.wrapping_add(1);
+        let arm = BootstrapTimerArm {
+            generation: self.bootstrap_timer_generation,
+            session: self.model.lock().pending_session_id(),
+        };
+        self.spawn_bootstrap_timer(duration, arm, ctx);
+    }
+
+    /// Re-arm for the same identity (the #1566 grace), without superseding anything.
+    fn spawn_bootstrap_timer(
+        &self,
+        duration: Duration,
+        arm: BootstrapTimerArm,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let _ = ctx.spawn(
             async move {
                 warpui::r#async::Timer::after(duration).await;
+                arm
             },
-            Self::on_bootstrap_failed_timer_complete,
+            Self::on_bootstrap_timer_fired,
         );
+    }
+
+    /// The give-up timer's callback: a no-op (logged) when it was superseded by a later arm or
+    /// was armed for a pending session that is no longer the pending one (#1566).
+    fn on_bootstrap_timer_fired(&mut self, arm: BootstrapTimerArm, ctx: &mut ViewContext<Self>) {
+        let pending = self.model.lock().pending_session_id();
+        let superseded = arm.generation != self.bootstrap_timer_generation;
+        let other_session = arm.session.is_some() && arm.session != pending;
+        if superseded || other_session {
+            log::debug!(
+                "bootstrap give-up timer ignored: stale (armed gen {} for {:?}; now gen {},                  pending {:?}) (#1566)",
+                arm.generation,
+                arm.session,
+                self.bootstrap_timer_generation,
+                pending
+            );
+            return;
+        }
+        self.bootstrap_timer_arm_in_flight = Some(arm);
+        self.on_bootstrap_failed_timer_complete((), ctx);
+        self.bootstrap_timer_arm_in_flight = None;
     }
 
     /// Timer callback for [`SUBSHELL_BOOTSTRAP_STALL_CEILING`] after a subshell's `InitShell`
@@ -19311,17 +22892,131 @@ impl TerminalView {
         if !abandoned {
             return;
         }
-        self.release_subshell_setup_held_bytes(ctx);
+        // #1577: the ceiling is a timer, and a timer never writes the keys held through the stalled
+        // setup into the abandoned shell: they come back to the editor as text (the Precmd EVENT
+        // of a setup that does finish still releases them in order). Both setup gates close,
+        // the setup state and the waiting notice go, and a toast says so.
+        self.give_up_setup_gates_to_editor("stall_ceiling", ctx);
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
         });
+        // #1119: the tab now runs the shell raw; say so, held keys or not (the hand-back above
+        // shows no toast of its own for the ceiling, this notice covers the held keys too).
+        log::warn!(
+            "subshell bootstrap abandoned at the stall ceiling: continuing as a plain shell \
+             (#1014/#1119)"
+        );
+        self.show_error_toast(
+            paste_queue::SUBSHELL_BOOTSTRAP_ABANDONED_TOAST.to_string(),
+            ctx,
+        );
         ctx.notify();
+    }
+
+    /// #1494: the ssh bootstrap timed out with keys held. The remote shell is alive at a usable,
+    /// non-bootstrapped prompt, but its tty is still raw because the bootstrap's `stty sane` never
+    /// ran. Plain ssh would have delivered the typing to that shell, so it is delivered there: a
+    /// space-led `stty sane` line (a leading space keeps it out of history where the shell honours
+    /// that) goes first, then the held keys through the normal hand-over, in order, exactly once.
+    /// When no remote shell is provably in front (the ssh block is no longer running) the keys
+    /// are handed back as unexecuted text instead; they are never run locally.
+    ///
+    /// #1577 (owner decision 2026-11-03): that delivery is a timer writing a command and the
+    /// user's keys to a pty. By default the keys are handed back here too (the ssh hand-back: the
+    /// input, or kept for it while the ssh block runs) with a toast naming `stty sane`; the #1494
+    /// delivery stays behind `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1`.
+    fn hand_held_ssh_typeahead_to_unbootstrapped_remote(
+        &mut self,
+        is_ssh: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self.ssh_typeahead_holding || self.ssh_held_is_empty() {
+            return;
+        }
+        // `is_ssh` is the wrapper's pending state, which `InitShell` consumes; the pending
+        // session itself still says it came from ssh.
+        let (ssh_session, session_pending) = {
+            let model = self.model.lock();
+            let info = model.get_pending_session_info().as_ref();
+            let from_ssh = info.is_some_and(|info| {
+                info.legacy_ssh_spawning_command.is_some()
+                    || info
+                        .subshell_info
+                        .as_ref()
+                        .is_some_and(|sub| sub.ssh_connection_info.is_some())
+            });
+            (is_ssh || from_ssh, !model.is_read_only() && info.is_some())
+        };
+        if !ssh_session {
+            return;
+        }
+        if !(session_pending && self.is_long_running()) {
+            log::warn!(
+                "ssh typeahead: no remote shell is provably in front at the bootstrap timer; \
+                 handing {} held byte(s) back as unexecuted text (#1494)",
+                self.ssh_held_bytes()
+            );
+            self.finish_ssh_typeahead(ctx);
+            return;
+        }
+        if !crate::terminal::bootstrap::ssh_bootstrap_giveup_delivers() {
+            // #1577 (owner decision): a timer never writes user bytes or a command to a pty. The
+            // held keys are handed back (to the input, or kept for it while the ssh block runs,
+            // like any ssh hand-back) and nothing is sent: no `stty sane`, no keys.
+            log::warn!(
+                "ssh typeahead: bootstrap failed; handing {} held byte(s) back instead of \
+                 writing them to the remote (#1577; PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1 \
+                 restores the #1494 delivery)",
+                self.ssh_held_bytes()
+            );
+            warpui::input_order::log_key_hop("kh_bootstrap_giveup", || {
+                format!("handed_back held_bytes={}", self.ssh_held_bytes())
+            });
+            self.ssh_remote_prompt_seen = false;
+            self.finish_ssh_typeahead(ctx);
+            self.show_ssh_typing_toast(
+                "SSH setup didn't finish; your typed text was not sent. The remote terminal may \
+                 be in raw mode: run `stty sane` there",
+                ctx,
+            );
+            return;
+        }
+        log::warn!(
+            "ssh typeahead: bootstrap failed, delivering {} held byte(s) to the remote shell \
+             after `stty sane` (#1494)",
+            self.ssh_held_bytes()
+        );
+        self.clear_line_editor_and_write_to_pty(b" stty sane\r".to_vec(), ctx);
+        self.ssh_remote_prompt_seen = true;
+        self.finish_ssh_typeahead(ctx);
+        // #1574: the held text now belongs to the remote shell, where the toast says it went. While
+        // part of it may be in that shell's line, no report is asked for: a report would clear it
+        // from the shell and move it into the editor (the #1566 `4echo T93_r` that became an agent
+        // prompt). The shell keeps the line and the pty keeps input.
+        self.handoff.write().note_committed_delivery();
+        self.show_ssh_typing_toast(
+            "SSH setup didn't finish; your typed text was sent to the remote shell",
+            ctx,
+        );
     }
 
     /// Called once the bootstrap timer completes
     /// Will send telemetry if the current session is not bootstrapped and will show a banner to
     /// the user if this is the first bootstrap in the session.
     fn on_bootstrap_failed_timer_complete(&mut self, _: (), ctx: &mut ViewContext<Self>) {
+        // #1494: the session died while the keys were held: they can go nowhere. Dropped, with a
+        // log, never run here.
+        if self.model.lock().is_read_only() {
+            if self.ssh_typeahead_holding && !self.ssh_held_is_empty() {
+                log::warn!(
+                    "ssh typeahead: the shell is gone at the bootstrap timer; discarding {} \
+                     held byte(s), not running them (#1494)",
+                    self.ssh_held_bytes()
+                );
+                self.reset_ssh_typeahead();
+            }
+            return;
+        }
         let (is_ssh, shell, is_subshell, was_triggered_by_rc_file, is_wsl, is_msys2) = {
             let model = self.model.lock();
 
@@ -19353,10 +23048,41 @@ impl TerminalView {
             )
         };
 
+        // #1566: the timer is a give-up net, not a verdict. A pending session whose bootstrap
+        // prompt (`Precmd`) was already seen is progressing and `Bootstrapped` is due: the
+        // failure path (which hands held keys back or `stty sane`s the tty under the
+        // bootstrap) must not run on it. Waits once more, logged; the second expiry is final.
+        let progressing_session = {
+            let model = self.model.lock();
+            model.pending_session_id().filter(|sid| {
+                self.bootstrap_precmd_seen_session == Some(*sid)
+                    && self.bootstrap_grace_used_session != Some(*sid)
+            })
+        };
+        if let Some(sid) = progressing_session {
+            self.bootstrap_grace_used_session = Some(sid);
+            log::warn!(
+                "bootstrap give-up timer: the pending session already showed its bootstrap \
+                 prompt; waiting {:?} more for Bootstrapped instead of failing it (#1566)",
+                BOOTSTRAP_PROGRESS_GRACE
+            );
+            let arm = self
+                .bootstrap_timer_arm_in_flight
+                .unwrap_or(BootstrapTimerArm {
+                    generation: self.bootstrap_timer_generation,
+                    session: Some(sid),
+                });
+            self.spawn_bootstrap_timer(BOOTSTRAP_PROGRESS_GRACE, arm, ctx);
+            return;
+        }
+
         log::warn!("Bootstrapping failed for shell {shell:?} on ssh {is_ssh}");
 
         // #983: this pending session is stuck; stop swallowing typing on its behalf.
-        self.ssh_bootstrap_failed_session = self.model.lock().pending_session_id();
+        let failed_session = self.model.lock().pending_session_id();
+        self.ssh_bootstrap_failed_session = failed_session;
+        self.ssh_edge(input_queue::SshEdge::BootstrapFailed);
+        self.hand_held_ssh_typeahead_to_unbootstrapped_remote(is_ssh, ctx);
 
         // Unhide the long-running block that was hidden at the start of
         // subshell bootstrap so the user can see the session output again.
@@ -19444,6 +23170,112 @@ impl TerminalView {
         )
     }
 
+    /// Reflows blocks a column change left stale (#1303) and re-anchors a fixed scroll position
+    /// so the content on screen does not move. Returns how many blocks were reflowed.
+    fn reflow_stale_blocks_keeping_scroll(
+        &mut self,
+        work: StaleReflowWork,
+        ctx: &mut ViewContext<Self>,
+    ) -> usize {
+        let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+        let mut model = self.model.lock();
+        if !model.block_list().stale_reflow_pending() {
+            return 0;
+        }
+        let (anchor, range) = {
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            (
+                viewport.reflow_anchor(),
+                viewport.block_range_with_margin(Lines::new(STALE_REFLOW_MARGIN_LINES)),
+            )
+        };
+        let reflowed = match work {
+            StaleReflowWork::NearViewport => range.map_or(0, |(first, last)| {
+                model
+                    .block_list_mut()
+                    .reflow_stale_blocks_in_range(first, last)
+            }),
+            StaleReflowWork::Chunk(budget) => {
+                model.block_list_mut().reflow_stale_blocks_within(budget)
+            }
+            StaleReflowWork::All => model.block_list_mut().flush_all_stale_reflow(),
+        };
+        if reflowed > 0 {
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            self.scroll_position
+                .compensate_for_reflow(anchor, &viewport);
+            drop(viewport);
+            drop(model);
+            ctx.notify();
+        }
+        reflowed
+    }
+
+    /// Installs background-parsed restored blocks (#1254) from the view, so a scrolled-back
+    /// position can be re-anchored across the height change (the same `ReflowAnchor`
+    /// compensation as a deferred reflow), and rescans the installed blocks for an active Find,
+    /// which ran against their empty placeholders (#1265). Installs done earlier by the model
+    /// itself (pty chunk, layout) still get the Find rescan through the drained list; only the
+    /// scroll compensation needs the pre-install anchor taken here.
+    fn install_deferred_restores_keeping_scroll(&mut self, ctx: &mut ViewContext<Self>) {
+        let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+        let mut model = self.model.lock();
+        let ready = model.block_list().has_ready_deferred_restores();
+        let anchor = if ready
+            && matches!(
+                self.scroll_position.position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ) {
+            self.viewport_state(model.block_list(), input_mode, ctx)
+                .reflow_anchor()
+        } else {
+            None
+        };
+        if ready {
+            model.block_list_mut().install_ready_deferred_restores();
+        }
+        let installed = model.block_list_mut().take_installed_restore_blocks();
+        if installed.is_empty() {
+            return;
+        }
+        let moved = anchor.is_some() && {
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            self.scroll_position
+                .compensate_for_reflow(anchor, &viewport)
+        };
+        drop(model);
+        log::debug!(
+            "Installed {} deferred restored block(s); scroll re-anchored: {moved}",
+            installed.len()
+        );
+        if self.find_model.as_ref(ctx).is_find_bar_open() {
+            self.find_model.update(ctx, |find_model, ctx| {
+                for block_index in installed {
+                    find_model.invalidate_async_find_block(block_index, None, ctx);
+                }
+            });
+        }
+        ctx.notify();
+    }
+
+    /// Arms the next deferred-reflow chunk, if any block is still stale and none is armed.
+    fn schedule_stale_reflow_driver(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.stale_reflow_driver_scheduled
+            || !self.model.lock().block_list().stale_reflow_pending()
+        {
+            return;
+        }
+        self.stale_reflow_driver_scheduled = true;
+        ctx.spawn(Timer::after(STALE_REFLOW_CHUNK_INTERVAL), |me, _, ctx| {
+            me.stale_reflow_driver_scheduled = false;
+            me.reflow_stale_blocks_keeping_scroll(
+                StaleReflowWork::Chunk(STALE_REFLOW_CHUNK_BUDGET),
+                ctx,
+            );
+            me.schedule_stale_reflow_driver(ctx);
+        });
+    }
+
     fn resize_internal(&mut self, size_update: SizeUpdate, ctx: &mut ViewContext<Self>) {
         // Viewer-driven sizing: report the viewer's natural size to the sharer.
         // This runs before the early-return so the initial report on viewer join
@@ -19463,6 +23295,21 @@ impl TerminalView {
             log::debug!("Tried to resize with size {new_size:?}. Skipping resize");
             return;
         }
+
+        // The newest blocks reflow inside `resize` below, so a scrolled-back position has to be
+        // anchored to content before it, not after (#1328).
+        let pre_resize_anchor = if size_update.rows_or_columns_changed()
+            && matches!(
+                self.scroll_position.position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ) {
+            let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+            let model = self.model.lock();
+            self.viewport_state(model.block_list(), input_mode, ctx)
+                .reflow_anchor()
+        } else {
+            None
+        };
 
         // Update model with new size info.
         self.model.lock().resize(size_update);
@@ -19484,6 +23331,22 @@ impl TerminalView {
             positioner.set_size_info(size_update.new_size, ctx);
         });
         *self.size_info = size_update.new_size;
+        // Deferred reflow (#1303): what is on screen reflows now, the rest in the background.
+        self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::NearViewport, ctx);
+        if pre_resize_anchor.is_some() {
+            let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+            let model = self.model.lock();
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            let moved = self
+                .scroll_position
+                .compensate_for_reflow(pre_resize_anchor, &viewport);
+            drop(viewport);
+            drop(model);
+            if moved {
+                ctx.notify();
+            }
+        }
+        self.schedule_stale_reflow_driver(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterResize, ctx);
 
         // Notify subscribers.
@@ -19642,7 +23505,67 @@ impl TerminalView {
     /// Takes `&self` (it only needs `ctx`) so that read-only paths -- notably
     /// `open_terminal_content_url`, which is called while a highlighted link is borrowed out of
     /// `self` -- can report a refusal without an exclusive borrow.
+    /// Copies `text` to the system clipboard without letting a stalled clipboard owner hold the UI
+    /// thread (#1307). Falls back to an inline write on platforms with a cheap clipboard. A later
+    /// copy always wins over an earlier slower one; a failed or very slow write shows a toast.
+    fn copy_text_to_clipboard(&mut self, text: String, ctx: &mut ViewContext<Self>) {
+        // A copy that lands now supersedes any huge selection still being rendered.
+        self.selection_copy_seq = self.selection_copy_seq.wrapping_add(1);
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let pending_for_thread = pending.clone();
+            let (tx, rx) = futures::channel::oneshot::channel();
+            let started = warpui::clipboard::write_in_background(
+                ctx.clipboard(),
+                ClipboardContent::plain_text(text),
+                warpui::clipboard::ClipboardTarget::Clipboard,
+                move |outcome| {
+                    pending_for_thread.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = tx.send(outcome);
+                },
+            );
+            match started {
+                Ok(()) => {
+                    ctx.spawn(async move { rx.await.ok() }, |me, outcome, ctx| {
+                        if !matches!(
+                            outcome,
+                            Some(warpui::clipboard::WriteOutcome::Written)
+                                | Some(warpui::clipboard::WriteOutcome::Superseded)
+                        ) {
+                            me.show_error_toast(
+                                "Copy failed \u{2014} the clipboard did not accept the text"
+                                    .to_string(),
+                                ctx,
+                            );
+                        }
+                    });
+                    ctx.spawn(
+                        Timer::after(CLIPBOARD_WRITE_SLOW_TOAST_DELAY),
+                        move |me, _, ctx| {
+                            if pending.load(std::sync::atomic::Ordering::SeqCst) {
+                                me.show_error_toast(
+                                    "Copy is taking a while \u{2014} the clipboard owner is not \
+                                     responding"
+                                        .to_string(),
+                                    ctx,
+                                );
+                            }
+                        },
+                    );
+                }
+                Err(content) => ctx.clipboard().write(content),
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        ctx.clipboard().write(ClipboardContent::plain_text(text));
+    }
+
     fn show_error_toast(&self, text: String, ctx: &mut ViewContext<Self>) {
+        // `handle` panics when the singleton was never registered (bare views); ask first.
+        if !ctx.has_singleton_model::<ToastStack>() {
+            return;
+        }
         let window_id = ctx.window_id();
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             let toast = DismissibleToast::error(text);
@@ -19774,24 +23697,206 @@ impl TerminalView {
         active_block.is_agent_requested_command() && active_block.is_agent_driving_command()
     }
 
-    fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
-        // A paste is typed text: the whole paste is dropped exactly when typing would be (#983).
-        if self.swallow_input_during_ssh_setup(None, ctx) {
+    /// Whether a paste goes into the input editor (else to the pty), and whether the pty paste
+    /// is bracketed.
+    fn paste_routing(&self, agent_owns_pty: bool, ctx: &mut ViewContext<Self>) -> (bool, bool) {
+        let mut model = self.model.lock();
+        (
+            // If the block list isn't bootstrapped yet, there could be something in the .rc file waiting for input,
+            // and we want the paste to go there if the editor isn't focused.
+            (self.is_input_box_visible(&model, ctx)
+                && (self.input.as_ref(ctx).editor().is_focused(ctx)
+                    || model.block_list().is_bootstrapped())
+                && !(FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && model.typeahead_handoff().routes_keys_to_pty()))
+                || agent_owns_pty,
+            model.needs_bracketed_paste(),
+        )
+    }
+
+    /// Starts a paste whose clipboard read goes through the one async API ([`request_read`]) and
+    /// is ordered by the pane queue (#1405): the paste is an entry held by a `PasteReading` gate
+    /// until the read answers, keys typed meanwhile queue behind it in typed order, and the text
+    /// is routed (input box or pty) when the entry drains. Used where no background reader of the
+    /// platform serves the paste: the CLI-agent paste (images included) and the paste held during
+    /// an ssh connect (behind the connect gate). Returns the paste id.
+    fn start_async_paste_read(
+        &mut self,
+        kind: warpui::clipboard::ReadKind,
+        cli_agent: bool,
+        for_ssh_hold: bool,
+        shell_dialect: Option<ShellDialect>,
+        ctx: &mut ViewContext<Self>,
+    ) -> u64 {
+        let id = self.paste_queue.next_paste_id();
+        let request = warpui::clipboard::request_read(ctx.clipboard(), kind);
+        self.paste_queue.routed_pastes.insert(id);
+        if for_ssh_hold {
+            self.paste_queue.ssh_pastes.insert(id);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        let backstop = paste_backstop();
+        #[cfg(target_family = "wasm")]
+        let backstop: Option<Duration> = None;
+        self.prepare_subshell_gates(&[], ctx);
+        let queue = self.paste_queue.queue.clone();
+        {
+            let kind = input_queue::EntryKind::Paste {
+                paste_id: id,
+                payload: None,
+            };
+            let spec = input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id)
+                .with_cap(backstop);
+            match queue.try_lock() {
+                Some(mut guard) => {
+                    let mut host = paste_queue::PtyQueueHost::new(self, ctx);
+                    guard.offer_gated(&mut host, kind, spec);
+                }
+                None => queue.defer(input_queue::Deferred::OfferGated { kind, spec }),
+            }
+        }
+        match request.start {
+            // The platform reads inline: the answer is known already, the gate opens at once (no
+            // event-loop hop), still in its place in typed order.
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.finish_async_paste_read(id, cli_agent, shell_dialect, outcome, ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, move |me, outcome, ctx| {
+                    me.finish_async_paste_read(id, cli_agent, shell_dialect, outcome, ctx)
+                });
+            }
+        }
+        id
+    }
+
+    /// The clipboard answered paste `id` (see [`Self::start_async_paste_read`]): the gate opens,
+    /// the paste drains in its place in typed order. A CLI agent that takes images natively gets
+    /// its image-paste key instead of the text (the Windows fall-through pastes the empty text,
+    /// which the agent reads as "a paste happened").
+    fn finish_async_paste_read(
+        &mut self,
+        id: u64,
+        cli_agent: bool,
+        shell_dialect: Option<ShellDialect>,
+        outcome: warpui::clipboard::ReadOutcome,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use warpui::clipboard::ReadOutcome;
+        // Cancelled (^C, a reset hold) or given up: no entry claims the answer.
+        // (A queue that is busy right now still holds the paste: do not treat it as gone.)
+        if self
+            .paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| !queue.has_gate(input_queue::GateKind::PasteReading, id))
+        {
+            self.paste_queue.routed_pastes.remove(&id);
+            self.paste_queue.ssh_pastes.remove(&id);
             return;
         }
-        let (should_paste_in_input, needs_bracketed_paste) = {
-            let mut model = self.model.lock();
-            (
-                // If the block list isn't bootstrapped yet, there could be something in the .rc file waiting for input,
-                // and we want the paste to go there if the editor isn't focused.
-                self.is_input_box_visible(&model, ctx)
-                    && (self.input.as_ref(ctx).editor().is_focused(ctx)
-                        || model.block_list().is_bootstrapped())
-                    && !(FeatureFlag::TypeaheadHandoff.is_enabled()
-                        && model.typeahead_handoff().routes_keys_to_pty()),
-                model.needs_bracketed_paste(),
-            )
+        let result = match outcome {
+            ReadOutcome::Content(content) if self.paste_queue.ssh_pastes.contains(&id) => {
+                // A paste held during an ssh connect: nothing to paste means nothing to hold.
+                let text = clipboard_content_with_escaped_paths(content, shell_dialect, false);
+                if text.is_empty() {
+                    self.paste_queue.refused.insert(id);
+                    Err(PasteFailure::NoAnswer)
+                } else {
+                    Ok(text.into_bytes())
+                }
+            }
+            ReadOutcome::Content(content) => {
+                if cli_agent && content.has_image_data() {
+                    if !cfg!(windows) {
+                        self.paste_queue.routed_pastes.remove(&id);
+                        Ok(vec![escape_sequences::C0::SYN])
+                    } else if CLIAgentSessionsModel::as_ref(ctx)
+                        .session(self.view_id)
+                        .is_some_and(|s| s.agent == CLIAgent::Claude)
+                    {
+                        // On Windows, Claude Code uses Alt+V for native image paste.
+                        self.paste_queue.routed_pastes.remove(&id);
+                        Ok(vec![escape_sequences::C0::ESC, b'v'])
+                    } else {
+                        // Other agents on Windows: the (empty-text) bracketed paste is their
+                        // signal to read the clipboard for image data themselves.
+                        Ok(
+                            clipboard_content_with_escaped_paths(content, shell_dialect, false)
+                                .into_bytes(),
+                        )
+                    }
+                } else {
+                    Ok(
+                        clipboard_content_with_escaped_paths(content, shell_dialect, false)
+                            .into_bytes(),
+                    )
+                }
+            }
+            ReadOutcome::TooLarge(bytes) => Err(PasteFailure::TooLarge(bytes)),
+            ReadOutcome::TimedOut => Err(PasteFailure::NoAnswer),
+            // No clipboard handle at all: nothing to paste, nothing to say.
+            ReadOutcome::Unavailable => Ok(Vec::new()),
         };
+        self.finish_queued_background_paste(id, result, ctx);
+    }
+
+    /// Delivers pasted text that was held during an ssh connect (#1292), to wherever a paste
+    /// made now would go.
+    fn deliver_paste_text(&mut self, copied: &str, ctx: &mut ViewContext<Self>) {
+        let agent_owns_pty = self.agent_owns_command_pty();
+        let (should_paste_in_input, needs_bracketed_paste) =
+            self.paste_routing(agent_owns_pty, ctx);
+        if should_paste_in_input {
+            self.input.update(ctx, |input, ctx| {
+                input.paste_insert(copied, ctx);
+            });
+        } else {
+            self.write_user_bytes_to_pty(paste_bytes_for_pty(copied, needs_bracketed_paste), ctx);
+        }
+    }
+
+    fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
+        // A paste is typed text: it is held exactly when typing would be (#1292).
+        if self.swallow_input_during_ssh_setup(None, ctx) {
+            if std::mem::take(&mut self.ssh_paste_to_hold) {
+                self.hold_ssh_paste(middle_click, ctx);
+            } else {
+                // Only the setup dialog drops a paste now; say why nothing happened (#1255).
+                self.show_error_toast(
+                    "Paste ignored \u{2014} the ssh setup prompt is open".to_string(),
+                    ctx,
+                );
+            }
+            return;
+        }
+        // #1179: an agent-driven command's pty takes no user bytes, so a paste is steer text for
+        // the agent's input, exactly as typed characters are. Computed before the model lock.
+        let agent_owns_pty = self.agent_owns_command_pty();
+        // #1424 (step 6): in `table` mode the table routes a paste (the destination rows, on facts
+        // that take no blocking model lock); in `shadow` mode it is compared with the legacy route.
+        let routing_shadow = self.shadow_begin(Class::Paste, ctx);
+        let (should_paste_in_input, needs_bracketed_paste) =
+            if input_queue::destination_mode() == input_queue::DestinationMode::Table {
+                self.paste_routing_via_table(ctx)
+            } else {
+                self.paste_routing(agent_owns_pty, ctx)
+            };
+        // A paste made while the pane queue holds input waits behind it, whichever way it routes.
+        let queue_holds = self
+            .paste_queue
+            .queue
+            .try_peek()
+            .is_some_and(|queue| queue.holds_keys())
+            && !self.only_ssh_gates_open();
+        note_shadow_leaf(if queue_holds {
+            DestClass::Held
+        } else if should_paste_in_input {
+            DestClass::Editor
+        } else {
+            DestClass::Pty
+        });
+        self.shadow_end(routing_shadow);
 
         let is_cli_agent_paste =
             !should_paste_in_input && !middle_click && self.has_active_cli_agent_session(ctx);
@@ -19804,62 +23909,109 @@ impl TerminalView {
         } else {
             Some(self.shell_dialect_from_app(ctx))
         };
-        let mut copied = if middle_click {
-            TerminalView::middle_click_paste_content(shell_dialect, ctx)
-        } else {
-            let clipboard_content = ctx.clipboard().read();
-
-            if is_cli_agent_paste && clipboard_content.has_image_data() {
-                if !cfg!(windows) {
-                    self.write_user_bytes_to_pty(vec![escape_sequences::C0::SYN], ctx);
-                    return;
-                }
-
-                // On Windows, Claude Code uses Alt+V for native image paste.
-                let is_claude = CLIAgentSessionsModel::as_ref(ctx)
-                    .session(self.view_id)
-                    .is_some_and(|s| s.agent == CLIAgent::Claude);
-                if is_claude {
-                    self.write_user_bytes_to_pty(
-                        vec![escape_sequences::C0::ESC, b'v'],
+        // Terminal-bound pastes read the clipboard and prepare the pty bytes off the main thread,
+        // so a multi-MB paste neither freezes the UI nor loses keys typed behind it (#1255).
+        #[cfg(not(target_family = "wasm"))]
+        if !middle_click && !should_paste_in_input && !is_cli_agent_paste {
+            if let Some(reader) = ctx.clipboard().background_text_reader() {
+                self.start_background_paste(reader, shell_dialect, needs_bracketed_paste, ctx);
+                return;
+            }
+        }
+        // A paste the terminal routes to the input box reads off the UI thread too (#1380): the
+        // input's own queue holds keys typed meanwhile and inserts it, in order.
+        #[cfg(not(target_family = "wasm"))]
+        if !middle_click && should_paste_in_input && !is_cli_agent_paste {
+            if let Some(reader) = ctx.clipboard().background_text_reader() {
+                self.input.update(ctx, |input, ctx| {
+                    input.start_background_middle_click_paste(
+                        reader,
+                        crate::terminal::input::PasteSource::TerminalPaste(shell_dialect),
                         ctx,
                     );
-                    return;
-                }
-
-                // For all other agents on Windows, fall through to the normal paste path. When
-                // bracketed paste is enabled (true for TUI-based CLI agents), the empty-text paste
-                // sends \x1b[200~\x1b[201~ to the PTY. The agent interprets this as a "paste
-                // happened" signal and reads the Windows clipboard directly for image data.
+                });
+                return;
             }
-
-            clipboard_content_with_escaped_paths(clipboard_content, shell_dialect, false)
-        };
-
-        if should_paste_in_input {
-            // We put everything from the clipboard into the input box, even
-            // if it includes non-printable characters.
-            self.input.update(ctx, |input, ctx| {
-                input.system_insert(&copied, ctx);
-            });
-        } else {
-            // We need to replace newlines (either \n or \r\n) with \r, as
-            // otherwise programs that don't support bracketed paste might
-            // misinterpret newlines as a ^J sequence.
-            // See: https://github.com/vercel/hyper/issues/1448#issuecomment-367890105
-            copied = LINEFEED_REGEX
-                .replace_all(copied.as_str(), "\r")
-                .to_string();
-
-            if needs_bracketed_paste {
-                // If bracketed paste is enabled in the current grid, then we should surround any
-                // paste operation with `\x1b[200~` and `\x1b[201~` so that the application knows
-                // the text came from paste, rather than from direct user input.
-                // See https://cirw.in/blog/bracketed-paste for more info on bracketed paste
-                copied = format!("{BRACKETED_PASTE_PREFIX}{copied}{BRACKETED_PASTE_SUFFIX}");
-            }
-            self.write_user_bytes_to_pty(copied.into_bytes(), ctx);
         }
+        // A middle click reads the primary selection the same way (#1331): off the UI thread, held
+        // keys kept in order, never a fragment run. Into the input or to the pty as the click routes.
+        #[cfg(not(target_family = "wasm"))]
+        if middle_click && !is_cli_agent_paste {
+            let reader = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
+                selection.background_reader_for_middle_click_paste(ctx)
+            });
+            if let Some(reader) = reader {
+                if should_paste_in_input {
+                    self.input.update(ctx, |input, ctx| {
+                        input.start_background_middle_click_paste(
+                            reader,
+                            crate::terminal::input::PasteSource::TerminalMiddleClick(shell_dialect),
+                            ctx,
+                        );
+                    });
+                } else {
+                    self.start_background_paste(reader, shell_dialect, needs_bracketed_paste, ctx);
+                }
+                return;
+            }
+        }
+        if !middle_click {
+            // Images matter only for CLI-agent paste; otherwise skip the read and decode. Paste
+            // never uses the HTML flavor, so the plain path reads just text and copied paths. The
+            // read is asynchronous and ordered by the pane queue (#1405).
+            self.start_async_paste_read(
+                if is_cli_agent_paste {
+                    warpui::clipboard::ReadKind::Full
+                } else {
+                    warpui::clipboard::ReadKind::TextAndPaths
+                },
+                is_cli_agent_paste,
+                false,
+                shell_dialect,
+                ctx,
+            );
+            return;
+        }
+        // A middle click no worker reader took: the paste is disabled (nothing to read), or the
+        // platform reads inline and the request is answered at once. Either way the read goes
+        // through the pane queue like any paste, routed (input or pty) when it drains (#1405).
+        let kind = SelectionSettings::handle(ctx)
+            .update(ctx, |selection, _| selection.middle_click_read_kind());
+        if let Some(kind) = kind {
+            self.start_async_paste_read(kind, false, false, shell_dialect, ctx);
+        }
+    }
+
+    /// Reads the clipboard and builds the pty bytes on a worker thread; the callback writes them
+    /// and then the keys typed meanwhile (see `paste_queue`).
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        shell_dialect: Option<ShellDialect>,
+        bracketed: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.start_background_paste_with_backstop(
+            reader,
+            shell_dialect,
+            bracketed,
+            paste_backstop(),
+            ctx,
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn start_background_paste_with_backstop(
+        &mut self,
+        reader: warpui::clipboard::BackgroundTextReader,
+        shell_dialect: Option<ShellDialect>,
+        bracketed: bool,
+        backstop: Option<Duration>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // The paste is an entry of the pane's input queue (#1353).
+        self.start_queued_background_paste(reader, shell_dialect, bracketed, backstop, ctx);
     }
 
     fn has_active_cli_agent_session(&self, ctx: &AppContext) -> bool {
@@ -19871,6 +24023,124 @@ impl TerminalView {
     fn is_inverted_blocklist(&self, ctx: &ViewContext<Self>) -> bool {
         let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
         input_mode.is_inverted_blocklist()
+    }
+    /// The selection's text for a copy. A selection over `COPY_SELECTION_DEFER_ROWS` rows is only
+    /// snapshotted here (cheap, under a short model lock); the caller renders it on a
+    /// background thread so a huge copy never stalls the UI (#1304). The result is byte-identical
+    /// to `selection_to_string`. `PHOSPHOR_COPY_INLINE=1` forces the old inline path.
+    fn selection_text_for_copy(&mut self, ctx: &ViewContext<Self>) -> SelectionCopyText {
+        // Any newer selection copy supersedes one still being rendered.
+        self.selection_copy_seq = self.selection_copy_seq.wrapping_add(1);
+        let defer_over_rows = if cfg!(target_family = "wasm") || copy_inline_forced() {
+            None
+        } else {
+            Some(COPY_SELECTION_DEFER_ROWS)
+        };
+        let semantic_selection = SemanticSelection::as_ref(ctx);
+        let parts = self.model.lock().selection_to_parts_sliced(
+            semantic_selection,
+            self.is_inverted_blocklist(ctx),
+            defer_over_rows,
+            ctx,
+        );
+        match parts {
+            None => SelectionCopyText::Ready(None),
+            Some(parts) if parts.has_snapshots() => SelectionCopyText::Pending(parts),
+            Some(parts) => SelectionCopyText::Ready(Some(parts.render())),
+        }
+    }
+
+    /// Renders `parts` on a background thread, then runs `then` with the text on the UI thread,
+    /// unless a newer selection copy started meanwhile (it must not be overwritten by this one).
+    #[cfg(not(target_family = "wasm"))]
+    fn render_selection_off_thread(
+        &mut self,
+        parts: SelectionParts,
+        ctx: &mut ViewContext<Self>,
+        then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
+    ) {
+        let seq = self.selection_copy_seq;
+        self.advance_selection_snapshot(parts, seq, ctx, then);
+    }
+
+    /// Fills the selection's block snapshots in `SELECTION_SNAPSHOT_SLICE`-budgeted slices, each
+    /// under its own short model lock, yielding to the event loop between slices (#1377); then
+    /// renders the text on a background thread. A newer copy (`seq` moved on) abandons this one.
+    #[cfg(not(target_family = "wasm"))]
+    fn advance_selection_snapshot(
+        &mut self,
+        mut parts: SelectionParts,
+        seq: u64,
+        ctx: &mut ViewContext<Self>,
+        then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
+    ) {
+        if self.selection_copy_seq != seq {
+            return;
+        }
+        if parts.needs_slicing() {
+            let advanced = {
+                let model = self.model.lock();
+                let _hold =
+                    crate::terminal::model_lock_trace::HoldTimer::start("selection_snapshot");
+                parts.advance(model.block_list(), SELECTION_SNAPSHOT_SLICE)
+            };
+            match advanced {
+                Err(_) => {
+                    self.show_error_toast(
+                        "Copy failed \u{2014} the selected output scrolled out of the history"
+                            .to_string(),
+                        ctx,
+                    );
+                    return;
+                }
+                Ok(false) => {
+                    // Yield: other events (keys, paints, pty reads) run before the next slice.
+                    ctx.spawn(async {}, move |me, _, ctx| {
+                        me.advance_selection_snapshot(parts, seq, ctx, then);
+                    });
+                    return;
+                }
+                Ok(true) => {}
+            }
+        }
+        // A newer copy cancels the render still running for the previous one (#1382).
+        if let Some(previous) = self.selection_render_cancel.take() {
+            previous.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.selection_render_cancel = Some(cancel.clone());
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("selection-render".into())
+            .spawn(move || {
+                if let Some(text) = parts.render_cancellable(&cancel) {
+                    let _ = tx.send(text);
+                }
+            });
+        if spawned.is_err() {
+            self.show_error_toast(
+                "Copy failed \u{2014} could not start the copy".to_string(),
+                ctx,
+            );
+            return;
+        }
+        ctx.spawn(async move { rx.await.ok() }, move |me, text, ctx| {
+            if let Some(text) = text {
+                if me.selection_copy_seq == seq {
+                    then(me, text, ctx);
+                }
+            }
+        });
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn render_selection_off_thread(
+        &mut self,
+        parts: SelectionParts,
+        ctx: &mut ViewContext<Self>,
+        then: impl FnOnce(&mut Self, String, &mut ViewContext<Self>) + 'static,
+    ) {
+        then(self, parts.render(), ctx);
     }
 
     fn copy(&mut self, ctx: &mut ViewContext<Self>) {
@@ -19906,17 +24176,22 @@ impl TerminalView {
             return;
         }
 
-        let semantic_selection = SemanticSelection::as_ref(ctx);
-        if let Some(selected) = self.model.lock().selection_to_string(
-            semantic_selection,
-            self.is_inverted_blocklist(ctx),
-            ctx,
-        ) {
-            if !selected.is_empty() {
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(selected));
+        match self.selection_text_for_copy(ctx) {
+            SelectionCopyText::Ready(Some(selected)) => {
+                if !selected.is_empty() {
+                    self.copy_text_to_clipboard(selected, ctx);
+                }
+                return;
             }
-            return;
+            SelectionCopyText::Ready(None) => {}
+            SelectionCopyText::Pending(parts) => {
+                self.render_selection_off_thread(parts, ctx, |me, selected, ctx| {
+                    if !selected.is_empty() {
+                        me.copy_text_to_clipboard(selected, ctx);
+                    }
+                });
+                return;
+            }
         }
 
         // Prioritize selected text in the input over selected blocks (APP-4330):
@@ -19995,58 +24270,37 @@ impl TerminalView {
                             Some(model.link_at_range(url, RespectObfuscatedSecrets::Yes));
                         url_content
                             .map(|url_content| {
-                                vec![MenuItemFields::new(crate::t!("menu-block-copy-url"))
-                                    .with_on_select_action(TerminalAction::ContextMenu(
-                                        ContextMenuAction::CopyUrl { url_content },
-                                    ))
-                                    .into_item()]
+                                vec![
+                                    MenuItemFields::new(crate::t!("menu-block-copy-url"))
+                                        .with_on_select_action(TerminalAction::ContextMenu(
+                                            ContextMenuAction::CopyUrl { url_content },
+                                        ))
+                                        .into_item(),
+                                ]
                             })
                             .unwrap_or_default()
                     }
                     #[cfg(feature = "local_fs")]
                     GridHighlightedLink::File(file_link) => {
-                        let path = file_link.get_inner().absolute_path();
-                        let show_in_file_explorer_menu_item_label = if cfg!(target_os = "macos") {
-                            crate::t!("menu-block-show-in-finder")
-                        } else {
-                            crate::t!("menu-block-show-containing-folder")
-                        };
-                        path.map(|path| {
-                            let mut items = vec![
-                                MenuItemFields::new(crate::t!("menu-block-copy-path"))
-                                    .with_on_select_action(TerminalAction::ContextMenu(
-                                        ContextMenuAction::CopyUrl {
-                                            url_content: path.to_string_lossy().into(),
-                                        },
-                                    ))
-                                    .into_item(),
-                                MenuItemFields::new(show_in_file_explorer_menu_item_label)
-                                    .with_on_select_action(TerminalAction::ShowInFileExplorer(
-                                        path.clone(),
-                                    ))
-                                    .into_item(),
-                            ];
-
+                        // Open / Show in Finder (containing folder) / Copy path, the same
+                        // entries as the alt screen menu (#1347). Every one is a local action:
+                        // a path is never handed to the agent.
+                        let remote = self.alt_link_session_is_remote(ctx);
+                        let mut items = link_detection::alt_screen_link_menu_items(
+                            highlighted_link,
+                            None,
+                            remote,
+                        );
+                        if let Some(path) = file_link.get_inner().absolute_path() {
                             if renders_in_warp_notebook_viewer(&path) {
                                 items.push(
                                     MenuItemFields::new(crate::t!("menu-block-open-in-warp"))
                                         .with_on_select_action(TerminalAction::OpenFileInWarp(path))
                                         .into_item(),
                                 );
-                                // Because the default for cmd-click is to open in Zap, we also
-                                // have an open-in-editor option.
-                                items.push(
-                                    MenuItemFields::new(crate::t!("menu-block-open-in-editor"))
-                                        .with_on_select_action(TerminalAction::OpenGridLink(
-                                            highlighted_link.clone(),
-                                        ))
-                                        .into_item(),
-                                );
                             }
-
-                            items
-                        })
-                        .unwrap_or_default()
+                        }
+                        items
                     }
                     GridHighlightedLink::Hyperlink { uri, .. } => {
                         // OSC 8 hyperlink right-click. "Copy link" copies the
@@ -20210,13 +24464,10 @@ impl TerminalView {
                 // selected block(s), so offer the selection explicitly (#988).
                 if is_active_block_selected
                     && is_active_block_running
-                    && model
-                        .selection_to_string(
-                            SemanticSelection::as_ref(ctx),
-                            self.is_inverted_blocklist(ctx),
-                            ctx,
-                        )
-                        .is_some_and(|text| !text.is_empty())
+                    && model.has_selection_range(
+                        SemanticSelection::as_ref(ctx),
+                        self.is_inverted_blocklist(ctx),
+                    )
                 {
                     items.insert(
                         1,
@@ -20345,28 +24596,30 @@ impl TerminalView {
                         ))
                         .into_item(),
                 ]);
-                items.append(&mut vec![MenuItemFields::new(crate::t!(
-                    "menu-block-toggle-block-filter"
-                ))
-                .with_on_select_action(TerminalAction::ToggleBlockFilterOnSelectedOrLastBlock(
-                    ToggleBlockFilterSource::ContextMenu,
-                ))
-                .with_key_shortcut_label(keybinding_name_to_display_string(
-                    TOGGLE_BLOCK_FILTER_KEYBINDING,
-                    ctx,
-                ))
-                .into_item()]);
-                items.append(&mut vec![MenuItemFields::new(crate::t!(
-                    "menu-block-toggle-bookmark"
-                ))
-                .with_on_select_action(TerminalAction::ContextMenu(
-                    ContextMenuAction::ToggleBookmark,
-                ))
-                .with_key_shortcut_label(keybinding_name_to_display_string(
-                    "terminal:bookmark_selected_block",
-                    ctx,
-                ))
-                .into_item()]);
+                items.append(&mut vec![
+                    MenuItemFields::new(crate::t!("menu-block-toggle-block-filter"))
+                        .with_on_select_action(
+                            TerminalAction::ToggleBlockFilterOnSelectedOrLastBlock(
+                                ToggleBlockFilterSource::ContextMenu,
+                            ),
+                        )
+                        .with_key_shortcut_label(keybinding_name_to_display_string(
+                            TOGGLE_BLOCK_FILTER_KEYBINDING,
+                            ctx,
+                        ))
+                        .into_item(),
+                ]);
+                items.append(&mut vec![
+                    MenuItemFields::new(crate::t!("menu-block-toggle-bookmark"))
+                        .with_on_select_action(TerminalAction::ContextMenu(
+                            ContextMenuAction::ToggleBookmark,
+                        ))
+                        .with_key_shortcut_label(keybinding_name_to_display_string(
+                            "terminal:bookmark_selected_block",
+                            ctx,
+                        ))
+                        .into_item(),
+                ]);
 
                 items.append(&mut vec![
                     MenuItem::Separator,
@@ -20380,15 +24633,17 @@ impl TerminalView {
                         ))
                         .into_item(),
                 ]);
-                items.append(&mut vec![MenuItemFields::new(scroll_to_bottom_str)
-                    .with_on_select_action(TerminalAction::ContextMenu(
-                        ContextMenuAction::ScrollToBottomOfBlock,
-                    ))
-                    .with_key_shortcut_label(keybinding_name_to_display_string(
-                        "terminal:scroll_to_bottom_of_selected_block",
-                        ctx,
-                    ))
-                    .into_item()]);
+                items.append(&mut vec![
+                    MenuItemFields::new(scroll_to_bottom_str)
+                        .with_on_select_action(TerminalAction::ContextMenu(
+                            ContextMenuAction::ScrollToBottomOfBlock,
+                        ))
+                        .with_key_shortcut_label(keybinding_name_to_display_string(
+                            "terminal:scroll_to_bottom_of_selected_block",
+                            ctx,
+                        ))
+                        .into_item(),
+                ]);
 
                 items
             }
@@ -20532,7 +24787,8 @@ impl TerminalView {
     /// `TerminalAction::Paste` as the `terminal:paste` keybinding, so it has the same
     /// clipboard and target semantics, and is disabled while the clipboard is empty.
     fn paste_menu_item(&self, ctx: &mut ViewContext<Self>) -> MenuItem<TerminalAction> {
-        let is_clipboard_empty = ctx.clipboard().read().is_empty();
+        // The cached answer only: asking the clipboard owner here blocked the UI (#1406).
+        let is_clipboard_empty = !warpui::clipboard::cached_has_content(ctx.clipboard());
         MenuItemFields::new(crate::t!("common-paste"))
             .with_on_select_action(TerminalAction::Paste)
             .with_key_shortcut_label(keybinding_name_to_display_string("terminal:paste", ctx))
@@ -20569,12 +24825,14 @@ impl TerminalView {
         is_rprompt_shown: bool,
         position: PromptPosition,
     ) -> Vec<MenuItem<TerminalAction>> {
-        let mut items = vec![MenuItemFields::new(crate::t!("menu-block-copy-prompt"))
-            .with_on_select_action(TerminalAction::ContextMenu(ContextMenuAction::CopyPrompt {
-                position,
-                part: PromptPart::EntirePrompt,
-            }))
-            .into_item()];
+        let mut items = vec![
+            MenuItemFields::new(crate::t!("menu-block-copy-prompt"))
+                .with_on_select_action(TerminalAction::ContextMenu(ContextMenuAction::CopyPrompt {
+                    position,
+                    part: PromptPart::EntirePrompt,
+                }))
+                .into_item(),
+        ];
 
         if is_rprompt_shown {
             items.push(
@@ -21055,10 +25313,29 @@ impl TerminalView {
         let mut menu_items = Vec::new();
         let model = self.model.lock();
 
+        // A path / URL under the pointer (Cmd/Ctrl + right-click in a mouse-reporting TUI, or a
+        // plain right-click otherwise) gets Open / Show in Finder / Copy path first (#1347).
+        if let Some(link) = self.highlighted_link.as_ref() {
+            let remote = self.alt_link_session_is_remote(ctx);
+            let url_content = match link {
+                GridHighlightedLink::Url(url) => {
+                    Some(model.link_at_range(url, RespectObfuscatedSecrets::Yes))
+                }
+                _ => None,
+            };
+            menu_items.extend(link_detection::alt_screen_link_menu_items(
+                link,
+                url_content,
+                remote,
+            ));
+            if !menu_items.is_empty() {
+                menu_items.push(MenuItem::Separator);
+            }
+        }
+
         let semantic_selection = SemanticSelection::as_ref(ctx);
-        let selection_string =
-            model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx);
-        if selection_string.is_some() {
+        // Only whether a selection exists matters here; do not format it (#1304).
+        if model.has_selection_range(semantic_selection, self.is_inverted_blocklist(ctx)) {
             menu_items.push(
                 MenuItemFields::new(crate::t!("menu-block-copy"))
                     .with_on_select_action(TerminalAction::ContextMenu(
@@ -21094,6 +25371,20 @@ impl TerminalView {
             menu_items.append(&mut pane_context_menu_items);
         }
         menu_items
+    }
+
+    /// Whether the active session is a remote one, where a local reveal in the file manager
+    /// would show the wrong machine's filesystem.
+    fn alt_link_session_is_remote(&self, ctx: &AppContext) -> bool {
+        #[cfg(feature = "local_fs")]
+        {
+            self.session_is_remote(self.active_block_session_id(), ctx)
+        }
+        #[cfg(not(feature = "local_fs"))]
+        {
+            let _ = ctx;
+            false
+        }
     }
 
     fn alt_screen_context_menu(&mut self, position: Vector2F, ctx: &mut ViewContext<Self>) {
@@ -21586,13 +25877,12 @@ impl TerminalView {
             self.is_selecting = false;
             self.block_text_selection_start_position = None;
 
-            let selected_text = {
-                let semantic_selection = SemanticSelection::as_ref(ctx);
-                self.model
-                    .lock()
-                    .selection_to_string(semantic_selection, false, ctx)
-                    // It doesn't make sense to allow empty text as AI context.
-                    .filter(|text| !text.is_empty())
+            // Only test for a selection here; materializing the selected string (potentially
+            // many MB under the model lock) is left to the copy path, and only when a
+            // copy-on-select setting actually needs it.
+            let has_selection = {
+                let model = self.model.lock();
+                self.terminal_is_selecting(&model, ctx)
             };
 
             // The text selection changed, so clear any previously attached context text.
@@ -21602,7 +25892,7 @@ impl TerminalView {
 
             // A text selection might be a byproduct of a block selection.
             // If there's no renderable text selection, we should clear the text selection.
-            if selected_text.is_none() {
+            if !has_selection {
                 self.clear_selected_text(ctx);
             } else {
                 self.maybe_copy_selection_to_clipboard(ctx);
@@ -21900,16 +26190,26 @@ impl TerminalView {
     }
 
     fn maybe_copy_selection_to_clipboard(&mut self, ctx: &mut ViewContext<Self>) {
+        // Building the selected string can be very expensive for large selections, so skip it
+        // entirely when neither copy-on-select nor the Linux primary selection will use it.
+        if !SelectionSettings::as_ref(ctx).copy_on_select_would_write() {
+            return;
+        }
         let selection_settings = SelectionSettings::handle(ctx);
-        let semantic_selection = SemanticSelection::as_ref(ctx);
-        let model = self.model.lock();
-        if let Some(selected) =
-            model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-        {
+        let copy_on_select = move |selected: String, ctx: &mut ViewContext<Self>| {
             selection_settings.update(ctx, |selection_settings, ctx| {
                 selection_settings
                     .maybe_copy_on_select(ClipboardContent::plain_text(selected), ctx);
             });
+        };
+        match self.selection_text_for_copy(ctx) {
+            SelectionCopyText::Ready(Some(selected)) => copy_on_select(selected, ctx),
+            SelectionCopyText::Ready(None) => {}
+            SelectionCopyText::Pending(parts) => {
+                self.render_selection_off_thread(parts, ctx, move |_, selected, ctx| {
+                    copy_on_select(selected, ctx)
+                });
+            }
         }
     }
 
@@ -21963,10 +26263,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            self.model
-                .lock()
-                .typeahead_handoff_mut()
-                .end_editor_takeover_window();
+            self.handoff.write().end_editor_takeover_window();
         }
         if self.terminal_is_selecting(&self.model.lock(), ctx) {
             return;
@@ -22986,13 +27283,56 @@ impl TerminalView {
     }
 
     fn paste_in_input(&mut self, ctx: &mut ViewContext<Self>) {
-        let clipboard_content = ctx.clipboard().read();
+        // Off the UI thread where the platform can (#1380); the input inserts it in order with
+        // the keys typed meanwhile.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(reader) = ctx.clipboard().background_text_reader() {
+            self.input.update(ctx, |input, ctx| {
+                input.start_background_middle_click_paste(
+                    reader,
+                    crate::terminal::input::PasteSource::PlainTextPaste,
+                    ctx,
+                );
+                ctx.focus_self();
+            });
+            send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
+            return;
+        }
+        // The platform reads inline (or this is wasm): the request is already answered (#1405).
+        let request = warpui::clipboard::request_read(
+            ctx.clipboard(),
+            warpui::clipboard::ReadKind::TextAndPaths,
+        );
+        match request.start {
+            warpui::clipboard::ReadStart::Ready(outcome) => {
+                self.insert_read_into_input(outcome, ctx)
+            }
+            warpui::clipboard::ReadStart::Pending(pending) => {
+                ctx.spawn(pending, |me, outcome, ctx| {
+                    me.insert_read_into_input(outcome, ctx)
+                });
+            }
+        }
+        send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
+    }
 
+    fn insert_read_into_input(
+        &mut self,
+        outcome: warpui::clipboard::ReadOutcome,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // An entry of the pane queue, not a direct insert: with a clipboard read still pending
+        // (or an Enter that waits) the text takes its place behind it (#1437).
+        let content =
+            warpui::clipboard::ClipboardContent::plain_text(outcome.into_content().plain_text);
         self.input.update(ctx, |input, ctx| {
-            input.system_insert(clipboard_content.plain_text.as_str(), ctx);
+            input.offer_ready_paste(
+                content,
+                crate::terminal::input::PasteSource::PlainTextPaste,
+                ctx,
+            );
             ctx.focus_self();
         });
-        send_telemetry_from_ctx!(TelemetryEvent::InputPaste, ctx);
     }
 
     fn command_search_from_input(&mut self, ctx: &mut ViewContext<Self>) {
@@ -23128,8 +27468,7 @@ impl TerminalView {
         ctx.emit(Event::OpenPromptEditor);
     }
 
-    /// Handle AI entrypoints, routing to AI in blocklist when possible and falling back to the AI
-    /// Assistant panel.
+    /// Handle AI entrypoints, routing to AI in blocklist.
     fn ask_ai(&mut self, ask_source: &AskAISource, ctx: &mut ViewContext<Self>) {
         let semantic_selection = SemanticSelection::as_ref(ctx);
         let selection_string = self.model.lock().selection_to_string(
@@ -23218,8 +27557,6 @@ impl TerminalView {
 
         if FeatureFlag::AgentMode.is_enabled() {
             self.ask_blocklist_ai(&ask_data, ctx);
-        } else {
-            ctx.emit(Event::AskAIAssistant(ask_data.clone()));
         }
 
         self.close_context_menu(ctx, false);
@@ -23347,12 +27684,21 @@ impl TerminalView {
     /// this it would stay partly behind a banner that appeared while it was open (#958).
     fn notify_notice_banner_changed(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.notify();
-        if let Some(delay) =
-            find_bar_banner_relayout_delay(self.find_model.as_ref(ctx).is_find_bar_open())
-        {
-            ctx.spawn(Timer::after(delay), |me, _, ctx| {
-                me.find_bar.update(ctx, |_, ctx| ctx.notify());
+        if self.find_model.as_ref(ctx).is_find_bar_open() {
+            // #1374: driven by the frame-drawn callback (the frame `notify` above schedules is the
+            // one that saves the banner's position), not by a guessed 50 ms delay.
+            let (frame_tx, frame_rx) = async_channel::bounded::<()>(1);
+            ctx.on_next_frame_drawn(move || {
+                let _ = frame_tx.try_send(());
             });
+            ctx.spawn(
+                async move {
+                    let _ = frame_rx.recv().await;
+                },
+                |me, _, ctx| {
+                    me.find_bar.update(ctx, |_, ctx| ctx.notify());
+                },
+            );
         }
     }
 
@@ -23370,9 +27716,13 @@ impl TerminalView {
         }
         self.find_bar.update(ctx, |view, ctx| {
             let semantic_selection = SemanticSelection::as_ref(ctx);
-            if let Some(selected) =
-                model.selection_to_string(semantic_selection, inverted_blocklist, ctx)
-            {
+            // A selection too big to be a sensible query is not prefilled (and not built).
+            if let BoundedSelection::Text(selected) = model.selection_to_bounded_string(
+                semantic_selection,
+                inverted_blocklist,
+                PREVIEW_SELECTION_MAX_ROWS,
+                ctx,
+            ) {
                 if !selected.is_empty() {
                     view.set_query_text(selected.as_str(), ctx);
                 }
@@ -23480,6 +27830,8 @@ impl TerminalView {
     /// Note that the meaning of "first" varies depending on whether the block list is inverted
     /// or not.
     fn run_find(&mut self, mut options: FindOptions, ctx: &mut ViewContext<Self>) {
+        // Match positions are grid coordinates: search the reflowed grids (#1303).
+        self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::All, ctx);
         let blocks_to_include_in_results = matches!(
             self.find_bar.as_ref(ctx).display_find_within_block,
             FindWithinBlockState::Enabled
@@ -23721,6 +28073,7 @@ impl TerminalView {
     }
 
     fn select_all_blocks(&mut self, ctx: &mut ViewContext<Self>) {
+        self.reflow_stale_blocks_keeping_scroll(StaleReflowWork::All, ctx);
         let first_block_index = self
             .model
             .lock()
@@ -24009,7 +28362,7 @@ impl TerminalView {
         // This also explains why we don't invoke this function unless we're attempting to clear
         // **all** selected text; because rich content text copying will stop working otherwise.
         if exempt_rich_content_view_id.is_none() {
-            self.model.lock().block_list_mut().clear_selection();
+            self.clear_block_list_selection_for_key();
         }
 
         // Clear all selected text within CLI subagent views,
@@ -24295,7 +28648,7 @@ impl TerminalView {
                     .lock()
                     .block_list_mut()
                     .mark_rich_content_dirty(block.id());
-                ctx.notify();
+                self.redraw_for_rich_content_update(ctx);
             }
             AIBlockEvent::OpenCitation(citation) => match citation {
                 AIAgentCitation::WarpDriveObject { uid } => {
@@ -24336,7 +28689,7 @@ impl TerminalView {
                 // The card still holds focus and `redetermine_terminal_focus` refuses to take it
                 // from an AI block, so reclaim it explicitly -- now, and again from the action
                 // events below once the command's block has settled and the input is visible.
-                self.reclaim_focus_until = Some(Instant::now() + Duration::from_secs(2));
+                self.reclaim_focus.start();
                 self.reclaim_focus_placed = false;
                 self.place_focus_after_card_resolved(ctx);
             }
@@ -24966,10 +29319,9 @@ impl TerminalView {
 
             let is_shell_mode = !self.ai_input_model.as_ref(ctx).is_ai_input_enabled();
             let are_blocks_selected = !self.selected_blocks.is_empty();
-            let is_text_selected = model
-                .selection_to_string(semantic_selection, false, ctx)
-                .filter(|text| !text.is_empty())
-                .is_some();
+            // Only whether a selection exists matters; building its text on every focus change
+            // grows with the selection (#1304).
+            let is_text_selected = model.has_selection_range(semantic_selection, false);
 
             // Leave the input box focused when selecting blocks or text as context in AI input
             // mode so users can quickly submit queries.
@@ -25007,19 +29359,26 @@ impl TerminalView {
             ctx.focus(blocked_cli_subagent_view);
         } else if should_focus_terminal {
             self.focus_terminal(ctx);
-        } else { match self.active_ssh_remote_server_choice_block() { Some(ssh_choice_view) => {
-            ctx.focus(&ssh_choice_view);
-        } _ => if let (Some(active_ai_block_view_handle), false) =
-            (self.active_ai_block(ctx), is_input_visible)
-        {
-            ctx.focus(active_ai_block_view_handle);
-        } else if let Some(env_var_collection_block_handle) =
-            self.active_env_var_collection_block(ctx)
-        {
-            ctx.focus(env_var_collection_block_handle);
         } else {
-            self.focus_input_box(ctx);
-        }}}
+            match self.active_ssh_remote_server_choice_block() {
+                Some(ssh_choice_view) => {
+                    ctx.focus(&ssh_choice_view);
+                }
+                _ => {
+                    if let (Some(active_ai_block_view_handle), false) =
+                        (self.active_ai_block(ctx), is_input_visible)
+                    {
+                        ctx.focus(active_ai_block_view_handle);
+                    } else if let Some(env_var_collection_block_handle) =
+                        self.active_env_var_collection_block(ctx)
+                    {
+                        ctx.focus(env_var_collection_block_handle);
+                    } else {
+                        self.focus_input_box(ctx);
+                    }
+                }
+            }
+        }
     }
 
     fn close_context_menu(&mut self, ctx: &mut ViewContext<Self>, should_redetermine_focus: bool) {
@@ -25098,10 +29457,10 @@ impl TerminalView {
         );
         let has_text_selection = no_blocks_selected && {
             let semantic_selection = SemanticSelection::as_ref(ctx);
+            // Existence only; do not format the selection (#1304).
             self.model
                 .lock()
-                .selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-                .is_some_and(|s| !s.is_empty())
+                .has_selection_range(semantic_selection, self.is_inverted_blocklist(ctx))
         };
         if has_text_selection {
             self.context_menu_copy_selected_text(ctx);
@@ -25202,14 +29561,15 @@ impl TerminalView {
             return;
         }
 
-        {
-            let semantic_selection = SemanticSelection::as_ref(ctx);
-            let model = self.model.lock();
-            if let Some(selected_text) =
-                model.selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-            {
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(selected_text));
+        match self.selection_text_for_copy(ctx) {
+            SelectionCopyText::Ready(Some(selected_text)) => {
+                self.copy_text_to_clipboard(selected_text, ctx);
+            }
+            SelectionCopyText::Ready(None) => {}
+            SelectionCopyText::Pending(parts) => {
+                self.render_selection_off_thread(parts, ctx, |me, selected_text, ctx| {
+                    me.copy_text_to_clipboard(selected_text, ctx);
+                });
             }
         }
         self.close_context_menu(ctx, true);
@@ -25364,32 +29724,10 @@ impl TerminalView {
             InputEvent::PageUp => self.page_up(ctx),
             InputEvent::PageDown => self.page_down(ctx),
             InputEvent::ExecuteCommand(event) => {
-                // #983: the head of this line was dropped during an ssh connect and the rest
-                // reached the input editor (it takes focus once the ssh block has ended), so
-                // its Enter must not run the tail as a command of its own.
-                self.log_ssh_drop_state("execute_command");
-                if self.ssh_drop_line_through_enter
-                    && matches!(event.source, CommandExecutionSource::User)
-                {
-                    self.ssh_drop_line_through_enter = false;
-                    self.ssh_setup_drop_notified = false;
-                    // #1113: the vetoed line is discarded (the editor is cleared, as before), with
-                    // a notice; held text is never concatenated with what the editor holds.
-                    let had_text = self.ssh_held_typing != SshHeldTyping::default()
-                        || !self.input.as_ref(ctx).buffer_text(ctx).is_empty();
-                    self.ssh_held_typing = SshHeldTyping::default();
-                    self.input.update(ctx, |input, ctx| {
-                        input.clear_buffer_and_reset_undo_stack(ctx)
-                    });
-                    if had_text {
-                        self.show_ssh_typing_toast(
-                            "Text typed while the SSH session connected was discarded, not run",
-                            ctx,
-                        );
-                    }
-                    return;
-                }
-                self.note_command_submitted_for_ssh_gate(&event.command);
+                self.note_command_submitted_for_ssh_gate(
+                    &event.command,
+                    matches!(event.source, CommandExecutionSource::User),
+                );
                 self.update_scroll_position_locking(
                     ScrollPositionUpdate::AfterCommandExecutionStarted,
                     ctx,
@@ -25453,6 +29791,14 @@ impl TerminalView {
                 );
             }
             InputEvent::ClearSelectionsWhenShellMode => self.clear_selections_when_shell_mode(ctx),
+            InputEvent::FocusPendingAgentAction => {
+                // Focus only; the card's own Enter binding then runs it on a second Enter.
+                if let Some(ai_block) = self.last_ai_block() {
+                    ai_block.update(ctx, |ai_block, ctx| {
+                        ai_block.focus_pending_action_for_empty_enter(ctx);
+                    });
+                }
+            }
             InputEvent::AutosuggestionAccepted => {
                 // TODO(suraj): maybe pass down the autosuggestion type and send
                 // the telemetry deeper so we don't have to guesstimate the state
@@ -25535,32 +29881,39 @@ impl TerminalView {
                 };
                 let initial_prompt = initial_prompt.clone();
 
-                match self.pane_stack.as_ref().and_then(|h| h.upgrade(ctx)) { Some(pane_stack) => {
-                    let should_pop = pane_stack.as_ref(ctx).depth() > 1;
-                    if should_pop {
-                        pane_stack.update(ctx, |stack, ctx| {
-                            stack.pop(ctx);
-                        });
+                match self.pane_stack.as_ref().and_then(|h| h.upgrade(ctx)) {
+                    Some(pane_stack) => {
+                        let should_pop = pane_stack.as_ref(ctx).depth() > 1;
+                        if should_pop {
+                            pane_stack.update(ctx, |stack, ctx| {
+                                stack.pop(ctx);
+                            });
+                        }
+
+                        let active_view = pane_stack.as_ref(ctx).active_view().clone();
+
+                        // If the active view is `self`, this cloud-mode terminal is the root of the
+                        // pane stack and has no parent terminal to host a local agent conversation.
+                        if active_view.id() == self.id() {
+                            log::warn!(
+                                "ExitAmbientAgentAndStartLocalAgent received but ambient-agent pane has no parent terminal"
+                            );
+                        } else {
+                            active_view.update(ctx, |view, ctx| {
+                                view.enter_agent_view_for_new_conversation(
+                                    initial_prompt,
+                                    origin,
+                                    ctx,
+                                );
+                            });
+                        }
                     }
-
-                    let active_view = pane_stack.as_ref(ctx).active_view().clone();
-
-                    // If the active view is `self`, this cloud-mode terminal is the root of the
-                    // pane stack and has no parent terminal to host a local agent conversation.
-                    if active_view.id() == self.id() {
+                    _ => {
                         log::warn!(
-                            "ExitAmbientAgentAndStartLocalAgent received but ambient-agent pane has no parent terminal"
+                            "ExitAmbientAgentAndStartLocalAgent received but no pane stack available; cannot start local agent without a parent terminal"
                         );
-                    } else {
-                        active_view.update(ctx, |view, ctx| {
-                            view.enter_agent_view_for_new_conversation(initial_prompt, origin, ctx);
-                        });
                     }
-                } _ => {
-                    log::warn!(
-                        "ExitAmbientAgentAndStartLocalAgent received but no pane stack available; cannot start local agent without a parent terminal"
-                    );
-                }}
+                }
 
                 ctx.notify();
             }
@@ -25709,6 +30062,13 @@ impl TerminalView {
                 // terminal-path Ctrl-D (see `ssh_connect_holds_eot`).
                 if self.ssh_connect_holds_eot() {
                     self.note_ssh_interrupt_held(ctx);
+                } else if self.pane_queue_or_setup_gate_open() {
+                    // #1432: with keys held (a paste reading, an Enter waiting for its verdict,
+                    // a prompt hold) or a subshell / PowerShell setup in flight, the EOT is a
+                    // signal that goes out in typed order behind them, exactly like the
+                    // terminal-path Ctrl-D; `Event::CtrlD` reaches the controller directly and
+                    // would overtake them and land inside the setup.
+                    self.write_user_bytes_to_pty(&[escape_sequences::C0::EOT][..], ctx);
                 } else {
                     ctx.emit(Event::CtrlD);
                 }
@@ -25736,10 +30096,7 @@ impl TerminalView {
             }
             InputEvent::EditorFocused => {
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
-                    self.model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .on_editor_focused();
+                    self.handoff.write().on_editor_focused();
                 }
                 ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
                 ctx.notify();
@@ -25823,12 +30180,16 @@ impl TerminalView {
                 self.register_cli_agent_listener_without_session_start_event(*agent, ctx);
             }
             InputEvent::TypeaheadHandoffEnterDeferred => {
+                // Keys typed from now on, in the editor or here, queue behind the Enter (#1016).
+                self.open_deferred_enter_gate(ctx);
+                self.arm_uncovered_deferral_timer(ctx);
+                self.arm_report_deferral_timer(ctx);
                 if ctx.is_self_or_child_focused() {
                     self.focus_terminal(ctx);
                 }
             }
             InputEvent::ReplayAfterDeferredEnter => {
-                self.replay_after_deferred_enter(Instant::now(), ctx);
+                self.replay_after_deferred_enter(ctx);
             }
             #[cfg(not(target_family = "wasm"))]
             InputEvent::OpenPluginInstructionsPane(agent, kind) => {
@@ -26235,9 +30596,11 @@ impl TerminalView {
             set_custom_keybinding(MOVE_LINE_END_BINDING_NAME, &CTRL_E_KEYSTROKE, ctx);
         }
         EmacsBindingsSettings::handle(ctx).update(ctx, |settings_model, settings_ctx| {
-            report_if_error!(settings_model
-                .emacs_bindings_banner_state
-                .set_value(BannerState::Dismissed, settings_ctx));
+            report_if_error!(
+                settings_model
+                    .emacs_bindings_banner_state
+                    .set_value(BannerState::Dismissed, settings_ctx)
+            );
         });
         self.is_emacs_bindings_banner_open = false;
         self.notify_notice_banner_changed(ctx);
@@ -26383,10 +30746,12 @@ impl TerminalView {
                     );
                 }
             }
-        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
+        } else if self.nav_key_goes_to_pty(
+            self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
             self.on_ssh_warpification_key_event(None, ctx);
-            let sequence =
-                EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_UP]);
+            let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_UP]);
             self.write_passive_input_to_pty(sequence, ctx);
         }
     }
@@ -26541,15 +30906,20 @@ impl TerminalView {
                     self.select_less_recent_block(false /* is_cmd_down */, ctx);
                 }
             }
-        } else if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
-            let sequence =
-                EscCodes::build_escape_sequence(self.model.lock().deref(), &[EscCodes::ARROW_DOWN]);
+        } else if self.nav_key_goes_to_pty(
+            self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
+            let sequence = self.build_cursor_key_sequence(&[EscCodes::ARROW_DOWN]);
             self.write_passive_input_to_pty(sequence, ctx);
         }
     }
 
     fn page_up(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.nav_key_goes_to_pty(
+            self.is_long_running() && !self.agent_owns_command_pty(),
+            ctx,
+        ) {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page up defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_UP);
@@ -26560,7 +30930,10 @@ impl TerminalView {
     }
 
     fn page_down(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() {
+        if self.nav_key_goes_to_pty(
+            self.is_long_running() && !self.agent_owns_command_pty(),
+            ctx,
+        ) {
             // Note: We explicitly use the CSI prefix, as the terminal we are impersonating
             // (`xterm-256color`) has the escape sequence for page down defined with that prefix
             let sequence = EscCodes::build_escape_sequence_with_c1(C1::CSI, EscCodes::PAGE_DOWN);
@@ -26571,8 +30944,12 @@ impl TerminalView {
     }
 
     fn move_home(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
-            let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"H");
+        if self.nav_key_goes_to_pty(
+            (self.is_long_running() && !self.agent_owns_command_pty())
+                || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
+            let sequence = self.build_cursor_key_sequence(b"H");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterHome, ctx);
@@ -26580,8 +30957,12 @@ impl TerminalView {
     }
 
     fn move_end(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.is_long_running() || self.typeahead_handoff_routes_keys_to_pty() {
-            let sequence = EscCodes::build_escape_sequence(self.model.lock().deref(), b"F");
+        if self.nav_key_goes_to_pty(
+            (self.is_long_running() && !self.agent_owns_command_pty())
+                || self.typeahead_handoff_routes_keys_to_pty(),
+            ctx,
+        ) {
+            let sequence = self.build_cursor_key_sequence(b"F");
             self.write_user_bytes_to_pty(sequence, ctx);
         } else {
             self.update_scroll_position_locking(ScrollPositionUpdate::AfterEnd, ctx);
@@ -27020,7 +31401,10 @@ impl TerminalView {
             self.append_to_rich_input(&text, ctx);
             Some(CliAgentRouting::RichInput)
         } else {
-            self.write_to_pty(text.into_bytes(), ctx);
+            // Through the pane queue like every user-visible byte (#1433): written raw it could
+            // overtake keys the queue holds (a paste still reading, an Enter waiting for its
+            // verdict) and ignored the ssh / subshell holds.
+            self.write_user_bytes_to_pty(text.into_bytes(), ctx);
             self.focus_terminal(ctx);
             Some(CliAgentRouting::Pty)
         }
@@ -27285,6 +31669,18 @@ impl TerminalView {
             .is_waterfall_gap_mode()
     }
 
+    /// The input mode `render` lays the view out in. When in agent view, layout is always pinned
+    /// to the bottom.
+    fn current_input_mode(&self, app: &AppContext) -> InputMode {
+        if FeatureFlag::AgentView.is_enabled()
+            && self.agent_view_controller.as_ref(app).is_fullscreen()
+        {
+            InputMode::PinnedToBottom
+        } else {
+            *InputModeSettings::as_ref(app).input_mode.value()
+        }
+    }
+
     pub fn get_terminal_view_render_context(
         &self,
         model: &TerminalModel,
@@ -27303,6 +31699,7 @@ impl TerminalView {
         };
 
         TerminalViewRenderContext {
+            key_model: self.key_model.clone(),
             size_info: *self.size_info(),
             scroll_position: self.scroll_position(),
             highlighted_url: self.highlighted_link.clone_inner(),
@@ -27313,7 +31710,7 @@ impl TerminalView {
                 .expect("terminal should upgrade")
                 .is_focused(app),
             approval_card_view_id: self.approval_card_view_id(app),
-            settled_ai_focus_view_ids: self.settled_ai_focus_view_ids(app),
+            settled_ai_focus_view_id: self.focused_settled_ai_target(app),
             ssh_choice_card_view_id: self
                 .active_ssh_remote_server_choice_block()
                 .map(|card| card.id()),
@@ -27532,51 +31929,60 @@ impl TerminalView {
         .finish()
     }
 
-    fn render_label_element(
+    /// The command run time ("(3.2s)", live while the command runs, hover tooltip with the
+    /// start/end times), shared by the Phosphor-prompt block label above and the shell-prompt
+    /// (PS1) block header drawn by `BlockListElement` (#1145). `None` when the block has no
+    /// duration to show yet and is not executing.
+    pub(super) fn render_duration_element(
         index: BlockIndex,
         model: &TerminalModel,
         mouse_state: Option<&MouseStateHandle>,
-        sessions: &Sessions,
-        padding_x: Pixels,
         tool_tip_below_button: bool,
         appearance: &Appearance,
-    ) -> Box<dyn Element> {
+    ) -> Option<Box<dyn Element>> {
         let terminal_theme_prompt: ColorU = appearance
             .theme()
             .sub_text_color(appearance.theme().background())
             .into();
 
-        let prompt = Text::new_inline(
-            Self::block_prompt(model, sessions, index),
-            appearance.monospace_font_family(),
-            appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
-        )
-        .with_style(Properties::default().weight(appearance.monospace_font_weight()))
-        .with_color(terminal_theme_prompt)
-        .finish();
-
-        let mut label_row = Flex::row().with_child(prompt);
-
         let is_live = Self::is_block_duration_live(model, index);
+        // #1142: a running command's counter ticks with paint-only repaints (a layout only when
+        // its length changes), instead of a full-window layout every second.
+        let live_start = is_live
+            .then(|| model.block_list().block_at(index)?.start_ts().copied())
+            .flatten()
+            .filter(|_| crate::ui_components::live_duration::paint_only_counter_enabled());
         if let Some(duration_string) = Self::block_duration_text(model, index) {
-            let duration = Text::new_inline(
-                duration_string,
-                appearance.monospace_font_family(),
-                appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
-            )
-            .with_style(Properties::default().weight(appearance.monospace_font_weight()))
-            .with_color(terminal_theme_prompt)
-            .finish();
+            let duration = if let Some(start) = live_start {
+                crate::ui_components::live_duration::LiveDurationText::new(
+                    start,
+                    appearance.monospace_font_family(),
+                    appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
+                    Properties::default().weight(appearance.monospace_font_weight()),
+                    terminal_theme_prompt,
+                )
+                .finish()
+            } else {
+                Text::new_inline(
+                    duration_string,
+                    appearance.monospace_font_family(),
+                    appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
+                )
+                .with_style(Properties::default().weight(appearance.monospace_font_weight()))
+                .with_color(terminal_theme_prompt)
+                .finish()
+            };
 
             // Wrap in LiveElement to trigger periodic repaints while the command is still
             // running, so the elapsed-duration counter updates live. See issue #426.
-            let duration: Box<dyn Element> = if is_live {
+            // (The paint-only counter above schedules its own repaints.)
+            let duration: Box<dyn Element> = if is_live && live_start.is_none() {
                 LiveElement::new(duration, LIVE_COMMAND_DURATION_REPAINT_INTERVAL).finish()
             } else {
                 duration
             };
 
-            label_row.add_child(if let Some(state) = mouse_state {
+            Some(if let Some(state) = mouse_state {
                 Hoverable::new(state.clone(), |state| {
                     let mut stack = Stack::new().with_child(duration);
                     if state.is_hovered() {
@@ -27613,12 +32019,12 @@ impl TerminalView {
                 .finish()
             } else {
                 duration
-            });
+            })
         } else if Self::is_block_executing(model, index) {
             // Block is executing but less than 1 second has elapsed — no duration text to
             // show yet. Add an invisible LiveElement to kick off the repaint timer so the
             // counter appears as soon as 1s elapses. See issue #426.
-            label_row.add_child(
+            Some(
                 LiveElement::new(
                     ConstrainedBox::new(Empty::new().finish())
                         .with_width(0.)
@@ -27627,7 +32033,45 @@ impl TerminalView {
                     LIVE_COMMAND_DURATION_REPAINT_INTERVAL,
                 )
                 .finish(),
-            );
+            )
+        } else {
+            None
+        }
+    }
+
+    fn render_label_element(
+        index: BlockIndex,
+        model: &TerminalModel,
+        mouse_state: Option<&MouseStateHandle>,
+        sessions: &Sessions,
+        padding_x: Pixels,
+        tool_tip_below_button: bool,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let terminal_theme_prompt: ColorU = appearance
+            .theme()
+            .sub_text_color(appearance.theme().background())
+            .into();
+
+        let prompt = Text::new_inline(
+            Self::block_prompt(model, sessions, index),
+            appearance.monospace_font_family(),
+            appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
+        )
+        .with_style(Properties::default().weight(appearance.monospace_font_weight()))
+        .with_color(terminal_theme_prompt)
+        .finish();
+
+        let mut label_row = Flex::row().with_child(prompt);
+
+        if let Some(duration) = Self::render_duration_element(
+            index,
+            model,
+            mouse_state,
+            tool_tip_below_button,
+            appearance,
+        ) {
+            label_row.add_child(duration);
         }
 
         SavePosition::new(
@@ -30014,7 +34458,87 @@ impl TerminalView {
         session_id
     }
 
+    /// #1562: whether a setup write (ssh warpify, subshell bootstrap) must not be made now,
+    /// because keys delivered to the pty sit in the shell's line and the write would kill them or
+    /// be appended to them.
+    pub(super) fn setup_write_must_wait_for_the_line(&self) -> bool {
+        FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self.handoff.read().shell_line_may_hold_typed_text()
+    }
+
+    fn show_setup_waits_for_line_toast(&self, ctx: &mut ViewContext<Self>) {
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::new(
+                    "Finish the line in the shell (Enter) or clear it (Ctrl-U) to start \
+                     Phosphor's setup. Ctrl-C skips setup."
+                        .to_string(),
+                    ToastFlavor::Default,
+                );
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            });
+        }
+    }
+
+    /// Defers an ssh warpify write while the shell's line holds typed text (#1562). Returns
+    /// whether it was deferred; the request is resumed by [`Self::resume_deferred_ssh_warpify`].
+    fn defer_ssh_warpify_for_the_line(
+        &mut self,
+        request: impl FnOnce() -> DeferredSshWarpify,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.setup_write_must_wait_for_the_line() {
+            return false;
+        }
+        log::info!("setup write deferred: the shell's line holds typed text");
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        self.ssh_warpify_deferred = Some((request(), block_id));
+        self.show_setup_waits_for_line_toast(ctx);
+        true
+    }
+
+    /// Resumes whatever setup write waited for the shell's line (#1562).
+    fn resume_deferred_setup_writes(&mut self, ctx: &mut ViewContext<Self>) {
+        self.resume_deferred_ssh_warpify(ctx);
+        if let Some(since) = self
+            .subshell_setup_deferred
+            .as_ref()
+            .filter(|d| d.waits_for_line)
+            .map(|d| d.since)
+        {
+            self.check_deferred_subshell_setup(since, false, ctx);
+        }
+    }
+
+    /// Calls the deferred ssh warpify function once the line is clean (#1562). Event-driven:
+    /// the hand-off's change and output call it; a timer never does.
+    fn resume_deferred_ssh_warpify(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.ssh_warpify_deferred.is_none() || self.setup_write_must_wait_for_the_line() {
+            return;
+        }
+        let Some((request, block_id)) = self.ssh_warpify_deferred.take() else {
+            return;
+        };
+        if self.model.lock().block_list().active_block().id() != &block_id {
+            // The shell the request was for is gone.
+            return;
+        }
+        match request {
+            DeferredSshWarpify::Probe => self.warpify_ssh_session(ctx),
+            DeferredSshWarpify::Continue { uname, shell_type } => {
+                self.continue_warpify_ssh_session(&uname, shell_type, ctx)
+            }
+            DeferredSshWarpify::InstallTmux { install_method } => {
+                self.install_tmux_and_warpify(ctx, &install_method)
+            }
+        }
+    }
+
     fn warpify_ssh_session(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.defer_ssh_warpify_for_the_line(|| DeferredSshWarpify::Probe, ctx) {
+            return;
+        }
         self.warpify_state.set_shell_detection_in_progress();
         self.begin_ssh_warpify_timeout(SSH_WARPIFY_TIMEOUT_DURATION, ctx);
         // Mint and register the ID *before* the probe reaches the pty, so the `InitSsh` hook it
@@ -30024,7 +34548,9 @@ impl TerminalView {
         let payload =
             convert_script_to_one_line(&begin_warpify_ssh_session_command(session_id, ctx));
         self.warpify_state.mark_ssh_payload_written(&payload);
-        self.clear_line_editor_and_write_to_pty(payload.into_bytes(), ctx);
+        // One SetupChunked job like the third writer (#1436): the probe / installer payloads are
+        // as long as the warpify script and a cooked macOS tty drops input past 1 KB.
+        self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(payload.into_bytes(), ctx);
     }
 
     fn continue_warpify_ssh_session(
@@ -30033,6 +34559,15 @@ impl TerminalView {
         shell_type: ShellType,
         ctx: &mut ViewContext<Self>,
     ) {
+        if self.defer_ssh_warpify_for_the_line(
+            || DeferredSshWarpify::Continue {
+                uname: uname.to_owned(),
+                shell_type,
+            },
+            ctx,
+        ) {
+            return;
+        }
         self.warpify_state.set_shell_type(&shell_type);
         self.model.lock().set_pending_warp_initiated_control_mode();
         // The warpify script emits `SshTmuxInstaller` and `RemoteWarpificationIsUnavailable` from
@@ -30060,6 +34595,14 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
         install_method: &TmuxInstallMethod,
     ) {
+        if self.defer_ssh_warpify_for_the_line(
+            || DeferredSshWarpify::InstallTmux {
+                install_method: install_method.clone(),
+            },
+            ctx,
+        ) {
+            return;
+        }
         let install_with_root_method = install_method.should_use_package_manager;
         let install_script = &install_method.script;
         self.model
@@ -30067,7 +34610,9 @@ impl TerminalView {
             .set_pending_warp_initiated_control_mode_with_install_tmux(install_with_root_method);
         let payload = convert_script_to_one_line(install_script);
         self.warpify_state.mark_ssh_payload_written(&payload);
-        self.clear_line_editor_and_write_to_pty(payload.into_bytes(), ctx);
+        // One SetupChunked job like the third writer (#1436): the probe / installer payloads are
+        // as long as the warpify script and a cooked macOS tty drops input past 1 KB.
+        self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(payload.into_bytes(), ctx);
     }
 
     fn begin_ssh_warpify_timeout(&mut self, duration: Duration, ctx: &mut ViewContext<Self>) {
@@ -30109,21 +34654,25 @@ impl TerminalView {
     ) {
         match check_type {
             SshLoginStatus::RecheckBeforeWarpifying => {
-                // After we receive a line of output from ssh that is NOT prompting for user input (unlike "Enter passphrase: "),
-                // we wait and repeat the check after a small delay in case the state returned to something that's user-input bound.
-                // For example, say the output that kicked off this event was "Permission denied, please try again." and
-                // ssh will subsequently re-prompt for user input. We want to avoid assuming that ssh authentication is completed until
-                // we confirm twice that user input is not currently being requested.
-                // Note: 100ms is an estimate, not backed by any particular technical happenings.
+                // After a line of ssh output that is NOT a prompt (could be a banner, or "Permission
+                // denied" before a re-prompt), login is only declared done if no prompt shows up
+                // again. That is decided from OUTPUT EVENTS in the model (#1374): a re-prompt in
+                // any later chunk withdraws this recheck (`check_for_end_of_ssh_login`), and the
+                // known mid-auth lines never request it. This timer is only the logged give-up
+                // for a .hushlogin host with an unrecognised prompt: there is no remote signal
+                // to wait for, so after the grace period quiet output is taken as "login done".
                 let active_block_id = self.model.lock().block_list().active_block_id().clone();
                 ctx.spawn(
                     async {
-                        warpui::r#async::Timer::after(Duration::from_secs(3)).await;
+                        warpui::r#async::Timer::after(SSH_LOGIN_RECHECK_GIVE_UP).await;
                         active_block_id
                     },
                     move |terminal_view, active_block_id, _| {
                         let mut model = terminal_view.model.lock();
                         if model.block_list().active_block_id() == &active_block_id {
+                            log::debug!(
+                                "ssh login recheck gave up waiting for a re-prompt (#1374)"
+                            );
                             model.check_for_end_of_ssh_login(true);
                         }
                     },
@@ -30266,6 +34815,10 @@ impl PtyIntentEvent for Event {
             Event::DiscardPendingCommandWrites => Some(PtyIntent::DiscardPendingCommandWrites),
             Event::DiscardHeldTypeaheadCommand => Some(PtyIntent::DiscardHeldTypeaheadCommand),
             Event::WriteBytesToPty { bytes } => Some(PtyIntent::WriteBytes(bytes.clone())),
+            Event::WriteLineClearSetupToPty { payload } => {
+                Some(PtyIntent::WriteLineClearSetup(payload.clone()))
+            }
+            Event::CancelPacedSetupWrites => Some(PtyIntent::CancelPacedSetupWrites),
             Event::SigintForegroundToPty => Some(PtyIntent::SigintForeground),
             Event::WriteHandoffUserBytesToPty { bytes } => {
                 Some(PtyIntent::WriteHandoffUserBytes(bytes.clone()))
@@ -30297,6 +34850,10 @@ impl PtyIntentEvent for Event {
 /// while the Unix password-prompt hooks carry the notification/SSH-upload logic
 /// that the manager's attribute poller drives.
 impl TerminalSurface for TerminalView {
+    fn set_output_signal(&mut self, tx: async_channel::Sender<()>) {
+        self.fullscreen_output_signal = Some(tx);
+    }
+
     #[cfg(feature = "local_tty")]
     fn on_shell_determined(&mut self, ctx: &mut ViewContext<Self>) {
         TerminalView::on_shell_determined(self, ctx);
@@ -30304,6 +34861,25 @@ impl TerminalSurface for TerminalView {
 
     fn on_typeahead_handoff_changed(&mut self, ctx: &mut ViewContext<Self>) {
         self.handle_typeahead_handoff_changed(ctx);
+    }
+
+    fn on_typeahead_handoff_not_engaged(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_typeahead_handoff_not_engaged(ctx);
+    }
+
+    fn on_prompt_hold_released(&mut self, hold_id: u64, ctx: &mut ViewContext<Self>) {
+        TerminalView::on_prompt_hold_released(self, hold_id, ctx);
+    }
+
+    fn on_young_hold_ended(&mut self, ctx: &mut ViewContext<Self>) {
+        self.drain_young_hold_ends(ctx);
+    }
+
+    fn on_input_buffer_overflow(&mut self, ctx: &mut ViewContext<Self>) {
+        self.show_ssh_typing_toast(
+            "Too much input is waiting to be sent to this terminal; the newest keys were discarded, not run",
+            ctx,
+        );
     }
 
     fn on_command_coalesced(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
@@ -30319,8 +34895,9 @@ impl TerminalSurface for TerminalView {
         // Never over text the user has typed since.
         if !command.is_empty() && self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
             let command = command.to_owned();
-            self.input
-                .update(ctx, |input, ctx| input.replace_buffer_content(&command, ctx));
+            self.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content(&command, ctx)
+            });
         }
     }
 
@@ -30424,8 +35001,8 @@ impl TerminalSurface for TerminalView {
         };
         // Same gate as `pending_interactive_prompt`: only a tool call blocked until the command
         // completes can be stuck on a full-screen program with nobody to quit it, and the
-        // executor (which needs no terminal-model lock) is asked first because this runs once
-        // a second for every polled block.
+        // executor (which needs no terminal-model lock) is asked first because this runs on
+        // output for every polled block.
         let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
         let executor = executor.as_ref(ctx);
         if !executor.has_any_awaiting_completion() {
@@ -30434,8 +35011,7 @@ impl TerminalSurface for TerminalView {
 
         let model = self.model.lock();
         let active_block = model.block_list().active_block();
-        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command())
-        {
+        if !(active_block.is_agent_requested_command() && active_block.is_agent_driving_command()) {
             return None;
         }
         let action_id = active_block.requested_command_action_id()?;
@@ -30550,7 +35126,7 @@ impl TerminalSurface for TerminalView {
         // block with an exit code; other block types don't terminate an upload.
         let exit_code = match &completed.block_type {
             BlockType::User(user) => {
-                user.serialized_block
+                user.serialized_block_without_output
                     .get_with(|compute| {
                         let model = self.model.lock();
                         compute(model.block_list())
@@ -30596,14 +35172,22 @@ impl TypedActionView for TerminalView {
             BlockTextSelect(_) => {
                 let semantic_selection = SemanticSelection::as_ref(ctx);
                 let model = self.model.lock();
-                model
-                    .selection_to_string(semantic_selection, self.is_inverted_blocklist(ctx), ctx)
-                    .map_or(Empty, |selected| {
-                        Custom(AccessibilityContent::new_without_help(
-                            selected,
-                            WarpA11yRole::TextRole,
-                        ))
-                    })
+                // Only runs with a screen reader active; still bounded so a huge selection is not
+                // built on the UI thread just to be announced (#1304).
+                let selected = match model.selection_to_bounded_string(
+                    semantic_selection,
+                    self.is_inverted_blocklist(ctx),
+                    PREVIEW_SELECTION_MAX_ROWS,
+                    ctx,
+                ) {
+                    BoundedSelection::None => return Empty,
+                    BoundedSelection::Text(selected) => selected,
+                    BoundedSelection::TooLarge => "Large selection".to_string(),
+                };
+                Custom(AccessibilityContent::new_without_help(
+                    selected,
+                    WarpA11yRole::TextRole,
+                ))
             }
             BlockSelect { .. }
             | SelectPriorBlock
@@ -30885,7 +35469,6 @@ impl TypedActionView for TerminalView {
             | OpenConversationsPalette
             | ExitAgentView
             | StartNewAgentConversation
-            | CancelAmbientAgentTask
             | OpenInlineHistoryMenu
             | OpenModelSelector
             | ResolvePromptSuggestion(..)
@@ -31567,9 +36150,8 @@ impl TypedActionView for TerminalView {
                         .is_some_and(|conversation| conversation.autoexecute_any_action());
                     // Turning autoexecute off accepts nothing.
                     if turning_on {
-                        accepted = ai_block.update(ctx, |ai_block, ctx| {
-                            ai_block.accept_pending_action(ctx)
-                        });
+                        accepted = ai_block
+                            .update(ctx, |ai_block, ctx| ai_block.accept_pending_action(ctx));
                     }
                 }
 
@@ -31778,9 +36360,10 @@ impl TypedActionView for TerminalView {
                     use ai::skills::SkillReference;
 
                     match skill_reference {
-                        SkillReference::Path(path) => match path.to_local_path() {
-                            Some(local_path) => {
-                                ctx.emit(Event::OpenCodeInWarp {
+                        SkillReference::Path(path) => {
+                            match path.to_local_path() {
+                                Some(local_path) => {
+                                    ctx.emit(Event::OpenCodeInWarp {
                                     source: CodeSource::Skill {
                                         reference: skill_reference.clone(),
                                         path: local_path.to_path_buf(),
@@ -31791,24 +36374,25 @@ impl TypedActionView for TerminalView {
                                             .open_file_layout
                                             .value(),
                                 });
+                                }
+                                // Remote skills are unaffected in practice today (issue #299
+                                // tracks the type, nothing populates a remote ParsedSkill into
+                                // the manager yet); this arm exists so the match is exhaustive
+                                // over what the type now allows.
+                                None => {
+                                    let window_id = ctx.window_id();
+                                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                                        toast_stack.add_ephemeral_toast(
+                                            DismissibleToast::error(
+                                                "Remote skills cannot be edited".to_string(),
+                                            ),
+                                            window_id,
+                                            ctx,
+                                        );
+                                    });
+                                }
                             }
-                            // Remote skills are unaffected in practice today (issue #299
-                            // tracks the type, nothing populates a remote ParsedSkill into
-                            // the manager yet); this arm exists so the match is exhaustive
-                            // over what the type now allows.
-                            None => {
-                                let window_id = ctx.window_id();
-                                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                                    toast_stack.add_ephemeral_toast(
-                                        DismissibleToast::error(
-                                            "Remote skills cannot be edited".to_string(),
-                                        ),
-                                        window_id,
-                                        ctx,
-                                    );
-                                });
-                            }
-                        },
+                        }
                         SkillReference::BundledSkillId(_) => {
                             let window_id = ctx.window_id();
                             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
@@ -31904,12 +36488,9 @@ impl TypedActionView for TerminalView {
                 // the pending-context attachment that `TerminalView::try_enter_agent_view`
                 // performs -- so a block selected in the terminal would be dropped
                 // (and then hidden) instead of carried into the new conversation.
-                if let Err(e) = self.try_enter_agent_view(
-                    None,
-                    AgentViewEntryOrigin::Keybinding,
-                    None,
-                    ctx,
-                ) {
+                if let Err(e) =
+                    self.try_enter_agent_view(None, AgentViewEntryOrigin::Keybinding, None, ctx)
+                {
                     log::warn!("Failed to start new agent conversation from keybinding: {e:?}");
                 }
             }
@@ -31931,12 +36512,6 @@ impl TypedActionView for TerminalView {
             }
             AwsCliNotInstalledBanner(action) => {
                 self.handle_aws_cli_not_installed_banner_action(*action, ctx);
-            }
-            CancelAmbientAgentTask => {
-                self.ambient_agent_view_model.update(ctx, |model, ctx| {
-                    model.cancel_task(ctx);
-                });
-                ctx.notify();
             }
             ToggleUsageFooter => {
                 self.toggle_usage_footer(ctx);
@@ -31997,9 +36572,137 @@ impl TypedActionView for TerminalView {
     }
 }
 
+/// While alive, the terminal view's ssh and subshell bookkeeping reads the model through the key
+/// snapshot instead of its lock (`TerminalView::model_facts`): the user key being handled never
+/// waits for the pty reader (#1404).
+struct KeyPathScope(Rc<Cell<u32>>);
+
+impl KeyPathScope {
+    fn enter(depth: &Rc<Cell<u32>>) -> Self {
+        depth.set(depth.get() + 1);
+        Self(Rc::clone(depth))
+    }
+}
+
+impl Drop for KeyPathScope {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+}
+
+/// The questions `pane_key::route_typed` asks about a key on the terminal destination, answered
+/// by the view. A probe that answers yes has already acted (held, queued or swallowed the key).
+struct TypedKeyProbes<'a, 'b> {
+    view: &'a mut TerminalView,
+    ctx: &'a mut ViewContext<'b, TerminalView>,
+    characters: &'a str,
+}
+
+impl pane_key::TypedRouteProbes for TypedKeyProbes<'_, '_> {
+    fn ssh_choice_card_up(&mut self) -> bool {
+        self.view.ssh_choice_card_holding_keys(self.ctx).is_some()
+    }
+
+    fn ssh_interrupt_held(&mut self) -> bool {
+        // #1001: an interrupt must not land in the middle of the remote bootstrap script, nor in
+        // the connect window before the remote session is announced (#983/#1001).
+        let held = self.view.ssh_bootstrap_interrupt_route()
+            == Some(SshBootstrapInterruptRoute::Hold)
+            || self.view.ssh_gate_holds_interrupt()
+            || (self.characters == "\u{4}" && self.view.ssh_connect_holds_eot());
+        if held {
+            self.view.note_ssh_interrupt_held(self.ctx);
+        }
+        held
+    }
+
+    fn ssh_interrupt_passes(&mut self) {
+        // The interrupt passes straight through; what was typed before it is stale, as the tty's
+        // own input flush on ^C would make it.
+        self.view.reset_ssh_typeahead();
+    }
+
+    fn ssh_setup_holds_key(&mut self) -> bool {
+        self.view
+            .swallow_input_during_ssh_setup(Some(self.characters), self.ctx)
+    }
+
+    fn enter_queue_takes_key(&mut self) -> bool {
+        // #1353 phase 3: behind an Enter whose gate is open on the input queue, in the same order.
+        if !self
+            .view
+            .input
+            .as_ref(self.ctx)
+            .enter_queue_holds_keys(self.ctx)
+        {
+            return false;
+        }
+        let characters = self.characters;
+        self.view.input.update(self.ctx, |input, ctx| {
+            input.queue_behind_enter(AfterEnterInput::Text(characters.to_string()), ctx)
+        })
+    }
+
+    fn note_warpification_key(&mut self) {
+        self.view.on_ssh_warpification_key_event(
+            Some(SshKeyEvent::from_chars(self.characters)),
+            self.ctx,
+        );
+    }
+
+    fn powershell_setup_holds(&mut self) -> bool {
+        self.view.holds_keys_for_powershell_subshell_setup()
+    }
+
+    fn on_approval_card(&mut self) -> bool {
+        // #1028: while the pending approval card holds focus, printable keys are for the agent
+        // input (a follow-up), never the running command underneath, even when the pty would take
+        // them. #1095: so is an AI block that holds focus itself while one of its actions awaits
+        // confirmation (its Enter approves).
+        self.view.typed_on_approval_card(self.ctx)
+            || self.view.typed_on_ai_block_awaiting_confirmation(self.ctx)
+    }
+
+    fn on_settled_ai_target(&mut self) -> bool {
+        // #1095: focus left on a settled action card or an AI block takes no printable keys;
+        // route them as if the terminal held focus, and let focus follow them.
+        self.view.typed_on_settled_ai_target(self.ctx)
+    }
+
+    fn agent_owns_typing(&mut self) -> bool {
+        // #1179: an agent-driven command's pty takes no user bytes; the text is for the agent's
+        // input. Ctrl-C / Ctrl-D keep their own route to the command.
+        !is_abort_key(self.characters.as_bytes()) && self.view.agent_owns_command_pty()
+    }
+
+    fn pty_takes_input(&mut self) -> bool {
+        self.view.should_write_typed_chars_to_pty(self.ctx)
+    }
+
+    fn input_box_visible(&mut self) -> bool {
+        // From the key snapshot: the exact state when the model is free, else the copy the model
+        // published after its last parse. A key never waits for the pty reader (#1440).
+        let facts = self.view.read_key_snapshot().input_box;
+        self.view.is_input_box_visible_with(&facts, self.ctx)
+    }
+}
+
 impl View for TerminalView {
     fn ui_name() -> &'static str {
         "Terminal"
+    }
+
+    fn is_pane_key_sink(&self) -> bool {
+        pane_key::mode() != PaneKeyMode::Off
+    }
+
+    fn on_pane_key(
+        &mut self,
+        key: &PaneKey,
+        key_ctx: &PaneKeyContext,
+        ctx: &mut ViewContext<Self>,
+    ) -> PaneKeyOutcome {
+        self.on_pane_key_event(key, key_ctx, ctx)
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
@@ -32009,16 +36712,11 @@ impl View for TerminalView {
         let appearance = Appearance::as_ref(app);
         let semantic_selection = SemanticSelection::as_ref(app);
         let model = self.model.lock();
+        // Declared after `model`, so it drops (and logs a slow hold) just before the guard.
+        let _hold = crate::terminal::model_lock_trace::HoldTimer::start("TerminalView::render");
         let ambient_agent_task_id_for_details_panel =
             self.ambient_agent_task_id_for_details_panel_from_model(&model, app);
-        let input_mode = if FeatureFlag::AgentView.is_enabled()
-            && self.agent_view_controller.as_ref(app).is_fullscreen()
-        {
-            // When in agent view, layout is always pin to bottom.
-            InputMode::PinnedToBottom
-        } else {
-            *InputModeSettings::as_ref(app).input_mode.value()
-        };
+        let input_mode = self.current_input_mode(app);
         let viewport = self.viewport_state(model.block_list(), input_mode, app);
         let is_alt_screen_active = { model.is_alt_screen_active() };
         // Compute callout positioning early while we have the model lock.
@@ -32034,6 +36732,9 @@ impl View for TerminalView {
                 .active_block()
                 .is_active_and_long_running()
         };
+        // What the tree built below is derived from; `handle_terminal_wakeup` compares against it.
+        self.last_rendered_fingerprint
+            .set(Some(self.render_fingerprint(&model, app)));
 
         let mut column = match input_mode {
             InputMode::PinnedToTop => Flex::column().with_reverse_orientation(),
@@ -32111,16 +36812,6 @@ impl View for TerminalView {
 
         if self.is_any_tooltip_open() {
             self.render_grid_tooltip(&mut stack, &model, appearance, app);
-        }
-
-        // Show progress steps while waiting for an ambient agent to start.
-        if self
-            .ambient_agent_view_model
-            .as_ref(app)
-            .agent_progress()
-            .is_some()
-        {
-            stack.add_child(self.render_ambient_agent_progress(appearance, app));
         }
 
         self.maybe_render_onboarding_callout(
@@ -32300,9 +36991,8 @@ impl View for TerminalView {
             // Only show one of these banners at a time, to avoid them visually
             // stacking on top of each other.
             let banner_position_id = Self::banner_position_id(self.id());
-            let banner_child = |banner: Box<dyn Element>| {
-                SavePosition::new(banner, &banner_position_id).finish()
-            };
+            let banner_child =
+                |banner: Box<dyn Element>| SavePosition::new(banner, &banner_position_id).finish();
             if self.is_slow_bootstrap_banner_open
                 && ContextFlag::ShowSlowShellStartupBanner.is_enabled()
             {
@@ -32563,6 +37253,14 @@ impl View for TerminalView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        // #1345: focus moving around the terminal while an ssh hand-off settles.
+        warpui::input_order::log_key_hop("kh_focus_terminal_view", || {
+            format!(
+                "self_focused={} ssh_holding={}",
+                focus_ctx.is_self_focused(),
+                self.ssh_typeahead_holding
+            )
+        });
         if focus_ctx.is_self_focused() {
             self.maybe_report_focus_in(ctx);
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
@@ -32576,10 +37274,13 @@ impl View for TerminalView {
             ctx.notify();
         }
         self.update_focused_terminal_info(ctx);
+        // #1424 step 7: the queue's focus epoch follows focus (table mode).
+        self.note_queue_focus_changed(ctx);
     }
 
     fn on_blur(&mut self, blur_ctx: &BlurContext, ctx: &mut ViewContext<Self>) {
         if blur_ctx.is_self_blurred() {
+            self.note_queue_focus_changed(ctx);
             // Make sure to close link tooltips when terminal view is not in focus.
             self.open_grid_link_tool_tip.take();
 
@@ -32955,6 +37656,14 @@ impl MenuPositioningProvider for TerminalViewMenuPositioningProvider {
 
 impl Drop for TerminalView {
     fn drop(&mut self) {
+        // #1441: closing a pane drops whatever it still holds (typed keys behind a gate, ssh-held
+        // typeahead, an in-flight paste). Never silent; counts only.
+        if let Some(queue) = self.paste_queue.queue.try_peek()
+            && let Some(line) =
+                paste_queue::dropped_input_summary(&queue, self.paste_queue.payloads.len())
+        {
+            log::warn!("{line}");
+        }
         if let Some((is_bootstrapped, pending_shell, has_pending_ssh_session)) =
             self.model.try_lock().map(|model| {
                 (
@@ -32983,10 +37692,8 @@ impl Drop for TerminalView {
                     "Session abandoned before bootstrap for shell {pending_shell:?} on ssh {has_pending_ssh_session}"
                 );
 
-                let duration_since_start =
-                    self.bootstrap_start.unwrap_or_else(Instant::now).elapsed();
                 log::debug!(
-                    "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}, duration_since_start={duration_since_start:?}",
+                    "Session abandoned before bootstrap details: pending_shell={pending_shell:?}, has_pending_ssh_session={has_pending_ssh_session}, was_ever_visible={}",
                     self.was_ever_visible,
                 );
             }
@@ -33017,7 +37724,8 @@ pub fn create_size_info_for_blocklist(
     // its first rows into the padded strip and lost them off the top. See
     // `LONG_RUNNING_TOP_PADDING_LINES`.
     let padding_x = PADDING_LEFT.into_pixels();
-    let padding_y = (cell_size_px.y() * TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES / 2.).into_pixels();
+    let padding_y =
+        (cell_size_px.y() * TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES / 2.).into_pixels();
 
     SizeInfo::new(
         pane_size,
@@ -33043,20 +37751,22 @@ pub fn create_size_info(
 ) -> SizeInfo {
     let cell_size_px =
         grid_cell_dimensions(font_cache, font_family_id, font_size, line_height_ratio);
-    let active_command = model
-        .block_list()
-        .active_block()
-        .top_level_command(sessions);
-
     match *TerminalSettings::as_ref(ctx).alt_screen_padding {
         AltScreenPaddingMode::Custom { uniform_padding }
             if FeatureFlag::RemoveAltScreenPadding.is_enabled()
                 && model.is_alt_screen_active()
                 // If we don't know what the top-level command is,
-                // it's not denylisted so we use the custom padding.
-                && active_command.is_none_or(|cmd| {
-                    !ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING.contains(cmd.as_str())
-                }) =>
+                // it's not denylisted so we use the custom padding. Looked up only here: it
+                // copies and parses the whole running command, which this function (run on
+                // every terminal layout) used to do even when the answer is not used. With a
+                // 1 MB command running that was ~20% of the UI thread (#1191).
+                && model
+                    .block_list()
+                    .active_block()
+                    .top_level_command(sessions)
+                    .is_none_or(|cmd| {
+                        !ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING.contains(cmd.as_str())
+                    }) =>
         {
             SizeInfo::new(
                 pane_size,
@@ -33159,6 +37869,24 @@ enum PowerShellSetupCtrlC {
     SkipSetup,
 }
 
+/// Whether the shell has answered a Ctrl-C that skipped a marker-paced PowerShell setup (#1372):
+/// a marker arrived after the Ctrl-C was written (`count` is past `count_at_abort`), it is this
+/// setup's, and it is the "PSReadLine is about to read" one -- not a line's own marker, which can
+/// still be in flight from before the Ctrl-C.
+fn powershell_abort_acknowledged(
+    last_marker: Option<(u64, usize)>,
+    count: u64,
+    count_at_abort: u64,
+    token: u64,
+) -> bool {
+    count > count_at_abort
+        && last_marker
+            == Some((
+                token,
+                crate::terminal::bootstrap::POWERSHELL_READY_MARKER_INDEX,
+            ))
+}
+
 fn powershell_setup_ctrl_c_route(hold: PowerShellSetupHold, stalled: bool) -> PowerShellSetupCtrlC {
     match hold {
         PowerShellSetupHold::Setup
@@ -33225,16 +37953,20 @@ fn ssh_bootstrap_interrupt_route(
 /// Pure rule for [`TerminalView::ssh_pre_init_abort_bytes`] (#1001): after the SSH hook (the
 /// remote command is running under a raw local tty) and before the remote shell's InitShell, a
 /// Ctrl-C is delivered as ssh's `~.` escape, which ends the client from raw mode.
-fn ssh_pre_init_abort_bytes(
-    ssh_hook_seen: bool,
-    remote_session_pending: bool,
-) -> Option<Vec<u8>> {
+fn ssh_pre_init_abort_bytes(ssh_hook_seen: bool, remote_session_pending: bool) -> Option<Vec<u8>> {
     (ssh_hook_seen && !remote_session_pending).then(|| b"~.".to_vec())
 }
 
 /// Ctrl-C and Ctrl-D: the keys that must always reach a shell whose subshell bootstrap is stuck.
 fn is_abort_key(bytes: &[u8]) -> bool {
     matches!(bytes, [0x03] | [0x04])
+}
+
+/// The keys the pane QUEUE jumps for (#1424, OD-1): Ctrl-C and Ctrl-D, and in `table` mode Ctrl-Z
+/// and Ctrl-\ too (`paste_queue::queue_signal_of`). The writer's stages use this where they used
+/// `is_abort_key`; the PowerShell abort machine (`AfterAbort`) stays Ctrl-C / Ctrl-D only.
+fn is_queue_signal_key(bytes: &[u8]) -> bool {
+    paste_queue::queue_signal_of(bytes).is_some()
 }
 
 /// Pure routing rule for a pane whose subshell bootstrap is announced but unfinished (#960):
@@ -33253,28 +37985,24 @@ fn subshell_bootstrap_key_forwarded(
         || announced_age.is_some_and(|age| abort_key || age >= SUBSHELL_BOOTSTRAP_STALL_CEILING)
 }
 
-/// Whether user keys about to be written to the pty reach a running command whose leftover input
-/// the shell will report, while the typeahead hand-off does not own that command (#1089): it
-/// owns only commands submitted from the input editor, so keys for anything else (a queued
-/// command, an env-var collection, a command running when the editor took input over) were
-/// written uncounted, and the legacy report could miss them. Agent-requested commands keep the
-/// legacy path (their typeahead is deliberately not inserted), as do shared-session viewers (no
-/// local pty controller counts their writes) and shells that cannot report their line.
-fn keys_reach_a_command_the_handoff_does_not_own(model: &TerminalModel) -> bool {
-    let active_block = model.block_list().active_block();
-    shell_reports_keys_left_in_its_line(model)
-        && active_block.bootstrap_stage().is_done()
-        && active_block.started()
-        && !active_block.finished()
-        && active_block.agent_interaction_metadata().is_none()
-}
-
-/// Whether keys written to the pty now, if the shell's line editor gets them, come back in a
-/// report this terminal requests itself (#1089): the shell reports its line and this is not a
-/// shared-session viewer, which has no local pty controller.
-fn shell_reports_keys_left_in_its_line(model: &TerminalModel) -> bool {
-    model.block_list().early_output().typeahead_mode() == TypeaheadMode::ShellReported
-        && !model.shared_session_status().is_viewer()
+/// What a user key that the hand-off held started, read under the key path's one model lock.
+#[derive(Default)]
+struct HandoffHoldStart {
+    /// A young Enter was held: the hold's id, its give-up cap and the mid-line stamp to share.
+    young: Option<(
+        u64,
+        Duration,
+        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
+    )>,
+    /// A key was held behind an Enter deferred for the shell's report: the gate's id.
+    deferred: Option<u64>,
+    /// Keys are held for the prompt (ConPTY): the hold's id, its give-up cap and the mid-line
+    /// stamp to share.
+    prompt: Option<(
+        u64,
+        Duration,
+        crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp,
+    )>,
 }
 
 /// Whether any SSH setup choice block belongs to the pending session (#976). Stale blocks of
@@ -33289,6 +38017,16 @@ fn choice_block_owns_input(
 /// How long after the ssh block ended cleanly (the remote shell's first precmd) the gate keeps
 /// holding keys while it waits for the remote session to register (#983).
 const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
+/// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
+/// (#1104) before it is given up on. Reports normally take milliseconds; this only bounds a
+/// request a program ate. #1577: the expiry does not run the Enter; the text stays in the editor.
+const UNCOVERED_REPORT_PATIENCE: Duration = Duration::from_secs(3);
+
+/// How long an Enter deferred behind the hand-off's own outstanding report waits for it before
+/// it is given up without running (#1215). A report is one request round trip (ms locally, well
+/// under a second over ssh); seconds without one mean a program consumed the request or the shell
+/// is not answering.
+const TYPEAHEAD_REPORT_PATIENCE: Duration = Duration::from_secs(3);
 /// Longest the gate keeps holding after the announced remote session finished bootstrapping
 /// while it waits for that shell's first prompt (#1085). The prompt is one precmd away; this
 /// only bounds a remote whose prompt never comes, so it cannot own the keyboard.
@@ -33319,6 +38057,11 @@ struct SshConnectGate {
     bootstrap_done_at: Option<Instant>,
     /// The first prompt (precmd) after the bootstrap ended has been handled (#1085).
     first_prompt_seen: bool,
+    /// #1565: the USER submitted the ssh command from this pane's input. Only then do keys typed
+    /// in the focused input editor belong to the connect hold; an agent-run ssh leaves them to
+    /// the editor (the next agent prompt), and a gate armed without a submit (preexec only) has
+    /// no known origin.
+    user_submitted: bool,
 }
 
 impl SshConnectGate {
@@ -33334,6 +38077,7 @@ impl SshConnectGate {
             block_id: None,
             bootstrap_done_at: None,
             first_prompt_seen: false,
+            user_submitted: false,
         }
     }
 
@@ -33373,90 +38117,58 @@ impl SshConnectGate {
                 .is_some_and(|at| now.saturating_duration_since(at) >= SSH_CONNECT_POST_BLOCK_GRACE)
     }
 
+    /// Why [`Self::should_release`] just answered true (call right after it did): the event that
+    /// ends the window, or the give-up that did (#1424 step 7). Same order as `should_release`.
+    fn release_reason(&self, now: Instant, pending: bool) -> input_queue::SshRelease {
+        if self.failed {
+            return input_queue::SshRelease::Failed;
+        }
+        if now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_SILENCE_CEILING {
+            return input_queue::SshRelease::GiveUpCeiling;
+        }
+        if self.saw_pending && !pending {
+            return if self.first_prompt_seen {
+                input_queue::SshRelease::FirstPrompt
+            } else {
+                input_queue::SshRelease::GiveUpFirstPromptGrace
+            };
+        }
+        input_queue::SshRelease::GiveUpPostBlockGrace
+    }
+
+    /// The instant this gate releases on time alone if no event does (#1348), for the one-shot
+    /// give-up timer. `pending` is whether a remote session is announced now. Mirrors the time
+    /// conditions of [`Self::should_release`]; a condition that needs an event has no deadline.
+    fn give_up_deadline(&self, pending: bool) -> Option<Instant> {
+        let ceiling = self.armed_at + SSH_CONNECT_SILENCE_CEILING;
+        let by_state = if self.saw_pending && !pending {
+            Some(
+                self.bootstrap_done_at.unwrap_or_else(Instant::now)
+                    + SSH_CONNECT_FIRST_PROMPT_GRACE,
+            )
+        } else if !pending {
+            self.block_done_at
+                .map(|at| at + SSH_CONNECT_POST_BLOCK_GRACE)
+        } else {
+            None
+        };
+        Some(by_state.map_or(ceiling, |at| at.min(ceiling)))
+    }
+
     /// The no-session half: hold keys until something visible was printed, for the whole
     /// post-block bootstrap wait, and from the end of the remote bootstrap to its first prompt
     /// (#1085). Full-screen programs never hold.
     fn drops_keys(&self, alt_screen: bool) -> bool {
+        self.drops_keys_with(alt_screen, self.output_seen)
+    }
+
+    /// [`Self::drops_keys`] with `output_seen` given: the read-only form the route facts use
+    /// (#1424), where the sticky "visible text seen" comes from the published snapshot instead of
+    /// a scan of the grid under the model's lock.
+    fn drops_keys_with(&self, alt_screen: bool, output_seen: bool) -> bool {
         !alt_screen
             && !self.failed
-            && (self.block_done || !self.output_seen || self.bootstrap_done_at.is_some())
-    }
-}
-
-/// What `SshHeldTyping::key` did with a key (#1113).
-#[derive(Debug, PartialEq, Eq)]
-enum SshHeldKey {
-    Kept,
-    /// The line had a paste or special keys and ended: it is discarded.
-    DiscardedLine,
-}
-
-/// The single line a user typed while an ssh connect dropped their keys (#1113), edited as they
-/// edit it, so it can be shown unexecuted afterwards instead of vanishing.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct SshHeldTyping {
-    text: String,
-    /// Its Enter was typed; the next printable key starts a new line.
-    ended: bool,
-    /// The line holds a paste or a control/escape sequence that cannot be reproduced.
-    tainted: bool,
-    /// An earlier complete line was replaced by a later one (it was not run).
-    superseded: bool,
-    /// The ssh block's output when the last key was recorded (#1113).
-    output_mark: Option<(BlockId, usize)>,
-}
-
-impl SshHeldTyping {
-    fn begin_line_if_ended(&mut self) {
-        if self.ended {
-            self.superseded |= !self.text.is_empty() && !self.tainted;
-            self.text.clear();
-            self.tainted = false;
-            self.ended = false;
-        }
-    }
-
-    /// `characters` is None for a paste.
-    fn key(&mut self, characters: Option<&str>) -> SshHeldKey {
-        match characters {
-            None => {
-                self.begin_line_if_ended();
-                self.tainted = true;
-            }
-            Some("\r" | "\n" | "\r\n") => {
-                if self.tainted {
-                    *self = Self::default();
-                    return SshHeldKey::DiscardedLine;
-                }
-                if !self.text.is_empty() {
-                    self.ended = true;
-                }
-            }
-            Some("\u{7f}" | "\u{8}") => {
-                if !self.ended {
-                    self.text.pop();
-                }
-            }
-            Some("\u{15}") => *self = Self::default(),
-            Some("\u{17}") => {
-                if !self.ended {
-                    let trimmed = self.text.trim_end().len();
-                    let word_start = self.text[..trimmed]
-                        .rfind(char::is_whitespace)
-                        .map_or(0, |i| i + 1);
-                    self.text.truncate(word_start);
-                }
-            }
-            Some(text) if !text.is_empty() && text.chars().all(|c| !c.is_control()) => {
-                self.begin_line_if_ended();
-                self.text.push_str(text);
-            }
-            Some(_) => {
-                self.begin_line_if_ended();
-                self.tainted = true;
-            }
-        }
-        SshHeldKey::Kept
+            && (self.block_done || !output_seen || self.bootstrap_done_at.is_some())
     }
 }
 
@@ -33465,27 +38177,6 @@ fn output_has_visible_text(output: &str) -> bool {
     output
         .chars()
         .any(|c| !c.is_whitespace() && !c.is_control())
-}
-
-/// Whether the last line of `output` reads as a prompt for the user's input (#1032): a question
-/// or a request ending in `:` / `?`, a `[y/n]` choice, or one that names a secret. The shell's
-/// own `$ ` / `% ` prompt is deliberately not one. Callers check that the line is unterminated.
-fn output_tail_is_input_prompt(output: &str) -> bool {
-    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
-        return false;
-    };
-    let line = line.trim_end();
-    if !output_has_visible_text(line) {
-        return false;
-    }
-    let lower = line.to_lowercase();
-    line.ends_with(':')
-        || line.ends_with('?')
-        || lower.ends_with("[y/n]")
-        || lower.ends_with("(y/n)")
-        || ["password", "passphrase", "passcode", "secret"]
-            .iter()
-            .any(|word| lower.contains(word))
 }
 
 /// Whether a deferred subshell setup (#1032) may be written now: the prompt text is gone from
@@ -33714,6 +38405,13 @@ fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
         .unwrap_or_else(|| dir.join(RULES_FILE_PATTERN[0]))
 }
 
+/// Whether an appearing approval card may take keyboard focus (#1195, #1350): never from the
+/// input box while it holds focus. No timing is involved: an Enter reaches the card only after
+/// the user deliberately moved focus there, so it never approves something unread.
+fn approval_card_may_take_focus(input_editor_focused: bool) -> bool {
+    !input_editor_focused
+}
+
 /// Whether `TerminalView::is_input_box_visible` should hide the input box for the active AI
 /// block.
 ///
@@ -33781,7 +38479,8 @@ fn restored_orphans_notice(count: usize) -> String {
 }
 
 /// The notice shown when a queued prompt or command is put back in the input because the turn
-/// it was waiting on ended without completing (#1026): says that it was put back and why.
+/// it was waiting on ended without completing (#1026): says that it was put back and why. Keep
+/// the wording short: the toast truncates behind "Show more", and the put-back fact is last (#1324).
 fn queue_restore_notice(finish_reason: FinishReason, is_command: bool) -> String {
     let what = if is_command {
         "queued command"
@@ -33791,10 +38490,8 @@ fn queue_restore_notice(finish_reason: FinishReason, is_command: bool) -> String
     let why = match finish_reason {
         FinishReason::Error => "the agent run failed",
         FinishReason::Complete => "the agent run ended",
-        FinishReason::Cancelled => "the agent run was stopped or a command was rejected",
-        FinishReason::CancelledDuringRequestedCommandExecution => {
-            "the agent's running command was cancelled"
-        }
+        FinishReason::Cancelled => "the run was cancelled",
+        FinishReason::CancelledDuringRequestedCommandExecution => "a command was cancelled",
     };
     format!("Your {what} was not sent: {why}. It was put back in the input.")
 }
@@ -33814,6 +38511,13 @@ fn shift_block_index_map<V>(map: &mut HashMap<BlockIndex, V>, count: usize) {
         .collect();
 }
 
+mod dest_table;
+mod paste_queue;
+mod route_facts;
+mod ssh_edges;
+mod ssh_queue;
+mod ssh_typeahead;
+
 #[cfg(test)]
 #[path = "view_test.rs"]
 mod tests;
@@ -33821,3 +38525,7 @@ mod tests;
 #[cfg(test)]
 #[path = "view/queued_prompts_tests.rs"]
 mod queued_prompts_tests;
+
+#[cfg(test)]
+#[path = "view/shared_queue_tests.rs"]
+mod shared_queue_tests;

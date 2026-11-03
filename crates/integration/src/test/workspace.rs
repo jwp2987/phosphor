@@ -1524,7 +1524,7 @@ fn assert_saved_positions_absent(labels: Vec<String>) -> AssertionCallback {
 
 fn assert_clipboard_contains_home() -> AssertionCallback {
     Box::new(|app, _window_id| {
-        let clipboard = app.update(|ctx| ctx.clipboard().read());
+        let clipboard = app.update(|ctx| warpui::clipboard::read_full_blocking(ctx.clipboard()));
         let content = match clipboard.paths {
             Some(paths) => paths.join(" "),
             None => clipboard.plain_text,

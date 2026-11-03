@@ -52,7 +52,6 @@ use crate::{
     settings_view::keybindings::KeybindingChangedNotifier,
     terminal::{
         input::SET_INPUT_MODE_TERMINAL_ACTION_NAME,
-        model::block::LONG_RUNNING_COMMAND_DURATION_MS,
         model_events::{ModelEvent, ModelEventDispatcher},
         view::ambient_agent::{AmbientAgentViewModel, AmbientAgentViewModelEvent},
         warpify::render::LEFT_STRIPE_WIDTH,
@@ -99,6 +98,9 @@ struct StateHandles {
     misroute_recovery: MouseStateHandle,
 }
 
+/// How often a hidden status bar re-renders while its conversation streams.
+const HIDDEN_STATUS_RENDER_INTERVAL: Duration = Duration::from_millis(250);
+
 pub struct BlocklistAIStatusBar {
     active_exchange_model: Option<Box<dyn AIBlockModel<View = BlocklistAIStatusBar>>>,
     action_model: ModelHandle<BlocklistAIActionModel>,
@@ -120,6 +122,8 @@ pub struct BlocklistAIStatusBar {
 
     // Whether the summarization cancellation confirmation dialog is open.
     is_summarization_cancel_dialog_open: bool,
+    /// A hidden-tab re-render is already scheduled; see [`Self::notify_streaming_update`].
+    hidden_render_pending: bool,
     summarization_cancel_dialog: ViewHandle<SummarizationCancelDialog>,
 
     /// Handle for the periodic timer that updates the summarization timer UI.
@@ -174,6 +178,25 @@ impl BlocklistAIStatusBar {
             }
         });
         ctx.subscribe_to_model(&history_model, move |me, _, event, ctx| {
+            // Streaming updates are handled here, with the *current* exchange id, rather than by
+            // re-registering a per-exchange `on_updated_output` subscription each time the active
+            // exchange changes: WarpUI keeps subscriptions for the view's lifetime, so those
+            // accumulated and older exchanges kept reprocessing every output event.
+            if let BlocklistAIHistoryEvent::UpdatedStreamingExchange {
+                exchange_id,
+                conversation_id,
+                ..
+            } = event
+            {
+                if let Some(model) = me.active_exchange_model.as_ref() {
+                    if model.exchange_id(ctx) == Some(*exchange_id) {
+                        me.on_updated_active_exchange_output(ctx);
+                    } else if model.conversation_id(ctx) == Some(*conversation_id) {
+                        me.notify_streaming_update(ctx);
+                    }
+                }
+                return;
+            }
             if event
                 .terminal_view_id()
                 .is_some_and(|id| id != terminal_view_id)
@@ -325,19 +348,11 @@ impl BlocklistAIStatusBar {
             | BlocklistAIActionEvent::FinishedAction { .. } => ctx.notify(),
             _ => (),
         });
-        ctx.subscribe_to_model(model_event_dispatcher, |me, _, event, ctx| match event {
-            ModelEvent::AfterBlockStarted { block_id, .. } => {
-                let terminal_model = me.terminal_model.lock();
-                if terminal_model
-                    .block_list()
-                    .block_with_id(block_id)
-                    .is_some_and(|block| block.agent_interaction_metadata().is_some())
-                {
-                    ctx.spawn(
-                        Timer::after(Duration::from_millis(LONG_RUNNING_COMMAND_DURATION_MS)),
-                        |_, _, ctx| ctx.notify(),
-                    );
-                }
+        ctx.subscribe_to_model(model_event_dispatcher, |_, _, event, ctx| match event {
+            // #1373: re-evaluate when the running command becomes interactive (a program owns the
+            // terminal) instead of after a fixed delay from the block's start.
+            ModelEvent::CommandBecameInteractive { .. } => {
+                ctx.notify();
             }
             ModelEvent::BlockCompleted(_) => {
                 ctx.notify();
@@ -401,6 +416,7 @@ impl BlocklistAIStatusBar {
             summarization_cancel_dialog,
             latest_response_stream_id: None,
             is_summarization_cancel_dialog_open: false,
+            hidden_render_pending: false,
             summarization_timer_handle: None,
             summarization_start_time: None,
             last_read_refresh_handle: None,
@@ -487,13 +503,7 @@ impl BlocklistAIStatusBar {
                     )
                     .ok()
                 })
-                .map(|model| {
-                    model.on_updated_output(
-                        Box::new(|me, ctx| me.on_updated_active_exchange_output(ctx)),
-                        ctx,
-                    );
-                    Box::new(model) as Box<dyn AIBlockModel<View = BlocklistAIStatusBar>>
-                });
+                .map(|model| Box::new(model) as Box<dyn AIBlockModel<View = BlocklistAIStatusBar>>);
             self.is_summarization_cancel_dialog_open = false;
             self.stop_summarization_timer();
 
@@ -535,7 +545,26 @@ impl BlocklistAIStatusBar {
             AIBlockOutputStatus::Pending | AIBlockOutputStatus::Failed { .. } => (),
         }
 
-        ctx.notify();
+        self.notify_streaming_update(ctx);
+    }
+
+    /// Re-renders for a streamed delta. A status bar whose tab is hidden is re-rendered at most
+    /// once per [`HIDDEN_STATUS_RENDER_INTERVAL`] rather than once per delta: nothing shows it
+    /// until its tab does, and a hidden view's notify still costs a main-thread render and a
+    /// frame (#1336, as #1282 for the output block).
+    fn notify_streaming_update(&mut self, ctx: &mut ViewContext<Self>) {
+        if ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) {
+            ctx.notify();
+            return;
+        }
+        if self.hidden_render_pending {
+            return;
+        }
+        self.hidden_render_pending = true;
+        ctx.spawn(Timer::after(HIDDEN_STATUS_RENDER_INTERVAL), |me, _, ctx| {
+            me.hidden_render_pending = false;
+            ctx.notify();
+        });
     }
 
     /// Closes the summarization cancel dialog.
@@ -1272,3 +1301,7 @@ impl TypedActionView for BlocklistAIStatusBar {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "status_bar_tests.rs"]
+mod tests;

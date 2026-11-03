@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""The messages pwsh.ps1 sends the app must not change when its hooks are made faster (#1231).
+
+WHY THIS EXISTS
+---------------
+pwsh.ps1 is the slowest of the shell bootstraps (every cmdlet call costs several times
+what a bash builtin does, and on Windows several times that again), so its hooks get
+rewritten for speed: lazy runspace pools, a PSReadLine reconfiguration that is skipped
+when nothing changed, fewer cmdlet calls per prompt. The app decodes every OSC the script
+writes, and `script/test_bootstrap_hook_equivalence` pins the same property for bash, zsh
+and fish; nothing did for PowerShell. This script runs the real pwsh.ps1 in a pty, exactly
+as the app starts it (`-EncodedCommand` init script, then ` . '<tmp>.ps1'`), drives a table
+of commands, decodes every OSC the shell writes (the `9278;d;<hex json>` hook messages, the
+`9277`/`9279` generator and reset-grid markers, the `133;A`/`133;B` prompt markers) and
+compares the ordered sequence with a golden file recorded from the script before the change.
+
+Values that differ by machine or run are normalised (times, PATH, environment and command
+name lists, the shell version and path, the temp directory); everything the app reads from
+a hook (session id, exit codes, block ids, cwd, git head and branch, the command text, the
+prompt-mode fields, the generator output) is compared exactly.
+
+USAGE
+    script/test_pwsh_hook_equivalence                  compare app/assets/.../pwsh.ps1 with the golden
+    script/test_pwsh_hook_equivalence --bootstrap F    use another pwsh.ps1 (e.g. `git show REF:...`)
+    script/test_pwsh_hook_equivalence --update         record the golden file from the chosen script
+    script/test_pwsh_hook_equivalence --pwsh PATH      another pwsh
+
+pwsh that is not installed is reported as SKIPPED (exit 0), as `script/check_pwsh_parse` does.
+Exit 0 when every check passes, 1 otherwise.
+"""
+
+import base64
+import fcntl
+import json
+import os
+import pty
+import re
+import select
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BOOT = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap")
+GOLDEN = os.path.join(ROOT, "script", "testdata", "pwsh_hooks_golden.json")
+SESSION_ID = 12345678901234
+
+args = sys.argv[1:]
+PWSH = shutil.which("pwsh")
+bootstrap_path = os.path.join(BOOT, "pwsh.ps1")
+update = False
+while args:
+    if args[0] == "--pwsh" and len(args) >= 2:
+        PWSH, args = args[1], args[2:]
+    elif args[0] == "--bootstrap" and len(args) >= 2:
+        bootstrap_path, args = args[1], args[2:]
+    elif args[0] == "--update":
+        update, args = True, args[1:]
+    else:
+        sys.exit(__doc__)
+
+if not PWSH:
+    print("test_pwsh_hook_equivalence: SKIPPED (pwsh not installed)")
+    sys.exit(0)
+
+failures = []
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail.replace("\n", "\n       "))
+
+
+def process(path):
+    """What bootstrap.rs does to a script before it is sent: trim, drop blank and comment lines."""
+    text = open(path, encoding="utf-8-sig").read()
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if len(stripped) < len(line):
+            line = line[len(line) - len(stripped) - 1 :]
+        line = line.rstrip()
+        s = line.lstrip()
+        if not s or s.startswith("#") or s.startswith("[Diagnostics.CodeAnalysis.SuppressMessageAttribute"):
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+OSC_RE = re.compile(rb"\x1b\](9278;d;([0-9A-Fa-f]*)|9277;[AB]|9279|133;[AB]|133;P;k=r)\x07")
+
+
+class Session:
+    def __init__(self, home, cwd):
+        init = process(os.path.join(BOOT, "pwsh_init_shell.ps1")).replace("@@WARP_SESSION_ID@@", str(SESSION_ID))
+        enc = base64.b64encode(init.encode("utf-16-le")).decode()
+        self.bootfile = tempfile.NamedTemporaryFile(
+            "w", suffix=".ps1", prefix=".tmp", delete=False, encoding="utf-8-sig"
+        )
+        self.bootfile.write(process(bootstrap_path))
+        self.bootfile.close()
+        env = dict(os.environ, HOME=home, TERM="xterm-256color")
+        env.pop("WARP_HONOR_PS1", None)
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(cwd)
+            os.execve(PWSH, [PWSH, "-NoLogo", "-NoProfile", "-NoExit", "-EncodedCommand", enc], env)
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
+        self.buf = b""
+        self.events = []  # decoded, in order
+
+    def pump(self, timeout=0.05):
+        r, _, _ = select.select([self.fd], [], [], timeout)
+        if not r:
+            return
+        try:
+            data = os.read(self.fd, 65536)
+        except OSError:
+            return
+        # PSReadLine asks for the cursor position; a terminal answers.
+        for _ in range(data.count(b"\x1b[6n")):
+            os.write(self.fd, b"\x1b[1;1R")
+        self.buf += data
+        while True:
+            m = OSC_RE.search(self.buf)
+            if not m:
+                break
+            self.events.append(self.decode(m))
+            self.buf = self.buf[m.end() :]
+        # Keep an unfinished OSC (the Bootstrapped hook is hundreds of KB); drop the rest.
+        start = self.buf.rfind(b"\x1b]")
+        self.buf = self.buf[start:] if start >= 0 else self.buf[-16:]
+
+    @staticmethod
+    def decode(m):
+        if m.group(2) is not None:
+            try:
+                msg = json.loads(bytes.fromhex(m.group(2).decode()))
+            except ValueError:
+                return ["bad-hook", m.group(2).decode()[:80]]
+            return ["hook", msg.get("hook"), msg.get("value")]
+        return ["osc", m.group(1).decode()]
+
+    def wait_for(self, pred, what, timeout=60):
+        deadline = time.time() + timeout
+        start = len(self.events)
+        while time.time() < deadline:
+            self.pump()
+            if pred(self.events[start:]):
+                return self.events[start:]
+        raise SystemExit("timeout waiting for %s; got %s" % (what, self.events[start:][-6:]))
+
+    def settle(self):
+        # Quiet for a moment: late writes (typeahead redraws) are not part of the hook stream.
+        quiet_until = time.time() + 0.25
+        while time.time() < quiet_until:
+            self.pump(0.02)
+
+    def run(self, line):
+        """Type `line`, return the events up to and including the next prompt end."""
+        mark = len(self.events)
+        os.write(self.fd, (line + "\r").encode())
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            self.pump()
+            tail = self.events[mark:]
+            if any(e == ["osc", "133;B"] for e in tail) and any(e[:2] == ["hook", "Precmd"] for e in tail):
+                break
+        else:
+            raise SystemExit("timeout running %r; got %s" % (line, self.events[mark:][-6:]))
+        self.settle()
+        return self.events[mark:]
+
+    def close(self):
+        try:
+            os.write(self.fd, b"exit\r")
+        except OSError:
+            pass
+        time.sleep(0.2)
+        try:
+            os.kill(self.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.waitpid(self.pid, 0)
+        except OSError:
+            pass
+        os.unlink(self.bootfile.name)
+
+
+RAW_SEQS = []
+
+
+def normalise(events, tmp):
+    """Drop what legitimately differs between machines and runs."""
+    out = []
+    for e in events:
+        if e[0] == "hook":
+            value = json.loads(json.dumps(e[2])) if e[2] is not None else None
+            if e[1] == "Bootstrapped" and value is not None:
+                # Lists and paths that depend on the machine: keep that they are present.
+                for key in (
+                    "histfile",
+                    "path",
+                    "editor",
+                    "env_var_names",
+                    "aliases",
+                    "function_names",
+                    "builtins",
+                    "shell_version",
+                    "shell_path",
+                    "linux_distribution",
+                    "rcfiles_start_time",
+                    "rcfiles_end_time",
+                    "home_dir",
+                ):
+                    if key in value:
+                        value[key] = "<%s %s>" % (key, "set" if value[key] else "empty")
+                value["keywords"] = value.get("keywords", "")[:20]
+            # #1353: the per-session sequence number depends on how many prompts came before
+            # (it is compared separately in main(): present and strictly increasing), so it is
+            # taken out here and the golden stays valid for scripts that predate it.
+            if e[1] in ("Precmd", "Preexec") and isinstance(value, dict) and "seq" in value:
+                RAW_SEQS.append(value.pop("seq"))
+            text = json.dumps(value, sort_keys=True).replace(tmp, "<TMP>")
+            out.append(["hook", e[1], json.loads(text)])
+        else:
+            out.append(e)
+    return out
+
+
+def scenarios(tmp):
+    repo = os.path.join(tmp, "repo")
+    os.makedirs(repo)
+    for cmd in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "-c", "user.email=a@b", "-c", "user.name=n", "commit", "-q", "--allow-empty", "-m", "x"],
+    ):
+        subprocess.run(
+            cmd,
+            cwd=repo,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            # A fixed commit time, so the abbreviated hash of a detached HEAD is the same every run.
+            env=dict(os.environ, GIT_AUTHOR_DATE="2026-01-01T00:00:00Z", GIT_COMMITTER_DATE="2026-01-01T00:00:00Z"),
+        )
+    plain = os.path.join(tmp, "plain dir")
+    os.makedirs(plain)
+    return [
+        ("null", "$null"),
+        ("echo", "echo hi"),
+        ("external-ok", "/bin/true"),
+        ("external-fail", "/bin/sh -c 'exit 7'"),
+        ("cmdlet-error", "Get-Item /nonexistent-path-for-test"),
+        ("not-found", "ehco foo"),
+        ("throw", "throw 'boom'"),
+        ("cd-plain", "cd '%s'" % plain),
+        ("cd-repo", "cd '%s'" % repo),
+        ("in-repo", "echo in repo"),
+        ("detached", "git checkout -q --detach"),
+        ("in-detached", "$null"),
+        ("env-chips", "$env:VIRTUAL_ENV = '/venv/x'; $env:KUBECONFIG = '/k/c'"),
+        ("env-chips-set", "$null"),
+        ("env-chips-clear", "Remove-Item env:VIRTUAL_ENV, env:KUBECONFIG"),
+        ("unicode", "echo 'héllo 世界'"),
+        ("generator", "Warp-Run-GeneratorCommand g1 'echo gen' g2 'Get-Item /nonexistent-gen'"),
+        ("after-generator", "$null"),
+        ("honor-ps1-on", "$env:WARP_HONOR_PS1 = '1'"),
+        ("honor-ps1-set", "$null"),
+        ("vi-mode", "Set-PSReadLineOption -EditMode Vi"),
+        ("after-vi", "$null"),
+        ("prediction-changed", "Set-PSReadLineOption -PredictionSource History"),
+        ("after-prediction", "$null"),
+        ("clear", "clear"),
+    ]
+
+
+def record():
+    tmp = os.path.realpath(tempfile.mkdtemp(prefix="pwshequiv"))
+    home = os.path.join(tmp, "home")
+    os.makedirs(home)
+    try:
+        table = scenarios(tmp)
+        s = Session(home, tmp)
+        try:
+            boot_events = s.wait_for(
+                lambda ev: any(e[:2] == ["hook", "InitShell"] for e in ev), "InitShell"
+            )
+            time.sleep(0.3)
+            mark = len(s.events)
+            os.write(s.fd, (" . '%s'\r" % s.bootfile.name).encode())
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                s.pump()
+                tail = s.events[mark:]
+                if any(e[:2] == ["hook", "Bootstrapped"] for e in tail) and any(
+                    e == ["osc", "133;B"] for e in tail[[e[:2] for e in tail].index(["hook", "Bootstrapped"]) :]
+                ):
+                    break
+            else:
+                raise SystemExit("bootstrap did not finish: %s" % s.events[mark:][-6:])
+            s.settle()
+            result = {"InitShell": normalise(boot_events, tmp), "bootstrap": normalise(s.events[mark:], tmp)}
+            for name, line in table:
+                result[name] = normalise(s.run(line), tmp)
+            return result
+        finally:
+            s.close()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main():
+    result = record()
+    if update:
+        os.makedirs(os.path.dirname(GOLDEN), exist_ok=True)
+        with open(GOLDEN, "w") as f:
+            json.dump(result, f, indent=1, sort_keys=True)
+            f.write("\n")
+        print("recorded %d scenarios to %s" % (len(result), GOLDEN))
+        return 0
+    with open(GOLDEN) as f:
+        golden = json.load(f)
+    print("pwsh hook equivalence (%s)" % os.path.relpath(bootstrap_path, ROOT) if bootstrap_path.startswith(ROOT) else bootstrap_path)
+    for name in golden:
+        got = result.get(name)
+        same = got == golden[name]
+        detail = ""
+        if not same:
+            a, b = golden[name], got or []
+            for i in range(max(len(a), len(b))):
+                x = a[i] if i < len(a) else None
+                y = b[i] if i < len(b) else None
+                if x != y:
+                    detail = "first difference at event %d\n  golden: %s\n  now:    %s" % (i, json.dumps(x)[:400], json.dumps(y)[:400])
+                    break
+        check(same, "%-20s %d events" % (name, len(golden[name])), detail)
+    check(set(result) == set(golden), "same scenario set")
+    # #1353: every Precmd and Preexec carries the shell's sequence number, strictly increasing.
+    if bootstrap_path.startswith(BOOT):
+        check(
+            len(RAW_SEQS) > 0 and all(isinstance(n, int) for n in RAW_SEQS) and all(b > a for a, b in zip(RAW_SEQS, RAW_SEQS[1:])),
+            "Precmd/Preexec seq present and strictly increasing (%d hooks)" % len(RAW_SEQS),
+            "seqs: %s" % RAW_SEQS[:40],
+        )
+    print("FAILED: %s" % ", ".join(failures) if failures else "all hook sequences identical")
+    return 1 if failures else 0
+
+
+sys.exit(main())

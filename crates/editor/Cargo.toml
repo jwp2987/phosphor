@@ -66,6 +66,8 @@ sum_tree = { workspace = true, features = ["test-util"] }
 warp_core = { workspace = true, features = ["test-util"] }
 warpui = { workspace = true, features = ["test-util"] }
 criterion = { version = "0.5.1", features = ["html_reports"] }
+# Reviewed snapshot tests (`cargo insta review`); .snap files live in `tests/snapshots/`.
+insta = "1.41.1"
 
 [[bench]]
 name = "buffer_bench"
@@ -73,4 +75,8 @@ harness = false
 
 [[bench]]
 name = "text_layout_bench"
+harness = false
+
+[[bench]]
+name = "mermaid_render_bench"
 harness = false

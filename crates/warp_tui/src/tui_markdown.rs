@@ -82,6 +82,7 @@ pub(crate) fn render_formatted_text(
     let mut code_index = 0;
     let mut list_numbering = ListNumbering::new();
     for (line_index, line) in formatted.lines.iter().enumerate() {
+        let (quote_depth, line) = line.unquote();
         let element = match line {
             FormattedTextLine::Heading(header) => {
                 inline_text(&header.text, palette.heading, palette)
@@ -138,12 +139,23 @@ pub(crate) fn render_formatted_text(
                 .finish(),
             FormattedTextLine::LineBreak => blank_row(),
             FormattedTextLine::HorizontalRule => TuiMarkdownRule::new(palette.rule).finish(),
+            // `unquote` never returns a quote.
+            FormattedTextLine::BlockQuote { .. } => blank_row(),
+        };
+        let element = if quote_depth > 0 {
+            quote_row(quote_depth, element, palette)
+        } else {
+            element
         };
         if !matches!(line, FormattedTextLine::OrderedList(_)) {
             list_numbering.reset();
         }
         column.add_child(element);
-        if should_insert_blank_row(line, formatted.lines.get(line_index + 1)) {
+        let next = formatted
+            .lines
+            .get(line_index + 1)
+            .map(|next| next.unquote().1);
+        if should_insert_blank_row(line, next) {
             column.add_child(blank_row());
         }
     }
@@ -196,6 +208,29 @@ fn inline_text(
     palette: TuiMarkdownPalette,
 ) -> Box<dyn TuiElement> {
     TuiText::from_spans(inline_spans(inline, base, palette)).finish()
+}
+
+/// Puts a bar per quote level in front of `element`.
+fn quote_row(
+    depth: usize,
+    element: Box<dyn TuiElement>,
+    palette: TuiMarkdownPalette,
+) -> Box<dyn TuiElement> {
+    let bars = "\u{2502} ".repeat(depth);
+    let width = UnicodeWidthStr::width(bars.as_str());
+    TuiFlex::row()
+        .child(
+            TuiFixedWidth::new(
+                width.try_into().unwrap_or(u16::MAX),
+                TuiText::new(bars)
+                    .with_style(palette.marker)
+                    .truncate()
+                    .finish(),
+            )
+            .finish(),
+        )
+        .flex_child(element)
+        .finish()
 }
 
 fn list_item(

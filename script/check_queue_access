@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Guard: the pane's input queue is reached only through `PaneQueue` (#1353 step 3).
+#
+# `PaneQueue::{lock, try_lock, peek, try_peek}` keep an EXPLICIT `draining` flag. A raw
+# `.borrow()` / `.borrow_mut()` / `.try_borrow()` on the queue (the `RefCell` it used to be) works
+# again only by accident of the borrow state, and with one queue shared by the editor, the
+# terminal input and the terminal view a stray borrow is a double-borrow panic that no test
+# builds the right interleaving for. So production code may not do it.
+#
+# Matches a bare word `queue` (not `write_queue`, `pane_queue`, ...) or a `queue()` call followed
+# by `.borrow(`, `.borrow_mut(` or `.try_borrow*(`, across line breaks. Test files, the wrapper
+# itself are exempt.
+#
+# Second guard (#1353, holder deletion): the legacy holders and their kill switches were deleted
+# on purpose (every keystroke lands in the one pane queue; the revert path is git). Production
+# code may not bring back a `PHOSPHOR_INPUT_QUEUE_*` / `PHOSPHOR_TEST_*_QUEUE` switch or one of
+# the deleted holder names (`EditorKeyHold`, `after_enter_replay`, `held_user_bytes`,
+# `subshell_setup_held_bytes`, `VerdictWait::queued`, the `SshTypeahead` field).
+#
+# Third guard (#1405, last blocking readers): production code may not call the BLOCKING clipboard
+# read helpers (`read_outcome_blocking`, `read_content_blocking`, `read_full_blocking`). They hold
+# the calling thread for as long as the clipboard owner takes (up to the platform's first-answer
+# deadline), so every production read goes through `request_read` and acts when the answer lands.
+# Exempt: tests, the headless TUI (`crates/warp_tui`), the integration harness, and the
+# definitions themselves (`crates/warpui_core/src/clipboard.rs`).
+#
+# Exit 0: clean. Exit 1: prints each offending file.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+status=0
+while IFS= read -r file; do
+    case "$file" in
+        */tests.rs|*_test.rs|*_tests.rs|*/tests/*|*/input_queue/pane.rs) continue ;;
+    esac
+    hits="$(perl -0777 -ne '
+        while (/(?:^|[^_\w])queue\s*(?:\(\s*\))?\s*\.\s*(?:try_)?borrow(?:_mut)?\s*\(/g) {
+            my $pre = substr($_, 0, pos($_));
+            my $line = ($pre =~ tr/\n//) + 1;
+            print "$line\n";
+        }' "$file")"
+    if [[ -n "$hits" ]]; then
+        printf 'check_queue_access: raw RefCell borrow of the input queue in %s (line %s)\n' \
+            "$file" "$(tr '\n' ' ' <<<"$hits" | sed 's/ $//')" >&2
+        status=1
+    fi
+done < <(git ls-files 'app/src/terminal/*.rs' 'app/src/editor/*.rs' 2>/dev/null)
+
+if ((status != 0)); then
+    echo "Use PaneQueue::lock/try_lock (mutable) or peek/try_peek (inspection); see input_queue/pane.rs." >&2
+fi
+
+banned='PHOSPHOR_INPUT_QUEUE_|PHOSPHOR_TEST_[A-Z]+_QUEUE|EditorKeyHold|\bafter_enter_replay|held_user_bytes|kill_switch::|ssh_editor_key_hold'
+while IFS= read -r file; do
+    case "$file" in
+        */tests.rs|*_test.rs|*_tests.rs|*/tests/*) continue ;;
+    esac
+    if grep -nE "$banned" "$file" | grep -vE '^\s*[0-9]+:\s*//' >/dev/null; then
+        printf 'check_queue_access: a deleted input holder or kill switch is back in %s:\n' "$file" >&2
+        grep -nE "$banned" "$file" | grep -vE '^[0-9]+:\s*//' >&2
+        status=1
+    fi
+done < <(git ls-files 'app/src/*.rs' 2>/dev/null)
+
+blocking='read_(outcome|content|full)_blocking'
+while IFS= read -r file; do
+    case "$file" in
+        */tests.rs|*_test.rs|*_tests.rs|*/tests/*|crates/warp_tui/*|crates/integration/*|*/integration_testing/*|crates/warpui_core/src/clipboard.rs) continue ;;
+    esac
+    if grep -nE "$blocking" "$file" | grep -vE '^[0-9]+:\s*//' >/dev/null; then
+        printf 'check_queue_access: a blocking clipboard read is called in %s (use request_read):\n' "$file" >&2
+        grep -nE "$blocking" "$file" | grep -vE '^[0-9]+:\s*//' >&2
+        status=1
+    fi
+done < <(git ls-files 'app/src/*.rs' 'crates/*/src/*.rs' 'crates/*/src/**/*.rs' 2>/dev/null)
+
+if ((status == 0)); then
+    echo "check_queue_access: ok"
+fi
+exit "$status"

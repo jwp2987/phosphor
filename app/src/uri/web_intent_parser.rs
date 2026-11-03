@@ -1,11 +1,6 @@
-#[cfg(target_family = "wasm")]
-use crate::uri::browser_url_handler::parse_current_url;
 use crate::ChannelState;
 use anyhow::{anyhow, Result};
 use url::Url;
-
-#[cfg(target_family = "wasm")]
-use warp_core::context_flag::ContextFlag;
 
 #[derive(Debug)]
 /// Represents an intent parsed from a web url
@@ -30,17 +25,10 @@ impl WebIntent {
             }
             segments
         } else {
-            #[cfg(not(target_family = "wasm"))]
             {
                 return Err(anyhow!("Attempting to parse invalid url: {}", url));
             }
 
-            #[cfg(target_family = "wasm")]
-            {
-                url.path_segments()
-                    .map(|segments| segments.collect::<Vec<_>>())
-                    .unwrap_or_default()
-            }
         };
 
         if segments.is_empty() {
@@ -130,73 +118,6 @@ pub fn maybe_rewrite_web_url_to_intent(url: &Url) -> Option<Url> {
         .map(WebIntent::into_intent_url)
 }
 
-/// On WASM warp, fires an event to try and open the given link on the desktop app.
-#[cfg(target_family = "wasm")]
-pub fn open_url_on_desktop(url: &Url) {
-    match WebIntent::try_from_url(url) {
-        Ok(WebIntent::ConversationView(intent))
-        | Ok(WebIntent::DriveObject(intent))
-        | Ok(WebIntent::Action(intent)) => {
-            crate::platform::wasm::emit_event(crate::platform::wasm::WarpEvent::OpenOnNative {
-                url: intent.into(),
-            });
-        }
-        _ => {
-            log::warn!("Attempting to open invalid url on desktop app:{url}");
-        }
-    };
-}
-
-#[cfg(target_family = "wasm")]
-fn set_context_flags_from_url(url: Url) {
-    match WebIntent::try_from_url(&url) {
-        Ok(WebIntent::ConversationView(_)) => ContextFlag::set_conversation_only(),
-        Ok(WebIntent::DriveObject(_)) => ContextFlag::set_warp_drive_link_only(),
-        Ok(WebIntent::SettingsView(_)) => ContextFlag::set_settings_link_only(),
-        Ok(WebIntent::Home(_)) => ContextFlag::set_warp_home_link_only(),
-        Ok(WebIntent::Action(_)) => {} // No special context flag for actions
-        _ => {}
-    }
-
-    // Allow directly setting flags through query params in dogfood.
-    if ChannelState::channel().is_dogfood() {
-        for (param, value) in url.query_pairs() {
-            let Ok(flag) = param.parse::<ContextFlag>() else {
-                continue;
-            };
-            let Ok(bool_value) = value.parse::<bool>() else {
-                continue;
-            };
-
-            flag.set(bool_value);
-        }
-    }
-}
-
-/// Looks at the current URL and converts it into an app intent.
-#[cfg(target_family = "wasm")]
-pub fn current_web_intent() -> Option<WebIntent> {
-    let Some(current_url) = parse_current_url() else {
-        log::warn!("Unable to parse the current url");
-        return None;
-    };
-
-    WebIntent::try_from_url(&current_url).ok()
-}
-
 // Looks at the current url and converts it into an app intent.
 // NOTE: This is only intended for use with target_family = "wasm"
-#[cfg(target_family = "wasm")]
-pub fn parse_web_intent_from_current_url() -> Option<Url> {
-    current_web_intent().map(WebIntent::into_intent_url)
-}
 
-#[cfg(target_family = "wasm")]
-pub fn set_context_flags_from_current_url() {
-    let Some(current_url) = parse_current_url() else {
-        log::warn!("Unable to parse the current url");
-        return;
-    };
-
-    set_context_flags_from_url(current_url);
-}

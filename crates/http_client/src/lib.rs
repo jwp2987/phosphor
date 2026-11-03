@@ -3,7 +3,6 @@ use std::pin::Pin;
 use std::time::Duration;
 use std::{fmt, future};
 
-#[cfg(not(target_family = "wasm"))]
 use async_compat::{Compat, CompatExt};
 use async_stream::stream;
 use bytes::Bytes;
@@ -115,7 +114,6 @@ impl Client {
         let mut builder = reqwest::Client::builder();
 
         // Set some HTTP/2-related settings that aren't available on wasm.
-        #[cfg(not(target_family = "wasm"))]
         {
             builder = builder
                 .http2_keep_alive_interval(Duration::from_secs(60))
@@ -128,7 +126,6 @@ impl Client {
 
         // Apply the global HTTP proxy configuration (see Issue #72).
         // The reqwest::Proxy API isn't available on the WASM target, so skip it.
-        #[cfg(not(target_family = "wasm"))]
         {
             builder = proxy::current_proxy_config().apply(builder);
         }
@@ -154,14 +151,6 @@ impl Client {
             before_request_sent: None,
             after_response_received: None,
         })
-    }
-
-    pub fn set_before_request_fn(&mut self, hook_fn: RequestHookFn) {
-        self.before_request_sent = Some(hook_fn);
-    }
-
-    pub fn set_after_response_fn(&mut self, hook_fn: ResponseHookFn) {
-        self.after_response_received = Some(hook_fn);
     }
 
     fn builder(&self, wrapped: reqwest::RequestBuilder) -> RequestBuilder<'_> {
@@ -559,7 +548,6 @@ impl<'c> oauth2::AsyncHttpClient<'c> for Client {
 
     #[cfg(target_arch = "wasm32")]
     type Future = Pin<Box<dyn Future<Output = Result<oauth2::HttpResponse, Self::Error>> + 'c>>;
-    #[cfg(not(target_arch = "wasm32"))]
     type Future =
         Pin<Box<dyn Future<Output = Result<oauth2::HttpResponse, Self::Error>> + Send + Sync + 'c>>;
 
@@ -574,7 +562,6 @@ impl<'c> oauth2::AsyncHttpClient<'c> for Client {
 
             let mut builder = ::http::Response::builder().status(response.status());
 
-            #[cfg(not(target_arch = "wasm32"))]
             {
                 builder = builder.version(response.0.version());
             }

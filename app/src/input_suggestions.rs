@@ -8,6 +8,7 @@ use itertools::Itertools;
 use pathfinder_geometry::vector::vec2f;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::{cmp, ops::Range, vec};
 use warp_command_signatures::IconType;
 use warp_completer::completer::{
@@ -19,6 +20,7 @@ use warpui::elements::{
     ChildAnchor, DispatchEventResult, Expanded, Hoverable, MouseStateHandle, ParentAnchor,
     ParentOffsetBounds, ScrollbarWidth,
 };
+use warpui::r#async::SpawnedFutureHandle;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::{
     accessibility::{AccessibilityContent, WarpA11yRole},
@@ -215,6 +217,33 @@ pub struct InputSuggestions {
 
     /// Mouse state handles for row hover state, one per item
     row_mouse_state_handles: Vec<MouseStateHandle>,
+
+    /// Bumped by every refilter request and every `set_items`; a background refilter result is
+    /// applied only if it still carries the current value.
+    refilter_generation: u64,
+
+    /// A background refilter of a large completion result set that has not landed yet. While this
+    /// is set, `items` still holds the previous (stale) list.
+    pending_refilter: Option<PendingRefilter>,
+}
+
+/// Completion result sets with at least this many entries are re-filtered off the UI thread as
+/// the user types; smaller ones stay inline so typical menus update in the same frame.
+pub const INLINE_REFILTER_MAX_ENTRIES: usize = 2000;
+
+/// Set `PHOSPHOR_SYNC_REFILTER=1` to always filter completion menus inline (kill switch).
+fn sync_refilter_forced() -> bool {
+    std::env::var_os("PHOSPHOR_SYNC_REFILTER").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// A refilter running in the background, with everything needed to redo it inline if a key that
+/// acts on the menu arrives before the result does.
+struct PendingRefilter {
+    generation: u64,
+    query: String,
+    options: Arc<SuggestionResults>,
+    preselect: TabCompletionsPreselectOption,
+    task: SpawnedFutureHandle,
 }
 
 pub enum Event {
@@ -332,6 +361,8 @@ impl InputSuggestions {
             visible_items_tx,
             ignore_button_handles: vec![],
             row_mouse_state_handles: vec![],
+            refilter_generation: 0,
+            pending_refilter: None,
         }
     }
 
@@ -352,6 +383,12 @@ impl InputSuggestions {
 
     pub fn is_empty(&self) -> bool {
         self.items.len() == 0
+    }
+
+    /// Leaves no item selected (as an `Unselected` as-you-type menu is), for tests.
+    #[cfg(test)]
+    pub fn clear_selection_for_test(&mut self) {
+        self.selected_index = None;
     }
 
     #[cfg(test)]
@@ -385,6 +422,126 @@ impl InputSuggestions {
             TabCompletionsPreselectOption::Unchanged => {}
         }
 
+        self.cycle = true;
+        ctx.notify();
+    }
+
+    /// Re-filters `options` for `query` as the user types with the completion menu open.
+    ///
+    /// Small result sets are filtered inline. Large ones are filtered on a background thread:
+    /// the previous list stays on screen until the result arrives, and a result that has been
+    /// superseded in the meantime is dropped. Returns `true` only when the filtered list is known
+    /// to be empty right now (never for a pending refilter; an empty result then closes the menu
+    /// itself when it lands).
+    pub fn refilter_tab_completions(
+        &mut self,
+        query: &str,
+        options: &Arc<SuggestionResults>,
+        preselect_option: TabCompletionsPreselectOption,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        self.cancel_pending_refilter();
+        self.refilter_generation += 1;
+        if options.suggestions.len() < INLINE_REFILTER_MAX_ENTRIES || sync_refilter_forced() {
+            self.prefix_search_for_tab_completion(query, options, preselect_option, ctx);
+            return self.items.is_empty();
+        }
+
+        let generation = self.refilter_generation;
+        let separators: Vec<char> = self.path_separators.all.to_vec();
+        let task_options = Arc::clone(options);
+        let task_query = query.to_owned();
+        let task = ctx.spawn(
+            async move { filter_tab_suggestions(&task_options, &task_query, &separators) },
+            move |me, items, ctx| me.apply_refilter_result(generation, items, ctx),
+        );
+        self.pending_refilter = Some(PendingRefilter {
+            generation,
+            query: query.to_owned(),
+            options: Arc::clone(options),
+            preselect: preselect_option,
+            task,
+        });
+        false
+    }
+
+    pub(crate) fn cancel_pending_refilter(&mut self) {
+        if let Some(pending) = self.pending_refilter.take() {
+            pending.task.abort();
+        }
+    }
+
+    /// Whether a background refilter has not landed yet (so `items` may not match the query).
+    #[cfg(test)]
+    pub fn has_pending_refilter(&self) -> bool {
+        self.pending_refilter.is_some()
+    }
+
+    /// Lands a background refilter result. Returns whether it was applied; a result whose
+    /// generation is no longer current is ignored.
+    pub(crate) fn apply_refilter_result(
+        &mut self,
+        generation: u64,
+        items: Vec<Item>,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if generation != self.refilter_generation {
+            return false;
+        }
+        let Some(pending) = self.pending_refilter.take() else {
+            return false;
+        };
+        if pending.generation != generation {
+            return false;
+        }
+        self.apply_filtered_items(items, pending.preselect, ctx);
+        if self.items.is_empty() {
+            ctx.emit(Event::CloseSuggestion {
+                should_restore_buffer_before_history_up: false,
+            });
+        }
+        true
+    }
+
+    /// If a background refilter is pending, abandons it and filters inline for the current query,
+    /// so whatever acts on the menu next sees the list that matches the current text. Returns
+    /// `None` when nothing was pending, else whether the list is now empty (in which case the
+    /// caller must close the menu).
+    pub fn flush_pending_refilter(&mut self, ctx: &mut ViewContext<Self>) -> Option<bool> {
+        let pending = self.pending_refilter.take()?;
+        pending.task.abort();
+        // Invalidate the in-flight result.
+        self.refilter_generation += 1;
+        let items =
+            filter_tab_suggestions(&pending.options, &pending.query, self.path_separators.all);
+        self.apply_filtered_items(items, pending.preselect, ctx);
+        Some(self.items.is_empty())
+    }
+
+    /// `flush_pending_refilter` for internal callers: an emptied list closes the menu.
+    fn flush_pending_refilter_or_close(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.flush_pending_refilter(ctx) == Some(true) {
+            ctx.emit(Event::CloseSuggestion {
+                should_restore_buffer_before_history_up: false,
+            });
+        }
+    }
+
+    fn apply_filtered_items(
+        &mut self,
+        items: Vec<Item>,
+        preselect_option: TabCompletionsPreselectOption,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.set_items(items);
+        if self.items.is_empty() {
+            return;
+        }
+        match preselect_option {
+            TabCompletionsPreselectOption::First => self.select_first_item(ctx),
+            TabCompletionsPreselectOption::Unselected => self.selected_index = None,
+            TabCompletionsPreselectOption::Unchanged => {}
+        }
         self.cycle = true;
         ctx.notify();
     }
@@ -517,6 +674,9 @@ impl InputSuggestions {
 
     /// Sets the items within the suggestions list
     pub fn set_items(&mut self, items: Vec<Item>) {
+        // Any wholesale replacement supersedes a refilter still in flight.
+        self.cancel_pending_refilter();
+        self.refilter_generation += 1;
         // Reset state after items have been replaced.
         self.list_state = UniformListState::default();
         self.items = items;
@@ -577,6 +737,7 @@ impl InputSuggestions {
     }
 
     pub fn select(&mut self, action: &SelectAction, ctx: &mut ViewContext<Self>) {
+        self.flush_pending_refilter_or_close(ctx);
         if self.items.is_empty() {
             return;
         }
@@ -633,6 +794,7 @@ impl InputSuggestions {
     }
 
     pub fn confirm(&mut self, ctx: &mut ViewContext<Self>) {
+        self.flush_pending_refilter_or_close(ctx);
         if let Some(item) = self.get_selected_item() {
             ctx.emit(Event::ConfirmSuggestion {
                 suggestion: item.text.to_owned(),
@@ -654,6 +816,7 @@ impl InputSuggestions {
     }
 
     pub fn confirm_and_execute(&mut self, ctx: &mut ViewContext<Self>) {
+        self.flush_pending_refilter_or_close(ctx);
         if let Some(item) = self.get_selected_item() {
             ctx.emit(Event::ConfirmAndExecuteSuggestion {
                 suggestion: item.text.to_owned(),

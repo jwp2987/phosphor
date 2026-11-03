@@ -1,0 +1,26 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ?
+height: ~500
+viewBox: true
+g: 19
+rect: 0
+path: 5
+circle: 0
+ellipse: 0
+polygon: 0
+polyline: 0
+line: 7
+text: 5
+tspan: 0
+marker: 1
+foreignObject: 0
+image: 0
+labels:
+  - "History"
+  - "2002"
+  - "LinkedIn"
+  - "2004"
+  - "Facebook : Google"

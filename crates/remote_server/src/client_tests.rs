@@ -104,6 +104,7 @@ async fn initialize_round_trip() {
         server_message::Message::InitializeResponse(InitializeResponse {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
+            chunked_responses: false,
         })
     });
 
@@ -129,6 +130,7 @@ async fn initialize_sends_empty_auth_token_when_none() {
         server_message::Message::InitializeResponse(InitializeResponse {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
+            chunked_responses: false,
         })
     });
 
@@ -152,6 +154,7 @@ async fn initialize_sends_auth_token_when_provided() {
         server_message::Message::InitializeResponse(InitializeResponse {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
+            chunked_responses: false,
         })
     });
 
@@ -217,6 +220,7 @@ async fn is_disconnected_starts_false() {
         server_message::Message::InitializeResponse(InitializeResponse {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
+            chunked_responses: false,
         })
     });
 
@@ -492,6 +496,7 @@ async fn concurrent_in_flight_requests() {
         server_message::Message::InitializeResponse(InitializeResponse {
             server_version: "test-0.1.0".to_string(),
             host_id: "test-host-id".to_string(),
+            chunked_responses: false,
         })
     });
     let client = std::sync::Arc::new(client);
@@ -529,6 +534,7 @@ async fn mock_server_with_error_handling(
                         InitializeResponse {
                             server_version: "test-0.1.0".to_string(),
                             host_id: "test-host-id".to_string(),
+                            chunked_responses: false,
                         },
                     )),
                 };
@@ -964,4 +970,247 @@ async fn codebase_index_push_messages_become_client_events() {
         }
         other => panic!("Expected CodebaseIndexStatusUpdated, got {other:?}"),
     }
+}
+
+/// #1128: a superseded generator is cancelled by dropping the `run_command` future. The
+/// server must be told, or the command keeps running remotely and streams its output back
+/// over the shared ssh connection.
+#[tokio::test]
+async fn dropping_run_command_future_sends_abort_for_its_request() {
+    use futures::FutureExt as _;
+
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, _server_write) = tokio::io::split(server_stream);
+    let mut server_read = server_read.compat();
+
+    let executor = executor::Background::default();
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+
+    // Poll once so the request is sent and is awaiting a response (the server never
+    // answers), then drop the future as the autosuggestion abort does.
+    let pending = client.run_command(
+        SessionId::from(42u64),
+        "systemctl status nginx".to_string(),
+        None,
+        Default::default(),
+    );
+    assert!(pending.now_or_never().is_none());
+
+    let run = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+    assert!(matches!(
+        unwrap_session_scoped(&run),
+        session_scoped_request::Message::RunCommand(_)
+    ));
+    let abort = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+    match &abort.message {
+        Some(client_message::Message::Notification(Notification {
+            message: Some(notification::Message::Abort(a)),
+        })) => assert_eq!(a.request_id_to_abort, run.request_id),
+        other => panic!("Expected Abort, got {other:?}"),
+    }
+}
+
+/// #1241: the abort-on-drop guard covers every awaited request, not only `run_command`. An
+/// agent read cancelled by Stop (or a link probe superseded by the next hover) must stop the
+/// remote work too, or its result crosses the shared ssh connection to be thrown away.
+#[tokio::test]
+async fn dropping_any_request_future_sends_abort_for_its_request() {
+    use futures::FutureExt as _;
+
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, _server_write) = tokio::io::split(server_stream);
+    let mut server_read = server_read.compat();
+
+    let executor = executor::Background::default();
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+
+    let pending = client.read_file_context(ReadFileContextRequest {
+        files: vec![],
+        max_file_bytes: None,
+        max_batch_bytes: None,
+    });
+    assert!(pending.now_or_never().is_none());
+    let read = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+    assert!(matches!(
+        &read.message,
+        Some(client_message::Message::HostScoped(HostScopedRequest {
+            message: Some(host_scoped_request::Message::ReadFileContext(_)),
+        }))
+    ));
+    let abort = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+    match &abort.message {
+        Some(client_message::Message::Notification(Notification {
+            message: Some(notification::Message::Abort(a)),
+        })) => assert_eq!(a.request_id_to_abort, read.request_id),
+        other => panic!("Expected Abort, got {other:?}"),
+    }
+    // The dropped request no longer waits for a response.
+    assert!(client.pending_requests.is_empty());
+
+    // A request that completes sends no Abort: the next frame the server sees is the next
+    // request, not a stale cancellation.
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    tokio::spawn(mock_server_with(
+        server_read.compat(),
+        server_write.compat_write(),
+        |_| server_message::Message::ListDirectoryResponse(ListDirectoryResponse::default()),
+    ));
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    client.list_directory("/tmp".to_string()).await.unwrap();
+    assert!(client.pending_requests.is_empty());
+}
+
+/// #1244, new client / new daemon: `Initialize` announces that this client reassembles chunked
+/// frames, and the daemon's confirmation is read back.
+#[tokio::test]
+async fn initialize_announces_chunked_responses_and_reads_the_confirmation() {
+    let (client, _event_rx, _executor) = setup_mock_client(|msg| {
+        match &msg.message {
+            Some(client_message::Message::SessionScoped(SessionScopedRequest {
+                message: Some(session_scoped_request::Message::Initialize(init)),
+            })) => assert!(init.chunked_responses),
+            other => panic!("Expected Initialize, got {other:?}"),
+        }
+        server_message::Message::InitializeResponse(InitializeResponse {
+            server_version: "test-0.1.0".to_string(),
+            host_id: "test-host-id".to_string(),
+            chunked_responses: true,
+        })
+    });
+    let resp = client
+        .initialize(None, ClientPreferences::default())
+        .await
+        .unwrap();
+    assert!(resp.chunked_responses);
+}
+
+/// #1244, new client / old daemon: a daemon that predates the field answers without it, which
+/// decodes as `false`; `initialize_round_trip` and `run_command_round_trip` above are the whole
+/// frames such a daemon keeps sending.
+#[tokio::test]
+async fn an_old_daemon_leaves_chunked_responses_off() {
+    let (client, _event_rx, _executor) = setup_mock_client(|_| {
+        server_message::Message::InitializeResponse(InitializeResponse {
+            server_version: "old".to_string(),
+            host_id: "test-host-id".to_string(),
+            chunked_responses: false,
+        })
+    });
+    let resp = client
+        .initialize(None, ClientPreferences::default())
+        .await
+        .unwrap();
+    assert!(!resp.chunked_responses);
+}
+
+/// #1244, new client / new daemon: a large `RunCommandResponse` arrives as `FrameChunk`s and
+/// resolves the request with the reassembled message; a small response interleaved between the
+/// chunks resolves its own request first.
+#[tokio::test]
+async fn chunked_responses_are_reassembled_and_a_small_one_passes_between_chunks() {
+    use futures::FutureExt as _;
+    use prost::Message as _;
+
+    const CHUNK: usize = 16 * 1024;
+    let big_stdout = vec![b'y'; 10 * CHUNK + 3];
+
+    let (client_stream, server_stream) = tokio::io::duplex(1 << 20);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let mut server_read = server_read.compat();
+    let mut server_write = server_write.compat_write();
+
+    let executor = executor::Background::default();
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+
+    let mut big = Box::pin(client.run_command(
+        SessionId::from(1u64),
+        "cat big".to_string(),
+        None,
+        Default::default(),
+    ));
+    assert!(big.as_mut().now_or_never().is_none());
+    let big_request = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+    let mut small = Box::pin(client.run_command(
+        SessionId::from(1u64),
+        "git branch".to_string(),
+        None,
+        Default::default(),
+    ));
+    assert!(small.as_mut().now_or_never().is_none());
+    let small_request = protocol::read_client_message(&mut server_read)
+        .await
+        .unwrap();
+
+    let success = |stdout: Vec<u8>| {
+        server_message::Message::RunCommandResponse(RunCommandResponse {
+            result: Some(crate::proto::run_command_response::Result::Success(
+                crate::proto::RunCommandSuccess {
+                    stdout,
+                    stderr: Vec::new(),
+                    exit_code: Some(0),
+                },
+            )),
+        })
+    };
+    let big_response = ServerMessage {
+        request_id: big_request.request_id.clone(),
+        message: Some(success(big_stdout.clone())),
+    };
+    let chunks = crate::frames::chunk_frame(&big_response.encode_to_vec(), "stream-1", CHUNK);
+    assert!(chunks.len() > 2);
+    // First chunk, then the small response whole, then the rest.
+    protocol::write_server_message(&mut server_write, &chunks[0])
+        .await
+        .unwrap();
+    protocol::write_server_message(
+        &mut server_write,
+        &ServerMessage {
+            request_id: small_request.request_id.clone(),
+            message: Some(success(b"main\n".to_vec())),
+        },
+    )
+    .await
+    .unwrap();
+    let small = small.await.unwrap();
+    assert!(big.as_mut().now_or_never().is_none());
+    for chunk in &chunks[1..] {
+        protocol::write_server_message(&mut server_write, chunk)
+            .await
+            .unwrap();
+    }
+    let big = big.await.unwrap();
+
+    let stdout = |resp: RunCommandResponse| match resp.result {
+        Some(crate::proto::run_command_response::Result::Success(s)) => s.stdout,
+        other => panic!("expected success, got {other:?}"),
+    };
+    assert_eq!(stdout(small), b"main\n");
+    assert_eq!(stdout(big), big_stdout);
+}
+
+#[test]
+fn chunked_responses_announcement_env_switch() {
+    assert!(chunked_responses_announced_from_env(None));
+    assert!(chunked_responses_announced_from_env(Some("1")));
+    assert!(!chunked_responses_announced_from_env(Some("0")));
+    assert!(!chunked_responses_announced_from_env(Some(" off ")));
 }

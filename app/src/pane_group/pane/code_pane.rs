@@ -102,6 +102,10 @@ impl PaneContent for CodePane {
             );
         }
 
+        // A pane restored from undo-close gets its released editors back before the dedupe below.
+        self.file_view(ctx)
+            .update(ctx, |code_view, ctx| code_view.restore_released_tabs(ctx));
+
         #[cfg(any(feature = "local_fs", feature = "local_tty"))]
         self.file_view(ctx).update(ctx, |code_view, ctx| {
             let line_col = match &source {
@@ -123,6 +127,10 @@ impl PaneContent for CodePane {
     ) {
         let pane_id = self.id();
         let _code_model = group.active_file_model().clone();
+
+        // `reattach_panes` (tab undo-close) skips `pre_attach`; rebuild released editors here too.
+        self.file_view(ctx)
+            .update(ctx, |code_view, ctx| code_view.restore_released_tabs(ctx));
 
         self.view
             .update(ctx, |view, ctx| view.set_focus_handle(focus_handle, ctx));
@@ -163,7 +171,6 @@ impl PaneContent for CodePane {
                 CodeViewEvent::RunTabConfigSkill { path } => {
                     ctx.emit(crate::pane_group::Event::RunTabConfigSkill { path: path.clone() });
                 }
-                #[cfg(not(target_family = "wasm"))]
                 CodeViewEvent::OpenLspLogs { log_path } => {
                     ctx.emit(crate::pane_group::Event::OpenLspLogs {
                         log_path: log_path.clone(),
@@ -213,6 +220,13 @@ impl PaneContent for CodePane {
             manager.deregister_pane(&source);
         });
 
+        // Hidden for the undo-close grace period: drop the (large) editors now, keep the paths (#1340).
+        if matches!(detach_type, DetachType::HiddenForClose) {
+            file_view.update(ctx, |code_view, ctx| {
+                code_view.release_tabs_for_undo_close(ctx);
+            });
+        }
+
         // `detach_type` now selects only the tab cleanup below, which is local-fs only.
         #[cfg(not(feature = "local_fs"))]
         let _ = detach_type;
@@ -230,9 +244,10 @@ impl PaneContent for CodePane {
     fn snapshot(&self, app: &AppContext) -> LeafContents {
         let code_view_ref = self.file_view(app).as_ref(app);
 
-        let tabs: Vec<CodePaneTabSnapshot> = (0..code_view_ref.tab_count())
-            .filter_map(|i| code_view_ref.tab_at(i))
-            .map(|tab| CodePaneTabSnapshot { path: tab.path() })
+        let tabs: Vec<CodePaneTabSnapshot> = code_view_ref
+            .snapshot_tab_paths()
+            .into_iter()
+            .map(|path| CodePaneTabSnapshot { path })
             .collect();
 
         let active_tab_index = code_view_ref.active_tab_index();

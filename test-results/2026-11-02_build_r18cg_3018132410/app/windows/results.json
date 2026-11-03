@@ -1,0 +1,272 @@
+﻿{
+    "summary":  {
+                    "skip":  0,
+                    "pass":  9,
+                    "fail":  4
+                },
+    "cases":  [
+                  {
+                      "name":  "mode_proof",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "screenshot only (no OCR on the VM): shots\\terminal_proof.png"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_proof.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_delivery",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "marker typed and received via sendkeys"
+                                 ],
+                      "metrics":  {
+                                      "method":  "sendkeys"
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "fast_typing",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  63.8,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_fast_typing.png"
+                                ]
+                  },
+                  {
+                      "name":  "paste_instant_enter",
+                      "mode":  "terminal",
+                      "status":  "pass",
+                      "seconds":  7.1,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_paste_instant_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "ctrl_c",
+                      "mode":  "terminal",
+                      "status":  "fail",
+                      "seconds":  76.2,
+                      "detail":  [
+                                     "Ctrl-C delivered 0/5 times"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_ctrl_c.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_enter",
+                      "mode":  "terminal",
+                      "status":  "fail",
+                      "seconds":  456.5,
+                      "detail":  [
+                                     "only 0/30 Enter timings (verdict: no-data)"
+                                 ],
+                      "metrics":  {
+                                      "enter_to_start_ms_median":  null,
+                                      "lat":  {
+                                                  "enter_to_start":  {
+                                                                         "phosphor":  {
+                                                                                          "p50":  null,
+                                                                                          "max":  null,
+                                                                                          "p95":  null,
+                                                                                          "n":  0
+                                                                                      },
+                                                                         "reference":  null,
+                                                                         "reference_name":  "conhost (powershell.exe)",
+                                                                         "budget_ms":  2,
+                                                                         "budget_kind":  "overhead",
+                                                                         "notes":  [
+                                                                                       "Windows: SendKeys + software D3D12 VM; numbers compare builds, not absolute vs hand-measured baselines",
+                                                                                       "n=0 \u003c 30 samples: indicative only",
+                                                                                       "only 0 Phosphor samples (\u003c 24): no verdict"
+                                                                                   ],
+                                                                         "overhead_ms":  null,
+                                                                         "budget_verdict":  "no-data",
+                                                                         "prev":  null,
+                                                                         "baseline":  {
+                                                                                          "status":  "pending"
+                                                                                      },
+                                                                         "verdict":  "no-data"
+                                                                     }
+                                              },
+                                      "n":  0
+                                  },
+                      "shots":  [
+                                    "shots\\terminal_latency_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "mode_proof",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "screenshot only (no OCR on the VM): shots\\agent_proof.png"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_proof.png"
+                                ]
+                  },
+                  {
+                      "name":  "key_delivery",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "marker typed and received via sendkeys"
+                                 ],
+                      "metrics":  {
+                                      "method":  "sendkeys"
+                                  },
+                      "shots":  [
+
+                                ]
+                  },
+                  {
+                      "name":  "fast_typing",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  63.6,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_fast_typing.png"
+                                ]
+                  },
+                  {
+                      "name":  "paste_instant_enter",
+                      "mode":  "agent",
+                      "status":  "pass",
+                      "seconds":  7.1,
+                      "detail":  [
+
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_paste_instant_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "ctrl_c",
+                      "mode":  "agent",
+                      "status":  "fail",
+                      "seconds":  76.3,
+                      "detail":  [
+                                     "Ctrl-C delivered 0/5 times"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+                                    "shots\\agent_ctrl_c.png"
+                                ]
+                  },
+                  {
+                      "name":  "latency_enter",
+                      "mode":  "agent",
+                      "status":  "fail",
+                      "seconds":  457.6,
+                      "detail":  [
+                                     "only 0/30 Enter timings (verdict: no-data)"
+                                 ],
+                      "metrics":  {
+                                      "enter_to_start_ms_median":  null,
+                                      "lat":  {
+                                                  "enter_to_start":  {
+                                                                         "phosphor":  {
+                                                                                          "p50":  null,
+                                                                                          "max":  null,
+                                                                                          "p95":  null,
+                                                                                          "n":  0
+                                                                                      },
+                                                                         "reference":  null,
+                                                                         "reference_name":  "conhost (powershell.exe)",
+                                                                         "budget_ms":  2,
+                                                                         "budget_kind":  "overhead",
+                                                                         "notes":  [
+                                                                                       "Windows: SendKeys + software D3D12 VM; numbers compare builds, not absolute vs hand-measured baselines",
+                                                                                       "n=0 \u003c 30 samples: indicative only",
+                                                                                       "only 0 Phosphor samples (\u003c 24): no verdict"
+                                                                                   ],
+                                                                         "overhead_ms":  null,
+                                                                         "budget_verdict":  "no-data",
+                                                                         "prev":  null,
+                                                                         "baseline":  {
+                                                                                          "status":  "pending"
+                                                                                      },
+                                                                         "verdict":  "no-data"
+                                                                     }
+                                              },
+                                      "n":  0
+                                  },
+                      "shots":  [
+                                    "shots\\agent_latency_enter.png"
+                                ]
+                  },
+                  {
+                      "name":  "restore",
+                      "mode":  "-",
+                      "status":  "pass",
+                      "seconds":  0,
+                      "detail":  [
+                                     "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+                                 ],
+                      "metrics":  {
+
+                                  },
+                      "shots":  [
+
+                                ]
+                  }
+              ],
+    "meta":  {
+                 "backend":  "sendkeys",
+                 "platform":  "windows",
+                 "commit":  "53c0a38c"
+             },
+    "reused_build":  {
+                         "commit":  "18fddcd8088da7ef506568624cc7936eff3a47e2",
+                         "fetched":  "local cache (C:\\Users\\Winters\\.cache\\phosphor-ci\\builds\\windows\\17664724432)",
+                         "this_pipeline":  "3018132410",
+                         "job_name":  "build-windows-x86_64",
+                         "this_commit":  "53c0a38cae9ea415b31b85bd80ec96d2859e07d7",
+                         "job_id":  17664724432,
+                         "pipeline_id":  "3017838858"
+                     }
+}

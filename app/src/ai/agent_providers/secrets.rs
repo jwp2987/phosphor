@@ -6,6 +6,9 @@
 //! Design modeled after `crates/ai/src/api_keys.rs::ApiKeyManager`.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use futures::channel::oneshot;
 
 use warpui::{Entity, ModelContext, SingletonEntity};
 use warpui_extras::secure_storage::{self, AppContextExt};
@@ -18,20 +21,149 @@ pub enum AgentProviderSecretsEvent {
     KeysUpdated,
 }
 
-/// Singleton: manages the user's custom provider API keys.
-pub struct AgentProviderSecrets {
-    keys: HashMap<String, String>,
+/// A cloneable, read-only view of the keyring read that is (or was) in flight, for callers that
+/// only hold an `&AppContext` and so cannot register a waiter (the one-shot requests, #1368).
+/// [`Self::keys`] resolves when that read settles: `Some(keys)` on success, `None` if the keyring
+/// could not be read. Event-driven: the read's completion closes the channel awaited here.
+#[derive(Clone)]
+pub struct LoadSignal {
+    outcome: Arc<Mutex<Option<Option<HashMap<String, String>>>>>,
+    settled: async_channel::Receiver<()>,
 }
 
-impl AgentProviderSecrets {
-    /// Reads all keys from secure storage at startup.
-    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+impl std::fmt::Debug for LoadSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoadSignal")
+    }
+}
+
+impl LoadSignal {
+    pub async fn keys(&self) -> Option<HashMap<String, String>> {
+        // Nothing is ever sent; the channel closing is the event.
+        let _ = self.settled.recv().await;
+        self.outcome.lock().ok()?.clone().flatten()
+    }
+}
+
+/// The producer side of one [`LoadSignal`].
+struct LoadAttempt {
+    outcome: Arc<Mutex<Option<Option<HashMap<String, String>>>>>,
+    /// Dropped (closing the channel) when the read settles.
+    tx: Option<async_channel::Sender<()>>,
+    rx: async_channel::Receiver<()>,
+}
+
+impl LoadAttempt {
+    fn new() -> Self {
+        let (tx, rx) = async_channel::bounded(1);
         Self {
-            keys: Self::load_from_storage(ctx),
+            outcome: Arc::new(Mutex::new(None)),
+            tx: Some(tx),
+            rx,
         }
     }
 
-    /// Reads the API key for the given provider; returns `None` if not configured.
+    fn settle(&mut self, keys: Option<HashMap<String, String>>) {
+        if let Ok(mut outcome) = self.outcome.lock() {
+            *outcome = Some(keys);
+        }
+        self.tx = None;
+    }
+}
+
+/// Singleton: manages the user's custom provider API keys.
+///
+/// The keychain read happens off the UI thread (#1309): [`Self::new`] returns an empty store and
+/// the read lands through [`Self::finish_load`], which emits `KeysUpdated` so subscribers
+/// re-derive from [`Self::get`]. Writes go through the ordered secure-storage worker.
+pub struct AgentProviderSecrets {
+    keys: HashMap<String, String>,
+    /// Edits made while a keychain read is in flight. They are re-applied on top of what the read
+    /// returns (so neither side is lost) and only then persisted -- persisting the in-memory map
+    /// before the read lands would overwrite the stored keys with a partial set.
+    pending: Vec<(String, Option<String>)>,
+    /// Whether a read is in flight.
+    loading: bool,
+    /// Identifies the latest read; a result from an older one is stale and dropped.
+    load_epoch: u64,
+    /// Whether the first read has completed.
+    loaded: bool,
+    /// The last read failed (the keyring errored or the secure-storage worker gave up on it), so
+    /// the in-memory map is NOT the stored one. Nothing is written while this is the case, and
+    /// the next [`Self::wait_for_load`] starts a fresh read.
+    load_failed: bool,
+    /// Requests parked until the first read settles (see [`Self::wait_for_load`]).
+    waiters: Vec<oneshot::Sender<Option<HashMap<String, String>>>>,
+    /// The current first-read attempt, for [`Self::load_signal`].
+    attempt: Option<LoadAttempt>,
+}
+
+impl AgentProviderSecrets {
+    /// Starts reading all keys from secure storage; they arrive shortly after construction.
+    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+        let mut me = Self {
+            keys: HashMap::new(),
+            pending: Vec::new(),
+            loading: false,
+            load_epoch: 0,
+            loaded: false,
+            load_failed: false,
+            waiters: Vec::new(),
+            attempt: None,
+        };
+        me.start_load(ctx);
+        me
+    }
+
+    /// Whether the initial read of the stored keys has completed.
+    pub fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
+    /// For a request that must not go out with an empty key because the first keyring read has
+    /// not landed. `None`: the keys are loaded, read them with [`Self::get`]. `Some(rx)`: await it;
+    /// it resolves with the loaded keys when the read lands, or `None` if the keyring could not
+    /// be read (error, or the secure-storage worker gave up on a call that never returned).
+    /// Event-driven: resolved by the read's own completion, no polling.
+    ///
+    /// After a failed read this starts a fresh one, so the next user action retries.
+    pub fn wait_for_load(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<oneshot::Receiver<Option<HashMap<String, String>>>> {
+        if self.loaded {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.waiters.push(tx);
+        if !self.loading {
+            self.start_load(ctx);
+        }
+        if self.loaded {
+            // The read finished synchronously (no worker): nothing to wait for.
+            self.waiters.clear();
+            return None;
+        }
+        // Still in flight, or finished synchronously and failed (`finish_load` has then already
+        // resolved `rx` with `None`).
+        Some(rx)
+    }
+
+    /// A view of the first keyring read for callers that cannot register a waiter. `None`
+    /// once the keys are loaded. If the last read failed, the signal is already settled with
+    /// `None` (the next [`Self::wait_for_load`] starts a fresh read).
+    pub fn load_signal(&self) -> Option<LoadSignal> {
+        if self.loaded {
+            return None;
+        }
+        self.attempt.as_ref().map(|a| LoadSignal {
+            outcome: a.outcome.clone(),
+            settled: a.rx.clone(),
+        })
+    }
+
+    /// Reads the API key for the given provider; returns `None` if not configured (or not yet
+    /// loaded -- see [`Self::is_loaded`]; `KeysUpdated` is emitted when the load lands).
     pub fn get(&self, provider_id: &str) -> Option<&str> {
         self.keys.get(provider_id).map(String::as_str)
     }
@@ -39,10 +171,10 @@ impl AgentProviderSecrets {
     /// Sets/updates the API key for a provider.
     /// Passing an empty string is equivalent to deleting it.
     pub fn set(&mut self, provider_id: &str, api_key: String, ctx: &mut ModelContext<Self>) {
-        if api_key.is_empty() {
-            self.keys.remove(provider_id);
-        } else {
-            self.keys.insert(provider_id.to_owned(), api_key);
+        let value = (!api_key.is_empty()).then_some(api_key);
+        self.apply(provider_id, value.clone());
+        if self.read_unsettled() {
+            self.pending.push((provider_id.to_owned(), value));
         }
         ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
         self.persist(ctx);
@@ -50,9 +182,30 @@ impl AgentProviderSecrets {
 
     /// Removes a provider (along with its secret).
     pub fn remove(&mut self, provider_id: &str, ctx: &mut ModelContext<Self>) {
-        if self.keys.remove(provider_id).is_some() {
+        // While the stored keys are still loading, the key may exist only on disk.
+        if self.keys.remove(provider_id).is_some() || self.read_unsettled() {
+            if self.read_unsettled() {
+                self.pending.push((provider_id.to_owned(), None));
+            }
             ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
             self.persist(ctx);
+        }
+    }
+
+    /// Whether the in-memory map may be missing stored keys (a read is in flight, the first one
+    /// has not landed, or the last one failed): edits are parked and nothing is persisted.
+    fn read_unsettled(&self) -> bool {
+        self.loading || !self.loaded
+    }
+
+    fn apply(&mut self, provider_id: &str, value: Option<String>) {
+        match value {
+            Some(v) => {
+                self.keys.insert(provider_id.to_owned(), v);
+            }
+            None => {
+                self.keys.remove(provider_id);
+            }
         }
     }
 
@@ -67,27 +220,107 @@ impl AgentProviderSecrets {
     /// to have been ignored. Driven by the revision file; see
     /// [`crate::ai::tui_api_keys`].
     ///
-    /// Emits [`AgentProviderSecretsEvent::KeysUpdated`] unconditionally, matching
+    /// Emits [`AgentProviderSecretsEvent::KeysUpdated`] when the read lands, matching
     /// [`Self::set`]: subscribers re-derive from [`Self::get`] rather than diffing.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn reload_from_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
-        self.keys = Self::load_from_storage(ctx);
-        ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
+        self.start_load(ctx);
     }
 
-    fn load_from_storage(ctx: &mut ModelContext<Self>) -> HashMap<String, String> {
-        let raw = match ctx.secure_storage().read_value(SECURE_STORAGE_KEY) {
-            Ok(json) => json,
-            Err(secure_storage::Error::NotFound) => return HashMap::new(),
-            Err(e) => {
-                log::error!("Failed to read agent provider secrets: {e:#}");
-                return HashMap::new();
+    fn start_load(&mut self, ctx: &mut ModelContext<Self>) {
+        self.load_epoch += 1;
+        self.loading = true;
+        if !self.loaded && self.attempt.as_ref().is_none_or(|a| a.tx.is_none()) {
+            self.attempt = Some(LoadAttempt::new());
+        }
+        let epoch = self.load_epoch;
+        match secure_storage::background::run_or_inline(
+            |storage| Self::read_from(storage),
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => {
+                ctx.spawn(result.wait(), move |me, loaded, ctx| {
+                    // `None`: the worker gave up on the call (a locked keyring that never
+                    // answered), which is a failed read just like an error from the keyring.
+                    let loaded = loaded.unwrap_or_else(|| {
+                        Err("the secure-storage worker gave up on the read".to_owned())
+                    });
+                    me.finish_load(epoch, loaded, true, ctx);
+                });
+            }
+            // Synchronous backend. During construction nothing can be subscribed yet, and the
+            // model is not registered, so don't emit then.
+            Err(keys) => {
+                let emit = self.loaded;
+                self.finish_load(epoch, keys, emit, ctx)
+            }
+        }
+    }
+
+    /// Adopts a completed read, unless a newer one was started since.
+    fn finish_load(
+        &mut self,
+        epoch: u64,
+        keys: Result<HashMap<String, String>, String>,
+        emit: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if epoch != self.load_epoch {
+            return;
+        }
+        self.loading = false;
+        let keys = match keys {
+            Ok(keys) => keys,
+            Err(reason) => {
+                log::error!("Could not read agent provider API keys from the keyring: {reason}");
+                // Keep whatever was loaded before (a reload) and keep edits parked; waiting
+                // requests fail with a clear error instead of sending an empty key.
+                self.load_failed = true;
+                if let Some(attempt) = self.attempt.as_mut() {
+                    attempt.settle(None);
+                }
+                for waiter in std::mem::take(&mut self.waiters) {
+                    let _ = waiter.send(None);
+                }
+                return;
             }
         };
-        serde_json::from_str(&raw).unwrap_or_else(|e| {
+        self.keys = keys;
+        self.loaded = true;
+        self.load_failed = false;
+
+        let pending = std::mem::take(&mut self.pending);
+        let had_pending = !pending.is_empty();
+        for (id, value) in pending {
+            self.apply(&id, value);
+        }
+        for waiter in std::mem::take(&mut self.waiters) {
+            let _ = waiter.send(Some(self.keys.clone()));
+        }
+        if let Some(attempt) = self.attempt.as_mut() {
+            attempt.settle(Some(self.keys.clone()));
+        }
+        if emit {
+            ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
+        }
+        if had_pending {
+            self.persist(ctx);
+        }
+    }
+
+    /// `Err` only when the keyring itself could not be read; "nothing stored" and an unparsable
+    /// value are an empty map (as before).
+    fn read_from(
+        storage: &dyn secure_storage::SecureStorage,
+    ) -> Result<HashMap<String, String>, String> {
+        let raw = match storage.read_value(SECURE_STORAGE_KEY) {
+            Ok(json) => json,
+            Err(secure_storage::Error::NotFound) => return Ok(HashMap::new()),
+            Err(e) => return Err(format!("{e:#}")),
+        };
+        Ok(serde_json::from_str(&raw).unwrap_or_else(|e| {
             log::error!("Failed to deserialize agent provider secrets: {e:#}");
             HashMap::new()
-        })
+        }))
     }
 
     /// The single choke point for every write to this store: [`Self::set`] and
@@ -95,7 +328,12 @@ impl AgentProviderSecrets {
     /// GUI and TUI mutation (add, edit, clear, delete a provider). The
     /// cross-process notification is therefore stamped here rather than at each
     /// of the five call sites, so a new mutation path cannot forget it.
+    ///
+    /// Deferred while a read is in flight (see `pending`); [`Self::finish_load`] persists then.
     fn persist(&self, ctx: &mut ModelContext<Self>) {
+        if self.read_unsettled() {
+            return;
+        }
         let json = match serde_json::to_string(&self.keys) {
             Ok(json) => json,
             Err(e) => {
@@ -103,16 +341,22 @@ impl AgentProviderSecrets {
                 return;
             }
         };
-        if let Err(e) = ctx.secure_storage().write_value(SECURE_STORAGE_KEY, &json) {
-            log::error!("Failed to write agent provider secrets: {e:#}");
-            // Deliberately no revision bump on a failed write -- see the same
-            // note in `ai::api_keys::ApiKeyManager::write_keys_to_secure_storage`.
-            return;
-        }
-
-        // The keyring is shared with every other Zap process, so tell them to
-        // re-read it. See `ai::secret_revision`.
-        ::ai::secret_revision::bump_or_log();
+        // Queued behind any earlier write on the secure-storage worker, so writes land in the
+        // order they were made; runs synchronously where no worker exists.
+        let _ = secure_storage::background::run_or_inline(
+            move |storage| {
+                if let Err(e) = storage.write_value(SECURE_STORAGE_KEY, &json) {
+                    log::error!("Failed to write agent provider secrets: {e:#}");
+                    // Deliberately no revision bump on a failed write -- see the same
+                    // note in `ai::api_keys::ApiKeyManager::write_keys_to_secure_storage`.
+                    return;
+                }
+                // The keyring is shared with every other Zap process, so tell them to
+                // re-read it. See `ai::secret_revision`.
+                ::ai::secret_revision::bump_or_log();
+            },
+            ctx.secure_storage(),
+        );
     }
 }
 

@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""Table test (#1164): the bash bootstrap's fork-free replacements must give the same
+answers as the commands they replaced.
+
+The replaced forks (sort -V, cat|sed on os-release, cut on `shopt -s`) are now builtin code
+in app/assets/bundled/bootstrap/bash_body.sh. This extracts that code from the real file and
+runs it, under `set -eu` (the hostile-rc case), against the old command on a table of inputs.
+Needs only python3 and bash; exit 0 when all agree.
+
+USAGE
+    script/test_bash_bootstrap_builtins [path/to/bash]
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+BODY = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap", "bash_body.sh")
+BASH = sys.argv[1] if len(sys.argv) > 1 else (shutil.which("bash") or "/bin/bash")
+text = open(BODY).read()
+failures = []
+
+
+def run(script, **kw):
+    return subprocess.run([BASH, "-c", script], capture_output=True, text=True, **kw)
+
+
+def check(cond, what, detail=""):
+    print(("  ok   " if cond else "  FAIL ") + what)
+    if not cond:
+        failures.append(what)
+        if detail:
+            print("       " + detail)
+
+
+# --- warp_at_least_bash_version vs `sort -rVC` -------------------------------------------
+m = re.search(r"^\s*warp_at_least_bash_version \(\) \{\n.*?\n    \}\n", text, re.S | re.M)
+assert m, "warp_at_least_bash_version not found"
+func = m.group(0)
+print("warp_at_least_bash_version")
+for have in ["3.2.57(1)-release", "4.0.44(1)-release", "4.3.48(1)-release", "4.4.0(1)-release",
+             "4.4.23(1)-release", "5.0.0(1)-release", "5.2.15(1)-release", "5.3.9(1)-release"]:
+    for want in ["4.0", "4.4"]:
+        # Old definition, evaluated against a fake BASH_VERSION.
+        old = run(
+            f'BASH_VERSION="{have}"; printf "%s\\n%s\\n" "$BASH_VERSION" "{want}" | '
+            f"sort -rVC && echo 1 || echo 0"
+        ).stdout.strip()
+        vi = have.split("(")[0].split(".")
+        new = run(
+            f"set -eu\nFAKE_VI=({vi[0]} {vi[1]} {vi[2]})\n{func.replace('BASH_VERSINFO', 'FAKE_VI')}\nwarp_at_least_bash_version {want}"
+        )
+        check(new.stdout.strip() == old and new.returncode == 0, f"{have} >= {want}: {old}")
+
+# --- os-release NAME= extraction vs cat|sed -----------------------------------------------
+m = re.search(r'(        linux_distribution=""\n.*?unset __warp_os_line\n)', text, re.S)
+assert m, "os-release block not found"
+block = m.group(1)
+print("os-release NAME extraction")
+cases = {
+    "plain": 'NAME="Ubuntu"\nVERSION="22.04"\n',
+    "no trailing newline": 'NAME="Fedora Linux"',
+    "unquoted": "NAME=Arch\nID=arch\n",
+    "empty": 'NAME=""\n',
+    "lone quote": 'NAME="\n',
+    "two matches": 'NAME="A"\nNAME="B"\n',
+    "embedded quote": 'NAME="Say "hi""\n',
+    "backslash and tab": 'NAME="a\\b\tc"\n',
+    "other keys only": 'PRETTY_NAME="X"\nID=x\n',
+    "empty file": "",
+    "crlf": 'NAME="Win"\r\n',
+}
+for name, content in cases.items():
+    with tempfile.NamedTemporaryFile("wb", delete=False) as f:
+        f.write(content.encode())
+        path = f.name
+    old = run(f"""cat {path} | sed -nE 's/^NAME="(.*)"$/\\1/p'""").stdout
+    old = old.rstrip("\n")
+    new = run(
+        f'set -eu\nos_release_file={path}\n{block}\nprintf "%s" "$linux_distribution"'
+    )
+    check(new.stdout == old and new.returncode == 0, f"{name}: {old!r}")
+    os.unlink(path)
+
+# --- shopt -s | cut -f 1 --------------------------------------------------------------------
+m = re.search(r'(        local shell_options=""\n.*?done <<< "\$\(builtin shopt -s\)"\n)', text, re.S)
+assert m, "shopt block not found"
+print("shopt option names")
+sh = f'set -eu\nf() {{\n{m.group(1)}\nprintf "%s" "$shell_options"\n}}\nf'
+old = run('shopt -s | command -p cut -f 1').stdout.rstrip("\n")
+new = run(sh)
+check(new.stdout == old and new.returncode == 0, f"{len(old.splitlines())} options, padding kept")
+
+# --- systemd OSC 3008 hooks (#1283) ----------------------------------------------------------
+m = re.search(r"(    if \[\[ -z \"\$\{PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT:-\}\" \].*?\n        unset __phosphor_osc_i\n    fi\n)", text, re.S)
+assert m, "systemd OSC 3008 block not found"
+osc_block = m.group(1)
+print("systemd OSC 3008 hooks")
+fake_profile = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False)
+fake_profile.write("""
+__systemd_osc_context_ps0() { :; }
+__systemd_osc_context_precmdline() { :; }
+[ -n "$(declare -p PROMPT_COMMAND 2>/dev/null)" ] || PROMPT_COMMAND+=('')
+PROMPT_COMMAND+=(__systemd_osc_context_precmdline)
+PS0='$(__systemd_osc_context_ps0)'"${PS0:-}"
+""")
+fake_profile.close()
+
+
+def osc(pre, env="", strict=True):
+    script = ("set -eu\n" if strict else "") + f". {fake_profile.name}\n{pre}\n{env}\n{osc_block}\n"
+    script += 'printf "PS0=[%s]\\n" "${PS0-}"; declare -p PROMPT_COMMAND 2>/dev/null || echo NOPC'
+    return run(script)
+
+
+r = osc("")
+check(r.returncode == 0 and "PS0=[]" in r.stdout and "precmdline" not in r.stdout, "systemd hooks removed")
+r = run(f"""set -eu
+PS0='before '; PROMPT_COMMAND=(my_cmd)
+. {fake_profile.name}
+PS0="${{PS0}}after"; PROMPT_COMMAND+=(my_other)
+{osc_block}
+printf "PS0=[%s]\\n" "$PS0"; declare -p PROMPT_COMMAND""")
+check(r.returncode == 0 and "PS0=[before after]" in r.stdout and "my_cmd" in r.stdout
+      and "my_other" in r.stdout and "precmdline" not in r.stdout, "user PS0 / PROMPT_COMMAND kept")
+r = run(f"""set -eu
+PROMPT_COMMAND='my_cmd'
+. {fake_profile.name}
+{osc_block}
+declare -p PROMPT_COMMAND""")
+check(r.returncode == 0 and "my_cmd" in r.stdout and "precmdline" not in r.stdout, "string PROMPT_COMMAND promoted to array by systemd")
+r = osc("", "PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT=1")
+check("__systemd_osc_context_ps0" in r.stdout and "precmdline" in r.stdout, "PHOSPHOR_KEEP_SYSTEMD_OSC_CONTEXT=1 keeps them")
+r = run(f"set -eu\nPS0='mine '\nPROMPT_COMMAND='mine_pc'\n{osc_block}\nprintf '[%s]' \"$PS0\"; declare -p PROMPT_COMMAND")
+check(r.returncode == 0 and "[mine ]" in r.stdout and "mine_pc" in r.stdout, "host without the systemd profile: unchanged")
+r = run(f"set -eu\n{osc_block}\necho done")
+check(r.returncode == 0 and "done" in r.stdout, "nothing set at all: no error under set -eu")
+# No fork through systemd's function: run an actual prompt cycle's PS0 expansion and count.
+r = run(f"""
+. {fake_profile.name}
+__systemd_osc_context_ps0() {{ echo called >> {fake_profile.name}.calls; }}
+{osc_block}
+: "${{PS0@P}}" """)
+check(not os.path.exists(fake_profile.name + ".calls"), "expanding PS0 no longer calls __systemd_osc_context_ps0")
+for f in (fake_profile.name, fake_profile.name + ".calls"):
+    if os.path.exists(f):
+        os.unlink(f)
+
+# --- `history 1 | sed` without a fork (#1492) ---------------------------------------------------
+# bash < 5.3 forked a command substitution, a pipeline subshell and sed before every command.
+# The replacement writes `history 1` to a temp file and reads it back; it must give the same
+# string for every kind of history entry, in the default and the hostile (set -eu) state.
+PREEXEC = os.path.join(ROOT, "app", "assets", "bundled", "bootstrap", "bash.sh")
+ptext = open(PREEXEC).read()
+m1 = re.search(r"^     __bp_history1_strip\(\) \{\n.*?\n     \}\n", ptext, re.S | re.M)
+m2 = re.search(r"^     __bp_history1_viafile\(\) \{\n.*?\n     \}\n", ptext, re.S | re.M)
+assert m1 and m2, "__bp_history1_* not found in bash.sh"
+hist_funcs = m1.group(0) + m2.group(0)
+print("history 1 without a fork")
+entries = {
+    "plain": "ls -la",
+    "leading spaces": "   echo  hi",
+    "digits first": "123 abc",
+    "single digit": "7",
+    "multi-line": "echo a\necho b",
+    "multi-line with blank lines": "if true; then\n\n  echo x\nfi",
+    "trailing newlines": "echo a\n\n",
+    "backslashes": "printf 'a\\nb\\\\' \\",
+    "quotes": "echo \"it's\" `date`",
+    "dash n": "-n",
+    "unicode": "echo caf\u00e9 \u65e5\u672c",
+    "tab": "a\tb",
+    "star-like": "* x",
+    "long": "x" * 5000,
+}
+for name, entry in entries.items():
+    for strict in ("", "set -eu\n"):
+        for tf in ("", "HISTTIMEFORMAT='%F %T '\n"):
+            prelude = f"{strict}set -o history\nHISTFILE=/dev/null\n{tf}"
+            setup = "history -s -- \"$ENTRY\"; "  # same line as the call: it is `history 1`
+            old = subprocess.run(
+                [BASH, "-c", prelude + setup + """o=$(export LC_ALL=C; HISTTIMEFORMAT='' builtin history 1 | sed '1 s/^ *[0-9][0-9]*[* ] //'); printf '%s' "$o" """],
+                capture_output=True, env={**os.environ, "ENTRY": entry})
+            new = subprocess.run(
+                [BASH, "-c", prelude + hist_funcs + setup + """__bp_history1_viafile || echo VIAFILE-FAILED; printf '%s' "$__bp_history1"; command -p rm -f "$__bp_h1_file" """],
+                capture_output=True, env={**os.environ, "ENTRY": entry})
+            check(new.stdout == old.stdout and new.returncode == 0 and (old.stdout.strip() != b"" or entry == ""),
+                  f"{name}{' (set -eu)' if strict else ''}{' (HISTTIMEFORMAT)' if tf else ''}",
+                  f"old={old.stdout!r} new={new.stdout!r} err={new.stderr!r}")
+# No temp file available -> the caller falls back to the pipeline.
+r = run(hist_funcs + "__bp_h1_file=none; __bp_history1_viafile && echo used || echo fallback")
+check(r.stdout.strip() == "fallback", "no scratch file: reports failure so the pipeline runs")
+r = run(hist_funcs + 'export TMPDIR=/nonexistent/x; __bp_history1_viafile && echo used || echo fallback; echo "[$__bp_h1_file]"')
+check(r.stdout.split() == ["fallback", "[none]"], "mktemp fails: remembered, no retry per command")
+# The scratch file is private and the cleanup removes it.
+r = run("set -o history; HISTFILE=/dev/null\n" + hist_funcs + 'history -s secret; for i in 1 2 3; do __bp_history1_viafile; done; stat -c %a "$__bp_h1_file"; command -p rm "$__bp_h1_file"')
+check(r.stdout.strip() == "600", "scratch file is mode 600 and reused")
+
+# --- key-value hooks (MSYS2 / Git Bash): one write, same bytes (#1492) ------------------------------
+bm = re.search(r"    # Expects the first argument to be the shell hook\.\n    warp_send_hook_via_kv_pairs_start.*?    warp_send_hook_via_kv_pairs_end \(\) \{\n.*?\n    \}\n", text, re.S)
+assert bm, "kv hook functions not found"
+new_kv = bm.group(0)
+old_kv = """
+    warp_send_hook_via_kv_pairs_start () { __warp_emit "${OSC_START}k;A;%s\\a" "${1-}"; }
+    warp_send_hook_kv_pair_escaped () {
+      if [[ -n "${2-}" ]]; then __warp_emit "${OSC_START}k;B;%s;%q\\a" "$1" "$2"; else __warp_emit "${OSC_START}k;B;%s;\\a" "${1-}"; fi
+    }
+    warp_send_hook_kv_pair () {
+      if [[ -n "${2-}" ]]; then __warp_emit "${OSC_START}k;B;%s;%s\\a" "$1" "$2"; else __warp_emit "${OSC_START}k;B;%s;\\a" "${1-}"; fi
+    }
+    warp_send_hook_via_kv_pairs_end () { __warp_emit "${OSC_START}k;C\\a"; }
+"""
+driver = r"""
+OSC_START="$(builtin printf '\e]9278;')"
+__warp_emit () { builtin printf "$@"; }
+for v in "" "plain" "with space" 'quo"te' "it's" 'back\slash' $'tab\there' $'new\nline' 'a;b' '%s %d' 'caf\xc3\xa9' '$HOME' '`x`' '-n' '~' '*'; do
+  warp_send_hook_via_kv_pairs_start "Hook"
+  warp_send_hook_kv_pair "k1" "$v"
+  warp_send_hook_kv_pair_escaped "k2" "$v"
+  warp_send_hook_kv_pair "" "$v"
+  warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
+  warp_send_hook_via_kv_pairs_end
+  builtin printf '\n--\n'
+done
+"""
+print("key-value hooks")
+for strict in ("", "set -eu\n"):
+    old = run(strict + old_kv + driver)
+    new = run(strict + new_kv + driver)
+    check(old.returncode == 0 and new.stdout == old.stdout and new.returncode == 0 and len(old.stdout) > 200,
+          f"same bytes{' under set -eu' if strict else ''}", f"old={old.stdout!r} new={new.stdout!r} {new.stderr!r}")
+# One write per hook: count write(2) calls on a pty-less fd via strace-free proxy -- the new
+# functions call __warp_emit exactly once per hook.
+r = run(new_kv + r"""
+OSC_START=X; n=0; __warp_emit () { n=$((n+1)); }
+warp_send_hook_via_kv_pairs_start H; warp_send_hook_kv_pair a b; warp_send_hook_kv_pair_escaped c d; warp_send_hook_kv_pair e ""
+warp_send_hook_via_kv_pairs_end; echo $n""")
+check(r.stdout.strip() == "1", "a hook is emitted with one write")
+
+print()
+if failures:
+    print("test_bash_bootstrap_builtins: FAILED")
+    sys.exit(1)
+print("test_bash_bootstrap_builtins: ok")

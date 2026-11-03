@@ -76,18 +76,6 @@ pub fn time24(_: &GeneratorContext) -> Option<ChipValue> {
     Some(ChipValue::Text(Local::now().format("%H:%M").to_string()))
 }
 
-/// Generator function that shows the current 12-hour time with seconds.
-pub fn time12_with_seconds(_: &GeneratorContext) -> Option<ChipValue> {
-    Some(ChipValue::Text(
-        Local::now().format("%I:%M:%S %P").to_string(),
-    ))
-}
-
-/// Generator function that shows the current 24-hour time with seconds.
-pub fn time24_with_seconds(_: &GeneratorContext) -> Option<ChipValue> {
-    Some(ChipValue::Text(Local::now().format("%H:%M:%S").to_string()))
-}
-
 /// Generator function for SSH session chip.
 pub fn ssh_session(ctx: &GeneratorContext) -> Option<ChipValue> {
     let session = ctx.active_session?;
@@ -126,12 +114,7 @@ pub fn shell_git_branch() -> ShellCommandGenerator {
     // bootstrap scripts, at least until that is removed.
     const SH_COMMAND: &str = "GIT_OPTIONAL_LOCKS=0 git symbolic-ref --short HEAD 2> /dev/null || \
      GIT_OPTIONAL_LOCKS=0 git rev-parse --short HEAD 2> /dev/null";
-    let pwsh_command = safe_git_powershell(
-        "git symbolic-ref --short HEAD  2>$null; \
-            if ($? -eq $false) { \
-                git rev-parse --short HEAD 2>$null; \
-            }",
-    );
+    let pwsh_command = pwsh_git_branch_command();
 
     let command = ShellCommand::shell_specific([
         (ShellType::PowerShell, pwsh_command),
@@ -147,11 +130,7 @@ pub fn shell_other_git_branches() -> ShellCommandGenerator {
     const SH_COMMAND: &str = "git --no-optional-locks branch --no-color --sort=-committerdate; \
         printf '\\036\\n'; \
         git --no-optional-locks worktree list --porcelain";
-    let pwsh_command = safe_git_powershell(
-        "git --no-optional-locks branch --no-color --sort=-committerdate; \
-        [char]30; \
-        git --no-optional-locks worktree list --porcelain",
-    );
+    let pwsh_command = pwsh_other_git_branches_command();
 
     let command = ShellCommand::shell_specific([
         (ShellType::PowerShell, pwsh_command),
@@ -244,20 +223,158 @@ pub fn shell_git_line_changes() -> ShellCommandGenerator {
         (ShellType::Bash, GIT_COMMAND.to_string()),
         (ShellType::Zsh, GIT_COMMAND.to_string()),
         (ShellType::Fish, GIT_COMMAND.to_string()),
-        (
-            ShellType::PowerShell,
-            safe_git_powershell("git -c diff.autoRefreshIndex=false diff --shortstat HEAD"),
-        ),
+        (ShellType::PowerShell, pwsh_git_line_changes_command()),
     ]);
 
     ShellCommandGenerator::new(command, Some(vec!["git".to_owned()]))
 }
 
+/// The program and arguments of the git diff-stat chip command.
+const GIT_LINE_CHANGES_ARGS: &[&str] = &[
+    "-c",
+    "diff.autoRefreshIndex=false",
+    "diff",
+    "--shortstat",
+    "HEAD",
+];
+
+/// The program and arguments of the Kubernetes context chip command.
+const KUBECTL_CURRENT_CONTEXT_COMMAND: &str = "kubectl config current-context";
+
+fn pwsh_git_line_changes_command() -> String {
+    safe_git_powershell(&format!("git {}", GIT_LINE_CHANGES_ARGS.join(" ")))
+}
+
 pub fn kubernetes_current_context() -> ShellCommandGenerator {
     ShellCommandGenerator::new(
-        ShellCommand::portable("kubectl config current-context"),
+        ShellCommand::portable(KUBECTL_CURRENT_CONTEXT_COMMAND),
         Some(vec!["kubectl".to_owned()]),
     )
+}
+
+fn pwsh_git_branch_command() -> String {
+    safe_git_powershell(
+        "git symbolic-ref --short HEAD  2>$null; \
+            if ($? -eq $false) { \
+                git rev-parse --short HEAD 2>$null; \
+            }",
+    )
+}
+
+fn pwsh_other_git_branches_command() -> String {
+    safe_git_powershell(
+        "git --no-optional-locks branch --no-color --sort=-committerdate; \
+        [char]30; \
+        git --no-optional-locks worktree list --porcelain",
+    )
+}
+
+/// One external program with fixed arguments.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DirectInvocation {
+    pub program: &'static str,
+    pub args: &'static [&'static str],
+    /// Variables the shell command sets for the program (and puts back afterwards).
+    pub env: &'static [(&'static str, &'static str)],
+}
+
+/// A chip command that is made of external programs only, so it can be run without a shell.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DirectPlan {
+    /// One program.
+    Single(DirectInvocation),
+    /// The first program, and only if it fails, the second: the result is the first success's
+    /// output, else the second's.
+    FirstSuccess(DirectInvocation, DirectInvocation),
+    /// Both programs one after the other with a record separator line (`\x1e` and a newline)
+    /// between their stdout; the result's status is the second's, as the shell's is the last
+    /// command's.
+    JoinedWithRecordSeparator(DirectInvocation, DirectInvocation),
+}
+
+const GIT_ENV: &[(&str, &str)] = &[("GIT_OPTIONAL_LOCKS", "0")];
+
+/// The plain command the session runs for command-correction branch names. It is a single git
+/// program, so it is run directly as well (#1334): on Windows it was the one per-prompt
+/// `powershell.exe -EncodedCommand` that the chip commands' direct path did not cover.
+pub(crate) const GIT_BRANCHES_FOR_CORRECTIONS_COMMAND: &str =
+    "git --no-optional-locks branch --no-color";
+
+/// The one listing of every git alias that the completer's alias lookups are answered from
+/// (#1342). On Windows it was still a `powershell.exe -EncodedCommand` per repository and
+/// config change; it is a single git program, so it is run directly as well. PowerShell passes
+/// `'^alias.'` to git as `^alias.`, so the direct argument is the same text.
+pub(crate) const GIT_ALIAS_LISTING_COMMAND: &str =
+    "git --no-optional-locks config --get-regexp '^alias.'";
+
+/// Recognises the PowerShell chip commands that run at prompts and are only external programs,
+/// so the local executor can start those programs itself instead of a `pwsh -NoProfile` process
+/// (#1230): a pwsh start costs 140-250 ms and ~0.25 s of CPU on Linux and several times that on
+/// Windows, where bash costs 3 ms. Matches the exact text the chips above generate, nothing
+/// else: any other command still goes through pwsh.
+pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectPlan> {
+    if command == pwsh_git_line_changes_command() {
+        return Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: GIT_LINE_CHANGES_ARGS,
+            env: GIT_ENV,
+        }));
+    }
+    if command == GIT_BRANCHES_FOR_CORRECTIONS_COMMAND {
+        return Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "branch", "--no-color"],
+            env: GIT_ENV,
+        }));
+    }
+    if command == GIT_ALIAS_LISTING_COMMAND {
+        return Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "config", "--get-regexp", "^alias."],
+            env: GIT_ENV,
+        }));
+    }
+    if command == KUBECTL_CURRENT_CONTEXT_COMMAND {
+        return Some(DirectPlan::Single(DirectInvocation {
+            program: "kubectl",
+            args: &["config", "current-context"],
+            env: &[],
+        }));
+    }
+    if command == pwsh_git_branch_command() {
+        return Some(DirectPlan::FirstSuccess(
+            DirectInvocation {
+                program: "git",
+                args: &["symbolic-ref", "--short", "HEAD"],
+                env: GIT_ENV,
+            },
+            DirectInvocation {
+                program: "git",
+                args: &["rev-parse", "--short", "HEAD"],
+                env: GIT_ENV,
+            },
+        ));
+    }
+    if command == pwsh_other_git_branches_command() {
+        return Some(DirectPlan::JoinedWithRecordSeparator(
+            DirectInvocation {
+                program: "git",
+                args: &[
+                    "--no-optional-locks",
+                    "branch",
+                    "--no-color",
+                    "--sort=-committerdate",
+                ],
+                env: GIT_ENV,
+            },
+            DirectInvocation {
+                program: "git",
+                args: &["--no-optional-locks", "worktree", "list", "--porcelain"],
+                env: GIT_ENV,
+            },
+        ));
+    }
+    None
 }
 
 /// Generator function that shows the current svn "branch".

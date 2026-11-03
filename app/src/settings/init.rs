@@ -32,7 +32,6 @@ use warp_core::semantic_selection::SemanticSelection;
 
 use super::{
     app_icon::AppIconSettings, app_installation_detection::UserAppInstallDetectionSettings,
-    cloud_preferences::PreferencesSettings,
     initializer::SettingsInitializer,
     language::LanguageSettings, native_preference::NativePreferenceSettings,
     network::NetworkSettings, AISettings, AISettingsChangedEvent, AccessibilitySettings,
@@ -88,7 +87,7 @@ pub fn register_all_settings(ctx: &mut AppContext) {
     TuiThemeSettings::register(ctx);
     TuiZeroStateSettings::register(ctx);
     LocalControlSettings::register(ctx);
-    PreferencesSettings::register(ctx);
+    super::local_control::begin_async_load(ctx);
     WarpDrivePrivacySettings::register(ctx);
     UserAppInstallDetectionSettings::register(ctx);
     AppIconSettings::register(ctx);
@@ -441,10 +440,49 @@ fn apply_tab_groups_setting_to_feature_flag(available_in_build: bool, ctx: &AppC
 /// password and re-pushes the global proxy settings. Also used by the NetworkSettings change
 /// subscription to keep the password from being lost.
 pub(crate) fn reapply_network_settings_preserving_password(ctx: &mut AppContext) {
+    use super::network::{NetworkSettings, ProxyMode};
     use super::network_secrets::ProxyCredentials;
+    // The keychain read is deferred until a custom proxy could actually use the password
+    // (#1164 item 6). Switching mode to Custom re-enters here via the NetworkSettings
+    // subscription, which loads it then.
+    if matches!(*NetworkSettings::as_ref(ctx).proxy_mode.value(), ProxyMode::Custom) {
+        ProxyCredentials::handle(ctx).update(ctx, |creds, ctx| creds.ensure_loaded(ctx));
+    }
     let password = ProxyCredentials::as_ref(ctx).password().to_string();
     apply_network_settings_to_global_slots(ctx, &password);
 }
+
+/// The restore of a settings file that looked deleted, waiting out
+/// [`user_preferences::RESTORE_CONFIRM_DELAY`]. An editor that saves by delete + rename (or
+/// delete, then write) shows up as a Delete event followed by a Create/Modify one; the second
+/// event is the answer to "was it really deleted?", so it cancels the restore instead of
+/// leaving the timer to guess (#1381, APP-19). The delay stays only as the give-up for a file
+/// that is never recreated: time is the only evidence of "deleted for good".
+#[cfg(feature = "local_fs")]
+#[derive(Default)]
+struct PendingRestore(std::sync::atomic::AtomicU64);
+
+#[cfg(feature = "local_fs")]
+impl PendingRestore {
+    /// A restore is now waiting; returns the token its timer must present.
+    fn begin(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// The file's own watcher events say it is not deleted (or was deleted again later):
+    /// whatever restore was waiting is void.
+    fn cancel(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn is_current(&self, token: u64) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst) == token
+    }
+}
+
+#[cfg(feature = "local_fs")]
+static PENDING_SETTINGS_RESTORE: std::sync::LazyLock<PendingRestore> =
+    std::sync::LazyLock::new(Default::default);
 
 /// Handles a `WarpConfig` change event, reloading settings from disk when
 /// the settings file is modified, created, or deleted.
@@ -465,10 +503,16 @@ fn handle_warp_config_change(
             // The file looks deleted. An editor's delete + rename save leaves it missing for a
             // moment, so confirm on a timer instead of sleeping here: this handler runs on the
             // UI thread (#862).
+            let token = PENDING_SETTINGS_RESTORE.begin();
             WarpConfig::handle(ctx).update(ctx, |_, ctx| {
                 ctx.spawn(
                     warpui::r#async::Timer::after(user_preferences::RESTORE_CONFIRM_DELAY),
-                    |_, _, ctx| {
+                    move |_, _, ctx| {
+                        // A Create/Modify event for the file arrived meanwhile: it is being
+                        // rewritten, not deleted, and its own event does the reload.
+                        if !PENDING_SETTINGS_RESTORE.is_current(token) {
+                            return;
+                        }
                         let prefs =
                             <settings::PublicPreferences as warpui::SingletonEntity>::as_ref(ctx);
                         // Restore only if the file is still missing; if it came back, the
@@ -479,8 +523,15 @@ fn handle_warp_config_change(
             });
             return;
         }
-        Ok(user_preferences::ReloadOutcome::Reloaded) => {}
+        Ok(user_preferences::ReloadOutcome::Reloaded) => PENDING_SETTINGS_RESTORE.cancel(),
+        // Our own background write echoing back: the settings in memory are already current.
+        Ok(user_preferences::ReloadOutcome::OwnWrite) => {
+            PENDING_SETTINGS_RESTORE.cancel();
+            return;
+        }
         Err(err) => {
+            // The file exists (it failed to parse): not deleted.
+            PENDING_SETTINGS_RESTORE.cancel();
             report_settings_reload_failure(&err, ctx);
             return;
         }
@@ -548,7 +599,8 @@ fn init_platform_native_preferences() -> user_preferences::Model {
             Box::<user_preferences::in_memory::InMemoryPreferences>::default()
         } else if #[cfg(any(target_os = "linux", target_os = "freebsd", feature = "integration_tests"))] {
             match user_preferences::file_backed::FileBackedUserPreferences::new(super::user_preferences_file_path()) {
-                Ok(prefs) => Box::new(prefs) as user_preferences::Model,
+                // Off-thread writes (#1203); flushed on quit in `terminate_persistence_writer`.
+                Ok(prefs) => Box::new(prefs.with_background_writer()) as user_preferences::Model,
                 Err(err) => {
                     crate::report_error!(anyhow::anyhow!(err));
                     Box::<user_preferences::in_memory::InMemoryPreferences>::default()
@@ -561,8 +613,6 @@ fn init_platform_native_preferences() -> user_preferences::Model {
             Box::new(user_preferences::user_defaults::UserDefaultsPreferencesStorage::new(
                 warp_core::channel::ChannelState::data_domain_if_not_default()
             ))
-        } else if #[cfg(target_family = "wasm")] {
-            Box::<user_preferences::local_storage::LocalStoragePreferences>::default()
         } else {
             unreachable!("Unspecified user preferences implementation for current platform!");
         }
@@ -591,14 +641,14 @@ pub fn init_public_user_preferences() -> (user_preferences::Model, Option<user_p
     cfg_if::cfg_if! {
         if #[cfg(test)] {
             (Box::<user_preferences::in_memory::InMemoryPreferences>::default(), None)
-        } else if #[cfg(target_family = "wasm")] {
-            (Box::<user_preferences::local_storage::LocalStoragePreferences>::default(), None)
         } else {
             if warp_core::features::FeatureFlag::SettingsFile.is_enabled() {
                 let (prefs, parse_error) =
                     user_preferences::toml_backed::TomlBackedUserPreferences::new(
                         super::user_preferences_toml_file_path(),
                     );
+                // Settings writes run off the UI thread; flushed on quit (#1155).
+                let prefs = prefs.with_background_writer();
                 if let Some(err) = &parse_error {
                     log::warn!("Settings file has syntax errors and could not be parsed: {err}");
                 }

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Output;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use command::r#async::Command;
 use warpui::r#async::FutureExt as _;
 
@@ -12,17 +12,52 @@ use warpui::r#async::FutureExt as _;
 /// teardown.
 const STOP_CONTROL_MASTER_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Builds the common SSH argument list for multiplexed connections through
-/// an existing ControlMaster socket.
+/// Formats the `ControlPath=` value for an `-o` option. ssh tokenises the option on whitespace
+/// (a home directory with a space otherwise fails with "extra arguments at end of line", #1100),
+/// so a path containing whitespace is double-quoted, and `%` is doubled because ssh expands
+/// `%` tokens in ControlPath.
+pub fn control_path_option(socket_path: &Path) -> String {
+    let path = socket_path.display().to_string().replace('%', "%%");
+    if path.contains(char::is_whitespace) {
+        format!("ControlPath=\"{path}\"")
+    } else {
+        format!("ControlPath={path}")
+    }
+}
+
+/// Builds the common SSH argument list for background clients that ride an existing
+/// ControlMaster socket (`run_ssh_command`, `run_ssh_script`, the remote-server proxy).
+///
+/// Guarded like [`mux_control_args`] (#1100): if the master is dead or closing, OpenSSH's mux
+/// client falls through to a real connection, which under the user's config (`Host *`
+/// `ProxyJump`, `ControlMaster yes`) could open an unexpected connection or auth prompt. These
+/// clients must only ever ride the master and otherwise fail fast: `-F /dev/null` (ignore user
+/// config), `ControlMaster=no`, `ProxyCommand=false` (a fallback "connection" is a local `false`
+/// that exits at once, no DNS/TCP), `BatchMode=yes` (never prompt) and a short `ConnectTimeout`.
+///
+/// Callers set `SHELL=/bin/sh` (ssh runs the ProxyCommand through `$SHELL`) and choose their own
+/// stdin; `-n` is deliberately not included because `run_ssh_script` and the proxy need stdin.
 pub fn ssh_args(socket_path: &Path) -> Vec<String> {
     vec![
+        "-F".to_string(),
+        "/dev/null".to_string(),
         "-q".to_string(),
+        "-o".to_string(),
+        "ControlMaster=no".to_string(),
+        "-o".to_string(),
+        "ProxyCommand=false".to_string(),
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "ConnectTimeout=5".to_string(),
         "-o".to_string(),
         "PasswordAuthentication=no".to_string(),
         "-o".to_string(),
         "ForwardX11=no".to_string(),
         "-o".to_string(),
-        format!("ControlPath={}", socket_path.display()),
+        "ClearAllForwardings=yes".to_string(),
+        "-o".to_string(),
+        control_path_option(socket_path),
         "placeholder@placeholder".to_string(),
     ]
 }
@@ -64,7 +99,7 @@ pub fn mux_control_args(op: &str, socket_path: &Path) -> Vec<String> {
         "-o".to_string(),
         "ControlMaster=no".to_string(),
         "-o".to_string(),
-        format!("ControlPath={}", socket_path.display()),
+        control_path_option(socket_path),
         "-o".to_string(),
         "ProxyCommand=false".to_string(),
         "-o".to_string(),
@@ -204,6 +239,8 @@ pub async fn run_ssh_command(
         Command::new("ssh")
             .args(ssh_args(socket_path))
             .arg(remote_command)
+            .env("SHELL", "/bin/sh")
+            .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output()
             .await
@@ -231,6 +268,7 @@ pub async fn run_ssh_script(socket_path: &Path, script: &str, timeout: Duration)
     let mut child = Command::new("ssh")
         .args(ssh_args(socket_path))
         .arg("bash -s")
+        .env("SHELL", "/bin/sh")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -270,10 +308,18 @@ pub async fn scp_upload(
             // dev mode is hundreds of MB; compression can significantly cut
             // upload time and reduce timeout risk.
             .arg("-C")
+            // #1100: ride the master only, never fall back to a real login.
+            .arg("-F")
+            .arg("/dev/null")
             .arg("-o")
-            .arg(format!("ControlPath={}", socket_path.display()))
+            .arg(control_path_option(socket_path))
             .arg("-o")
             .arg("ControlMaster=no")
+            .arg("-o")
+            .arg("ProxyCommand=false")
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .env("SHELL", "/bin/sh")
             .arg("-o")
             .arg("PasswordAuthentication=no")
             .arg("-o")

@@ -1,6 +1,3 @@
-#![cfg_attr(target_family = "wasm", allow(dead_code, unused_imports))]
-// Adding this file level gate as some of the code around editability is not used in WASM yet.
-
 use std::{collections::HashMap, ops::Range, rc::Rc, sync::Arc};
 
 use futures::stream::AbortHandle;
@@ -588,6 +585,11 @@ impl DiffModel {
 
     pub fn base(&self) -> Option<Arc<MultilineString<LF>>> {
         self.base.clone()
+    }
+
+    /// Whether a base text was set, i.e. whether [`Self::compute_diff`] has anything to compare to.
+    pub fn has_base(&self) -> bool {
+        self.base.is_some()
     }
 
     /// Given the new content, compute the new set of diff contents.

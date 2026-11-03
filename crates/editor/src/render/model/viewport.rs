@@ -78,9 +78,11 @@ pub struct ScrollPositionSnapshot {
 impl ScrollPositionSnapshot {
     /// Map this snapshot back to a `scroll_top` offset for the current render state.
     pub(super) fn to_scroll_top(self, render_state: &RenderState) -> Pixels {
-        render_state
-            .character_bounds(self.first_character_offset)
-            .map_or(Pixels::zero(), |bounds| bounds.min_y().into_pixels())
+        // Only the row's y position is read, which a dehydrated paragraph answers exactly.
+        super::hydration::y_only_geometry(|| {
+            render_state.character_bounds(self.first_character_offset)
+        })
+        .map_or(Pixels::zero(), |bounds| bounds.min_y().into_pixels())
     }
 
     /// Snapshot the render state's current scroll position.

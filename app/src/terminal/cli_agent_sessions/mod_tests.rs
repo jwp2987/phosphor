@@ -1447,6 +1447,32 @@ fn idle_prompt_does_not_disarm_pending_cancel() {
 }
 
 #[test]
+fn idle_prompt_after_ctrl_c_cancels_immediately_without_waiting_for_the_timer() {
+    App::test((), |mut app| async move {
+        let model = app.add_singleton_model(|_| CLIAgentSessionsModel::new());
+        let view_id = EntityId::new();
+        model.update(&mut app, |m, ctx| {
+            m.set_session(
+                view_id,
+                cli_agent_session(CLIAgentSessionStatus::InProgress, true),
+                ctx,
+            );
+            m.update_from_event(view_id, &rich_event(CLIAgentEventType::PromptSubmit), ctx);
+            // A window far longer than the test: only the event can resolve it.
+            m.observe_ctrl_c_write_with_window(view_id, Duration::from_secs(3600), ctx);
+            m.update_from_event(view_id, &rich_event(CLIAgentEventType::IdlePrompt), ctx);
+        });
+        model.read(&app, |m, _| {
+            assert_eq!(
+                m.session(view_id).map(|s| &s.status),
+                Some(&CLIAgentSessionStatus::Cancelled)
+            );
+            assert!(!m.has_armed_ctrl_c_window(view_id));
+        });
+    });
+}
+
+#[test]
 fn late_stop_after_cancelled_flips_status_to_success() {
     App::test((), |mut app| async move {
         let model = app.add_singleton_model(|_| CLIAgentSessionsModel::new());

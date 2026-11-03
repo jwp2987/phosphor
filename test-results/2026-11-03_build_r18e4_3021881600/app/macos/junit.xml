@@ -1,0 +1,488 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="145" failures="45" skipped="35">
+<testcase classname="terminal" name="mode_proof" time="4.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.60">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="40.90">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="77.30">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="67.90">
+</testcase>
+<testcase classname="terminal" name="rollover" time="17.20">
+</testcase>
+<testcase classname="terminal" name="expert_fuzz" time="37.00">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="8.00">
+</testcase>
+<testcase classname="terminal" name="arrows_behind_paste" time="12.60">
+</testcase>
+<testcase classname="terminal" name="keydown_count" time="26.60">
+</testcase>
+<testcase classname="terminal" name="big_paste" time="10.40">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="25.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="557.90">
+<failure message="Ctrl-C under flood: Phosphor overhead 49.42 +/- 3.06 ms (SE) over Terminal.app (.command via open) exceeds the 20 ms budget (overhead - 2 SE &gt; budget)">Ctrl-C under flood: Phosphor overhead 49.42 +/- 3.06 ms (SE) over Terminal.app (.command via open) exceeds the 20 ms budget (overhead - 2 SE &gt; budget)
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 202.04 ms includes the input-tool spawn (harness floor 141.02762495167553 ms)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks
+Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)
+injector accounting: injector sent 18323; app saw 8989; lost-before-app 9334 (Enter: sent 153, app saw 79)</failure>
+</testcase>
+<testcase classname="terminal" name="read_x" time="12.90">
+<failure message="read x received []">read x received []
+injector accounting: injector sent 77; app saw 75; lost-before-app 2 (Enter: sent 3, app saw 3)</failure>
+</testcase>
+<testcase classname="terminal" name="subshells" time="93.00">
+<failure message="bash subshell (setup gap 0.25s): lines []">bash subshell (setup gap 0.25s): lines []
+zsh subshell (setup gap 2.00s): lines []
+fish subshell (setup gap 2.00s): lines []
+nu subshell (setup gap 2.50s): lines []
+injector accounting: injector sent 699; app saw 692; lost-before-app 7 (Enter: sent 25, app saw 26)</failure>
+</testcase>
+<testcase classname="terminal" name="alt_screen" time="15.20">
+<failure message="shell usable after less/vim: []">shell usable after less/vim: []
+vim received typed text: []
+injector accounting: injector sent 81; app saw 79; lost-before-app 2 (Enter: sent 4, app saw 4)</failure>
+</testcase>
+<testcase classname="terminal" name="gitbash_subshell" time="1.50">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="24.70">
+<failure message='ssh_connect_typing (gap 0.0 s): T194_vg274r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: session_by_pid: pid 17129 | debug1: session_exit_message: session 0 channel 0 pid 17129 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.1 port 64391:11: disconnected by user | Disconnected from user gitrunner 127.0.0.1 port 64391 | debug1: do_cleanup | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup; test sshd (openssh) listening on 127.0.0.1:64388; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 150946.6, received 149260.0 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes=" " t=1793712304090.777 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="~" t=1793712304092.341 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="/" t=1793712304117.282 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="r" t=1793712304135.759 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="l" t=1793712304156.981 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="." t=1793712304167.658 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793712304183.958 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="x" t=1793712304201.208 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793712304226.158 | [DEBUG] input_order hop=hand_route reason=held_young_enter_started state=pty_owned awaiting_ready=false in_flight=0 bytes="\r" t=1793712304227.450'>ssh_connect_typing (gap 0.0 s): T194_vg274r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: session_by_pid: pid 17129 | debug1: session_exit_message: session 0 channel 0 pid 17129 exit 0 | debug1: session_exit_message: release channel 0 | Received disconnect from 127.0.0.1 port 64391:11: disconnected by user | Disconnected from user gitrunner 127.0.0.1 port 64391 | debug1: do_cleanup | debug1: mm_reap: child exited with status 255 | debug1: do_cleanup; test sshd (openssh) listening on 127.0.0.1:64388; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 150946.6, received 149260.0 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes=" " t=1793712304090.777 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="~" t=1793712304092.341 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="/" t=1793712304117.282 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="r" t=1793712304135.759 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="l" t=1793712304156.981 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="." t=1793712304167.658 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793712304183.958 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="x" t=1793712304201.208 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793712304226.158 | [DEBUG] input_order hop=hand_route reason=held_young_enter_started state=pty_owned awaiting_ready=false in_flight=0 bytes="\r" t=1793712304227.450
+remote shell received 0/1 typed-ahead commands exactly (missing 1)
+ssh_connect_typing loss: 1 of 1 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials
+injector accounting: WARN loss case: injector sent 44; app saw 41; lost-before-app 3 (Enter: sent 2, app saw 2)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_not_local_after_ssh_connect_typing" time="0.00">
+<failure message="after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="10.10">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="8.00">
+</testcase>
+<testcase classname="terminal" name="ssh_failing_not_local" time="25.40">
+<skipped message="NO-REFERENCE (not a pass): ssh_failing_not_local: ssh started 2.31 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (Conne"/>
+</testcase>
+<testcase classname="terminal" name="idle_cpu" time="25.40">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="352.00">
+<failure message="Enter to command start: Phosphor overhead 8.61 +/- 0.77 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)">Enter to command start: Phosphor overhead 8.61 +/- 0.77 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.73 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+shell side: pty_write -&gt; first pty_read median 1.40 ms (n=74)
+Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+injector accounting: injector sent 8761; app saw 4350; lost-before-app 4411 (Enter: sent 1, app saw 75)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="30.30">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="125.60">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks"/>
+</testcase>
+<testcase classname="terminal" name="latency_first_key_after_idle" time="752.60">
+<skipped message="NO-REFERENCE (not a pass): First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="73.90">
+<failure message="'what is 5 &gt; 3' (prose) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['what is 5 &gt; 3']">'what is 5 &gt; 3' (prose) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['what is 5 &gt; 3']
+injector accounting: injector sent 615; app saw 549; lost-before-app 66 (Enter: sent 26, app saw 26)</failure>
+</testcase>
+<testcase classname="terminal" name="agent_mode_switch" time="15.80">
+</testcase>
+<testcase classname="terminal" name="ui_tab_menu" time="11.10">
+<failure message="tab_return: shell received ['echo t213_4tqsni &gt;&gt; tc/menuzz_'], expected exactly one of ['echo t213_4tqsni &gt;&gt; tc/menuzz_one.txt', 'echo t213_4tqsni &gt;&gt; tc/menuzz_two.txt']">tab_return: shell received ['echo t213_4tqsni &gt;&gt; tc/menuzz_'], expected exactly one of ['echo t213_4tqsni &gt;&gt; tc/menuzz_one.txt', 'echo t213_4tqsni &gt;&gt; tc/menuzz_two.txt']
+down_return: shell received ['echo t214_ycy38b &gt;&gt; tc/menuzz_ '], expected exactly one of ['echo t214_ycy38b &gt;&gt; tc/menuzz_one.txt', 'echo t214_ycy38b &gt;&gt; tc/menuzz_two.txt']
+a file named like the uncompleted prefix (tc/menuzz_) was created: Enter ran the uncompleted line
+injector accounting: injector sent 72; app saw 63; lost-before-app 9 (Enter: sent 0, app saw 3)</failure>
+</testcase>
+<testcase classname="terminal" name="flood_typed_line" time="18.30">
+<failure message="yes: the flood ended (-2.42 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES">yes: the flood ended (-2.42 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES
+seq: the flood ended (-2.55 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES
+injector accounting: injector sent 204; app saw 198; lost-before-app 6 (Enter: sent 4, app saw 4)</failure>
+</testcase>
+<testcase classname="terminal" name="remote_session_legacy" time="106.50">
+<failure message="[legacy] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t232_ebiuf78q, outer pid again], got ['40674', '40673', 't232_ebiuf78q']">[legacy] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t232_ebiuf78q, outer pid again], got ['40674', '40673', 't232_ebiuf78q']
+[legacy] vim over ssh wrote the typed text: expected ['hello remote t233_8rwq8y'], got []
+[legacy] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t234_z7783rfl'], got []
+[legacy] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []
+[legacy] no local prompt after `exit` from the remote shell
+harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+APP DIED: pid 28536 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists
+injector accounting: injector sent 1415; app saw 1411; lost-before-app 4 (Enter: sent 43, app saw 43)</failure>
+</testcase>
+<testcase classname="terminal" name="intl_wide_type" time="8.80">
+<failure message="typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069775f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069775f7a776a2e747874]">typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069775f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069775f7a776a2e747874]
+injector accounting: injector sent 159; app saw 157; lost-before-app 2 (Enter: sent 6, app saw 6)</failure>
+</testcase>
+<testcase classname="terminal" name="ui_ghost_accept" time="17.70">
+</testcase>
+<testcase classname="terminal" name="flood_typing_latency" time="21.10">
+<failure message="the flood in tab A ended before the typing finished (before=False, after=False): raise APPCI_FLOOD_LINES">the flood in tab A ended before the typing finished (before=False, after=False): raise APPCI_FLOOD_LINES
+no reference terminal in this case: gap p50 18.9 / p95 20.8 ms are recorded, not judged against one
+no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)
+injector accounting: injector sent 323; app saw 318; lost-before-app 5 (Enter: sent 2, app saw 2)</failure>
+</testcase>
+<testcase classname="terminal" name="remote_session_ext" time="119.60">
+<failure message="[ext] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t255_4hojhydl, outer pid again], got ['43014', '43013', 't255_4hojhydl']">[ext] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t255_4hojhydl, outer pid again], got ['43014', '43013', 't255_4hojhydl']
+[ext] vim over ssh wrote the typed text: expected ['hello remote t256_93bdrd'], got []
+[ext] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t257_74nw2hvu'], got []
+[ext] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []
+[ext] no local prompt after `exit` from the remote shell
+harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+injector accounting: injector sent 1321 keys (43 Enter); app key trace not available, so nothing to compare</failure>
+</testcase>
+<testcase classname="terminal" name="intl_wide_paste" time="11.30">
+<failure message="paste inside typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069705f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069705f7a776a2e747874]">paste inside typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069705f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069705f7a776a2e747874]
+injector accounting: injector sent 125; app saw 130; lost-before-app 0 (Enter: sent 5, app saw 11); app logged 5 more than were injected (keys from an earlier case or another source)</failure>
+</testcase>
+<testcase classname="terminal" name="ui_ctrl_r" time="15.60">
+</testcase>
+<testcase classname="terminal" name="flood_scrollback_find" time="13.00">
+<failure message="control: the marker is already visible before the Find (the flood did not scroll it away; raise APPCI_SCALE/lines)">control: the marker is already visible before the Find (the flood did not scroll it away; raise APPCI_SCALE/lines)
+the Find typed into the shell: ['echo FZEWNPRMYBTCAM; seq 1 300000; now &gt;&gt; ff_end.txt', 'FZEWNPRMYBTCAM']
+injector accounting: injector sent 72; app saw 68; lost-before-app 4 (Enter: sent 2, app saw 2)</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_hanging_host_not_local" time="32.10">
+<failure message="[refused host] the local shell is usable afterwards (and has none of the held line): expected ['t263_r1v4vf'], got ['MUSTNOT_T262_pjnz26', 't263_r1v4vf']">[refused host] the local shell is usable afterwards (and has none of the held line): expected ['t263_r1v4vf'], got ['MUSTNOT_T262_pjnz26', 't263_r1v4vf']
+[refused host] timing: ssh started t0; ssh client first seen never (exited before the first 50 ms poll or never started), exited not observed; first MUSTNOT key +1.69 s, last MUSTNOT key +2.66 s; app ssh gate lines after the first key: 0
+NO-REFERENCE: UNVERIFIABLE [refused host]: the ssh client had not been seen before the first MUSTNOT key, so a local run of the line is correct and says nothing about the hold
+[hanging host] timing: ssh started t0; ssh client first seen +1.52 s, exited +5.47 s; first MUSTNOT key +1.67 s, last MUSTNOT key +2.64 s; app ssh gate lines after the first key: 43
+injector accounting: injector sent 340; app saw 332; lost-before-app 8 (Enter: sent 6, app saw 6)</failure>
+</testcase>
+<testcase classname="terminal" name="intl_wide_edit" time="10.60">
+</testcase>
+<testcase classname="terminal" name="ui_palette" time="17.80">
+<failure message="palette did not open: 'Search for a command' not on screen (see shots/*palette_open.png)">palette did not open: 'Search for a command' not on screen (see shots/*palette_open.png)
+nonsense filter did not show 'No results found'
+injector accounting: injector sent 212; app saw 206; lost-before-app 6 (Enter: sent 5, app saw 5)</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_password_prompt" time="43.00">
+<failure message="after a wrong passphrase the next command ran in the LOCAL shell: expected ['t274_yrhqahg3'], got []">after a wrong passphrase the next command ran in the LOCAL shell: expected ['t274_yrhqahg3'], got []
+injector accounting: injector sent 142; app saw 136; lost-before-app 6 (Enter: sent 8, app saw 8)</failure>
+</testcase>
+<testcase classname="terminal" name="intl_wide_program" time="25.30">
+</testcase>
+<testcase classname="terminal" name="latency_enter_ssh" time="364.50">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="terminal" name="intl_compose_linux" time="1.50">
+<skipped message="Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac"/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_japanese" time="1.80">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="terminal" name="intl_ime_pinyin" time="1.50">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="terminal" name="intl_deadkey_option" time="56.80">
+</testcase>
+<testcase classname="terminal" name="intl_altgr_ps" time="1.40">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="intl_altgr_bash" time="1.40">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="terminal" name="ui_mouse_select_copy" time="1.50">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="editor_edit_save" time="1.50">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows "/>
+</testcase>
+<testcase classname="terminal" name="shell_zsh" time="20.60">
+<failure message="harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')">harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+APP DIED: pid 44304 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists
+injector accounting: injector sent 497; app saw 493; lost-before-app 4 (Enter: sent 14, app saw 16)</failure>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="35.40">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="43.30">
+</testcase>
+<testcase classname="terminal" name="shell_pwsh" time="36.10">
+</testcase>
+<testcase classname="terminal" name="ui_right_click_paste" time="1.40">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="terminal" name="editor_paste" time="1.40">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows "/>
+</testcase>
+<testcase classname="terminal" name="ui_drag_drop_file" time="1.40">
+<skipped message="mac: no way to synthesize a drag source (XDND needs a client that owns the drag; Wayland wl_data_device likewise)"/>
+</testcase>
+<testcase classname="terminal" name="ui_resize_typing" time="30.80">
+</testcase>
+<testcase classname="terminal" name="ui_split_panes" time="55.60">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="6.60">
+</testcase>
+<testcase classname="terminal" name="md_viewer_big" time="93.00">
+<failure message="2 MB markdown file: first heading not visible within 90 s">2 MB markdown file: first heading not visible within 90 s
+injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="editor_memory_7mb" time="35.70">
+<failure message="txt: opening a 7 MB file cost 247 MB of RSS (&gt; 100 MB target)">txt: opening a 7 MB file cost 247 MB of RSS (&gt; 100 MB target)
+txt: release on close NOT MEASURED: no close key on this platform (APPCI_KEY_CLOSE empty; macOS: cmd-shift-W is refused by the guard). Only the open-cost half of this case is judged
+SKIPPED rs: RSS grew only -109.9 MB after opening /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/editor_mem_rs.rs through the palette (cmd+p): the file did not open; set APPCI_KEY_PALETTE
+injector accounting: injector sent 225; app saw 220; lost-before-app 5 (Enter: sent 0, app saw 0)</failure>
+</testcase>
+<testcase classname="terminal" name="ui_startup_time" time="28.90">
+</testcase>
+<testcase classname="terminal" name="session_restore" time="1.40">
+<skipped message="session_restore needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and "/>
+</testcase>
+<testcase classname="terminal" name="ui_settings_live" time="47.90">
+</testcase>
+<testcase classname="terminal" name="quit_24_tabs" time="1.40">
+<skipped message="quit_24_tabs needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and Mac"/>
+</testcase>
+<testcase classname="terminal" name="soak" time="1.40">
+<skipped message="no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is cmd-shift-W, which the frontmost-app guard refuses by policy"/>
+</testcase>
+<testcase classname="terminal" name="tabs_two_windows" time="41.50">
+</testcase>
+<testcase classname="terminal" name="tabs_streaming" time="35.90">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="3.20">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="66.70">
+</testcase>
+<testcase classname="agent" name="rollover" time="16.50">
+</testcase>
+<testcase classname="agent" name="expert_fuzz" time="40.60">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="8.00">
+</testcase>
+<testcase classname="agent" name="arrows_behind_paste" time="12.70">
+</testcase>
+<testcase classname="agent" name="keydown_count" time="26.10">
+</testcase>
+<testcase classname="agent" name="big_paste" time="10.40">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="25.80">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="553.70">
+<failure message="Ctrl-C under flood: Phosphor overhead 36.41 +/- 1.82 ms (SE) over Terminal.app (.command via open) exceeds the 20 ms budget (overhead - 2 SE &gt; budget)">Ctrl-C under flood: Phosphor overhead 36.41 +/- 1.82 ms (SE) over Terminal.app (.command via open) exceeds the 20 ms budget (overhead - 2 SE &gt; budget)
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 201.9 ms includes the input-tool spawn (harness floor 141.76991605199873 ms)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks
+Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)
+injector accounting: injector sent 18342; app saw 9022; lost-before-app 9320 (Enter: sent 154, app saw 80)</failure>
+</testcase>
+<testcase classname="agent" name="read_x" time="12.90">
+<failure message="read x received []">read x received []
+injector accounting: injector sent 77; app saw 75; lost-before-app 2 (Enter: sent 3, app saw 3)</failure>
+</testcase>
+<testcase classname="agent" name="subshells" time="92.90">
+<failure message="bash subshell (setup gap 0.25s): lines []">bash subshell (setup gap 0.25s): lines []
+zsh subshell (setup gap 2.00s): lines []
+fish subshell (setup gap 2.00s): lines []
+nu subshell (setup gap 2.50s): lines []
+injector accounting: injector sent 699; app saw 692; lost-before-app 7 (Enter: sent 25, app saw 26)</failure>
+</testcase>
+<testcase classname="agent" name="alt_screen" time="15.30">
+<failure message="shell usable after less/vim: []">shell usable after less/vim: []
+vim received typed text: []
+injector accounting: injector sent 81; app saw 79; lost-before-app 2 (Enter: sent 4, app saw 4)</failure>
+</testcase>
+<testcase classname="agent" name="gitbash_subshell" time="1.50">
+<skipped message="Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="24.40">
+<failure message='ssh_connect_typing (gap 0.0 s): T110_igh1pn never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1; test sshd (openssh) listening on 127.0.0.1:49316; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 198888.9, received 196666.7 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes=" " t=1793716120582.712 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="~" t=1793716120599.227 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="/" t=1793716120615.805 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="r" t=1793716120632.485 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="l" t=1793716120649.113 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="." t=1793716120665.682 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793716120682.538 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="x" t=1793716120707.324 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793716120730.431 | [DEBUG] input_order hop=hand_route reason=held_young_enter_started state=pty_owned awaiting_ready=false in_flight=0 bytes="\r" t=1793716120732.508'>ssh_connect_typing (gap 0.0 s): T110_igh1pn never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1; test sshd (openssh) listening on 127.0.0.1:49316; ssh client probe exit 0: Transferred: sent 3580, received 3540 bytes, in 0.0 seconds | Bytes per second: sent 198888.9, received 196666.7 | debug1: Exit status 0; app ssh hops: [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes=" " t=1793716120582.712 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="~" t=1793716120599.227 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="/" t=1793716120615.805 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="r" t=1793716120632.485 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="l" t=1793716120649.113 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="." t=1793716120665.682 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793716120682.538 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="x" t=1793716120707.324 | [DEBUG] input_order hop=hand_route reason=unheld state=pty_owned awaiting_ready=false in_flight=0 bytes="t" t=1793716120730.431 | [DEBUG] input_order hop=hand_route reason=held_young_enter_started state=pty_owned awaiting_ready=false in_flight=0 bytes="\r" t=1793716120732.508
+remote shell received 0/1 typed-ahead commands exactly (missing 1)
+ssh_connect_typing loss: 1 of 1 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials
+injector accounting: WARN loss case: injector sent 43; app saw 41; lost-before-app 2 (Enter: sent 2, app saw 2)</failure>
+</testcase>
+<testcase classname="agent" name="pane_not_local_after_ssh_connect_typing" time="0.00">
+<failure message="after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean">after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean</failure>
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="10.10">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="7.90">
+</testcase>
+<testcase classname="agent" name="ssh_failing_not_local" time="25.30">
+<skipped message="NO-REFERENCE (not a pass): ssh_failing_not_local: ssh started 2.30 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (Conne"/>
+</testcase>
+<testcase classname="agent" name="idle_cpu" time="25.10">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="351.90">
+<failure message="Enter to command start: Phosphor overhead 10.59 +/- 1.23 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)">Enter to command start: Phosphor overhead 10.59 +/- 1.23 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.31 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+shell side: pty_write -&gt; first pty_read median 1.50 ms (n=75)
+Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+injector accounting: injector sent 8760; app saw 4350; lost-before-app 4410 (Enter: sent 1, app saw 75)</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="30.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="125.70">
+<failure message="Key to paint: Phosphor overhead 9.55 +/- 2.61 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)">Key to paint: Phosphor overhead 9.55 +/- 2.61 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE &gt; budget)
+measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks
+Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)
+injector accounting: injector sent 34; app saw 20; lost-before-app 14 (Enter: sent 1, app saw 0)</failure>
+</testcase>
+<testcase classname="agent" name="latency_first_key_after_idle" time="752.20">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: First key after 1 s idle: overhead -1.61 +/- 5.39 ms (SE) vs budget 5 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)"/>
+</testcase>
+<testcase classname="agent" name="approval_card_pause" time="21.50">
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="28.90">
+<failure message="the first Ctrl-C did not clear the text typed while the reply streamed ('keepmet125_ohi6hr' still visible): the key did not reach the input">the first Ctrl-C did not clear the text typed while the reply streamed ('keepmet125_ohi6hr' still visible): the key did not reach the input
+the screen kept changing 6 s after the Ctrl-C that follows the input clear (4 distinct frames in 5): the stream did not stop
+injector accounting: injector sent 133; app saw 130; lost-before-app 3 (Enter: sent 1, app saw 1)</failure>
+</testcase>
+<testcase classname="agent" name="agent_approval" time="71.40">
+</testcase>
+<testcase classname="agent" name="agent_input_exact" time="8.50">
+</testcase>
+<testcase classname="agent" name="routing_table" time="79.40">
+<failure message="'ls -la' (shell) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter (dest lost, surface AgentConversation)">'ls -la' (shell) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter (dest lost, surface AgentConversation)
+'what is 5 &gt; 3' (prose) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['what is 5 &gt; 3']
+injector accounting: injector sent 602; app saw 549; lost-before-app 53 (Enter: sent 26, app saw 26)</failure>
+</testcase>
+<testcase classname="agent" name="agent_mode_switch" time="15.40">
+</testcase>
+<testcase classname="agent" name="ui_tab_menu" time="11.30">
+<failure message="tab_return: shell received ['echo t135_nfvhei &gt;&gt; tc/menuzz_'], expected exactly one of ['echo t135_nfvhei &gt;&gt; tc/menuzz_one.txt', 'echo t135_nfvhei &gt;&gt; tc/menuzz_two.txt']">tab_return: shell received ['echo t135_nfvhei &gt;&gt; tc/menuzz_'], expected exactly one of ['echo t135_nfvhei &gt;&gt; tc/menuzz_one.txt', 'echo t135_nfvhei &gt;&gt; tc/menuzz_two.txt']
+down_return: shell received ['echo t136_s0vobl &gt;&gt; tc/menuzz_ '], expected exactly one of ['echo t136_s0vobl &gt;&gt; tc/menuzz_one.txt', 'echo t136_s0vobl &gt;&gt; tc/menuzz_two.txt']
+a file named like the uncompleted prefix (tc/menuzz_) was created: Enter ran the uncompleted line
+injector accounting: injector sent 72; app saw 63; lost-before-app 9 (Enter: sent 0, app saw 3)</failure>
+</testcase>
+<testcase classname="agent" name="flood_typed_line" time="18.00">
+<failure message="yes: the flood ended (-1.88 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES">yes: the flood ended (-1.88 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES
+seq: the flood ended (-2.55 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES
+injector accounting: injector sent 204; app saw 198; lost-before-app 6 (Enter: sent 4, app saw 4)</failure>
+</testcase>
+<testcase classname="agent" name="remote_session_legacy" time="109.20">
+<failure message="[legacy] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t154_qpwukr4t, outer pid again], got ['23486', '23485', 't154_qpwukr4t']">[legacy] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t154_qpwukr4t, outer pid again], got ['23486', '23485', 't154_qpwukr4t']
+[legacy] vim over ssh wrote the typed text: expected ['hello remote t155_9w2gju'], got []
+[legacy] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t156_el48ccmw'], got []
+[legacy] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []
+[legacy] no local prompt after `exit` from the remote shell
+harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+APP DIED: pid 10739 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists
+injector accounting: injector sent 1415; app saw 1411; lost-before-app 4 (Enter: sent 43, app saw 43)</failure>
+</testcase>
+<testcase classname="agent" name="intl_wide_type" time="8.40">
+<failure message="typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069775f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069775f7a776a2e747874]">typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069775f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069775f7a776a2e747874]
+injector accounting: injector sent 159; app saw 157; lost-before-app 2 (Enter: sent 6, app saw 6)</failure>
+</testcase>
+<testcase classname="agent" name="ui_ghost_accept" time="18.00">
+</testcase>
+<testcase classname="agent" name="flood_typing_latency" time="21.10">
+<failure message="the flood in tab A ended before the typing finished (before=False, after=False): raise APPCI_FLOOD_LINES">the flood in tab A ended before the typing finished (before=False, after=False): raise APPCI_FLOOD_LINES
+no reference terminal in this case: gap p50 18.7 / p95 20.8 ms are recorded, not judged against one
+no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)
+injector accounting: injector sent 323; app saw 318; lost-before-app 5 (Enter: sent 2, app saw 2)</failure>
+</testcase>
+<testcase classname="agent" name="remote_session_ext" time="120.90">
+<failure message="[ext] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t177_xndfgg8y, outer pid again], got ['25808', '25807', 't177_xndfgg8y']">[ext] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t177_xndfgg8y, outer pid again], got ['25808', '25807', 't177_xndfgg8y']
+[ext] vim over ssh wrote the typed text: expected ['hello remote t178_l427cm'], got []
+[ext] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t179_25yswlrl'], got []
+[ext] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []
+[ext] no local prompt after `exit` from the remote shell
+harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')
+injector accounting: injector sent 1321 keys (43 Enter); app key trace not available, so nothing to compare</failure>
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_remote_session_ext" time="0.00">
+<failure message="after remote_session_ext the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.">after remote_session_ext the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="intl_wide_paste" time="11.40">
+<failure message="paste inside typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069705f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069705f7a776a2e747874]">paste inside typed zwj: shell received 'echo 👨\\u200d👩\\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069705f7a776a2e747874], expected 'echo 👨\u200d👩\u200d👧 &gt;&gt; ip_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069705f7a776a2e747874]
+injector accounting: injector sent 125; app saw 113; lost-before-app 12 (Enter: sent 5, app saw 10)</failure>
+</testcase>
+<testcase classname="agent" name="ui_ctrl_r" time="15.20">
+</testcase>
+<testcase classname="agent" name="flood_scrollback_find" time="13.50">
+<failure message="control: the marker is already visible before the Find (the flood did not scroll it away; raise APPCI_SCALE/lines)">control: the marker is already visible before the Find (the flood did not scroll it away; raise APPCI_SCALE/lines)
+injector accounting: injector sent 72; app saw 68; lost-before-app 4 (Enter: sent 2, app saw 2)</failure>
+</testcase>
+<testcase classname="agent" name="ssh_hanging_host_not_local" time="32.10">
+<failure message="[refused host] the local shell is usable afterwards (and has none of the held line): expected ['t185_2ttyus'], got ['MUSTNOT_T184_urzay5', 't185_2ttyus']">[refused host] the local shell is usable afterwards (and has none of the held line): expected ['t185_2ttyus'], got ['MUSTNOT_T184_urzay5', 't185_2ttyus']
+[refused host] timing: ssh started t0; ssh client first seen never (exited before the first 50 ms poll or never started), exited not observed; first MUSTNOT key +1.64 s, last MUSTNOT key +2.60 s; app ssh gate lines after the first key: 0
+NO-REFERENCE: UNVERIFIABLE [refused host]: the ssh client had not been seen before the first MUSTNOT key, so a local run of the line is correct and says nothing about the hold
+[hanging host] timing: ssh started t0; ssh client first seen +1.52 s, exited +9.52 s; first MUSTNOT key +1.66 s, last MUSTNOT key +2.64 s; app ssh gate lines after the first key: 43
+injector accounting: injector sent 340; app saw 332; lost-before-app 8 (Enter: sent 6, app saw 6)</failure>
+</testcase>
+<testcase classname="agent" name="intl_wide_edit" time="10.90">
+</testcase>
+<testcase classname="agent" name="ui_palette" time="18.50">
+<failure message="palette did not open: 'Search for a command' not on screen (see shots/*palette_open.png)">palette did not open: 'Search for a command' not on screen (see shots/*palette_open.png)
+nonsense filter did not show 'No results found'
+injector accounting: injector sent 212; app saw 206; lost-before-app 6 (Enter: sent 5, app saw 5)</failure>
+</testcase>
+<testcase classname="agent" name="ssh_password_prompt" time="43.30">
+<failure message="after a wrong passphrase the next command ran in the LOCAL shell: expected ['t196_h27i1ivu'], got []">after a wrong passphrase the next command ran in the LOCAL shell: expected ['t196_h27i1ivu'], got []
+injector accounting: injector sent 142; app saw 136; lost-before-app 6 (Enter: sent 8, app saw 8)</failure>
+</testcase>
+<testcase classname="agent" name="intl_wide_program" time="25.20">
+</testcase>
+<testcase classname="agent" name="latency_enter_ssh" time="363.20">
+<skipped message="NO-REFERENCE (not a pass): measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks"/>
+</testcase>
+<testcase classname="agent" name="intl_compose_linux" time="1.40">
+<skipped message="Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac"/>
+</testcase>
+<testcase classname="agent" name="intl_ime_japanese" time="1.50">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="agent" name="intl_ime_pinyin" time="1.50">
+<skipped message="NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): "/>
+</testcase>
+<testcase classname="agent" name="intl_deadkey_option" time="56.50">
+</testcase>
+<testcase classname="agent" name="intl_altgr_ps" time="1.40">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="intl_altgr_bash" time="1.40">
+<skipped message="Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)"/>
+</testcase>
+<testcase classname="agent" name="ui_mouse_select_copy" time="1.40">
+<skipped message="macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)"/>
+</testcase>
+<testcase classname="agent" name="editor_edit_save" time="1.40">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows "/>
+</testcase>
+<testcase classname="agent" name="shell_zsh" time="30.70">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="35.80">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="43.10">
+</testcase>
+<testcase classname="agent" name="shell_pwsh" time="37.00">
+</testcase>
+<testcase classname="agent" name="editor_paste" time="1.50">
+<skipped message="the file is opened by a second `phosphor &lt;path&gt;` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows "/>
+</testcase>
+<testcase classname="agent" name="ui_resize_typing" time="29.70">
+</testcase>
+<testcase classname="agent" name="ui_split_panes" time="53.50">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="7.30">
+</testcase>
+<testcase classname="agent" name="md_viewer_ai_answer" time="8.90">
+</testcase>
+<testcase classname="agent" name="ui_startup_time" time="27.30">
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_ui_startup_time" time="0.00">
+<failure message="after ui_startup_time the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.">after ui_startup_time the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="session_restore" time="1.40">
+<skipped message="session_restore needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and "/>
+</testcase>
+<testcase classname="agent" name="ui_settings_live" time="46.80">
+</testcase>
+<testcase classname="agent" name="quit_24_tabs" time="1.40">
+<skipped message="quit_24_tabs needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and Mac"/>
+</testcase>
+<testcase classname="agent" name="soak" time="1.30">
+<skipped message="no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is cmd-shift-W, which the frontmost-app guard refuses by policy"/>
+</testcase>
+<testcase classname="agent" name="tabs_two_windows" time="41.70">
+</testcase>
+<testcase classname="agent" name="tabs_streaming" time="36.10">
+</testcase>
+</testsuite>

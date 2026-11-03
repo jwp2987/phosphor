@@ -165,7 +165,9 @@ impl ReadSkillExecutor {
                                 AIAgentActionResultType::ReadSkill(ReadSkillResult::Success {
                                     content: FileContext::new(
                                         skill.path.display_path(),
-                                        AnyFileContent::StringContent(skill.content.clone()),
+                                        AnyFileContent::StringContent(capped_skill_content(
+                                            &skill.content,
+                                        )),
                                         skill.line_range.clone(),
                                         None,
                                     ),
@@ -204,6 +206,26 @@ impl ReadSkillExecutor {
     }
 }
 
+/// Most bytes of a SKILL.md handed to the model. A skill is a prompt, normally a few KB; an
+/// accidental or hostile multi-megabyte one would otherwise go into the context whole.
+const MAX_SKILL_CONTENT_BYTES: usize = 128 * 1024;
+
+/// `content` cut to [`MAX_SKILL_CONTENT_BYTES`] at a char boundary, with a marker saying so.
+fn capped_skill_content(content: &str) -> String {
+    if content.len() <= MAX_SKILL_CONTENT_BYTES {
+        return content.to_owned();
+    }
+    let mut end = MAX_SKILL_CONTENT_BYTES;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n\n[SKILL.md truncated: showing the first {end} of {} bytes]",
+        &content[..end],
+        content.len()
+    )
+}
+
 /// Build a sync success execution from a parsed skill.
 ///
 /// This helper is factored out so the generic `T` of `ActionExecution<T>` infers to
@@ -214,7 +236,7 @@ fn success_execution(
 ) -> ActionExecution<anyhow::Result<ai::skills::ParsedSkill>> {
     let content = FileContext::new(
         skill.path.display_path(),
-        AnyFileContent::StringContent(skill.content.clone()),
+        AnyFileContent::StringContent(capped_skill_content(&skill.content)),
         skill.line_range.clone(),
         None,
     );
@@ -437,5 +459,33 @@ mod scope_tests {
             Some(Path::new("/repo")),
             None,
         ));
+    }
+}
+
+#[cfg(test)]
+mod skill_cap_tests {
+    use super::*;
+
+    #[test]
+    fn a_normal_skill_is_returned_unchanged() {
+        assert_eq!(capped_skill_content("# skill\nbody"), "# skill\nbody");
+    }
+
+    #[test]
+    fn an_oversized_skill_is_cut_and_says_so() {
+        let content = "x".repeat(MAX_SKILL_CONTENT_BYTES + 500);
+        let out = capped_skill_content(&content);
+        assert!(out.len() < content.len());
+        assert!(out.starts_with(&"x".repeat(MAX_SKILL_CONTENT_BYTES)));
+        assert!(out.contains("truncated"));
+        assert!(out.contains(&(MAX_SKILL_CONTENT_BYTES + 500).to_string()));
+    }
+
+    #[test]
+    fn the_cut_never_splits_a_character() {
+        // 3-byte chars so the byte limit lands mid-character.
+        let content = "\u{20ac}".repeat(MAX_SKILL_CONTENT_BYTES);
+        let out = capped_skill_content(&content);
+        assert!(out.contains("truncated"));
     }
 }

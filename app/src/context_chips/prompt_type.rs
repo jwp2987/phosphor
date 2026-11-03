@@ -43,16 +43,6 @@ impl PromptType {
         }
     }
 
-    pub fn new_static(
-        chips: Vec<ChipResult>,
-        same_line_prompt_enabled: bool,
-        separator: WarpPromptSeparator,
-    ) -> Self {
-        PromptType::Static {
-            snapshot: PromptSnapshot::from_chips(chips, same_line_prompt_enabled, separator),
-        }
-    }
-
     /// Returns menu items for copying parts of the prompt given a prompt snapshot.
     pub fn copy_menu_items(
         &self,
@@ -113,7 +103,7 @@ impl PromptType {
     }
 
     pub fn chips(&self, ctx: &AppContext) -> Vec<ChipResult> {
-        self.snapshot(ctx).chips().clone()
+        self.snapshot(ctx).into_chips()
     }
 
     pub fn agent_view_chips(&self, ctx: &AppContext) -> Vec<ChipResult> {

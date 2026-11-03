@@ -2,7 +2,7 @@ use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::app_exit::{ChildKillHandle, ChildProcessSlot, McpAppExitShutdown};
 use crate::ai::mcp::file_based_manager::FileBasedMCPManagerEvent;
 use crate::ai::mcp::templatable_manager::oauth::{
-    load_credentials_from_secure_storage, write_to_secure_storage, FILE_BASED_MCP_CREDENTIALS_KEY,
+    parse_credentials, FILE_BASED_MCP_CREDENTIALS_KEY,
     TEMPLATABLE_MCP_CREDENTIALS_KEY,
 };
 use core::fmt;
@@ -61,10 +61,11 @@ use uuid::Uuid;
 use warp_core::safe_error;
 use warp_core::{execution_mode::AppExecutionMode, features::FeatureFlag, settings::Setting as _};
 use warpui::AppContext;
+use warpui_extras::secure_storage::AppContextExt as _;
 use warpui::{windowing::WindowManager, ModelContext, SingletonEntity};
 
 use super::{
-    oauth::{self, AuthContext, FileBasedPersistedCredentialsMap, PersistedCredentialsMap},
+    oauth::{self, AuthContext},
     MCPServerState, SpawnedServerInfo, TemplatableMCPServerInfo, TemplatableMCPServerManager,
     TemplatableMCPServerManagerEvent,
 };
@@ -300,6 +301,10 @@ impl TemplatableMCPServerManager {
             spawned_servers: Default::default(),
             server_credentials: Default::default(),
             file_based_server_credentials: Default::default(),
+            credentials_loading: false,
+            templatable_credentials_dirty: false,
+            file_based_credentials_dirty: false,
+            pending_autostart: Vec::new(),
             locally_installed_servers,
             database_connection,
             server_error_messages: Default::default(),
@@ -312,26 +317,20 @@ impl TemplatableMCPServerManager {
 
         me.refresh_server_objects(ctx);
 
-        // If we're not in a test, try to load credentials from secure storage.
-        if !cfg!(test) {
-            me.server_credentials = load_credentials_from_secure_storage::<PersistedCredentialsMap>(
-                ctx,
-                TEMPLATABLE_MCP_CREDENTIALS_KEY,
-            );
-
-            if FeatureFlag::FileBasedMcp.is_enabled() {
-                me.file_based_server_credentials = load_credentials_from_secure_storage::<
-                    FileBasedPersistedCredentialsMap,
-                >(
-                    ctx, FILE_BASED_MCP_CREDENTIALS_KEY
-                );
-            }
-        }
-
-        if AppExecutionMode::as_ref(ctx).can_autostart_mcp_servers() {
-            for installation_uuid in running_server_uuids {
+        let autostart: Vec<Uuid> = if AppExecutionMode::as_ref(ctx).can_autostart_mcp_servers() {
+            running_server_uuids.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        if cfg!(test) {
+            for installation_uuid in autostart {
                 me.spawn_server(installation_uuid, ctx)
             }
+        } else {
+            // The stored credentials are read on the secure-storage worker (#1309). Servers that
+            // need them to authenticate start when the read lands.
+            me.pending_autostart = autostart;
+            me.start_credentials_load(ctx);
         }
 
         // Migrate legacy MCPs to be templatables on app start. Uses UpdateManager
@@ -340,6 +339,62 @@ impl TemplatableMCPServerManager {
         me.convert_all_legacy_to_templatable(servers_to_restart, ctx);
 
         me
+    }
+
+    /// Reads the stored OAuth credentials off the UI thread and starts the pending servers once
+    /// they are in memory.
+    fn start_credentials_load(&mut self, ctx: &mut ModelContext<Self>) {
+        self.credentials_loading = true;
+        let read_file_based = FeatureFlag::FileBasedMcp.is_enabled();
+        match warpui_extras::secure_storage::background::run_or_inline(
+            move |storage| {
+                (
+                    storage.read_value(TEMPLATABLE_MCP_CREDENTIALS_KEY),
+                    read_file_based.then(|| storage.read_value(FILE_BASED_MCP_CREDENTIALS_KEY)),
+                )
+            },
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => {
+                ctx.spawn(result.wait(), |me, raw, ctx| {
+                    // A lost worker leaves the maps empty; start the servers regardless.
+                    let (templatable, file_based) =
+                        raw.unwrap_or((Err(warpui_extras::secure_storage::Error::NotFound), None));
+                    me.finish_credentials_load(templatable, file_based, ctx);
+                });
+            }
+            Err((templatable, file_based)) => {
+                self.finish_credentials_load(templatable, file_based, ctx)
+            }
+        }
+    }
+
+    fn finish_credentials_load(
+        &mut self,
+        templatable: Result<String, warpui_extras::secure_storage::Error>,
+        file_based: Option<Result<String, warpui_extras::secure_storage::Error>>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // What was stored is the base; anything saved while the read was in flight is newer and
+        // overlays it.
+        let mut stored: oauth::PersistedCredentialsMap = parse_credentials(templatable);
+        stored.extend(std::mem::take(&mut self.server_credentials));
+        self.server_credentials = stored;
+        if let Some(raw) = file_based {
+            let mut stored: oauth::FileBasedPersistedCredentialsMap = parse_credentials(raw);
+            stored.extend(std::mem::take(&mut self.file_based_server_credentials));
+            self.file_based_server_credentials = stored;
+        }
+        self.credentials_loading = false;
+        if std::mem::take(&mut self.templatable_credentials_dirty) {
+            self.persist_credentials(ctx, TEMPLATABLE_MCP_CREDENTIALS_KEY);
+        }
+        if std::mem::take(&mut self.file_based_credentials_dirty) {
+            self.persist_credentials(ctx, FILE_BASED_MCP_CREDENTIALS_KEY);
+        }
+        for installation_uuid in std::mem::take(&mut self.pending_autostart) {
+            self.spawn_server(installation_uuid, ctx);
+        }
     }
 
     fn delete_orphaned_installations(&mut self, ctx: &mut ModelContext<Self>) {
@@ -1452,11 +1507,7 @@ impl TemplatableMCPServerManager {
             );
             self.server_credentials
                 .insert(template_uuid, legacy_cred.clone());
-            write_to_secure_storage(
-                ctx,
-                TEMPLATABLE_MCP_CREDENTIALS_KEY,
-                &self.server_credentials,
-            );
+            self.persist_credentials(ctx, TEMPLATABLE_MCP_CREDENTIALS_KEY);
         }
     }
 
@@ -1467,6 +1518,7 @@ impl TemplatableMCPServerManager {
         space: Space,
         automatically_start_server: bool,
         initiated_by: InitiatedBy,
+        env_vars_prefilled: bool,
         ctx: &mut ModelContext<Self>,
     ) -> Result<ParsedTemplatableMCPServerResult, LegacyToTemplatableMCPConversionError> {
         let template_uuid = legacy_mcp_server.uuid;
@@ -1476,8 +1528,13 @@ impl TemplatableMCPServerManager {
         }
 
         if let Some(conn) = &self.database_connection {
-            let mut conn = conn.lock();
-            legacy_mcp_server.fill_environment_variables(&mut conn);
+            // The startup conversion reads the env vars on a worker thread
+            // (`convert_all_legacy_to_templatable`), so the UI thread never waits on the
+            // shared connection mutex.
+            if !env_vars_prefilled {
+                let mut conn = conn.lock();
+                legacy_mcp_server.fill_environment_variables(&mut conn);
+            }
         } else {
             return Err(LegacyToTemplatableMCPConversionError::NoDBConnection);
         }
@@ -1522,9 +1579,35 @@ impl TemplatableMCPServerManager {
             "Converting {} legacy MCP servers into templatable MCP servers",
             legacy_servers.len()
         );
-        for legacy_server in legacy_servers {
-            let sync_id = legacy_server.sync_id();
-            let legacy_mcp_server = legacy_server.model().string_model.clone();
+        if legacy_servers.is_empty() {
+            return;
+        }
+        let pending: Vec<(SyncId, MCPServer)> = legacy_servers
+            .into_iter()
+            .map(|legacy_server| {
+                (
+                    legacy_server.sync_id(),
+                    legacy_server.model().string_model.clone(),
+                )
+            })
+            .collect();
+
+        // Read every server's environment variables on a worker thread; the conversion itself
+        // (which mutates models) continues on the main thread when the read is done.
+        let connection = self.database_connection.clone();
+        let filled = read_legacy_env_vars_in_background(connection, pending);
+        ctx.spawn(filled, move |me, pending, ctx| {
+            me.finish_legacy_conversion(pending, servers_to_restart, ctx);
+        });
+    }
+
+    fn finish_legacy_conversion(
+        &mut self,
+        pending: Vec<(SyncId, MCPServer)>,
+        servers_to_restart: HashSet<Uuid>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        for (sync_id, legacy_mcp_server) in pending {
             let uuid = legacy_mcp_server.uuid;
             let result = self.convert_legacy_to_templatable(
                 sync_id,
@@ -1532,6 +1615,7 @@ impl TemplatableMCPServerManager {
                 Space::Personal,
                 servers_to_restart.contains(&uuid),
                 InitiatedBy::System,
+                true,
                 ctx,
             );
             match result {
@@ -1811,11 +1895,7 @@ impl TemplatableMCPServerManager {
             self.file_based_server_credentials.remove(hash);
         }
         if !installation_hashes.is_empty() {
-            write_to_secure_storage(
-                ctx,
-                FILE_BASED_MCP_CREDENTIALS_KEY,
-                &self.file_based_server_credentials,
-            );
+            self.persist_credentials(ctx, FILE_BASED_MCP_CREDENTIALS_KEY);
         }
     }
 
@@ -2441,3 +2521,48 @@ impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::tran
 #[cfg(test)]
 #[path = "native_tests.rs"]
 mod tests;
+
+/// Fills the environment variables of each legacy MCP server from the database on a worker
+/// thread. Resolves to the input list (unchanged when there is no connection or the thread could
+/// not start, in which case the caller's per-server `NoDBConnection` / empty-env behaviour applies).
+fn read_legacy_env_vars_in_background(
+    connection: Option<Arc<Mutex<diesel::SqliteConnection>>>,
+    mut pending: Vec<(SyncId, MCPServer)>,
+) -> impl std::future::Future<Output = Vec<(SyncId, MCPServer)>> + Send + 'static {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let fallback = pending.clone();
+    // Dropping the returned future (the caller gave up on the start) cancels the read between
+    // servers, so an abandoned start does not keep walking the database (#1382).
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancel_for_thread = cancel.clone();
+    let spawned = std::thread::Builder::new()
+        .name("mcp-env-read".into())
+        .spawn(move || {
+            if let Some(conn) = connection {
+                let mut conn = conn.lock();
+                for (_, server) in pending.iter_mut() {
+                    if cancel_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    server.fill_environment_variables(&mut conn);
+                }
+            }
+            let _ = tx.send(pending);
+        });
+    async move {
+        let _cancel_on_drop = CancelFlagOnDrop(cancel);
+        if spawned.is_err() {
+            return fallback;
+        }
+        rx.await.unwrap_or(fallback)
+    }
+}
+
+/// Sets the flag when dropped (the future holding it finished or was abandoned).
+struct CancelFlagOnDrop(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CancelFlagOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}

@@ -22,8 +22,8 @@ use warpui::{
 };
 
 use crate::resource_center::{mark_feature_used_and_write_to_user_defaults, Tip, TipAction};
-use crate::ui_components::tab_selector::{render_tab_selector, SettingsTab};
 use crate::themes::theme::{RespectSystemTheme, ThemeKind, WarpTheme};
+use crate::ui_components::tab_selector::{render_tab_selector, SettingsTab};
 use crate::util::traffic_lights::traffic_light_data;
 use crate::workspace::PANEL_HEADER_HEIGHT;
 use crate::{
@@ -175,7 +175,33 @@ impl ThemeChooserMode {
     }
 }
 
+/// The theme the user has arrowed to (Up/Down) but that has only been previewed so far. Previewing is
+/// cheap; persisting writes the settings file (with an fsync) and sends telemetry, so the
+/// chooser does that once, when it closes or the selection scope changes, instead of on every key
+/// repeat.
+#[derive(Debug, Default)]
+struct PendingThemePersist(Option<ThemeKind>);
+
+impl PendingThemePersist {
+    /// Records `kind` as previewed-but-not-persisted, replacing any earlier one.
+    fn note_preview(&mut self, kind: ThemeKind) {
+        self.0 = Some(kind);
+    }
+
+    /// Takes the theme to persist, if any, leaving nothing pending.
+    fn take(&mut self) -> Option<ThemeKind> {
+        self.0.take()
+    }
+
+    /// Drops the pending theme because something else persisted a selection.
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+}
+
 pub struct ThemeChooser {
+    /// See [`PendingThemePersist`].
+    pending_persist: PendingThemePersist,
     button_mouse_states: MouseStateHandles,
     header_dimming_mouse_state: MouseStateHandle,
     list_state: UniformListState,
@@ -274,6 +300,7 @@ impl ThemeChooser {
             header_dimming_mouse_state: Default::default(),
             list_state: Default::default(),
             scroll_state: Default::default(),
+            pending_persist: PendingThemePersist::default(),
             selected_theme: Tracked::new(None),
             filtered_themes: Tracked::new(None),
             mode: ThemeChooserMode::for_active_theme(ctx),
@@ -402,7 +429,6 @@ impl ThemeChooser {
 
     // this is actually used in our integration test assertions,
     // but rust thinks it's unused when running unit tests in this crate
-    #[allow(dead_code)]
     pub fn themes(&self) -> impl Iterator<Item = &ThemeKind> {
         self.themes
             .iter()
@@ -410,6 +436,9 @@ impl ThemeChooser {
     }
 
     fn close(&mut self, ctx: &mut ViewContext<Self>) {
+        // Persist the last arrowed-to theme (once) before the transient preview is cleared, so
+        // closing keeps it exactly as it did when every arrow press persisted.
+        self.persist_pending_theme(ctx);
         *self.selected_theme = None;
         *self.filtered_themes = None;
         AppearanceManager::handle(ctx).update(ctx, |appearance_manager, ctx| {
@@ -437,6 +466,20 @@ impl ThemeChooser {
         ctx: &mut ViewContext<Self>,
     ) {
         self.select_theme(selected_kind.clone(), ctx);
+        self.persist_theme(selected_kind, ctx);
+    }
+
+    /// Persists the theme previewed by the arrow keys, if one is pending.
+    fn persist_pending_theme(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(kind) = self.pending_persist.take() {
+            self.persist_theme(&kind, ctx);
+        }
+    }
+
+    /// Records `selected_kind` as the user's choice: telemetry plus the theme settings (or the
+    /// per-window override, depending on the scope). The caller has already previewed it.
+    fn persist_theme(&mut self, selected_kind: &ThemeKind, ctx: &mut ViewContext<Self>) {
+        self.pending_persist.clear();
         send_telemetry_from_ctx!(
             TelemetryEvent::ThemeSelection {
                 theme: selected_kind.to_string(),
@@ -510,6 +553,8 @@ impl ThemeChooser {
         if self.scope == scope {
             return;
         }
+        // Persist any arrowed-to theme under the scope it was chosen in.
+        self.persist_pending_theme(ctx);
         self.scope = scope;
 
         if scope == ThemeScope::AllWindows {
@@ -596,7 +641,7 @@ impl ThemeChooser {
                 .saturating_sub(1),
         };
         self.list_state.scroll_to(index);
-        self.select_and_save_theme(&self.selected_theme(index), ctx);
+        self.preview_arrowed_theme(self.selected_theme(index), ctx);
     }
 
     fn down(&mut self, ctx: &mut ViewContext<Self>) {
@@ -614,7 +659,14 @@ impl ThemeChooser {
             }
         };
         self.list_state.scroll_to(index);
-        self.select_and_save_theme(&self.selected_theme(index), ctx);
+        self.preview_arrowed_theme(self.selected_theme(index), ctx);
+    }
+
+    /// Previews a theme reached with the arrow keys without persisting it; it is persisted once
+    /// when the chooser closes (see [`PendingThemePersist`]).
+    fn preview_arrowed_theme(&mut self, kind: ThemeKind, ctx: &mut ViewContext<Self>) {
+        self.select_theme(kind.clone(), ctx);
+        self.pending_persist.note_preview(kind);
     }
 
     fn visible_theme_count(&self) -> usize {
@@ -1095,3 +1147,7 @@ impl ThemeChooserItem {
         .finish()
     }
 }
+
+#[cfg(test)]
+#[path = "theme_chooser_tests.rs"]
+mod tests;

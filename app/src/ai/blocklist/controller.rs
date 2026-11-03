@@ -5,6 +5,7 @@
 //! Agent Mode UI.
 pub mod input_context;
 mod pending_response_streams;
+mod project_rules_wait;
 pub mod response_stream;
 pub(super) mod shared_session;
 mod slash_command;
@@ -23,7 +24,8 @@ use super::{
     action_model::{BlocklistAIActionEvent, BlocklistAIActionModel},
     agent_view::{AgentViewController, AgentViewControllerEvent},
     context_model::{
-        context_and_files_for_attachments, BlocklistAIContextModel, PendingAttachment,
+        BlocklistAIContextModel, PendingAttachment, ReadAttachment, attachments_need_disk_read,
+        block_context_from_terminal_model, context_and_files_from_read, read_attachments, read_attachments_cancellable,
     },
     history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
     input_model::InputConfig,
@@ -35,7 +37,8 @@ use crate::ai::agent::conversation::{AIConversation, ConversationStatus};
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
     AIAgentActionResult, CancellationOutcome, CancellationReason, PassiveSuggestionResultType,
-    PassiveSuggestionTrigger, PassiveSuggestionTriggerType, RunningCommand,
+    PassiveSuggestionTrigger, PassiveSuggestionTriggerType, ReadShellCommandOutputResult,
+    RunningCommand, TransferShellCommandControlToUserResult, WriteToLongRunningShellCommandResult,
 };
 use crate::ai::agent::{DocumentContentAttachmentSource, FileContext};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
@@ -142,6 +145,13 @@ pub struct SessionContext {
     /// filesystem and need no client; `is_remote()` is what separates "no client because
     /// there is no remote host" from "no client on a host that needs one".
     has_remote_server_client: bool,
+    /// The home directory of the host a `WarpifiedRemote` session's shell runs on, when known.
+    /// `~` in an agent-supplied path means THIS on a remote session, never the local user's
+    /// home (#1288). Always `None` for a local session.
+    remote_home: Option<String>,
+    /// The OS category the remote host's shell reported at bootstrap ("Linux", "MacOS",
+    /// "Windows"), when known. Decides which path rules the file tools use (#1278).
+    remote_os_category: Option<String>,
 }
 
 impl SessionContext {
@@ -179,7 +189,24 @@ impl SessionContext {
             | Some(SessionType::Local)
             | None => false,
         };
+        let remote_home = if matches!(session_type, Some(SessionType::WarpifiedRemote { .. })) {
+            session_arc
+                .as_ref()
+                .and_then(|s| s.home_dir().map(str::to_owned))
+        } else {
+            None
+        };
+        let remote_os_category = if matches!(session_type, Some(SessionType::WarpifiedRemote { .. }))
+        {
+            session_arc
+                .as_ref()
+                .and_then(|s| s.host_info().os_category)
+        } else {
+            None
+        };
         SessionContext {
+            remote_os_category,
+            remote_home,
             session_type,
             shell: session.shell_launch_data(app),
             current_working_directory: session.current_working_directory().cloned(),
@@ -199,6 +226,48 @@ impl SessionContext {
 
     pub fn current_working_directory(&self) -> &Option<String> {
         &self.current_working_directory
+    }
+
+    /// Whether `path` begins with a `~` that cannot be resolved: a remote session whose home
+    /// is unknown. The local expansion would name the wrong host's file, so every consumer
+    /// that makes a permission decision or writes must fail closed on it (#1288).
+    pub fn tilde_unresolvable(&self, path: &str) -> bool {
+        self.is_remote()
+            && self.remote_home.as_deref().is_none_or(str::is_empty)
+            && crate::ai::paths::path_needs_home(path)
+    }
+
+    /// Resolves an agent-supplied `path` to the absolute path the file tools act on. On a
+    /// remote session `~` is expanded against the remote host's home first
+    /// ([`crate::ai::paths::expand_tilde_against`], the same expansion `read_files`, `grep` and
+    /// `file_glob` use), because [`crate::ai::paths::host_native_absolute_path`] alone expands
+    /// it against the LOCAL home. Permission checks, the diff and the writer must all resolve
+    /// through this so they name the same file (#1288). Check [`Self::tilde_unresolvable`]
+    /// first.
+    pub fn resolve_path(&self, path: &str) -> String {
+        let expanded = if self.is_remote() {
+            crate::ai::paths::expand_tilde_against(path, self.remote_home.as_deref())
+        } else {
+            path.to_owned()
+        };
+        // A remote session's paths use the remote host's (unix) rules, not the local OS's
+        // (#1278).
+        crate::ai::paths::host_native_absolute_path_for(
+            &expanded,
+            &self.shell,
+            &self.current_working_directory,
+            self.path_host(),
+        )
+    }
+
+    /// Which host's path rules this session's file paths follow. `Local` for a local session
+    /// and for a remote whose OS is unknown (the previous behaviour).
+    pub fn path_host(&self) -> crate::ai::paths::PathHost {
+        if self.is_remote() {
+            crate::ai::paths::PathHost::for_remote(self.remote_os_category.as_deref())
+        } else {
+            crate::ai::paths::PathHost::Local
+        }
     }
 
     /// Returns the remote host ID if this is a `WarpifiedRemote` session with
@@ -281,6 +350,8 @@ impl SessionContext {
             ssh_connection_info: None,
             is_legacy_ssh: false,
             has_remote_server_client: false,
+            remote_home: None,
+            remote_os_category: None,
         }
     }
 
@@ -292,6 +363,14 @@ impl SessionContext {
             current_working_directory: Some(cwd.to_owned()),
             ..Self::new_for_test()
         }
+    }
+
+    /// This context with its working directory replaced (e.g. a remote session whose cwd is a
+    /// path on the other host).
+    #[cfg(test)]
+    pub fn with_cwd_for_test(mut self, cwd: &str) -> Self {
+        self.current_working_directory = Some(cwd.to_owned());
+        self
     }
 
     /// A legacy-SSH session: the user typed `ssh host` into the PTY rather than using the
@@ -312,6 +391,8 @@ impl SessionContext {
             ssh_connection_info: None,
             is_legacy_ssh: true,
             has_remote_server_client: false,
+            remote_home: None,
+            remote_os_category: None,
         }
     }
 
@@ -338,6 +419,20 @@ impl SessionContext {
             ssh_connection_info: None,
             is_legacy_ssh: false,
             has_remote_server_client,
+            remote_home: None,
+            remote_os_category: None,
+        }
+    }
+
+    /// A warpified-remote session with a connected remote-server client, whose home is
+    /// `remote_home` (`None` = not yet known) and whose cwd is `cwd`.
+    #[cfg(test)]
+    pub fn new_remote_with_home_for_test(remote_home: Option<&str>, cwd: &str) -> Self {
+        SessionContext {
+            remote_home: remote_home.map(str::to_owned),
+            remote_os_category: None,
+            current_working_directory: Some(cwd.to_owned()),
+            ..Self::new_warpified_remote_for_test(true)
         }
     }
 }
@@ -375,6 +470,130 @@ pub enum BlocklistAIControllerEvent {
 
     /// Emitted when the export-to-file slash command is executed.
     ExportConversationToFile { filename: Option<String> },
+
+    /// A turn ended with tool results pending and no final assistant message, for a reason the
+    /// user did not choose (#1178). The terminal view shows "Agent stopped: <reason>" so the
+    /// agent never just goes quiet.
+    AgentStopped {
+        conversation_id: AIConversationId,
+        reason: String,
+    },
+
+    /// `follow_up_on_monitored_command_completed` just resumed the conversation for a block
+    /// completion whose `FinishedSubagent` is about to be delivered. The terminal view records
+    /// it the way `on_user_block_completed` records its own resume, so a `LrcAutoQueue` row
+    /// does not fire into -- and cancel -- that resume; the row goes out at the resume's end.
+    ResumedOnBlockCompletion { conversation_id: AIConversationId },
+}
+
+/// Why a batch of finished action results that sends no follow-up request leaves the turn
+/// silent, when nobody asked for that (#1178). `None` for a deliberate stop (a cancellation
+/// reason is set: Stop, Reject, a new query, ...) and for a batch with nothing cancelled.
+pub(crate) fn silent_stop_reason(
+    cancellation_reason: Option<CancellationReason>,
+    results: &[Arc<AIAgentActionResult>],
+) -> Option<String> {
+    if cancellation_reason.is_some() {
+        return None;
+    }
+    results
+        .iter()
+        .find(|result| result.result.is_cancelled())
+        .map(|result| match result.result.command_str() {
+            Some(command) => format!("the command `{command}` was interrupted"),
+            None => "a tool call was cancelled before it returned a result".to_owned(),
+        })
+}
+
+/// What the controller does once every action of a conversation's step has finished: the
+/// decision behind the `FinishedAction` subscriber, pure so the end-of-step behaviour matrix is
+/// testable without a provider. A step always ends in exactly one of: a follow-up request that
+/// carries its results, or a final status with -- when nobody asked for the stop -- a visible
+/// reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FinishedBatchPlan {
+    /// Send the step's results back to the model, and why. `None`: the turn ends here.
+    pub follow_up: Option<FollowUpTrigger>,
+    /// Without a follow-up, the status the turn ends in. `Cancelled` for any mix of cancelled,
+    /// failed and successful results: an imperfect heuristic that practically speaking has no
+    /// effect, since a batch with a non-cancelled result sends a follow-up instead.
+    pub final_status: ConversationStatus,
+    /// Without a follow-up, the stop reason to show when nobody asked for the stop (#1178).
+    pub silent_stop: Option<String>,
+}
+
+/// See [`FinishedBatchPlan`]. `is_passive_code_diff`: the step is an entirely passive code
+/// diff whose last result is its edit (no autosend). `has_manual_follow_up`: the user asked
+/// for a follow-up once the actions complete.
+pub(crate) fn plan_finished_batch(
+    cancellation_reason: Option<CancellationReason>,
+    results: &[Arc<AIAgentActionResult>],
+    is_passive_code_diff: bool,
+    has_manual_follow_up: bool,
+) -> FinishedBatchPlan {
+    // A `Succeeded` cancellation (an optimistic long-running-command completion or a revert)
+    // is itself the terminal result, so it neither triggers a follow-up nor counts as a
+    // cancellation. Derived from `CancellationReason::conversation_outcome`, the single source
+    // of truth for the reason -> status mapping, rather than re-tested per reason.
+    let treat_as_success = matches!(
+        cancellation_reason.map(|reason| reason.conversation_outcome()),
+        Some(CancellationOutcome::Succeeded)
+    );
+    let follow_up = if has_manual_follow_up {
+        Some(FollowUpTrigger::UserRequested)
+    } else if !is_passive_code_diff
+        && !treat_as_success
+        && results
+            .iter()
+            .any(|result| result.result.should_trigger_request_upon_completion())
+    {
+        Some(FollowUpTrigger::Auto)
+    } else {
+        None
+    };
+    // An interrupted exit 130 is "successful" by exit code (`ExitCode::was_successful` accepts
+    // 130) but is a cancellation, so a turn ended by ^C must not read as a finished one (#1178).
+    let final_status = if treat_as_success
+        || results
+            .iter()
+            .all(|result| result.result.is_successful() && !result.result.is_cancelled())
+    {
+        ConversationStatus::Success
+    } else {
+        ConversationStatus::Cancelled
+    };
+    FinishedBatchPlan {
+        follow_up,
+        final_status,
+        silent_stop: silent_stop_reason(cancellation_reason, results),
+    }
+}
+
+/// Whether a ^C was written to the pty of `block_id`'s command (false for a block that is gone).
+fn block_interrupted_by_ctrl_c(terminal_model: &TerminalModel, block_id: &BlockId) -> bool {
+    terminal_model
+        .block_list()
+        .block_index_for_id(block_id)
+        .and_then(|index| terminal_model.block_list().block_at(index))
+        .is_some_and(|block| block.was_interrupted_by_ctrl_c())
+}
+
+/// The block whose command `result` reports as finished, for the tools that read or drive a
+/// running command. A `RequestCommandOutput` completion is the command's own action and is not
+/// one: its block is reported by the request that carries it.
+pub(crate) fn finished_command_block_id(result: &AIAgentActionResultType) -> Option<&BlockId> {
+    match result {
+        AIAgentActionResultType::ReadShellCommandOutput(
+            ReadShellCommandOutputResult::CommandFinished { block_id, .. },
+        )
+        | AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::CommandFinished { block_id, .. },
+        )
+        | AIAgentActionResultType::TransferShellCommandControlToUser(
+            TransferShellCommandControlToUserResult::CommandFinished { block_id, .. },
+        ) => Some(block_id),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -591,6 +810,10 @@ pub struct BlocklistAIController {
     /// a model -- or tool output steering it -- that keeps naming a skill the turn does not
     /// list would loop on the user's API key (#1068).
     skill_resolution_resumes_this_turn: HashMap<AIConversationId, u8>,
+    /// Auto-resumes spent this turn on synthetic local tool results of every kind (bad
+    /// arguments, unknown tool, intercepted tool), capped at
+    /// [`MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN`]; reset with the skill counter.
+    synthetic_result_resumes_this_turn: HashMap<AIConversationId, u8>,
     /// Passive suggestion results that should be included with the next request
     /// for a given conversation (e.g. accepted/iterated code diffs that weren't
     /// auto-resumed).
@@ -608,12 +831,117 @@ pub struct BlocklistAIController {
     /// At most 1 kept per conversation; a subsequent request submitted directly by
     /// the user overwrites it.
     pending_byop_requests: HashMap<AIConversationId, PendingByopRequest>,
+    /// Submits waiting (in order) for their attached files to be read off the UI thread.
+    pending_query_sends: std::collections::VecDeque<PendingQuerySend>,
+    next_query_send_seq: u64,
     /// True while this controller's pane is closed but restorable from the undo-close stack
     /// (#848). A closed pane sends nothing: `send_request_input` -- the single place a request
     /// is started -- refuses, no auto-resume is scheduled, and finished actions neither trigger
     /// a follow-up nor put their conversation back `InProgress`. Mirrors
     /// `TerminalView::suspended_for_close`, which sets and clears it.
     suspended_for_close: bool,
+    /// Blocks whose completion already produced a follow-up request for a monitored command the
+    /// model had stopped waiting on (#1178): one per block, however many completion signals
+    /// arrive.
+    monitored_completion_follow_ups: HashSet<BlockId>,
+    /// A monitored command that finished while a request about its conversation was still in
+    /// flight (the model mid-reply, a tool step, a compaction) or scheduled. `BlockCompleted`
+    /// fires once; the model's reply may then end on the stale "still running" snapshot with
+    /// nothing left to report the result. The completion is held here and re-decided at every
+    /// clean stream end ([`Self::retry_deferred_monitored_completion`]) until it is sent or
+    /// dropped. Every command that finishes while one is held joins the list, so a second
+    /// completion does not erase the first; they go out together in one report (#1264). A
+    /// conversation with no held completion has no entry.
+    deferred_monitored_completions: HashMap<AIConversationId, Vec<BlockId>>,
+    /// Conversations whose running request is the follow-up that reports a monitored command's
+    /// completion (#1264). With the held completions above, this is what
+    /// [`Self::completion_report_outstanding`] answers, so the view never fires a queued prompt
+    /// into a report that is pending or in flight (a submission cancels the running request and
+    /// its output would be lost). Cleared when that stream ends or the user cancels.
+    monitored_completion_resumes_in_flight: HashSet<AIConversationId>,
+}
+
+/// What [`MonitoredCompletionFacts`] say to do about a finished monitored command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MonitoredCompletionDecision {
+    /// Resume the conversation now with the finished block as context.
+    Send,
+    /// A request about this conversation is in flight or coming; hold the completion and
+    /// re-decide when that stream ends.
+    Defer,
+    /// Nothing to do: already reported, the pane is closed, or the turn ended in a way the
+    /// user chose (stopped, failed) with nothing coming that could change that.
+    Drop,
+}
+
+/// What `BlocklistAIController::follow_up_on_monitored_command_completed` checks before it
+/// reports a finished monitored command to the model (#1178).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MonitoredCompletionFacts {
+    /// A response stream of the conversation is running: the model is mid-turn and reads the
+    /// result itself (including one that polled `read_shell_command_output`).
+    pub stream_in_flight: bool,
+    /// The conversation's last turn ended normally. A turn the user stopped, one that failed
+    /// and one still in progress (a new user turn) are not resumed.
+    pub last_turn_succeeded: bool,
+    /// The pane is closed (undo-restorable).
+    pub suspended_for_close: bool,
+    /// A compaction summary or its continue message is in flight.
+    pub mid_compaction: bool,
+    /// Actions are pending, running, or finished but not yet sent: a request that carries them
+    /// is coming and will include the command's result.
+    pub has_unsent_actions: bool,
+    /// This block already produced a follow-up.
+    pub already_followed_up: bool,
+    /// A ^C was written to the command's pty: the user (or the model, who then reads the
+    /// result itself) interrupted it, so its exit is not news that restarts a turn (#1264).
+    pub interrupted_by_ctrl_c: bool,
+    /// An automatic resume (after an error, or for a synthetic tool result) is scheduled, or a
+    /// request the readiness pass stashed is waiting to be resent: a request is coming, and
+    /// sending one now would abort it.
+    pub resume_scheduled: bool,
+}
+
+/// Whether actions stand between a monitored command's completion and the model
+/// (`MonitoredCompletionFacts::has_unsent_actions`): actions still pending or running always do
+/// (their request is coming and carries the result); finished results do only while a request
+/// to send them is coming (`retained_results_block`). A step that ended without a request keeps
+/// its results for the user's next prompt, so they must not hold the completion forever (#1264).
+pub(crate) fn unsent_actions_block(
+    has_unfinished_actions: bool,
+    has_finished_results: bool,
+    retained_results_block: bool,
+) -> bool {
+    has_unfinished_actions || (has_finished_results && retained_results_block)
+}
+
+impl MonitoredCompletionFacts {
+    /// Whether the finished command is reported to the model with a follow-up request now.
+    pub(crate) fn should_follow_up(&self) -> bool {
+        self.decision() == MonitoredCompletionDecision::Send
+    }
+
+    /// Send now, hold for the next stream end, or drop. Holding is for every reason that is a
+    /// request about this conversation still being on its way: that request's end re-decides
+    /// with fresh facts, so a command that finishes while the model is mid-reply is reported
+    /// once the reply (or the tool loop, or the compaction) is over instead of never.
+    pub(crate) fn decision(&self) -> MonitoredCompletionDecision {
+        if self.already_followed_up || self.suspended_for_close || self.interrupted_by_ctrl_c {
+            return MonitoredCompletionDecision::Drop;
+        }
+        if self.stream_in_flight
+            || self.mid_compaction
+            || self.has_unsent_actions
+            || self.resume_scheduled
+        {
+            return MonitoredCompletionDecision::Defer;
+        }
+        if self.last_turn_succeeded {
+            MonitoredCompletionDecision::Send
+        } else {
+            MonitoredCompletionDecision::Drop
+        }
+    }
 }
 
 /// `send_request_input`'s refusal while the pane is closed (#848). Expected, not a failure:
@@ -644,6 +972,70 @@ struct PendingByopRequest {
     is_queued_prompt: bool,
 }
 
+/// Everything `send_query` has decided by the time it needs the attachments' content, carried
+/// across the (off-thread) attachment read.
+struct UserQuerySend {
+    input_query: InputQueryType,
+    query: String,
+    inputs: Vec<AIAgentInput>,
+    task_id: TaskId,
+    conversation_id: AIConversationId,
+    user_query_mode: UserQueryMode,
+    additional_attachments: HashMap<String, AIAgentAttachment>,
+    entrypoint_type: EntrypointType,
+    is_queued_prompt: bool,
+}
+
+/// A submit waiting for its attachment read, in submit order.
+/// How long one attachment read may take before its submit is failed (#1370 F4).
+/// `PHOSPHOR_ATTACHMENT_READ_GIVE_UP_MS` overrides.
+fn attachment_read_give_up() -> std::time::Duration {
+    let ms = std::env::var("PHOSPHOR_ATTACHMENT_READ_GIVE_UP_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30_000);
+    std::time::Duration::from_millis(ms)
+}
+
+/// What a queued submit sends once its attachments are read: a user query, or a skill
+/// invocation carrying the live-staged attachments (#1314).
+enum QueuedSend {
+    User(UserQuerySend),
+    Skill(SkillSend),
+}
+
+impl QueuedSend {
+    fn conversation_id(&self) -> Option<AIConversationId> {
+        match self {
+            QueuedSend::User(send) => Some(send.conversation_id),
+            QueuedSend::Skill(send) => send.conversation_id(),
+        }
+    }
+}
+
+struct PendingQuerySend {
+    seq: u64,
+    send: QueuedSend,
+    read: Option<Vec<ReadAttachment>>,
+    /// The live-staged attachments were taken (and cleared from staging) at submit time, so
+    /// this send owns them; see `send_query` (#1370 F4).
+    staged_taken: bool,
+    /// Set when this entry is dropped (give-up, discard, pane close), so the worker thread still
+    /// reading its attachments stops between files instead of finishing a read nobody awaits
+    /// (#1382).
+    _cancel_read: CancelOnDrop,
+}
+
+/// Sets its flag when dropped; the cancel half of the `decorations_cancel` pattern.
+#[derive(Default)]
+struct CancelOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 enum InputQueryType {
     /// The user submitted query from the input. This may map to [`AIAgentInput::UserQuery`] but may
     /// map to other `AIAgentInput` types depending on various factors.
@@ -665,7 +1057,7 @@ enum WhichTask {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FollowUpTrigger {
+pub(crate) enum FollowUpTrigger {
     Auto,
     UserRequested,
 }
@@ -786,28 +1178,32 @@ impl BlocklistAIController {
             else {
                 return;
             };
+            // The model read the finished command itself (`read_shell_command_output` or a
+            // write/transfer that returned `CommandFinished`): the completion held for it has
+            // been reported through that result, so it is not reported again at the turn end.
+            if let Some(held) = me.deferred_monitored_completions.get_mut(conversation_id) {
+                held.retain(|held_block_id| {
+                    !finished_action_results.iter().any(|result| {
+                        finished_command_block_id(&result.result) == Some(held_block_id)
+                    })
+                });
+                if held.is_empty() {
+                    me.deferred_monitored_completions.remove(conversation_id);
+                }
+            }
             let is_passive_code_diff = is_entirely_passive_code_diff
                 && finished_action_results.last().is_some_and(|result| {
                     matches!(result.result, AIAgentActionResultType::RequestFileEdits(_))
                 });
             let has_manual_follow_up = me.pending_passive_follow_ups.contains(conversation_id);
 
-            // A `Succeeded` cancellation (an optimistic long-running-command
-            // completion or a revert) is itself the terminal result, so it neither
-            // triggers a follow-up nor counts as a cancellation. Derived from
-            // `CancellationReason::conversation_outcome`, the single source of truth
-            // for the reason -> status mapping, rather than re-tested per reason.
-            let treat_as_success = matches!(
-                cancellation_reason.map(|reason| reason.conversation_outcome()),
-                Some(CancellationOutcome::Succeeded)
+            let plan = plan_finished_batch(
+                *cancellation_reason,
+                finished_action_results,
+                is_passive_code_diff,
+                has_manual_follow_up,
             );
-            let should_trigger_follow_up_request = (!is_passive_code_diff
-                && !treat_as_success
-                && finished_action_results
-                    .iter()
-                    .any(|result| result.result.should_trigger_request_upon_completion()))
-                || has_manual_follow_up;
-            if !should_trigger_follow_up_request {
+            let Some(trigger) = plan.follow_up else {
                 // No follow-up carries this step's results, so a tool-loop compaction
                 // deferred to them (#1059) has nothing to ride on; drop it rather than let it
                 // fire on some unrelated later follow-up.
@@ -840,30 +1236,23 @@ impl BlocklistAIController {
                     //
                     // If the user does end up following up on the passive diff-originated conversation,
                     // the status will once again be updated to `InProgress`.
-                    let updated_conversation_status = if finished_action_results
-                        .iter()
-                        .all(|result| result.result.is_successful())
-                        || treat_as_success
-                    {
-                        ConversationStatus::Success
-                    } else {
-                        // This is an imperfect heuristic that practically speaking should have no effect.
-                        //
-                        // If we actually need to differentiate between the state of a conversation
-                        // where actions completed with mixed result statuses (e.g. a mix of
-                        // cancelled, error, and success) _and_ we don't automatically send back action
-                        // results to the agent, then it'd be worth considering adding a new status
-                        // variant.
-                        ConversationStatus::Cancelled
-                    };
                     history_model.update(ctx, |history_model, ctx| {
                         history_model.update_conversation_status(
                             me.terminal_view_id,
                             *conversation_id,
-                            updated_conversation_status,
+                            plan.final_status,
                             ctx,
                         );
                     });
+
+                    // #1178: no request follows and nobody asked for that: say so instead of
+                    // leaving a finished-looking turn with no message.
+                    if let Some(reason) = plan.silent_stop {
+                        ctx.emit(BlocklistAIControllerEvent::AgentStopped {
+                            conversation_id: *conversation_id,
+                            reason,
+                        });
+                    }
 
                     // This is the only terminal outcome for a rejected (or otherwise
                     // resolved-without-a-follow-up) blocked action: no new request is being
@@ -895,13 +1284,14 @@ impl BlocklistAIController {
                             conversation_id: *conversation_id,
                         });
                     }
+
+                    // The step ended with no request, so no stream end will re-decide a
+                    // monitored command's completion held behind it (`has_unsent_actions`);
+                    // decide it now that the turn's status is final. Results this plan kept
+                    // back are not on their way anywhere, so they do not hold it (#1264).
+                    me.retry_deferred_monitored_completion(*conversation_id, false, ctx);
                 }
                 return;
-            }
-            let trigger = if has_manual_follow_up {
-                FollowUpTrigger::UserRequested
-            } else {
-                FollowUpTrigger::Auto
             };
             // Prefers resending a BYOP request that readiness stashed (it contains
             // the user's original prompt); otherwise falls back to the original
@@ -965,15 +1355,313 @@ impl BlocklistAIController {
             compaction_turn_state: HashMap::new(),
             window_too_small_notified: HashSet::new(),
             skill_resolution_resumes_this_turn: HashMap::new(),
+            synthetic_result_resumes_this_turn: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
             pending_byop_requests: HashMap::new(),
+            pending_query_sends: Default::default(),
+            next_query_send_seq: 0,
             suspended_for_close: false,
+            monitored_completion_follow_ups: HashSet::new(),
+            deferred_monitored_completions: HashMap::new(),
+            monitored_completion_resumes_in_flight: HashSet::new(),
         }
     }
 
     /// Marks this controller's pane closed (or restored); see `suspended_for_close`.
     pub fn set_suspended_for_close(&mut self, suspended: bool) {
         self.suspended_for_close = suspended;
+        if suspended {
+            // Submits still waiting on an attachment read are dropped with the pane (#1362); a
+            // read that lands later finds no entry (ids are `seq`) and sends nothing.
+            self.pending_query_sends.clear();
+            // A closed pane never resumes an agent (#848): a completion held for its turn end
+            // would be dropped at the next decision anyway, and must not fire after an undo.
+            self.deferred_monitored_completions.clear();
+        }
+    }
+
+    /// #1178: a command the model was left monitoring (`wait_until_complete=false`, or a stall
+    /// snapshot) finished after the model had already ended its turn on the "still running"
+    /// snapshot. Nothing else tells the model, so the turn would stay silent forever. Resumes
+    /// the conversation once with the finished block (command, output, exit code) as context.
+    ///
+    /// Not when the user stopped or started a new turn, or the pane is closed. While a stream is
+    /// running (the model is mid-reply), a compaction is under way, results are still on their
+    /// way to the model or a resume is scheduled, the completion is held and re-decided at that
+    /// request's end (`deferred_monitored_completions`): the model's reply may end on the stale
+    /// "still running" snapshot, and `BlockCompleted` does not fire twice. Returns whether a
+    /// request was sent.
+    /// Records that `block_id`'s completion is already carried by a request (the take-over
+    /// auto-resume `on_user_block_completed` sends with the block as context), so the monitored
+    /// completion of the same block is dropped (`already_followed_up`) instead of being held
+    /// behind that resume and reported a second time when it ends.
+    pub(crate) fn note_block_reported(&mut self, block_id: &BlockId) {
+        self.record_monitored_completion_follow_up(block_id);
+    }
+
+    /// Remembers that `block_id`'s completion has been followed up. Only recent blocks can still
+    /// be reported, so when the set grows past a generous bound it is emptied rather than left to
+    /// grow for the life of the app (#1253).
+    fn record_monitored_completion_follow_up(&mut self, block_id: &BlockId) {
+        const MAX_TRACKED_FOLLOW_UPS: usize = 1024;
+        if self.monitored_completion_follow_ups.len() >= MAX_TRACKED_FOLLOW_UPS {
+            self.monitored_completion_follow_ups.clear();
+        }
+        self.monitored_completion_follow_ups
+            .insert(block_id.clone());
+    }
+
+    pub(crate) fn follow_up_on_monitored_command_completed(
+        &mut self,
+        conversation_id: AIConversationId,
+        block_id: &BlockId,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        self.follow_up_on_monitored_command_completed_with(conversation_id, block_id, true, ctx)
+    }
+
+    /// Whether a report of a monitored command's completion is pending (held for a turn end) or
+    /// in flight (the resume that carries it is the running request) for `conversation_id`
+    /// (#1264). While it is, a queued prompt must wait for that report's turn end: submitting it
+    /// would cancel the request and lose the command's output.
+    pub(crate) fn completion_report_outstanding(&self, conversation_id: AIConversationId) -> bool {
+        self.deferred_monitored_completions
+            .contains_key(&conversation_id)
+            || self
+                .monitored_completion_resumes_in_flight
+                .contains(&conversation_id)
+    }
+
+    /// [`Self::follow_up_on_monitored_command_completed`] with `retained_results_block` as for
+    /// [`unsent_actions_block`].
+    fn follow_up_on_monitored_command_completed_with(
+        &mut self,
+        conversation_id: AIConversationId,
+        block_id: &BlockId,
+        retained_results_block: bool,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let facts =
+            self.monitored_completion_facts(conversation_id, block_id, retained_results_block, ctx);
+        match facts.decision() {
+            MonitoredCompletionDecision::Drop => {
+                if facts.already_followed_up || facts.interrupted_by_ctrl_c {
+                    // Specific to this block; the others held for the conversation stand.
+                    self.clear_deferred_monitored_completion(conversation_id, block_id);
+                } else {
+                    // The pane is closed or the turn ended in a way that nothing held for it
+                    // can change.
+                    self.deferred_monitored_completions.remove(&conversation_id);
+                }
+                return false;
+            }
+            MonitoredCompletionDecision::Defer => {
+                log::info!(
+                    "[byop] monitored command finished while a request is in flight or coming; \
+                     reporting it at the turn end block={block_id:?} \
+                     conversation={conversation_id:?} facts={facts:?}"
+                );
+                let held = self
+                    .deferred_monitored_completions
+                    .entry(conversation_id)
+                    .or_default();
+                if !held.contains(block_id) {
+                    held.push(block_id.clone());
+                }
+                return false;
+            }
+            MonitoredCompletionDecision::Send => {}
+        }
+        // This block and any other completion held for the conversation go out in one report.
+        let mut blocks = vec![block_id.clone()];
+        for held in self
+            .deferred_monitored_completions
+            .remove(&conversation_id)
+            .unwrap_or_default()
+        {
+            if !blocks.contains(&held) && !self.monitored_completion_follow_ups.contains(&held) {
+                blocks.push(held);
+            }
+        }
+        let block_contexts: Vec<(BlockId, AIAgentContext)> = {
+            let terminal_model = self.terminal_model.lock();
+            blocks
+                .into_iter()
+                .filter_map(|id| {
+                    // A held block the user interrupted with ^C is not reported (#1264).
+                    if block_interrupted_by_ctrl_c(&terminal_model, &id) {
+                        return None;
+                    }
+                    let context = block_context_from_terminal_model(&terminal_model, &id, false)?;
+                    Some((id, AIAgentContext::Block(Box::new(context))))
+                })
+                .collect()
+        };
+        if block_contexts.is_empty() {
+            // The block is gone (evicted) and nothing is sent: a queued prompt that waited for
+            // this report (`completion_report_outstanding`) has no turn end left to drain it.
+            if QueuedQueryModel::as_ref(ctx).has_queue(conversation_id) {
+                ctx.emit(BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id });
+            }
+            return false;
+        }
+        let reported: Vec<BlockId> = block_contexts.iter().map(|(id, _)| id.clone()).collect();
+        let contexts: Vec<AIAgentContext> = block_contexts
+            .into_iter()
+            .map(|(_, context)| context)
+            .collect();
+        log::info!(
+            "[byop] monitored command finished after the turn ended; following up \
+             block={block_id:?} reported={reported:?} conversation={conversation_id:?}"
+        );
+        // Before the resume's own `SentRequest`, so the view's record is in place when the
+        // `FinishedSubagent` queued behind this call is delivered (events are delivered in the
+        // order they were emitted).
+        ctx.emit(BlocklistAIControllerEvent::ResumedOnBlockCompletion { conversation_id });
+        // Marked before the send: the request's own events can reach this controller during it.
+        self.monitored_completion_resumes_in_flight
+            .insert(conversation_id);
+        let sent = self.resume_conversation_with_recovery_budget_checked(
+            conversation_id,
+            RecoveryBudget::fresh(),
+            /*is_auto_resume_after_error*/ false,
+            contexts,
+            ctx,
+        );
+        match sent {
+            // A request the readiness pass stashed goes out once pending results land.
+            Ok(()) => {}
+            Err(e) if e.downcast_ref::<PendingByopToolResultsError>().is_some() => {}
+            Err(e) => {
+                // Nothing went out: the report is not in flight, so a queued prompt must not
+                // wait for it, and the blocks may be reported again by a later signal.
+                if e.downcast_ref::<SuspendedForCloseError>().is_some() {
+                    log::debug!("{e}");
+                } else {
+                    log::error!(
+                        "[byop] the monitored-command completion report could not be sent \
+                         for conversation {conversation_id:?}: {e:#}"
+                    );
+                }
+                self.monitored_completion_resumes_in_flight
+                    .remove(&conversation_id);
+                if QueuedQueryModel::as_ref(ctx).has_queue(conversation_id) {
+                    ctx.emit(BlocklistAIControllerEvent::QueuedPromptsReleased { conversation_id });
+                }
+                return false;
+            }
+        }
+        for id in &reported {
+            self.record_monitored_completion_follow_up(id);
+        }
+        true
+    }
+
+    fn monitored_completion_facts(
+        &self,
+        conversation_id: AIConversationId,
+        block_id: &BlockId,
+        retained_results_block: bool,
+        ctx: &ModelContext<Self>,
+    ) -> MonitoredCompletionFacts {
+        MonitoredCompletionFacts {
+            stream_in_flight: self
+                .in_flight_response_streams
+                .has_active_stream_for_conversation(conversation_id, ctx),
+            last_turn_succeeded: BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| {
+                    matches!(conversation.status(), ConversationStatus::Success)
+                }),
+            suspended_for_close: self.suspended_for_close,
+            mid_compaction: self
+                .compaction_turn_state
+                .get(&conversation_id)
+                .is_some_and(|state| state.is_mid_compaction()),
+            has_unsent_actions: {
+                let action_model = self.action_model.as_ref(ctx);
+                unsent_actions_block(
+                    action_model.has_unfinished_actions_for_conversation(conversation_id),
+                    action_model
+                        .get_finished_action_results(conversation_id)
+                        .is_some_and(|results| !results.is_empty()),
+                    retained_results_block,
+                )
+            },
+            already_followed_up: self.monitored_completion_follow_ups.contains(block_id),
+            interrupted_by_ctrl_c: block_interrupted_by_ctrl_c(
+                &self.terminal_model.lock(),
+                block_id,
+            ),
+            resume_scheduled: self
+                .pending_auto_resume_handles
+                .contains_key(&conversation_id)
+                || self.pending_byop_requests.contains_key(&conversation_id),
+        }
+    }
+
+    /// Re-decides a completion held by [`Self::follow_up_on_monitored_command_completed`] once a
+    /// stream of `conversation_id` has ended. Holds it again if another request is in flight or
+    /// coming (a tool step, a compaction's summary and continue), so it is reported at the first
+    /// quiet turn end.
+    fn retry_deferred_monitored_completion(
+        &mut self,
+        conversation_id: AIConversationId,
+        retained_results_block: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(block_id) = self
+            .deferred_monitored_completions
+            .get(&conversation_id)
+            .and_then(|held| held.first())
+            .cloned()
+        {
+            self.follow_up_on_monitored_command_completed_with(
+                conversation_id,
+                &block_id,
+                retained_results_block,
+                ctx,
+            );
+        }
+    }
+
+    /// Drops a held completion of `block_id`, if that is the one held for `conversation_id`.
+    fn clear_deferred_monitored_completion(
+        &mut self,
+        conversation_id: AIConversationId,
+        block_id: &BlockId,
+    ) {
+        if let Some(held) = self
+            .deferred_monitored_completions
+            .get_mut(&conversation_id)
+        {
+            held.retain(|held_block_id| held_block_id != block_id);
+            if held.is_empty() {
+                self.deferred_monitored_completions.remove(&conversation_id);
+            }
+        }
+    }
+
+    /// Whether a monitored command completion is held for `conversation_id`.
+    #[cfg(test)]
+    pub(crate) fn has_deferred_monitored_completion(
+        &self,
+        conversation_id: AIConversationId,
+    ) -> bool {
+        self.deferred_monitored_completions
+            .contains_key(&conversation_id)
+    }
+
+    /// The blocks whose completion is held for `conversation_id`, in arrival order.
+    #[cfg(test)]
+    pub(crate) fn deferred_monitored_blocks_for_test(
+        &self,
+        conversation_id: AIConversationId,
+    ) -> Vec<BlockId> {
+        self.deferred_monitored_completions
+            .get(&conversation_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn is_suspended_for_close(&self) -> bool {
@@ -1116,6 +1804,8 @@ impl BlocklistAIController {
             self.update_compaction_turn_state(conversation_id, |state| state.on_new_user_turn());
             self.skill_resolution_resumes_this_turn
                 .remove(&conversation_id);
+            self.synthetic_result_resumes_this_turn
+                .remove(&conversation_id);
         }
 
         // Drain any queued passive suggestion results for this conversation
@@ -1206,41 +1896,416 @@ impl BlocklistAIController {
 
         let additional_attachments = input_query.additional_attachments;
         let queued_query_id = input_query.queued_query_id;
-        let ai_input = match input_query.input_query {
+        let direct_staged = queued_query_id.is_none()
+            && matches!(
+                input_query.input_query,
+                InputQueryType::UserSubmittedQueryFromInput { .. }
+            );
+
+        // Resolve the attachment set for this submission. A fired queued row reads the
+        // attachments captured when it was queued (it may no longer match whatever is
+        // live-staged now, e.g. if the user has since attached something new for their
+        // next message); a direct submission consumes the live staging as before.
+        let prompt_attachments = match &input_query.input_query {
+            InputQueryType::UserSubmittedQueryFromInput { .. } => match queued_query_id {
+                Some(query_id) => QueuedQueryModel::as_ref(ctx)
+                    .attachments_for(conversation_id, query_id)
+                    .to_vec(),
+                None => self
+                    .context_model
+                    .as_ref(ctx)
+                    .pending_attachments()
+                    .to_vec(),
+            },
+            InputQueryType::AIInputType { .. } => Vec::new(),
+        };
+
+        let send = UserQuerySend {
+            input_query: input_query.input_query,
+            query,
+            inputs,
+            task_id,
+            conversation_id,
+            user_query_mode,
+            additional_attachments,
+            entrypoint_type,
+            is_queued_prompt,
+        };
+
+        self.schedule_send(
+            QueuedSend::User(send),
+            prompt_attachments,
+            direct_staged,
+            ctx,
+        );
+    }
+
+    /// Sends `send` once `prompt_attachments` are read. Reading attached files is disk IO that
+    /// grows with the file (up to 10 MB), so it runs on a worker thread. Submits stay strictly
+    /// ordered: while an earlier submit is still waiting on its read, every later one queues
+    /// behind it, and they are sent in the order they were made.
+    ///
+    /// `direct_staged`: `prompt_attachments` were copied from live staging (not from a queued
+    /// row), so a deferred send takes them out of staging.
+    fn schedule_send(
+        &mut self,
+        send: QueuedSend,
+        prompt_attachments: Vec<PendingAttachment>,
+        direct_staged: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let needs_read = attachments_need_disk_read(&prompt_attachments);
+        if !needs_read && self.pending_query_sends.is_empty() {
+            self.finish_queued_send(send, read_attachments(prompt_attachments), ctx);
+            return;
+        }
+        // This send is deferred past this call. The attachments it copied from live staging are
+        // taken out of staging now, so a second submit during the read cannot copy them again
+        // (a duplicate), and anything staged afterwards is the next message's own (#1370 F4);
+        // `drain_ready_query_sends` keeps that newer staging across this send's reset.
+        let staged_taken = direct_staged && !prompt_attachments.is_empty();
+        if staged_taken {
+            self.context_model.update(ctx, |context_model, ctx| {
+                context_model.clear_pending_attachments(ctx);
+            });
+        }
+        let seq = self.next_query_send_seq;
+        self.next_query_send_seq += 1;
+        if !needs_read {
+            self.pending_query_sends.push_back(PendingQuerySend {
+                seq,
+                send,
+                read: Some(read_attachments(prompt_attachments)),
+                staged_taken,
+                _cancel_read: CancelOnDrop::default(),
+            });
+            return;
+        }
+        let cancel_read = CancelOnDrop::default();
+        let cancel_flag = cancel_read.0.clone();
+        self.pending_query_sends.push_back(PendingQuerySend {
+            seq,
+            send,
+            read: None,
+            staged_taken,
+            _cancel_read: cancel_read,
+        });
+        let file_names: Vec<String> = prompt_attachments
+            .iter()
+            .filter(|a| matches!(a, PendingAttachment::File(_)))
+            .map(|a| a.file_name().to_owned())
+            .collect();
+        // Give-up safety net (#1370 F4): a read that never returns (hung mount) must not block
+        // every later submit. The signal is the read landing; this only covers it never coming.
+        ctx.spawn(
+            async move {
+                warpui::r#async::Timer::after(attachment_read_give_up()).await;
+            },
+            move |me, _, ctx| me.give_up_attachment_read(seq, file_names, ctx),
+        );
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let fallback = prompt_attachments.clone();
+        let spawned = std::thread::Builder::new()
+            .name("attachment-read".into())
+            .spawn(move || {
+                let _ = tx.send(read_attachments_cancellable(
+                    prompt_attachments,
+                    &cancel_flag,
+                ));
+            });
+        let spawn_ok = match spawned {
+            Ok(_) => true,
+            Err(e) => {
+                log::warn!("Failed to spawn attachment read thread ({e}); reading inline");
+                false
+            }
+        };
+        ctx.spawn(
+            async move {
+                if spawn_ok {
+                    if let Ok(read) = rx.await {
+                        return read;
+                    }
+                }
+                read_attachments(fallback)
+            },
+            move |me, read, ctx| me.on_attachment_read_landed(seq, read, ctx),
+        );
+    }
+
+    /// An attachment read finished. Id-guarded (#1362): if the submit was discarded meanwhile
+    /// (Ctrl-C, stop, pane close) there is no entry with this `seq` and the read is dropped.
+    fn on_attachment_read_landed(
+        &mut self,
+        seq: u64,
+        read: Vec<ReadAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(entry) = self.pending_query_sends.iter_mut().find(|e| e.seq == seq) {
+            entry.read = Some(read);
+        }
+        self.drain_ready_query_sends(ctx);
+    }
+
+    /// The give-up timer fired. If the read for `seq` is still outstanding, that submit fails
+    /// with a visible error and later submits are released; a read landing afterwards finds no
+    /// entry and is dropped.
+    fn give_up_attachment_read(
+        &mut self,
+        seq: u64,
+        file_names: Vec<String>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(index) = self
+            .pending_query_sends
+            .iter()
+            .position(|e| e.seq == seq && e.read.is_none())
+        else {
+            return;
+        };
+        log::warn!(
+            "Attachment read for submit {seq} did not finish in {:?}; failing that submit",
+            attachment_read_give_up()
+        );
+        self.pending_query_sends.remove(index);
+        let names = if file_names.is_empty() {
+            vec!["attachment".to_owned()]
+        } else {
+            file_names
+        };
+        self.notify_attachment_read_failures(&names, ctx);
+        self.drain_ready_query_sends(ctx);
+    }
+
+    /// Test seam: parks a user-query submit as if its attachment read were in flight; returns
+    /// its `seq`.
+    #[cfg(test)]
+    pub(crate) fn park_query_send_for_test(
+        &mut self,
+        conversation_id: AIConversationId,
+        task_id: TaskId,
+        query: &str,
+    ) -> u64 {
+        let seq = self.next_query_send_seq;
+        self.next_query_send_seq += 1;
+        self.pending_query_sends.push_back(PendingQuerySend {
+            seq,
+            send: QueuedSend::User(UserQuerySend {
+                input_query: InputQueryType::UserSubmittedQueryFromInput {
+                    query: query.to_owned(),
+                    static_query_type: None,
+                    running_command: None,
+                },
+                query: query.to_owned(),
+                inputs: vec![],
+                task_id,
+                conversation_id,
+                user_query_mode: UserQueryMode::Normal,
+                additional_attachments: HashMap::new(),
+                entrypoint_type: EntrypointType::UserInitiated,
+                is_queued_prompt: false,
+            }),
+            read: None,
+            staged_taken: false,
+            _cancel_read: CancelOnDrop::default(),
+        });
+        seq
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_attachments_for_test(
+        &mut self,
+        attachments: Vec<PendingAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.context_model.update(ctx, |context_model, ctx| {
+            context_model.append_pending_attachments(attachments, ctx);
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn staged_attachment_count_for_test(&self, ctx: &ModelContext<Self>) -> usize {
+        self.context_model.as_ref(ctx).pending_attachments().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn send_user_query_for_test(&mut self, query: &str, ctx: &mut ModelContext<Self>) {
+        self.send_query(
+            InputQuery {
+                which_task: WhichTask::NewConversation,
+                input_query: InputQueryType::UserSubmittedQueryFromInput {
+                    query: query.to_owned(),
+                    static_query_type: None,
+                    running_command: None,
+                },
+                additional_attachments: HashMap::new(),
+                queued_query_id: None,
+            },
+            EntrypointType::UserInitiated,
+            None,
+            false,
+            ctx,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn give_up_attachment_read_for_test(
+        &mut self,
+        seq: u64,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.give_up_attachment_read(seq, vec![], ctx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn land_attachment_read_for_test(&mut self, seq: u64, ctx: &mut ModelContext<Self>) {
+        self.on_attachment_read_landed(seq, vec![], ctx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_query_send_count_for_test(&self) -> usize {
+        self.pending_query_sends.len()
+    }
+
+    /// Tells the user which attached files could not be read; the request is still sent without
+    /// their content (the file path reference stays).
+    fn notify_attachment_read_failures(&self, names: &[String], ctx: &mut ModelContext<Self>) {
+        let terminal_view_id = self.terminal_view_id;
+        let window_ids: Vec<warpui::WindowId> = ctx.window_ids().collect();
+        let Some(window_id) = window_ids.into_iter().find(|window_id| {
+            ctx.view_ids_for_window(*window_id)
+                .contains(&terminal_view_id)
+        }) else {
+            return;
+        };
+        let message = if names.len() == 1 {
+            format!("Could not read attached file {}.", names[0])
+        } else {
+            format!("Could not read {} attached files.", names.len())
+        };
+        crate::workspace::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                crate::view_components::DismissibleToast::error(message),
+                window_id,
+                ctx,
+            );
+        });
+    }
+
+    /// Drops the queued submits of `conversation_id` (#1362); later ready submits of other
+    /// conversations are released if the dropped entry was blocking them.
+    fn discard_pending_query_sends(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let before = self.pending_query_sends.len();
+        self.pending_query_sends
+            .retain(|entry| entry.send.conversation_id() != Some(conversation_id));
+        if self.pending_query_sends.len() != before {
+            self.drain_ready_query_sends(ctx);
+        }
+    }
+
+    /// Sends, in submit order, every queued submit whose attachment read has finished.
+    fn drain_ready_query_sends(&mut self, ctx: &mut ModelContext<Self>) {
+        while self
+            .pending_query_sends
+            .front()
+            .is_some_and(|entry| entry.read.is_some())
+        {
+            let Some(PendingQuerySend {
+                send,
+                read: Some(read),
+                staged_taken,
+                ..
+            }) = self.pending_query_sends.pop_front()
+            else {
+                break;
+            };
+            // Whatever is staged now was staged after this submit (its own was taken); the
+            // send's context reset must not wipe it (#1370 F4).
+            let newer = if staged_taken {
+                self.context_model
+                    .as_ref(ctx)
+                    .pending_attachments()
+                    .to_vec()
+            } else {
+                Vec::new()
+            };
+            self.finish_queued_send(send, read, ctx);
+            if !newer.is_empty() {
+                self.context_model.update(ctx, |context_model, ctx| {
+                    context_model.append_pending_attachments(newer, ctx);
+                });
+            }
+        }
+    }
+
+    /// Sends a queued submit whose attachments have been read.
+    fn finish_queued_send(
+        &mut self,
+        send: QueuedSend,
+        read: Vec<ReadAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match send {
+            QueuedSend::User(send) => self.finish_user_query_send(send, read, ctx),
+            QueuedSend::Skill(send) => send.finish(self, read, ctx),
+        }
+    }
+
+    /// The second half of `send_query`: builds the user input from the already-read attachments
+    /// and sends the request.
+    fn finish_user_query_send(
+        &mut self,
+        send: UserQuerySend,
+        read: Vec<ReadAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let UserQuerySend {
+            input_query,
+            query,
+            mut inputs,
+            task_id,
+            conversation_id,
+            user_query_mode,
+            additional_attachments,
+            entrypoint_type,
+            is_queued_prompt,
+        } = send;
+        let failed_files: Vec<String> = read
+            .iter()
+            .filter_map(|item| match (&item.attachment, &item.file_context) {
+                (PendingAttachment::File(file), None) => Some(file.file_name.clone()),
+                _ => None,
+            })
+            .collect();
+        if !failed_files.is_empty() {
+            self.notify_attachment_read_failures(&failed_files, ctx);
+        }
+        let ai_input = match input_query {
             InputQueryType::UserSubmittedQueryFromInput {
                 static_query_type,
                 running_command,
                 ..
-            } => {
-                // Resolve the attachment set for this submission. A fired queued row reads the
-                // attachments captured when it was queued (it may no longer match whatever is
-                // live-staged now, e.g. if the user has since attached something new for their
-                // next message); a direct submission consumes the live staging as before.
-                let prompt_attachments = match queued_query_id {
-                    Some(query_id) => QueuedQueryModel::as_ref(ctx)
-                        .attachments_for(conversation_id, query_id)
-                        .to_vec(),
-                    None => self
-                        .context_model
-                        .as_ref(ctx)
-                        .pending_attachments()
-                        .to_vec(),
-                };
-                input_for_query(
-                    query,
-                    &task_id,
-                    conversation_id,
-                    static_query_type,
-                    user_query_mode,
-                    running_command,
-                    additional_attachments,
-                    prompt_attachments,
-                    self.context_model.as_ref(ctx),
-                    self.active_session.as_ref(ctx),
-                    ctx,
-                )
+            } => input_for_query(
+                query,
+                &task_id,
+                conversation_id,
+                static_query_type,
+                user_query_mode,
+                running_command,
+                additional_attachments,
+                read,
+                self.context_model.as_ref(ctx),
+                self.active_session.as_ref(ctx),
+                ctx,
+            ),
+            InputQueryType::AIInputType { ai_input } => {
+                drop(read);
+                ai_input
             }
-            InputQueryType::AIInputType { ai_input } => ai_input,
         };
         inputs.push(ai_input);
 
@@ -1674,10 +2739,13 @@ impl BlocklistAIController {
                 .as_ref()
             {
                 for (block_id, agent_view_visibility) in promoted_blocks {
-                    if let Err(e) = sender.send(ModelEvent::UpdateBlockAgentViewVisibility {
-                        block_id: block_id.to_string(),
-                        agent_view_visibility: agent_view_visibility.into(),
-                    }) {
+                    if let Err(e) = crate::persistence::send_model_event_nonblocking(
+                        sender,
+                        ModelEvent::UpdateBlockAgentViewVisibility {
+                            block_id: block_id.to_string(),
+                            agent_view_visibility: agent_view_visibility.into(),
+                        },
+                    ) {
                         log::error!("Error sending UpdateBlockAgentViewVisibility event: {e:?}");
                     }
                 }
@@ -2025,16 +3093,17 @@ impl BlocklistAIController {
         // request is built, so the summarizer sees every call with its real result and
         // nothing is cancelled or synthesized; the committed summary then resumes the task
         // with the continue message (`handle_response_stream_finished`).
-        let root_task_id = BlocklistAIHistoryModel::as_ref(ctx)
-            .conversation(&conversation_id)
-            .map(|conversation| conversation.get_root_task_id().clone());
-        let results_all_in_root_task = root_task_id.as_ref().is_some_and(|root_task_id| {
-            finished_results
-                .iter()
-                .all(|result| &result.task_id == root_task_id)
-        });
+        // #1074: the summary rides in the task the results belong to — the root task, or a
+        // CLI/LRC subagent's own task — so a subagent loop is compacted too and resumes inside
+        // the subagent (the continue message goes to the monitored subagent task). Results
+        // spanning several tasks have no single task to carry it: plain follow-up.
+        let single_result_task_id = crate::ai::byop_compaction::single_task_id(
+            finished_results.iter().map(|result| &result.task_id),
+        )
+        .cloned();
+        let results_in_one_task = single_result_task_id.is_some();
         let results_request = self.update_compaction_turn_state(conversation_id, |state| {
-            state.on_tool_results_ready(results_all_in_root_task)
+            state.on_tool_results_ready(results_in_one_task)
         });
 
         let context = action_result_context(
@@ -2054,14 +3123,14 @@ impl BlocklistAIController {
             ctx,
         );
         if results_request == crate::ai::byop_compaction::ToolResultsRequest::SummarizeWithResults {
-            if let Some(root_task_id) = root_task_id {
+            if let Some(result_task_id) = single_result_task_id {
                 log::info!(
                     "[byop-compaction] tool loop over the threshold: sending this step's tool \
-                     results with the automatic summary (#1059)"
+                     results with the automatic summary (#1059, #1074)"
                 );
                 request_input
                     .input_messages
-                    .entry(root_task_id)
+                    .entry(result_task_id)
                     .or_default()
                     .push(AIAgentInput::SummarizeConversation {
                         prompt: None,
@@ -2089,6 +3158,22 @@ impl BlocklistAIController {
                     "Failed to send follow-up with action results for conversation \
                      {conversation_id:?}: {e:#}"
                 );
+                // The results are drained and no request carries them, so the turn would
+                // otherwise stay `InProgress` with nothing pending, running or in flight: a
+                // silent hang. End it visibly instead; the user can resume by hand.
+                let terminal_view_id = self.terminal_view_id;
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                    history_model.update_conversation_status_with_error_message(
+                        terminal_view_id,
+                        conversation_id,
+                        ConversationStatus::Error,
+                        Some(format!(
+                            "The tool results could not be sent back to the model: {e:#}. Send \
+                             a message (for example \"continue\") to resume."
+                        )),
+                        ctx,
+                    );
+                });
             }
         }
         // The allowance is spent only by a summary that really went out (a response stream is
@@ -2232,11 +3317,32 @@ impl BlocklistAIController {
         additional_context: Vec<AIAgentContext>,
         ctx: &mut ModelContext<Self>,
     ) {
+        let _ = self.resume_conversation_with_recovery_budget_checked(
+            conversation_id,
+            recovery,
+            is_auto_resume_after_error,
+            additional_context,
+            ctx,
+        );
+    }
+
+    /// [`Self::resume_conversation_with_recovery_budget`] reporting whether the request was
+    /// accepted, for the callers whose bookkeeping depends on it.
+    fn resume_conversation_with_recovery_budget_checked(
+        &mut self,
+        conversation_id: AIConversationId,
+        recovery: RecoveryBudget,
+        is_auto_resume_after_error: bool,
+        additional_context: Vec<AIAgentContext>,
+        ctx: &mut ModelContext<Self>,
+    ) -> anyhow::Result<()> {
         let Some(conversation) =
             BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
         else {
             log::error!("Tried to resume non-existent conversation: {conversation_id:?}");
-            return;
+            return Err(anyhow::anyhow!(
+                "tried to resume non-existent conversation {conversation_id:?}"
+            ));
         };
         let task_id = {
             let terminal_model = self.terminal_model.lock();
@@ -2275,7 +3381,7 @@ impl BlocklistAIController {
         } else {
             None
         };
-        let _ = self.send_request_input(
+        self.send_request_input(
             RequestInput::for_task(
                 inputs,
                 task_id,
@@ -2290,7 +3396,8 @@ impl BlocklistAIController {
             recovery,
             /*is_queued_prompt*/ false,
             ctx,
-        );
+        )
+        .map(|_| ())
     }
 
     /// Schedules an auto-resume-after-error for the conversation, after the recovery
@@ -2456,7 +3563,7 @@ impl BlocklistAIController {
             let task_id = conversation.get_root_task_id().clone();
             let conversation_data = api::ConversationData {
                 id: conversation_id,
-                tasks: conversation.compute_active_tasks(),
+                tasks: Arc::new(conversation.compute_active_tasks()),
                 server_conversation_token: conversation.server_conversation_token().cloned(),
                 forked_from_conversation_token: conversation
                     .forked_from_server_conversation_token()
@@ -2476,7 +3583,7 @@ impl BlocklistAIController {
             let task_id = TaskId::new(uuid::Uuid::new_v4().to_string());
             let conversation_data = api::ConversationData {
                 id: conversation_id,
-                tasks: vec![],
+                tasks: Arc::new(vec![]),
                 server_conversation_token: None,
                 forked_from_conversation_token: None,
                 // Do not tie passive suggestion requests to the ambient agent task, since they are
@@ -2649,7 +3756,7 @@ impl BlocklistAIController {
         let conversation_id = conversation.id();
         let conversation_data = api::ConversationData {
             id: conversation_id,
-            tasks: active_tasks,
+            tasks: Arc::new(active_tasks),
             server_conversation_token: conversation.server_conversation_token().cloned(),
             forked_from_conversation_token: conversation
                 .forked_from_server_conversation_token()
@@ -3956,6 +5063,19 @@ impl BlocklistAIController {
         // no-op when this conversation has no active background session.
         computer_use::end_background_session(&conversation_id.to_string());
 
+        // A stop / Ctrl-C / delete / revert discards submits of this conversation still waiting
+        // on their attachment read (#1362). A follow-up submit supersedes the running turn, not
+        // earlier queued submits (they stay ordered before it), and an optimistic completion is
+        // not a user action. A read that lands later finds no entry (`seq`-guarded) and sends
+        // nothing.
+        if !matches!(
+            reason,
+            CancellationReason::FollowUpSubmitted { .. }
+                | CancellationReason::OptimisticCLISubagentCompletion
+        ) {
+            self.discard_pending_query_sends(conversation_id, ctx);
+        }
+
         // Cancel any pending auto-resume for this conversation.
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
             handle.abort();
@@ -3970,6 +5090,16 @@ impl BlocklistAIController {
         // dropped, and so is an in-flight deferred summary's resume. Results already
         // recorded stay in history; nothing is lost.
         self.update_compaction_turn_state(conversation_id, |state| state.on_conversation_stopped());
+
+        // The user stopped the conversation or moved on (a new prompt, a revert, a delete): a
+        // monitored command's completion held for the turn end is not reported on their behalf.
+        // An optimistic subagent completion is the command finishing, not the user acting, and
+        // keeps the hold.
+        if reason.conversation_outcome() != CancellationOutcome::Succeeded {
+            self.deferred_monitored_completions.remove(&conversation_id);
+            self.monitored_completion_resumes_in_flight
+                .remove(&conversation_id);
+        }
 
         if !self
             .in_flight_response_streams
@@ -4254,8 +5384,8 @@ impl BlocklistAIController {
                                 );
                                 if completed_successfully {
                                     if let Some(pending_title_generation) =
-                                        response_stream.update(ctx, |response_stream, _| {
-                                            response_stream.take_pending_title_generation()
+                                        response_stream.update(ctx, |response_stream, ctx| {
+                                            response_stream.take_pending_title_generation(ctx)
                                         })
                                     {
                                         self.start_title_generation(
@@ -4348,6 +5478,19 @@ impl BlocklistAIController {
                                 ctx,
                             );
                         });
+                        // Nothing more is coming for this request: a continue reply or a
+                        // deferred summary waited on through it is not owed any more (#1238).
+                        if !recovery_pending {
+                            self.update_compaction_turn_state(conversation_id, |state| {
+                                state.on_request_failed()
+                            });
+                        } else {
+                            // The resume is a plain one: a deferred summary that was in
+                            // flight is not re-asked, so give its allowance back (#1238).
+                            self.update_compaction_turn_state(conversation_id, |state| {
+                                state.on_request_resumed()
+                            });
+                        }
                     }
                 }
             }
@@ -4533,9 +5676,14 @@ impl BlocklistAIController {
                         })
                     });
                     if needs_byop_local_resume && !has_pending_resume {
-                        let allowed = !has_skill_resolution_failure
+                        let allowed = (!has_skill_resolution_failure
                             || charge_skill_resolution_resume(
                                 self.skill_resolution_resumes_this_turn
+                                    .entry(conversation_id)
+                                    .or_default(),
+                            ))
+                            && charge_synthetic_result_resume(
+                                self.synthetic_result_resumes_this_turn
                                     .entry(conversation_id)
                                     .or_default(),
                             );
@@ -4552,11 +5700,20 @@ impl BlocklistAIController {
                             );
                         } else {
                             log::warn!(
-                                "[byop] read_skill named an unlisted skill again; the per-turn \
-                                 auto-resume allowance ({MAX_SKILL_RESOLUTION_RESUMES_PER_TURN}) \
-                                 is spent, so the turn ends here. \
-                                 conversation_id={conversation_id:?}"
+                                "[byop] the per-turn auto-resume allowance for synthetic tool \
+                                 results is spent (skills {MAX_SKILL_RESOLUTION_RESUMES_PER_TURN}, \
+                                 all kinds {MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN}), so the turn \
+                                 ends here. conversation_id={conversation_id:?}"
                             );
+                            // The last result card shows the rejected call; this says why the
+                            // agent is not retrying it.
+                            ctx.emit(BlocklistAIControllerEvent::AgentStopped {
+                                conversation_id,
+                                reason: "the model kept sending tool calls Phosphor could not \
+                                         run, and this turn's automatic retries are used up. \
+                                         Send a message to continue."
+                                    .to_owned(),
+                            });
                         }
                     }
                 }
@@ -4580,6 +5737,16 @@ impl BlocklistAIController {
                     }
                 });
                 ctx.unsubscribe_from_model(response_stream);
+
+                // A monitored command that finished during this stream is reported now that it
+                // has ended -- unless the turn goes on (tool calls were queued above, a resume
+                // or a compaction is coming), in which case it is held for that end. Before
+                // `FinishedReceivingOutput`: the resume's exchange must exist when the view
+                // decides whether this turn end drains the queued prompts, so that a queued
+                // row waits for the resume instead of firing into it.
+                self.monitored_completion_resumes_in_flight
+                    .remove(&conversation_id);
+                self.retry_deferred_monitored_completion(conversation_id, true, ctx);
 
                 if self.should_refresh_available_llms_on_stream_finish {
                     self.should_refresh_available_llms_on_stream_finish = false;
@@ -4692,6 +5859,11 @@ impl BlocklistAIController {
                 // stream's own AgentOutput can be the summary: an earlier one is some old
                 // narration that does not summarize the head it would replace.
                 let mut summary_committed = false;
+                // Asked before the commit, which consumes the note (#1079).
+                let summary_dropped_tool_calls = summarize_overflow.is_some()
+                    && crate::ai::agent_providers::chat_stream::summary_stream_dropped_tool_calls(
+                        conversation_id,
+                    );
                 if let Some(overflow) = summarize_overflow {
                     let compaction_cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
                     history_model.update(ctx, |history_model, _ctx| {
@@ -4717,6 +5889,14 @@ impl BlocklistAIController {
                 // compaction is deferred to that step's tool results, which then go out with
                 // the automatic summary (`send_follow_up_for_conversation`, #1059). The
                 // policy itself is `byop_compaction::plan_after_stream_finished` (#959).
+                let turn_produced_output = BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .is_some_and(|conversation| {
+                        crate::ai::byop_compaction::turn_has_visible_output(
+                            conversation.all_tasks().flat_map(|task| task.messages()),
+                            |id| stream_message_ids.contains(&MessageId::new(id.to_owned())),
+                        )
+                    });
                 let finished_stream = match summarize_overflow {
                     Some(overflow) => crate::ai::byop_compaction::FinishedStream::Summary {
                         auto: overflow,
@@ -4816,8 +5996,39 @@ impl BlocklistAIController {
                 // An automatic (overflow) summary interrupted the user's task. Don't let
                 // the turn end on the summary text; resume below, after the stream is
                 // marked complete.
-                let resume_after_auto_compaction = plan.resume_with_continue_message;
+                // #1079: the model answered the summary request with a tool call (it ignores
+                // `tool_choice`) and nothing committed: ask once more, with an explicit "no
+                // tools" instruction, instead of resuming uncompacted. Part of the same
+                // compaction (the allowance is not touched), and at most once.
+                let retry_summary_overflow = summarize_overflow.filter(|_| {
+                    !summary_committed
+                        && summary_dropped_tool_calls
+                        && self.update_compaction_turn_state(conversation_id, |state| {
+                            state.claim_summary_retry()
+                        })
+                });
+                let resume_after_auto_compaction =
+                    plan.resume_with_continue_message && retry_summary_overflow.is_none();
                 let auto_compaction_decision = plan.decision;
+
+                // The reply to the post-compaction continue message: a reasoning-only or
+                // blank one would end the turn with nothing shown (#1102). Retry the continue
+                // once, then say so. A compaction decided on this same turn supersedes it (its
+                // own summary and continue follow); a summary stream is never a reply.
+                let continue_reply = if summarize_overflow.is_none() {
+                    self.update_compaction_turn_state(conversation_id, |state| {
+                        state.on_continue_reply(turn_produced_output)
+                    })
+                } else {
+                    crate::ai::byop_compaction::ContinueReplyAction::None
+                };
+                let continue_reply = if auto_compaction_decision
+                    == crate::ai::byop_compaction::AutoCompactionDecision::None
+                {
+                    continue_reply
+                } else {
+                    crate::ai::byop_compaction::ContinueReplyAction::None
+                };
 
                 if auto_compaction_decision
                     == crate::ai::byop_compaction::AutoCompactionDecision::GiveUp
@@ -4829,6 +6040,24 @@ impl BlocklistAIController {
                             RenderableAIError::ContextWindowExceeded(
                                 "The conversation is still over the model's context window after automatic compaction. Start a new conversation, use a larger-context model, or reduce the amount of data read in one task.".to_owned(),
                             ),
+                            /*recovery_pending*/ false,
+                            stream_id,
+                            conversation_id,
+                            self.terminal_view_id,
+                            ctx,
+                        );
+                    });
+                } else if continue_reply == crate::ai::byop_compaction::ContinueReplyAction::Fail {
+                    log::warn!(
+                        "[byop-compaction] the model's reply to the continue message was empty twice; ending the turn with a notice"
+                    );
+                    history_model.update(ctx, |history_model, ctx| {
+                        history_model.mark_response_stream_completed_with_error(
+                            RenderableAIError::Other {
+                                error_message: "The model returned an empty reply after the conversation was compacted, so the task stopped. Send a message (for example \"continue\") to resume it.".to_owned(),
+                                will_attempt_resume: false,
+                                waiting_for_network: false,
+                            },
                             /*recovery_pending*/ false,
                             stream_id,
                             conversation_id,
@@ -4866,13 +6095,38 @@ impl BlocklistAIController {
                     );
                 }
 
-                if resume_after_auto_compaction {
+                if let Some(overflow) = retry_summary_overflow {
+                    log::info!(
+                        "[byop-compaction] the summary came back as a tool call: asking once more without tools (#1079)"
+                    );
+                    self.send_slash_command_request(
+                        crate::ai::blocklist::controller::SlashCommandRequest::Summarize {
+                            prompt: Some(
+                                crate::ai::byop_compaction::prompt::SUMMARY_RETRY_INSTRUCTION
+                                    .to_owned(),
+                            ),
+                            overflow,
+                        },
+                        ctx,
+                    );
+                }
+
+                if resume_after_auto_compaction
+                    || continue_reply == crate::ai::byop_compaction::ContinueReplyAction::Retry
+                {
                     // Opencode `compaction.ts:533-537`: after an automatic summary, a
                     // synthetic user message tells the model to carry on. The request is
                     // built from the compacted history (summary + kept tail), so the task
                     // continues instead of ending on the summary text. Sent as
                     // agent-initiated so it doesn't reset the one-compaction-per-turn cap.
-                    log::info!("[byop-compaction] resuming the interrupted task after auto-compaction");
+                    if resume_after_auto_compaction {
+                        log::info!("[byop-compaction] resuming the interrupted task after auto-compaction");
+                    } else {
+                        log::info!("[byop-compaction] empty reply to the continue message; sending it once more");
+                    }
+                    self.update_compaction_turn_state(conversation_id, |state| {
+                        state.on_continue_sent()
+                    });
                     self.send_user_query_in_conversation_internal(
                         crate::ai::byop_compaction::prompt::build_continue_message(false),
                         conversation_id,
@@ -5051,7 +6305,7 @@ fn input_for_query(
     user_query_mode: UserQueryMode,
     running_command: Option<RunningCommand>,
     additional_attachments: HashMap<String, AIAgentAttachment>,
-    prompt_attachments: Vec<PendingAttachment>,
+    read: Vec<ReadAttachment>,
     context_model: &BlocklistAIContextModel,
     active_session: &ActiveSession,
     app: &AppContext,
@@ -5060,8 +6314,10 @@ fn input_for_query(
     // explicitly-resolved `prompt_attachments` set (the queued row's captured attachments, or
     // live staging captured at send time — decided by the caller) rather than from whatever
     // happens to be staged in `context_model` when this request is actually built.
-    let (attachment_context, file_attachments) =
-        context_and_files_for_attachments(prompt_attachments);
+    let (attachment_context, file_attachments, failed_files) = context_and_files_from_read(read);
+    if !failed_files.is_empty() {
+        log::warn!("Could not read attached file(s) for the request: {failed_files:?}");
+    }
     let context = input_context_for_request(
         true,
         context_model,
@@ -5279,10 +6535,32 @@ fn cancellation_switches_input_to_shell(
 /// The dispatch gate's refusals (`tool_not_offered`, `plan_mode_blocked`,
 /// `computer_use_disabled`; see `chat_stream::dispatch_refusal_payload`) deliberately do NOT
 /// resume: a model that keeps naming a withheld tool would otherwise loop on the user's API
-/// key. They render a visible "tool not available this turn" card instead (#1067).
+/// key. They render a visible "tool not available this turn" card instead (#1067). Every
+/// resume this does grant is charged against [`MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN`].
 pub(crate) fn byop_synthetic_result_needs_resume(server_message_data: &str) -> bool {
     server_message_data.contains(r#""error":"invalid_arguments""#)
+        // A call to a tool that does not exist: the result lists the available names and asks
+        // the model to re-issue the call, which it can only do if the turn goes on. Without
+        // the resume the hint sat unread until the user's next message, and the turn looked
+        // finished.
+        || server_message_data.contains(r#""error":"unknown_tool""#)
         || server_message_data.contains(r#""_byop_intercepted":true"#)
+}
+
+/// At most this many automatic resumes per turn for synthetic local tool results of any kind
+/// (bad arguments, an unknown tool, a locally intercepted tool). Each one is a full model
+/// request on the user's provider, and a small model that keeps sending the same bad call
+/// would otherwise loop for as long as it kept doing so. Generous: a turn with a few
+/// intercepted `todowrite`/web calls and the odd bad argument stays well under it.
+const MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN: u8 = 8;
+
+/// Charges one synthetic-result resume against a turn's allowance; false once it is spent.
+fn charge_synthetic_result_resume(spent: &mut u8) -> bool {
+    if *spent >= MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN {
+        return false;
+    }
+    *spent += 1;
+    true
 }
 
 #[cfg(test)]

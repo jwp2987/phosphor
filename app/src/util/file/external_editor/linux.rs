@@ -415,8 +415,8 @@ impl EditorMetadata {
 /// If `line_column_number` is `Some`, the file will be opened with the cursor
 /// at the given location (if supported by the editor).
 ///
-/// If with_editor is `None`, we attempt to compute the default editor for the
-/// given file type, and open the file there.
+/// If with_editor is `None`, the file is handed to the OS handler. To use the XDG default
+/// editor, resolve it first (off the UI thread) with [`default_editor_for_file`].
 pub fn open_file_path_with_line_and_col(
     line_column_number: Option<LineAndColumnArg>,
     with_editor: Option<Editor>,
@@ -424,7 +424,9 @@ pub fn open_file_path_with_line_and_col(
     ctx: &mut AppContext,
 ) {
     if full_path.is_file() {
-        let with_editor = with_editor.or_else(|| get_app_for_file_from_mime(full_path));
+        // No `xdg-mime` lookup here (#1318): it blocks for up to ~500 ms, so callers that want the
+        // system-default editor resolve it off the UI thread with
+        // [`default_editor_for_file`] and pass the result as `with_editor`.
         if let Some(editor) = with_editor {
             if let Some(mut command) = editor.command(full_path, line_column_number) {
                 match command.spawn() {
@@ -439,18 +441,18 @@ pub fn open_file_path_with_line_and_col(
     ctx.open_file_path(full_path);
 }
 
-/// Open `full_path` in its XDG default application, but only if that application is a known
-/// [`Editor`]; returns whether it was opened. See the macOS twin for why (#681): the caller
-/// opens the in-app editor when this returns `false`, never the OS handler.
-pub fn open_in_default_editor_only(
+/// Open `full_path` in `editor` (the XDG default editor resolved by [`default_editor_for_file`]),
+/// but only if there is one; returns whether it was opened. See the macOS twin for why (#681): the
+/// caller opens the in-app editor when this returns `false`, never the OS handler.
+pub fn open_in_editor_only(
     line_column_number: Option<LineAndColumnArg>,
     full_path: &Path,
-    _ctx: &mut AppContext,
+    editor: Option<Editor>,
 ) -> bool {
     if !full_path.is_file() {
         return false;
     }
-    let Some(editor) = get_app_for_file_from_mime(full_path) else {
+    let Some(editor) = editor else {
         return false;
     };
     let Some(mut command) = editor.command(full_path, line_column_number) else {
@@ -468,6 +470,26 @@ pub fn open_in_default_editor_only(
     }
 }
 
+/// Resolves the XDG default editor for `path` without blocking the caller (#1318): the
+/// `xdg-mime` queries (each capped at [`XDG_MIME_TIMEOUT`]) run on a dedicated thread. Resolves to
+/// `None` if the default app is not a known [`Editor`], the lookup fails, or the thread dies.
+pub fn default_editor_for_file(
+    path: std::path::PathBuf,
+) -> impl std::future::Future<Output = Option<Editor>> + Send {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let spawned = std::thread::Builder::new()
+        .name("xdg-mime-lookup".into())
+        .spawn(move || {
+            let _ = tx.send(get_app_for_file_from_mime(&path));
+        });
+    async move {
+        if spawned.is_err() {
+            return None;
+        }
+        rx.await.ok().flatten()
+    }
+}
+
 /// Attempt to match a file with an existing editor based on Mime type
 ///
 /// Calls xdg-mime to first find the mime type of a file, and then find
@@ -477,29 +499,56 @@ pub fn open_in_default_editor_only(
 /// Used so that if xdg-open will work on a file we already know about,
 /// we can use line and col numbers.
 fn get_app_for_file_from_mime(path: &Path) -> Option<Editor> {
-    let mime_type = String::from_utf8(
-        Command::new("xdg-mime")
-            .arg("query")
-            .arg("filetype")
-            .arg(path)
-            .output()
-            .ok()?
-            .stdout,
-    )
-    .ok()?;
+    let mut mime_query = Command::new("xdg-mime");
+    mime_query.arg("query").arg("filetype").arg(path);
+    let mime_type = String::from_utf8(output_with_timeout(mime_query, XDG_MIME_TIMEOUT)?).ok()?;
 
-    let default_app = String::from_utf8(
-        Command::new("xdg-mime")
-            .args(["query", "default", mime_type.trim()])
-            .output()
-            .ok()?
-            .stdout,
-    )
-    .ok()?;
+    let mut default_query = Command::new("xdg-mime");
+    default_query.args(["query", "default", mime_type.trim()]);
+    let default_app =
+        String::from_utf8(output_with_timeout(default_query, XDG_MIME_TIMEOUT)?).ok()?;
 
     let app_id = default_app.trim().replace(".desktop", "");
 
     get_editor_by_app_id(compute_editors_by_id(), app_id.as_str())
+}
+
+/// Longest the UI thread waits for one `xdg-mime` query. A hung `xdg-mime` (broken mime database,
+/// stuck D-Bus or desktop-file lookup) used to freeze the whole app; on timeout the lookup finds
+/// no editor and the caller falls back to `xdg-open` / the in-app editor.
+const XDG_MIME_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Runs `command` and returns its stdout, or `None` if it fails to start, fails, or does not
+/// finish within `timeout` (in which case it is killed).
+fn output_with_timeout(mut command: Command, timeout: std::time::Duration) -> Option<Vec<u8>> {
+    let child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    // The worker owns the child, so it also reaps it after a kill.
+    std::thread::Builder::new()
+        .name("xdg-mime-wait".into())
+        .spawn(move || {
+            let _ = tx.send(child.wait_with_output());
+        })
+        .ok()?;
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => Some(output.stdout),
+        Ok(_) => None,
+        Err(_) => {
+            log::warn!("{command:?} did not finish within {timeout:?}; giving up on it");
+            // SAFETY: plain signal send to a child this function spawned; the worker thread
+            // still owns and will reap it.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            None
+        }
+    }
 }
 
 static EDITORS_BY_ID: OnceLock<HashMap<&'static str, Editor>> = OnceLock::new();

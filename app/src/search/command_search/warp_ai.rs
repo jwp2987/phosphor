@@ -1,5 +1,5 @@
 use crate::{
-    ai_assistant::AI_ASSISTANT_LOGO_COLOR,
+    ai::ask_ai::AI_ASSISTANT_LOGO_COLOR,
     appearance::Appearance,
     features::FeatureFlag,
     search::{

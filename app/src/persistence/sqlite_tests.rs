@@ -31,8 +31,9 @@ use super::{
     codebase_index_has_embeddings, decode_path, deduplicate_events, encode_path,
     get_all_codebase_index_metadata, read_sqlite_data, read_sqlite_data_counting, save_app_state,
     save_codebase_index_embeddings, save_codebase_index_metadata, setup_database,
-    setup_database_or_quarantine, start_writer,
+    setup_database_or_quarantine, speculative_startup_read, start_writer, SPECULATIVE_READ,
 };
+use crate::auth::UserUid;
 
 #[test]
 fn test_deduplicate_snapshots() {
@@ -50,11 +51,13 @@ fn test_deduplicate_snapshots() {
     let completed_block_1 = BlockCompleted {
         pane_id: vec![1, 2, 3],
         block: Arc::new(SerializedBlock::default()),
+        deferred_content: None,
         is_local: true,
     };
     let completed_block_2 = BlockCompleted {
         pane_id: vec![4, 5, 6],
         block: Arc::new(SerializedBlock::default()),
+        deferred_content: None,
         is_local: true,
     };
     let snapshot_1 = AppState {
@@ -117,6 +120,7 @@ fn test_deduplicate_no_snapshots() {
     let original_events = vec![ModelEvent::SaveBlock(BlockCompleted {
         pane_id: vec![1, 2, 3],
         block: Default::default(),
+        deferred_content: None,
         is_local: true,
     })];
     let filtered_events = deduplicate_events(original_events);
@@ -2778,8 +2782,7 @@ fn lock_retry_slows_down_instead_of_giving_up() {
 
 /// A rollback-journal file database whose writer connection `a` has a short busy
 /// timeout, plus `t(x)`; used to make `COMMIT` fail with `SQLITE_BUSY` (a reader
-/// on another connection holds a SHARED lock), which diesel's `transaction()`
-/// reports without ending the transaction (#971).
+/// on another connection holds a SHARED lock) (#971).
 fn stray_transaction_fixture() -> (
     tempfile::TempDir,
     String,
@@ -2822,9 +2825,32 @@ fn count_rows_from_fresh_connection(url: &str) -> i64 {
         .n
 }
 
-/// #971: a failed COMMIT left the writer inside an open transaction with diesel
-/// counting depth 1, so every later write was a SAVEPOINT in a transaction that
-/// never committed: "saved" in the log, invisible to every other connection.
+/// Leaves `a` in the state #971 describes: SQLite inside an open transaction holding a pending
+/// write, diesel counting depth 1, after a `COMMIT` that was blocked by the fixture's reader.
+/// diesel's own `transaction()` used to end up here when `COMMIT` failed; diesel 2.3.14 (#1286)
+/// rolls that back instead, so the state is built by hand to keep exercising the settle path
+/// (any other code that issues a raw `COMMIT` can still leave it behind).
+fn leave_stray_transaction(a: &mut diesel::sqlite::SqliteConnection) {
+    use diesel::{
+        RunQueryDsl as _,
+        connection::{AnsiTransactionManager, SimpleConnection as _, TransactionManager as _},
+    };
+
+    AnsiTransactionManager::begin_transaction(a).expect("transaction begins");
+    diesel::sql_query("INSERT INTO t VALUES (1)")
+        .execute(a)
+        .expect("write is pending");
+    assert!(
+        a.batch_execute("COMMIT;").is_err(),
+        "COMMIT must be blocked by the reader's SHARED lock"
+    );
+}
+
+/// #971: a blocked COMMIT must never leave the writer inside an open transaction, whichever way
+/// the driver reports it: later writes have to commit promptly instead of nesting in it. diesel
+/// 2.3.14 rolls the failed top-level commit back itself (the caller's retry re-sends the write);
+/// older diesel returned early with the transaction open, which `settle_stray_transaction`
+/// (called after every write) ends.
 #[test]
 fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
     use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
@@ -2839,9 +2865,40 @@ fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
         result.is_err(),
         "COMMIT must be blocked by the reader's SHARED lock"
     );
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+    super::settle_stray_transaction(&mut a);
+    assert!(
+        !super::in_open_transaction(&mut a),
+        "the writer must be back in autocommit"
+    );
+
+    // And later writes commit promptly instead of nesting in an old transaction.
+    a.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::sql_query("INSERT INTO t VALUES (2)").execute(conn)?;
+        Ok(())
+    })
+    .expect("a later write commits");
+    assert!(
+        count_rows_from_fresh_connection(&url) >= 1,
+        "the later write must be visible to another connection"
+    );
+    assert!(
+        !super::settle_stray_transaction(&mut a),
+        "nothing left to settle"
+    );
+}
+
+/// #971: a transaction left open by a blocked COMMIT is committed (not lost) once the lock
+/// clears, and the writer is back in autocommit.
+#[test]
+fn stray_transaction_is_committed_by_the_settle_once_the_lock_clears() {
+    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+
+    let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
+    leave_stray_transaction(&mut a);
     assert!(
         super::in_open_transaction(&mut a),
-        "precondition: diesel's early return leaves SQLite inside the transaction"
+        "precondition: the blocked COMMIT leaves SQLite inside the transaction"
     );
 
     reader.batch_execute("ROLLBACK;").expect("reader released");
@@ -2859,7 +2916,6 @@ fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
         "the intended write must be committed, not lost"
     );
 
-    // And later writes commit promptly instead of nesting in the old transaction.
     a.transaction::<_, diesel::result::Error, _>(|conn| {
         diesel::sql_query("INSERT INTO t VALUES (2)").execute(conn)?;
         Ok(())
@@ -2876,13 +2932,10 @@ fn blocked_commit_does_not_leave_the_writer_inside_a_transaction() {
 /// or "locked"), end it, and leave the connection in autocommit after every call.
 #[test]
 fn write_lock_probe_ends_a_stray_transaction_and_leaves_autocommit() {
-    use diesel::{Connection as _, RunQueryDsl as _, connection::SimpleConnection as _};
+    use diesel::{Connection as _, connection::SimpleConnection as _};
 
     let (_dir, url, mut a, mut reader) = stray_transaction_fixture();
-    let _ = a.transaction::<_, diesel::result::Error, _>(|conn| {
-        diesel::sql_query("INSERT INTO t VALUES (1)").execute(conn)?;
-        Ok(())
-    });
+    leave_stray_transaction(&mut a);
     assert!(super::in_open_transaction(&mut a));
     reader.batch_execute("ROLLBACK;").expect("reader released");
 
@@ -2992,7 +3045,7 @@ fn lone_conversation_write_is_visible_to_a_fresh_connection_promptly() {
         .sender
         .send(ModelEvent::UpdateMultiAgentConversation {
             conversation_id: "conversation-lone".to_string(),
-            updated_tasks: vec![task],
+            updated_tasks: vec![std::sync::Arc::new(task)],
             conversation_data: serde_json::from_str(r#"{"server_conversation_token":null}"#)
                 .expect("minimal conversation data"),
             task_retention: crate::persistence::PersistedTaskRetention::DeleteMissing,
@@ -3402,4 +3455,347 @@ fn deliberately_read_only_file_is_not_failed_or_retried() {
     #[allow(clippy::permissions_set_readonly_false)]
     perms.set_readonly(false);
     std::fs::set_permissions(&path, perms).unwrap();
+}
+
+/// #1155: the writer connection runs `synchronous=NORMAL` (1) with an 8 MB
+/// `journal_size_limit`, but only when the database is in WAL mode.
+#[test]
+fn writer_connection_uses_normal_synchronous_in_wal_mode() {
+    use diesel::RunQueryDsl;
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let synchronous = diesel::sql_query("SELECT synchronous AS value FROM pragma_synchronous")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("synchronous pragma")
+        .value;
+    assert_eq!(synchronous, 1, "NORMAL, not the FULL default (2)");
+    let limit =
+        diesel::sql_query("SELECT journal_size_limit AS value FROM pragma_journal_size_limit")
+            .get_result::<SingleInt>(&mut conn)
+            .expect("journal_size_limit pragma")
+            .value;
+    assert_eq!(limit, 8 * 1024 * 1024);
+}
+
+/// A non-WAL connection keeps the safe default: NORMAL is only crash-safe in WAL.
+#[test]
+fn durability_pragmas_are_skipped_outside_wal_mode() {
+    use diesel::{connection::SimpleConnection, Connection, RunQueryDsl};
+    let mut conn = diesel::SqliteConnection::establish(":memory:").expect("in-memory db");
+    conn.batch_execute("PRAGMA journal_mode=MEMORY;")
+        .expect("journal mode");
+    super::apply_wal_durability_pragmas(&mut conn);
+    let synchronous = diesel::sql_query("SELECT synchronous AS value FROM pragma_synchronous")
+        .get_result::<SingleInt>(&mut conn)
+        .expect("synchronous pragma")
+        .value;
+    assert_eq!(synchronous, 2, "FULL stays in place outside WAL mode");
+}
+
+/// #1155: SQLite's "WAL recovered" notice (283) is routine after an unclean exit and is
+/// logged at INFO; other notices keep their level.
+#[test]
+fn wal_recovery_notice_is_logged_at_info() {
+    use super::sqlite_log_level;
+    use libsqlite3_sys as sqlite3;
+    assert_eq!(
+        sqlite_log_level(sqlite3::SQLITE_NOTICE_RECOVER_WAL),
+        log::Level::Info
+    );
+    assert_eq!(
+        sqlite_log_level(sqlite3::SQLITE_NOTICE_RECOVER_ROLLBACK),
+        log::Level::Warn
+    );
+    assert_eq!(sqlite_log_level(sqlite3::SQLITE_CORRUPT), log::Level::Error);
+}
+
+/// The startup read made ahead of time on the prewarm thread must be exactly what the main-thread
+/// read returns, for either value of the NLD flag, and must be built without the flag being known.
+#[test]
+fn read_ahead_of_time_matches_the_main_thread_read() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    let app_state = AppState {
+        windows: vec![
+            test_terminal_window_snapshot(false),
+            test_terminal_window_snapshot(true),
+        ],
+        active_window_index: Some(1),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    for nld_enabled in [false, true] {
+        let _guard = FeatureFlag::NldPromptHistoryMatch.override_enabled(nld_enabled);
+        let speculative =
+            speculative_startup_read(&mut conn).expect("a database without cloud objects reads");
+        let (ahead, skipped) = speculative
+            .into_persisted_data(&None, nld_enabled)
+            .expect("no signed-in user");
+        let main = read_sqlite_data(&mut conn, None).expect("main-thread read");
+        assert_eq!(skipped, 0);
+        // Not compared through `Debug`: `block_lists` is a `HashMap` whose print order varies.
+        assert_eq!(ahead.app_state, main.app_state);
+        assert_eq!(ahead.nld_prompts, main.nld_prompts);
+        assert_eq!(ahead.command_history.len(), main.command_history.len());
+        assert_eq!(ahead.ai_queries.len(), main.ai_queries.len());
+        assert_eq!(ahead.cloud_objects.len(), main.cloud_objects.len());
+        assert_eq!(ahead.workspaces.len(), main.workspaces.len());
+        assert_eq!(ahead.current_workspace_uid, main.current_workspace_uid);
+    }
+    // The read-ahead flag must not leak out of the read.
+    assert!(!SPECULATIVE_READ.with(|flag| flag.get()));
+}
+
+/// A signed-in user's id decides cloud object owners, which the prewarm thread cannot know.
+#[test]
+fn read_ahead_of_time_is_not_used_for_a_signed_in_user() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let mut conn =
+        setup_database(&tempdir.path().join("warp.sqlite")).expect("database should initialize");
+    let speculative = speculative_startup_read(&mut conn).expect("reads");
+    assert!(
+        speculative
+            .into_persisted_data(&Some(UserUid::new("someone")), false)
+            .is_none()
+    );
+}
+
+/// #1252: a `WriteBarrier` is answered only after the events queued before it were written, so a
+/// caller that waits for it reads a database that holds them.
+#[test]
+fn write_barrier_is_answered_after_the_events_queued_before_it() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let metadata = test_workspace_metadata("/tmp/barrier-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(metadata.clone()),
+        })
+        .expect("upsert event should send");
+    let (barrier, written) = crate::persistence::WriteBarrier::new();
+    writer
+        .sender
+        .send(ModelEvent::WriteBarrier(barrier))
+        .expect("barrier should send");
+    futures::executor::block_on(written).expect("the writer answers the barrier");
+
+    let mut conn = setup_database(&database_path).expect("database should reopen");
+    let restored = get_all_codebase_index_metadata(&mut conn).expect("metadata should load");
+    assert_eq!(restored.len(), 1, "the write queued before the barrier is on disk");
+    assert_eq!(restored[0].path, metadata.path);
+
+    writer
+        .sender
+        .send(ModelEvent::Terminate)
+        .expect("terminate event should send");
+    writer.handle.join().expect("writer should terminate");
+}
+
+/// A rollback-journal database whose `COMMIT` is blocked (`SQLITE_BUSY`) for as long as the returned
+/// reader's transaction is open, plus the writer connection (#1297).
+fn blocked_commit_database() -> (
+    tempfile::TempDir,
+    PathBuf,
+    diesel::sqlite::SqliteConnection,
+    diesel::sqlite::SqliteConnection,
+) {
+    use diesel::{Connection as _, connection::SimpleConnection as _, sqlite::SqliteConnection};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+    conn.batch_execute("PRAGMA journal_mode=DELETE;")
+        .expect("rollback-journal mode");
+    let mut reader =
+        SqliteConnection::establish(database_path.to_str().unwrap()).expect("reader connects");
+    reader
+        .batch_execute("BEGIN; SELECT COUNT(*) FROM sqlite_master;")
+        .expect("reader holds a SHARED lock");
+    (tempdir, database_path, conn, reader)
+}
+
+/// #1297: a non-snapshot event whose `COMMIT` is blocked once is not lost. diesel 2.3.14 rolls a
+/// failed top-level `COMMIT` back, so the writer commits the event's transaction itself, keeps it
+/// open while the lock is held and commits it once, when the lock clears.
+#[test]
+fn event_whose_commit_is_blocked_is_persisted_exactly_once() {
+    use diesel::connection::SimpleConnection as _;
+
+    let (_dir, database_path, mut conn, mut reader) = blocked_commit_database();
+    conn.batch_execute("PRAGMA busy_timeout=50;")
+        .expect("short timeout");
+
+    let outcome = super::handle_model_event(
+        ModelEvent::InsertCommand {
+            metadata: started_command("echo 1297"),
+        },
+        &mut conn,
+    );
+    assert!(
+        matches!(outcome, super::EventOutcome::CommitBlocked),
+        "the blocked COMMIT must be parked, not reported as finished"
+    );
+    assert!(
+        super::in_open_transaction(&mut conn),
+        "the finished transaction is kept open so the write survives"
+    );
+
+    let mut queue = super::RetryQueue::default();
+    queue.commit_pending = true;
+    assert!(!queue.is_empty());
+    assert!(matches!(
+        super::drain_retry_queue(&mut queue, &mut conn, &database_path),
+        super::DrainOutcome::Locked
+    ));
+    assert!(
+        queue.commit_pending,
+        "still locked: the commit stays pending"
+    );
+
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+    assert!(matches!(
+        super::drain_retry_queue(&mut queue, &mut conn, &database_path),
+        super::DrainOutcome::Done
+    ));
+    assert!(queue.is_empty());
+    assert!(!super::in_open_transaction(&mut conn));
+    assert_eq!(command_count(&database_path), 1, "persisted exactly once");
+
+    // The writer is back in autocommit and later events commit normally.
+    assert!(matches!(
+        super::handle_model_event(ModelEvent::ClearUserProfiles, &mut conn),
+        super::EventOutcome::Finished(Ok(()))
+    ));
+    assert_eq!(
+        command_count(&database_path),
+        1,
+        "nothing was applied twice"
+    );
+}
+
+fn command_count(database_path: &std::path::Path) -> i64 {
+    use diesel::{Connection as _, RunQueryDsl as _, sql_types::BigInt};
+
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    // A plain connection: the database is in rollback-journal mode here, which `setup_database`
+    // would try to change while the writer's connection is open.
+    let mut conn = diesel::sqlite::SqliteConnection::establish(database_path.to_str().unwrap())
+        .expect("count connection");
+    diesel::sql_query("SELECT COUNT(*) AS n FROM commands")
+        .get_result::<Count>(&mut conn)
+        .expect("count")
+        .n
+}
+
+/// #1297: through the writer thread, the same blocked-`COMMIT` event is committed by the retry
+/// path once the lock is gone, before a later event is handled.
+#[test]
+fn writer_commits_an_event_whose_commit_was_blocked() {
+    use diesel::connection::SimpleConnection as _;
+
+    let (_dir, database_path, conn, mut reader) = blocked_commit_database();
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    writer
+        .sender
+        .send(ModelEvent::InsertCommand {
+            metadata: started_command("echo 1297"),
+        })
+        .expect("event should send");
+    // Let the writer exhaust its COMMIT attempts (3 x the 1s busy timeout) and park the commit,
+    // then free the lock.
+    std::thread::sleep(std::time::Duration::from_millis(3800));
+    reader.batch_execute("ROLLBACK;").expect("reader released");
+
+    let (barrier, written) = crate::persistence::WriteBarrier::new();
+    writer
+        .sender
+        .send(ModelEvent::WriteBarrier(barrier))
+        .expect("barrier should send");
+    futures::executor::block_on(written).expect("the writer answers the barrier");
+    assert_eq!(command_count(&database_path), 1, "persisted exactly once");
+
+    writer
+        .sender
+        .send(ModelEvent::Terminate)
+        .expect("terminate event should send");
+    writer.handle.join().expect("writer should terminate");
+}
+
+/// Whether `server_experiments` exists in `conn`.
+fn server_experiments_table_exists(conn: &mut diesel::sqlite::SqliteConnection) -> bool {
+    use diesel::{RunQueryDsl as _, sql_types::BigInt};
+
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = BigInt)]
+        n: i64,
+    }
+    let count = diesel::sql_query(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'server_experiments'",
+    )
+    .get_result::<Count>(conn)
+    .expect("sqlite_master query");
+    count.n > 0
+}
+
+const DROP_SERVER_EXPERIMENTS_UP_SQL: &str = include_str!(
+    "../../../crates/persistence/migrations/2026-11-02-000000_drop_server_experiments/up.sql"
+);
+
+/// A fresh database (all migrations applied, so the table was created and then dropped)
+/// ends up without `server_experiments`, and the drop is a no-op when re-applied to a
+/// database that no longer (or never) had the table.
+#[test]
+fn drop_server_experiments_migration_on_a_fresh_database() {
+    use diesel::{Connection as _, RunQueryDsl as _, sqlite::SqliteConnection};
+    use diesel_migrations::MigrationHarness as _;
+
+    let mut conn = SqliteConnection::establish(":memory:").expect("in-memory connection");
+    conn.run_pending_migrations(::persistence::MIGRATIONS)
+        .expect("migrations should run");
+    assert!(!server_experiments_table_exists(&mut conn));
+
+    // Never had the table: the statement must still succeed.
+    diesel::sql_query(DROP_SERVER_EXPERIMENTS_UP_SQL)
+        .execute(&mut conn)
+        .expect("dropping an absent table must not fail");
+    assert!(!server_experiments_table_exists(&mut conn));
+}
+
+/// A database that still has a populated `server_experiments` table loses it, and nothing
+/// else.
+#[test]
+fn drop_server_experiments_migration_on_a_database_with_the_table() {
+    use diesel::{Connection as _, RunQueryDsl as _, sqlite::SqliteConnection};
+    use diesel_migrations::MigrationHarness as _;
+
+    let mut conn = SqliteConnection::establish(":memory:").expect("in-memory connection");
+    conn.run_pending_migrations(::persistence::MIGRATIONS)
+        .expect("migrations should run");
+
+    diesel::sql_query("CREATE TABLE server_experiments (experiment TEXT PRIMARY KEY NOT NULL)")
+        .execute(&mut conn)
+        .expect("recreate the legacy table");
+    diesel::sql_query("INSERT INTO server_experiments VALUES ('WINDOWS_LAUNCH_EXPERIMENT')")
+        .execute(&mut conn)
+        .expect("legacy row");
+    assert!(server_experiments_table_exists(&mut conn));
+
+    diesel::sql_query(DROP_SERVER_EXPERIMENTS_UP_SQL)
+        .execute(&mut conn)
+        .expect("migration SQL should apply");
+    assert!(!server_experiments_table_exists(&mut conn));
 }

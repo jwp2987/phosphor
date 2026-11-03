@@ -271,7 +271,7 @@ And that is the list. The specifics:
 | **Telemetry / analytics** | Physically removed. The `send_telemetry_*` macros are compile-time no-ops that type-check the event in a `if false` branch and evaluate nothing. `ChannelState::is_telemetry_available()` is hard-coded `false`, so the "Help improve Phosphor" toggle **never renders at all**. `should_collect_ai_ugc_telemetry()` returns `false` unconditionally, ignoring the setting. |
 | **AI content / UGC collection** | Same function; always `false`. There is no `global_ai_analytics_collection` setting in this tree — that is a Warp server-side concept and has no counterpart here. |
 | **Crash reports** | Never uploaded. See above. |
-| **Settings sync** | `account.is_settings_sync_enabled` exists and defaults to `false`, but it has **no production consumer**: it only decides whether a "local only" badge is drawn next to a setting. Nothing syncs anywhere regardless of its value. |
+| **Settings sync** | There is no settings sync. The old `account.is_settings_sync_enabled` key (which only drew a "local only" badge) was removed; a `settings.toml` that still contains it keeps loading and the key is reported as unknown. |
 | **Account / identity** | There is no account. `AuthState` is a local placeholder that always reports "logged in"; the placeholder id no longer appears in any outgoing header. |
 | **Update checks** | **None** — autoupdate is not compiled into any shipped build (#630). In a self-built `--features autoupdate` binary it is an unauthenticated GET against the project's public GitHub Releases feed, controlled by `updates.automatic_updates_enabled`, sending nothing identifying. |
 
@@ -283,7 +283,16 @@ channel were ever wired up. Today it is unreachable UI over a dead channel.
 
 Separate from telemetry, and it *does* do something: **Settings → Privacy →
 Secret redaction** scans blocks, Library object contents and agent prompts for
-credentials and prevents them being saved or sent. You can add your own patterns
+credentials and prevents them being saved or sent.
+
+When it is on, everything sent to a model provider is redacted first with the
+same detector (built-in patterns plus your custom regexes; each match becomes
+`*` of the same length): the system prompt, every message including history,
+attached and command output, file and project context, tool-call arguments,
+tool results (command output, file reads, MCP), compaction summaries, one-shot
+requests (titles, next command, explain, commit messages), embeddings and rerank
+inputs, and web-search queries. Not redacted: tool schemas, images/PDFs, and the
+URL of a web fetch. Redaction is off by default. You can add your own patterns
 under **Custom secret redaction** (`privacy.custom_secret_regex_list`); they take
 effect on the next command, and support the inline `(?i)` case-insensitivity
 flag.
@@ -774,7 +783,6 @@ These are private settings: they have no TOML path and are stored in
 | `agents.mcp_servers.file_based_mcp_enabled` | Auto-spawn MCP servers found in third-party agents' *global* config files. | `false` | Settings → MCP Servers |
 | `updates.automatic_updates_enabled` | Background update checks. **Inert on every platform** — no bundler compiles autoupdate in (#630). | `true` | `settings.toml` only — the About page's update UI is hidden |
 | `general.autoupdate_enabled` | TUI auto-updater. Inert: the TUI has no release channel. | `true` | `settings.toml` only |
-| `account.is_settings_sync_enabled` | Only controls whether a "local only" badge is drawn. Nothing syncs. | `false` | `settings.toml` |
 | `DebugSettings.is_shell_debug_mode_enabled` | Sets `WARP_SHELL_DEBUG_MODE` in new sessions. | `false` | Private setting (`user_preferences.json`); App → Debug menu, debug builds |
 | `DebugSettings.recording_mode` | Record raw PTY bytes to disk. | off unless built with the `recording_mode` feature | Private setting; App → Debug menu, debug builds |
 | `DebugSettings.are_in_band_generators_for_all_sessions_enabled` | Use in-band generators for completions/highlighting in every session. | `false` | Private setting; App → Debug menu, debug builds |
@@ -833,7 +841,7 @@ the part you actually want.
 | **Credits, billing, paid tiers, upgrade flows** | Metered agent usage against a subscription. | **Absent.** You pay your provider directly, so there is no balance to show. **Replacement: `/usage` and `/cost`.** `/usage` reports the one budget a BYOP conversation actually spends against — the percentage of the model's context window used and remaining. `/cost` multiplies the token counts the provider reported by the per-model rates *you* configured. Where a rate is not configured it says so in words rather than rendering a plausible-looking `$0.00`. |
 | **Teams and workspaces** | Shared folders, workflows, org policy, admin panels. | **Absent, permanently.** `UserWorkspaces::has_teams()` and `current_team()` are hard-coded to "none". The consequence to know about: org-level command denylists, workspace AI-autonomy policy and enterprise secret-redaction rules are inert, because there is no server to deliver them. |
 | **Agent commit/PR attribution toggle** | A user preference uploaded to Warp's server, where the *server* decided whether to add a `Co-Authored-By` line. | **Absent.** The client never implemented the behaviour even upstream; there is no local attribution emitter to toggle. |
-| **Settings sync across devices** | Synced settings through your account. | **Absent.** The setting key survives but nothing reads it. Copy `settings.toml` by hand. |
+| **Settings sync across devices** | Synced settings through your account. | **Absent.** Copy `settings.toml` by hand. |
 
 ### Sharing and cloud sessions
 
@@ -975,7 +983,6 @@ the part you actually want.
 - no `global_ai_analytics_collection` anywhere in the tree (only a TODO.md mention at TODO.md:4385)
 - server_root_url is a blackhole sentinel `http://192.0.2.0:9`: crates/warp_core/src/channel/state.rs:187-195, crates/warp_core/src/channel/config.rs:30
 - is_cloud_disabled() returns true: crates/warp_core/src/channel/state.rs:208-210
-- account.is_settings_sync_enabled has no production consumer: app/src/settings/cloud_preferences.rs:17-27; the only readers draw a "local only" badge (app/src/settings_view/settings_page.rs:522, features_page.rs:6469, keybindings.rs:1158, workspace/view.rs:20927); `is_setting_syncable_on_current_platform` (crates/settings/src/lib.rs:323) is referenced only by tests
 - AuthState is a local placeholder: app/src/auth/mod.rs:1-20, :189-219; whoami no longer reads it and reports a local profile: app/src/ai/agent_sdk/admin.rs (#637)
 - privacy page: what was deliberately not ported (cloud conversation storage, network log, data management, docs.warp.dev link): app/src/settings_view/privacy_page.rs:9-20
 - crash-report toggle copy stating nothing is uploaded: app/i18n/en/warp.ftl:933-934

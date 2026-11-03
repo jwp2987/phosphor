@@ -600,3 +600,30 @@ fn test_nu_executables_command_runs_in_sh_and_lists_executables() {
     assert_eq!(names, vec!["tool a".to_string(), "tool-b".to_string()]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #1203: PSReadLine's ConsoleHost_history.txt (pwsh 7 and Windows PowerShell 5.1) joins the
+/// lines of a multi-line command with a trailing backtick; the bootstrap's own lines are not the
+/// user's history.
+#[test]
+fn test_parse_history_powershell_joins_backtick_continuations_and_drops_bootstrap_lines() {
+    let history_lines = "Get-ChildItem | Where-Object Length -gt 1kb\r\n\
+if (-not $global:WARP_BOOTSTRAPPED) { $global:_warpPrevHistoryHandler = 1 } # apikey\r\n\
+. 'C:\\Users\\me\\AppData\\Local\\Temp\\.tmpAb12Cd.ps1'\r\n\
+. /home/me/.local/share/Phosphor/pwsh.ps1\r\n\
+Get-Process |`\r\n  Sort-Object CPU -Descending |`\r\n  Select-Object -First 5\r\n\
+\r\n\
+git status`";
+    assert_eq!(
+        ShellType::PowerShell.parse_history(history_lines.as_bytes()),
+        vec![
+            "Get-ChildItem | Where-Object Length -gt 1kb".to_string(),
+            "Get-Process |\n  Sort-Object CPU -Descending |\n  Select-Object -First 5".to_string(),
+            "git status\n".to_string(),
+        ]
+    );
+    // A user's own `. ./build.ps1` is history; only the bootstrap's spellings are dropped.
+    assert_eq!(
+        ShellType::PowerShell.parse_history(b". ./build.ps1\n. C:\\x\\.tmpAb12Cd.ps1\n"),
+        vec![". ./build.ps1".to_string()]
+    );
+}

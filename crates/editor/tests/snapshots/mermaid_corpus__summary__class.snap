@@ -1,0 +1,29 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ?
+height: ?
+viewBox: true
+g: 3
+rect: 6
+path: 10
+circle: 1
+ellipse: 0
+polygon: 0
+polyline: 0
+line: 6
+text: 8
+tspan: 0
+marker: 9
+foreignObject: 0
+image: 0
+labels:
+  - "Animal"
+  - "+String name"
+  - "+int age"
+  - "+makeSound()"
+  - "Cat"
+  - "+purr()"
+  - "Dog"
+  - "+fetch()"

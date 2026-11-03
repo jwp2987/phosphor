@@ -14,6 +14,34 @@ use rstar::{primitives::Rectangle, RTree};
 use std::sync::Arc;
 use vec1::{vec1, Vec1};
 
+/// See [`Scene::stats`]. Areas are device pixels, summed over primitives (overdraw counts).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneStats {
+    pub layers: usize,
+    pub clipped_layers: usize,
+    pub rects: usize,
+    /// Rects that draw nothing and are skipped by the renderer.
+    pub skipped_rects: usize,
+    pub rounded_rects: usize,
+    pub gradient_rects: usize,
+    pub bordered_rects: usize,
+    /// Drawn rects of at least [`LARGE_RECT_AREA_PX`] device pixels.
+    pub large_rects: usize,
+    pub shadows: usize,
+    pub glyphs: usize,
+    pub images: usize,
+    pub icons: usize,
+    pub rect_area_px: f64,
+    pub rounded_rect_area_px: f64,
+    pub gradient_area_px: f64,
+    /// Area of the shadow quads: the shader runs a 4-tap erf blur per pixel of these.
+    pub shadow_area_px: f64,
+    pub image_area_px: f64,
+}
+
+/// A rect of at least this many device pixels counts as "large" in [`SceneStats`].
+const LARGE_RECT_AREA_PX: f64 = 250_000.;
+
 #[derive(Clone)]
 pub struct Scene {
     scale_factor: f32,
@@ -21,6 +49,8 @@ pub struct Scene {
     active_layer_index_stack: Vec1<ZIndex>,
     layers: Vec1<Layer>,
     overlay_layers: Vec<Layer>,
+    /// Sizes the layers of this scene are pre-allocated to as they are started.
+    capacity_hints: SceneCapacityHints,
     #[cfg(debug_assertions)]
     /// Custom panic location, set with [`Scene::set_location_for_panic_logging`]
     panic_location: Option<&'static std::panic::Location<'static>>,
@@ -53,7 +83,58 @@ pub enum ClipBounds {
     None,
 }
 
+/// How many primitives of each kind a layer held. A frame's layers are usually the same shape as
+/// the previous frame's (the same elements, with different content), so sizing a layer's vectors
+/// up front from the last frame avoids the reallocations the vectors would otherwise go through as
+/// they grow from empty on every frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayerCapacity {
+    rects: usize,
+    glyphs: usize,
+    images: usize,
+    icons: usize,
+}
+
+impl LayerCapacity {
+    fn of(layer: &Layer) -> Self {
+        Self {
+            rects: layer.rects.len(),
+            glyphs: layer.glyphs.len(),
+            images: layer.images.len(),
+            icons: layer.icons.len(),
+        }
+    }
+}
+
+/// The [`LayerCapacity`] of every layer of a scene, in the order the layers were started.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SceneCapacityHints {
+    layers: Vec<LayerCapacity>,
+    overlay_layers: Vec<LayerCapacity>,
+}
+
+impl SceneCapacityHints {
+    fn normal(&self, index: usize) -> LayerCapacity {
+        self.layers.get(index).copied().unwrap_or_default()
+    }
+
+    fn overlay(&self, index: usize) -> LayerCapacity {
+        self.overlay_layers.get(index).copied().unwrap_or_default()
+    }
+}
+
 impl Layer {
+    fn with_capacity(clip_bounds: Option<RectF>, capacity: LayerCapacity) -> Self {
+        Layer {
+            clip_bounds,
+            rects: Vec::with_capacity(capacity.rects),
+            glyphs: Vec::with_capacity(capacity.glyphs),
+            images: Vec::with_capacity(capacity.images),
+            icons: Vec::with_capacity(capacity.icons),
+            ..Default::default()
+        }
+    }
+
     fn record_hit_rect(&mut self, rect: RectF) {
         if let Some(intersected) = self
             .clip_bounds
@@ -103,6 +184,22 @@ pub struct Rect {
     pub corner_radius: CornerRadius,
     pub background: Fill,
     pub border: Border,
+}
+
+impl Rect {
+    /// Whether drawing this rect (its shadow aside) cannot change a pixel: the background has no
+    /// alpha at either end and the border either is not drawn (no width on any side) or has none
+    /// either. The rect shader returns alpha 0 for such a rect and the alpha blend leaves the
+    /// destination as it was, so a renderer may skip it. Containers whose fill is `Fill::None`
+    /// are the common case; each one costs a full pass over its bounds on a software rasterizer.
+    pub fn draws_nothing(&self) -> bool {
+        let transparent = |fill: &Fill| fill.start_color().a == 0 && fill.end_color().a == 0;
+        let border_drawn = self.border.top_width() != 0.
+            || self.border.right_width() != 0.
+            || self.border.bottom_width() != 0.
+            || self.border.left_width() != 0.;
+        transparent(&self.background) && (!border_drawn || transparent(&self.border.color))
+    }
 }
 
 #[derive(Clone)]
@@ -249,6 +346,18 @@ pub struct CornerRadius {
 }
 
 impl CornerRadius {
+    /// Whether every corner is square: unset, or an absolute radius of zero. `with_all(Pixels(0.))`
+    /// draws the same as `CornerRadius::default()`, but compares unequal to it.
+    pub fn is_square(&self) -> bool {
+        [self.top_left, self.top_right, self.bottom_left, self.bottom_right]
+            .into_iter()
+            .all(|radius| match radius {
+                None => true,
+                Some(Radius::Pixels(pixels)) => pixels == 0.,
+                Some(Radius::Percentage(_)) => false,
+            })
+    }
+
     /// Merge this CornerRadius struct with another.
     /// `Some(r)` takes precedence over `None`.
     /// If both are present, `other`'s values, take precedence over `self`'s existing values.
@@ -369,6 +478,18 @@ impl CornerRadius {
     }
 }
 
+/// Where in a layer the next primitive would be recorded. Taken with [`Scene::insertion_point`]
+/// while painting; [`Scene::splice_at`] later inserts primitives painted elsewhere there, so they
+/// end up ordered exactly as if they had been painted at that moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerInsertionPoint {
+    z_index: ZIndex,
+    rects: usize,
+    images: usize,
+    glyphs: usize,
+    icons: usize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Newtype to encapsulate a Z index, which actually represents a layer index in the list of layers
 pub enum ZIndex {
@@ -385,14 +506,34 @@ impl ZIndex {
 
 impl Scene {
     pub fn new(scale_factor: f32, rendering_config: rendering::Config) -> Self {
+        Self::with_capacity_hints(scale_factor, rendering_config, SceneCapacityHints::default())
+    }
+
+    /// A scene whose layers are pre-allocated to the sizes in `capacity_hints`, normally the
+    /// [`Self::capacity_hints`] of the previous frame's scene. Only the allocation differs: the
+    /// primitives recorded, and their order, are the same as with [`Self::new`].
+    pub fn with_capacity_hints(
+        scale_factor: f32,
+        rendering_config: rendering::Config,
+        capacity_hints: SceneCapacityHints,
+    ) -> Self {
         Self {
             scale_factor,
             rendering_config,
             active_layer_index_stack: vec1![ZIndex::Normal(0)],
-            layers: vec1![Layer::default()],
+            layers: vec1![Layer::with_capacity(None, capacity_hints.normal(0))],
             overlay_layers: Vec::new(),
+            capacity_hints,
             #[cfg(debug_assertions)]
             panic_location: None,
+        }
+    }
+
+    /// The sizes of this scene's layers, to pre-allocate the next frame's scene with.
+    pub fn capacity_hints(&self) -> SceneCapacityHints {
+        SceneCapacityHints {
+            layers: self.layers.iter().map(LayerCapacity::of).collect(),
+            overlay_layers: self.overlay_layers.iter().map(LayerCapacity::of).collect(),
         }
     }
 
@@ -472,21 +613,21 @@ impl Scene {
     }
 
     pub fn start_layer(&mut self, bounds: ClipBounds) {
-        let layer = self.create_layer(bounds);
+        let clip_bounds = self.clip_bounds_for_new_layer(bounds);
 
         match *self.active_layer_index_stack.last() {
-            ZIndex::Normal(_) => self.push_normal_layer(layer),
-            ZIndex::Overlay(_) => self.push_overlay_layer(layer),
+            ZIndex::Normal(_) => self.push_normal_layer(clip_bounds),
+            ZIndex::Overlay(_) => self.push_overlay_layer(clip_bounds),
         }
     }
 
     pub(crate) fn start_overlay_layer(&mut self, bounds: ClipBounds) {
-        let layer = self.create_layer(bounds);
-        self.push_overlay_layer(layer);
+        let clip_bounds = self.clip_bounds_for_new_layer(bounds);
+        self.push_overlay_layer(clip_bounds);
     }
 
-    fn create_layer(&mut self, bounds: ClipBounds) -> Layer {
-        let clip_bounds = match bounds {
+    fn clip_bounds_for_new_layer(&mut self, bounds: ClipBounds) -> Option<RectF> {
+        match bounds {
             ClipBounds::ActiveLayer => self.active_layer().clip_bounds,
             ClipBounds::BoundedBy(bounds) => Some(bounds),
             ClipBounds::BoundedByActiveLayerAnd(bounds) => {
@@ -503,24 +644,25 @@ impl Scene {
                 }
             }
             ClipBounds::None => None,
-        };
-
-        Layer {
-            clip_bounds,
-            ..Default::default()
         }
     }
 
-    fn push_normal_layer(&mut self, layer: Layer) {
-        self.active_layer_index_stack
-            .push(ZIndex::Normal(self.layers.len()));
-        self.layers.push(layer);
+    fn push_normal_layer(&mut self, clip_bounds: Option<RectF>) {
+        let index = self.layers.len();
+        self.active_layer_index_stack.push(ZIndex::Normal(index));
+        self.layers.push(Layer::with_capacity(
+            clip_bounds,
+            self.capacity_hints.normal(index),
+        ));
     }
 
-    fn push_overlay_layer(&mut self, layer: Layer) {
-        self.active_layer_index_stack
-            .push(ZIndex::Overlay(self.overlay_layers.len()));
-        self.overlay_layers.push(layer);
+    fn push_overlay_layer(&mut self, clip_bounds: Option<RectF>) {
+        let index = self.overlay_layers.len();
+        self.active_layer_index_stack.push(ZIndex::Overlay(index));
+        self.overlay_layers.push(Layer::with_capacity(
+            clip_bounds,
+            self.capacity_hints.overlay(index),
+        ));
     }
 
     pub fn set_active_layer_click_through(&mut self) {
@@ -674,6 +816,54 @@ impl Scene {
         layer.glyphs.last_mut().unwrap()
     }
 
+    /// An empty scene with this scene's scale and rendering config, to paint primitives into
+    /// that are later inserted with [`Self::splice_at`].
+    pub fn scratch(&self) -> Scene {
+        Scene::new(self.scale_factor, self.rendering_config)
+    }
+
+    /// Where in the active layer the next primitive would go.
+    pub fn insertion_point(&mut self) -> LayerInsertionPoint {
+        let z_index = self.z_index();
+        let layer = self.active_layer();
+        LayerInsertionPoint {
+            z_index,
+            rects: layer.rects.len(),
+            images: layer.images.len(),
+            glyphs: layer.glyphs.len(),
+            icons: layer.icons.len(),
+        }
+    }
+
+    /// Inserts the base layer of `painted` (a [`Self::scratch`] scene) at `point`, as if its
+    /// primitives had been recorded there. An insertion moves every point recorded later in the
+    /// same layer, so splice in reverse order of recording. Layers `painted` started beyond its
+    /// base layer are not carried over.
+    pub fn splice_at(&mut self, point: LayerInsertionPoint, painted: Scene) {
+        let Scene {
+            layers,
+            overlay_layers,
+            ..
+        } = painted;
+        let mut layers = layers.into_vec();
+        debug_assert!(
+            layers.len() == 1 && overlay_layers.is_empty(),
+            "a spliced scene must not start layers of its own"
+        );
+        let base = layers.swap_remove(0);
+        let layer = match point.z_index {
+            ZIndex::Normal(index) => &mut self.layers[index],
+            ZIndex::Overlay(index) => &mut self.overlay_layers[index],
+        };
+        drop(layer.rects.splice(point.rects..point.rects, base.rects));
+        drop(layer.images.splice(point.images..point.images, base.images));
+        drop(layer.glyphs.splice(point.glyphs..point.glyphs, base.glyphs));
+        drop(layer.icons.splice(point.icons..point.icons, base.icons));
+        for hit_rect in base.hit_map.iter() {
+            layer.hit_map.insert(*hit_rect);
+        }
+    }
+
     /// Get an iterator over all layers in order, from bottom to top
     pub fn layers(&self) -> impl Iterator<Item = &Layer> {
         self.layers.iter().chain(self.overlay_layers.iter())
@@ -683,6 +873,146 @@ impl Scene {
     #[cfg(test)]
     pub fn layer_count(&self) -> usize {
         self.layers.len() + self.overlay_layers.len()
+    }
+
+    /// Per-kind primitive counts and covered device-pixel areas of the scene, for the
+    /// `warpui::scene_stats` debug log (#1279). Walks the layers once; only called when that log
+    /// target is enabled.
+    pub fn stats(&self) -> SceneStats {
+        let sf = self.scale_factor;
+        let area = |bounds: RectF, clip: Option<RectF>| -> f64 {
+            let b = match clip {
+                Some(c) => bounds.intersection(c),
+                None => Some(bounds),
+            };
+            b.map_or(0., |b| (b.width() * sf) as f64 * (b.height() * sf) as f64)
+        };
+        let mut stats = SceneStats::default();
+        for layer in self.layers() {
+            stats.layers += 1;
+            if layer.clip_bounds.is_some() {
+                stats.clipped_layers += 1;
+            }
+            let clip = layer.clip_bounds;
+            for rect in &layer.rects {
+                if let Some(shadow) = rect.drop_shadow {
+                    stats.shadows += 1;
+                    let pad = shadow.spread_radius;
+                    let b = RectF::new(
+                        rect.bounds.origin() + shadow.offset - vec2f(pad, pad),
+                        rect.bounds.size() + vec2f(2. * pad, 2. * pad),
+                    );
+                    stats.shadow_area_px += area(b, clip);
+                }
+                if rect.draws_nothing() {
+                    stats.skipped_rects += 1;
+                    continue;
+                }
+                stats.rects += 1;
+                let a = area(rect.bounds, clip);
+                stats.rect_area_px += a;
+                if !rect.corner_radius.is_square() {
+                    stats.rounded_rects += 1;
+                    stats.rounded_rect_area_px += a;
+                }
+                if matches!(rect.background, Fill::Gradient { .. }) {
+                    stats.gradient_rects += 1;
+                    stats.gradient_area_px += a;
+                }
+                if rect.border.top_width() != 0.
+                    || rect.border.right_width() != 0.
+                    || rect.border.bottom_width() != 0.
+                    || rect.border.left_width() != 0.
+                {
+                    stats.bordered_rects += 1;
+                }
+                if a >= LARGE_RECT_AREA_PX {
+                    stats.large_rects += 1;
+                }
+            }
+            stats.glyphs += layer.glyphs.len();
+            stats.images += layer.images.len();
+            stats.icons += layer.icons.len();
+            for i in &layer.images {
+                stats.image_area_px += area(i.bounds, clip);
+            }
+            for i in &layer.icons {
+                stats.image_area_px += area(i.bounds, clip);
+            }
+        }
+        stats
+    }
+
+    /// A hash of everything the renderer would draw (rects, shadows, glyphs, images, icons, layer
+    /// clips). Two frames with the same fingerprint put the same pixels on screen, so logging it
+    /// beside [`Scene::stats`] shows which frames repainted identical content (#1279, a second
+    /// frame after every key). Debug-log use only.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let f = |h: &mut std::collections::hash_map::DefaultHasher, v: f32| v.to_bits().hash(h);
+        let rect = |h: &mut std::collections::hash_map::DefaultHasher, r: RectF| {
+            f(h, r.origin_x());
+            f(h, r.origin_y());
+            f(h, r.width());
+            f(h, r.height());
+        };
+        let fill = |h: &mut std::collections::hash_map::DefaultHasher, fill: &Fill| {
+            for c in [fill.start_color(), fill.end_color()] {
+                (c.r, c.g, c.b, c.a).hash(h);
+            }
+            f(h, fill.start().x());
+            f(h, fill.start().y());
+            f(h, fill.end().x());
+            f(h, fill.end().y());
+        };
+        self.scale_factor.to_bits().hash(&mut h);
+        for layer in self.layers() {
+            layer.clip_bounds.is_some().hash(&mut h);
+            if let Some(c) = layer.clip_bounds {
+                rect(&mut h, c);
+            }
+            for r in &layer.rects {
+                rect(&mut h, r.bounds);
+                fill(&mut h, &r.background);
+                fill(&mut h, &r.border.color);
+                for w in [
+                    r.border.top_width(),
+                    r.border.right_width(),
+                    r.border.bottom_width(),
+                    r.border.left_width(),
+                ] {
+                    f(&mut h, w);
+                }
+                format!("{:?}", r.corner_radius).hash(&mut h);
+                if let Some(d) = r.drop_shadow {
+                    (d.color.r, d.color.g, d.color.b, d.color.a).hash(&mut h);
+                    f(&mut h, d.offset.x());
+                    f(&mut h, d.offset.y());
+                    f(&mut h, d.blur_radius);
+                    f(&mut h, d.spread_radius);
+                }
+            }
+            for g in &layer.glyphs {
+                g.glyph_key.glyph_id.hash(&mut h);
+                f(&mut h, g.position.x());
+                f(&mut h, g.position.y());
+                (g.color.r, g.color.g, g.color.b, g.color.a).hash(&mut h);
+                format!("{:?}", g.fade).hash(&mut h);
+            }
+            for i in &layer.images {
+                rect(&mut h, i.bounds);
+                Arc::as_ptr(&i.asset).hash(&mut h);
+                f(&mut h, i.opacity);
+            }
+            for i in &layer.icons {
+                rect(&mut h, i.bounds);
+                Arc::as_ptr(&i.asset).hash(&mut h);
+                f(&mut h, i.opacity);
+                (i.color.r, i.color.g, i.color.b, i.color.a).hash(&mut h);
+            }
+        }
+        h.finish()
     }
 
     pub fn scale_factor(&self) -> f32 {

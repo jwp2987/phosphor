@@ -5,8 +5,8 @@ use super::{
     COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE, COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE,
     COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE, COMMAND_DENYLISTED_MESSAGE,
     COMMAND_REJECTED_BY_USER_MESSAGE, EDIT_MODE_OPEN_KEYMAP_CONTEXT, RequestedCommandView,
-    StreamedTextChange, cancel_explanation_for_reason, denylisted_command_message,
-    enter_accepts_requested_command_context, format_command_text,
+    AcceptSource, StreamedTextChange, accept_is_stale, accept_key_predates_paint, cancel_explanation_for_reason,
+    denylisted_command_message, enter_accepts_requested_command_context, format_command_text,
     header_message_for_user_take_over_reason, mcp_blocked_title_text,
     mcp_viewing_detail_title_text, should_expand_for_control_change, streamed_text_change,
     user_collapsed_after_set_expanded,
@@ -569,4 +569,32 @@ fn programmatic_expand_clears_user_collapsed_flag() {
         user_collapsed_after_set_expanded(true, true),
         false
     ));
+}
+
+// #1362 (was #1195): an Enter in flight when the approval card appears must not approve the
+// command. Ordering, not time: a key whose seq is not after the paint seq is stale.
+#[test]
+fn accept_key_queued_before_the_card_painted_is_ignored_whatever_the_delay() {
+    // Card painted when the key clock read 7; keys 5, 6 and 7 were delivered before/at it.
+    assert!(accept_key_predates_paint(Some(7), 5));
+    assert!(accept_key_predates_paint(Some(7), 7));
+    // Still ignored if handled "late": the verdict has no time input at all.
+    assert!(accept_key_predates_paint(Some(7), 6));
+}
+
+#[test]
+fn accept_after_painted_is_honoured_at_any_delay() {
+    // The very next key after the paint approves, even a few microseconds later (< 300 ms).
+    assert!(!accept_key_predates_paint(Some(7), 8));
+    assert!(!accept_key_predates_paint(Some(7), 9_000));
+    // A card never rendered awaiting (programmatic accept) is not stale.
+    assert!(!accept_key_predates_paint(None, 0));
+}
+
+// A click on Run is never stale; only keys are checked.
+#[test]
+fn a_click_on_run_is_never_stale() {
+    assert!(accept_is_stale(AcceptSource::Key, Some(7), 7));
+    assert!(!accept_is_stale(AcceptSource::Pointer, Some(7), 7));
+    assert!(!accept_is_stale(AcceptSource::Key, None, 0));
 }

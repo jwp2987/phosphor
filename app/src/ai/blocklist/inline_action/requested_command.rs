@@ -244,6 +244,31 @@ pub(crate) fn enter_accepts_requested_command_context() -> ContextPredicate {
         & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
 }
 
+/// Whether a key Accept predates the card being painted awaiting approval (#1362, #1195).
+/// `painted_at` is the key clock (`warpui::key_dispatch_seq`) when the card was first rendered
+/// awaiting; `key_seq` is the clock value of the key being handled. A key whose seq is not
+/// strictly greater was delivered before the card was on screen -- the tail of an Enter the user
+/// was already typing -- so it is not a decision, however much wall-clock time has passed.
+/// `None` (never rendered that way, e.g. a programmatic accept) is not stale. Ordering only; no
+/// timer. (Focus is implied: the card's Accept binding needs the card focused, and since #1350
+/// the card never takes focus from the input by itself.)
+pub(crate) fn accept_key_predates_paint(painted_at: Option<u64>, key_seq: u64) -> bool {
+    painted_at.is_some_and(|painted_at| key_seq <= painted_at)
+}
+
+/// Where an accept came from. Only a key can be the tail of an Enter the user was already typing
+/// when the card appeared; a click is always a decision (#1195).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptSource {
+    Key,
+    Pointer,
+}
+
+/// Whether an accept from `source` is ignored as stale: keys only.
+pub(crate) fn accept_is_stale(source: AcceptSource, painted_at: Option<u64>, key_seq: u64) -> bool {
+    source == AcceptSource::Key && accept_key_predates_paint(painted_at, key_seq)
+}
+
 /// Whether an action in `status` can be accepted by the user: only one that is `Blocked` on
 /// their confirmation. A queued action waits behind another; a running, finished, errored,
 /// timed-out or untracked one has nothing left to accept (#1095).
@@ -477,6 +502,9 @@ pub enum RequestedCommandViewEvent {
 #[derive(Debug, Clone)]
 pub enum RequestedCommandViewAction {
     Accept,
+    /// Run was clicked (button or menu item). Unlike Enter it is a deliberate pointer decision,
+    /// so it is never swallowed by the accept debounce (#1195).
+    AcceptClick,
     AcceptAndAutoExecute,
     ToggleAcceptMenu,
     Reject,
@@ -533,6 +561,9 @@ pub struct RequestedCommandView {
     /// command only while this matches `command_text`, [`FULL_VIEW_DWELL`] has passed, and the
     /// full view is scrolled to its end -- see [`Self::review_state`].
     full_view_opened: Option<(String, Instant)>,
+    /// The key clock (`warpui::key_dispatch_seq`) when the card was first rendered awaiting the
+    /// user's Accept; `None` while it is not (#1195, #1362). Keys at or before it are stale.
+    awaiting_accept_painted_at: Cell<Option<u64>>,
     /// Whether this card is in edit mode, shared with the action model, which refuses user
     /// accepts that bypass the card while it is set (issue #847).
     edit_flag: Rc<Cell<bool>>,
@@ -653,7 +684,7 @@ impl RequestedCommandView {
                 ENTER_ACCEPT_REQUESTED_COMMAND_KEYSTROKE.clone(),
             )),
             ButtonSize::InlineActionHeader,
-            RequestedCommandViewAction::Accept,
+            RequestedCommandViewAction::AcceptClick,
             RequestedCommandViewAction::ToggleAcceptMenu,
             Icon::Check,
             true,
@@ -894,6 +925,7 @@ impl RequestedCommandView {
             explanation: ExplanationState::Idle,
             explanation_request: None,
             full_view_opened: None,
+            awaiting_accept_painted_at: Cell::new(None),
             edit_flag: Rc::new(Cell::new(false)),
             user_committed_edit: false,
             approval_preview: RefCell::new(ApprovalPreviewCache::default()),
@@ -975,6 +1007,17 @@ impl RequestedCommandView {
             .as_ref(app)
             .get_action_status(&self.action_id);
         accepts_user_decision(status.as_ref())
+    }
+
+    /// Records the key clock when the card first showed itself awaiting approval, and forgets it once it no
+    /// longer is (#1195). Called from `render`, hence the `Cell`.
+    fn note_awaiting_accept(&self, app: &AppContext) {
+        if !self.awaits_user_accept(app) {
+            self.awaiting_accept_painted_at.set(None);
+        } else if self.awaiting_accept_painted_at.get().is_none() {
+            self.awaiting_accept_painted_at
+                .set(Some(warpui::key_dispatch_seq()));
+        }
     }
 
     /// The [`RejectDisposition`] for this card's action in its current status.
@@ -1138,11 +1181,29 @@ impl RequestedCommandView {
     /// Only then is the reviewed text recorded on the model, which refuses any user accept of
     /// an elided command without that record.
     pub(crate) fn try_accept(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        self.try_accept_from(AcceptSource::Key, ctx)
+    }
+
+    fn try_accept_from(&mut self, source: AcceptSource, ctx: &mut ViewContext<Self>) -> bool {
         // #1095: a card whose action is no longer awaiting confirmation (running, finished,
         // errored, timed out) is never accepted again, whatever path the Accept came from.
         if !self.awaits_user_accept(ctx) {
             log::info!(
                 "Not accepting requested action {:?}: it is not awaiting confirmation",
+                self.action_id
+            );
+            return false;
+        }
+        // #1195 / #1362: a key delivered before the card was painted awaiting approval is not a
+        // decision. Ordering on the key clock, not elapsed time. The hint to press Enter again
+        // is the card's existing behaviour (#1180); this just declines the stale key.
+        if accept_is_stale(
+            source,
+            self.awaiting_accept_painted_at.get(),
+            warpui::key_dispatch_seq(),
+        ) {
+            log::info!(
+                "Not accepting requested action {:?}: the key predates the card being shown",
                 self.action_id
             );
             return false;
@@ -1350,7 +1411,7 @@ impl RequestedCommandView {
                 REQUESTED_COMMAND_ACCEPT_LABEL,
                 accept_keystroke.as_str(),
             )
-            .with_on_select_action(RequestedCommandViewAction::Accept)
+            .with_on_select_action(RequestedCommandViewAction::AcceptClick)
             .into_item();
 
             let auto_item = MenuItemFields::new_with_label("Auto-approve", auto_keystroke.as_str())
@@ -2538,6 +2599,7 @@ impl View for RequestedCommandView {
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
+        self.note_awaiting_accept(app);
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
         let action_status = self
@@ -2895,6 +2957,9 @@ impl TypedActionView for RequestedCommandView {
         match action {
             RequestedCommandViewAction::Accept => {
                 self.try_accept(ctx);
+            }
+            RequestedCommandViewAction::AcceptClick => {
+                self.try_accept_from(AcceptSource::Pointer, ctx);
             }
             RequestedCommandViewAction::AcceptAndAutoExecute => {
                 if self.try_accept(ctx) {

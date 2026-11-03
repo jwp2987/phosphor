@@ -87,6 +87,19 @@ impl IntervalTimer {
         eprintln!("==========================");
     }
 
+    /// One-line summary of the startup phases, e.g. `SQLITE_INITIALIZED=120ms ... total=900ms`,
+    /// for the always-on log (#1146). Call once, after the last interval.
+    pub fn startup_summary(&self) -> String {
+        let stats = self.compute_stats();
+        let phases = stats
+            .iter()
+            .map(|point| format!("{}={}ms", point.name, point.marginal_duration_ms))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let total = stats.last().map_or(0, |point| point.cumulative_duration_ms);
+        format!("startup timing: {phases} total={total}ms")
+    }
+
     /// Once you are done with all the intervals in your process, we compute a cumulative sum of the
     /// time at each interval, as well as an individual time between each interval.
     pub fn compute_stats(&self) -> Vec<TimingDataPoint> {

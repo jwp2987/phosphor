@@ -88,6 +88,7 @@ fn test_position_cache_caching() {
 /// Shared layout/paint call counters for [`CountingElement`], read back by tests.
 #[derive(Default)]
 struct RepaintCounts {
+    render_calls: Cell<u32>,
     layout_calls: Cell<u32>,
     paint_calls: Cell<u32>,
 }
@@ -154,6 +155,9 @@ impl Entity for CountingRootView {
 
 impl crate::core::View for CountingRootView {
     fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        self.counts
+            .render_calls
+            .set(self.counts.render_calls.get() + 1);
         Box::new(CountingElement {
             counts: self.counts.clone(),
             size: None,
@@ -230,6 +234,81 @@ fn test_app_build_scene_skips_layout_only_for_paint_only_redraw() {
             "a real invalidation must still run layout"
         );
         assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 2);
+    })
+}
+
+/// `AppContext::request_paint_only_redraw` is the non-timer way to ask for a paint-only frame
+/// (a terminal whose alt-screen grid is read at paint time uses it for pty output). It must take
+/// the same layout-skipping path as a paint-only timer, and a later real invalidation must still
+/// lay out.
+#[test]
+fn test_request_paint_only_redraw_skips_layout_until_a_view_is_notified() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        let counts = view.update(app, |view, _ctx| view.counts.clone());
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let layout_calls_baseline = counts.layout_calls.get();
+        let paint_calls_baseline = counts.paint_calls.get();
+
+        app.update(|ctx| {
+            ctx.request_paint_only_redraw(window_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(
+            counts.layout_calls.get(),
+            layout_calls_baseline,
+            "a requested paint-only redraw must not re-run layout"
+        );
+        assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 1);
+
+        // A notified view in the same frame as a paint-only request wins: full layout.
+        app.update(|ctx| {
+            ctx.request_paint_only_redraw(window_id);
+            ctx.simulate_view_updated(window_id, root_view_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(counts.layout_calls.get(), layout_calls_baseline + 1);
+        assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 2);
+    })
+}
+
+/// `AppContext::request_redraw` lays out and paints the existing tree without re-rendering any
+/// view (the block list uses it for pty output while nothing its tree was built from changed).
+#[test]
+fn test_request_redraw_lays_out_and_paints_without_re_rendering() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let root_view_id = app.root_view_id(window_id).unwrap();
+        let counts = view.update(app, |view, _ctx| view.counts.clone());
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let render_calls_baseline = counts.render_calls.get();
+        let layout_calls_baseline = counts.layout_calls.get();
+        let paint_calls_baseline = counts.paint_calls.get();
+
+        app.update(|ctx| {
+            ctx.request_redraw(window_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(
+            counts.render_calls.get(),
+            render_calls_baseline,
+            "a requested redraw must not re-render the view"
+        );
+        assert_eq!(counts.layout_calls.get(), layout_calls_baseline + 1);
+        assert_eq!(counts.paint_calls.get(), paint_calls_baseline + 1);
+
+        app.update(|ctx| {
+            ctx.simulate_view_updated(window_id, root_view_id);
+            ctx.simulate_render_frame(window_id);
+        });
+        assert_eq!(counts.render_calls.get(), render_calls_baseline + 1);
     })
 }
 
@@ -388,6 +467,34 @@ fn test_refocus_root_when_persistent_child_stops_being_emitted_by_mounted_parent
             Some(root_view_id),
             "a live child its mounted parent no longer emits must lose focus"
         );
+    })
+}
+
+/// #1256: `AppContext::is_view_reachable` is false only for a live view the last (current)
+/// layout did not visit, and true for a mounted view and for one that was never rendered
+/// against a layout. A terminal wakeup uses it to skip a frame request for a hidden tab.
+#[test]
+fn test_is_view_reachable_is_false_only_for_a_view_the_last_layout_left_out() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, root) = app.add_window(WindowStyle::NotStealFocus, SwitchingRootView::new);
+        let (child, tab, lay_out_child) = root.update(app, |root, _| {
+            (
+                root.child.clone(),
+                root.tab.clone(),
+                root.lay_out_child.clone(),
+            )
+        });
+        // Before the first layout nothing is judged unreachable.
+        assert!(app.update(|ctx| ctx.is_view_reachable(window_id, child.id())));
+
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert!(app.update(|ctx| ctx.is_view_reachable(window_id, child.id())));
+
+        lay_out_child.set(false);
+        tab.update(app, |_, ctx| ctx.notify());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        assert!(!app.update(|ctx| ctx.is_view_reachable(window_id, child.id())));
     })
 }
 
@@ -717,6 +824,37 @@ fn test_pending_paint_only_timer_upgrades_when_a_layout_required_repaint_joins_i
             "a pending paint-only timer must be upgraded to run a full layout once a \
              layout-required repaint request is covered by its (earlier) deadline"
         );
+    })
+}
+
+/// A one-shot repaint request later than a pending timer is "covered" by it. The covering
+/// timer only repaints once, at its own deadline, so the later request must be re-armed when it
+/// fires rather than silently dropped (UI-A7).
+#[test]
+fn test_repaint_request_covered_by_an_earlier_timer_is_rearmed_when_that_timer_fires() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let start = instant::Instant::now();
+        let early = start + Duration::from_millis(40);
+        let late = start + Duration::from_millis(400);
+        app.update(|ctx| {
+            ctx.manage_delayed_repaint_timers(window_id, early, false);
+            // Covered by the earlier timer: no second timer is spawned...
+            ctx.manage_delayed_repaint_timers(window_id, late, false);
+            assert_eq!(ctx.pending_repaint_timer_deadlines(window_id), vec![early]);
+        });
+
+        // ...but once the early timer has fired, the late request must still be pending.
+        Timer::after(Duration::from_millis(150)).await;
+        app.update(|ctx| {
+            let pending = ctx.pending_repaint_timer_deadlines(window_id);
+            assert!(
+                pending.iter().any(|deadline| *deadline >= late),
+                "the covered request at +400ms was dropped; pending: {pending:?}"
+            );
+        });
     })
 }
 
@@ -1083,5 +1221,63 @@ fn test_a_new_view_builds_a_frame_once_then_none_until_mounted() {
         assert_eq!(renders.get(), 2, "mounting an already-rendered view needs no render");
         assert_eq!(layouts, 1, "and the frame that mounts it lays it out");
         assert!(presenter.borrow().is_view_mounted(new_child.id()));
+    })
+}
+
+/// Redraw is driven by the raster worker's signal (#1356): registering a wait schedules no
+/// periodic repaint, and a completion redraws the owning window exactly once (paint only, no
+/// layout) however many times the wait was registered.
+#[test]
+fn test_raster_completion_redraws_the_owning_window_once() {
+    use crate::image_cache::RasterWait;
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        let counts = view.update(app, |view, _ctx| view.counts.clone());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let (wait, finish) = RasterWait::test_new();
+        app.update(|ctx| {
+            ctx.manage_pending_rasters(window_id, [wait.clone()].into_iter().collect());
+            ctx.manage_pending_rasters(window_id, [wait].into_iter().collect());
+        });
+        let paint_baseline = counts.paint_calls.get();
+        let layout_baseline = counts.layout_calls.get();
+
+        // Nothing has finished: no frames, however long we wait.
+        Timer::after(Duration::from_millis(100)).await;
+        assert_eq!(counts.paint_calls.get(), paint_baseline);
+
+        finish();
+        for _ in 0..500 {
+            if counts.paint_calls.get() > paint_baseline {
+                break;
+            }
+            Timer::after(Duration::from_millis(2)).await;
+        }
+        // Let any (wrong) second redraw show up.
+        Timer::after(Duration::from_millis(100)).await;
+        assert_eq!(counts.paint_calls.get(), paint_baseline + 1);
+        assert_eq!(counts.layout_calls.get(), layout_baseline);
+    })
+}
+
+/// A raster that finishes after its window closed is dropped without touching the dead window.
+#[test]
+fn test_raster_completion_for_a_closed_window_is_dropped() {
+    use crate::image_cache::RasterWait;
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _view) =
+            app.add_window(WindowStyle::NotStealFocus, |_| CountingRootView::default());
+        app.update(|ctx| ctx.simulate_render_frame(window_id));
+        let (wait, finish) = RasterWait::test_new();
+        app.update(|ctx| {
+            ctx.manage_pending_rasters(window_id, [wait].into_iter().collect());
+            ctx.simulate_window_closed(window_id);
+        });
+        finish();
+        Timer::after(Duration::from_millis(100)).await;
+        app.update(|ctx| assert!(!ctx.is_window_open(window_id)));
     })
 }

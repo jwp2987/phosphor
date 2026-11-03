@@ -11,7 +11,7 @@ use markdown_parser::{
     markdown_parser::{
         CODE_BLOCK_DEFAULT_MARKDOWN_LANG, EMBED_BLOCK_MARKDOWN_LANG, RUNNABLE_BLOCK_MARKDOWN_LANG,
     },
-    parse_markdown,
+    parse_markdown_without_blockquotes,
     weight::CustomWeight,
 };
 pub use markdown_parser::{
@@ -203,7 +203,7 @@ impl<'a> std::ops::AddAssign<&'a Self> for TextSummary {
 }
 
 fn parse_table_cell_markdown_inline(cell: &str) -> FormattedTextInline {
-    let Ok(parsed) = parse_markdown(cell) else {
+    let Ok(parsed) = parse_markdown_without_blockquotes(cell) else {
         return vec![FormattedTextFragment::plain_text(cell)];
     };
 
@@ -233,6 +233,8 @@ fn parse_table_cell_markdown_inline(cell: &str) -> FormattedTextInline {
                 inline.push(FormattedTextFragment::plain_text("---"));
             }
             FormattedTextLine::Embedded(_) => {}
+            // Not produced by `parse_markdown_without_blockquotes`.
+            FormattedTextLine::BlockQuote { .. } => {}
         }
     }
 
@@ -512,15 +514,6 @@ impl BufferBlockItem {
         match self {
             Self::HorizontalRule | Self::Embedded { .. } | Self::Image { .. } => "\n".to_string(),
         }
-    }
-
-    pub fn as_plain_text_sliced(&self, start: usize, end: usize) -> String {
-        let full_text = self.as_plain_text();
-        full_text
-            .chars()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .collect()
     }
 }
 
@@ -1013,13 +1006,6 @@ impl IndentUnit {
         }
     }
 
-    pub fn char_unit(&self) -> String {
-        match self {
-            Self::Tab => "\t".to_string(),
-            Self::Space(_) => " ".to_string(),
-        }
-    }
-
     pub fn text_with_num_tab_stops(&self, count: usize) -> String {
         match self {
             Self::Tab => "\t".repeat(count),
@@ -1143,6 +1129,7 @@ impl TextStylesWithMetadata {
         }
     }
 
+    #[cfg(test)]
     pub fn colliding_style(&self, style: &BufferTextStyle) -> bool {
         match style {
             BufferTextStyle::Italic => self.italic,
@@ -1383,6 +1370,7 @@ impl TextStyles {
         }
     }
 
+    #[cfg(test)]
     pub fn colliding_style(&self, style: &BufferTextStyle) -> bool {
         match style {
             BufferTextStyle::Italic => self.italic,
@@ -1413,10 +1401,6 @@ impl TextStyles {
 
     pub fn is_strikethrough(&self) -> bool {
         self.strikethrough
-    }
-
-    pub fn get_weight(&self) -> Weight {
-        Weight::from_custom_weight(self.weight)
     }
 
     pub fn get_custom_weight(&self) -> Option<CustomWeight> {

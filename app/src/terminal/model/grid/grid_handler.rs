@@ -17,6 +17,7 @@ use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::ops::{Range, RangeInclusive};
+use std::sync::Arc;
 use std::{
     cmp::{min, Ordering},
     mem,
@@ -35,6 +36,8 @@ use warp_terminal::model::grid::CellType;
 use warp_terminal::model::grid::FlatStorage;
 use warp_terminal::model::grid::{HyperlinkId, HyperlinkRegistry};
 pub use warp_terminal::model::TermMode;
+
+pub use image::ImagePlacement;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 use warp_util::path::CleanPathResult;
 use warpui::color::ColorU;
@@ -62,9 +65,13 @@ use crate::terminal::model::{Secret, SecretHandle};
 use super::displayed_output::DisplayedOutput;
 use super::grapheme_cursor::{self, GraphemeCursor};
 use super::row::Row;
+use super::text_snapshot::{GridTextSnapshot, SnapshotCell, SnapshotContent, SnapshotRow};
 use super::{ConvertToAbsolute as _, Cursor, SelectionCursor};
 use filtering::FilterState;
 use string_offset::ByteOffset;
+
+/// How many rows a sliced text snapshot copies between deadline checks.
+pub const SNAPSHOT_DEADLINE_CHECK_ROWS: usize = 64;
 
 /// Used to match equal brackets, when performing a bracket-pair selection.
 const BRACKET_PAIRS: [(char, char); 4] = [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')];
@@ -533,7 +540,7 @@ pub struct GridHandler {
 
     pub(super) secrets: SecretMap,
     /// Given a plaintext, this map returns all secrets with the same plaintext.
-    secrets_in_plaintext: HashMap<String, HashSet<SecretHandle>>,
+    secrets_in_plaintext: HashMap<Arc<str>, HashSet<SecretHandle>>,
     secret_obfuscation_mode: ObfuscateSecrets,
     /// Determines whether all bytes have been processed to detect secrets.
     all_bytes_scanned_for_secrets: bool,
@@ -1338,6 +1345,181 @@ impl GridHandler {
         }
     }
 
+    /// Plain-text twin of [`Self::bounds_to_string`] that copies the needed cells instead of
+    /// building the string, so the string can be built off the UI thread and outside the model
+    /// lock (#1304). `GridTextSnapshot::render` returns the same text `bounds_to_string` would
+    /// (`include_esc_sequences == false`).
+    pub fn bounds_to_text_snapshot(
+        &self,
+        start: Point,
+        end: Point,
+        respect_obfuscated_secrets: RespectObfuscatedSecrets,
+        force_secrets_obfuscated: bool,
+        respect_displayed_output: RespectDisplayedOutput,
+    ) -> GridTextSnapshot {
+        let mut snapshot = GridTextSnapshot::empty();
+        self.bounds_to_text_snapshot_sliced(
+            start,
+            end,
+            respect_obfuscated_secrets,
+            force_secrets_obfuscated,
+            respect_displayed_output,
+            0,
+            None,
+            &mut snapshot,
+        );
+        snapshot
+    }
+
+    /// Row-chunked [`Self::bounds_to_text_snapshot`] (#1377): appends the rows at offsets
+    /// `from..` of the range to `out`, stopping once `deadline` has passed (checked every
+    /// [`SNAPSHOT_DEADLINE_CHECK_ROWS`] rows). Returns `Some(next_offset)` if rows remain, to be
+    /// passed as `from` to the next call (after the caller released the model lock), and `None`
+    /// when the range is complete. Calling it to completion produces exactly the rows of the
+    /// unsliced call. The grid must not change between slices (finished blocks never do).
+    #[allow(clippy::too_many_arguments)]
+    pub fn bounds_to_text_snapshot_sliced(
+        &self,
+        start: Point,
+        end: Point,
+        respect_obfuscated_secrets: RespectObfuscatedSecrets,
+        force_secrets_obfuscated: bool,
+        respect_displayed_output: RespectDisplayedOutput,
+        from: usize,
+        deadline: Option<std::time::Instant>,
+        out: &mut GridTextSnapshot,
+    ) -> Option<usize> {
+        if end.row >= self.total_rows() || self.total_rows() == 0 || self.columns() == 0 {
+            return None;
+        }
+
+        let requested = end.row.saturating_sub(start.row) + 1;
+        let row_indices: Box<dyn Iterator<Item = usize> + '_> =
+            match (respect_displayed_output, self.displayed_output_rows()) {
+                (RespectDisplayedOutput::Yes, Some(rows)) => Box::new(
+                    rows.skip(start.row + from)
+                        .take(requested.saturating_sub(from)),
+                ),
+                _ => Box::new((start.row + from)..(end.row + 1)),
+            };
+
+        let columns = self.columns();
+        if out.tabs.is_empty() {
+            out.tabs = (0..columns)
+                .map(|col| self.ansi_handler_state.tabs[col])
+                .collect();
+            out.columns = columns;
+        }
+        for (i, row) in row_indices.enumerate() {
+            let offset = from + i;
+            let offset_row = start.row + offset;
+            let start_col = if offset_row == start.row {
+                start.col
+            } else {
+                0
+            };
+            let end_col = if offset_row == end.row {
+                end.col
+            } else {
+                columns.saturating_sub(1)
+            };
+            if let Some(snapshot_row) = self.snapshot_line(
+                row,
+                start_col..end_col,
+                offset_row == end.row,
+                respect_obfuscated_secrets,
+                force_secrets_obfuscated,
+            ) {
+                out.rows.push(snapshot_row);
+            }
+            if let Some(deadline) = deadline {
+                if (i + 1) % SNAPSHOT_DEADLINE_CHECK_ROWS == 0
+                    && offset + 1 < requested
+                    && std::time::Instant::now() >= deadline
+                {
+                    return Some(offset + 1);
+                }
+            }
+        }
+        None
+    }
+
+    /// Copies what [`Self::line_to_string`] reads for one row (plain text only).
+    fn snapshot_line(
+        &self,
+        row: usize,
+        mut cols: Range<usize>,
+        include_wrapped_wide: bool,
+        respect_obfuscated_secrets: RespectObfuscatedSecrets,
+        force_secrets_obfuscated: bool,
+    ) -> Option<SnapshotRow> {
+        let grid_row = self.row(row)?;
+        let row_length = min(grid_row.line_length(), cols.end + 1);
+
+        if grid_row
+            .get(cols.start)
+            .is_some_and(|cell| cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+        {
+            cols.start -= 1;
+        }
+
+        let should_show_secrets = force_secrets_obfuscated
+            || (respect_obfuscated_secrets == RespectObfuscatedSecrets::Yes
+                && self.get_secret_obfuscation().is_visually_obfuscated());
+        let check_secrets = should_show_secrets && self.has_secrets();
+
+        let mut cells = Vec::new();
+        let mut obfuscated = Vec::new();
+        for col in IndexRange::from(cols.start..row_length) {
+            let Some(cell) = grid_row.get(col) else {
+                break;
+            };
+            cells.push(SnapshotCell {
+                content: match cell.content_for_display() {
+                    CharOrStr::Char(c) => SnapshotContent::Char(c),
+                    CharOrStr::Str(s) => SnapshotContent::Str(s.into()),
+                },
+                is_tab: cell.c == '\t',
+                flags: cell.flags,
+            });
+            if check_secrets {
+                obfuscated.push(
+                    self.secret_at_original_point(Point::new(row, col))
+                        .is_some_and(|(handle, _)| {
+                            self.secret_by_handle(handle)
+                                .is_some_and(Secret::is_obfuscated)
+                        }),
+                );
+            }
+        }
+
+        let last_flags = row_length
+            .checked_sub(1)
+            .and_then(|last| grid_row.get(last))
+            .map(|cell| cell.flags);
+
+        let prev_first_char = if row_length == self.columns()
+            && row_length >= 2
+            && last_flags.is_some_and(|flags| flags.contains(Flags::LEADING_WIDE_CHAR_SPACER))
+            && include_wrapped_wide
+        {
+            row.checked_sub(1)
+                .and_then(|prev| self.row(prev))
+                .and_then(|prev_row| prev_row.get(0).map(|cell| cell.c))
+        } else {
+            None
+        };
+
+        Some(SnapshotRow {
+            cols,
+            row_length,
+            cells,
+            obfuscated,
+            last_flags,
+            prev_first_char,
+        })
+    }
+
     fn visible_rows_to_string(
         &self,
         start: Point,
@@ -1845,6 +2027,21 @@ impl GridHandler {
         Some(start..=end)
     }
 
+    /// Moves the dirty cells range up by `rows`, to follow its rows when that many rows are
+    /// truncated from the front of the grid. A bound that is within the truncated rows moves to the
+    /// top of the grid.
+    pub(super) fn shift_dirty_cells_range_up(&mut self, rows: usize) {
+        let shift = |point: Point| {
+            if point.row < rows {
+                Point::new(0, 0)
+            } else {
+                Point::new(point.row - rows, point.col)
+            }
+        };
+        let dirty_cells_range = &mut self.ansi_handler_state.dirty_cells_range;
+        *dirty_cells_range = shift(dirty_cells_range.start)..shift(dirty_cells_range.end);
+    }
+
     /// Updates the dirty cells range based on the current cursor position.
     fn update_dirty_cells_range(&mut self) {
         let mut cursor_point = self.cursor_point();
@@ -1905,6 +2102,7 @@ impl GridHandler {
 
     /// Whether a pty edit has changed rows away from the cursor since find last consumed the
     /// dirty range (#822).
+    #[cfg(test)]
     pub fn find_has_unlocalized_change(&self) -> bool {
         self.find_unlocalized_change
     }
@@ -1914,26 +2112,6 @@ impl GridHandler {
         // Initialize the dirty cells range to be the current point of the cursor, since this is
         // where the cursor will be upon the next run of the PTY event loop.
         self.ansi_handler_state.dirty_cells_range = cursor_point_offset..cursor_point_offset;
-    }
-
-    /// Returns `true` if the row has trailing whitespace or empty cells starting from `col`,
-    /// inclusive.
-    #[inline]
-    pub fn row_has_trailing_whitespace(&self, row: usize, col: usize) -> bool {
-        if row >= self.grid.total_rows() {
-            return false;
-        }
-
-        let mut cursor =
-            self.grapheme_cursor_from(Point::new(row, col), grapheme_cursor::Wrap::None);
-        while let Some(item) = cursor.current_item() {
-            if !item.content_char().is_whitespace() {
-                return false;
-            }
-
-            cursor.move_forward()
-        }
-        true
     }
 
     /// Returns the index of the last row in the grid which received any output
@@ -2820,6 +2998,12 @@ impl GridHandler {
                 Some(Cow::Owned(std::rc::Rc::into_inner(row)?))
             }
         }
+    }
+
+    /// Whether `row_idx` soft-wraps onto the next row, for callers (find) that must not cut a
+    /// logical line in two.
+    pub(in crate::terminal) fn row_soft_wraps(&self, row_idx: usize) -> bool {
+        self.row_wraps(row_idx)
     }
 
     pub(in crate::terminal::model) fn row_wraps(&self, row_idx: usize) -> bool {

@@ -2,7 +2,18 @@ use std::ops::Not;
 
 use arboard::{self, Clipboard as WindowsClipboardInner};
 
+use crate::clipboard::{
+    Availability, BackgroundClipboardWriter, ClipboardReader, ClipboardTarget, ReadKind,
+    ReadOutcome,
+};
 use crate::{clipboard::ClipboardContent, Clipboard};
+
+// Standard clipboard format ids (winuser.h), spelled out so no extra windows-crate feature is needed.
+const CF_TEXT: u32 = 1;
+const CF_DIB: u32 = 8;
+const CF_UNICODETEXT: u32 = 13;
+const CF_HDROP: u32 = 15;
+const CF_DIBV5: u32 = 17;
 
 pub struct WindowsClipboard {
     inner: WindowsClipboardInner,
@@ -33,15 +44,122 @@ impl Clipboard for WindowsClipboard {
         }
     }
 
-    fn read(&mut self) -> ClipboardContent {
+    fn availability(&mut self, target: ClipboardTarget) -> Availability {
+        if crate::clipboard::pending_write(target).is_some() {
+            return Availability::HasContent;
+        }
+        // `IsClipboardFormatAvailable` never opens the clipboard, so it cannot block on another
+        // process holding it and decodes nothing (#1306). Covers the formats `read` consumes.
+        use windows::core::w;
+        use windows::Win32::System::DataExchange::{
+            IsClipboardFormatAvailable, RegisterClipboardFormatW,
+        };
+        let available =
+            |format: u32| format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok();
+        let any = [CF_UNICODETEXT, CF_TEXT, CF_HDROP, CF_DIB, CF_DIBV5]
+            .into_iter()
+            .any(available)
+            || available(unsafe { RegisterClipboardFormatW(w!("HTML Format")) })
+            || available(unsafe { RegisterClipboardFormatW(w!("PNG")) });
+        if any {
+            Availability::HasContent
+        } else {
+            Availability::Empty
+        }
+    }
+
+    fn reader(&mut self, kind: ReadKind) -> ClipboardReader {
+        // A fresh handle on the worker: the Windows clipboard is process-global and arboard opens
+        // it per call, so a read blocked on another process holding it stalls only the worker
+        // (#1305). Win32 has no first-answer deadline to apply (`OpenClipboard` gives no event
+        // or timeout); the blocked-reader cap and the consumer's backstop bound the wait.
+        Box::new(move || match WindowsClipboard::new() {
+            Ok(mut clipboard) => ReadOutcome::Content(match kind {
+                ReadKind::TextAndPaths => clipboard.read_text_and_paths(),
+                // No separate primary selection on Windows: it is the clipboard.
+                ReadKind::Full | ReadKind::Primary => clipboard.read(),
+            }),
+            Err(_) => ReadOutcome::Unavailable,
+        })
+    }
+
+    fn background_writer(&mut self) -> Option<BackgroundClipboardWriter> {
+        // One long-lived writer thread with one handle keeps writes ordered; a Win32 owner or
+        // viewer that stalls `OpenClipboard` stalls that thread, not the UI (#1307).
+        static WRITER: std::sync::OnceLock<BackgroundClipboardWriter> = std::sync::OnceLock::new();
+        Some(
+            WRITER
+                .get_or_init(|| {
+                    crate::clipboard::serial_writer(
+                        || WindowsClipboard::new().ok(),
+                        |clipboard, contents, _target| {
+                            let result = if let Some(html) = &contents.html {
+                                clipboard.inner.set().html(html, Some(&contents.plain_text))
+                            } else {
+                                clipboard.inner.set().text(&contents.plain_text)
+                            };
+                            result
+                                .map_err(|err| log::warn!("Unable to set clipboard text: {err:?}"))
+                                .is_ok()
+                        },
+                    )
+                })
+                .clone(),
+        )
+    }
+}
+
+/// The blocking read primitives, run only inside the reader on a worker thread (#1405).
+impl WindowsClipboard {
+    pub(crate) fn read_text_and_paths(&mut self) -> ClipboardContent {
+        if let Some(pending) =
+            crate::clipboard::pending_write(crate::clipboard::ClipboardTarget::Clipboard)
+        {
+            let mut content = (*pending).clone();
+            content.html = None;
+            content.images = Default::default();
+            return content;
+        }
+        // Text (with the HTML-derived fallback `read` applies) and copied paths only: no image
+        // read or decode, and the HTML is dropped as `read_text_and_paths` promises.
+        let mut content = self.read_text_html_and_paths(false);
+        content.html = None;
+        content
+    }
+
+    pub(crate) fn read(&mut self) -> ClipboardContent {
+        // A copy still being written is what the user just copied (#1307).
+        if let Some(pending) =
+            crate::clipboard::pending_write(crate::clipboard::ClipboardTarget::Clipboard)
+        {
+            return (*pending).clone();
+        }
+        let mut content = self.read_text_html_and_paths(true);
+
+        // Try to get image content from clipboard
+        content.images = crate::clipboard_utils::read_images_from_clipboard(
+            &mut self.inner,
+            &content.html,
+            &content.plain_text,
+        );
+
+        content
+    }
+}
+
+impl WindowsClipboard {
+    /// `always_html` false skips the HTML read unless the text is blank (the only case that uses it).
+    fn read_text_html_and_paths(&mut self, always_html: bool) -> ClipboardContent {
         let mut content = ClipboardContent {
             plain_text: self.inner.get().text().unwrap_or_default(),
             ..Default::default()
         };
 
         // Try to get HTML content
-        if let Ok(html) = self.inner.get().html() {
-            content.html = html.is_empty().not().then_some(html);
+        if always_html || content.plain_text.trim().is_empty() {
+            if let Ok(html) = self.inner.get().html() {
+                content.html = html.is_empty().not().then_some(html);
+            }
         }
 
         // Some environments provide HTML but do not provide a plaintext representation.
@@ -61,13 +179,6 @@ impl Clipboard for WindowsClipboard {
                 .map(|p| p.to_string_lossy().to_string())
                 .collect()
         });
-
-        // Try to get image content from clipboard
-        content.images = crate::clipboard_utils::read_images_from_clipboard(
-            &mut self.inner,
-            &content.html,
-            &content.plain_text,
-        );
 
         content
     }

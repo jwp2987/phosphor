@@ -1,7 +1,7 @@
 //! Unit tests for the Linux `middle_click_paste_enabled` gating fixed for #708.
 //!
 //! These exercise `SelectionSettings::middle_click_paste_gate` directly rather than
-//! `read_for_middle_click_paste`, because the latter needs a live `AppContext` (clipboard
+//! `request_middle_click_read`, because the latter needs a live `AppContext` (clipboard
 //! access) to run at all, while the defect and its fix are entirely in the gating decision —
 //! whether the setting's value is consulted before any clipboard is touched. See that
 //! function's doc comment for the AppContext-dependent clipboard-selection half, which this
@@ -53,7 +53,7 @@ fn disabling_middle_click_paste_gates_it_off_on_linux() {
 
 /// Enabling the setting does not, by itself, guarantee a paste -- `linux_selection_clipboard`
 /// is a second, independent gate applied later by
-/// `maybe_read_from_linux_selection_clipboard`. This test pins down only the first gate: it
+/// `middle_click_read_kind`. This test pins down only the first gate: it
 /// must say "go ahead" regardless of the second setting's value, so the two remain
 /// independently toggleable rather than one silently overriding the other.
 #[test]
@@ -61,4 +61,20 @@ fn disabling_middle_click_paste_gates_it_off_on_linux() {
 fn enabling_middle_click_paste_permits_it_regardless_of_primary_clipboard_setting() {
     assert!(settings_with(true, true).middle_click_paste_gate());
     assert!(settings_with(true, false).middle_click_paste_gate());
+}
+
+/// #1151 F2: selection mouse-up skips building the selected string unless a copy target is
+/// enabled. Before the gate existed the string was always built; this pins the predicate.
+#[test]
+fn copy_on_select_would_write_tracks_both_copy_targets() {
+    let with = |copy_on_select: bool, linux: bool| SelectionSettings {
+        copy_on_select: CopyOnSelect::new(Some(copy_on_select)),
+        linux_selection_clipboard: LinuxSelectionClipboard::new(Some(linux)),
+        middle_click_paste_enabled: MiddleClickPasteEnabled::new(None),
+        right_click_behavior: RightClickBehaviorSetting::new(None),
+    };
+    assert!(!with(false, false).copy_on_select_would_write());
+    assert!(with(true, false).copy_on_select_would_write());
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    assert!(with(false, true).copy_on_select_would_write());
 }

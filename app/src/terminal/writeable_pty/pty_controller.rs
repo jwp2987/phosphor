@@ -8,8 +8,10 @@ use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::AIAgentPtyWriteMode;
 use crate::terminal::input::CommandExecutionSource;
+use crate::terminal::model::block::BlockId;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::early_output::TypeaheadMode;
+use crate::terminal::model::key_facts::{ModelCommand, ModelInbox};
 use crate::terminal::model::lifecycle::StartCommandOutcome;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::model::session::BootstrapSessionType;
@@ -17,13 +19,17 @@ use crate::terminal::model::session::{
     ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
 use crate::terminal::model::tmux::commands::TmuxCommand;
-use crate::terminal::model::typeahead_handoff::{ActiveDecision, HeldAgentCommand};
+use crate::terminal::model::typeahead_handoff::{
+    ActiveDecision, HeldAgentCommand, PaneHandoff, ShellPromptFact,
+};
 use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::bootstrap_file::{permanent_bootstrap_file, TempBootstrapFile};
+use crate::terminal::writeable_pty::command_pipe;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::long_command_file;
+use crate::terminal::writeable_pty::posix_long_command;
 use crate::terminal::{
     bootstrap,
     line_editor_status::{LineEditorStatus, LineEditorStatusEvent},
@@ -38,6 +44,45 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 use super::Message;
+use super::write_queue::{AbortScope, Pacing};
+
+/// Gap between the chunks of a bootstrap written into a subshell behind a user-space pty relay
+/// (`sudo -i`, `su`, `script`, `ksu`, ...). #960: such a relay deadlocks when ~120KB is flooded
+/// at it in one burst, and how fast it consumes its input is not observable from here (the echo
+/// it produces is not byte-exact), so this is a time gap by necessity, not a way to decide
+/// whether a chunk is written.
+#[cfg(feature = "local_fs")]
+const RELAY_BOOTSTRAP_PACING: Duration = Duration::from_millis(25);
+/// Gap between the chunks of a bootstrap written into a container subshell (`docker`/`podman
+/// exec -it`): a double-pty proxy that drops data on large writes or bursts (#960 family).
+/// Same reason as [`RELAY_BOOTSTRAP_PACING`]: the proxy's consumption is unobservable.
+#[cfg(feature = "local_fs")]
+const CONTAINER_BOOTSTRAP_PACING: Duration = Duration::from_millis(50);
+
+/// Gap between the 1000-byte chunks of the ssh-warpify line-clear payload while the tty is
+/// canonical (cooked, no newline in the line). Reason: P0 (#1384) measured that a canonical tty
+/// accepts a write and then SILENTLY drops everything past its input queue (macOS: 1024 B; Linux
+/// N_TTY: 4095 B), with no `EAGAIN`, no `POLLOUT` change and no readable counter in advance, so
+/// there is no signal to wait on and the gap stays. A non-canonical tty (a bash/zsh line editor at
+/// its prompt) gives a real `EAGAIN` instead, and then no gap is used (see
+/// [`Pacing::GapIfCanonical`]).
+const MAC_TTY_INPUT_QUEUE_PACING: Duration = Duration::from_millis(10);
+/// Chunk size of the line-clear payload: under the macOS tty input queue (1024 B).
+const MAC_TTY_INPUT_QUEUE_CHUNK: usize = 1000;
+
+/// Whether the writer-owned job queue (#1384) is used: paced bootstrap writes, and the paste and
+/// agent write classes (P4).
+/// `PHOSPHOR_PTY_WRITE_QUEUE=0` turns it off and the timer-chained writes of before are used.
+pub(crate) fn write_queue_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let off = std::env::var("PHOSPHOR_PTY_WRITE_QUEUE").is_ok_and(|v| v.trim() == "0");
+        if off {
+            log::info!("PHOSPHOR_PTY_WRITE_QUEUE=0: bootstrap writes are paced by UI timers; paste and agent writes are not classed");
+        }
+        !off
+    })
+}
 
 /// Byte sequence to emulate the user pressing ENTER, used to execute a command in the shell.
 const COMMAND_ENTER: &[u8] = &[escape_sequences::C0::CR, escape_sequences::C0::LF];
@@ -87,6 +132,13 @@ const PTY_WRITE_GATE_STALL_LOG_THRESHOLD: Duration = Duration::from_secs(3);
 /// the shell (a program reading stdin, an empty or continued line) and the counts are reset.
 const TYPEAHEAD_HANDOFF_STALE_COUNT_RESET: Duration = Duration::from_millis(250);
 
+/// #1353 phase 6 (PTY-3): with the prompt-sequence path the stale line counts are reset by events
+/// -- the sampled shell state at decision time (a program owns the terminal), the finished
+/// command having been interactive (see `TypeaheadHandoff::note_interactive_command_finished`),
+/// and the prompt's Precmd -- so this is only the one logged give-up for a continued line (PS2) or
+/// a shell that reports nothing, which no event can tell from "still working through the queue".
+const TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP: Duration = Duration::from_secs(5);
+
 /// Represents a single call to write bytes to the PTY asynchronously.
 enum PtyWrite {
     Command {
@@ -101,6 +153,12 @@ enum PtyWrite {
         before_write_fn: Option<Box<dyn FnOnce() -> StartCommandOutcome + Send + 'static>>,
     },
     Bytes {
+        /// The bytes to be written.
+        bytes: Cow<'static, [u8]>,
+    },
+    /// A paste-sized user write (#1255): written like `Bytes`, but a ^C cancels the part the
+    /// event loop has not yet written to the pty.
+    PasteBytes {
         /// The bytes to be written.
         bytes: Cow<'static, [u8]>,
     },
@@ -130,9 +188,13 @@ impl NativeShellCompletionsState {
     }
 }
 
+/// The most input held while tmux control mode waits for its primary pane (#1442): the ssh hold's
+/// 64 KiB. Control mode is ready within a round trip; this is only reached when it never is.
+pub(crate) const MAX_TMUX_PENDING_BYTES: usize = 64 * 1024;
+
 enum TmuxControlMode {
     /// Tmux control mode is started, but we don't have the primary pane yet.
-    Pending { buffer: Vec<u8> },
+    Pending { buffer: Vec<u8>, overflowed: bool },
     /// Tmux control mode is active.
     Active { primary_pane: u32 },
 }
@@ -160,9 +222,30 @@ pub struct PtyController<T: EventLoopSender> {
     /// rather than being typed into PSReadLine (#1106). Set when the shell is initialised.
     #[cfg(not(target_family = "wasm"))]
     runs_long_commands_from_file: bool,
-    /// The temp file of the last such command; replaced by the next one, removed on drop.
+    /// The pipe serving the last such command to its launcher line (#1592); it must outlive the
+    /// Preexec (which runs before the launcher reads it), so it is not `command_pipe`. Replaced by
+    /// the next served command, closed on drop. In memory only: no command is written to disk.
     #[cfg(not(target_family = "wasm"))]
-    long_command_file: Option<tempfile::TempPath>,
+    long_command_pipe: Option<command_pipe::CommandPipe>,
+    /// The sessions this controller's shells minted pipe names for; forgotten when it drops.
+    #[cfg(not(target_family = "wasm"))]
+    pipe_sessions: command_pipe::SessionPipeNames,
+    /// The command being served on the session's named pipe for the PowerShell insert chord
+    /// (#1581); in memory only, closed when dropped. Set exactly while `file_insert_pending` is.
+    command_pipe: Option<command_pipe::CommandPipe>,
+    /// The command whose text went to the shell on the pipe plus the insert chord (#1581), until
+    /// its Preexec arrives (the shell ran it) or `CommandFileFailed` does (the shell inserted
+    /// nothing and the command is typed instead). At most one: a second command is typed while it
+    /// is set.
+    file_insert_pending: Option<String>,
+    /// The id of the active block (the prompt's) when the chord was written; a Precmd for that
+    /// same block is not evidence the chord was lost (B2). Set and cleared with
+    /// `file_insert_pending`.
+    file_insert_block: Option<BlockId>,
+    #[cfg(test)]
+    fast_insert_off_for_test: bool,
+    /// One-shot: the retype after `CommandFileFailed` must be typed, not sent as the chord again.
+    force_typed_command: bool,
     tmux_control_mode: Option<TmuxControlMode>,
     in_flight_native_completions_state: Option<NativeShellCompletionsState>,
     /// Incremented every time a native-completions handshake starts or advances a phase, so a
@@ -193,6 +276,12 @@ pub struct PtyController<T: EventLoopSender> {
     /// typeahead instead of overtaking it into the shell's current line.
     handoff_command_pending: bool,
     handoff_bytes_after_command: Vec<u8>,
+    /// The pane's typeahead hand-off, reached without the model's lock (#1403): a user key's
+    /// write must not wait for the pty reader, which holds that lock while it parses.
+    handoff: PaneHandoff,
+    /// Where a key's write leaves its bookkeeping for the model (the typed-ahead record of its
+    /// echo), applied before the model parses the next bytes.
+    model_inbox: ModelInbox,
     /// Typeahead hand-off: the last request decision had to wait. Queued writes stay queued while
     /// the shell's line may hold user bytes, which a queued command's kill prefix would destroy.
     handoff_request_waiting: bool,
@@ -202,6 +291,24 @@ pub struct PtyController<T: EventLoopSender> {
     /// Typeahead hand-off: a command from the editor was written or queued while one was held,
     /// so `is_user_command_executing` belongs to it and dropping the held one must leave it.
     handoff_command_written_since_hold: bool,
+    /// The chunks of a paced bootstrap write (container / relay subshell) that are not yet
+    /// written, oldest first. Chunk k+1 is only written by the pacing step chained behind chunk
+    /// k, so there is exactly one pending step and nothing to race.
+    paced_write_queue: VecDeque<Vec<u8>>,
+    /// Bumped to cancel the paced write in flight (a ^C, the pty shutting down, the shell
+    /// exiting, a newer bootstrap): the step already scheduled sees the new value and writes
+    /// nothing, so no chunk (nor the submit CR it ends in) is typed into whatever owns the pty
+    /// afterwards.
+    paced_write_generation: u64,
+    /// Whether paced bootstrap writes go to the event loop as one `SetupChunked` job (#1384)
+    /// instead of timer-chained `Input` messages. Decided once, from the sender (only the local
+    /// unix event loop has the queue) and `PHOSPHOR_PTY_WRITE_QUEUE`.
+    write_queue: bool,
+    /// When the last lone ^C was sent to the event loop, until the line editor next announces it
+    /// is ready (input-order log only: the ^C -> next prompt leg, #1401).
+    ctrl_c_sent_at: Option<std::time::Instant>,
+    /// A `SetupChunked` job was sent and no abort since, so a cancel has something to abort.
+    setup_job_sent: bool,
     /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
     /// running under test, so the sent `Message::Shutdown` is otherwise unobservable).
     #[cfg(test)]
@@ -220,6 +327,7 @@ impl<T: EventLoopSender> PtyController<T> {
     ) -> Self {
         ctx.subscribe_to_model(&model_event_dispatcher, |me, event, ctx| match event {
             ModelEvent::Handler(AnsiHandlerEvent::UserCommandFinished) => {
+                me.log_since_ctrl_c("command_finished_after_ctrl_c");
                 me.is_user_command_executing = false;
             }
             ModelEvent::Handler(AnsiHandlerEvent::InitShell {
@@ -232,13 +340,117 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             ModelEvent::Handler(AnsiHandlerEvent::SetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(true);
+                if let Some(sent) = me.ctrl_c_sent_at.take() {
+                    warpui::input_order::log_hop("line_editor_ready_after_ctrl_c", || {
+                        format!(
+                            "via=bracketed_paste since_ctrl_c_ms={:.1}",
+                            sent.elapsed().as_secs_f64() * 1e3
+                        )
+                    });
+                }
+                // #1349: the line editor's ready signal releases the keys held since the
+                // prompt's precmd (ConPTY), in typed order, ahead of any request. This is the
+                // only thing that releases them besides a command start, a ^C or the give-up cap.
+                // #1353 phase 5: with the hold in the view's input queue the keys are not here; the
+                // view releases that gate (writing them, accounted, in typed order) and asks for the
+                // decision again. The hand-off decides no request while the hold is live.
+                let mut released_queued_hold = false;
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    let queued_hold = {
+                        let mut model = me.terminal_model.lock();
+                        let mut handoff = model.typeahead_handoff_mut();
+                        handoff.release_queued_prompt_hold_on_signal()
+                    };
+                    if let Some(hold_id) = queued_hold {
+                        released_queued_hold = true;
+                        ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
+                    }
+                }
+                // #1208: readline and zle enable bracketed paste as they start reading a line, so
+                // the shell is at its prompt now, not 50 ms after precmd. Only while the hand-off
+                // can vouch that no typeahead line is queued ahead of a write: readline would
+                // run that line first and the write would land in the program it starts.
+                // With the keys still in the view's queue their Enters are not counted yet, so the
+                // line editor is not announced as reading until the view has released them (it
+                // asks for the decision again then).
+                if FeatureFlag::TypeaheadHandoff.is_enabled()
+                    && !released_queued_hold
+                    && !me
+                        .terminal_model
+                        .lock()
+                        .typeahead_handoff()
+                        .has_unanswered_lines()
+                {
+                    me.line_editor_status
+                        .update(ctx, |status, ctx| status.note_shell_reading_line(ctx));
+                } else {
+                    // The signal cannot end the activation wait itself (#1349): fall back to the
+                    // default delay now that the keys held for it are released.
+                    me.line_editor_status
+                        .update(ctx, |status, ctx| status.expedite_pending_activation(ctx));
+                }
             }
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(false);
             }
+            ModelEvent::LineEditorReading { .. } => {
+                // #1401: PowerShell never enables bracketed paste, so its "ready after ^C" leg
+                // ends here (the last hop of the chain; the clock stops).
+                if let Some(sent) = me.ctrl_c_sent_at.take() {
+                    warpui::input_order::log_hop("line_editor_ready_after_ctrl_c", || {
+                        format!(
+                            "via=line_editor_reading since_ctrl_c_ms={:.1}",
+                            sent.elapsed().as_secs_f64() * 1e3
+                        )
+                    });
+                }
+                me.on_line_editor_reading_marker(ctx);
+            }
+            ModelEvent::ContinuationPrompt { .. } => {
+                me.on_continuation_prompt_marker(ctx);
+            }
+            // #1614: the pty reader applied the stream a young hold waited on, and the hand-off
+            // decided again: the hold either ended as typeahead (the view writes its keys) or now
+            // waits for the request (decided here, if the line editor is active).
+            ModelEvent::YoungHoldReevaluated => {
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    me.announce_young_hold_end(ctx);
+                    me.retry_typeahead_handoff_request(ctx);
+                }
+            }
+            // The shell ran what the chord inserted (or anything else): nothing to retype (#1581).
+            ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
+                me.clear_file_insert();
+                // #1614: a Preexec parsed after a young hold opened ended it as typeahead (on the
+                // model thread); the view writes its keys now, on this event, not at the next key
+                // or the cap.
+                me.announce_young_hold_end(ctx);
+            }
+            ModelEvent::CommandFileFailed { session_id } => {
+                let active = me
+                    .model_event_dispatcher
+                    .as_ref(ctx)
+                    .active_session_id()
+                    .map(|id| id.as_u64());
+                if active != Some(session_id.as_u64()) {
+                    log::warn!(
+                        "CommandFileFailed for session {} while the active session is {:?}; retyping anyway",
+                        session_id.as_u64(),
+                        active
+                    );
+                }
+                me.on_command_file_failed(ctx);
+            }
+            // The shell is back at a prompt and never ran the inserted command (no Preexec came):
+            // nothing else will report it, so type it once (#1581).
+            ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                me.log_since_ctrl_c("precmd_after_ctrl_c");
+                me.on_precmd_with_chord_outstanding(ctx);
+            }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
                     buffer: Default::default(),
+                    overflowed: false,
                 });
             }
             ModelEvent::Handler(AnsiHandlerEvent::RunTmuxCommand(command)) => {
@@ -247,8 +459,12 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::Handler(AnsiHandlerEvent::EndTmuxControlMode) => {
                 me.tmux_control_mode = None;
             }
-            ModelEvent::Exit { .. } if me.handoff_held_command_pending => {
-                me.drop_held_handoff_command();
+            ModelEvent::Exit { .. } => {
+                // The shell is gone: the rest of a paced bootstrap has nowhere to go.
+                me.cancel_paced_writes(ctx);
+                if me.handoff_held_command_pending {
+                    me.drop_held_handoff_command();
+                }
             }
             ModelEvent::HonorPS1OutOfSync => {
                 // We force re-sync the PS1 state of Zap settings with the shell's environment variable, $WARP_HONOR_PS1, via
@@ -264,7 +480,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 let previous_control_mode_state = me.tmux_control_mode.replace(TmuxControlMode::Active {
                         primary_pane: *primary_pane,
                     });
-                if let Some(TmuxControlMode::Pending { buffer }) = previous_control_mode_state {
+                if let Some(TmuxControlMode::Pending { buffer, .. }) = previous_control_mode_state {
                     me.send_write_to_event_loop(
                         PtyWrite::Bytes {
                             bytes: Cow::Owned(buffer),
@@ -405,6 +621,11 @@ impl<T: EventLoopSender> PtyController<T> {
             |_, _| (),
         );
 
+        let write_queue = event_loop_tx.supports_write_queue() && write_queue_enabled();
+        let (handoff, model_inbox) = {
+            let model = terminal_model.lock();
+            (model.pane_handoff(), model.model_inbox())
+        };
         Self {
             event_loop_tx,
             terminal_model,
@@ -419,7 +640,14 @@ impl<T: EventLoopSender> PtyController<T> {
             #[cfg(not(target_family = "wasm"))]
             runs_long_commands_from_file: false,
             #[cfg(not(target_family = "wasm"))]
-            long_command_file: None,
+            long_command_pipe: None,
+            pipe_sessions: Default::default(),
+            command_pipe: None,
+            file_insert_pending: None,
+            file_insert_block: None,
+            force_typed_command: false,
+            #[cfg(test)]
+            fast_insert_off_for_test: false,
             tmux_control_mode: None,
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
@@ -429,9 +657,16 @@ impl<T: EventLoopSender> PtyController<T> {
             has_logged_current_pty_write_stall: false,
             handoff_command_pending: false,
             handoff_bytes_after_command: Vec::new(),
+            handoff,
+            model_inbox,
             handoff_request_waiting: false,
             handoff_held_command_pending: false,
             handoff_command_written_since_hold: false,
+            paced_write_queue: VecDeque::new(),
+            paced_write_generation: 0,
+            write_queue,
+            ctrl_c_sent_at: None,
+            setup_job_sent: false,
             #[cfg(test)]
             shutdown_requested: false,
         }
@@ -442,6 +677,9 @@ impl<T: EventLoopSender> PtyController<T> {
     /// set when this re-runs a decision that had to wait, rather than answering a fresh
     /// activation of the shell's line editor.
     fn decide_typeahead_handoff_request(&mut self, is_retry: bool, ctx: &mut ModelContext<Self>) {
+        // #1349: keys held since the prompt's precmd are released by the line editor's ready
+        // signal (see the `SetBracketedPaste` handler), never by this activation: the fallback
+        // timer behind it is not a signal.
         // The editor's command is still queued behind this activation: write it (and the keys
         // typed after it) first. The decision belongs to the prompt that follows it.
         if self.handoff_command_pending {
@@ -455,23 +693,30 @@ impl<T: EventLoopSender> PtyController<T> {
             .active_session_id()
             .and_then(|id| self.sessions.as_ref(ctx).get(id))
             .and_then(|session| session.shell().input_reporting_sequence());
-        let decision = {
-            let mut model = self.terminal_model.lock();
-            let at_prompt = model.is_at_prompt_for_typeahead_request();
-            model
-                .typeahead_handoff_mut()
-                .on_line_editor_active(at_prompt, input_reporting_seq.is_some())
-        };
+        // The one model read is the exact "at a prompt" fact (the decision depends on it, so it is
+        // not a published copy); the hand-off is mutated through its own handle, after the model's
+        // lock is released, so the decision never holds the model while it takes the hand-off.
+        let at_prompt = self
+            .terminal_model
+            .lock()
+            .is_at_prompt_for_typeahead_request();
+        let decision = self
+            .handoff
+            .write()
+            .on_line_editor_active(at_prompt, input_reporting_seq.is_some());
 
+        warpui::input_order::log_hop("handoff_decision", || {
+            format!("decision={decision:?} retry={is_retry}")
+        });
+        // #1614: a decision that found no request possible for a live young hold ended it as
+        // typeahead; the view writes its keys.
+        self.announce_young_hold_end(ctx);
         match decision {
             ActiveDecision::Legacy if !is_retry => {
                 self.handoff_request_waiting = false;
                 if let Some(bytes) = input_reporting_seq {
                     // #1089: its report covers user bytes the hand-off did not adopt.
-                    self.terminal_model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .on_legacy_request_written();
+                    self.handoff.write().on_legacy_request_written();
                     self.pending_writes.push_front(PtyWrite::Bytes {
                         bytes: Cow::Owned(bytes.to_vec()),
                     });
@@ -479,6 +724,28 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.execute_next_queued_write(ctx);
             }
             ActiveDecision::Legacy | ActiveDecision::Drain => {
+                // #1104: a report came back while user bytes written behind its request are
+                // still in the shell's line. The shell reports its line as of the request and
+                // clears it, so those bytes would stay there; one more request, behind them,
+                // collects them. Queued commands go out behind it, not ahead of the bytes.
+                let drain_request = if is_retry && decision == ActiveDecision::Legacy {
+                    input_reporting_seq
+                        .filter(|_| self.handoff.write().drain_request_due(at_prompt, true))
+                } else {
+                    None
+                };
+                if let Some(bytes) = drain_request {
+                    self.pending_writes.push_front(PtyWrite::Bytes {
+                        bytes: Cow::Owned(bytes.to_vec()),
+                    });
+                } else if self.handoff_held_command_pending
+                    && self.handoff.read().holds_queued_writes()
+                {
+                    // A command held behind untracked user bytes stays held until a request
+                    // behind them is written; its kill prefix would destroy them unreported.
+                    self.handoff_request_waiting = true;
+                    return;
+                }
                 self.handoff_request_waiting = false;
                 self.execute_next_queued_write(ctx);
             }
@@ -513,6 +780,50 @@ impl<T: EventLoopSender> PtyController<T> {
         }
     }
 
+    /// The shell said its line editor is reading a line (`LineEditorReading`, #1390): an explicit
+    /// ready signal, which releases the keys held since the prompt's precmd (ConPTY, #1349) exactly
+    /// as the bracketed-paste enable does. It works where that one never comes (readline with
+    /// `enable-bracketed-paste off`), so the give-up cap of the hold is not reached there. The
+    /// hand-off's own account of the marker (idempotent per prompt, in stream order) was applied
+    /// on the model thread; releasing a hold twice, for the marker and for the enable, releases
+    /// it once.
+    fn on_line_editor_reading_marker(&mut self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        let queued_hold = self
+            .terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .release_queued_prompt_hold_on_signal();
+        if let Some(hold_id) = queued_hold {
+            ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
+        }
+    }
+
+    /// The shell showed a continuation prompt (`ContinuationPrompt`, #1391): the hand-off
+    /// re-baselined its line counts on this event (model thread, in stream order); a request
+    /// decision that was waiting on counts that disagreed is decided again now, not after the
+    /// give-up of the stale counts.
+    fn on_continuation_prompt_marker(&mut self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        // #1573: the Enter of the ConPTY enter window ended a line the shell continues (PS2): its
+        // line editor reads again, so the keys held since that Enter are released now, in typed
+        // order, by this event (before, only the 1.5 s give-up released them, and it switched the
+        // prompt hold off for the session).
+        let held_for_continuation = self
+            .terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .release_enter_window_for_continuation();
+        if let Some(hold_id) = held_for_continuation {
+            ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
+        }
+        self.retry_typeahead_handoff_request(ctx);
+    }
+
     /// Re-runs a typeahead hand-off request decision that had to wait, if the shell's line
     /// editor is still active.
     pub fn retry_typeahead_handoff_request(&mut self, ctx: &mut ModelContext<Self>) {
@@ -526,20 +837,75 @@ impl<T: EventLoopSender> PtyController<T> {
         activity_generation: u64,
         ctx: &mut ModelContext<Self>,
     ) {
+        // #1353 phase 6: ask the pty now, at the moment the counts disagree with the prompt, who
+        // owns the terminal. A program in the foreground (or reading a password) consumed the
+        // lines the counts consider queued, so they are answered; no waiting for a quiet period.
+        let (seq_mode, program_consumed_them) = {
+            let mut model = self.terminal_model.lock();
+            let handoff = model.typeahead_handoff_mut();
+            let seq_mode = handoff.prompt_seq_mode();
+            let program = seq_mode
+                && handoff.counts_diverged()
+                && handoff.sample_prompt_fact() == ShellPromptFact::NotAtPrompt;
+            (seq_mode, program)
+        };
+        if program_consumed_them {
+            let did_reset = self
+                .terminal_model
+                .lock()
+                .typeahead_handoff_mut()
+                .reset_stale_counts(activity_generation);
+            warpui::input_order::log_hop("handoff_stale_counts_reset", || {
+                format!("by=terminal_owner reset={did_reset}")
+            });
+            if did_reset {
+                // The counts agree now, so this decision cannot arm another reset.
+                self.retry_typeahead_handoff_request(ctx);
+                return;
+            }
+        }
+        let wait = if seq_mode {
+            TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP
+        } else {
+            TYPEAHEAD_HANDOFF_STALE_COUNT_RESET
+        };
         ctx.spawn(
             async move {
-                Timer::after(TYPEAHEAD_HANDOFF_STALE_COUNT_RESET).await;
+                Timer::after(wait).await;
             },
             move |me, _, ctx| {
-                let did_reset = me
-                    .terminal_model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .reset_stale_counts(activity_generation);
+                let (did_reset, diverged, young_hold_live) = {
+                    let mut model = me.terminal_model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    let diverged = handoff.counts_diverged();
+                    let young_hold_live = handoff.young_hold_queued();
+                    (
+                        handoff.reset_stale_counts(activity_generation),
+                        diverged,
+                        young_hold_live,
+                    )
+                };
+                if seq_mode && did_reset && diverged {
+                    // The give-up of the wait fired: nothing said the queued lines were answered
+                    // or consumed. Counts and the wait only, never bytes.
+                    log::warn!(
+                        "typeahead hand-off: no prompt, command start or terminal-owner change \
+                         within {} s for lines the counts consider queued; treating them as consumed",
+                        TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP.as_secs()
+                    );
+                }
                 // Decide again whether or not a request was waiting: after a `DrainAndWait` the
                 // reset is what hands input back to the editor.
-                if did_reset {
-                    me.retry_typeahead_handoff_request(ctx);
+                // (In the prompt-sequence path other events retry a wait that is not about the counts.)
+                if did_reset && (diverged || !seq_mode) {
+                    if young_hold_live {
+                        // #1614: not now (a timer must not end the hold as typeahead: the
+                        // decision's no-binding and committed-delivery branches would); decide on
+                        // the next flushed write, or when the hold's own end asks for it.
+                        me.handoff_request_waiting = true;
+                    } else {
+                        me.retry_typeahead_handoff_request(ctx);
+                    }
                 }
             },
         );
@@ -553,10 +919,22 @@ impl<T: EventLoopSender> PtyController<T> {
         bytes: Cow<'static, [u8]>,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.write_handoff_user_bytes_inner(bytes, true, ctx);
+    }
+
+    /// As [`Self::write_handoff_user_bytes`]. `may_retry` is whether the write may re-run a
+    /// waiting request decision; the decision that is releasing held keys passes `false`, as it
+    /// is about to decide itself.
+    fn write_handoff_user_bytes_inner(
+        &mut self,
+        bytes: Cow<'static, [u8]>,
+        may_retry: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
         // An Enter voids any quiet-period reset armed before it, so decide again (which arms a
         // fresh one) rather than leave nobody to.
         let has_enter = bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
-        {
+        if crate::terminal::model_lock_trace::key_path_uses_model_lock() {
             // #1033: the tty echoes these keys wherever the output is when they arrive; record
             // them so that echo can be told from output. A full-screen program reads them raw.
             let mut model = self.terminal_model.lock();
@@ -565,18 +943,33 @@ impl<T: EventLoopSender> PtyController<T> {
             } else {
                 model.block_list_mut().record_typed_ahead_bytes(&bytes);
             }
+        } else {
+            // The same record, left in the model's inbox instead of written under its lock (the
+            // pty reader holds that lock while it parses, and this write waited for it, #1403).
+            // The model applies it before it parses the next bytes, and the echo of these bytes
+            // cannot be parsed before they are written, which happens below.
+            self.model_inbox
+                .post(ModelCommand::TypedAhead(bytes.to_vec()));
         }
-        if self.handoff_command_pending {
+        let deferred_behind_command = self.handoff_command_pending;
+        let byte_count = bytes.len();
+        if deferred_behind_command {
             self.handoff_bytes_after_command.extend_from_slice(&bytes);
+        } else if byte_count >= PASTE_WRITE_MIN_BYTES {
+            self.write_paste_bytes(bytes, ctx);
         } else {
             self.write_bytes(bytes, ctx);
         }
-        let writes_in_flight = self
-            .terminal_model
-            .lock()
-            .typeahead_handoff_mut()
-            .on_user_write_flushed();
-        if writes_in_flight == 0 && (self.handoff_request_waiting || has_enter) {
+        let writes_in_flight = self.handoff.write().on_user_write_flushed();
+        // #1162: where each typed-ahead write went and what was still in flight behind it.
+        warpui::input_order::log_hop("handoff_user_write", || {
+            format!(
+                "bytes={byte_count} enter={has_enter} deferred_behind_command={deferred_behind_command} \
+                 in_flight={writes_in_flight} request_waiting={}",
+                self.handoff_request_waiting
+            )
+        });
+        if may_retry && writes_in_flight == 0 && (self.handoff_request_waiting || has_enter) {
             self.retry_typeahead_handoff_request(ctx);
         }
     }
@@ -868,6 +1261,7 @@ impl<T: EventLoopSender> PtyController<T> {
                     .lock()
                     .typeahead_handoff_mut()
                     .on_uncounted_command_written();
+                self.announce_young_hold_end(ctx);
             }
             if !is_command || !did_write {
                 self.execute_next_queued_write(ctx);
@@ -958,6 +1352,10 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             self.runs_long_commands_from_file = shell_type == ShellType::PowerShell
                 && pending_session_info.session_type == BootstrapSessionType::Local;
+            if shell_type == ShellType::PowerShell {
+                self.pipe_sessions
+                    .track(pending_session_info.session_id.as_u64());
+            }
         }
 
         #[cfg(feature = "local_fs")]
@@ -983,6 +1381,132 @@ impl<T: EventLoopSender> PtyController<T> {
     #[cfg(feature = "local_fs")]
     fn write_terminating_bootstrap_bytes(&mut self, ctx: &mut ModelContext<PtyController<T>>) {
         self.write_bytes(&[escape_sequences::C0::CR][..], ctx);
+    }
+
+    /// Writes `chunks` to the pty in order, the first now and each next one `gap` after the
+    /// previous, as ONE cancellable sequence (a newer call, [`Self::cancel_paced_writes`]
+    /// replaces / drops what is left).
+    ///
+    /// The gap is flow control for a user-space pty relay (`docker exec -it`, `sudo -i`, `script`)
+    /// that deadlocks when flooded (#960): how fast the relay consumes the input is not
+    /// observable from here (the echo it produces is not byte-exact and not guaranteed), so this
+    /// is the one place the bootstrap stays paced by time. It is never what decides *whether* a
+    /// chunk is written: a ^C, the pty shutting down, the shell exiting or a newer bootstrap
+    /// bumps `paced_write_generation`, and nothing more is written (previously every chunk was a
+    /// free-standing timer that typed itself into the live shell regardless).
+    fn start_paced_writes(
+        &mut self,
+        chunks: Vec<Vec<u8>>,
+        pacing: Pacing,
+        ctx: &mut ModelContext<PtyController<T>>,
+    ) {
+        if self.write_queue && self.tmux_control_mode.is_none() {
+            // One job in the event loop's own FIFO (#1384): the loop honours the gap as its poll
+            // deadline, nothing a user types can land inside the script, and an abort replaces
+            // the generation below.
+            self.cancel_paced_writes(ctx);
+            self.setup_job_sent = true;
+            self.send_message_to_event_loop(Message::SetupChunked { chunks, pacing }, ctx);
+            return;
+        }
+        // The timer path cannot read the tty mode where the writer does, so it keeps the gap.
+        let gap = match pacing {
+            Pacing::Gap { dur, .. } | Pacing::GapIfCanonical { dur, .. } => dur,
+            Pacing::None => Duration::ZERO,
+        };
+        self.cancel_paced_writes(ctx);
+        let generation = self.paced_write_generation;
+        self.paced_write_queue = chunks.into();
+        self.write_next_paced_chunk(generation, gap, ctx);
+    }
+
+    /// One step of [`Self::start_paced_writes`]: write the next chunk and chain the one after it.
+    fn write_next_paced_chunk(
+        &mut self,
+        generation: u64,
+        gap: Duration,
+        ctx: &mut ModelContext<PtyController<T>>,
+    ) {
+        if generation != self.paced_write_generation {
+            return;
+        }
+        let Some(chunk) = self.paced_write_queue.pop_front() else {
+            return;
+        };
+        self.write_bytes(chunk, ctx);
+        // `write_bytes` of a lone ^C cancels, but a chunk is never one; re-check anyway.
+        if generation != self.paced_write_generation || self.paced_write_queue.is_empty() {
+            return;
+        }
+        ctx.spawn(Timer::after(gap), move |me, _, ctx| {
+            me.write_next_paced_chunk(generation, gap, ctx)
+        });
+    }
+
+    /// Writes the ssh-warpify one-line payload (#1384 P3): ctrl-k ctrl-u to clear the line, then
+    /// `payload`, as ONE job in 1000-byte chunks. Nothing a user types lands inside it, a ^C / ^D
+    /// or [`Self::cancel_paced_writes`] cuts it at a chunk boundary.
+    ///
+    /// Pacing: with the writer-owned queue the gap is used only while the tty is canonical (cooked
+    /// tty drops input past its queue size silently, so there is no signal to wait on); a
+    /// non-canonical tty (a line editor at its prompt) pushes back with `EAGAIN` / `POLLOUT` and
+    /// loses nothing, so the chunks go back to back. The kill switch
+    /// (`PHOSPHOR_PTY_WRITE_QUEUE=0`) and the remote / ConPTY pty keep the timer chain with the
+    /// gap always on, as before.
+    pub fn write_line_clear_setup(&mut self, payload: Vec<u8>, ctx: &mut ModelContext<Self>) {
+        // Ctrl-u + ctrl-k clears everything before the cursor, then everything after the cursor.
+        // Ctrl-c is dangerous because it could cancel an ongoing command. We add an arbitrary
+        // space first so that the ctrl-u always clears at least one character, avoiding the
+        // audible bell.
+        let mut to_write = vec![
+            b' ',
+            escape_sequences::C0::VT,  // ctrl-k to clear forward
+            escape_sequences::C0::NAK, // ctrl-u to clear backward
+        ];
+        to_write.extend_from_slice(&payload);
+        let chunks: Vec<Vec<u8>> = to_write
+            .chunks(MAC_TTY_INPUT_QUEUE_CHUNK)
+            .map(<[u8]>::to_vec)
+            .collect();
+        self.start_paced_writes(
+            chunks,
+            Pacing::GapIfCanonical {
+                dur: MAC_TTY_INPUT_QUEUE_PACING,
+                why: "canonical tty silently drops input past its queue (macOS 1024 B) with no \
+                      EAGAIN or POLLOUT (#1384 P0)",
+            },
+            ctx,
+        );
+    }
+
+    /// Drops what is left of a paced bootstrap write (see [`Self::start_paced_writes`]).
+    pub fn cancel_paced_writes(&mut self, ctx: &mut ModelContext<Self>) {
+        self.paced_write_generation = self.paced_write_generation.wrapping_add(1);
+        self.paced_write_queue.clear();
+        if std::mem::take(&mut self.setup_job_sent) {
+            self.send_message_to_event_loop(Message::Abort(AbortScope::Setup), ctx);
+        }
+    }
+
+    /// The agent's command was cancelled: drops the agent input the writer has not yet written
+    /// (#1384 P4), and nothing else -- typed keys, pastes, commands and replies stay queued.
+    /// A no-op without the write queue (the agent input travels as ordinary input there).
+    pub fn cancel_agent_writes(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.write_queue {
+            self.send_message_to_event_loop(Message::Abort(AbortScope::Agent), ctx);
+        }
+    }
+
+    /// Test-only: use the writer-owned job queue for paced writes, as the local unix pty does.
+    #[cfg(test)]
+    pub fn force_write_queue(&mut self, enabled: bool) {
+        self.write_queue = enabled;
+    }
+
+    /// Test-only: how many chunks of a paced write are still unwritten.
+    #[cfg(test)]
+    pub fn paced_writes_remaining(&self) -> usize {
+        self.paced_write_queue.len()
     }
 
     #[cfg(feature = "local_fs")]
@@ -1056,7 +1580,6 @@ impl<T: EventLoopSender> PtyController<T> {
             // across a chunk boundary. They're only a handful of bytes, so this doesn't change the
             // chunking's purpose of keeping each write small.
             const CONTAINER_BOOTSTRAP_CHUNK_SIZE: usize = 4096;
-            const CONTAINER_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(50);
             let bytes: Vec<u8> = bootstrap.into_owned();
             let mut chunks: Vec<Vec<u8>> = bytes
                 .chunks(CONTAINER_BOOTSTRAP_CHUNK_SIZE)
@@ -1075,12 +1598,14 @@ impl<T: EventLoopSender> PtyController<T> {
                 last.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
                 last.push(escape_sequences::C0::CR);
             }
-            for (index, chunk) in chunks.into_iter().enumerate() {
-                ctx.spawn(
-                    Timer::after(CONTAINER_BOOTSTRAP_CHUNK_DELAY * index as u32),
-                    move |me, _, ctx| me.write_bytes(chunk, ctx),
-                );
-            }
+            self.start_paced_writes(
+                chunks,
+                Pacing::Gap {
+                    dur: CONTAINER_BOOTSTRAP_PACING,
+                    why: "docker/podman exec -it double-pty proxy drops bursts; its consumption is unobservable (#960)",
+                },
+                ctx,
+            );
         } else if pending_session_info.subshell_info.is_some() {
             // #960: a subshell started through a user-space pty relay (`sudo -i`, `sudo su -`,
             // `script`, ...) deadlocks when ~120KB of script is flooded at it in one burst. The
@@ -1092,21 +1617,47 @@ impl<T: EventLoopSender> PtyController<T> {
             // bytes paced in 2KB writes finish in about a second. Pacing keeps the relay's pending
             // write below what the inner tty can queue. No bracketed paste here: the shell is a
             // line-editing bash/zsh that already receives this script raw.
-            const SUBSHELL_BOOTSTRAP_CHUNK_DELAY: Duration = Duration::from_millis(25);
-            for (index, chunk) in bootstrap::subshell_bootstrap_chunks(&bootstrap)
-                .into_iter()
-                .enumerate()
-            {
-                if index == 0 {
-                    self.write_bytes(chunk, ctx);
-                    continue;
+            //
+            // #1226: for a `sudo`/`su`/`ksu`/`doas` subshell of a local bash or zsh the body of the
+            // script goes in as a counted raw read instead (see
+            // `bootstrap::counted_subshell_bootstrap_chunks`): about 26 paced chunks, 650 ms of
+            // pure pacing, become the few chunks before the body plus one write (746 -> 222 ms
+            // from `InitShell` to `Bootstrapped` through a blocking pty relay).
+            let chunks = match bootstrap::local_counted_bootstrap(
+                &bootstrap,
+                shell_type,
+                pending_session_info,
+            ) {
+                Some((counted, prefix_len)) => {
+                    bootstrap::counted_subshell_bootstrap_chunks(&counted, prefix_len)
                 }
-                ctx.spawn(
-                    Timer::after(SUBSHELL_BOOTSTRAP_CHUNK_DELAY * index as u32),
-                    move |me, _, ctx| me.write_bytes(chunk, ctx),
-                );
-            }
+                None => bootstrap::subshell_bootstrap_chunks(&bootstrap),
+            };
+            self.start_paced_writes(
+                chunks,
+                Pacing::Gap {
+                    dur: RELAY_BOOTSTRAP_PACING,
+                    why: "user-space pty relay deadlocks on a flood; its consumption is unobservable (#960)",
+                },
+                ctx,
+            );
         } else {
+            // #1172: a bash over ssh that can take a counted raw read gets the body of the
+            // bootstrap that way, not typed through its line editor.
+            let bootstrap =
+                bootstrap::bootstrap_for_session(bootstrap, shell_type, pending_session_info);
+            // #1226: the same for a local bash or zsh tab (the bootstrap is read by one `head -c`
+            // instead of typed through the line editor: 174 -> 128 ms for bash, 92 -> 59 ms for
+            // zsh, InitShell to Bootstrapped). `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` types it as
+            // before.
+            let bootstrap = match bootstrap::local_counted_bootstrap(
+                &bootstrap,
+                shell_type,
+                pending_session_info,
+            ) {
+                Some((counted, _)) => Cow::Owned(counted),
+                None => bootstrap,
+            };
             self.write_bytes(bootstrap, ctx);
         }
     }
@@ -1191,17 +1742,30 @@ impl<T: EventLoopSender> PtyController<T> {
             self.hold_command_behind_unreported_user_line(command, shell_type, source, None, ctx);
             return StartCommandOutcome::Accepted;
         }
+        warpui::input_order::log_hop("write_command", String::new);
         let is_editor_command = matches!(source, CommandExecutionSource::User);
         let mut engages_typeahead_handoff = false;
-        let mut handoff_held_bytes: Vec<u8> = Vec::new();
         {
             let mut model = self.terminal_model.lock();
 
             // Explicitly start the block now that the command is executed.
             let outcome = start_command_execution_for_source(&mut model, source);
             if !outcome.is_accepted() {
+                if is_editor_command {
+                    // #1353 phase 6 (INP-10): the editor's command was refused, so it is never
+                    // written, no block starts and the hand-off will not engage for this Enter:
+                    // the keys waiting behind it must not wait for either (the negative event).
+                    // A command that IS written but is not the hand-off's (flag off, a shell that
+                    // cannot report) is followed by its block starting, the positive event.
+                    drop(model);
+                    ctx.emit(PtyControllerEvent::TypeaheadHandoffNotEngaged);
+                }
                 return outcome;
             }
+
+            // The key path reads the active block's state from the published facts (#1403); a
+            // command that starts here changes it.
+            model.publish_key_facts();
 
             // Ensure that the `TerminalModel` doesn't interpret any of the PTY output from the
             // following commands as in-band command output. If the in-band command output is not
@@ -1215,11 +1779,11 @@ impl<T: EventLoopSender> PtyController<T> {
                     == TypeaheadMode::ShellReported;
                 engages_typeahead_handoff = is_editor_command && can_report;
                 if engages_typeahead_handoff {
-                    handoff_held_bytes = model.typeahead_handoff_mut().on_command_written();
-                    // #1033: keys typed behind the command's Enter follow it to the pty.
-                    model
-                        .block_list_mut()
-                        .record_typed_ahead_bytes(&handoff_held_bytes);
+                    // Keys typed behind the command's Enter (a held young Enter, a deferred
+                    // Enter's gate) follow it to the pty: the hand-off records the end and the
+                    // view writes them through `write_handoff_user_bytes`, which records their
+                    // echo (#1033) and keeps them behind a command that is still parked.
+                    model.typeahead_handoff_mut().on_command_written();
                     model
                         .block_list_mut()
                         .early_output_mut()
@@ -1252,28 +1816,42 @@ impl<T: EventLoopSender> PtyController<T> {
             // Cancel the async writer task and clear the async write queue.
             // Check if line editor is active
             self.send_write_to_event_loop(write, ctx);
-            if self.handoff_command_pending || !handoff_held_bytes.is_empty() {
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
+            if self.handoff_command_pending {
                 self.flush_handoff_bytes_after_command(ctx);
             }
         } else if self.handoff_held_command_pending {
             self.pending_writes.push_front(write);
             if engages_typeahead_handoff {
                 self.handoff_command_pending = true;
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
             }
         } else {
             self.pending_writes.push_back(write);
             if engages_typeahead_handoff {
                 self.handoff_command_pending = true;
-                self.handoff_bytes_after_command.extend(handoff_held_bytes);
             }
         }
         if engages_typeahead_handoff {
             self.handoff_request_waiting = false;
             ctx.emit(PtyControllerEvent::TypeaheadHandoffChanged);
         }
+        self.announce_young_hold_end(ctx);
         StartCommandOutcome::Accepted
+    }
+
+    /// Tells the view that the hand-off ended a young hold whose keys are in its input queue
+    /// (#1353 phase 5b), when it did. A no-op without the hand-off or without such a hold.
+    fn announce_young_hold_end(&self, ctx: &mut ModelContext<Self>) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        let pending = self
+            .terminal_model
+            .lock()
+            .typeahead_handoff()
+            .young_hold_end_pending();
+        if pending {
+            ctx.emit(PtyControllerEvent::YoungHoldEnded);
+        }
     }
 
     /// Drops every queued (not yet written) command, so a command parked until the line editor
@@ -1400,6 +1978,7 @@ impl<T: EventLoopSender> PtyController<T> {
             before_write_fn: Some(Box::new(move || {
                 let mut model = terminal_model.lock();
                 let outcome = start_command_execution_for_source(&mut model, source);
+                model.publish_key_facts();
                 if outcome.is_accepted() {
                     if let Some(annotate_block) = annotate_block {
                         annotate_block(&mut model);
@@ -1469,7 +2048,11 @@ impl<T: EventLoopSender> PtyController<T> {
         // get written to the active block.
         // TODO: reconsider this behavior since the output was not the result of a command, and given the function name
         // is start_command_execution and no command was executed.
-        self.terminal_model.lock().start_command_execution();
+        {
+            let mut model = self.terminal_model.lock();
+            model.start_command_execution();
+            model.publish_key_facts();
+        }
     }
 
     /// Resizes the PTY's size (i.e. its notion of the number of columns and rows in the screen) via
@@ -1519,6 +2102,34 @@ impl<T: EventLoopSender> PtyController<T> {
         );
     }
 
+    /// Writes a paste-sized block of user bytes. The event loop streams it to the pty as the pty
+    /// (and whatever is on the other end, such as ssh) accepts it, never dropping or splitting a
+    /// byte, and a ^C cancels what is still unwritten (#1255).
+    pub fn write_paste_bytes<B: Into<Cow<'static, [u8]>>>(
+        &mut self,
+        bytes: B,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.send_write_to_event_loop(
+            PtyWrite::PasteBytes {
+                bytes: bytes.into(),
+            },
+            ctx,
+        );
+    }
+
+    /// ConPTY prompt hold (#1349): the session's shell signals its line editor being ready, so
+    /// the activation fallback waits for that signal for the (long) give-up cap instead of
+    /// firing 50 ms after the precmd and releasing held keys ahead of it.
+    pub fn set_conpty_prompt_hold_signals(
+        &mut self,
+        wait: Option<std::time::Duration>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.line_editor_status
+            .update(ctx, |status, _| status.set_signal_wait(wait));
+    }
+
     pub fn set_foreground_sigint(&mut self, f: std::sync::Arc<dyn Fn() -> bool>) {
         self.foreground_sigint = Some(f);
     }
@@ -1526,7 +2137,9 @@ impl<T: EventLoopSender> PtyController<T> {
     /// Interrupts the pty's foreground program with SIGINT rather than a ^C byte, which a raw
     /// tty would hand to the program as data (#1001). Falls back to the byte.
     pub fn sigint_foreground_or_write_etx(&mut self, ctx: &mut ModelContext<Self>) {
-        // Whatever of a big paste is still waiting to be written must not outlive the interrupt.
+        // Whatever of a big paste is still waiting to be written must not outlive the interrupt,
+        // nor the rest of a paced bootstrap.
+        self.cancel_paced_writes(ctx);
         self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         if self.foreground_sigint.as_ref().is_some_and(|f| f()) {
             return;
@@ -1546,29 +2159,178 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             self.shutdown_requested = true;
         }
+        self.cancel_paced_writes(ctx);
         self.send_message_to_event_loop(Message::Shutdown, ctx);
     }
 
-    /// What to type into the line editor for `command`: the command itself, or, for a command too
-    /// long for PSReadLine to render (#1106), a short line that dot-sources it from a temp file.
-    fn command_to_type(&mut self, command: String, shell_type: ShellType) -> String {
+    /// What to send to the shell for `command`: the line to type into the line editor, or, for a
+    /// PowerShell command that can be inserted in one operation, the insert chord (#1581). A
+    /// command too long for PSReadLine to render (#1106) becomes a short launcher line that reads
+    /// it from the pipe (#1592). Nothing is ever written to disk; if the pipe is unavailable (or
+    /// the kill switch is off) the command is typed.
+    fn command_to_type(
+        &mut self,
+        command: String,
+        shell_type: ShellType,
+        is_user_command: bool,
+        session_id: Option<u64>,
+    ) -> TypedCommand {
+        let force_typed = std::mem::take(&mut self.force_typed_command);
         #[cfg(not(target_family = "wasm"))]
         if shell_type == ShellType::PowerShell
             && self.runs_long_commands_from_file
-            && long_command_file::needs_file(&command)
+            && is_user_command
+            && !force_typed
+            && self.file_insert_pending.is_none()
+            && self.fast_insert_on()
+            && long_command_file::can_insert_via_pipe(&command)
         {
-            if let Some((file, launcher)) = long_command_file::write_command_file(&command) {
-                self.long_command_file = Some(file);
+            // The pipe exists before the chord is written, so the shell cannot connect early.
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command, false) {
+                self.command_pipe = Some(pipe);
+                warpui::input_order::log_hop("pwsh_command_via_pipe", || {
+                    format!("bytes={}", command.len())
+                });
+                self.file_insert_pending = Some(command);
+                self.file_insert_block = Some(
+                    self.terminal_model
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .id()
+                        .clone(),
+                );
+                return TypedCommand::FileChord;
+            }
+        }
+        // A command too long for PSReadLine to render (#1106) is served on the pipe and a short
+        // launcher line is typed (#1592). With the kill switch off, or if the pipe cannot be made,
+        // it is typed as is: never written to disk.
+        #[cfg(not(target_family = "wasm"))]
+        if shell_type == ShellType::PowerShell
+            && self.runs_long_commands_from_file
+            && is_user_command
+            && !force_typed
+            && self.fast_insert_on()
+            && long_command_file::needs_launcher(&command)
+        {
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command, true) {
+                self.long_command_pipe = Some(pipe);
+                let launcher = long_command_file::LAUNCHER_LINE.to_owned();
                 // The shell echoes and reports the launcher; the block header, tab title and
                 // suggestion context must show the command the user submitted (#1117).
                 self.terminal_model
                     .lock()
                     .set_command_display_override(launcher.clone(), command);
-                return launcher;
+                return TypedCommand::Line(launcher);
             }
         }
+        let _ = (is_user_command, session_id, force_typed);
         let _ = shell_type;
-        command
+        // A bash with no bracketed paste is typed the command key by key, which stalls for a
+        // huge one (#1129); the shell decodes it from one short line instead. With bracketed paste
+        // the same holds from a larger size, where readline's multi-line paste turns quadratic
+        // (#1255).
+        if shell_type == ShellType::Bash
+            && posix_long_command::needs_wrapper_for(&command, self.is_bracketed_paste_enabled)
+        {
+            let line = posix_long_command::wrapper_line(&command);
+            self.terminal_model
+                .lock()
+                .set_command_display_override(line.clone(), command);
+            return TypedCommand::Line(line);
+        }
+        TypedCommand::Line(command)
+    }
+
+    /// The kill switch (`PHOSPHOR_PWSH_FAST_INSERT=0`); tests flip it per controller instead of
+    /// through the process environment.
+    #[cfg(not(target_family = "wasm"))]
+    fn fast_insert_on(&self) -> bool {
+        #[cfg(test)]
+        if self.fast_insert_off_for_test {
+            return false;
+        }
+        long_command_file::fast_insert_enabled()
+    }
+
+    /// Closes the previous pipe of the same slot (the name is a first-instance create, so it has
+    /// to be free) and serves `command` on the session's pipe. The insert chord and the long
+    /// command launcher have a slot each (the launcher's name has a `-long` suffix), so a long
+    /// command can follow an outstanding chord without being typed raw. `None`: type it instead.
+    #[cfg(not(target_family = "wasm"))]
+    fn serve_on_pipe(
+        &mut self,
+        session_id: Option<u64>,
+        command: &str,
+        long: bool,
+    ) -> Option<command_pipe::CommandPipe> {
+        let mut name = session_id.and_then(command_pipe::lookup_pipe_name)?;
+        if long {
+            name.push_str("-long");
+            self.long_command_pipe = None;
+        } else {
+            self.command_pipe = None;
+        }
+        command_pipe::CommandPipe::serve(&name, command)
+    }
+
+    /// The insert chord found no command file and inserted nothing (#1581): type the command the
+    /// old way, once. The shell's buffer is untouched, and the retype starts with the kill-buffer
+    /// chord like every typed command. Nothing is retyped when no chord is outstanding (a Preexec
+    /// already answered it, or the report is stale).
+    fn on_command_file_failed(&mut self, ctx: &mut ModelContext<Self>) {
+        let Some(command) = self.file_insert_pending.take() else {
+            warpui::input_order::log_hop("pwsh_command_file_failed_ignored", String::new);
+            return;
+        };
+        self.file_insert_block = None;
+        warpui::input_order::log_hop("pwsh_command_file_failed_retype", || {
+            format!("bytes={}", command.len())
+        });
+        self.command_pipe = None;
+        self.force_typed_command = true;
+        self.send_write_to_event_loop(
+            PtyWrite::Command {
+                command,
+                shell_type: ShellType::PowerShell,
+                in_band_command_id: None,
+                before_write_fn: None,
+            },
+            ctx,
+        );
+        self.force_typed_command = false;
+    }
+
+    /// A Precmd while a chord is outstanding means no Preexec came (it clears the chord): retype.
+    fn on_precmd_with_chord_outstanding(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.file_insert_pending.is_none() {
+            return;
+        }
+        let active = self
+            .terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .id()
+            .clone();
+        if self.file_insert_block.as_ref() == Some(&active) {
+            // The Precmd of the prompt the chord was written at (queued before the write, or a
+            // generator command's): not evidence the chord was lost. Retyping here could run the
+            // command twice.
+            warpui::input_order::log_hop("pwsh_precmd_same_prompt_chord_kept", String::new);
+            return;
+        }
+        warpui::input_order::log_hop("pwsh_precmd_without_preexec", String::new);
+        self.on_command_file_failed(ctx);
+    }
+
+    /// Forgets an outstanding insert chord (its command ran, or its write was refused before it
+    /// reached the pty) and closes its pipe.
+    fn clear_file_insert(&mut self) {
+        self.file_insert_pending = None;
+        self.file_insert_block = None;
+        self.command_pipe = None;
     }
 
     /// Sends a message to the event loop thread requesting a PTY write for the given `bytes`.
@@ -1584,6 +2346,7 @@ impl<T: EventLoopSender> PtyController<T> {
             PtyWrite::Command { shell_type, .. } => Some(*shell_type),
             PtyWrite::AgentInput { .. }
             | PtyWrite::Bytes { .. }
+            | PtyWrite::PasteBytes { .. }
             | PtyWrite::TmuxCommand(_)
             | PtyWrite::RunNativeShellCompletions(_) => None,
         };
@@ -1603,32 +2366,57 @@ impl<T: EventLoopSender> PtyController<T> {
             &write,
             PtyWrite::Bytes { bytes } if bytes.as_ref() == [escape_sequences::C0::ETX]
         );
+        if is_interrupt {
+            self.cancel_paced_writes(ctx);
+        }
+
+        // A paste is streamed by the event loop a tty-buffer at a time (the remote program or ssh
+        // sets the pace; nothing is dropped or split). It is tagged cancellable so a ^C stops
+        // what is still unwritten instead of queueing behind all of it (#1255).
+        let is_paste = matches!(&write, PtyWrite::PasteBytes { .. });
+        let is_agent_input = matches!(&write, PtyWrite::AgentInput { .. });
 
         let (bytes_to_write, is_for_command, on_write_fn, raw_tmux_command) = match write {
             PtyWrite::Command {
                 command,
                 shell_type,
+                in_band_command_id,
                 before_write_fn: on_write_fn,
-                ..
             } => {
-                let command = self.command_to_type(command, shell_type);
-                (
-                    Cow::Owned(bytes_to_execute_command(
-                        command.as_str(),
+                let session_id = self
+                    .model_event_dispatcher
+                    .as_ref(ctx)
+                    .active_session_id()
+                    .map(|id| id.as_u64());
+                let bytes = match self.command_to_type(
+                    command,
+                    shell_type,
+                    in_band_command_id.is_none(),
+                    session_id,
+                ) {
+                    TypedCommand::Line(line) => Cow::Owned(bytes_to_execute_command(
+                        line.as_str(),
                         shell_type,
                         self.is_bracketed_paste_enabled,
                     )),
-                    true,
-                    on_write_fn,
-                    false,
-                )
+                    // Exactly the two chord bytes: no kill-buffer prefix (the handler reverts
+                    // the line), no command text, no Enter.
+                    #[cfg(not(target_family = "wasm"))]
+                    TypedCommand::FileChord => Cow::Borrowed(long_command_file::INSERT_CHORD),
+                    // Never produced on wasm (`command_to_type` has no pipe there).
+                    #[cfg(target_family = "wasm")]
+                    TypedCommand::FileChord => Cow::Borrowed(&b"\x1b3"[..]),
+                };
+                (bytes, true, on_write_fn, false)
             }
             PtyWrite::AgentInput { bytes, mode } => {
                 let decorated_bytes =
                     mode.decorate_bytes(bytes.into_owned(), self.is_bracketed_paste_enabled);
                 (decorated_bytes.into(), false, None, false)
             }
-            PtyWrite::Bytes { bytes } => (bytes, false, None, false),
+            PtyWrite::Bytes { bytes } | PtyWrite::PasteBytes { bytes } => {
+                (bytes, false, None, false)
+            }
             PtyWrite::TmuxCommand(command) => {
                 let command = command.get_command_string();
                 debug_assert!(
@@ -1661,7 +2449,21 @@ impl<T: EventLoopSender> PtyController<T> {
         let bytes_to_write = match &mut self.tmux_control_mode {
             None => bytes_to_write,
             Some(_) if raw_tmux_command => bytes_to_write,
-            Some(TmuxControlMode::Pending { buffer }) => {
+            Some(TmuxControlMode::Pending { buffer, overflowed }) => {
+                // #1442: held until the primary pane is known, which may never come; bounded
+                // like the ssh hold. Past the cap the new bytes are dropped (never a prefix of a
+                // line: whole writes only), logged once, and the user is told.
+                if buffer.len() + bytes_to_write.len() > MAX_TMUX_PENDING_BYTES {
+                    if !*overflowed {
+                        *overflowed = true;
+                        log::warn!(
+                            "tmux control mode: pending input buffer full ({} bytes), dropping further input until the session is ready",
+                            buffer.len()
+                        );
+                        ctx.emit(PtyControllerEvent::InputBufferOverflow);
+                    }
+                    return false;
+                }
                 buffer.extend_from_slice(&bytes_to_write);
                 return false;
             }
@@ -1675,6 +2477,7 @@ impl<T: EventLoopSender> PtyController<T> {
 
         if let Some(on_write_fn) = on_write_fn {
             if !on_write_fn().is_accepted() {
+                self.clear_file_insert();
                 return false;
             }
         }
@@ -1703,17 +2506,35 @@ impl<T: EventLoopSender> PtyController<T> {
         }
 
         if is_interrupt {
+            warpui::input_order::log_hop("ctrl_c_to_event_loop", String::new);
+            self.ctrl_c_sent_at = Some(std::time::Instant::now());
             self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         }
-        self.send_message_to_event_loop(
-            if is_user_command {
-                Message::CommandInput(bytes_to_write)
-            } else {
-                Message::Input(bytes_to_write)
-            },
-            ctx,
-        );
+        // On a pty with the write queue, a paste and an agent write are their own job classes
+        // (#1384 P4), so the writer can abort them by scope; without it (ConPTY, the kill
+        // switch) they travel as before.
+        let message = if self.write_queue && is_paste {
+            Message::PasteInput(bytes_to_write)
+        } else if self.write_queue && is_agent_input {
+            Message::AgentInput(bytes_to_write)
+        } else if is_user_command || is_paste {
+            Message::CommandInput(bytes_to_write)
+        } else {
+            Message::Input(bytes_to_write)
+        };
+        self.send_message_to_event_loop(message, ctx);
         true
+    }
+
+    /// Input-order log only (#1401): one hop of the ^C -> next prompt chain, with the time since
+    /// the last lone ^C was handed to the event loop. Does not stop the clock (the chain ends at
+    /// the line editor's ready signal) and decides nothing.
+    fn log_since_ctrl_c(&self, what: &str) {
+        if let Some(sent) = self.ctrl_c_sent_at {
+            warpui::input_order::log_hop(what, || {
+                format!("since_ctrl_c_ms={:.1}", sent.elapsed().as_secs_f64() * 1e3)
+            });
+        }
     }
 
     /// Sends a message to the event loop. If the send fails with `SendError::Disconnected`, emits
@@ -1779,6 +2600,20 @@ pub enum PtyControllerEvent {
     /// The typeahead hand-off changed who owns the user's keystrokes, so the surface should
     /// re-evaluate focus (and arm a report deadline after a request).
     TypeaheadHandoffChanged,
+    /// The editor's command was refused, so it is never written and the hand-off will NOT engage
+    /// for it (#1353 phase 6): the negative event keys waiting for the route to settle are
+    /// released on.
+    TypeaheadHandoffNotEngaged,
+    /// The shell's line editor signalled it is ready while the view's input queue held keys for
+    /// the prompt (#1353 phase 5, ConPTY): the view releases that gate (`hold_id` names it).
+    PromptHoldReleased { hold_id: u64 },
+    /// A command was written (or counted) while the view's input queue held the keys of a young
+    /// hold, and the hand-off ended that hold (#1353 phase 5b): the view takes or drops the
+    /// gate's entries.
+    YoungHoldEnded,
+    /// Input was dropped because a buffer on the way to the pty was full (#1442): the surface
+    /// tells the user.
+    InputBufferOverflow,
 }
 
 impl<T: EventLoopSender> Entity for PtyController<T> {
@@ -1821,6 +2656,15 @@ fn start_command_execution_for_source(
     }
 }
 
+/// What `command_to_type` decided to send for a command.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+enum TypedCommand {
+    /// Type this line (with the shell's kill-buffer chord and Enter around it).
+    Line(String),
+    /// The command is in the session's command file: send only the insert chord (#1581).
+    FileChord,
+}
+
 /// Splits `shell_type`'s kill-buffer chord off the front of `bytes` (the output of
 /// `bytes_to_execute_command`, which prepends it), returning `Some((kill_buffer_bytes, rest))`, or
 /// `None` when there is nothing to split.
@@ -1856,6 +2700,10 @@ pub(crate) fn command_is_sent_as_bracketed_paste(
 ) -> bool {
     is_bracketed_paste_enabled && !command.is_empty()
 }
+
+/// User writes at least this large are pastes, not keystrokes: they go out as
+/// [`PtyController::write_paste_bytes`], so a ^C cancels the part not yet written (#1255).
+pub(crate) const PASTE_WRITE_MIN_BYTES: usize = 32 * 1024;
 
 /// Returns the shell-dependent array of bytes to be written to the PTY to execute `command`.
 fn bytes_to_execute_command(
@@ -1933,6 +2781,12 @@ pub enum EventLoopSendError {
 
 pub trait EventLoopSender: 'static {
     fn send(&self, message: Message) -> Result<(), EventLoopSendError>;
+
+    /// Whether the event loop behind this sender runs the typed write queue (`SetupChunked` and
+    /// `Abort`, #1384). Only the local unix pty loop does.
+    fn supports_write_queue(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -1941,6 +2795,9 @@ mod command_bytes_tests;
 #[cfg(test)]
 #[path = "pty_controller_lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "pty_controller_pwsh_insert_tests.rs"]
+mod pwsh_insert_tests;
 #[cfg(test)]
 #[path = "pty_controller_tests.rs"]
 mod tests;

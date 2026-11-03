@@ -20,15 +20,14 @@
 //!   * 25s timeout
 //!   * SSE response → `result.content[0].text`
 
-use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use reqwest::StatusCode;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
 use reqwest::redirect::Policy;
-use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -184,10 +183,8 @@ fn validate_url_not_internal(url_str: &str) -> Result<()> {
 ///
 /// Only available for non-WASM targets: reqwest's `dns` module and
 /// `ClientBuilder::dns_resolver` aren't exposed to WebAssembly.
-#[cfg(not(target_arch = "wasm32"))]
 struct SsrfSafeResolver;
 
-#[cfg(not(target_arch = "wasm32"))]
 impl reqwest::dns::Resolve for SsrfSafeResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         let host = name.as_str().to_owned();
@@ -249,7 +246,6 @@ pub fn build_ssrf_safe_client() -> Result<reqwest::Client> {
         .pool_idle_timeout(Duration::from_secs(30));
     // Only non-WASM targets get the SSRF-safe DNS resolver; WebAssembly doesn't expose
     // reqwest's DNS module.
-    #[cfg(not(target_arch = "wasm32"))]
     let builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
     builder.build().context("build SSRF-safe reqwest client")
 }
@@ -290,6 +286,17 @@ pub async fn run_webfetch(client: &reqwest::Client, args: FetchArgs) -> Result<F
     };
 
     response_to_fetch_output(resp, &args.url, &format).await
+}
+
+/// `Err` when adding `incoming` bytes to a body already `have` bytes long passes the size limit.
+fn check_body_growth(have: usize, incoming: usize) -> std::result::Result<(), String> {
+    if have.saturating_add(incoming) > MAX_RESPONSE_SIZE {
+        Err(format!(
+            "Response too large (more than {MAX_RESPONSE_SIZE} bytes limit)"
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Shared Response → FetchOutput conversion logic.
@@ -333,13 +340,15 @@ async fn response_to_fetch_output(
         }
     }
 
-    let bytes = resp.bytes().await.context("read response body")?;
-    if bytes.len() > MAX_RESPONSE_SIZE {
-        bail!(
-            "Response too large ({} bytes > {} bytes limit)",
-            bytes.len(),
-            MAX_RESPONSE_SIZE
-        );
+    // Read chunk by chunk so a chunked (no Content-Length) body is refused as soon as it passes
+    // the limit instead of being buffered in full first (#1278).
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.context("read response body")? {
+        if let Err(message) = check_body_growth(bytes.len(), chunk.len()) {
+            bail!(message);
+        }
+        bytes.extend_from_slice(&chunk);
     }
 
     // Image → base64 attachment
@@ -654,7 +663,11 @@ pub async fn run_websearch(
 ) -> Result<SearchOutput> {
     let query = args.query.clone();
     let exa_args = args.into_exa_args();
-    let body = exa::build_request_body(exa::SEARCH_TOOL_NAME, &exa_args);
+    let mut body = exa::build_request_body(exa::SEARCH_TOOL_NAME, &exa_args);
+    // #1469: the model-written query can carry user content.
+    if crate::ai::agent_providers::outbound_redaction::is_enabled() {
+        crate::ai::agent_providers::outbound_redaction::redact_json_strings(&mut body);
+    }
 
     let url = endpoint_override
         .map(|s| s.to_owned())
@@ -690,7 +703,18 @@ pub async fn run_websearch(
 /// won't trigger auto-resume and the model will get stuck waiting for a result. See
 /// `chat_stream::dispatch_byop_web_tool` and the controller's `needs_byop_local_resume` check.
 pub fn fetch_output_to_json(out: &FetchOutput) -> Value {
-    let mut v = serde_json::to_value(out).unwrap_or_else(|_| json!({"status": "serialize_error"}));
+    // A fetched image is carried as a `data:` base64 URL (up to 5 MB). The tool result is text,
+    // so the model cannot see the image; inlining the base64 only fills the 40k result cap
+    // with unusable characters. Report the mime and size instead (#1278).
+    let mut out = out.clone();
+    for attachment in &mut out.attachments {
+        let bytes = attachment.url.len().saturating_mul(3) / 4;
+        attachment.url = format!(
+            "<{} image, about {bytes} bytes; image data omitted because tool results are text>",
+            attachment.mime
+        );
+    }
+    let mut v = serde_json::to_value(&out).unwrap_or_else(|_| json!({"status": "serialize_error"}));
     if let Some(obj) = v.as_object_mut() {
         obj.insert("_byop_intercepted".to_owned(), Value::Bool(true));
     }
@@ -756,6 +780,19 @@ mod webfetch_tests;
 #[cfg(test)]
 #[path = "websearch_tests.rs"]
 mod websearch_tests;
+
+#[cfg(test)]
+mod body_limit_tests {
+    use super::*;
+
+    #[test]
+    fn body_growth_stops_at_the_limit() {
+        assert!(check_body_growth(0, MAX_RESPONSE_SIZE).is_ok());
+        assert!(check_body_growth(MAX_RESPONSE_SIZE - 1, 1).is_ok());
+        assert!(check_body_growth(MAX_RESPONSE_SIZE, 1).is_err());
+        assert!(check_body_growth(usize::MAX, 1).is_err());
+    }
+}
 
 #[cfg(test)]
 mod ssrf_ip_tests {

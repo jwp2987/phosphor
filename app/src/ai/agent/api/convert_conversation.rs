@@ -29,7 +29,7 @@ use crate::ai::agent::{
 use crate::ai::block_context::BlockContext;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
 use crate::ai::llms::LLMId;
-use crate::ai_assistant::execution_context::{WarpAiExecutionContext, WarpAiOsContext};
+use crate::ai::execution_context::{WarpAiExecutionContext, WarpAiOsContext};
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::terminal_model::BlockIndex;
 use ai::agent::action_result::{
@@ -529,6 +529,9 @@ pub(crate) fn convert_tool_call_result_to_input(
                             .finish_ts
                             .as_ref()
                             .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos)),
+                        // The wire format does not carry it: a restored 130 keeps meaning
+                        // "cancelled", as before #1178.
+                        interrupted: finished.exit_code == 130,
                     }
                 }
                 Some(api::run_shell_command_result::Result::LongRunningCommandSnapshot(

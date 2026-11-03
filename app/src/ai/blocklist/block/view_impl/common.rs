@@ -2373,7 +2373,6 @@ fn should_load_blocklist_image_asset(asset_source: &AssetSource) -> bool {
     !matches!(asset_source, AssetSource::LocalFile { .. })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn should_load_blocklist_image_asset(_: &AssetSource) -> bool {
     true
 }
@@ -3356,6 +3355,7 @@ pub fn render_code_output_section<A: Action>(
 
     match props.editor_view {
         Some(view) => render_code_block_with_warp_text(
+            props.code_snippet,
             CodeBlockOptions {
                 on_open: match (props.open_code_block_action_factory, open_source.clone()) {
                     #[allow(unused)]

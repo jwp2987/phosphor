@@ -1302,3 +1302,54 @@ fn test_line_at_vertical_offset_returns_none_for_invalid() {
         );
     })
 }
+
+#[test]
+fn release_memory_drops_trees_and_stops_following_the_shared_buffer() {
+    // #1340 / #1407: a closed editor must not keep its parse trees or react to later edits of the
+    // buffer it shared with another pane.
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let shared_buffer = app.add_model(|_| Buffer::default());
+        let editor = mock_model_with_buffer(&mut app, shared_buffer.clone());
+        shared_buffer.update(&mut app, |buffer, ctx| {
+            buffer.replace_all("fn a() {}\n".repeat(100), ctx);
+        });
+        layout_model(&mut app, &editor).await;
+
+        editor.update(&mut app, |editor, ctx| editor.release_memory(ctx));
+        editor.read(&app, |editor, ctx| {
+            assert!(editor.is_released());
+            assert_eq!(editor.syntax_tree_count(ctx), 0);
+        });
+
+        // An edit made elsewhere is not parsed or laid out by the released editor.
+        shared_buffer.update(&mut app, |buffer, ctx| {
+            buffer.replace_all("fn b() {}\n".repeat(100), ctx);
+        });
+        editor.read(&app, |editor, ctx| {
+            assert_eq!(editor.syntax_tree_count(ctx), 0);
+        });
+    })
+}
+
+#[test]
+fn an_editor_without_a_diff_base_has_none_to_compute_against() {
+    // The content-changed path skips copying the whole text when there is no base (#1340).
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        // `reset_content` always sets the loaded text as the base, so an editor with nothing to
+        // diff against is one that was only constructed (the mock helpers all reset its content).
+        let editor = app.add_model(|ctx| {
+            let styles =
+                code_text_styles(Appearance::as_ref(ctx), FontSettings::as_ref(ctx), None);
+            CodeEditorModel::new(styles, None, false, None, ctx)
+        });
+        editor.read(&app, |editor, ctx| {
+            assert!(!editor.diff().as_ref(ctx).has_base());
+        });
+        let with_base = mock_model_with_diff(&mut app, "a\n", "b\n", ContentVersion::new());
+        with_base.read(&app, |editor, ctx| {
+            assert!(editor.diff().as_ref(ctx).has_base());
+        });
+    })
+}

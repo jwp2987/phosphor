@@ -15,8 +15,6 @@ use crate::view_components::action_button::{
     ActionButton, ButtonSize, DangerNakedTheme, KeystrokeSource, NakedTheme, PrimaryTheme,
 };
 use pathfinder_color::ColorU;
-use pathfinder_geometry::vector::Vector2F;
-use std::cell::RefCell;
 use warp_core::ui::{appearance::Appearance, theme::Fill};
 use warp_editor::render::element::VerticalExpansionBehavior;
 use warpui::{
@@ -66,7 +64,6 @@ pub struct CommentEditor {
     line: Option<EditorLineLocation>,
     show_remove_button: bool,
     save_button_disabled: bool,
-    laid_out_size: RefCell<Option<Vector2F>>,
     is_imported_comment: bool,
 }
 
@@ -96,44 +93,6 @@ impl CommentEditor {
             line: None,
             show_remove_button: false,
             save_button_disabled: true,
-            laid_out_size: RefCell::new(None),
-            is_imported_comment: false,
-        };
-        me.update_save_button_state(ctx);
-        me
-    }
-
-    #[allow(unused)] // TODO(CODE-1464): use this
-    pub fn new_embedded(
-        ctx: &mut ViewContext<Self>,
-        comment_model: ModelHandle<EditorCommentsModel>,
-        comment_id: Option<CommentId>,
-        line: EditorLineLocation,
-    ) -> Self {
-        let editor = create_editable_comment_markdown_editor(None, ctx);
-
-        ctx.subscribe_to_view(&editor, |me, _, event, ctx| {
-            me.handle_editor_event(event, ctx);
-        });
-
-        ctx.subscribe_to_model(&comment_model, |me, _, event, ctx| {
-            me.handle_comment_model_event(event, ctx);
-        });
-
-        let (save_button, close_button, remove_button) = Self::create_buttons(ctx);
-
-        let show_remove_button = comment_id.is_some();
-
-        let mut me = Self {
-            comment_id,
-            editor,
-            save_button,
-            close_button,
-            remove_button,
-            line: Some(line),
-            show_remove_button,
-            save_button_disabled: true,
-            laid_out_size: RefCell::new(None),
             is_imported_comment: false,
         };
         me.update_save_button_state(ctx);
@@ -143,16 +102,6 @@ impl CommentEditor {
     #[cfg_attr(not(feature = "local_fs"), allow(unused))]
     pub fn comment_text(&self, app: &AppContext) -> String {
         self.editor.as_ref(app).model().as_ref(app).markdown(app)
-    }
-
-    #[cfg_attr(not(feature = "local_fs"), allow(unused))]
-    pub fn get_laid_out_size(&self) -> Option<Vector2F> {
-        self.laid_out_size.borrow().as_ref().cloned()
-    }
-
-    #[allow(unused)] // TODO(CODE-1464): use this
-    pub fn set_laid_out_size(&self, value: Vector2F) {
-        self.laid_out_size.replace(Some(value));
     }
 
     fn create_buttons(

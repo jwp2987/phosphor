@@ -1,0 +1,149 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Plain with ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "inline code",
+                    styles: InlineCode,
+                },
+                FormattedTextFragment {
+                    text: " and ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "double `tick` code",
+                    styles: InlineCode,
+                },
+                FormattedTextFragment {
+                    text: " here.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "bold",
+                    styles: Bold,
+                },
+                FormattedTextFragment {
+                    text: " ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "italic",
+                    styles: Italic,
+                },
+                FormattedTextFragment {
+                    text: " ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "italic",
+                    styles: Italic,
+                },
+                FormattedTextFragment {
+                    text: " ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "bold",
+                    styles: Bold,
+                },
+                FormattedTextFragment {
+                    text: " ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "both",
+                    styles: Bold | Italic,
+                },
+                FormattedTextFragment {
+                    text: " ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "strike",
+                    styles: Strikethrough,
+                },
+                FormattedTextFragment {
+                    text: " ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "underline",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Mixed ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "bold with ",
+                    styles: Bold,
+                },
+                FormattedTextFragment {
+                    text: "nested italic",
+                    styles: Bold | Italic,
+                },
+                FormattedTextFragment {
+                    text: " inside",
+                    styles: Bold,
+                },
+                FormattedTextFragment {
+                    text: " text.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Unclosed **bold and `code and *italic",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Escapes: * _ ` # [ ] 1. not a list.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Hard break with two spaces  ",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "next line.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

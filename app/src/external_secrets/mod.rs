@@ -1,6 +1,5 @@
 // Most of this module is dead code on web as it is not possible to retrieve
 // external secrets from the browser.
-#![cfg_attr(target_family = "wasm", allow(dead_code, unused_variables))]
 
 use anyhow::anyhow;
 use core::fmt;
@@ -11,7 +10,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use warp_util::path::ShellFamily;
 
-#[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+#[cfg(feature = "local_tty")]
 use crate::terminal::local_shell::execute_command;
 
 use crate::{terminal::shell::ShellType, ui_components::icons::Icon};
@@ -111,7 +110,7 @@ impl SecretManager {
         shell_path: PathBuf,
         path_env_var: Option<String>,
     ) -> bool {
-        #[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+        #[cfg(feature = "local_tty")]
         {
             match self {
                 SecretManager::OnePassword => {
@@ -146,7 +145,7 @@ impl SecretManager {
         shell_path: PathBuf,
         path_env_var: Option<String>,
     ) -> Option<Vec<ExternalSecret>> {
-        #[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+        #[cfg(feature = "local_tty")]
         {
             match self {
                 SecretManager::OnePassword => {
@@ -187,7 +186,6 @@ impl SecretManager {
         shell_path: PathBuf,
         path_env_var: Option<String>,
     ) -> Result<Vec<ExternalSecret>, SecretErrorType> {
-        #[cfg(not(target_family = "wasm"))]
         {
             let is_installed = self
                 .is_installed(shell_type, shell_path.clone(), path_env_var.clone())

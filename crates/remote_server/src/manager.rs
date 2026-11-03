@@ -1,49 +1,64 @@
 use std::collections::{HashMap, HashSet};
-#[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
 use std::sync::Arc;
-#[cfg(not(target_family = "wasm"))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::HostId;
 use crate::auth::RemoteServerAuthContext;
-#[cfg(not(target_family = "wasm"))]
 use crate::client::ClientEvent;
 use crate::client::RemoteServerClient;
 use crate::setup::PreinstallCheckResult;
-#[cfg(not(target_family = "wasm"))]
 use crate::setup::RemoteOs;
 use crate::setup::RemotePlatform;
 use crate::setup::RemoteServerSetupState;
 use crate::setup::UnsupportedReason;
-#[cfg(not(target_family = "wasm"))]
 use crate::transport::Connection;
 use crate::transport::RemoteTransport;
 use futures::channel::oneshot;
 use repo_metadata::RepoMetadataUpdate;
 use serde::Serialize;
 use warp_core::SessionId;
-#[cfg(not(target_family = "wasm"))]
 use warp_core::channel::{Channel, ChannelState};
-#[cfg(not(target_family = "wasm"))]
 use warpui::r#async::FutureExt as _;
 use warpui::{Entity, ModelContext, ModelSpawner, SingletonEntity};
 
 /// Maximum number of reconnection attempts after a spontaneous disconnect.
-#[cfg(not(target_family = "wasm"))]
 const MAX_RECONNECT_ATTEMPTS: u32 = 2;
 /// Delay between reconnection attempts.
-#[cfg(not(target_family = "wasm"))]
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+/// A remote-server connection that lived shorter than this before the proxy died is counted as
+/// short-lived (#1250). Reconnecting resets the attempt counter, so a daemon that handshakes and
+/// then crashes was reconnected to forever, a new ssh channel and `Initialize` every few seconds.
+const STABLE_CONNECTION_AFTER: Duration = Duration::from_secs(30);
+/// Consecutive short-lived connections after which the session gives up reconnecting and falls
+/// back to the ControlMaster executor for good.
+const MAX_SHORT_LIVED_CONNECTIONS: u32 = 3;
+
+/// The consecutive short-lived connections of a session after one that lived `lived` (`None`
+/// when it never reached `Connected`): a connection that stayed up long enough proves the daemon
+/// works and resets the count.
+fn consecutive_short_lived_connections(previous: u32, lived: Option<Duration>) -> u32 {
+    match lived {
+        Some(lived) if lived < STABLE_CONNECTION_AFTER => previous.saturating_add(1),
+        Some(_) | None => 0,
+    }
+}
+/// Outer bound on one reconnect attempt (connect + `Initialize`). Without it
+/// the only bound was the 120 s `Initialize` request timeout, so two attempts
+/// could sit in `Reconnecting` for ~4 minutes.
+const RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Brief timeout for awaiting a child process's exit status after a
 /// spontaneous disconnect. Gives the `remote-server-proxy` subprocess time
 /// to report its exit code and signal status before we give up and report
 /// `None`. Upstream: f0ca7861fe5603e31e1a43118ddf2ff5c17782ca (#10728).
-#[cfg(not(target_family = "wasm"))]
 const EXIT_STATUS_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 
+/// Bound on a speculative connect (#1266): a proxy spawn that hangs (ssh with a dead master,
+/// a daemon that never binds its socket) must not keep the attempt, and its ssh child, alive
+/// past the point where the probe-driven setup has long made its own decision.
+const SPECULATIVE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Parameters that travel together through the reconnection flow.
-#[cfg(not(target_family = "wasm"))]
 struct ReconnectParams {
     attempt: u32,
     host_id: HostId,
@@ -56,7 +71,6 @@ struct ReconnectParams {
 
 /// Error from [`RemoteServerManager::run_connect_and_handshake`] that
 /// preserves which phase failed so callers can report accurate telemetry.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Debug, thiserror::Error)]
 enum ConnectAndHandshakeError {
     /// `transport.connect()` failed, or the session was deregistered
@@ -68,7 +82,47 @@ enum ConnectAndHandshakeError {
     Initialize(anyhow::Error),
 }
 
-#[cfg(not(target_family = "wasm"))]
+/// Why the `remote-server-proxy` child went away, as far as reconnecting is
+/// concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyExit {
+    /// The ssh session itself is gone (the user typed `exit`, or the master
+    /// died), so there is nothing to reconnect to.
+    UserExited,
+    /// Only the proxy (or the network path under it) went away while the ssh
+    /// session lives; worth a bounded background reconnect.
+    ProxyOnly,
+}
+
+/// Classifies a proxy exit. `master_socket_present` is whether the ssh
+/// ControlPath socket still exists (`None` when the session has no
+/// ControlMaster). The socket, not the proxy's exit, tells whether the user
+/// left: a killed or crashed proxy used to be indistinguishable from `exit`
+/// and permanently disabled remote completions for the session (#1171).
+fn classify_proxy_exit(master_socket_present: Option<bool>, child_exited: bool) -> ProxyExit {
+    match master_socket_present {
+        Some(true) => ProxyExit::ProxyOnly,
+        Some(false) => ProxyExit::UserExited,
+        // No ControlMaster to ask: keep the old heuristic.
+        None if child_exited => ProxyExit::UserExited,
+        None => ProxyExit::ProxyOnly,
+    }
+}
+
+/// Runs one reconnect attempt under an outer `timeout`, turning an expiry
+/// into an `Initialize` error so it flows through the normal failure/retry
+/// path. Dropping the future drops the proxy child (`kill_on_drop`).
+async fn bound_reconnect_attempt<T>(
+    attempt: impl std::future::Future<Output = Result<T, ConnectAndHandshakeError>>,
+    timeout: Duration,
+) -> Result<T, ConnectAndHandshakeError> {
+    attempt.with_timeout(timeout).await.unwrap_or_else(|_| {
+        Err(ConnectAndHandshakeError::Initialize(anyhow::anyhow!(
+            "reconnect attempt timed out after {timeout:?}"
+        )))
+    })
+}
+
 impl ConnectAndHandshakeError {
     fn phase(&self) -> RemoteServerInitPhase {
         match self {
@@ -211,7 +265,6 @@ impl RemoteServerErrorKind {
 ///   string): treat as compatible. This preserves the `cargo run` +
 ///   `script/deploy_remote_server` dev loop, where neither side reports a
 ///   release tag.
-#[cfg(not(target_family = "wasm"))]
 fn version_is_compatible(client: Option<&str>, server: &str) -> bool {
     match (client, server.is_empty()) {
         (Some(c), false) => c == server,
@@ -227,7 +280,6 @@ fn version_is_compatible(client: Option<&str>, server: &str) -> bool {
 /// non-empty tag would trigger a delete-reinstall-mismatch-again loop. Release
 /// builds avoid stale binaries via the versioned install path; local builds
 /// continue to skip strict version checking.
-#[cfg(not(target_family = "wasm"))]
 fn should_enforce_remote_version_check(channel: Channel) -> bool {
     !matches!(channel, Channel::Oss)
 }
@@ -258,10 +310,8 @@ pub enum RemoteSessionState {
         /// The transport's owning `Child`. Dropped when the state is
         /// replaced or removed, killing the subprocess via
         /// `kill_on_drop`.
-        #[cfg(not(target_family = "wasm"))]
         _child: async_process::Child,
         /// See type-level doc.
-        #[cfg(not(target_family = "wasm"))]
         control_path: Option<PathBuf>,
     },
     /// Initialize handshake succeeded. Client is ready for requests.
@@ -275,17 +325,13 @@ pub enum RemoteSessionState {
         /// receiving a different user's bearer token.
         identity_key: String,
         /// The transport's owning `Child`. See `Initializing::_child`.
-        #[cfg(not(target_family = "wasm"))]
         _child: async_process::Child,
         /// See type-level doc.
-        #[cfg(not(target_family = "wasm"))]
         control_path: Option<PathBuf>,
         /// Transport stored for reconnection after spontaneous disconnect.
-        #[cfg(not(target_family = "wasm"))]
         transport: Arc<dyn RemoteTransport>,
     },
     /// A reconnection attempt is in progress after a spontaneous disconnect.
-    #[cfg(not(target_family = "wasm"))]
     Reconnecting {
         attempt: u32,
         host_id: HostId,
@@ -308,7 +354,6 @@ pub enum RemoteSessionState {
     /// `connect_session`'s `is_first_session` check read `false` forever for
     /// that host and suppressed `HostConnected` — see the note on
     /// `deregister_session`'s `host_id` extraction.
-    #[cfg(not(target_family = "wasm"))]
     AwaitingExitStatus {
         control_path: Option<PathBuf>,
         host_id: HostId,
@@ -328,7 +373,6 @@ enum MasterTeardown {
 
 impl MasterTeardown {
     /// The owned ControlMaster socket to send `ssh -O exit` to, if any.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn path_to_stop(self, control_path: Option<PathBuf>) -> Option<PathBuf> {
         match self {
             MasterTeardown::Stop => control_path,
@@ -357,6 +401,11 @@ pub enum RemoteServerManagerEvent {
         /// The error message from the failed phase.
         error: String,
     },
+    /// A speculative connect (#1266, started alongside the binary probes without waiting for
+    /// their verdict) did not succeed. Not a failure of the session: the probe-driven setup
+    /// decides what happens next, and no setup state changes on this event. Never emitted for
+    /// an attempt that was cancelled.
+    SessionSpeculativeConnectFailed { session_id: SessionId },
     /// This session's connection dropped. Carries `host_id` so consumers
     /// don't need to look it up from the already-transitioned state.
     /// This session's underlying connection is no longer usable: the
@@ -376,6 +425,15 @@ pub enum RemoteServerManagerEvent {
         /// `None` when the session was explicitly deregistered or when
         /// the exit status could not be determined.
         exit_status: Option<RemoteServerExitStatus>,
+    },
+    /// The remote-server proxy died while the ssh session itself is still up
+    /// and a background reconnect is starting. Not final: `SessionReconnected`
+    /// or `SessionDisconnected` follows. Subscribers that hold a client for
+    /// this session should stop using it (the session's command executor is
+    /// swapped back to the ControlMaster one meanwhile).
+    SessionConnectionLost {
+        session_id: SessionId,
+        host_id: HostId,
     },
     /// A reconnection attempt succeeded. Downstream owners (e.g.
     /// `RemoteServerCommandExecutor`) should swap their client reference
@@ -589,6 +647,8 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::SessionConnectionFailed { session_id, .. }
             | RemoteServerManagerEvent::SessionDisconnected { session_id, .. }
             | RemoteServerManagerEvent::SessionReconnected { session_id, .. }
+            | RemoteServerManagerEvent::SessionConnectionLost { session_id, .. }
+            | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { session_id }
             | RemoteServerManagerEvent::SessionDeregistered { session_id }
             | RemoteServerManagerEvent::NavigatedToDirectory { session_id, .. }
             | RemoteServerManagerEvent::SetupStateChanged { session_id, .. }
@@ -746,7 +806,6 @@ fn ripgrep_search_result(
 /// Persists for the lifetime of the session (removed only in
 /// `deregister_session`) so that `mark_session_connected` can re-send
 /// the notification after a reconnect.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 struct SessionBootstrapInfo {
     shell_type: String,
     shell_path: Option<String>,
@@ -777,7 +836,6 @@ pub struct RemoteServerManager {
     session_bootstrap_info: HashMap<SessionId, SessionBootstrapInfo>,
     /// App auth context used for connection-time `Initialize` and future
     /// reconnect handshakes.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     auth_context: Option<Arc<RemoteServerAuthContext>>,
     /// Detected remote platform per session, populated during the binary check
     /// phase via `detect_platform()`. Used for telemetry.
@@ -791,6 +849,21 @@ pub struct RemoteServerManager {
     /// keyed by request id, awaiting a response drained off
     /// `host_response_rx`. #438 dependent features 4/5.
     pending_host_requests: HashMap<crate::protocol::RequestId, PendingHostRequest>,
+    /// Generation of each session's live event stream (#1171). Bumped when a reconnect attempt
+    /// starts and when a new stream is installed, so the end handler of a stale stream (one
+    /// from an attempt that timed out) cannot mark the session disconnected over a
+    /// `Reconnecting` or newer state.
+    connection_generation: HashMap<SessionId, u64>,
+    /// When each session's remote-server connection reached `Connected`, to tell a daemon that
+    /// keeps dying right after the handshake from a one-off drop (#1250).
+    connected_at: HashMap<SessionId, Instant>,
+    /// Consecutive connections of a session that died within `STABLE_CONNECTION_AFTER`.
+    short_lived_connections: HashMap<SessionId, u32>,
+    /// The speculative connect attempt (#1266) currently allowed to install a connection for a
+    /// session, by attempt id. An attempt whose id is no longer here (cancelled, or superseded
+    /// by a probe-driven `connect_session`) abandons its connection instead of installing it.
+    speculative_attempts: HashMap<SessionId, u64>,
+    next_speculative_attempt: u64,
     /// Last accepted `RemoteAgentContextSnapshot` per host, used by
     /// `accept_remote_agent_context_snapshot_revision` to drop stale/
     /// duplicate pushes and queried via `remote_agent_context_snapshot()`.
@@ -821,6 +894,11 @@ impl RemoteServerManager {
             session_platforms: HashMap::new(),
             session_labels: HashMap::new(),
             pending_host_requests: HashMap::new(),
+            connection_generation: HashMap::new(),
+            connected_at: HashMap::new(),
+            short_lived_connections: HashMap::new(),
+            speculative_attempts: HashMap::new(),
+            next_speculative_attempt: 0,
             remote_agent_context_snapshots: HashMap::new(),
             client_preferences: crate::client::ClientPreferences::default(),
         }
@@ -840,14 +918,12 @@ impl RemoteServerManager {
             return;
         }
         self.client_preferences = preferences.clone();
-        #[cfg(not(target_family = "wasm"))]
         for client in self.connected_clients() {
             client.update_preferences(preferences.clone());
         }
     }
 
     /// Every connected session's client.
-    #[cfg(not(target_family = "wasm"))]
     fn connected_clients(&self) -> Vec<Arc<RemoteServerClient>> {
         self.sessions
             .values()
@@ -895,7 +971,6 @@ impl RemoteServerManager {
             log::warn!("check_binary is a no-op on WASM");
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             ctx.emit(RemoteServerManagerEvent::SetupStateChanged {
                 session_id,
@@ -904,59 +979,69 @@ impl RemoteServerManager {
             let spawner = self.spawner.clone();
             ctx.background_executor()
                 .spawn(async move {
-                    // Run platform detection, binary check, and old-binary
-                    // check concurrently. The old-binary check lets the
-                    // controller distinguish fresh install (no prior
-                    // versioned binary) from update (prior versioned
-                    // binary present), so it can skip the install prompt
-                    // in the update case.
-                    let (platform_result, check_result, old_binary_result) = futures::join!(
-                        transport.detect_platform(),
-                        transport.check_binary(),
-                        transport.check_has_old_binary(),
-                    );
-                    let platform = match platform_result {
-                        Ok(p) => Some(p),
-                        Err(e) => {
-                            log::warn!("Platform detection failed for session {session_id:?}: {e}");
-                            None
-                        }
-                    };
-                    let has_old_binary = match old_binary_result {
-                        Ok(has) => has,
-                        Err(e) => {
-                            log::warn!(
-                                "Old-binary detection failed for session {session_id:?}: {e}. \
-                                 Treating as fresh install."
-                            );
+                    let stage_start = std::time::Instant::now();
+                    // #1172: a binary that is there and runs `--version` needs none of the other
+                    // probes to decide anything: the preinstall verdict is about hosts the binary
+                    // cannot run on, and the platform is only telemetry. The controller holds the
+                    // remote shell's bootstrap until this result lands, so it is reported the
+                    // moment the check itself passes, not after the slowest of the four probes
+                    // (20-47 ms of every connect). The rest still run and are recorded.
+                    let (early_tx, early_rx) = futures::channel::oneshot::channel();
+                    let early_spawner = spawner.clone();
+                    let early_fut = async move {
+                        if early_rx.await.is_ok() {
+                            let _ = early_spawner
+                                .spawn(move |_me, ctx| {
+                                    ctx.emit(RemoteServerManagerEvent::BinaryCheckComplete {
+                                        session_id,
+                                        result: Ok(true),
+                                        remote_platform: None,
+                                        preinstall_check: None,
+                                        has_old_binary: false,
+                                    });
+                                })
+                                .await;
+                            true
+                        } else {
                             false
                         }
                     };
-                    // Run the preinstall check after platform detection
-                    // resolves, only on Linux. macOS hosts pay zero extra
-                    // round-trips. SSH-level failures are logged and
-                    // surfaced as `None`, which the controller treats as
-                    // inconclusive (fail open).
-                    let preinstall = match &platform {
-                        Some(p) if matches!(p.os, RemoteOs::Linux) => {
-                            match transport.run_preinstall_check().await {
-                                Ok(r) => Some(r),
-                                Err(e) => {
-                                    log::warn!(
-                                        "Preinstall check failed for session {session_id:?}: {e}"
-                                    );
-                                    None
-                                }
-                            }
-                        }
-                        _ => None,
-                    };
+                    let (
+                        BinaryCheckProbes {
+                            platform,
+                            check_result,
+                            has_old_binary,
+                            preinstall,
+                        },
+                        early_reported,
+                    ) = futures::join!(
+                        run_binary_check_probes_staged(&transport, session_id, Some(early_tx)),
+                        early_fut,
+                    );
+                    // #1146: one line per connect so a slow ssh setup can be placed by stage.
+                    log::info!(
+                        "remote-server setup timing for session {session_id:?}: \
+                         detect+check+old-binary+preinstall (concurrent) {} ms (check result reported early: {early_reported})",
+                        stage_start.elapsed().as_millis(),
+                    );
                     let _ = spawner
                         .spawn(move |me, ctx| {
                             if let Some(p) = &platform {
                                 me.session_platforms.insert(session_id, p.clone());
                             }
-                            if let Err(error) = &check_result {
+                            if early_reported {
+                                return;
+                            }
+                            // #1266: a speculative connect may already have connected this
+                            // session; a probe that failed on the side is then not a setup
+                            // failure to show.
+                            let connected = matches!(
+                                me.sessions.get(&session_id),
+                                Some(RemoteSessionState::Connected { .. })
+                            );
+                            if let Err(error) = &check_result
+                                && !connected
+                            {
                                 ctx.emit(RemoteServerManagerEvent::SetupStateChanged {
                                     session_id,
                                     state: RemoteServerSetupState::Failed {
@@ -997,7 +1082,6 @@ impl RemoteServerManager {
     /// binary, based on a positive classification from the preinstall
     /// check. The setup state transitions to `Unsupported`, which the
     /// downstream UI treats as a clean fall-back to the legacy SSH flow.
-    #[cfg(not(target_family = "wasm"))]
     pub fn mark_setup_unsupported(
         &mut self,
         session_id: SessionId,
@@ -1029,7 +1113,6 @@ impl RemoteServerManager {
             log::warn!("install_binary is a no-op on WASM");
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             let setup_state = if is_update {
                 RemoteServerSetupState::Updating
@@ -1045,7 +1128,13 @@ impl RemoteServerManager {
             let spawner = self.spawner.clone();
             ctx.background_executor()
                 .spawn(async move {
+                    let install_start = std::time::Instant::now();
                     let result = transport.install_binary().await;
+                    log::info!(
+                        "remote-server install timing for session {session_id:?}: {} ms (ok={})",
+                        install_start.elapsed().as_millis(),
+                        result.is_ok(),
+                    );
                     let _ = spawner
                         .spawn(move |_me, ctx| {
                             if let Err(error) = &result {
@@ -1092,7 +1181,6 @@ impl RemoteServerManager {
             log::warn!("connect_session is a no-op on WASM");
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             log::info!("Starting remote server connection for session {session_id:?}");
 
@@ -1102,6 +1190,8 @@ impl RemoteServerManager {
                 state: RemoteServerSetupState::Initializing,
             });
 
+            // A speculative attempt still in flight (#1266) is superseded by this connect.
+            self.speculative_attempts.remove(&session_id);
             self.sessions
                 .insert(session_id, RemoteSessionState::Connecting);
             if let Some(connection_label) = connection_label {
@@ -1128,6 +1218,7 @@ impl RemoteServerManager {
                         &auth_context_for_task,
                         &spawner,
                         &executor,
+                        None,
                     )
                     .await
                     {
@@ -1171,22 +1262,165 @@ impl RemoteServerManager {
         }
     }
 
-    /// Shared connect + handshake logic used by both `connect_session` and
-    /// `attempt_reconnect`.
+    /// Starts a connect + handshake for a session WITHOUT waiting for the binary probes (#1266),
+    /// so that on a host where the extension is installed the connect overlaps the probe stage
+    /// instead of following it. Differs from [`Self::connect_session`] in what it tells the
+    /// world: no `SessionConnecting`, no `SetupStateChanged` on start or on failure, and a
+    /// failure ends in [`RemoteServerManagerEvent::SessionSpeculativeConnectFailed`] instead of
+    /// `SessionConnectionFailed` -- the probe-driven setup owns the user-visible outcome.
+    /// Success is indistinguishable from a normal connect (`SessionConnected`, `Ready`).
+    /// Bounded by [`SPECULATIVE_CONNECT_TIMEOUT`]; cancellable with
+    /// [`Self::cancel_speculative_connect`].
+    pub fn connect_session_speculative<T>(
+        &mut self,
+        session_id: SessionId,
+        transport: T,
+        auth_context: Arc<RemoteServerAuthContext>,
+        connection_label: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) where
+        T: RemoteTransport + 'static,
+    {
+        log::info!("Starting speculative remote server connection for session {session_id:?}");
+        self.next_speculative_attempt = self.next_speculative_attempt.wrapping_add(1);
+        let attempt = self.next_speculative_attempt;
+        self.speculative_attempts.insert(session_id, attempt);
+        self.sessions
+            .insert(session_id, RemoteSessionState::Connecting);
+        if let Some(connection_label) = connection_label {
+            self.session_labels.insert(session_id, connection_label);
+        }
+        self.auth_context = Some(Arc::clone(&auth_context));
+
+        let spawner = self.spawner.clone();
+        let executor = ctx.background_executor().clone();
+        let transport: Arc<dyn RemoteTransport> = Arc::new(transport);
+        let auth_context_for_task = Arc::clone(&auth_context);
+        let identity_key = auth_context.remote_server_identity_key();
+        ctx.background_executor()
+            .spawn(async move {
+                let result = bound_reconnect_attempt(
+                    Self::run_connect_and_handshake(
+                        session_id,
+                        &*transport,
+                        &auth_context_for_task,
+                        &spawner,
+                        &executor,
+                        Some(attempt),
+                    ),
+                    SPECULATIVE_CONNECT_TIMEOUT,
+                )
+                .await;
+                let _ = spawner
+                    .spawn(move |me, ctx| {
+                        me.finish_speculative_connect(
+                            session_id,
+                            attempt,
+                            result,
+                            identity_key,
+                            transport,
+                            ctx,
+                        );
+                    })
+                    .await;
+            })
+            .detach();
+    }
+
+    /// The end of a speculative connect (#1266). An attempt that is no longer the session's
+    /// current one (cancelled, or superseded by a probe-driven connect) changes nothing and
+    /// says nothing.
+    fn finish_speculative_connect(
+        &mut self,
+        session_id: SessionId,
+        attempt: u64,
+        result: Result<HostId, ConnectAndHandshakeError>,
+        identity_key: String,
+        transport: Arc<dyn RemoteTransport>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.speculative_attempts.get(&session_id) != Some(&attempt) {
+            log::info!(
+                "Speculative remote server connection for session {session_id:?} was \
+                 superseded; discarding its result"
+            );
+            return;
+        }
+        self.speculative_attempts.remove(&session_id);
+        match result {
+            Ok(host_id) => {
+                log::info!(
+                    "Speculative remote server connection for session {session_id:?} succeeded"
+                );
+                self.mark_session_connected(session_id, host_id, identity_key, transport, ctx);
+            }
+            Err(e) => {
+                log::info!(
+                    "Speculative remote server connection for session {session_id:?} did not \
+                     succeed ({e}); the binary probes decide"
+                );
+                // Never through `finish_mark_session_disconnected`: a speculative miss is not a
+                // connection that died, so it counts for nothing in #1250's short-lived tally.
+                if matches!(
+                    self.sessions.get(&session_id),
+                    Some(
+                        RemoteSessionState::Connecting
+                            | RemoteSessionState::Initializing { .. }
+                            | RemoteSessionState::Disconnected
+                    )
+                ) {
+                    self.sessions.remove(&session_id);
+                }
+                ctx.emit(RemoteServerManagerEvent::SessionSpeculativeConnectFailed { session_id });
+            }
+        }
+    }
+
+    /// Abandons a session's speculative connect (#1266), if one is in flight: its connection,
+    /// ready or not, is dropped (killing the proxy child) and its result is never reported.
+    /// Returns whether there was one.
+    pub fn cancel_speculative_connect(&mut self, session_id: SessionId) -> bool {
+        if self.speculative_attempts.remove(&session_id).is_none() {
+            return false;
+        }
+        if matches!(
+            self.sessions.get(&session_id),
+            Some(
+                RemoteSessionState::Connecting
+                    | RemoteSessionState::Initializing { .. }
+                    | RemoteSessionState::Disconnected
+            )
+        ) {
+            self.sessions.remove(&session_id);
+        }
+        true
+    }
+
+    /// Whether a speculative connect (#1266) is in flight for the session.
+    pub fn has_speculative_connect(&self, session_id: SessionId) -> bool {
+        self.speculative_attempts.contains_key(&session_id)
+    }
+
+    /// Shared connect + handshake logic used by `connect_session`, `attempt_reconnect` and
+    /// `connect_session_speculative`.
     /// 1. Calls `transport.connect()` to establish streams.
     /// 2. Transitions the session to `Initializing` and starts draining the
     ///    event channel.
     /// 3. Runs the initialize handshake with the current auth token, if any.
     /// Returns `Ok(host_id)` on success, or a phase-tagged error.
-    #[cfg(not(target_family = "wasm"))]
+    /// `speculative_attempt` (#1266) is the attempt id a speculative connect must still hold
+    /// in `speculative_attempts` when its connection is ready to be installed; otherwise the
+    /// connection is dropped unused, exactly as for a session deregistered meanwhile.
     async fn run_connect_and_handshake(
         session_id: SessionId,
         transport: &dyn RemoteTransport,
         auth_context: &RemoteServerAuthContext,
         spawner: &ModelSpawner<Self>,
         executor: &Arc<warpui::r#async::executor::Background>,
+        speculative_attempt: Option<u64>,
     ) -> Result<HostId, ConnectAndHandshakeError> {
         // Phase 1: Connect (establish streams, create client).
+        let connect_start = std::time::Instant::now();
         let Connection {
             client,
             event_rx,
@@ -1199,6 +1433,7 @@ impl RemoteServerManager {
             .await
             .map_err(ConnectAndHandshakeError::Connect)?;
 
+        let connect_ms = connect_start.elapsed().as_millis();
         let client = Arc::new(client);
         let client_for_init = Arc::clone(&client);
 
@@ -1210,6 +1445,11 @@ impl RemoteServerManager {
                 if !me.sessions.contains_key(&session_id) {
                     return false;
                 }
+                if speculative_attempt.is_some_and(|attempt| {
+                    me.speculative_attempts.get(&session_id) != Some(&attempt)
+                }) {
+                    return false;
+                }
                 me.sessions.insert(
                     session_id,
                     RemoteSessionState::Initializing {
@@ -1219,13 +1459,26 @@ impl RemoteServerManager {
                     },
                 );
 
+                let generation = me.bump_connection_generation(session_id);
                 ctx.spawn_stream_local(
                     event_rx,
                     move |me, event, ctx| {
-                        me.forward_client_event(session_id, event, ctx);
+                        // #1171: a stale stream's items must not reach the session state either;
+                        // they are routed by session id, so a late item of a dead connection
+                        // would apply to the one that replaced it.
+                        if me.connection_generation.get(&session_id) == Some(&generation) {
+                            me.forward_client_event(session_id, event, ctx);
+                        }
                     },
                     move |me, ctx| {
-                        me.mark_session_disconnected(session_id, ctx);
+                        // #1171: only the newest stream may end the session.
+                        if me.connection_generation.get(&session_id) == Some(&generation) {
+                            me.mark_session_disconnected(session_id, ctx);
+                        } else {
+                            log::info!(
+                                "Stale event stream ended for session {session_id:?}, ignoring"
+                            );
+                        }
                     },
                 );
 
@@ -1252,6 +1505,7 @@ impl RemoteServerManager {
         }
 
         // Phase 2: Initialize handshake.
+        let init_start = std::time::Instant::now();
         let auth_token = auth_context.get_auth_token().await;
         // The daemon is configured for codebase indexing here, on every
         // (re)connect, rather than by a later notification: a daemon that
@@ -1271,6 +1525,14 @@ impl RemoteServerManager {
                 ConnectAndHandshakeError::Initialize(anyhow::anyhow!("{e:#}"))
                     .with_proxy_stderr(&stderr_tail)
             })?;
+
+        // #1146: one line per (re)connect with the stage split.
+        log::info!(
+            "remote-server connect timing for session {session_id:?}: connect {connect_ms} ms, \
+             initialize handshake {} ms, total {} ms",
+            init_start.elapsed().as_millis(),
+            connect_start.elapsed().as_millis(),
+        );
 
         // Version compatibility check. If the server reports a different release
         // tag than the client expects, the binary on disk is stale. Remove it so
@@ -1372,6 +1634,10 @@ impl RemoteServerManager {
         self.session_bootstrap_info.remove(&session_id);
         self.session_platforms.remove(&session_id);
         self.session_labels.remove(&session_id);
+        self.connection_generation.remove(&session_id);
+        self.connected_at.remove(&session_id);
+        self.short_lived_connections.remove(&session_id);
+        self.speculative_attempts.remove(&session_id);
 
         // Remove the session entry. Dropping the `RemoteSessionState`
         // here drops the transport's owned `Child` (if any), which
@@ -1383,7 +1649,6 @@ impl RemoteServerManager {
         // force the master to exit below. Safe to do under the
         // "caller already observed ExitShell" assumption documented
         // above.
-        #[cfg(not(target_family = "wasm"))]
         let control_path = match &prev {
             Some(RemoteSessionState::Connected { control_path, .. })
             | Some(RemoteSessionState::Initializing { control_path, .. }) => control_path.clone(),
@@ -1410,7 +1675,6 @@ impl RemoteServerManager {
         // `manager_tests.rs` exercises `mark_session_disconnected` or this state.
         let host_id = match &prev {
             Some(RemoteSessionState::Connected { host_id, .. }) => Some(host_id.clone()),
-            #[cfg(not(target_family = "wasm"))]
             Some(RemoteSessionState::Reconnecting { host_id, .. })
             | Some(RemoteSessionState::AwaitingExitStatus { host_id, .. }) => Some(host_id.clone()),
             _ => None,
@@ -1433,7 +1697,6 @@ impl RemoteServerManager {
         // to complete and we don't want to block the main thread on it.
         #[cfg(target_family = "wasm")]
         let _ = master_teardown;
-        #[cfg(not(target_family = "wasm"))]
         if let Some(control_path) = master_teardown.path_to_stop(control_path) {
             ctx.background_executor()
                 .spawn(async move {
@@ -1502,10 +1765,8 @@ impl RemoteServerManager {
                 | RemoteSessionState::Initializing { .. }
                 | RemoteSessionState::Connected { .. },
             ) => true,
-            #[cfg(not(target_family = "wasm"))]
             Some(RemoteSessionState::Reconnecting { .. }) => true,
             // The connection is already gone; we're only confirming why.
-            #[cfg(not(target_family = "wasm"))]
             Some(RemoteSessionState::AwaitingExitStatus { .. }) => false,
         }
     }
@@ -1690,7 +1951,6 @@ impl RemoteServerManager {
     /// Forwards a push event from the client event channel as a manager event.
     /// No-ops if the session is not in `Connected` state (i.e. `host_id` not
     /// yet available).
-    #[cfg(not(target_family = "wasm"))]
     fn forward_client_event(
         &mut self,
         session_id: SessionId,
@@ -1796,7 +2056,6 @@ impl RemoteServerManager {
 
     /// Transitions a session from `Initializing` to `Connected`. Stores the
     /// `transport` for reconnection support after a spontaneous disconnect.
-    #[cfg(not(target_family = "wasm"))]
     fn mark_session_connected(
         &mut self,
         session_id: SessionId,
@@ -1807,7 +2066,18 @@ impl RemoteServerManager {
     ) {
         log::info!("Remote server connected for session {session_id:?}, host {host_id}");
 
-        // Only transition if the session is still in Initializing state.
+        // Only transition if the session is still in Initializing state. Check before removing:
+        // taking the entry out of any other state (a stream that ended first, a reconnect)
+        // would make it vanish without a `SessionReconnected` / `SessionDisconnected` (#1253).
+        if !matches!(
+            self.sessions.get(&session_id),
+            Some(RemoteSessionState::Initializing { .. })
+        ) {
+            log::info!(
+                "Remote server for session {session_id:?} is no longer initializing; not marking it connected"
+            );
+            return;
+        }
         let Some(RemoteSessionState::Initializing {
             client,
             _child,
@@ -1818,6 +2088,7 @@ impl RemoteServerManager {
         };
 
         let is_first_session = !self.host_to_sessions.contains_key(&host_id);
+        self.connected_at.insert(session_id, Instant::now());
         self.sessions.insert(
             session_id,
             RemoteSessionState::Connected {
@@ -1891,7 +2162,6 @@ impl RemoteServerManager {
     /// src/core/model/context.rs`) is synchronous, so this await cannot
     /// happen inside `mark_session_disconnected` itself — hence the
     /// extract-await-reenter split with `finish_mark_session_disconnected`.
-    #[cfg(not(target_family = "wasm"))]
     async fn await_exit_status(
         mut child: async_process::Child,
         session_id: SessionId,
@@ -1930,7 +2200,6 @@ impl RemoteServerManager {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn mark_session_disconnected(
         &mut self,
         session_id: SessionId,
@@ -1968,10 +2237,19 @@ impl RemoteServerManager {
                 },
             );
 
+            // The socket to probe: the master we own, else the transport's own ControlPath
+            // (a reused, user-owned master has no teardown `control_path`, but its socket
+            // still tells a crashed proxy from the ssh session ending; #1250).
+            let master_socket = control_path
+                .clone()
+                .or_else(|| transport.master_socket_path());
             let spawner = self.spawner.clone();
             ctx.background_executor()
                 .spawn(async move {
                     let exit_status = Self::await_exit_status(_child, session_id).await;
+                    // A stat of the local ControlPath socket: microseconds,
+                    // and off the entity-model thread.
+                    let master_socket_present = master_socket.as_ref().map(|p| p.exists());
                     let _ = spawner
                         .spawn(move |me, ctx| {
                             me.finish_mark_session_disconnected(
@@ -1981,6 +2259,7 @@ impl RemoteServerManager {
                                 control_path,
                                 transport,
                                 exit_status,
+                                master_socket_present,
                                 ctx,
                             );
                         })
@@ -2004,7 +2283,6 @@ impl RemoteServerManager {
     /// synchronously before the `f0ca7861` port; only the exit-status
     /// source changed (async `await_exit_status` instead of sync
     /// `capture_exit_status`).
-    #[cfg(not(target_family = "wasm"))]
     fn finish_mark_session_disconnected(
         &mut self,
         session_id: SessionId,
@@ -2013,6 +2291,7 @@ impl RemoteServerManager {
         control_path: Option<PathBuf>,
         transport: Arc<dyn RemoteTransport>,
         exit_status: Option<RemoteServerExitStatus>,
+        master_socket_present: Option<bool>,
         ctx: &mut ModelContext<Self>,
     ) {
         // The session may have been deregistered (or otherwise reset) while
@@ -2028,22 +2307,20 @@ impl RemoteServerManager {
         }
         self.sessions.remove(&session_id);
 
-        // If the child process has already exited (`exit_status.is_some()`),
-        // it means the remote daemon is really gone — e.g. the user typed
-        // `exit` in the remote shell, and ssh ControlMaster tore down all
-        // slave channels together, so `remote-server-proxy` exited too. In
-        // this case, an immediate reconnect will most likely fail and would
-        // instead make the terminal pane hang for 2-4 seconds before fully
-        // ending; so we skip auto-reconnect and go straight to the
-        // Disconnected path. Only `exit_status.is_none()` (child still
-        // running, or the wait timed out) — a "true transient network
-        // blip" — keeps the reconnect logic.
-        let child_already_exited = exit_status.is_some();
+        // Did the user leave, or did only the proxy die? A proxy exit alone
+        // proves nothing: `exit` in the remote shell makes ssh tear down the
+        // master and every channel (proxy included), but a killed/crashed
+        // proxy or daemon looks identical from here. The ControlPath socket
+        // tells them apart; reconnecting after a real `exit` would just hang
+        // the pane for 2-4 s. See `classify_proxy_exit`.
+        let proxy_exit = classify_proxy_exit(master_socket_present, exit_status.is_some());
+        let child_already_exited = proxy_exit == ProxyExit::UserExited;
         let Some(auth_context) = self.auth_context.clone().filter(|_| !child_already_exited) else {
             if child_already_exited {
                 log::info!(
                     "Spontaneous disconnect for session {session_id:?}: \
-                     child already exited (exit_status={exit_status:?}), \
+                     ssh session gone (exit_status={exit_status:?}, \
+                     master_socket_present={master_socket_present:?}), \
                      skipping reconnect"
                 );
             } else {
@@ -2069,6 +2346,12 @@ impl RemoteServerManager {
             "Spontaneous disconnect for session {session_id:?}, \
              will attempt reconnect (transport={transport:?})"
         );
+        // Let the session fall back to the ControlMaster executor right away
+        // so completions keep working while we reconnect in the background.
+        ctx.emit(RemoteServerManagerEvent::SessionConnectionLost {
+            session_id,
+            host_id: host_id.clone(),
+        });
 
         // Clear stale repo metadata and host index so downstream
         // models don't hold onto data from the dead server process.
@@ -2082,6 +2365,37 @@ impl RemoteServerManager {
         // We need to do this on disconnect because the cached
         // navigated path is only deduping for the current _remote server session.
         self.last_navigated_path.remove(&session_id);
+
+        // A daemon that keeps dying right after the handshake is not reconnected to forever
+        // (#1250): each reconnect would reset `attempt`, so this counts connections instead.
+        let lived = self
+            .connected_at
+            .remove(&session_id)
+            .map(|connected_at| connected_at.elapsed());
+        let short_lived = consecutive_short_lived_connections(
+            self.short_lived_connections
+                .get(&session_id)
+                .copied()
+                .unwrap_or(0),
+            lived,
+        );
+        if short_lived >= MAX_SHORT_LIVED_CONNECTIONS {
+            log::warn!(
+                "Remote server for session {session_id:?} died within {STABLE_CONNECTION_AFTER:?} \
+                 of connecting {short_lived} times in a row (last lived {lived:?}); not \
+                 reconnecting again"
+            );
+            self.short_lived_connections.remove(&session_id);
+            self.sessions
+                .insert(session_id, RemoteSessionState::Disconnected);
+            ctx.emit(RemoteServerManagerEvent::SessionDisconnected {
+                session_id,
+                host_id,
+                exit_status,
+            });
+            return;
+        }
+        self.short_lived_connections.insert(session_id, short_lived);
 
         self.attempt_reconnect(
             session_id,
@@ -2098,8 +2412,14 @@ impl RemoteServerManager {
         );
     }
 
+    /// Starts a new connection generation for `session_id` and returns it (#1171).
+    fn bump_connection_generation(&mut self, session_id: SessionId) -> u64 {
+        let generation = self.connection_generation.entry(session_id).or_insert(0);
+        *generation = generation.wrapping_add(1);
+        *generation
+    }
+
     /// Attempt to re-establish the remote server connection.
-    #[cfg(not(target_family = "wasm"))]
     fn attempt_reconnect(
         &mut self,
         session_id: SessionId,
@@ -2121,6 +2441,8 @@ impl RemoteServerManager {
              (attempt {attempt}/{MAX_RECONNECT_ATTEMPTS})"
         );
 
+        // The previous attempt's stream (if it timed out after installing one) is now stale.
+        self.bump_connection_generation(session_id);
         self.sessions.insert(
             session_id,
             RemoteSessionState::Reconnecting {
@@ -2150,12 +2472,16 @@ impl RemoteServerManager {
                     return;
                 }
 
-                match Self::run_connect_and_handshake(
-                    session_id,
-                    &*transport_clone,
-                    &auth_context_for_task,
-                    &spawner,
-                    &executor,
+                match bound_reconnect_attempt(
+                    Self::run_connect_and_handshake(
+                        session_id,
+                        &*transport_clone,
+                        &auth_context_for_task,
+                        &spawner,
+                        &executor,
+                        None,
+                    ),
+                    RECONNECT_ATTEMPT_TIMEOUT,
                 )
                 .await
                 {
@@ -2227,7 +2553,6 @@ impl RemoteServerManager {
     }
 
     /// Handle a failed reconnection attempt: either retry or give up.
-    #[cfg(not(target_family = "wasm"))]
     fn handle_reconnect_failure(
         &mut self,
         session_id: SessionId,
@@ -2354,7 +2679,6 @@ impl RemoteServerManager {
 
     /// Ensures a codebase index exists on `host_id` for `repo_path`, without
     /// resyncing one that already exists.
-    #[cfg(not(target_family = "wasm"))]
     pub fn ensure_codebase_indexed(
         &mut self,
         host_id: HostId,
@@ -2366,7 +2690,6 @@ impl RemoteServerManager {
     }
 
     /// Sends a full `ResyncCodebase` to the daemon owning `repo_path`.
-    #[cfg(not(target_family = "wasm"))]
     pub fn resync_codebase(
         &mut self,
         host_id: HostId,
@@ -2381,26 +2704,7 @@ impl RemoteServerManager {
         )
     }
 
-    /// Sends an incremental `ResyncCodebase` to the daemon owning `repo_path`.
-    #[cfg(not(target_family = "wasm"))]
-    pub fn trigger_codebase_incremental_sync(
-        &mut self,
-        host_id: HostId,
-        repo_path: String,
-        ctx: &mut ModelContext<Self>,
-    ) -> bool {
-        self.mutate_codebase_index(
-            host_id,
-            repo_path,
-            RemoteCodebaseIndexUpdateOperation::Sync {
-                is_full_sync: false,
-            },
-            ctx,
-        )
-    }
-
     /// Drops the daemon's index for `repo_path`.
-    #[cfg(not(target_family = "wasm"))]
     pub fn drop_codebase_index(
         &mut self,
         host_id: HostId,
@@ -2423,7 +2727,6 @@ impl RemoteServerManager {
     /// transport failure, arrives as either `CodebaseIndexStatusUpdated` or
     /// `CodebaseIndexMutationFailed`; a caller that showed a spinner will
     /// always be told to stop.
-    #[cfg(not(target_family = "wasm"))]
     fn mutate_codebase_index(
         &mut self,
         host_id: HostId,
@@ -2536,7 +2839,6 @@ impl RemoteServerManager {
     }
 
     /// The first connected session for a host, if any.
-    #[cfg(not(target_family = "wasm"))]
     fn connected_session_for_host(&self, host_id: &HostId) -> Option<SessionId> {
         let sessions = self.host_to_sessions.get(host_id)?;
         sessions
@@ -2619,7 +2921,6 @@ impl RemoteServerManager {
     /// error conversion for session-scoped requests. No-ops (logs at debug)
     /// if the request isn't pending — already resolved, already aborted, or
     /// a stray/duplicate response.
-    #[cfg(not(target_family = "wasm"))]
     fn resolve_host_response(&mut self, msg: crate::proto::ServerMessage) {
         let request_id = crate::protocol::RequestId::from(msg.request_id.clone());
         let Some(pending) = self.pending_host_requests.remove(&request_id) else {
@@ -2644,7 +2945,6 @@ impl RemoteServerManager {
     /// not be decoded (`ClientEvent::HostScopedDecodeFailed`). The daemon
     /// already produced a reply, so this is terminal — unlike a dispatch
     /// failure, retrying wouldn't help. No-op if the request isn't pending.
-    #[cfg(not(target_family = "wasm"))]
     fn fail_host_request_decode_error(&mut self, request_id: &crate::protocol::RequestId) {
         if let Some(pending) = self.pending_host_requests.remove(request_id) {
             log::warn!(
@@ -2850,6 +3150,97 @@ impl HostRequestHandle {
                 Err(HostRequestError::UnexpectedResponse)
             }
         }
+    }
+}
+
+/// Everything `check_binary` learns about a host before setup continues.
+#[derive(Debug)]
+pub(crate) struct BinaryCheckProbes {
+    pub(crate) platform: Option<RemotePlatform>,
+    pub(crate) check_result: Result<bool, String>,
+    pub(crate) has_old_binary: bool,
+    pub(crate) preinstall: Option<PreinstallCheckResult>,
+}
+
+/// Runs the setup probes for one host.
+///
+/// Platform detection, binary check, old-binary check and the preinstall check all start
+/// together (#1136): the preinstall check used to wait for platform detection, which cost
+/// an extra round trip plus a remote shell start on every Linux connect. The old-binary
+/// check lets the controller distinguish a fresh install (no prior versioned binary) from
+/// an update (prior versioned binary present), so it can skip the install prompt in the
+/// update case.
+///
+/// The preinstall check only matters on Linux, so its result is dropped for any other
+/// platform (or when detection failed), exactly as if it had never run. SSH-level failures
+/// are logged and surfaced as `None`, which the controller treats as inconclusive (fail
+/// open).
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) async fn run_binary_check_probes<T>(
+    transport: &T,
+    session_id: SessionId,
+) -> BinaryCheckProbes
+where
+    T: RemoteTransport + ?Sized,
+{
+    run_binary_check_probes_staged(transport, session_id, None).await
+}
+
+/// [`run_binary_check_probes`], signalling `early` the moment the binary check reports the
+/// binary present, without waiting for the other three probes (#1172).
+pub(crate) async fn run_binary_check_probes_staged<T>(
+    transport: &T,
+    session_id: SessionId,
+    mut early: Option<futures::channel::oneshot::Sender<()>>,
+) -> BinaryCheckProbes
+where
+    T: RemoteTransport + ?Sized,
+{
+    let (platform_result, check_result, old_binary_result, preinstall_result) = futures::join!(
+        transport.detect_platform(),
+        async {
+            let result = transport.check_binary().await;
+            // #1172: tell the caller as soon as the binary is known to be there.
+            if let (Ok(true), Some(early)) = (&result, early.take()) {
+                let _ = early.send(());
+            }
+            result
+        },
+        transport.check_has_old_binary(),
+        transport.run_preinstall_check(),
+    );
+    let platform = match platform_result {
+        Ok(p) => Some(p),
+        Err(e) => {
+            log::warn!("Platform detection failed for session {session_id:?}: {e}");
+            None
+        }
+    };
+    let has_old_binary = match old_binary_result {
+        Ok(has) => has,
+        Err(e) => {
+            log::warn!(
+                "Old-binary detection failed for session {session_id:?}: {e}. \
+                 Treating as fresh install."
+            );
+            false
+        }
+    };
+    let preinstall = match &platform {
+        Some(p) if matches!(p.os, RemoteOs::Linux) => match preinstall_result {
+            Ok(r) => Some(r),
+            Err(e) => {
+                log::warn!("Preinstall check failed for session {session_id:?}: {e}");
+                None
+            }
+        },
+        _ => None,
+    };
+    BinaryCheckProbes {
+        platform,
+        check_result,
+        has_old_binary,
+        preinstall,
     }
 }
 

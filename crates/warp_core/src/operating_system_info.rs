@@ -38,7 +38,6 @@ pub struct OperatingSystemInfo {
 }
 
 impl OperatingSystemInfo {
-    #[cfg(not(target_family = "wasm"))]
     fn new() -> Result<Self, OperatingSystemInfoError> {
         let os_category =
             OperatingSystemCategory::new().ok_or(OperatingSystemInfoError::Unknown)?;
@@ -129,7 +128,6 @@ pub enum OperatingSystemCategory {
 }
 
 impl OperatingSystemCategory {
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn new() -> Option<Self> {
         if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             Some(OperatingSystemCategory::Linux)
@@ -163,7 +161,6 @@ pub enum OperatingSystemInfoError {
     #[error("computing the operating system information is unsupported on this platform")]
     #[allow(dead_code)]
     UnsupportedPlatform,
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     #[error("unable to compute the operating system information")]
     Unknown,
 }

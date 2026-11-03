@@ -7,6 +7,7 @@ app/frameworks/**/*.xcframework
 /lib/*
 !/lib/rust-genai/
 !/lib/cosmic-text/
+!/lib/arboard/
 /lib/rust-genai/target/
 /lib/cosmic-text/target/
 /warp.xcworkspace
@@ -14,8 +15,6 @@ app/frameworks/**/*.xcframework
 .DS_Store
 *.icloud
 app/src/server/graphql/schema/generated
-crates/command-signatures-v2/js/build
-crates/command-signatures-v2/js/node_modules
 .worktrees/
 /target-check
 # For testing changes to the channel versions file

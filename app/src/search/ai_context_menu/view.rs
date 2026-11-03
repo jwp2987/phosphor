@@ -1,35 +1,25 @@
 use crate::appearance::Appearance;
 use crate::debounce::debounce;
 use crate::drive::settings::WarpDriveSettings;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::blocks::data_source::BlockDataSource;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::code::data_source::{CodeSymbolCache, code_data_source};
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::code::is_code_symbols_indexing;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::commands::data_source::CommandDataSource;
 use crate::search::ai_context_menu::conversations::data_source::ConversationDataSource;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::diffset::data_source::DiffSetDataSource;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::files::data_source::{
     file_data_source_for_current_repo, file_data_source_for_pwd,
 };
 use crate::search::ai_context_menu::mixer::AIContextMenuMixer;
 use crate::search::ai_context_menu::mixer::AIContextMenuSearchableAction;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::notebooks::data_source::NotebookDataSource;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::rules::data_source::RulesDataSource;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::skills::data_source::SkillsDataSource;
-#[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::workflows::data_source::WorkflowDataSource;
 use crate::search::data_source::QueryResult;
 use crate::search::data_source::{Query, QueryFilter};
-#[cfg(not(target_family = "wasm"))]
 use crate::search::mixer::AddAsyncSourceOptions;
+use crate::search::mixer::SearchMixerEvent;
 use crate::search::result_renderer::{QueryResultRenderer, QueryResultRendererStyles};
 use crate::search::search_bar::{SearchBar, SearchBarEvent, SearchBarState, SearchResultOrdering};
 use crate::settings::InputSettings;
@@ -67,13 +57,11 @@ use warpui::{
     WeakViewHandle,
 };
 
-#[cfg(not(target_family = "wasm"))]
 use crate::workspace::ActiveSession;
-#[cfg(not(target_family = "wasm"))]
 use repo_metadata::repositories::DetectedRepositories;
-#[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 
+use super::query_gate::QueryGate;
 use super::styles;
 
 const CORNER_RADIUS: f32 = 8.0;
@@ -84,15 +72,6 @@ const PADDING: f32 = 10.0;
 const SEARCH_DEBOUNCE_PERIOD: Duration = Duration::from_millis(60);
 const DETAILS_PANEL_MARGIN: f32 = 4.0;
 const PANEL_POSITION_ID: &str = "AIContextMenuPanel";
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AIContextMenuPosition {
-    /// The user clicked the AI Context Menu button.
-    AtButton,
-    /// If this is at the user's cursor, then we don't need to show a
-    /// text input field.
-    AtCursor,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AIContextMenuCategory {
@@ -232,6 +211,8 @@ struct AIContextMenuState {
 }
 
 /// Maximum number of results to display
+/// Safety net for an Enter waiting on results that never arrive (logged when it fires).
+const SELECT_WAIT_GIVE_UP: Duration = Duration::from_secs(3);
 const MAX_SEARCH_RESULTS: usize = 250;
 const MAX_CONSECUTIVE_EMPTY_RESULTS_EVENTS: usize = 7;
 
@@ -242,11 +223,12 @@ pub struct AIContextMenu {
     /// a lot of helpful logic for managing the search state.
     search_bar: ViewHandle<SearchBar<AIContextMenuSearchableAction>>,
     search_bar_state: ModelHandle<SearchBarState<AIContextMenuSearchableAction>>,
-    #[cfg(not(target_family = "wasm"))]
     code_symbol_cache: ModelHandle<CodeSymbolCache>,
     state: AIContextMenuState,
     /// Debounce channel for search queries
     search_debounce_tx: Sender<String>,
+    /// Which query the displayed results answer, and an Enter waiting for the current one (#1365).
+    query_gate: QueryGate,
     handle: WeakViewHandle<Self>,
     /// Keep track of how many times in a row
     /// we had 0 matches and the user continued to make the query longer.
@@ -394,12 +376,7 @@ impl AIContextMenu {
 
         // Compute once — used by CLI agent, AI-mode, and terminal-mode branches.
         let is_active_dir_in_git_repo = {
-            #[cfg(target_family = "wasm")]
-            {
-                false
-            }
 
-            #[cfg(not(target_family = "wasm"))]
             {
                 let active_window_id = app.windows().state().active_window;
                 let active_dir = active_window_id
@@ -595,7 +572,6 @@ impl AIContextMenu {
         });
 
         // Subscribe to repository detection so categories (Files/Code) update when a git repo is found.
-        #[cfg(not(target_family = "wasm"))]
         ctx.subscribe_to_model(
             &DetectedRepositories::handle(ctx),
             |me, _handle, _event, ctx| {
@@ -608,11 +584,21 @@ impl AIContextMenu {
             me.refresh_categories_state(ctx);
         });
 
-        #[cfg(not(target_family = "wasm"))]
         ctx.observe(
             &ActiveSession::handle(ctx),
             Self::handle_active_session_change,
         );
+
+        // Results reaching the search bar (event) release an Enter that was waiting for them.
+        ctx.subscribe_to_model(&mixer, |me, _handle, event, _ctx| {
+            if matches!(event, SearchMixerEvent::ResultsChanged) {
+                me.query_gate.results_reported();
+            }
+        });
+        // The search bar updates its state (and notifies) when it has taken the mixer's results.
+        ctx.observe(&search_bar_state, |me, _, ctx| {
+            me.run_deferred_select_if_ready(ctx);
+        });
 
         // Set up debounce system for search queries
         let (search_debounce_tx, search_debounce_rx) = async_channel::unbounded();
@@ -625,12 +611,10 @@ impl AIContextMenu {
         // Get initial categories for proper initialization
         let initial_categories = Self::get_categories_for_mode(true, false, false, false, ctx); // Default to AI mode, not a viewer, not ambient agent, not CLI agent input
 
-        #[cfg(not(target_family = "wasm"))]
         let code_symbol_cache = ctx.add_model(CodeSymbolCache::new);
 
         // When the outline updates (e.g. indexing finishes), re-run the current
         // mixer query so the Code results refresh automatically.
-        #[cfg(not(target_family = "wasm"))]
         ctx.subscribe_to_model(&code_symbol_cache, |me, _handle, _event, ctx| {
             let code_active = matches!(
                 me.state.navigation_state,
@@ -650,7 +634,6 @@ impl AIContextMenu {
             mixer,
             search_bar,
             search_bar_state,
-            #[cfg(not(target_family = "wasm"))]
             code_symbol_cache,
             state: AIContextMenuState {
                 navigation_state: if initial_categories.len() > 1 {
@@ -673,6 +656,7 @@ impl AIContextMenu {
             },
             handle: ctx.handle(),
             search_debounce_tx,
+            query_gate: QueryGate::default(),
             num_consecutive_empty_results_events: 0,
         };
 
@@ -680,7 +664,6 @@ impl AIContextMenu {
         result
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn handle_active_session_change(
         &mut self,
         _handle: ModelHandle<ActiveSession>,
@@ -691,7 +674,63 @@ impl AIContextMenu {
         self.refresh_categories_state(ctx);
     }
 
+    /// Whether Enter would select anything right now. False for a menu showing "No results",
+    /// so terminal-mode Enter can close it and submit the line instead (#1337).
+    ///
+    /// `typed_filter` is what the user has typed after the `@`. The menu's own query reaches it
+    /// through a debounce channel, so an Enter right after the last key would still see the
+    /// unfiltered category list and report something selectable; the typed text is authoritative.
+    pub fn has_selectable_item(&self, typed_filter: &str, ctx: &AppContext) -> bool {
+        match &self.state.navigation_state {
+            NavigationState::MainMenu => {
+                let typed = typed_filter.trim().to_lowercase();
+                if typed.is_empty() {
+                    !self.get_filtered_categories(ctx).is_empty()
+                } else {
+                    self.get_filtered_categories(ctx)
+                        .iter()
+                        .any(|category| category.name().to_lowercase().contains(&typed))
+                }
+            }
+            NavigationState::Category(_) | NavigationState::AllCategories => self
+                .search_bar_state
+                .as_ref(ctx)
+                .query_result_renderers()
+                .is_some_and(|results| !results.is_empty()),
+        }
+    }
+
+    /// Runs the Enter that `select_current_item` deferred, once the results are current.
+    fn run_deferred_select_if_ready(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.query_gate.select_waiting() {
+            return;
+        }
+        let in_main_menu = matches!(self.state.navigation_state, NavigationState::MainMenu);
+        let loading = !in_main_menu && self.mixer.as_ref(ctx).is_loading();
+        if self.query_gate.take_ready_select(loading) {
+            self.select_current_item(ctx);
+        }
+    }
+
     pub fn select_current_item(&mut self, ctx: &mut ViewContext<Self>) {
+        // The query reaches the mixer through a debounce, so right after a key the shown results
+        // (or the main-menu filter) answer an older query. Never act on them: wait for the
+        // current query's results (event driven; the timer below is only a logged give-up) (#1365).
+        if self.query_gate.is_stale() {
+            let wait_id = self.query_gate.defer_select();
+            log::debug!("ai context menu: Enter deferred until results for the typed query arrive");
+            let _ = ctx.spawn(
+                async { warpui::r#async::Timer::after(SELECT_WAIT_GIVE_UP).await },
+                move |me, _, _ctx| {
+                    if me.query_gate.give_up(wait_id) {
+                        log::warn!(
+                            "ai context menu: gave up waiting for results; Enter dropped (acting on nothing)"
+                        );
+                    }
+                },
+            );
+            return;
+        }
         match &self.state.navigation_state {
             NavigationState::MainMenu => {
                 // Select the current category from filtered categories
@@ -735,6 +774,7 @@ impl AIContextMenu {
     }
 
     pub fn close(&mut self, ctx: &mut ViewContext<Self>) {
+        self.query_gate.reset();
         self.num_consecutive_empty_results_events = 0;
         let query_length = self.query(ctx).len();
         let item_count = self.item_count(ctx);
@@ -765,6 +805,7 @@ impl AIContextMenu {
             ctx,
         );
         if categories.len() > 1 {
+            self.query_gate.reset();
             self.state.navigation_state = NavigationState::MainMenu;
             self.state.main_menu_query = String::new();
             self.state.selected_category_index = 0;
@@ -775,6 +816,7 @@ impl AIContextMenu {
 
     pub fn update_search_query(&mut self, query: String, _ctx: &mut ViewContext<Self>) {
         // Send the query through the debounce channel instead of updating directly
+        self.query_gate.request(query.clone());
         let _ = self.search_debounce_tx.try_send(query);
     }
 
@@ -797,6 +839,12 @@ impl AIContextMenu {
             self.check_and_transition_to_all_categories(&query, ctx);
         }
 
+        // Main-menu categories are view state filtered synchronously above, so only the other
+        // states wait for the mixer to answer; an unchanged query produces no new results.
+        let awaits_mixer = !matches!(self.state.navigation_state, NavigationState::MainMenu)
+            && self.search_bar.as_ref(ctx).query(ctx) != query;
+        self.query_gate.applied(&query, awaits_mixer);
+
         self.search_bar.update(ctx, |search_bar, ctx| {
             let prev_query = search_bar.query(ctx);
             // In MainMenu state the mixer has no data sources, so empty results
@@ -817,6 +865,8 @@ impl AIContextMenu {
         });
         if self.num_consecutive_empty_results_events >= MAX_CONSECUTIVE_EMPTY_RESULTS_EVENTS {
             self.close(ctx);
+        } else {
+            self.run_deferred_select_if_ready(ctx);
         }
     }
 
@@ -844,7 +894,6 @@ impl AIContextMenu {
 
         match self.state.navigation_state {
             NavigationState::MainMenu => {}
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::CurrentFolderFiles) => {
                 self.mixer.update(ctx, |mixer, ctx| {
                     mixer.add_async_source(
@@ -866,7 +915,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::RepoFiles) => {
                 self.mixer.update(ctx, |mixer, ctx| {
                     mixer.add_async_source(
@@ -888,7 +936,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Commands) => {
                 let command_data_source = ctx.add_model(|_| CommandDataSource::new());
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -902,7 +949,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Blocks) => {
                 let block_data_source = ctx.add_model(|_| BlockDataSource::new());
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -916,7 +962,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Code) => {
                 self.mixer.update(ctx, |mixer, ctx| {
                     mixer.add_async_source(
@@ -938,7 +983,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Workflows) => {
                 let workflow_data_source = ctx.add_model(|_| WorkflowDataSource::new());
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -952,7 +996,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Notebooks) => {
                 let notebook_data_source = ctx.add_model(|_| NotebookDataSource::new(false));
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -966,7 +1009,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Plans) => {
                 let notebook_data_source = ctx.add_model(|_| NotebookDataSource::new(true));
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -980,7 +1022,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Rules) => {
                 let rules_data_source = ctx.add_model(|_| RulesDataSource::new());
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -994,7 +1035,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::DiffSet) => {
                 let diffset_data_source = ctx.add_model(|_| DiffSetDataSource);
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -1021,7 +1061,6 @@ impl AIContextMenu {
                     );
                 });
             }
-            #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Skills) => {
                 let skills_data_source = ctx.add_model(|_| SkillsDataSource::new());
                 self.mixer.update(ctx, |mixer, ctx| {
@@ -1069,7 +1108,6 @@ impl AIContextMenu {
     }
 
     /// Set up data sources for all available categories
-    #[cfg(not(target_family = "wasm"))]
     fn setup_data_sources_for_all_categories(&mut self, query: &str, ctx: &mut ViewContext<Self>) {
         // Reset mixer first
         self.mixer.update(ctx, |mixer, ctx| {
@@ -1199,39 +1237,6 @@ impl AIContextMenu {
         }
 
         // Run the query with all data sources
-        self.mixer.update(ctx, |mixer, ctx| {
-            mixer.run_query(
-                Query {
-                    text: query.into(),
-                    filters: HashSet::new(),
-                },
-                ctx,
-            );
-        });
-    }
-
-    #[cfg(target_family = "wasm")]
-    fn setup_data_sources_for_all_categories(&mut self, query: &str, ctx: &mut ViewContext<Self>) {
-        self.mixer.update(ctx, |mixer, ctx| {
-            mixer.reset(ctx);
-        });
-
-        let categories = Self::get_categories_for_mode(
-            self.state.is_ai_or_autodetect_mode,
-            self.state.is_shared_session_viewer,
-            self.state.is_in_ambient_agent,
-            self.state.is_cli_agent_input,
-            ctx,
-        );
-        for category in categories.iter() {
-            if matches!(category, AIContextMenuCategory::Conversations) {
-                let conversation_data_source = ctx.add_model(|_| ConversationDataSource);
-                self.mixer.update(ctx, |mixer, _ctx| {
-                    mixer.add_sync_source(conversation_data_source, [QueryFilter::Conversations]);
-                });
-            }
-        }
-
         self.mixer.update(ctx, |mixer, ctx| {
             mixer.run_query(
                 Query {
@@ -1436,7 +1441,6 @@ impl AIContextMenu {
         .finish()
     }
 
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn render_code_symbols_indexing(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
@@ -1524,7 +1528,6 @@ impl AIContextMenu {
     }
 
     /// Whether the AI context menu should render.
-    #[cfg(not(target_family = "wasm"))]
     pub fn should_render(&self, app: &AppContext) -> bool {
         !Self::get_categories_for_mode(
             self.state.is_ai_or_autodetect_mode,
@@ -1534,11 +1537,6 @@ impl AIContextMenu {
             app,
         )
         .is_empty()
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub fn should_render(&self, _app: &AppContext) -> bool {
-        false
     }
 
     /// Returns the selected result renderer, if any.
@@ -1651,14 +1649,12 @@ impl AIContextMenu {
 
     /// Renders the appropriate empty-state element: code-symbols-indexing
     /// indicator (when applicable), loading spinner, or the provided fallback.
-    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     fn render_empty_state(
         &self,
         category: Option<&AIContextMenuCategory>,
         fallback: Box<dyn Element>,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        #[cfg(not(target_family = "wasm"))]
         if let Some(cat) = category
             && *cat == AIContextMenuCategory::Code
             && is_code_symbols_indexing(app)
@@ -1673,7 +1669,6 @@ impl AIContextMenu {
         }
     }
 
-    #[allow(dead_code)]
     fn render_search_bar(&self) -> Box<dyn Element> {
         ChildView::new(&self.search_bar).finish()
     }

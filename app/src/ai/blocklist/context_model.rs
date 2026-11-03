@@ -235,7 +235,19 @@ fn is_text_like_by_filename(file_name: &str) -> bool {
 /// actually consumes BinaryContent and upgrades it to `ContentPart::Binary`.
 fn read_pending_file_for_context(file: &PendingFile) -> Option<FileContext> {
     let full_path = file.file_path.to_string_lossy().into_owned();
-    let metadata_size = std::fs::metadata(&file.file_path).ok().map(|m| m.len());
+    let metadata_size = match std::fs::metadata(&file.file_path) {
+        Ok(m) => Some(m.len()),
+        // Gone since it was attached: report it as unreadable rather than handing the model an
+        // empty placeholder for a file that does not exist.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::warn!(
+                "Attached file {} no longer exists; not adding it to the context",
+                file.file_path.display()
+            );
+            return None;
+        }
+        Err(_) => None,
+    };
 
     // 1) text-like: try UTF-8
     if is_text_like(file) {
@@ -320,32 +332,74 @@ fn read_pending_file_for_context(file: &PendingFile) -> Option<FileContext> {
     ))
 }
 
-/// Splits an explicitly-resolved attachment set into the `AIAgentContext` entries it produces
-/// (an `Image` per image, plus the `File` content read from disk for each file — see
-/// `read_pending_file_for_context`) and the plain `PendingFile` list callers use to also add
-/// `FilePathReference` entries to `referenced_attachments` (via `add_pending_file_attachments`).
-///
-/// Used by callers that resolve their own attachment set — a fired queued row's captured
-/// attachments, or the currently-staged attachments for a direct send — instead of reading
-/// `pending_attachments` directly, so the built request reflects what was actually staged when
-/// the prompt was queued (or sent), not whatever happens to be staged when the request is built.
-pub fn context_and_files_for_attachments(
+/// One attachment together with the file content read for it. `file_context` is `Some` only for
+/// a `File` whose content was read successfully.
+#[derive(Debug, Clone)]
+pub struct ReadAttachment {
+    pub attachment: PendingAttachment,
+    pub file_context: Option<FileContext>,
+}
+
+/// Reads the content of every file attachment (blocking disk IO: stats and reads of up to the
+/// inline caps per file). Order is preserved. Callers on the UI thread run this on a worker
+/// thread and continue with [`context_and_files_from_read`] when it returns.
+pub fn read_attachments(attachments: Vec<PendingAttachment>) -> Vec<ReadAttachment> {
+    read_attachments_cancellable(attachments, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// [`read_attachments`] that checks `cancel` before each file and skips the remaining reads once
+/// it is set (the result is then discarded by the caller; #1382).
+pub fn read_attachments_cancellable(
     attachments: Vec<PendingAttachment>,
-) -> (Vec<AIAgentContext>, Vec<PendingFile>) {
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<ReadAttachment> {
+    attachments
+        .into_iter()
+        .map(|attachment| {
+            let file_context = match &attachment {
+                PendingAttachment::File(file)
+                    if !cancel.load(std::sync::atomic::Ordering::Relaxed) =>
+                {
+                    read_pending_file_for_context(file)
+                }
+                _ => None,
+            };
+            ReadAttachment {
+                attachment,
+                file_context,
+            }
+        })
+        .collect()
+}
+
+/// Builds the context entries and file list from already-read attachments, in the original order,
+/// plus the names of the files whose content could not be read.
+pub fn context_and_files_from_read(
+    read: Vec<ReadAttachment>,
+) -> (Vec<AIAgentContext>, Vec<PendingFile>, Vec<String>) {
     let mut context = Vec::new();
     let mut files = Vec::new();
-    for attachment in attachments {
-        match attachment {
+    let mut failed = Vec::new();
+    for item in read {
+        match item.attachment {
             PendingAttachment::Image(image) => context.push(AIAgentContext::Image(image)),
             PendingAttachment::File(file) => {
-                if let Some(file_context) = read_pending_file_for_context(&file) {
-                    context.push(AIAgentContext::File(file_context));
+                match item.file_context {
+                    Some(file_context) => context.push(AIAgentContext::File(file_context)),
+                    None => failed.push(file.file_name.clone()),
                 }
                 files.push(file);
             }
         }
     }
-    (context, files)
+    (context, files, failed)
+}
+
+/// True when reading `attachments` touches the disk.
+pub fn attachments_need_disk_read(attachments: &[PendingAttachment]) -> bool {
+    attachments
+        .iter()
+        .any(|a| matches!(a, PendingAttachment::File(_)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -523,6 +577,32 @@ pub fn block_context_from_terminal_model(
         os: None,
         session_id: None,
     })
+}
+
+/// Packs a project-rules lookup into the context entry an agent request carries. Shared by
+/// `pending_context` and the send path, which adds the rules once the fast-path scan lands
+/// (#1364).
+pub(crate) fn project_rules_context(
+    rules: ai::project_context::model::ProjectRulesResult,
+) -> AIAgentContext {
+    AIAgentContext::ProjectRules {
+        root_path: rules.root_path.to_string_lossy().into(),
+        active_rules: rules
+            .active_rules
+            .into_iter()
+            .map(|rule| {
+                let line_count = rule.content.lines().count();
+                FileContext {
+                    file_name: rule.path.to_string_lossy().into(),
+                    content: AnyFileContent::StringContent(rule.content.clone()),
+                    line_range: None,
+                    last_modified: None,
+                    line_count,
+                }
+            })
+            .collect(),
+        additional_rule_paths: rules.additional_rule_paths,
+    }
 }
 
 impl BlocklistAIContextModel {
@@ -897,8 +977,11 @@ impl BlocklistAIContextModel {
             // above, just for symbol-search availability instead of rules.
             false
         } else {
-            pwd.as_ref()
-                .is_some_and(|pwd| RepoOutlines::as_ref(app).is_directory_indexed(Path::new(&pwd)))
+            pwd.as_ref().is_some_and(|pwd| {
+                // Lazy outline: an agent query in this repo is the first real need.
+                RepoOutlines::as_ref(app).request_outline(Path::new(&pwd));
+                RepoOutlines::as_ref(app).is_directory_indexed(Path::new(&pwd))
+            })
         };
 
         let project_rules = if let Some(host_id) = remote_host {
@@ -909,12 +992,11 @@ impl BlocklistAIContextModel {
                 .and_then(|s| s.canonicalize().ok())
         }) {
             // Prefers the normal path (zero IO, taking results from the HashMap once
-            // async indexing has finished); when not ready, synchronously
-            // fast-path-stats and reads rule files from cwd/ancestor directories.
-            // Matches opencode's `findUp` pattern, ensuring AGENTS.md is available
-            // even if a question is asked right after `cd`. The fast-path has an
-            // internal cache + time budget, so the UI never blocks. See
-            // `crates/ai/src/project_context/model.rs::find_rules_with_fast_path`。
+            // async indexing has finished), then the fast-path cache filled by the
+            // cd-time background scan. Never scans on this (UI) thread: when neither
+            // has the answer yet, the rules are left out here and the send path adds
+            // them once the scan lands (`controller/project_rules_wait.rs`, #1364).
+            // See `crates/ai/src/project_context/model.rs::find_rules_with_fast_path`.
             ProjectContextModel::as_ref(app).find_rules_with_fast_path(&pwd)
         } else {
             None
@@ -959,24 +1041,7 @@ impl BlocklistAIContextModel {
 
         // Always include project rules if available
         if let Some(rules) = project_rules {
-            context.push(AIAgentContext::ProjectRules {
-                root_path: rules.root_path.to_string_lossy().into(),
-                active_rules: rules
-                    .active_rules
-                    .into_iter()
-                    .map(|rule| {
-                        let line_count = rule.content.lines().count();
-                        FileContext {
-                            file_name: rule.path.to_string_lossy().into(),
-                            content: AnyFileContent::StringContent(rule.content.clone()),
-                            line_range: None,
-                            last_modified: None,
-                            line_count,
-                        }
-                    })
-                    .collect(),
-                additional_rule_paths: rules.additional_rule_paths,
-            });
+            context.push(project_rules_context(rules));
         }
 
         // If this is a user query, add user-selected contexts
@@ -1012,8 +1077,8 @@ impl BlocklistAIContextModel {
             // (a fired queued row's captured attachments, or live staging captured at send
             // time). Reading `self.pending_attachments` here would attach whatever happens to be
             // staged when the request is *built*, not what was staged when it was queued. See
-            // `context_and_files_for_attachments`, which callers use to build this context
-            // themselves from their resolved set.
+            // `read_attachments` + `context_and_files_from_read`, which callers use to build this
+            // context themselves from their resolved set.
         }
 
         context
@@ -1042,6 +1107,17 @@ impl BlocklistAIContextModel {
         if let Some(session_id) = block_metadata.session_id()
             && let Some(active_session) = sessions.as_ref(ctx).get(session_id)
         {
+            // Start the project-rules scan for the new cwd now, off the UI thread, so the
+            // request built after this `cd` finds it cached instead of walking the disk
+            // (#1364). Local sessions only: a remote cwd is a path on another host.
+            #[cfg(feature = "local_fs")]
+            if active_session.is_local()
+                && let Some(pwd) = pwd.as_ref()
+                && ctx.has_singleton_model::<ProjectContextModel>()
+            {
+                ProjectContextModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.prewarm_fast_path(pwd, ctx));
+            }
             self.update_directory_context(
                 pwd.map(|p| p.to_string_lossy().to_string()),
                 active_session.home_dir().map(|sq| sq.to_owned()),

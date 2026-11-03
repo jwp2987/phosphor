@@ -297,7 +297,6 @@ impl View for ExternalEditorView {
             None,
             LocalOnlyIconState::for_setting(
                 OpenFileEditor::storage_key(),
-                OpenFileEditor::sync_to_cloud(),
                 &mut self.local_only_icon_states.borrow_mut(),
                 app,
             ),
@@ -312,7 +311,6 @@ impl View for ExternalEditorView {
             None,
             LocalOnlyIconState::for_setting(
                 OpenCodePanelsFileEditor::storage_key(),
-                OpenCodePanelsFileEditor::sync_to_cloud(),
                 &mut self.local_only_icon_states.borrow_mut(),
                 app,
             ),
@@ -327,7 +325,6 @@ impl View for ExternalEditorView {
             None,
             LocalOnlyIconState::for_setting(
                 OpenFileLayout::storage_key(),
-                OpenFileLayout::sync_to_cloud(),
                 &mut self.local_only_icon_states.borrow_mut(),
                 app,
             ),
@@ -346,7 +343,6 @@ impl View for ExternalEditorView {
                 None,
                 LocalOnlyIconState::for_setting(
                     PreferTabbedEditorView::storage_key(),
-                    PreferTabbedEditorView::sync_to_cloud(),
                     &mut self.local_only_icon_states.borrow_mut(),
                     app,
                 ),
@@ -381,7 +377,6 @@ impl View for ExternalEditorView {
             }),
             LocalOnlyIconState::for_setting(
                 PreferMarkdownViewer::storage_key(),
-                PreferMarkdownViewer::sync_to_cloud(),
                 &mut self.local_only_icon_states.borrow_mut(),
                 app,
             ),

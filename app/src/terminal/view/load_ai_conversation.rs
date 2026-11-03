@@ -7,6 +7,7 @@ use warp_core::features::FeatureFlag;
 use warpui::{EntityId, ViewContext};
 
 use super::blocklist_filter::exchanges_for_blocklist;
+use super::fork_restore_persist::FORK_RESTORE_STALL_GIVE_UP;
 use crate::ai::blocklist::agent_view::{
     AgentViewEntryBlockParams, AgentViewEntryOrigin, DismissalStrategy, EphemeralMessage,
 };
@@ -14,13 +15,13 @@ use crate::ai::blocklist::block::cli::CLISubagentViewMode;
 use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::history_model::{CLIAgentConversation, LoadedConversationData};
 use crate::ai::blocklist::{BlocklistAIContextModel, SerializedBlockListItem};
+use crate::terminal::TerminalModel;
 use crate::terminal::block_list_viewport::ScrollPositionUpdate;
 use crate::terminal::input::message_bar::Message as InputMessage;
 use crate::terminal::input::message_bar::MessageItem;
 use crate::terminal::model::block::SerializedBlock;
 use crate::terminal::model::rich_content::RichContentType;
 use crate::terminal::model_events::ModelEventDispatcher;
-use crate::terminal::TerminalModel;
 use crate::util::bindings::keybinding_name_to_keystroke;
 use chrono::{DateTime, Local};
 use itertools::Itertools;
@@ -40,13 +41,13 @@ use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::{
     ai::{
         agent::{
+            AIAgentExchange, AIAgentExchangeId, AIAgentOutput,
             conversation::{AIConversation, AIConversationId},
             task::TaskId,
-            AIAgentExchange, AIAgentExchangeId, AIAgentOutput,
         },
         blocklist::{
-            history_model::BlocklistAIHistoryModel, model::AIBlockModelImpl, AIBlock,
-            BlocklistAIActionModel, BlocklistAIController, ClientIdentifiers,
+            AIBlock, BlocklistAIActionModel, BlocklistAIController, ClientIdentifiers,
+            history_model::BlocklistAIHistoryModel, model::AIBlockModelImpl,
         },
     },
     persistence::model::AgentConversationData,
@@ -1166,19 +1167,74 @@ impl TerminalView {
             history_model.on_forked_conversation(conversation_id, self.view_id, ctx);
         });
 
-        let model = self.model.lock();
-        model
-            .block_list()
-            .blocks()
-            .iter()
-            .filter(|b| b.is_restored() && !b.is_background())
-            .map(|b| Arc::new(SerializedBlock::from(b)))
-            .for_each(|block| {
-                ctx.emit(Event::BlockCompleted {
-                    is_local: self.is_block_considered_remote(block.session_id, None, ctx),
-                    block,
-                });
+        self.fork_restore_persist.reset();
+        self.persist_restored_blocks_for_fork(ctx);
+    }
+
+    /// Emits `BlockCompleted` for the restored blocks of a fork. A restored block whose grids
+    /// are still being parsed off-thread (#1254) would serialize blank, so it waits for its
+    /// install: `resume_fork_restore_persist` calls this again when a deferred restore lands,
+    /// however long the parse takes (#1363). The only timer is a stall watchdog for a parse
+    /// that never completes; it is logged and the user is told.
+    fn persist_restored_blocks_for_fork(&mut self, ctx: &mut ViewContext<Self>) {
+        let (ready, still_pending) = {
+            let model = self.model.lock();
+            let candidates = model
+                .block_list()
+                .blocks()
+                .iter()
+                .filter(|b| b.is_restored() && !b.is_background())
+                .map(|b| (b.id().clone(), b.is_restore_pending()))
+                .collect::<Vec<_>>();
+            let ready_ids = self.fork_restore_persist.poll(candidates);
+            let ready = ready_ids
+                .iter()
+                .filter_map(|id| model.block_list().block_with_id(id))
+                .map(|b| Arc::new(SerializedBlock::from(b)))
+                .collect::<Vec<_>>();
+            (ready, self.fork_restore_persist.is_waiting())
+        };
+        for block in ready {
+            ctx.emit(Event::BlockCompleted {
+                is_local: self.is_block_considered_remote(block.session_id, None, ctx),
+                persisted_content: None,
+                block,
             });
+        }
+        if still_pending {
+            let generation = self.fork_restore_persist.generation();
+            ctx.spawn(
+                warpui::r#async::Timer::after(FORK_RESTORE_STALL_GIVE_UP),
+                move |me, _, ctx| me.give_up_on_fork_restore(generation, ctx),
+            );
+        }
+    }
+
+    /// A deferred restore installed: persist the fork blocks it made ready. Called from the
+    /// wakeup that installs them; one bool check when no fork is waiting.
+    pub(super) fn resume_fork_restore_persist(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.fork_restore_persist.is_waiting() {
+            self.persist_restored_blocks_for_fork(ctx);
+        }
+    }
+
+    /// Stall watchdog: nothing installed for `FORK_RESTORE_STALL_GIVE_UP`.
+    fn give_up_on_fork_restore(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        if !self.fork_restore_persist.give_up(generation) {
+            return;
+        }
+        log::error!(
+            "Forked conversation: restored blocks never finished loading; they were not saved"
+        );
+        let message = InputMessage::new(vec![MessageItem::text(
+            "some blocks of this forked conversation failed to load and were not saved",
+        )]);
+        self.ephemeral_message_model.update(ctx, |model, ctx| {
+            model.show_ephemeral_message(
+                EphemeralMessage::new(message, DismissalStrategy::UntilExplicitlyDismissed),
+                ctx,
+            );
+        });
     }
 
     /// Show a contextual ephemeral hint when the restored conversation's
@@ -1436,7 +1492,25 @@ impl TerminalView {
             return;
         }
 
-        let content = ctx.clipboard().read();
+        // Off the UI thread (#1380); the link is then loaded from what was read.
+        crate::util::clipboard::read_clipboard_for_view(
+            self,
+            ctx,
+            warpui::clipboard::ReadKind::TextAndPaths,
+            |view, read, ctx| match read {
+                warpui::clipboard::BackgroundTextRead::Content(content) => {
+                    view.load_agent_mode_conversation_from_clipboard_content(content, ctx)
+                }
+                _ => log::error!("Clipboard could not be read for a conversation debug link"),
+            },
+        );
+    }
+
+    fn load_agent_mode_conversation_from_clipboard_content(
+        &mut self,
+        content: warpui::clipboard::ClipboardContent,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let Some(debug_link) = content
             .paths
             .and_then(|paths| paths.into_iter().exactly_one().ok())
@@ -1640,7 +1714,8 @@ mod working_directory_tests {
 
     #[test]
     fn conversation_tracks_initial_and_latest_working_directory() {
-        let conversation = conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
+        let conversation =
+            conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
 
         assert_eq!(
             conversation.initial_working_directory().as_deref(),
@@ -1654,7 +1729,8 @@ mod working_directory_tests {
 
     #[test]
     fn forked_startup_working_directory_uses_latest_directory() {
-        let conversation = conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
+        let conversation =
+            conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
 
         let restoration = ConversationRestorationInNewPaneType::Forked {
             conversation,
@@ -1674,4 +1750,3 @@ mod working_directory_tests {
         );
     }
 }
-

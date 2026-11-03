@@ -542,3 +542,50 @@ mod app_exit {
         assert_eq!(status.signal(), Some(libc::SIGKILL));
     }
 }
+
+#[test]
+fn legacy_env_var_read_runs_off_thread_and_returns_every_server() {
+    use crate::ai::mcp::{MCPServer, ServerSentEvents, TransportType};
+    use super::{ClientId, SyncId};
+
+    let main_thread = std::thread::current().id();
+    let servers: Vec<_> = (0..3)
+        .map(|i| {
+            (
+                SyncId::ClientId(ClientId::new()),
+                MCPServer {
+                    transport_type: TransportType::ServerSentEvents(ServerSentEvents {
+                        url: format!("http://localhost:{i}"),
+                        headers: vec![],
+                    }),
+                    name: format!("s{i}"),
+                    uuid: uuid::Uuid::new_v4(),
+                },
+            )
+        })
+        .collect();
+    let expected: Vec<_> = servers.iter().map(|(_, s)| s.uuid).collect();
+    let out =
+        futures::executor::block_on(super::read_legacy_env_vars_in_background(None, servers));
+    assert_eq!(
+        out.iter().map(|(_, s)| s.uuid).collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(main_thread, std::thread::current().id());
+}
+
+#[test]
+fn abandoning_the_env_read_future_sets_the_cancel_flag() {
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let guard = super::CancelFlagOnDrop(flag.clone());
+    assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+    drop(guard);
+    assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn env_read_without_connection_returns_input_unchanged() {
+    let read =
+        futures_lite::future::block_on(super::read_legacy_env_vars_in_background(None, Vec::new()));
+    assert!(read.is_empty());
+}

@@ -41,7 +41,6 @@ use crate::terminal::{ShellLaunchData, SizeInfo, SizeUpdate};
 /// resizing, command execution, and native shell completions.
 pub enum PtyIntent {
     CtrlD,
-    #[cfg(not(target_family = "wasm"))]
     Interrupt,
     /// SIGINT to the pty's foreground process group instead of a ^C byte (#1001); falls back
     /// to the byte where no signal path exists.
@@ -54,6 +53,12 @@ pub enum PtyIntent {
     /// its agent action was cancelled or its conversation stopped.
     DiscardHeldTypeaheadCommand,
     WriteBytes(Cow<'static, [u8]>),
+    /// The ssh-warpify one-line payload, written as one cancellable job after a line-clear
+    /// (#1384 P3).
+    WriteLineClearSetup(Vec<u8>),
+    /// Cut what is left of a paced setup write (a line-clear payload or a bootstrap): the ssh
+    /// warpify was cancelled, or a ^C / ^D went out (#1384 P3).
+    CancelPacedSetupWrites,
     /// User bytes the typeahead hand-off routed to the pty and counts as in flight until the
     /// PTY controller has processed them (`FeatureFlag::TypeaheadHandoff`).
     WriteHandoffUserBytes(Cow<'static, [u8]>),
@@ -111,6 +116,22 @@ where
     /// (`FeatureFlag::TypeaheadHandoff`).
     fn on_typeahead_handoff_changed(&mut self, _ctx: &mut ViewContext<Self>) {}
 
+    /// Called when the editor's command was refused, so the hand-off will not engage
+    /// for it (#1353 phase 6), so keys waiting for the route to settle can be released.
+    fn on_typeahead_handoff_not_engaged(&mut self, _ctx: &mut ViewContext<Self>) {}
+
+    /// Called when the shell's line editor signalled it is ready while the surface's input queue
+    /// held keys for the prompt (#1353 phase 5): release the gate `hold_id` names.
+    fn on_prompt_hold_released(&mut self, _hold_id: u64, _ctx: &mut ViewContext<Self>) {}
+
+    /// Called when a young hold whose keys sit in the surface's input queue ended in the
+    /// controller (#1353 phase 5b): the surface takes or drops the gate's entries.
+    fn on_young_hold_ended(&mut self, _ctx: &mut ViewContext<Self>) {}
+
+    /// Called when input was dropped because a buffer on the way to the pty was full (#1442):
+    /// the surface tells the user.
+    fn on_input_buffer_overflow(&mut self, _ctx: &mut ViewContext<Self>) {}
+
     /// Called when `command` was not run because another one is already waiting to start
     /// (`FeatureFlag::TypeaheadHandoff`), so the surface can say so.
     fn on_command_coalesced(&mut self, _command: &str, _ctx: &mut ViewContext<Self>) {}
@@ -160,12 +181,17 @@ where
 
     /// A fingerprint of the screen while the active block is an agent command whose tool call
     /// is blocked waiting for completion AND is on the alternate screen or in raw mode
-    /// (`is_raw_mode`: termios has ICANON off), `None` otherwise. Consulted once a second;
+    /// (`is_raw_mode`: termios has ICANON off), `None` otherwise. Consulted when output arrives;
     /// the manager feeds it to a `FullscreenStallDetector` (#855).
     #[cfg(unix)]
     fn fullscreen_stall_fingerprint(&self, _is_raw_mode: bool, _ctx: &AppContext) -> Option<u64> {
         None
     }
+
+    /// Gives the surface a channel to signal on terminal output while a waited agent command
+    /// may be stalled on a full-screen program, so the manager judges the screen on output
+    /// events instead of a polling tick (#1365).
+    fn set_output_signal(&mut self, _tx: async_channel::Sender<()>) {}
 
     /// The waited agent command is stalled on a pager Phosphor identified by process name:
     /// send it `q` and remember to tell the model.
@@ -200,7 +226,7 @@ where
 /// (Upstream Warp defines this in `local_tty/terminal_manager.rs`; kept here
 /// alongside the trait until the local manager is genericized.)
 pub struct TerminalSurfaceInit {
-    pub wakeups_rx: async_channel::Receiver<()>,
+    pub wakeups_rx: async_channel::Receiver<crate::terminal::event_listener::Wakeup>,
     pub model_events: ModelHandle<ModelEventDispatcher>,
     pub model: Arc<FairMutex<TerminalModel>>,
     pub sessions: ModelHandle<Sessions>,

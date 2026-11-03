@@ -1,0 +1,30 @@
+{
+ "warning_count": 61,
+ "warnings_by_crate": {
+  "arboard (lib)": 2,
+  "warpui (lib)": 3,
+  "repo_metadata (lib)": 1,
+  "warp_editor (lib)": 1,
+  "warp_terminal (lib)": 6,
+  "remote_server (lib)": 1,
+  "warp (lib)": 18,
+  "warp (lib test)": 28,
+  "warp_tui (lib)": 1
+ },
+ "warning_lines_by_kind": {
+  "unused import": 43,
+  "unreachable pattern": 24,
+  "unused variable": 18,
+  "function": 12,
+  "variable does not need to be mutable": 10,
+  "use of deprecated type alias": 8,
+  "method": 8,
+  "unused imports": 7,
+  "value assigned to": 4,
+  "trait": 4,
+  "unused doc comment": 1
+ },
+ "errors": 0,
+ "status": "success",
+ "duration": 340.724006
+}

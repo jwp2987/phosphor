@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -37,10 +37,25 @@ pub enum RepoOutlinesEvent {
     OutlinesUpdated(PathBuf),
 }
 
-const MAX_REPO_FILE_SIZE_LIMIT: usize = 5000;
+/// The most files an outline parses; a larger repository gets a partial outline.
+pub const MAX_REPO_FILE_SIZE_LIMIT: usize = 5000;
+
+/// Source of outline versions. Global (not per-model) so a version never repeats across
+/// `RepoOutlines` instances, which keeps version-keyed caches correct in tests and on
+/// model re-creation.
+static OUTLINE_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_outline_version() -> u64 {
+    OUTLINE_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 pub struct RepoOutlines {
     outlines: HashMap<PathBuf, OutlineState>,
+
+    /// Changes whenever ANY outline's content or status changes (#1276). Every site that
+    /// mutates `outlines` (insert, clear, status set to Pending/Complete/Failed, in-place
+    /// update swap) must call [`Self::bump_version`]; symbol caches key on this value.
+    version: u64,
 
     /// Queue of paths to be scanned for git repo outlines.
     outline_queue: VecDeque<PathBuf>,
@@ -49,9 +64,35 @@ pub struct RepoOutlines {
     active_outline_task: Option<AbortHandle>,
 
     indexing_enabled: bool,
+
+    /// Sender half of the on-demand build channel; see [`Self::request_outline`].
+    request_tx: Sender<PathBuf>,
+
+    /// Paths for which something asked for an outline. A repo is only parsed once a
+    /// request covers it; merely entering a git repo no longer starts the parse.
+    requested: HashSet<PathBuf>,
+
+    /// Whether `request_outline` is allowed to start builds (false in tests and
+    /// dev/integration builds, mirroring the old `DetectedGitRepo` subscription).
+    build_on_demand: bool,
+
+    /// When each repo's last build failed, for the retry backoff (see
+    /// [`OUTLINE_RETRY_BACKOFF`]).
+    failed_at: HashMap<PathBuf, Instant>,
 }
 
 const REPO_WATCHER_DEBOUNCE_DURATION: Duration = Duration::from_secs(10);
+
+/// How long a repo whose outline build failed is left alone before the next reader request
+/// rebuilds it (#1276). Requests inside the window do nothing, so a persistently failing repo
+/// is retried at most once per window, never on every tool call.
+const OUTLINE_RETRY_BACKOFF: Duration = Duration::from_secs(60);
+
+/// Whether a failed build, recorded at `failed_at`, is old enough to be retried. An unknown
+/// failure time retries immediately.
+fn retry_backoff_elapsed(failed_at: Option<Instant>, backoff: Duration) -> bool {
+    failed_at.is_none_or(|at| at.elapsed() >= backoff)
+}
 
 impl RepoOutlines {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
@@ -65,20 +106,32 @@ impl RepoOutlines {
             }
         });
 
-        if indexing_enabled
+        let build_on_demand = indexing_enabled
             && !cfg!(any(
                 test,
                 feature = "fast_dev",
                 feature = "integration_tests"
-            ))
-        {
+            ));
+        let (request_tx, request_rx) = async_channel::unbounded();
+        if build_on_demand {
+            // Detecting a repo does NOT start the parse (it keeps two threads busy for
+            // seconds and its allocations slow every keystroke afterwards). It only
+            // builds when a reader already asked for that repo before it was detected.
             ctx.subscribe_to_model(&DetectedRepositories::handle(ctx), |me, event, ctx| {
                 let DetectedRepositoriesEvent::DetectedGitRepo {
                     repository,
                     source: _,
                 } = event;
-                me.index_repo(repository.clone(), ctx);
+                let root = repository.as_ref(ctx).root_dir().to_local_path_lossy();
+                if me.is_requested(&root) {
+                    me.index_repo(repository.clone(), ctx);
+                }
             });
+            ctx.spawn_stream_local(
+                request_rx,
+                |me, path: PathBuf, ctx| me.handle_outline_request(path, ctx),
+                |_, _| {},
+            );
         }
 
         ctx.subscribe_to_model(&InputSettings::handle(ctx), |me, event, ctx| {
@@ -90,9 +143,14 @@ impl RepoOutlines {
 
         Self {
             outlines: Default::default(),
+            version: next_outline_version(),
             outline_queue: Default::default(),
             active_outline_task: Default::default(),
             indexing_enabled,
+            request_tx,
+            requested: Default::default(),
+            build_on_demand,
+            failed_at: Default::default(),
         }
     }
 
@@ -101,15 +159,69 @@ impl RepoOutlines {
     pub fn new_for_test(_ctx: &mut ModelContext<Self>) -> Self {
         Self {
             outlines: Default::default(),
+            version: next_outline_version(),
             outline_queue: Default::default(),
             active_outline_task: Default::default(),
             indexing_enabled: true,
+            request_tx: async_channel::unbounded().0,
+            requested: Default::default(),
+            build_on_demand: false,
+            failed_at: Default::default(),
+        }
+    }
+
+    /// Monotonic-ish token that changes on every outline mutation; see the field doc.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn bump_version(&mut self) {
+        self.version = next_outline_version();
+    }
+
+    /// Asks for the outline of the repo containing `path` to be built, if it has not
+    /// been already. Called by every reader (the @ menu, the agent's codebase tools,
+    /// agent context) so the parse only happens once something needs symbols. Cheap
+    /// and non-blocking, safe to call from `&AppContext` on any path; the build
+    /// itself starts asynchronously, so the first caller sees no outline yet.
+    pub fn request_outline(&self, path: &Path) {
+        if self.build_on_demand
+            && (self.get_outline_internal(path).is_none() || self.outline_retry_due(path))
+        {
+            let _ = self.request_tx.try_send(path.to_path_buf());
+        }
+    }
+
+    /// Whether `path`'s outline build failed and the backoff since has elapsed, so a new
+    /// request should rebuild it instead of leaving it `Failed` forever.
+    fn outline_retry_due(&self, path: &Path) -> bool {
+        match self.get_outline_internal(path) {
+            Some((OutlineStatus::Failed, key)) => {
+                retry_backoff_elapsed(self.failed_at.get(&key).copied(), OUTLINE_RETRY_BACKOFF)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_requested(&self, repo_root: &Path) -> bool {
+        self.requested.iter().any(|p| p.starts_with(repo_root))
+    }
+
+    fn handle_outline_request(&mut self, path: PathBuf, ctx: &mut ModelContext<Self>) {
+        if !self.should_build_outlines(ctx) {
+            return;
+        }
+        self.requested.insert(path.clone());
+        if let Some(repository) =
+            DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(&path, ctx)
+        {
+            self.index_repo(repository, ctx);
         }
     }
 
     fn index_repo(&mut self, repository: ModelHandle<Repository>, ctx: &mut ModelContext<Self>) {
         let repo_path = repository.as_ref(ctx).root_dir().to_local_path_lossy();
-        if self.get_outline_internal(&repo_path).is_none()
+        if (self.get_outline_internal(&repo_path).is_none() || self.outline_retry_due(&repo_path))
             && self.should_build_outlines(ctx)
             && !self.outline_queue.contains(&repo_path)
         {
@@ -118,7 +230,9 @@ impl RepoOutlines {
                 status: OutlineStatus::Pending,
                 subscriber_id: None,
             };
+            self.failed_at.remove(&repo_path);
             self.outlines.insert(repo_path.clone(), outline_state);
+            self.bump_version();
             self.outline_queue.push_back(repo_path);
             self.compute_next_outline(ctx);
         }
@@ -131,6 +245,16 @@ impl RepoOutlines {
     /// feed the (cloud) codebase semantic-search feature. That feature is not
     /// present in this fork, so outlines are driven solely by the local @ context
     /// menu symbol setting.
+    /// Whether outlines are built at all (indexing allowed and the "outline codebase symbols
+    /// for @ context menu" setting on). When false, no repository ever gets an outline, so
+    /// readers can say why instead of reporting an empty index (#1276).
+    pub fn outlines_enabled(&self, app: &warpui::AppContext) -> bool {
+        self.indexing_enabled
+            && *InputSettings::as_ref(app)
+                .outline_codebase_symbols_for_at_context_menu
+                .value()
+    }
+
     fn should_build_outlines(&self, ctx: &ModelContext<Self>) -> bool {
         self.indexing_enabled
             && *InputSettings::as_ref(ctx)
@@ -140,8 +264,15 @@ impl RepoOutlines {
 
     fn handle_setting_change_event(me: &mut RepoOutlines, ctx: &mut ModelContext<Self>) {
         if me.should_build_outlines(ctx) {
-            // Add all working directories to the queue and start processing.
+            // Rebuild only repos something already asked for; the rest stay lazy.
             for dir in all_working_directories(ctx).into_iter() {
+                if !me
+                    .requested
+                    .iter()
+                    .any(|p| p.starts_with(&dir) || dir.starts_with(p))
+                {
+                    continue;
+                }
                 if let Some(repository) =
                     DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(&dir, ctx)
                 {
@@ -160,6 +291,7 @@ impl RepoOutlines {
 
             me.outlines = HashMap::default();
             me.outline_queue = VecDeque::default();
+            me.bump_version();
         }
     }
 
@@ -269,6 +401,7 @@ impl RepoOutlines {
                                 {
                                     outline_state.status = OutlineStatus::Complete(outline);
                                 }
+                                me.bump_version();
                                 ctx.emit(RepoOutlinesEvent::OutlinesUpdated(
                                     canonicalized_path.into(),
                                 ));
@@ -291,7 +424,9 @@ impl RepoOutlines {
                                 );
                                 if let Some(outline_state) = me.outlines.get_mut(&root_path_clone) {
                                     outline_state.status = OutlineStatus::Failed;
+                                    me.failed_at.insert(root_path_clone.clone(), Instant::now());
                                 }
+                                me.bump_version();
                             }
                         };
                     }
@@ -379,6 +514,7 @@ impl RepoOutlines {
             }) => {
                 let mut outline = OutlineStatus::Pending;
                 std::mem::swap(outline_status, &mut outline);
+                self.bump_version();
                 let repo_path_clone_inner = repo_path.to_path_buf();
 
                 ctx.spawn(
@@ -393,6 +529,7 @@ impl RepoOutlines {
                     move |me, (outline, repo_path), ctx| {
                         if let Some(state) = me.outlines.get_mut(&repo_path) {
                             state.status = OutlineStatus::Complete(outline);
+                            me.bump_version();
                             ctx.emit(RepoOutlinesEvent::OutlinesUpdated(repo_path));
                         }
                     },
@@ -439,3 +576,7 @@ impl RepositorySubscriber for OutlineRepositorySubscriber {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;

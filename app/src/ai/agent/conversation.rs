@@ -6,7 +6,6 @@ use crate::ai::blocklist::block::cli_controller::LongRunningCommandControlState;
 use crate::ai::blocklist::{RequestInput, ResponseStreamId, SerializedBlockListItem};
 use crate::ai::byop_readiness::RepairStateStatus;
 use crate::code_review::CodeReviewTelemetryEvent;
-use crate::notebooks::NotebookId;
 use crate::persistence::model::{ConversationUsageMetadata, ModelTokenUsage, ToolUsageMetadata};
 use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::model::block::{
@@ -17,7 +16,6 @@ use crate::ai::agent::api::convert_conversation::{
     compute_time_to_first_token_ms_from_messages, proto_timestamp_to_local_datetime,
     ConvertToExchanges,
 };
-use ai::document::AIDocumentId;
 use ai::skills::SkillPathOrigin;
 use chrono::{DateTime, Local, TimeZone};
 use itertools::Itertools as _;
@@ -71,7 +69,7 @@ use super::{
         Task, TaskId,
     },
     AIAgentAction, AIAgentActionId, AIAgentContext, AIAgentExchange, AIAgentExchangeId,
-    AIAgentInput, AIAgentOutputStatus, AIAgentTodo, AIAgentTodoId, FinishedAIAgentOutput,
+    AIAgentInput, AIAgentOutputStatus, AIAgentTodoId, FinishedAIAgentOutput,
     MessageId, RenderableAIError, RequestCost,
 };
 use super::{
@@ -1176,6 +1174,7 @@ impl AIConversation {
     /// Updates the last observed orchestration event sequence number. Callers
     /// must follow up with `write_updated_conversation_state` to push the
     /// change to SQLite.
+    #[cfg(test)]
     pub fn set_last_event_sequence(&mut self, sequence: i64) {
         self.last_event_sequence = Some(sequence);
     }
@@ -1404,16 +1403,6 @@ impl AIConversation {
             }
         }
         has_passive_exchange
-    }
-
-    /// True if the conversation consists of just one exchange
-    /// and that exchange is a passive suggestion.
-    pub fn is_single_passive_exchange(&self) -> bool {
-        self.task_store.task_count() == 1
-            && self.is_entirely_passive()
-            && self
-                .get_root_task()
-                .is_some_and(|task| task.exchanges_len() == 1)
     }
 
     /// True if the conversation started with a CLI subagent and was never continued.
@@ -1679,39 +1668,6 @@ impl AIConversation {
         });
     }
 
-    /// Updates the notebook_uid for a plan artifact when it's synced to Zap Drive.
-    pub fn update_plan_notebook_uid(
-        &mut self,
-        document_uid: AIDocumentId,
-        notebook_uid: NotebookId,
-        terminal_view_id: Option<EntityId>,
-        ctx: &mut ModelContext<BlocklistAIHistoryModel>,
-    ) {
-        let document_uid = document_uid.to_string();
-        for artifact in &mut self.artifacts {
-            if let Artifact::Plan {
-                document_uid: doc_uid,
-                notebook_uid: nb_uid,
-                ..
-            } = artifact
-            {
-                if doc_uid == &document_uid {
-                    *nb_uid = Some(notebook_uid);
-                    let updated_artifact = artifact.clone();
-                    self.write_updated_conversation_state(ctx);
-                    if let Some(terminal_view_id) = terminal_view_id {
-                        ctx.emit(BlocklistAIHistoryEvent::UpdatedConversationArtifacts {
-                            terminal_view_id,
-                            conversation_id: self.id,
-                            artifact: updated_artifact,
-                        });
-                    }
-                    return;
-                }
-            }
-        }
-    }
-
     pub fn initial_query(&self) -> Option<String> {
         self.root_task_exchanges()
             .flat_map(|exchange| exchange.input.iter())
@@ -1742,12 +1698,6 @@ impl AIConversation {
             }
         }
         result.join("\n\n")
-    }
-
-    pub fn has_auto_code_diff_query(&self) -> bool {
-        self.root_task_exchanges()
-            .flat_map(|exchange| exchange.input.iter())
-            .any(|input| input.is_auto_code_diff_query())
     }
 
     pub fn latest_user_query(&self) -> Option<String> {
@@ -1878,24 +1828,6 @@ impl AIConversation {
                 })
             })
         })
-    }
-
-    /// Returns the exchange ID that contains the given action ID, if any.
-    pub fn exchange_id_for_action(&self, action_id: &AIAgentActionId) -> Option<AIAgentExchangeId> {
-        for task in self.task_store.tasks() {
-            for exchange in task.exchanges() {
-                let Some(output) = exchange.output_status.output() else {
-                    continue;
-                };
-                let contains_action = output.get().messages.iter().any(|step| {
-                    matches!(step, AIAgentOutputMessage{ message: AIAgentOutputMessageType::Action(AIAgentAction { id, .. }), .. } if id == action_id)
-                });
-                if contains_action {
-                    return Some(exchange.id);
-                }
-            }
-        }
-        None
     }
 
     /// Returns the `AIAgentContext` objects attached to the exchange with the given ID, if any.
@@ -3584,11 +3516,6 @@ impl AIConversation {
         self.todo_lists.last()
     }
 
-    pub fn active_todo(&self) -> Option<&AIAgentTodo> {
-        self.active_todo_list()
-            .and_then(|todo_list| todo_list.in_progress_item())
-    }
-
     pub fn todo_status(&self, todo_id: &AIAgentTodoId) -> Option<TodoStatus> {
         for (i, list) in self.todo_lists.iter().rev().enumerate() {
             let is_active_list = i == 0;
@@ -3674,7 +3601,7 @@ impl AIConversation {
             conversation_id: self.id.to_string(),
             updated_tasks: self
                 .all_tasks()
-                .filter_map(|task| task.source().cloned())
+                .filter_map(|task| task.shared_source())
                 .collect(),
             conversation_data: AgentConversationData {
                 // Must round-trip: the restore path reads this flag back
@@ -3707,7 +3634,7 @@ impl AIConversation {
                 // a value it does not know. Matches the default at
                 // `crates/persistence/src/model.rs:1764`.
                 root_task_is_optimistic: None,
-                compaction_state_json: if self.compaction_state.completed().is_empty() {
+                compaction_state_json: if self.compaction_state.is_empty() {
                     None
                 } else {
                     match serde_json::to_string(&self.compaction_state) {
@@ -3829,29 +3756,12 @@ impl AIConversation {
 
         let event = self.updated_conversation_state_event_with_retention(retention);
         // Every event is a full replace of the conversation, so the writer must see them in the
-        // order they were produced. Hand the event to the channel from this thread: spawning it
-        // onto the multi-threaded background executor let two writes made milliseconds apart
-        // (the last streamed message and the stream-finished write) reach the writer swapped,
-        // leaving the older state on disk until the conversation was next saved (#1000). Only a
-        // full channel falls back to a blocking send off the UI thread.
-        match sqlite_sender.try_send(event) {
-            Ok(()) => {}
-            Err(std::sync::mpsc::TrySendError::Full(event)) => {
-                log::warn!("SQLite writer channel is full; sending the conversation write async");
-                ctx.spawn(
-                    async move {
-                        if let Err(e) = sqlite_sender.send(event) {
-                            log::warn!(
-                                "Failed to send updated AI tasks to sqlite writer thread: {e:?}"
-                            );
-                        }
-                    },
-                    |_, _, _| {},
-                );
-            }
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                log::warn!("Failed to send updated AI tasks to sqlite writer thread: disconnected");
-            }
+        // order they were produced (#1000, #1367). `send_model_event_nonblocking` keeps that order
+        // even when the channel is full: a full channel parks the event on one ordered delivery
+        // queue (never a spawned send that a later write could overtake), and the UI thread
+        // never blocks.
+        if let Err(e) = crate::persistence::send_model_event_nonblocking(&sqlite_sender, event) {
+            log::warn!("Failed to send updated AI tasks to sqlite writer thread: {e:?}");
         }
     }
 
@@ -4911,21 +4821,6 @@ pub enum AIAgentHarness {
     ClaudeCode,
     Gemini,
     Unknown,
-}
-
-/// Describes the format of the conversation transcript data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AIAgentSerializedBlockFormat {
-    JsonV1,
-}
-
-/// Describes the format capabilities of a conversation.
-#[derive(Debug, Clone)]
-pub struct AIAgentConversationFormat {
-    /// Whether there is a Zap MAA task list available for this conversation.
-    pub has_task_list: bool,
-    /// The format of the TUI serialized block, if available.
-    pub block_snapshot: Option<AIAgentSerializedBlockFormat>,
 }
 
 /// Metadata for an AI conversation, containing restore data outside the full task list data.

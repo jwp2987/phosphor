@@ -102,16 +102,11 @@ impl AppCallbackDispatcher {
         }
     }
 
-    // This is not called on Linux or wasm, as there isn't any generic way to
+    // This is not called on Linux, as there isn't any generic way to
     // click on/interact with a notification.
     // TODO(CORE-2322): implement desktop notifications on Windows
     #[cfg_attr(
-        any(
-            target_os = "linux",
-            target_os = "freebsd",
-            target_os = "windows",
-            target_family = "wasm"
-        ),
+        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
         allow(dead_code)
     )]
     pub fn notification_clicked(&mut self, response: notification::NotificationResponse) {
@@ -142,6 +137,9 @@ impl AppCallbackDispatcher {
         if let Some(callback) = &mut self.callbacks.on_will_terminate {
             self.ui_app.update(|ctx| callback(ctx));
         }
+
+        // Last, so a copy made during shutdown is covered too (#1330).
+        self.ui_app.update(|ctx| ctx.clipboard().flush_on_exit());
     }
 
     pub fn should_terminate_app(&mut self) -> ApproveTerminateResult {
@@ -178,11 +176,8 @@ impl AppCallbackDispatcher {
         }
     }
 
-    // Dead code is allowed on wasm as when we register the network connection
-    // listener on wasm, we don't yet have access to an `AppCallbackDispatcher`,
-    // so we directly check the `Callbacks` object instead.
     // TODO(CORE-2683): implement events for internet reachability changes
-    #[cfg_attr(any(target_family = "wasm", target_os = "windows"), allow(dead_code))]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn has_internet_reachability_changed_callback(&self) -> bool {
         self.callbacks.on_internet_reachability_changed.is_some()
     }
@@ -199,7 +194,7 @@ impl AppCallbackDispatcher {
     }
 
     pub fn active_window_changed(&mut self, active_window_id: Option<WindowId>) {
-        log::info!("active window changed: {active_window_id:?}");
+        log::debug!("active window changed: {active_window_id:?}");
         self.ui_app.update(|ctx| {
             WindowManager::handle(ctx).update(ctx, |state, ctx| {
                 state.set_active_window(active_window_id, ctx);
@@ -228,7 +223,7 @@ impl AppCallbackDispatcher {
     }
 
     pub fn window_resized(&mut self) {
-        log::info!("window resized");
+        log::debug!("window resized");
         if let Some(callback) = &mut self.callbacks.on_window_resized {
             self.ui_app.update(|ctx| callback(ctx));
         }
@@ -321,12 +316,7 @@ impl AppCallbackDispatcher {
 // application menus, so these never get called.
 // TODO(CORE-2691): implement native Windows OS app menus
 #[cfg_attr(
-    any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "windows",
-        target_family = "wasm"
-    ),
+    any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
     allow(dead_code)
 )]
 impl AppCallbackDispatcher {
@@ -348,12 +338,7 @@ impl AppCallbackDispatcher {
 // native platform modals on these platforms, so these never get called.
 // TODO(CORE-2323): implement native Windows OS modal
 #[cfg_attr(
-    any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "windows",
-        target_family = "wasm"
-    ),
+    any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
     allow(dead_code)
 )]
 impl AppCallbackDispatcher {

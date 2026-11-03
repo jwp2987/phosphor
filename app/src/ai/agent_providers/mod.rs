@@ -11,10 +11,12 @@
 //! configuration, routing the Agent's multi-agent calls to local providers.
 
 pub mod active_ai;
+pub mod append_coalesce;
 pub mod attachment_caps;
 pub mod chat_stream;
 pub mod command_snapshots;
 pub mod content_tool_calls;
+mod convert;
 /// BYOP embeddings, for the codebase index. New in this fork: the pin produced
 /// embeddings server-side and had no client for them.
 pub mod embeddings;
@@ -22,6 +24,9 @@ pub mod llm_id;
 pub mod models_dev;
 pub mod oneshot;
 pub mod openai_compatible;
+pub mod outbound_redaction;
+#[cfg(test)]
+pub(crate) mod outbound_redaction_tests;
 pub mod prompt_renderer;
 pub mod reasoning;
 pub mod secrets;
@@ -448,8 +453,14 @@ pub fn build_byop_models_by_feature(app: &AppContext) -> ModelsByFeature {
 /// provider's/model's entry drops out of `build_byop_llm_infos`.
 pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, String, String)> {
     let (provider_id, model_id) = llm_id::decode(id)?;
-    let providers = AISettings::as_ref(app).agent_providers.value().clone();
-    let provider = providers.into_iter().find(|p| p.id == provider_id)?;
+    // Borrow the settings list and clone only the matched provider: this runs several times
+    // per send on the UI thread, and the list carries every provider's full model table.
+    let provider = AISettings::as_ref(app)
+        .agent_providers
+        .value()
+        .iter()
+        .find(|p| p.id == provider_id)?
+        .clone();
     if !provider.is_usable() {
         return None;
     }
@@ -469,6 +480,43 @@ pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, S
         .map(str::to_owned)
         .unwrap_or_default();
     Some((provider, api_key, model_id))
+}
+
+/// The user-visible error for a request that could not be sent because the keyring never gave
+/// up the API key. Shown instead of sending an empty key, which the provider would answer with
+/// an opaque 401.
+pub const KEYRING_READ_FAILED_MESSAGE: &str = "Couldn't read the API key from the keyring (it may be locked or not responding). \
+     Unlock it and send the message again.";
+
+/// [`KEYRING_READ_FAILED_MESSAGE`] as an error type, so the retry layer can recognise it and not
+/// retry (the user has to unlock the keyring; three silent retries only delay the message).
+#[derive(Debug)]
+pub struct KeyringReadFailed;
+
+impl std::fmt::Display for KeyringReadFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(KEYRING_READ_FAILED_MESSAGE)
+    }
+}
+
+impl std::error::Error for KeyringReadFailed {}
+
+/// Whether a request to `provider` could ever carry an API key, i.e. whether it has to wait for
+/// the secure-storage load before it may be sent.
+///
+/// Providers that never send a key must not wait at all (the keyring may be slow or locked):
+/// Ollama's native protocol is keyless, and for a plaintext `http://` endpoint on a non-loopback
+/// host the key is withheld anyway (see [`is_plaintext_bearer_risk`]). Everything else -- hosted
+/// APIs and loopback gateways (LiteLLM, a local proxy) -- can carry a key and waits.
+pub(crate) fn provider_may_send_api_key(provider: &AgentProvider) -> bool {
+    provider.api_type != crate::settings::AgentProviderApiType::Ollama
+        && !is_plaintext_bearer_risk(&provider.resolved_base_url())
+}
+
+/// Whether the keys for a request to `provider` are still being read from the keyring (#1368).
+/// Cheap, read-only: the send path calls it while building the request.
+pub(crate) fn must_wait_for_keys(app: &AppContext, provider: &AgentProvider) -> bool {
+    provider_may_send_api_key(provider) && !AgentProviderSecrets::as_ref(app).is_loaded()
 }
 
 /// The configured context window (tokens) for the currently active BYOP base

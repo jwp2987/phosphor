@@ -157,6 +157,7 @@ pub struct TestBlockListBuilder<'a> {
     honor_ps1: bool,
     block_sizes: BlockSize,
     channel_event_proxy: ChannelEventListener,
+    lazy_restore_min_bytes: Option<usize>,
 }
 
 impl<'a> TestBlockListBuilder<'a> {
@@ -166,7 +167,15 @@ impl<'a> TestBlockListBuilder<'a> {
             honor_ps1: false,
             block_sizes: block_size(),
             channel_event_proxy: ChannelEventListener::new_for_test(),
+            lazy_restore_min_bytes: None,
         }
+    }
+
+    /// Defers parsing of restored blocks of at least this many saved bytes (#1254). Unset, every
+    /// restored block is parsed eagerly, whatever `PHOSPHOR_LAZY_RESTORE` says.
+    pub fn with_lazy_restore_min_bytes(mut self, min_bytes: usize) -> Self {
+        self.lazy_restore_min_bytes = Some(min_bytes);
+        self
     }
 
     pub fn with_restored_blocks(mut self, restored_blocks: &'a [SerializedBlockListItem]) -> Self {
@@ -190,7 +199,7 @@ impl<'a> TestBlockListBuilder<'a> {
     }
 
     pub fn build(self) -> BlockList {
-        let mut block_list = BlockList::new(
+        let mut block_list = BlockList::new_with_lazy_restore_min_bytes(
             self.restored_blocks,
             self.block_sizes,
             self.channel_event_proxy,
@@ -202,6 +211,8 @@ impl<'a> TestBlockListBuilder<'a> {
             false, /* is_inverted */
             ObfuscateSecrets::No,
             false, /* is_telemetry_enabled */
+            super::key_facts::KeyModelCell::default(),
+            self.lazy_restore_min_bytes,
         );
         // This is usually done by the terminal manager after constructing the blocklist,
         // but we have tests assuming the separator exists.

@@ -57,6 +57,12 @@ impl ReconnectingPeer {
         }
     }
 
+    /// The server's tool-call idle timeout; the bound a caller gives any other request to this
+    /// server that has no deadline of its own.
+    pub fn tool_call_timeout(&self) -> Duration {
+        self.tool_call_timeout
+    }
+
     /// Gets the current peer if connected, or triggers reconnection and waits for it.
     async fn get_connected_peer(
         &self,

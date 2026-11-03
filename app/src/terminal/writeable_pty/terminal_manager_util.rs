@@ -1,7 +1,6 @@
 use crate::persistence::ModelEvent;
 use crate::terminal::line_editor_status::LineEditorStatus;
 use crate::features::FeatureFlag;
-#[cfg(not(target_family = "wasm"))]
 use crate::terminal::model::escape_sequences;
 use crate::terminal::model::lifecycle::StartCommandOutcome;
 use crate::terminal::model::session::{ExecutorCommandEvent, Sessions};
@@ -9,7 +8,7 @@ use crate::terminal::model::session::{ExecutorCommandEvent, Sessions};
 use crate::terminal::model::terminal_model::ExitReason;
 use crate::terminal::view;
 use crate::terminal::writeable_pty::command_history::update_command_history;
-use crate::terminal::writeable_pty::pty_controller::EventLoopSender;
+use crate::terminal::writeable_pty::pty_controller::{EventLoopSender, PASTE_WRITE_MIN_BYTES};
 use crate::terminal::writeable_pty::terminal_surface::{PtyIntent, PtyIntentEvent, TerminalSurface};
 use crate::terminal::writeable_pty::{PtyController, PtyControllerEvent};
 use crate::terminal::ModelEventDispatcher;
@@ -92,7 +91,6 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             // Interrupt the foreground command with a ^C (ETX) written straight to the pty,
             // as the GUI's `TerminalView::ctrl_c` does. The TUI surface projects this (#875);
             // before, it was a no-op there, so ctrl-c and agent stop never reached the command.
-            #[cfg(not(target_family = "wasm"))]
             PtyIntent::Interrupt => {
                 controller.update(ctx, |controller, ctx| {
                     controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
@@ -109,8 +107,10 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                 });
             }
             PtyIntent::DiscardPendingCommandWrites => {
-                controller.update(ctx, |controller, _| {
+                controller.update(ctx, |controller, ctx| {
                     controller.discard_pending_command_writes();
+                    // The agent's command was cancelled: its unwritten input goes too (#1384 P4).
+                    controller.cancel_agent_writes(ctx);
                 });
             }
             PtyIntent::DiscardHeldTypeaheadCommand => {
@@ -121,7 +121,21 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             PtyIntent::WriteBytes(bytes) => {
                 controller.update(ctx, |controller, ctx| {
                     // TODO: the underlying bytes should be wrapped in an Arc and copied out only when they need to be written to the PTY.
-                    controller.write_bytes(bytes, ctx);
+                    if bytes.len() >= PASTE_WRITE_MIN_BYTES {
+                        controller.write_paste_bytes(bytes, ctx);
+                    } else {
+                        controller.write_bytes(bytes, ctx);
+                    }
+                });
+            }
+            PtyIntent::WriteLineClearSetup(payload) => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.write_line_clear_setup(payload, ctx);
+                });
+            }
+            PtyIntent::CancelPacedSetupWrites => {
+                controller.update(ctx, |controller, ctx| {
+                    controller.cancel_paced_writes(ctx);
                 });
             }
             PtyIntent::WriteHandoffUserBytes(bytes) => {
@@ -211,6 +225,23 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
                     surface.on_typeahead_handoff_changed(ctx)
                 });
             }
+            PtyControllerEvent::TypeaheadHandoffNotEngaged => {
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_typeahead_handoff_not_engaged(ctx)
+                });
+            }
+            PtyControllerEvent::PromptHoldReleased { hold_id } => {
+                let hold_id = *hold_id;
+                surface.update(ctx, |surface, ctx| {
+                    surface.on_prompt_hold_released(hold_id, ctx)
+                });
+            }
+            PtyControllerEvent::YoungHoldEnded => {
+                surface.update(ctx, |surface, ctx| surface.on_young_hold_ended(ctx));
+            }
+            PtyControllerEvent::InputBufferOverflow => {
+                surface.update(ctx, |surface, ctx| surface.on_input_buffer_overflow(ctx));
+            }
         }
     });
 }
@@ -223,7 +254,6 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
 /// NOTE: we cannot simply use the strong references (the handle arguments to this wire_up fn)
 /// in the subscription callbacks because that will create a reference cycle. Instead,
 /// we should use weak handles and upgrade them lazily.
-#[cfg(not(target_family = "wasm"))]
 pub fn wire_up_remote_server_controller_with_view<T: EventLoopSender>(
     remote_server_controller: &ModelHandle<
         super::remote_server_controller::RemoteServerController<T>,
@@ -278,7 +308,6 @@ pub fn init_pty_controller_model<Sender: EventLoopSender>(
 }
 
 /// Creates a [`RemoteServerController`] that orchestrates the SSH init flow.
-#[cfg(not(target_family = "wasm"))]
 pub fn init_remote_server_controller<Sender: EventLoopSender>(
     pty_controller: &ModelHandle<PtyController<Sender>>,
     model_events: &ModelHandle<ModelEventDispatcher>,

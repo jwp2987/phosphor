@@ -10,7 +10,7 @@ use warpui::{
 
 use crate::{
     auth::UserUid,
-    cloud_object::{model::persistence::ObjectStoreModel, Owner},
+    cloud_object::model::persistence::ObjectStoreModel,
     server::ids::ServerId,
     ui_components::{
         avatar::{Avatar, AvatarContent},
@@ -57,10 +57,6 @@ impl SharingAccessLevel {
     }
 
     pub fn can_move_drive(self) -> bool {
-        self >= SharingAccessLevel::Full
-    }
-
-    pub fn can_edit_access(self) -> bool {
         self >= SharingAccessLevel::Full
     }
 
@@ -122,12 +118,6 @@ impl TeamKind {
 }
 
 impl Subject {
-    pub fn from_owner(owner: Owner) -> Self {
-        match owner {
-            Owner::User { user_uid } => Subject::User(UserKind::Account(user_uid)),
-            Owner::Team { team_uid } => Subject::Team(TeamKind::Team { team_uid }),
-        }
-    }
 
     pub fn user_uid(&self) -> Option<UserUid> {
         match self {

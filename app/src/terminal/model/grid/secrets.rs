@@ -22,6 +22,13 @@ impl GridHandler {
         self.secrets.len()
     }
 
+    /// True if the grid holds any detected secret, obfuscated or not. When false,
+    /// [`Self::secret_at_displayed_point`] is `None` for every point, so per-cell lookups can be
+    /// skipped.
+    pub fn has_secrets(&self) -> bool {
+        !self.secrets.is_empty()
+    }
+
     pub fn get_secret_obfuscation(&self) -> ObfuscateSecrets {
         self.secret_obfuscation_mode
     }
@@ -104,7 +111,9 @@ impl GridHandler {
         let handle = SecretHandle::next();
 
         let range = *range.start()..=*range.end();
-        let secret = Secret::new(is_obfuscated, range.clone(), secret_level);
+        let plaintext: Arc<str> = Arc::from(plaintext);
+        let secret = Secret::new(is_obfuscated, range.clone(), secret_level)
+            .with_plaintext(plaintext.clone());
         self.secrets.insert(handle, secret, self.columns());
 
         self.secrets_in_plaintext
@@ -127,18 +136,22 @@ impl GridHandler {
         &mut self,
         range: RangeInclusive<Point>,
     ) -> Option<RangeInclusive<Point>> {
+        // Callers (such as clearing the visible rows) can get here without a scan having run since
+        // the grid last dropped rows from its front.
+        self.sync_secrets_with_truncation();
+
         // Determine the set of secrets that need to be removed and eagerly collect them into a vec.
         // We can't mutate the cells or the secrets map directly within the iterator due to lifetime
-        // issues.
+        // issues. Only the secrets that intersect the range are looked at: this runs once per
+        // chunk of pty output, so visiting every secret in the grid here made a large run of
+        // output with many secrets quadratic.
         let secrets_to_remove = self
             .secrets
-            .iter()
-            .filter_map(|(secret_handle, secret)| {
-                let secret_range = secret.range();
-                // If the secret intersects with the dirty range at all, clear it.
-                let ranges_intersect =
-                    range.start() <= secret_range.end() && range.end() >= secret_range.start();
-                ranges_intersect.then_some((*secret_handle, secret_range))
+            .handles_overlapping(&range, self.columns())
+            .into_iter()
+            .filter_map(|secret_handle| {
+                let secret = self.secrets.get_by_handle(&secret_handle)?;
+                Some((secret_handle, secret.range()))
             })
             .collect_vec();
 
@@ -150,10 +163,47 @@ impl GridHandler {
             start_point = start_point.min(*secret_range.start());
             end_point = end_point.max(*secret_range.end());
 
-            self.secrets.remove(secret_handle, self.columns());
+            if let Some(secret) = self.secrets.remove(secret_handle, self.columns()) {
+                self.forget_secret_plaintext(secret_handle, secret.plaintext());
+            }
         }
 
         Some(start_point..=end_point)
+    }
+
+    /// Drops `secret_handle` from the plaintext index, and the index entry itself once no secret
+    /// has that plaintext any more. Without this the index grew with every secret ever detected.
+    fn forget_secret_plaintext(
+        &mut self,
+        secret_handle: SecretHandle,
+        plaintext: Option<&Arc<str>>,
+    ) {
+        let Some(plaintext) = plaintext else {
+            return;
+        };
+        let now_empty = self
+            .secrets_in_plaintext
+            .get_mut(&**plaintext)
+            .is_some_and(|handles| {
+                handles.remove(&secret_handle);
+                handles.is_empty()
+            });
+        if now_empty {
+            self.secrets_in_plaintext.remove(&**plaintext);
+        }
+    }
+
+    /// Tells the secret map how many rows the grid has truncated from its front (because of its
+    /// `max_rows`), so that secrets keep pointing at the text they were found in, and forgets the
+    /// secrets whose rows were dropped.
+    fn sync_secrets_with_truncation(&mut self) {
+        let truncated_rows = self.num_lines_truncated() as usize;
+        for (secret_handle, secret) in self
+            .secrets
+            .set_truncated_rows(truncated_rows, self.columns())
+        {
+            self.forget_secret_plaintext(secret_handle, secret.plaintext());
+        }
     }
 
     /// Scans the entire grid (not just the dirty cells range) for secrets.
@@ -194,28 +244,45 @@ impl GridHandler {
 
     /// Rescans the entire grid for secrets after a resize.
     pub(super) fn scan_for_secrets_after_resize(&mut self) {
-        // Clear the entire secret range map since the underlying ranges stored within the map may
-        // be out of date after the resize.
-        self.secrets.clear_ranges_after_resize();
-        self.scan_range_for_secrets(
+        // Drop every secret, since the ranges they hold may be out of date after the resize. The
+        // text of the ones the user revealed is kept so that the same text stays revealed.
+        let old_unobfuscated_secrets = self.unobfuscated_secret_plaintexts();
+        self.secrets.clear();
+        self.secrets_in_plaintext.clear();
+        self.scan_range_for_secrets_keeping_unobfuscated(
             Point::new(0, 0)..=Point::new(self.total_rows() - 1, self.columns() - 1),
+            old_unobfuscated_secrets,
         );
+    }
+
+    /// The plaintext of every secret that is currently revealed.
+    fn unobfuscated_secret_plaintexts(&self) -> HashSet<String> {
+        self.secrets
+            .unobfuscated_secrets()
+            .map(|secret| match secret.plaintext() {
+                Some(plaintext) => plaintext.to_string(),
+                None => self.generate_secret_plaintext(secret.range()),
+            })
+            .collect()
     }
 
     /// Scans the given `range` for secrets. Any prior secrets within the range are removed from the
     /// grid. Any match is visually redacted in the grid.
     fn scan_range_for_secrets(&mut self, range: RangeInclusive<Point>) {
-        let old_unobfuscated_secrets = &self
-            .secrets
-            .iter()
-            .filter_map(|(_, secret)| {
-                if !secret.is_obfuscated() {
-                    Some(self.generate_secret_plaintext(secret.range()))
-                } else {
-                    None
-                }
-            })
-            .collect::<HashSet<String>>();
+        let old_unobfuscated_secrets = self.unobfuscated_secret_plaintexts();
+        self.scan_range_for_secrets_keeping_unobfuscated(range, old_unobfuscated_secrets);
+    }
+
+    /// Like [`Self::scan_range_for_secrets`], except that a match whose text is in
+    /// `old_unobfuscated_secrets` is left revealed.
+    fn scan_range_for_secrets_keeping_unobfuscated(
+        &mut self,
+        range: RangeInclusive<Point>,
+        old_unobfuscated_secrets: HashSet<String>,
+    ) {
+        // Rows the grid dropped from its front invalidate the secrets there; this also makes the
+        // map's row coordinates current before anything is looked up or inserted.
+        self.sync_secrets_with_truncation();
 
         // Clear any secrets that may are encompassed by the range that we are now searching --
         // they may no longer be valid.

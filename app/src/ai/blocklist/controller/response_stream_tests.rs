@@ -1,4 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
 use super::{
@@ -10,7 +9,6 @@ use super::{RetryWaitKind, clear_retry_wait, current_retry_wait, set_retry_wait}
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::api_error::AIApiError;
 // `agent_sdk` (and so the driver's recovery deadline) is native-only here.
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::driver::AUTO_RESUME_TIMEOUT;
 
 // Argument order: has_received_client_actions, is_recoverable, recovery, is_online.
@@ -150,7 +148,6 @@ fn a_scheduled_resume_inherits_a_charged_budget() {
 /// `retry()`'s `pending_resume` assignment through `schedule_auto_resume_after_error` to
 /// `ResponseStream::new`. That path needs a live stream and a `ModelContext`, so it wants
 /// an integration seam this module does not have. Recorded in `TODO.md` rather than faked.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pending_resume_carries_its_budget_and_backoff_verbatim() {
     // Built exactly as the `RecoveryAction::Resume` arm builds it: the stream's budget
@@ -293,7 +290,6 @@ fn spending_an_attempt_preserves_resume_eligibility() {
 /// the assertion is cloud-bound; it relates two local constants, and both still exist and
 /// still mean the same thing. `attempts_used` is not consulted, so this is a pure
 /// arithmetic property of the schedule.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn the_recovery_backoff_fits_inside_the_driver_run_recovery_window() {
     // The driver re-arms AUTO_RESUME_TIMEOUT per recovery attempt, so what has to fit in
@@ -314,7 +310,6 @@ fn the_recovery_backoff_fits_inside_the_driver_run_recovery_window() {
 
 /// #854: the provider's `Retry-After` stretches the wait but never shortens it, and the
 /// largest hint we accept still fits the driver's recovery window.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_after_stretches_but_never_shortens_the_recovery_wait() {
     let backoff = Duration::from_secs(2);
@@ -335,7 +330,6 @@ fn retry_after_stretches_but_never_shortens_the_recovery_wait() {
 
 /// #853/#854 follow-up: the countdown reads the recorded wait, rounds up to whole seconds, and
 /// is gone once cleared or expired.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_wait_registry_reports_then_clears() {
     let id = AIConversationId::new();
@@ -351,7 +345,6 @@ fn retry_wait_registry_reports_then_clears() {
     assert_eq!(current_retry_wait(id), None);
 }
 
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_wait_expires_on_its_own() {
     let id = AIConversationId::new();
@@ -383,7 +376,6 @@ fn retry_wait_kind_follows_the_error() {
 /// #903: the countdown must keep ticking once a second for the whole wait, independent of any
 /// response stream (a resume waits after its stream is gone). Each tick nudges observers of the
 /// history model, which is what makes the status bar recompute "retrying in N s".
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_wait_pulse_keeps_ticking_until_the_wait_ends() {
     use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
@@ -410,4 +402,164 @@ fn retry_wait_pulse_keeps_ticking_until_the_wait_ends() {
         history.update(&mut app, |_, ctx| super::start_retry_wait_pulse(id, ctx));
         clear_retry_wait(id);
     });
+}
+
+/// #1381 (APP-R8): ending the wait releases the conversation's pulse registration at once. The
+/// chain's next tick runs on a spawn, and a spawn on a dropped history model never fires, so
+/// relying on that tick to deregister left the id registered forever and no later wait for the
+/// conversation could pulse again.
+#[test]
+fn clearing_the_wait_releases_the_pulse_registration() {
+    use super::retry_wait_pulse_running;
+    use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let id = AIConversationId::new();
+        set_retry_wait(id, RetryWaitKind::Connection, Duration::from_secs(30));
+        history.update(&mut app, |_, ctx| super::start_retry_wait_pulse(id, ctx));
+        assert!(retry_wait_pulse_running(id));
+        // The stream is cancelled: no tick has to run for the registration to go away.
+        assert!(clear_retry_wait(id));
+        assert!(!retry_wait_pulse_running(id));
+        // A later wait starts its own chain.
+        set_retry_wait(id, RetryWaitKind::Connection, Duration::from_secs(30));
+        history.update(&mut app, |_, ctx| super::start_retry_wait_pulse(id, ctx));
+        assert!(retry_wait_pulse_running(id));
+        clear_retry_wait(id);
+    });
+}
+
+// ── a request waits for the keyring read instead of sending an empty key (#1368) ──
+
+mod key_wait {
+    use std::collections::HashMap;
+
+    use futures::StreamExt as _;
+    use futures::channel::oneshot;
+
+    use super::super::{KeyWait, byop_keyring_error_response_stream, wait_for_loaded_keys};
+    use crate::ai::agent_providers::provider_may_send_api_key;
+    use crate::settings::{AgentProvider, AgentProviderApiType};
+
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        warpui::r#async::block_on(f)
+    }
+
+    #[test]
+    fn a_request_sent_before_the_load_waits_and_then_carries_the_real_key() {
+        let (load_tx, load_rx) = oneshot::channel();
+        let (_cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let mut api_key = String::new();
+
+        // Nothing resolved yet: the wait is pending, not an empty-key send.
+        let mut wait = Box::pin(wait_for_loaded_keys(
+            load_rx,
+            &mut cancel_rx,
+            "prov",
+            &mut api_key,
+        ));
+        let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        assert!(std::future::Future::poll(wait.as_mut(), &mut cx).is_pending());
+
+        load_tx
+            .send(Some(HashMap::from([(
+                "prov".to_owned(),
+                "sk-real".to_owned(),
+            )])))
+            .unwrap();
+        assert!(matches!(run(wait), KeyWait::Ready));
+        assert_eq!(api_key, "sk-real");
+    }
+
+    #[test]
+    fn a_failed_load_fails_the_request_with_a_clear_error_and_no_key() {
+        let (load_tx, load_rx) = oneshot::channel();
+        let (_cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let mut api_key = String::new();
+        load_tx.send(None).unwrap();
+        assert!(matches!(
+            run(wait_for_loaded_keys(
+                load_rx,
+                &mut cancel_rx,
+                "prov",
+                &mut api_key
+            )),
+            KeyWait::Failed
+        ));
+        assert!(api_key.is_empty());
+
+        // The error the user sees is the keyring message, not an auth failure from a provider.
+        let (_tx, rx) = oneshot::channel::<()>();
+        let stream = run(byop_keyring_error_response_stream(rx)).unwrap();
+        let items: Vec<_> = run(stream.collect::<Vec<_>>());
+        assert_eq!(items.len(), 1);
+        let err = match items.into_iter().next().unwrap() {
+            Err(err) => err,
+            Ok(_) => panic!("expected the keyring error, not a response event"),
+        };
+        assert!(
+            err.to_string().contains("API key from the keyring"),
+            "{err}"
+        );
+        // Not retried: the user has to unlock the keyring.
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn a_cancel_while_waiting_sends_nothing() {
+        let (_load_tx, load_rx) = oneshot::channel();
+        let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+        let mut api_key = String::new();
+        cancel_tx.send(()).unwrap();
+        assert!(matches!(
+            run(wait_for_loaded_keys(
+                load_rx,
+                &mut cancel_rx,
+                "prov",
+                &mut api_key
+            )),
+            KeyWait::Cancelled
+        ));
+    }
+
+    fn provider(api_type: AgentProviderApiType, base_url: &str) -> AgentProvider {
+        AgentProvider {
+            id: "p".to_owned(),
+            name: "P".to_owned(),
+            kind: Default::default(),
+            api_type,
+            base_url: base_url.to_owned(),
+            models: Vec::new(),
+            extra_headers: Vec::new(),
+            vertex_project: String::new(),
+            vertex_location: String::new(),
+            disabled: false,
+            token_price: None,
+        }
+    }
+
+    #[test]
+    fn keyless_providers_never_wait_for_the_keyring() {
+        // A LAN Ollama (documentation address): no key is ever sent, so a slow keyring must not delay it.
+        assert!(!provider_may_send_api_key(&provider(
+            AgentProviderApiType::Ollama,
+            "http://198.51.100.7:11434"
+        )));
+        // Plaintext non-loopback http: the key is withheld anyway.
+        assert!(!provider_may_send_api_key(&provider(
+            AgentProviderApiType::OpenAi,
+            "http://198.51.100.7:8080/v1"
+        )));
+        // Hosted APIs and loopback gateways can carry a key and do wait.
+        assert!(provider_may_send_api_key(&provider(
+            AgentProviderApiType::Anthropic,
+            "https://api.anthropic.com/v1"
+        )));
+        assert!(provider_may_send_api_key(&provider(
+            AgentProviderApiType::OpenAi,
+            "http://127.0.0.1:8787/v1"
+        )));
+    }
 }

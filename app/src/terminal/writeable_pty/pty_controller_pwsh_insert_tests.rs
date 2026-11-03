@@ -1,0 +1,483 @@
+//! The PowerShell insert chord (#1581): a single-line command is served on the session's named
+//! pipe (in memory; a stand-in off Windows) and the pty gets exactly `ESC 3`; the shell reads it
+//! from the pipe. These tests drive
+//! `send_write_to_event_loop` the way the queue-draining path does and read what reaches the
+//! event loop.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use parking_lot::{FairMutex, Mutex};
+use warpui::{App, ModelHandle};
+
+use super::*;
+use crate::terminal::event_listener::ChannelEventListener;
+use crate::terminal::model::session::{SessionId, Sessions};
+
+#[derive(Clone, Default)]
+struct RecordingSender {
+    messages: Arc<Mutex<Vec<Message>>>,
+}
+
+impl EventLoopSender for RecordingSender {
+    fn send(&self, message: Message) -> Result<(), EventLoopSendError> {
+        self.messages.lock().push(message);
+        Ok(())
+    }
+}
+
+fn payload(message: &Message) -> Vec<u8> {
+    match message {
+        Message::Input(bytes) | Message::CommandInput(bytes) => bytes.to_vec(),
+        _ => panic!("unexpected message"),
+    }
+}
+
+struct Rig {
+    controller: ModelHandle<PtyController<RecordingSender>>,
+    sender: RecordingSender,
+}
+
+fn rig(app: &mut App, session: u64, powershell_local: bool) -> Rig {
+    let model = Arc::new(FairMutex::new(TerminalModel::mock(
+        None,
+        Some(ChannelEventListener::new_for_test()),
+    )));
+    let (_events_tx, events_rx) = async_channel::unbounded();
+    let (_executor_tx, executor_rx) = async_channel::unbounded();
+    let sessions = app.add_model(|_| Sessions::new_for_test());
+    let model_events =
+        app.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
+    model_events.update(app, |dispatcher, _| {
+        dispatcher.set_active_session_id(SessionId::from(session));
+    });
+    let line_editor_status =
+        app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+    let sender = RecordingSender::default();
+    let controller = app.add_model(|ctx| {
+        PtyController::new(
+            sender.clone(),
+            model_events,
+            line_editor_status,
+            sessions,
+            executor_rx,
+            model,
+            ctx,
+        )
+    });
+    if powershell_local {
+        // What building the init script does on Windows.
+        command_pipe::pipe_name_for_session(session);
+    }
+    controller.update(app, |controller, _| {
+        controller.runs_long_commands_from_file = powershell_local;
+    });
+    Rig { controller, sender }
+}
+
+fn command(text: &str, counter: Option<Arc<AtomicUsize>>) -> PtyWrite {
+    PtyWrite::Command {
+        command: text.to_owned(),
+        shell_type: ShellType::PowerShell,
+        in_band_command_id: None,
+        before_write_fn: counter.map(|counter| {
+            Box::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                StartCommandOutcome::Accepted
+            }) as Box<dyn FnOnce() -> StartCommandOutcome + Send + 'static>
+        }),
+    }
+}
+
+fn typed_bytes(text: &str) -> Vec<u8> {
+    bytes_to_execute_command(text, ShellType::PowerShell, false)
+}
+
+#[test]
+fn a_single_line_powershell_command_is_one_chord_write_and_a_pipe() {
+    App::test((), |mut app| async move {
+        let session = 9_100_001;
+        let rig = rig(&mut app, session, true);
+        let written = Arc::new(AtomicUsize::new(0));
+        let sent = rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", Some(written.clone())), ctx)
+        });
+        assert!(sent);
+        assert_eq!(
+            written.load(Ordering::SeqCst),
+            1,
+            "on_command_written runs once"
+        );
+
+        let messages = rig.sender.messages.lock();
+        assert_eq!(messages.len(), 1, "exactly one pty write, not ESC 2 + text");
+        assert!(matches!(&messages[0], Message::CommandInput(_)));
+        assert_eq!(payload(&messages[0]), b"\x1b3".to_vec());
+
+        drop(messages);
+        rig.controller.read(&app, |controller, _| {
+            assert_eq!(controller.file_insert_pending.as_deref(), Some("Get-Date"));
+            assert!(
+                controller.command_pipe.is_some(),
+                "the pipe lives with the chord"
+            );
+        });
+    });
+}
+
+#[test]
+fn multi_line_long_and_control_character_commands_keep_the_typed_path() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_002, true);
+        let cases = [
+            "echo a\necho b",
+            "echo a\r\necho b",
+            "echo a\tb",
+            "echo \u{1b}x",
+        ];
+        for text in cases {
+            rig.sender.messages.lock().clear();
+            rig.controller.update(&mut app, |controller, ctx| {
+                controller.send_write_to_event_loop(command(text, None), ctx)
+            });
+            let messages = rig.sender.messages.lock();
+            // ESC 2 on its own, then the text and the Enter.
+            assert_eq!(messages.len(), 2, "{text:?}");
+            assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
+            let expected = typed_bytes(text);
+            assert_eq!(payload(&messages[1]), expected[2..].to_vec());
+        }
+    });
+}
+
+/// Files this process's tests could have left in the temp dir for a command (the old #1106 path).
+fn command_temp_files() -> usize {
+    std::fs::read_dir(std::env::temp_dir())
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".phosphor-cmd-")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_long_command_is_served_on_the_pipe_behind_a_text_free_launcher_and_never_hits_the_disk() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_020, true);
+        let secret = "s3cr3t-token-9f2c";
+        for len in [long_command_file::MAX_TYPED_BYTES + 1, 8_000, 100_000] {
+            let long = format!("echo '{secret}{}'", "a".repeat(len));
+            let before = command_temp_files();
+            rig.sender.messages.lock().clear();
+            rig.controller.update(&mut app, |controller, ctx| {
+                controller.send_write_to_event_loop(command(&long, None), ctx)
+            });
+            {
+                let messages = rig.sender.messages.lock();
+                assert_eq!(messages.len(), 2, "ESC 2 and the launcher line");
+                assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
+                let typed = payload(&messages[1]);
+                assert_eq!(
+                    typed,
+                    typed_bytes(long_command_file::LAUNCHER_LINE)[2..].to_vec()
+                );
+                assert!(!String::from_utf8_lossy(&typed).contains(secret));
+            }
+            assert_eq!(command_temp_files(), before, "no file is written");
+            rig.controller.read(&app, |controller, _| {
+                assert!(controller.long_command_pipe.is_some());
+                assert!(controller.command_pipe.is_none());
+                // The launcher is not the insert chord: no retype bookkeeping.
+                assert!(controller.file_insert_pending.is_none());
+            });
+        }
+    });
+}
+
+#[test]
+fn the_launcher_pipe_survives_the_preexec_that_precedes_the_launcher_reading_it() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_021, true);
+        let long = "a".repeat(long_command_file::MAX_TYPED_BYTES + 1);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command(&long, None), ctx);
+            controller.clear_file_insert(); // what the Preexec subscription does
+        });
+        rig.controller.read(&app, |controller, _| {
+            assert!(controller.long_command_pipe.is_some());
+        });
+    });
+}
+
+#[test]
+fn with_the_kill_switch_off_a_long_command_is_typed_and_nothing_is_written() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_022, true);
+        rig.controller.update(&mut app, |controller, _| {
+            controller.fast_insert_off_for_test = true;
+        });
+        let long = format!("echo '{}'", "a".repeat(long_command_file::MAX_TYPED_BYTES));
+        let before = command_temp_files();
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command(&long, None), ctx)
+        });
+        let messages = rig.sender.messages.lock();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
+        assert_eq!(payload(&messages[1]), typed_bytes(&long)[2..].to_vec());
+        assert_eq!(command_temp_files(), before);
+        drop(messages);
+        rig.controller.read(&app, |controller, _| {
+            assert!(controller.long_command_pipe.is_none());
+            assert!(controller.command_pipe.is_none());
+        });
+    });
+}
+
+#[test]
+fn a_long_command_without_a_session_pipe_is_typed() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_023, false);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.runs_long_commands_from_file = true;
+            controller.send_write_to_event_loop(
+                command(&"a".repeat(long_command_file::MAX_TYPED_BYTES + 1), None),
+                ctx,
+            );
+        });
+        let messages = rig.sender.messages.lock();
+        assert_eq!(messages.len(), 2);
+        assert!(!payload(&messages[1]).starts_with(b". (Warp-Run-LongCommand"));
+    });
+}
+
+#[test]
+fn in_band_commands_and_non_local_powershell_are_typed() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_003, true);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(
+                PtyWrite::Command {
+                    command: "Get-Date".to_owned(),
+                    shell_type: ShellType::PowerShell,
+                    in_band_command_id: Some("id".to_owned()),
+                    before_write_fn: None,
+                },
+                ctx,
+            )
+        });
+        assert_eq!(rig.sender.messages.lock().len(), 2);
+
+        let remote = self::rig(&mut app, 9_100_004, false);
+        remote.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx)
+        });
+        let messages = remote.sender.messages.lock();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
+        assert_eq!(payload(&messages[1]), typed_bytes("Get-Date")[2..].to_vec());
+    });
+}
+
+#[test]
+fn the_failure_hook_retypes_the_command_once_and_only_once() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_005, true);
+        let written = Arc::new(AtomicUsize::new(0));
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", Some(written.clone())), ctx);
+        });
+        assert_eq!(rig.sender.messages.lock().len(), 1);
+
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.on_command_file_failed(ctx);
+        });
+        {
+            let messages = rig.sender.messages.lock();
+            assert_eq!(messages.len(), 3, "chord, then ESC 2, then the line");
+            assert_eq!(payload(&messages[1]), b"\x1b2".to_vec());
+            assert_eq!(payload(&messages[2]), typed_bytes("Get-Date")[2..].to_vec());
+        }
+        assert_eq!(
+            written.load(Ordering::SeqCst),
+            1,
+            "the retype does not re-run on_command_written"
+        );
+        rig.controller.read(&app, |controller, _| {
+            assert!(controller.file_insert_pending.is_none());
+            assert!(!controller.force_typed_command);
+            assert!(
+                controller.command_pipe.is_none(),
+                "the retype closes the pipe"
+            );
+        });
+
+        // A second report has nothing to retype: no duplicate.
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.on_command_file_failed(ctx);
+        });
+        assert_eq!(rig.sender.messages.lock().len(), 3);
+    });
+}
+
+#[test]
+fn a_preexec_clears_the_outstanding_chord_so_a_late_failure_retypes_nothing() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_006, true);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+            // What the Preexec subscription does.
+            controller.clear_file_insert();
+            controller.on_command_file_failed(ctx);
+        });
+        assert_eq!(rig.sender.messages.lock().len(), 1, "only the chord");
+    });
+}
+
+#[test]
+fn a_second_command_is_typed_while_a_chord_is_outstanding() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_007, true);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("one", None), ctx);
+            controller.send_write_to_event_loop(command("two", None), ctx);
+        });
+        let messages = rig.sender.messages.lock();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(payload(&messages[0]), b"\x1b3".to_vec());
+        assert_eq!(payload(&messages[1]), b"\x1b2".to_vec());
+    });
+}
+
+#[test]
+fn a_refused_write_leaves_no_outstanding_chord() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_008, true);
+        let sent = rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(
+                PtyWrite::Command {
+                    command: "Get-Date".to_owned(),
+                    shell_type: ShellType::PowerShell,
+                    in_band_command_id: None,
+                    before_write_fn: Some(Box::new(|| StartCommandOutcome::RejectedExecuting)),
+                },
+                ctx,
+            )
+        });
+        assert!(!sent);
+        assert!(rig.sender.messages.lock().is_empty());
+        rig.controller.read(&app, |controller, _| {
+            assert!(controller.file_insert_pending.is_none());
+            assert!(
+                controller.command_pipe.is_none(),
+                "a refused write closes the pipe"
+            );
+        });
+    });
+}
+
+#[test]
+fn a_session_without_a_registered_pipe_name_is_typed() {
+    App::test((), |mut app| async move {
+        // Local PowerShell, but no name was minted for this session (no Windows init script).
+        let rig = rig(&mut app, 9_100_011, false);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.runs_long_commands_from_file = true;
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+        });
+        let messages = rig.sender.messages.lock();
+        assert_eq!(messages.len(), 2, "ESC 2 and the typed line, no chord");
+        assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
+    });
+}
+
+/// A Precmd for the prompt the chord was written at (queued before the write, or a generator
+/// command's) keeps the chord; a Precmd of a NEW prompt means no Preexec came and retypes once (B2).
+#[test]
+fn a_precmd_without_a_preexec_retypes_once_and_a_preexec_first_retypes_nothing() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_009, true);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+            // The same prompt's Precmd: not a lost chord.
+            controller.on_precmd_with_chord_outstanding(ctx);
+        });
+        assert_eq!(rig.sender.messages.lock().len(), 1, "only the chord");
+        rig.controller.read(&app, |controller, _| {
+            assert_eq!(controller.file_insert_pending.as_deref(), Some("Get-Date"));
+        });
+
+        // A new block (a new prompt) starts without a Preexec having answered the chord.
+        rig.controller.update(&mut app, |controller, ctx| {
+            {
+                let mut model = controller.terminal_model.lock();
+                model.simulate_long_running_block("other", "");
+                model.finish_block();
+            }
+            controller.on_precmd_with_chord_outstanding(ctx);
+            // A second Precmd has nothing outstanding.
+            controller.on_precmd_with_chord_outstanding(ctx);
+        });
+        {
+            let messages = rig.sender.messages.lock();
+            assert_eq!(messages.len(), 3, "chord, then one typed retype");
+            assert_eq!(payload(&messages[1]), b"\x1b2".to_vec());
+            assert_eq!(payload(&messages[2]), typed_bytes("Get-Date")[2..].to_vec());
+        }
+        rig.controller.read(&app, |controller, _| {
+            assert!(controller.file_insert_pending.is_none());
+            assert!(controller.file_insert_block.is_none());
+        });
+
+        // Normal flow: Preexec clears the chord, the Precmd after the command retypes nothing.
+        let normal = self::rig(&mut app, 9_100_010, true);
+        normal.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+            controller.clear_file_insert(); // what the Preexec subscription does
+            controller.on_precmd_with_chord_outstanding(ctx);
+        });
+        assert_eq!(normal.sender.messages.lock().len(), 1);
+    });
+}
+
+/// F1 (#1592): a long command submitted while a chord is outstanding is still served behind the
+/// launcher line (never typed raw), and both pipes stay alive.
+#[test]
+fn a_long_command_while_a_chord_is_outstanding_goes_behind_the_launcher() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_030, true);
+        let long = format!(
+            "echo '{}'",
+            "a".repeat(long_command_file::MAX_TYPED_BYTES + 1000)
+        );
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("one", None), ctx);
+            controller.send_write_to_event_loop(command(&long, None), ctx);
+        });
+        {
+            let messages = rig.sender.messages.lock();
+            assert_eq!(messages.len(), 3, "chord, ESC 2, launcher line");
+            assert_eq!(payload(&messages[0]), b"\x1b3".to_vec());
+            assert_eq!(payload(&messages[1]), b"\x1b2".to_vec());
+            assert_eq!(
+                payload(&messages[2]),
+                typed_bytes(long_command_file::LAUNCHER_LINE)[2..].to_vec()
+            );
+        }
+        rig.controller.read(&app, |controller, _| {
+            assert_eq!(controller.file_insert_pending.as_deref(), Some("one"));
+            assert!(controller.command_pipe.is_some(), "the chord's pipe lives");
+            assert!(
+                controller.long_command_pipe.is_some(),
+                "the launcher's pipe lives"
+            );
+        });
+    });
+}

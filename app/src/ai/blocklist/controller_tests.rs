@@ -164,7 +164,7 @@ fn input_for_query_converts_prompt_attachments_and_ignores_live_staging() {
                 UserQueryMode::Normal,
                 None,
                 HashMap::new(),
-                prompt_attachments,
+                super::read_attachments(prompt_attachments),
                 context_model.as_ref(ctx),
                 active_session.as_ref(ctx),
                 ctx,
@@ -1531,20 +1531,80 @@ fn stop_drops_a_deferred_tool_loop_compaction() {
     });
 }
 
-/// Results of a subagent task (not the conversation's root task) never carry the summary:
-/// the summary input belongs to the root task, and a request spanning two tasks would append
-/// one exchange per task. They go as a plain follow-up and the deferral is dropped.
+/// #1074 (e35f40c2c): the results of a subagent task (not the conversation's root task) carry
+/// the summary in that task, so a CLI/LRC subagent loop that never pauses is compacted too and
+/// resumes inside the subagent. (Before #1074 only root-task results carried it.)
 #[test]
-fn subagent_task_results_never_carry_the_auto_summary() {
+fn subagent_task_results_carry_the_auto_summary_in_their_own_task() {
     use crate::features::FeatureFlag;
 
     App::test((), |mut app| async move {
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
         let (controller, conversation_id, _root_task_id) = tool_loop_controller(&mut app);
 
+        // The task must exist in the conversation: the summary exchange is appended to it, and an
+        // unknown task id fails that append, so no stream is tracked and the allowance stays unspent.
+        let subagent_task_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+                history
+                    .create_silent_cli_subagent_task_for_conversation(
+                        crate::terminal::model::block::BlockId::new(),
+                        conversation_id,
+                    )
+                    .expect("subagent task should be created")
+            });
+
         controller.update(&mut app, |controller, ctx| {
             defer_compaction_to_tool_results(controller, conversation_id);
             controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("subagent-call", &subagent_task_id),
+                );
+            });
+            controller.send_follow_up_for_conversation(
+                conversation_id,
+                super::FollowUpTrigger::Auto,
+                ctx,
+            );
+            assert_eq!(
+                in_flight_summarization_flags(controller, ctx),
+                vec![Some(true)],
+                "the subagent's results go with the automatic summary"
+            );
+            let state = controller
+                .compaction_turn_state
+                .get(&conversation_id)
+                .copied()
+                .unwrap_or_default();
+            assert!(state.auto_compacted(), "the turn's allowance is spent");
+            assert!(
+                !state.compaction_deferred_to_tool_results(),
+                "the deferral is consumed"
+            );
+        });
+    });
+}
+
+/// Results spanning several tasks have no single task to carry the summary (a request spanning
+/// two tasks would append one exchange per task): they go as a plain follow-up and the
+/// deferral is dropped. This is the case the pre-#1074 test of the subagent-only variant
+/// covered; it is still the rule.
+#[test]
+fn results_spanning_tasks_never_carry_the_auto_summary() {
+    use crate::features::FeatureFlag;
+
+    App::test((), |mut app| async move {
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let (controller, conversation_id, root_task_id) = tool_loop_controller(&mut app);
+
+        controller.update(&mut app, |controller, ctx| {
+            defer_compaction_to_tool_results(controller, conversation_id);
+            controller.action_model.update(ctx, |action_model, _| {
+                action_model.push_finished_action_result_for_test(
+                    conversation_id,
+                    command_result("root-call", &root_task_id),
+                );
                 action_model.push_finished_action_result_for_test(
                     conversation_id,
                     command_result("subagent-call", &TaskId::new("subagent-task".to_owned())),
@@ -1559,7 +1619,7 @@ fn subagent_task_results_never_carry_the_auto_summary() {
                 in_flight_summarization_flags(controller, ctx)
                     .iter()
                     .all(Option::is_none),
-                "no summary request for a subagent's results"
+                "no summary request for results spanning tasks"
             );
             assert!(
                 !controller
@@ -1725,7 +1785,8 @@ fn tool_loop_over_the_window_compacts_with_its_results_through_the_byop_path() {
 /// tool call (providers whose genai adapter ignores `tool_choice`). The call is dropped, and
 /// the narration is this stream's own AgentOutput — but it is not a summary, so nothing is
 /// committed: the head (the step's calls and results included) stays visible. The deferred
-/// summary still resumes the task: exactly one continue request.
+/// summary is then asked for once more without tools (#1079, e35f40c2c) instead of resuming
+/// the task uncompacted: one retry request, no continue request yet.
 #[test]
 fn narration_before_a_dropped_tool_call_is_not_committed_as_the_summary() {
     drive_tool_loop_through_the_byop_path(SummaryStreamOutcome::NarrationThenToolCall);
@@ -2228,7 +2289,27 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
                     })
                 })
                 .count();
-            assert_eq!(continue_requests, 1, "exactly one continue request after the commit");
+            if outcome == SummaryStreamOutcome::NarrationThenToolCall {
+                // #1079 (e35f40c2c): a summary the model answered with a tool call is asked for
+                // once more, without tools, and the task resumes only after that one commits.
+                assert_eq!(continue_requests, 0, "no continue before the retried summary");
+                let retries = controller
+                    .in_flight_response_streams
+                    .streams_for_test()
+                    .filter(|stream| {
+                        stream.as_ref(ctx).params_for_test().input.iter().any(|input| {
+                            matches!(
+                                input,
+                                AIAgentInput::SummarizeConversation { prompt: Some(prompt), .. }
+                                    if prompt.as_str() == crate::ai::byop_compaction::prompt::SUMMARY_RETRY_INSTRUCTION
+                            )
+                        })
+                    })
+                    .count();
+                assert_eq!(retries, 1, "the summary is asked for once more, without tools");
+            } else {
+                assert_eq!(continue_requests, 1, "exactly one continue request after the commit");
+            }
 
             if outcome == SummaryStreamOutcome::SummaryOfAnOlderTurn {
                 // What the continue request sends: the summary first, then the kept turn's
@@ -2273,4 +2354,828 @@ fn drive_tool_loop_through_the_byop_path(outcome: SummaryStreamOutcome) {
             }
         });
     });
+}
+
+/// #1178: the facts under which a finished monitored command is reported to the model.
+mod monitored_completion {
+    use super::super::{
+        MonitoredCompletionDecision, MonitoredCompletionFacts, silent_stop_reason,
+    };
+    use super::*;
+
+    fn idle_after_text_reply() -> MonitoredCompletionFacts {
+        MonitoredCompletionFacts {
+            last_turn_succeeded: true,
+            ..Default::default()
+        }
+    }
+
+    /// The reported case: the model answered the "running" snapshot with text and ended its
+    /// turn, then the command finished. Fails on the old code, which sent nothing.
+    #[test]
+    fn sends_one_follow_up_when_the_turn_already_ended() {
+        assert!(idle_after_text_reply().should_follow_up());
+    }
+
+    #[test]
+    fn never_sends_a_second_follow_up_for_the_same_block() {
+        let facts = MonitoredCompletionFacts {
+            already_followed_up: true,
+            ..idle_after_text_reply()
+        };
+        assert!(!facts.should_follow_up());
+    }
+
+    #[test]
+    fn guarded_cases_send_nothing() {
+        let base = idle_after_text_reply();
+        // The model is mid-turn (a new user turn, or it polled the output itself).
+        assert!(!MonitoredCompletionFacts {
+            stream_in_flight: true,
+            ..base
+        }
+        .should_follow_up());
+        // The user stopped the conversation, it failed, or a new turn is in progress.
+        assert!(!MonitoredCompletionFacts {
+            last_turn_succeeded: false,
+            ..base
+        }
+        .should_follow_up());
+        // The pane is closed.
+        assert!(!MonitoredCompletionFacts {
+            suspended_for_close: true,
+            ..base
+        }
+        .should_follow_up());
+        // A compaction is under way.
+        assert!(!MonitoredCompletionFacts {
+            mid_compaction: true,
+            ..base
+        }
+        .should_follow_up());
+        // Results are on their way to the model already.
+        assert!(!MonitoredCompletionFacts {
+            has_unsent_actions: true,
+            ..base
+        }
+        .should_follow_up());
+    }
+
+    fn result_of(
+        result: crate::ai::agent::AIAgentActionResultType,
+    ) -> std::sync::Arc<crate::ai::agent::AIAgentActionResult> {
+        std::sync::Arc::new(crate::ai::agent::AIAgentActionResult {
+            id: AIAgentActionId::from("call".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result,
+        })
+    }
+
+    fn completed_130(interrupted: bool) -> crate::ai::agent::AIAgentActionResultType {
+        crate::ai::agent::AIAgentActionResultType::RequestCommandOutput(
+            crate::ai::agent::RequestCommandOutputResult::Completed {
+                block_id: crate::terminal::model::block::BlockId::new(),
+                command: "sh -c 'exit 130'".to_owned(),
+                output: String::new(),
+                exit_code: 130.into(),
+                start_ts: None,
+                completed_ts: None,
+                interrupted,
+            },
+        )
+    }
+
+    /// B: a self-exited 130 produces a normal result, so a request follows and nothing is
+    /// reported as a silent stop; a user interrupt does not trigger one.
+    #[test]
+    fn self_exited_130_continues_and_an_interrupt_does_not() {
+        let self_exit = result_of(completed_130(false));
+        assert!(self_exit.result.should_trigger_request_upon_completion());
+        assert_eq!(silent_stop_reason(None, &[self_exit]), None);
+
+        let interrupted = result_of(completed_130(true));
+        assert!(!interrupted.result.should_trigger_request_upon_completion());
+    }
+
+    /// A turn that ends with a cancelled result nobody asked for says why; a deliberate stop
+    /// (a cancellation reason is set) stays quiet.
+    #[test]
+    fn unrequested_cancelled_result_reports_a_stop_reason() {
+        let interrupted = result_of(completed_130(true));
+        let reason = silent_stop_reason(None, std::slice::from_ref(&interrupted))
+            .expect("an unrequested cancelled result must be reported");
+        assert!(reason.contains("sh -c 'exit 130'"), "{reason}");
+        assert_eq!(
+            silent_stop_reason(Some(CancellationReason::ManuallyCancelled), &[interrupted]),
+            None
+        );
+    }
+
+    /// A request about the conversation is in flight or coming -- the model mid-reply, a tool
+    /// step, a compaction, a scheduled resume: the completion is held for that request's end,
+    /// never dropped. Fails on the old code, which only knew send-or-nothing.
+    #[test]
+    fn a_completion_while_a_request_is_in_flight_or_coming_is_deferred() {
+        use MonitoredCompletionDecision as D;
+        let base = idle_after_text_reply();
+        // Mid-reply the status is still `InProgress`.
+        assert_eq!(
+            MonitoredCompletionFacts {
+                stream_in_flight: true,
+                last_turn_succeeded: false,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                mid_compaction: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                has_unsent_actions: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                resume_scheduled: true,
+                ..base
+            }
+            .decision(),
+            D::Defer
+        );
+    }
+
+    /// Nothing coming and the turn did not end normally (the user stopped it, it failed), or
+    /// the block was already reported, or the pane is closed: dropped, whatever else is going on.
+    #[test]
+    fn a_stopped_or_failed_turn_with_nothing_coming_drops_the_completion() {
+        use MonitoredCompletionDecision as D;
+        assert_eq!(MonitoredCompletionFacts::default().decision(), D::Drop);
+        assert_eq!(
+            MonitoredCompletionFacts {
+                already_followed_up: true,
+                stream_in_flight: true,
+                ..idle_after_text_reply()
+            }
+            .decision(),
+            D::Drop
+        );
+        assert_eq!(
+            MonitoredCompletionFacts {
+                suspended_for_close: true,
+                stream_in_flight: true,
+                ..idle_after_text_reply()
+            }
+            .decision(),
+            D::Drop
+        );
+        assert_eq!(idle_after_text_reply().decision(), D::Send);
+    }
+
+    /// The controller holds a completion that arrives while a stream is in flight, keeps it
+    /// across the command's own optimistic completion, and drops it when the user stops the
+    /// conversation. Fails on the old code: the first call returned false and nothing was kept.
+    #[test]
+    fn a_completion_during_the_models_reply_is_held_until_the_user_stops_or_the_turn_ends() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            // Stopping a conversation with a live exchange persists it, which reads this singleton.
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let block_id = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    assert!(
+                        !controller.follow_up_on_monitored_command_completed(
+                            conversation_id,
+                            &block_id,
+                            ctx
+                        ),
+                        "nothing is sent into a running stream"
+                    );
+                    assert!(
+                        controller.has_deferred_monitored_completion(conversation_id),
+                        "the completion is held for the stream's end"
+                    );
+                    // The command finishing is not the user acting: the hold survives.
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::OptimisticCLISubagentCompletion,
+                        ctx,
+                    );
+                    assert!(controller.has_deferred_monitored_completion(conversation_id));
+                    // The user stopping (or sending a new prompt) drops it: nothing resumes on
+                    // their behalf.
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::ManuallyCancelled,
+                        ctx,
+                    );
+                    assert!(!controller.has_deferred_monitored_completion(conversation_id));
+                });
+            });
+        });
+    }
+
+    /// #1264: a user ^C inside a monitored command is not news that restarts a turn.
+    #[test]
+    fn a_command_the_user_interrupted_with_ctrl_c_sends_nothing() {
+        let facts = MonitoredCompletionFacts {
+            interrupted_by_ctrl_c: true,
+            ..idle_after_text_reply()
+        };
+        assert!(!facts.should_follow_up());
+        assert_eq!(facts.decision(), MonitoredCompletionDecision::Drop);
+    }
+
+    /// #1264: a second command finishing while one is held does not erase the first. Fails on
+    /// the old code, where the second insert replaced the first block id.
+    #[test]
+    fn a_second_completion_does_not_replace_the_held_one() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let first = crate::terminal::model::block::BlockId::new();
+                let second = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &first,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &second,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &second,
+                        ctx,
+                    );
+                    assert_eq!(
+                        controller.deferred_monitored_blocks_for_test(conversation_id),
+                        vec![first, second],
+                        "both are held, in order, once each"
+                    );
+                });
+            });
+        });
+    }
+
+    /// #1264: finished results a step kept back (no request follows them) do not hold a
+    /// completion; actions still pending or running always do, and finished results do while a
+    /// request to send them is coming.
+    #[test]
+    fn retained_results_block_only_while_a_request_is_coming() {
+        use super::super::unsent_actions_block;
+        assert!(unsent_actions_block(true, false, false));
+        assert!(unsent_actions_block(true, false, true));
+        assert!(unsent_actions_block(false, true, true));
+        assert!(!unsent_actions_block(false, true, false));
+        assert!(!unsent_actions_block(false, false, true));
+    }
+
+    /// #1264: while a completion is held, the view is told a report is outstanding, so no queued
+    /// prompt fires into it; the command's own optimistic completion keeps it, the user's stop
+    /// clears it, and a closed pane drops every hold at once.
+    #[test]
+    fn a_held_completion_is_an_outstanding_report_until_the_user_stops_or_the_pane_closes() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            // Stopping a conversation with a live exchange persists it, which reads this singleton.
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let block_id = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    assert!(!controller.completion_report_outstanding(conversation_id));
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    assert!(!controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &block_id,
+                        ctx
+                    ));
+                    assert!(
+                        controller.completion_report_outstanding(conversation_id),
+                        "a held completion is an outstanding report"
+                    );
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::OptimisticCLISubagentCompletion,
+                        ctx,
+                    );
+                    assert!(controller.completion_report_outstanding(conversation_id));
+                    controller.cancel_conversation_progress(
+                        conversation_id,
+                        CancellationReason::ManuallyCancelled,
+                        ctx,
+                    );
+                    assert!(!controller.completion_report_outstanding(conversation_id));
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn closing_the_pane_drops_the_held_completion() {
+        App::test((), |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                let terminal_view_id = view.id();
+                let stream_id = ResponseStreamId::new_for_test();
+                let conversation_id =
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        let conversation_id =
+                            history.start_new_conversation(terminal_view_id, false, false, ctx);
+                        history
+                            .conversation_mut(&conversation_id)
+                            .expect("conversation should exist")
+                            .append_reassigned_exchange(
+                                &stream_id,
+                                streaming_exchange(),
+                                terminal_view_id,
+                                ctx,
+                            )
+                            .expect("exchange should append");
+                        conversation_id
+                    });
+                let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+                let block_id = crate::terminal::model::block::BlockId::new();
+                view.ai_controller().update(ctx, |controller, ctx| {
+                    controller.register_mock_stream_for_test(
+                        stream_id,
+                        conversation_id,
+                        stream,
+                        ctx,
+                    );
+                    controller.follow_up_on_monitored_command_completed(
+                        conversation_id,
+                        &block_id,
+                        ctx,
+                    );
+                    assert!(controller.has_deferred_monitored_completion(conversation_id));
+                    controller.set_suspended_for_close(true);
+                    assert!(!controller.has_deferred_monitored_completion(conversation_id));
+                    assert!(!controller.completion_report_outstanding(conversation_id));
+                });
+            });
+        });
+    }
+}
+
+/// The end-of-step decision behind the `FinishedAction` subscriber: every finished batch ends
+/// in a follow-up request or in a final status, and a stop nobody asked for is named.
+mod finished_batch {
+    use super::super::{FollowUpTrigger, plan_finished_batch};
+    use super::*;
+    use crate::ai::agent::{AIAgentActionResult, AIAgentActionResultType};
+    use crate::ai::agent::{ReadFilesResult, RequestCommandOutputResult};
+    use crate::terminal::model::block::BlockId;
+    use std::sync::Arc;
+
+    fn result_of(result: AIAgentActionResultType) -> Arc<AIAgentActionResult> {
+        Arc::new(AIAgentActionResult {
+            id: AIAgentActionId::from("call".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            result,
+        })
+    }
+
+    fn completed(exit_code: i32, interrupted: bool) -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::RequestCommandOutput(
+            RequestCommandOutputResult::Completed {
+                block_id: BlockId::new(),
+                command: "make test".to_owned(),
+                output: String::new(),
+                exit_code: exit_code.into(),
+                start_ts: None,
+                completed_ts: None,
+                interrupted,
+            },
+        ))
+    }
+
+    fn rejected() -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::RequestCommandOutput(
+            RequestCommandOutputResult::CancelledBeforeExecution,
+        ))
+    }
+
+    fn cancelled_read() -> Arc<AIAgentActionResult> {
+        result_of(AIAgentActionResultType::ReadFiles(ReadFilesResult::Cancelled))
+    }
+
+    /// A finished command -- succeeded, failed, or exited 130 on its own -- goes back to the
+    /// model; the turn is not over.
+    #[test]
+    fn a_finished_result_sends_an_automatic_follow_up() {
+        for result in [completed(0, false), completed(2, false), completed(130, false)] {
+            let plan = plan_finished_batch(None, &[result], false, false);
+            assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
+        }
+        // One finished result among cancelled ones is enough.
+        let plan = plan_finished_batch(None, &[rejected(), completed(0, false)], false, false);
+        assert_eq!(plan.follow_up, Some(FollowUpTrigger::Auto));
+    }
+
+    /// A user Reject or Stop ends the turn quietly: the user chose it.
+    #[test]
+    fn a_user_stop_ends_the_turn_without_a_notice() {
+        let plan = plan_finished_batch(
+            Some(CancellationReason::ManuallyCancelled),
+            &[rejected()],
+            false,
+            false,
+        );
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        assert_eq!(plan.silent_stop, None);
+    }
+
+    /// A cancellation nobody asked for (a ^C into the command, a cancelled tool) ends the turn
+    /// with a visible reason (#1178): never a finished-looking turn with no message.
+    #[test]
+    fn an_unrequested_cancellation_ends_the_turn_with_a_reason() {
+        let plan = plan_finished_batch(None, &[completed(130, true)], false, false);
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Cancelled);
+        assert!(
+            plan.silent_stop
+                .as_deref()
+                .is_some_and(|reason| reason.contains("make test")),
+            "{:?}",
+            plan.silent_stop
+        );
+        let plan = plan_finished_batch(None, &[cancelled_read()], false, false);
+        assert_eq!(plan.follow_up, None);
+        assert!(plan.silent_stop.is_some());
+    }
+
+    /// An optimistic long-running-command completion or a revert is the terminal result:
+    /// `Success`, no follow-up, no notice -- whatever the results say.
+    #[test]
+    fn a_succeeded_cancellation_ends_the_turn_successfully() {
+        for reason in [
+            CancellationReason::OptimisticCLISubagentCompletion,
+            CancellationReason::Reverted,
+        ] {
+            let plan = plan_finished_batch(Some(reason), &[rejected()], false, false);
+            assert_eq!(plan.follow_up, None);
+            assert_eq!(plan.final_status, ConversationStatus::Success);
+            assert_eq!(plan.silent_stop, None);
+        }
+    }
+
+    /// A requested follow-up goes out even when nothing else would send one; a passive code
+    /// diff never autosends.
+    #[test]
+    fn manual_follow_up_and_passive_code_diff_override_the_results() {
+        let plan = plan_finished_batch(
+            Some(CancellationReason::ManuallyCancelled),
+            &[rejected()],
+            false,
+            true,
+        );
+        assert_eq!(plan.follow_up, Some(FollowUpTrigger::UserRequested));
+        let plan = plan_finished_batch(None, &[completed(0, false)], true, false);
+        assert_eq!(plan.follow_up, None);
+        assert_eq!(plan.final_status, ConversationStatus::Success);
+        assert_eq!(plan.silent_stop, None);
+    }
+}
+
+/// The automatic resumes a turn gets for synthetic local tool results (bad arguments, unknown
+/// tool, intercepted tool): each is a model request on the user's provider, so they are bounded.
+mod synthetic_result_resumes {
+    use super::super::{
+        MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN, byop_synthetic_result_needs_resume,
+        charge_synthetic_result_resume,
+    };
+
+    /// An unknown tool name is answered with the available names and a request to re-issue
+    /// the call; that answer only helps if the turn resumes. Fails on the old code, which
+    /// resumed for bad arguments and intercepted tools only.
+    #[test]
+    fn an_unknown_tool_result_resumes_like_bad_arguments() {
+        assert!(byop_synthetic_result_needs_resume(
+            r#"{"error":"unknown_tool","available_tools":["read_files"],"executed":false}"#
+        ));
+        assert!(byop_synthetic_result_needs_resume(
+            r#"{"error":"invalid_arguments","executed":false}"#
+        ));
+        assert!(byop_synthetic_result_needs_resume(
+            r#"{"_byop_intercepted":true,"status":"ok"}"#
+        ));
+        // The dispatch gate's refusals stay non-resuming (#1067).
+        assert!(!byop_synthetic_result_needs_resume(
+            r#"{"error":"tool_not_offered","executed":false}"#
+        ));
+    }
+
+    /// The allowance is spent one resume at a time and then refuses; a model looping on the
+    /// same bad call is stopped after a bounded number of requests. Fails on the old code,
+    /// which had no bound for anything but skill names.
+    #[test]
+    fn the_per_turn_allowance_is_bounded() {
+        let mut spent = 0u8;
+        for _ in 0..MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN {
+            assert!(charge_synthetic_result_resume(&mut spent));
+        }
+        assert!(!charge_synthetic_result_resume(&mut spent));
+        assert!(!charge_synthetic_result_resume(&mut spent));
+        assert_eq!(spent, MAX_SYNTHETIC_RESULT_RESUMES_PER_TURN);
+    }
+}
+
+#[cfg(unix)]
+mod remote_home_1288 {
+    use crate::ai::blocklist::SessionContext;
+
+    #[test]
+    fn remote_session_path_rules_follow_the_remote_os() {
+        use crate::ai::paths::PathHost;
+        let mut session = SessionContext::new_remote_with_home_for_test(None, "/home/u");
+        // OS not reported yet: previous (local) behaviour.
+        assert_eq!(session.path_host(), PathHost::Local);
+        session.remote_os_category = Some("Windows".to_owned());
+        assert_eq!(session.path_host(), PathHost::RemoteWindows);
+        session.remote_os_category = Some("Linux".to_owned());
+        assert_eq!(session.path_host(), PathHost::RemoteUnix);
+        // A local session never takes remote rules, even with a stale category.
+        let mut local = SessionContext::new_for_test();
+        local.remote_os_category = Some("Windows".to_owned());
+        assert_eq!(local.path_host(), PathHost::Local);
+    }
+
+    #[test]
+    fn resolve_path_uses_the_remote_home_not_the_local_one() {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser/proj",
+        );
+        assert_eq!(session.resolve_path("~/x"), "/home/remoteuser/x");
+        assert_eq!(session.resolve_path("~"), "/home/remoteuser");
+        assert_eq!(session.resolve_path("y"), "/home/remoteuser/proj/y");
+        assert_eq!(session.resolve_path("/etc/z"), "/etc/z");
+        assert!(!session.tilde_unresolvable("~/x"));
+    }
+
+    #[test]
+    fn unknown_remote_home_is_flagged_for_tilde_paths_only() {
+        let session = SessionContext::new_remote_with_home_for_test(None, "/srv");
+        assert!(session.tilde_unresolvable("~/x"));
+        assert!(session.tilde_unresolvable("~"));
+        assert!(!session.tilde_unresolvable("/srv/x"));
+        assert!(!session.tilde_unresolvable("rel/x"));
+    }
+
+    #[test]
+    fn a_local_session_expands_with_the_local_home() {
+        let session = SessionContext::new_local_with_cwd_for_test("/srv");
+        assert!(!session.tilde_unresolvable("~/x"));
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(
+                session.resolve_path("~/x"),
+                home.join("x").to_string_lossy()
+            );
+        }
+    }
+}
+
+/// #1362: a submit parked on its attachment read is discarded by Ctrl-C / stop and by pane
+/// close; the read landing afterwards (id-guarded by `seq`) sends nothing. Without the discard
+/// the landing read starts a request.
+mod parked_query_sends {
+    use super::*;
+    use crate::ai::agent::conversation::AIConversationId;
+
+    fn setup(
+        app: &mut App,
+    ) -> (
+        warpui::ViewHandle<crate::terminal::TerminalView>,
+        AIConversationId,
+    ) {
+        initialize_app_for_terminal_view(app);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        // A give-up toasts the user (`notify_attachment_read_failures`); production registers this.
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(app, None);
+        let terminal_view_id = terminal.read(app, |view, _| view.id());
+        let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        (terminal, conversation_id)
+    }
+
+    #[test]
+    fn ctrl_c_then_read_lands_sends_nothing() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let seq = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "hi",
+                );
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+                assert_eq!(controller.pending_query_send_count_for_test(), 0);
+                controller.land_attachment_read_for_test(seq, ctx);
+                assert!(!controller.has_active_stream_for_conversation(conversation_id, ctx));
+            });
+        });
+    }
+
+    #[test]
+    fn follow_up_supersede_keeps_earlier_parked_send() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "first",
+                );
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::FollowUpSubmitted {
+                        is_for_same_conversation: true,
+                    },
+                    ctx,
+                );
+                assert_eq!(controller.pending_query_send_count_for_test(), 1);
+            });
+        });
+    }
+
+    #[test]
+    fn pane_close_then_read_lands_sends_nothing() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let seq = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "hi",
+                );
+                controller.set_suspended_for_close(true);
+                assert_eq!(controller.pending_query_send_count_for_test(), 0);
+                controller.land_attachment_read_for_test(seq, ctx);
+                assert!(!controller.has_active_stream_for_conversation(conversation_id, ctx));
+            });
+        });
+    }
+
+    #[test]
+    fn hung_read_does_not_block_a_later_submit() {
+        App::test((), |mut app| async move {
+            let (terminal, conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let hung = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "hung",
+                );
+                let later = controller.park_query_send_for_test(
+                    conversation_id,
+                    TaskId::new("t".to_owned()),
+                    "later",
+                );
+                // The later submit's own read is done, but it waits behind the hung one.
+                controller.land_attachment_read_for_test(later, ctx);
+                assert_eq!(controller.pending_query_send_count_for_test(), 2);
+                // The give-up fails only the hung submit and releases the later one.
+                controller.give_up_attachment_read_for_test(hung, ctx);
+                assert_eq!(controller.pending_query_send_count_for_test(), 0);
+            });
+        });
+    }
+
+    /// A submit deferred on its read takes its attachments out of live staging, so a second
+    /// submit during the read cannot copy them again (#1370 F4).
+    #[test]
+    fn deferred_submit_takes_its_attachments_out_of_staging() {
+        use crate::ai::blocklist::PendingAttachment;
+        App::test((), |mut app| async move {
+            let (terminal, _conversation_id) = setup(&mut app);
+            let controller = terminal.read(&app, |view, _| view.ai_controller().clone());
+            controller.update(&mut app, |controller, ctx| {
+                let file =
+                    PendingAttachment::File(crate::ai::blocklist::context_model::PendingFile {
+                        file_name: "a.txt".to_owned(),
+                        file_path: std::path::PathBuf::from("/nonexistent/a.txt"),
+                        mime_type: "text/plain".to_owned(),
+                    });
+                controller.stage_attachments_for_test(vec![file], ctx);
+                controller.send_user_query_for_test("first", ctx);
+                assert_eq!(controller.pending_query_send_count_for_test(), 1);
+                assert!(
+                    controller.staged_attachment_count_for_test(ctx) == 0,
+                    "the deferred submit owns its attachments; a second submit must not copy them"
+                );
+            });
+        });
+    }
 }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="2" failures="2" skipped="0">
+<testcase classname="terminal" name="launch" time="120.00">
+<failure message="no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)">no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)</failure>
+</testcase>
+<testcase classname="agent" name="launch" time="120.00">
+<failure message="no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)">no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)</failure>
+</testcase>
+</testsuite>

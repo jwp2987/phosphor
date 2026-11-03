@@ -5,6 +5,8 @@ pub mod bonus_grant_notification_model;
 // warpctrl install button from outside this module.
 #[cfg(target_os = "macos")]
 pub(crate) mod cli_install;
+#[cfg(feature = "local_fs")]
+mod code_open_queue;
 mod close_session_confirmation_dialog;
 pub(crate) mod cross_window_tab_drag;
 pub mod delete_conversation_confirmation_dialog;
@@ -57,7 +59,7 @@ pub use action::{
 };
 pub use active_session::ActiveSession;
 pub use global_actions::{
-    ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination,
+    flush_pending_app_snapshot, ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination,
 };
 pub use util::{active_terminal_in_window, PaneViewLocator, TabMovement};
 pub use view::{
@@ -1268,8 +1270,7 @@ pub fn init(app: &mut AppContext) {
         ]);
     }
 
-    // We use the same binding name for the AI Assistant and block list AI to preserve custom
-    // keybindings between them.
+    // The binding name is kept from the removed AI Assistant panel to preserve custom keybindings.
     app.register_editable_bindings([
         EditableBinding::new(
             "workspace:toggle_ai_assistant",
@@ -1282,17 +1283,6 @@ pub fn init(app: &mut AppContext) {
         .with_enabled(|| FeatureFlag::AgentMode.is_enabled())
         .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED))
         .with_group(bindings::BindingGroup::WarpAi.as_str())
-        .with_custom_action(CustomAction::NewAgentModePane),
-        EditableBinding::new(
-            "workspace:toggle_ai_assistant",
-            crate::t!("keybinding-desc-workspace-toggle-ai-assistant"),
-            WorkspaceAction::ToggleAIAssistant,
-        )
-        .with_enabled(|| !FeatureFlag::AgentMode.is_enabled())
-        .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED))
-        .with_group(bindings::BindingGroup::WarpAi.as_str())
-        // We use the same custom action as AM so that we don't have
-        // two mac menu items for AM vs Zap AI since they are mutually exclusive.
         .with_custom_action(CustomAction::NewAgentModePane),
     ]);
 
@@ -1593,7 +1583,6 @@ fn add_overflow_menu_items_as_editable_binding(app: &mut AppContext) {
             WorkspaceAction::SendFeedback,
         )
         .with_context_predicate(id!("Workspace")),
-        #[cfg(not(target_family = "wasm"))]
         EditableBinding::new(
             "workspace:view_logs",
             crate::t!("keybinding-desc-workspace-view-logs"),

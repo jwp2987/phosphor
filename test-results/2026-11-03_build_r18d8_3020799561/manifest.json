@@ -1,0 +1,675 @@
+{
+ "pipeline": 3020799561,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3020799561",
+ "ref": "build/r18d8",
+ "commit": "9625b716c8d8655dc241a64596c6871eeca024bd",
+ "created_at": "2026-11-03T05:11:13.815Z",
+ "date": "2026-11-03",
+ "tier": "release",
+ "pipeline_status": "manual",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762549,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762548,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762547,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762546,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762545,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos": {
+   "status": "failed",
+   "duration": 277.795873,
+   "id": 17686762544,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "failed",
+   "duration": 9.214863,
+   "id": 17686762543,
+   "runner": ""
+  },
+  "app-test-linux-wayland": {
+   "status": "failed",
+   "duration": 5700.516202,
+   "id": 17686762542,
+   "runner": "",
+   "note": "no results artifact (job failed)"
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762541,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762540,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762539,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "canceled",
+   "duration": 8556.109296,
+   "id": 17686762538,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 2010.460117,
+   "id": 17686762537,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1196.482688,
+   "id": 17686762536,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762535,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762534,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "success",
+   "duration": 1404.273136,
+   "id": 17686762533,
+   "runner": ""
+  },
+  "mutants-warpui-core": {
+   "status": "success",
+   "duration": 3933.93116,
+   "id": 17686762532,
+   "runner": ""
+  },
+  "mutants": {
+   "status": "success",
+   "duration": 904.402393,
+   "id": 17686762531,
+   "runner": ""
+  },
+  "fuzz-smoke": {
+   "status": "failed",
+   "duration": 415.722664,
+   "id": 17686762530,
+   "runner": ""
+  },
+  "test-shuttle-loom": {
+   "status": "failed",
+   "duration": 151.972519,
+   "id": 17686762529,
+   "runner": ""
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762528,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762527,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762526,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762525,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "success",
+   "duration": 130.460006,
+   "id": 17686762524,
+   "runner": ""
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762523,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 82.331174,
+   "id": 17686762522,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "failed",
+   "duration": 581.044511,
+   "id": 17686762521,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 10.530024,
+   "id": 17686762520,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 11.079393,
+   "id": 17686762519,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762518,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762517,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762516,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762515,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686762514,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 544.246489,
+   "id": 17686762513,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 112.044111,
+   "id": 17686762512,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-shuttle-loom": {
+   "summary_line": null,
+   "duration_s": null,
+   "run": null,
+   "passed": 0,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 0,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [],
+   "errors": [
+    "error[E0277]: `sync_shim::model::MutexGuard<'_, Vec<u64>>` doesn't implement `std::fmt::Debug`",
+    "error: could not compile `warpui_core` (lib test) due to 1 previous error; 1 warning emitted",
+    "ERROR: Job failed: exit status 101"
+   ],
+   "job": "test-shuttle-loom",
+   "status": "failed",
+   "duration": 151.972519
+  },
+  "test-workspace-rest": {
+   "summary_line": "Summary [  26.720s] 3259 tests run: 3259 passed, 19 skipped",
+   "duration_s": 26.72,
+   "run": 3259,
+   "passed": 3259,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest",
+   "status": "success",
+   "duration": 130.460006
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   5.223s] 776 tests run: 776 passed, 7 skipped",
+   "duration_s": 5.223,
+   "run": 776,
+   "passed": 776,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 82.331174
+  },
+  "test-linux": {
+   "summary_line": "Summary [ 226.354s] 10755 tests run: 10721 passed (1 slow), 34 failed, 29 skipped",
+   "duration_s": 226.354,
+   "run": 10755,
+   "passed": 10721,
+   "failed": 34,
+   "timed_out": 0,
+   "skipped": 29,
+   "slow": 1,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "code::editor::model::tests::an_editor_without_a_diff_base_has_none_to_compute_against",
+     "seconds": 0.233
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::bootstrap::tests::bundled_bash_body_has_one_local_only_block_holding_the_ssh_wrapper",
+     "seconds": 0.023
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::bootstrap::tests::bundled_bootstrap_bodies_are_safe_to_read_through_a_cooked_tty",
+     "seconds": 0.037
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::bootstrap::tests::typed_bootstrap_lines_fit_macos_max_canon",
+     "seconds": 0.023
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste",
+     "seconds": 21.233
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_line",
+     "seconds": 5.328
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_live_end_after_an_edit_waits_for_the_next_layout",
+     "seconds": 0.172
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_ready_paste_then_immediate_enter_classifies_the_pasted_line",
+     "seconds": 2.914
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_text_typed_during_the_verdict_wait_never_merges_into_the_held_enter",
+     "seconds": 5.321
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order",
+     "seconds": 5.344
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::input::tests::test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands",
+     "seconds": 5.329
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::model::terminal_model::tests::full_reset_clears_app_cursor_and_kitty_flags_and_publishes_them_1599",
+     "seconds": 0.023
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::model::typeahead_handoff::tests::a_committed_delivery_is_never_asked_for_and_stays_in_the_shell",
+     "seconds": 0.02
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::model::typeahead_handoff::tests::the_committed_delivery_mark_ends_when_its_line_cannot_hold_it",
+     "seconds": 0.02
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::a_line_delivered_to_the_shell_as_final_stays_in_the_shell",
+     "seconds": 0.148
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys",
+     "seconds": 0.198
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once",
+     "seconds": 0.176
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group1_handover_tests::an_agent_write_does_not_overtake_user_bytes_waiting_in_the_queue",
+     "seconds": 0.172
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group1_handover_tests::nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell",
+     "seconds": 0.234
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group1_handover_tests::release_without_event_hands_over_before_the_next_key",
+     "seconds": 0.153
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group2_timer_tests::ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering",
+     "seconds": 0.152
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group2_timer_tests::uncovered_report_patience_keeps_the_text_instead_of_running_the_enter",
+     "seconds": 0.132
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group3_paste_tests::editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold",
+     "seconds": 0.15
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group4_prompt_tests::enter_on_a_pending_approval_card_stays_with_the_card",
+     "seconds": 0.162
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group4_prompt_tests::ssh_warpify_on_a_clean_line_writes_at_once",
+     "seconds": 0.13
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group4_prompt_tests::ssh_warpify_waits_for_a_line_holding_delivered_keys",
+     "seconds": 0.165
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group4_prompt_tests::subshell_bootstrap_waits_for_a_line_holding_delivered_keys",
+     "seconds": 0.165
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shell",
+     "seconds": 0.164
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::shadow_mode_reports_zero_untagged_disagreements_over_chained_key_sequences",
+     "seconds": 0.205
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane",
+     "seconds": 0.146
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_ctrl_c_ends_the_hold",
+     "seconds": 0.14
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_queue_interrupt_discards_the_held_keys",
+     "seconds": 0.16
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::table_mode_arrivals_reach_the_same_destinations_as_legacy",
+     "seconds": 0.531
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::typeahead_handoff_returns_an_unfinished_held_line_to_the_editor_when_the_submit_runs_nothing",
+     "seconds": 0.126
+    }
+   ],
+   "regressions": [
+    "code::editor::model::tests::an_editor_without_a_diff_base_has_none_to_compute_against",
+    "terminal::bootstrap::tests::bundled_bash_body_has_one_local_only_block_holding_the_ssh_wrapper",
+    "terminal::bootstrap::tests::bundled_bootstrap_bodies_are_safe_to_read_through_a_cooked_tty",
+    "terminal::bootstrap::tests::typed_bootstrap_lines_fit_macos_max_canon",
+    "terminal::input::tests::test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste",
+    "terminal::input::tests::test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_line",
+    "terminal::input::tests::test_live_end_after_an_edit_waits_for_the_next_layout",
+    "terminal::input::tests::test_ready_paste_then_immediate_enter_classifies_the_pasted_line",
+    "terminal::input::tests::test_text_typed_during_the_verdict_wait_never_merges_into_the_held_enter",
+    "terminal::input::tests::test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order",
+    "terminal::input::tests::test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands",
+    "terminal::model::terminal_model::tests::full_reset_clears_app_cursor_and_kitty_flags_and_publishes_them_1599",
+    "terminal::model::typeahead_handoff::tests::a_committed_delivery_is_never_asked_for_and_stays_in_the_shell",
+    "terminal::model::typeahead_handoff::tests::the_committed_delivery_mark_ends_when_its_line_cannot_hold_it",
+    "terminal::view::tests::a_line_delivered_to_the_shell_as_final_stays_in_the_shell",
+    "terminal::view::tests::a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys",
+    "terminal::view::tests::a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once",
+    "terminal::view::tests::group1_handover_tests::an_agent_write_does_not_overtake_user_bytes_waiting_in_the_queue",
+    "terminal::view::tests::group1_handover_tests::nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell",
+    "terminal::view::tests::group1_handover_tests::release_without_event_hands_over_before_the_next_key",
+    "terminal::view::tests::group2_timer_tests::ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering",
+    "terminal::view::tests::group2_timer_tests::uncovered_report_patience_keeps_the_text_instead_of_running_the_enter",
+    "terminal::view::tests::group3_paste_tests::editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold",
+    "terminal::view::tests::group4_prompt_tests::enter_on_a_pending_approval_card_stays_with_the_card",
+    "terminal::view::tests::group4_prompt_tests::ssh_warpify_on_a_clean_line_writes_at_once",
+    "terminal::view::tests::group4_prompt_tests::ssh_warpify_waits_for_a_line_holding_delivered_keys",
+    "terminal::view::tests::group4_prompt_tests::subshell_bootstrap_waits_for_a_line_holding_delivered_keys",
+    "terminal::view::tests::nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shell",
+    "terminal::view::tests::shadow_mode_reports_zero_untagged_disagreements_over_chained_key_sequences",
+    "terminal::view::tests::ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane",
+    "terminal::view::tests::ssh_ctrl_c_ends_the_hold",
+    "terminal::view::tests::ssh_queue_interrupt_discards_the_held_keys",
+    "terminal::view::tests::table_mode_arrivals_reach_the_same_destinations_as_legacy",
+    "terminal::view::tests::typeahead_handoff_returns_an_unfinished_held_line_to_the_editor_when_the_submit_runs_nothing"
+   ],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-linux",
+   "status": "failed",
+   "duration": 581.044511
+  }
+ },
+ "app": {
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 17686762544,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "launch",
+     "status": "fail",
+     "seconds": 120,
+     "detail": [
+      "no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "launch",
+     "status": "fail",
+     "seconds": 120,
+     "detail": [
+      "no shell prompt within 120s (see logs/app.stdout; GPU/Wayland init or keyring?)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/junit.xml",
+    "macos/results.json",
+    "macos/summary.md"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "9625b716",
+    "owner_settings": "sha256 a0613b641a27",
+    "tier": "full",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 0,
+    "fail": 2,
+    "skip": 0,
+    "noref": 0
+   },
+   "screenshots_in_ci_artifacts": []
+  },
+  "x11": {
+   "job": "app-test-linux-x11",
+   "job_id": 17686762543,
+   "status": "failed",
+   "reuse": false,
+   "cases": [],
+   "files": [],
+   "meta": {},
+   "summary": {
+    "pass": 0,
+    "fail": 0,
+    "skip": 0,
+    "noref": 0
+   },
+   "from_trace": true,
+   "screenshots_in_ci_artifacts": []
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 52,
+  "warnings_by_crate": {
+   "markdown_parser (lib)": 1,
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 24,
+   "warp (lib test)": 20
+  },
+  "warning_lines_by_kind": {
+   "unused import": 82,
+   "unused imports": 23,
+   "function": 12,
+   "use of deprecated type alias": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 544.246489
+ }
+}

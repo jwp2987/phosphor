@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-linux-wayland" tests="40" failures="8" skipped="8">
+<testcase classname="terminal" name="mode_proof" time="1.50">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.20">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="88.60">
+<failure message="Phosphor lost keys the reference keeps with the SAME injection (perline-unprimed): Phosphor 12/12 bad lines (first char lost 12), foot 0/12 -- a Phosphor-side drop (#1414)">Phosphor lost keys the reference keeps with the SAME injection (perline-unprimed): Phosphor 12/12 bad lines (first char lost 12), foot 0/12 -- a Phosphor-side drop (#1414)
+phosphor / perline-unprimed: first char lost on 12/12 lines, other bad 0, missing 0
+phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0
+phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0
+reference / perline-unprimed: first char lost on 0/12 lines, other bad 0, missing 0
+reference / perline: first char lost on 0/12 lines, other bad 0, missing 0
+reference / oneshot: first char lost on 0/12 lines, other bad 0, missing 0</failure>
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="132.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="56.70">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="6.50">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="17.30">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="275.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="28.70">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="7.20">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="6.00">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="47.30">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.40 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="15.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="38.00">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="29.70">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="39.80">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="3.50">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.70">
+</testcase>
+<testcase classname="agent" name="cadence" time="6.40">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="57.10">
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_fast_typing" time="0.00">
+<failure message="after fast_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Esc">after fast_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="21.40">
+<failure message="paste + instant Enter: 0/6 md5 digest lines exact (first got [], expected ['5adab3d97a990aa6e1bec241daf9082a'])">paste + instant Enter: 0/6 md5 digest lines exact (first got [], expected ['5adab3d97a990aa6e1bec241daf9082a'])</failure>
+</testcase>
+<testcase classname="agent" name="tab_enter" time="17.50">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="277.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="28.50">
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_ssh_connect_typing" time="0.00">
+<failure message="after ssh_connect_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed">after ssh_connect_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="7.30">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="6.00">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="47.20">
+<skipped message="NO-REFERENCE (not a pass): app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.64 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side"/>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="15.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_latency_key_log" time="0.00">
+<failure message="after latency_key_log the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no">after latency_key_log the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="0.60">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="17.70">
+<failure message="text typed at 10-25 ms/key while the reply streamed is not visible in the input ('keepmet115_qm09d8')">text typed at 10-25 ms/key while the reply streamed is not visible in the input ('keepmet115_qm09d8')</failure>
+</testcase>
+<testcase classname="agent" name="routing_table" time="42.00">
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_routing_table" time="0.00">
+<failure message="after routing_table the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no E">after routing_table the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="29.80">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="39.50">
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_shell_nu" time="0.00">
+<failure message="after shell_nu the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape">after shell_nu the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="3.80">
+</testcase>
+</testsuite>

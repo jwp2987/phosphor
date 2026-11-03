@@ -37,6 +37,7 @@ use crate::terminal::model::block::{
 use crate::terminal::model::session::command_executor::{
     POSIX_GENERATOR_WRAPPER, POWERSHELL_GENERATOR_WRAPPER,
 };
+#[cfg(test)]
 use crate::terminal::shell::ShellType;
 use crate::terminal::ssh::util::parse_interactive_ssh_command;
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
@@ -78,9 +79,19 @@ fn write_skips_pty_permission_check(block_finished: Option<bool>) -> bool {
 ///
 /// Fallback: when output grids are empty (e.g. missing preexec / early-complete timing), extract
 /// the stdout portion from the command grid (everything after the first line).
+/// Most output text handed to the agent for one command. The request layer cuts tool output
+/// to 40,000 characters (`chat_stream::MAX_TOOL_RESPONSE_CHARS`); this is several times that so
+/// other consumers keep headroom, while bounding how much of a (possibly 100k-row) grid is
+/// formatted while the terminal-model lock is held (#1190).
+const AGENT_COMMAND_OUTPUT_MAX_BYTES: usize = 256 * 1024;
+
 fn agent_shell_command_block_output(block: &Block) -> String {
-    let primary = block.output_with_secrets_unobfuscated();
+    let (mut primary, truncated) =
+        block.output_head_with_secrets_unobfuscated(AGENT_COMMAND_OUTPUT_MAX_BYTES);
     if !primary.trim().is_empty() {
+        if truncated {
+            primary.push_str(&output_truncated_marker(block, &primary));
+        }
         return primary;
     }
 
@@ -102,6 +113,17 @@ fn agent_shell_command_block_output(block: &Block) -> String {
         .unwrap_or_default()
 }
 
+/// Tells the agent that rows after the ones shown were omitted, so a long `seq`/log dump isn't
+/// mistaken for the whole output.
+fn output_truncated_marker(block: &Block, shown: &str) -> String {
+    let shown_lines = shown.lines().count();
+    let total_lines = block.output_grid().len();
+    format!(
+        "\n…[output truncated: showing the first {shown_lines} of {total_lines} lines; \
+         pipe through head/tail/grep to see the rest]"
+    )
+}
+
 pub struct ShellCommandExecutor {
     active_session: ModelHandle<ActiveSession>,
     block_finished_senders: HashMap<BlockSelector, oneshot::Sender<()>>,
@@ -109,6 +131,15 @@ pub struct ShellCommandExecutor {
     /// pending poll future to resolve immediately with a fresh snapshot, bypassing the
     /// agent-set timeout.
     force_refresh_senders: HashMap<BlockSelector, oneshot::Sender<()>>,
+    /// Output wake-ups for waited commands on a snapshot-capable model, so their stall detection
+    /// runs when the terminal produced output instead of on a polling tick (#1365). Capacity 1:
+    /// a burst of output coalesces into one pending signal.
+    output_watchers: HashMap<BlockSelector, async_channel::Sender<()>>,
+    /// The sender-map key each in-flight write / read / transfer action registered, so
+    /// cancelling the action can drop its senders (which resolves its future with
+    /// `Cancelled`) instead of leaving the detached future to run to its timeout (#1278). The
+    /// flag is true for a transfer-control action, which also holds `control_handback_sender`.
+    block_action_selectors: HashMap<AIAgentActionId, (BlockSelector, bool)>,
     terminal_model: Arc<FairMutex<TerminalModel>>,
     terminal_view_id: EntityId,
     /// Sender to notify when user hands control back to agent after TransferShellCommandControlToUser.
@@ -125,8 +156,6 @@ pub struct ShellCommandExecutor {
 
 impl ShellCommandExecutor {
     pub const MAX_WAIT_DURATION: Duration = Duration::from_secs(2);
-    /// How often a snapshot-capable model's waited command is checked for a stalled screen.
-    const STALL_POLL_INTERVAL: Duration = Duration::from_millis(500);
     /// Maximum delay we will honor for any agent-requested wait. Applies both  
     /// to finite `ShellCommandDelay::Duration` requests and to  
     /// `ShellCommandDelay::OnCompletion`, which would otherwise wait indefinitely.  
@@ -158,6 +187,8 @@ impl ShellCommandExecutor {
             terminal_model,
             block_finished_senders: HashMap::new(),
             force_refresh_senders: HashMap::new(),
+            output_watchers: HashMap::new(),
+            block_action_selectors: HashMap::new(),
             terminal_view_id,
             control_handback_sender: None,
             awaiting_completion_action_ids: HashSet::new(),
@@ -203,6 +234,20 @@ impl ShellCommandExecutor {
     #[cfg(test)]
     pub fn unmark_awaiting_completion_for_test(&mut self, action_id: &AIAgentActionId) {
         self.awaiting_completion_action_ids.remove(action_id);
+    }
+
+    /// Whether any waited command is watching terminal output for a stall. Cheap; lets the
+    /// terminal view skip the per-wakeup call entirely when nothing is watching.
+    pub fn has_output_watchers(&self) -> bool {
+        !self.output_watchers.is_empty()
+    }
+
+    /// The terminal produced output: wake the stall detection of every watching command. Takes
+    /// no terminal-model lock and never blocks.
+    pub fn note_output(&mut self) {
+        self.output_watchers.retain(|_, tx| {
+            !matches!(tx.try_send(()), Err(async_channel::TrySendError::Closed(_)))
+        });
     }
 
     fn handle_terminal_model_event(&mut self, event: &ModelEvent, _ctx: &mut ModelContext<Self>) {
@@ -507,6 +552,7 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.output_watchers.remove(&block_selector);
                                 me.awaiting_completion_action_ids.remove(&action_id);
                                 pager_closed = me.pager_closed_action_ids.remove(&action_id);
                             });
@@ -536,7 +582,8 @@ impl ShellCommandExecutor {
                     );
                 };
                 if block.finished() {
-                    let output: String = agent_shell_command_block_output(block);
+                    let output =
+                        with_input_not_delivered_note(agent_shell_command_block_output(block));
                     let exit_code = block.exit_code();
                     let start_ts = block.start_ts().cloned();
                     let completed_ts = block.completed_ts().cloned();
@@ -555,6 +602,13 @@ impl ShellCommandExecutor {
                 let target_command = block.command_with_secrets_unobfuscated(false);
                 let (input, mode) =
                     pty_write_for_target_command(Some(&target_command), input, *mode);
+                // A shell at its prompt reads with a line editor, which has no line limit; any
+                // other program may be in the tty's line mode, which silently truncates (#1129).
+                let long_line_note = if is_interactive_shell_invocation(&target_command) {
+                    None
+                } else {
+                    long_line_write_note(&input)
+                };
                 // Drop immutable borrow.
                 drop(model);
 
@@ -567,6 +621,9 @@ impl ShellCommandExecutor {
                 ctx.emit(ShellCommandExecutorEvent::WriteToPty { input, mode });
 
                 let block_selector = BlockSelector::Id(block_id.clone());
+                self.block_action_selectors
+                    .insert(action_id.clone(), (block_selector.clone(), false));
+                let cleanup_action_id = action_id.clone();
                 ActionExecution::new_async(
                     self.action_result_future(
                         block_selector.clone(),
@@ -578,10 +635,16 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.output_watchers.remove(&block_selector);
+                                me.block_action_selectors.remove(&cleanup_action_id);
                             });
                         }
 
-                        action_result_for_write_to_long_running_shell_command(result)
+                        let result = action_result_for_write_to_long_running_shell_command(result);
+                        match &long_line_note {
+                            Some(note) => with_long_line_note(result, note),
+                            None => result,
+                        }
                     },
                 )
             }
@@ -593,7 +656,14 @@ impl ShellCommandExecutor {
                 };
                 if block.finished() {
                     let command = block.command_with_secrets_unobfuscated(false);
-                    let output: String = block.output_with_secrets_unobfuscated();
+                    let output: String = {
+                        let (mut head, truncated) = block
+                            .output_head_with_secrets_unobfuscated(AGENT_COMMAND_OUTPUT_MAX_BYTES);
+                        if truncated {
+                            head.push_str(&output_truncated_marker(block, &head));
+                        }
+                        head
+                    };
                     let exit_code = block.exit_code();
                     let start_ts = block.start_ts().cloned();
                     let completed_ts = block.completed_ts().cloned();
@@ -622,6 +692,9 @@ impl ShellCommandExecutor {
                 drop(model);
 
                 let block_selector = BlockSelector::Id(block_id.clone());
+                self.block_action_selectors
+                    .insert(action_id.clone(), (block_selector.clone(), false));
+                let cleanup_action_id = action_id.clone();
                 ActionExecution::new_async(
                     self.action_result_future(block_selector.clone(), delay),
                     move |result, ctx| {
@@ -630,6 +703,8 @@ impl ShellCommandExecutor {
                             handle.update(ctx, |me, _| {
                                 me.block_finished_senders.remove(&block_selector);
                                 me.force_refresh_senders.remove(&block_selector);
+                                me.output_watchers.remove(&block_selector);
+                                me.block_action_selectors.remove(&cleanup_action_id);
                             });
                         }
 
@@ -668,12 +743,19 @@ impl ShellCommandExecutor {
                 let (block_finished_tx, block_finished_rx) = oneshot::channel();
                 self.block_finished_senders
                     .insert(block_selector.clone(), block_finished_tx);
+                self.block_action_selectors
+                    .insert(action_id.clone(), (block_selector.clone(), true));
+                let cleanup_action_id = action_id.clone();
 
                 // Build the future that captures terminal model and block data.
                 let transfer_future = {
                     let terminal_model = self.terminal_model.clone();
                     let block_id = block_id.clone();
                     async move {
+                        // Fused so a dropped sender (cancel) is still polled and reported as
+                        // `Err`, rather than skipped by `select!` as terminated (#1278).
+                        let handback_rx = handback_rx.fuse();
+                        let block_finished_rx = block_finished_rx.fuse();
                         pin!(handback_rx);
                         pin!(block_finished_rx);
 
@@ -703,6 +785,7 @@ impl ShellCommandExecutor {
                                                 exit_code: block.exit_code(),
                                                 start_ts: block.start_ts().cloned(),
                                                 completed_ts: block.completed_ts().cloned(),
+                                                interrupted: block.was_interrupted_by_ctrl_c(),
                                             }
                                         } else {
                                             let grid_contents = if model.is_alt_screen_active() {
@@ -740,6 +823,7 @@ impl ShellCommandExecutor {
                     if let Some(handle) = handle.upgrade(ctx) {
                         handle.update(ctx, |me, _| {
                             me.block_finished_senders.remove(&block_selector);
+                            me.block_action_selectors.remove(&cleanup_action_id);
                             me.control_handback_sender = None;
                         });
                     }
@@ -776,10 +860,25 @@ impl ShellCommandExecutor {
         self.force_refresh_senders
             .insert(block_selector.clone(), force_refresh_tx);
 
+        // Output wake-ups drive the stall detection of a snapshot-capable model's waited command.
+        let output_rx = if matches!(delay, ActionResultDelay::OnCompletionOrStall { .. }) {
+            let (output_tx, output_rx) = async_channel::bounded(1);
+            self.output_watchers
+                .insert(block_selector.clone(), output_tx);
+            Some(output_rx)
+        } else {
+            None
+        };
+
         // Create a future that resolves when we should send a result to the agent.
         let terminal_model = self.terminal_model.clone();
 
         async move {
+            // `.fuse()` matters: a `oneshot::Receiver` whose sender was dropped reports
+            // `is_terminated()`, so `select!` would skip it and never see the `Err` that means
+            // "cancelled" (#1278). A `Fuse` is terminated only once it has yielded.
+            let block_metadata_received_rx = block_metadata_received_rx.fuse();
+            let force_refresh_rx = force_refresh_rx.fuse();
             pin!(block_metadata_received_rx);
             pin!(force_refresh_rx);
 
@@ -806,10 +905,39 @@ impl ShellCommandExecutor {
                 // snapshot (sends `q`, answers the prompt) with the write-to-command tool.
                 let deadline = Timer::after(timeout_duration).fuse();
                 pin!(deadline);
+                // Stall detection is event driven: the screen is judged when the terminal
+                // produced output (and once at the start), and a single quiet timer is armed
+                // only while a stall-eligible screen is on display. No polling tick, no lock
+                // taken on a clock (#1365). "Unchanged for 3 s" is itself a time question, so
+                // the quiet timer is the one legitimate clock here.
+                let Some(output_rx) = output_rx else {
+                    return ActionResult::Cancelled;
+                };
                 let mut tracker = StallTracker::default();
                 loop {
-                    let tick = Timer::after(Self::STALL_POLL_INTERVAL).fuse();
-                    pin!(tick);
+                    // Every wake-up (output, quiet timer, or the first pass) re-judges the screen.
+                    let fingerprint = {
+                        let model = terminal_model.lock();
+                        stall_fingerprint(&model, &block_selector)
+                    };
+                    let now = instant::Instant::now();
+                    if tracker.observe(fingerprint, now) >= STALL_SNAPSHOT_AFTER {
+                        break WakeReason::Stalled;
+                    }
+                    let quiet_for =
+                        tracker.time_until_stalled(STALL_SNAPSHOT_AFTER, instant::Instant::now());
+                    let quiet_timer = async move {
+                        match quiet_for {
+                            Some(remaining) => {
+                                Timer::after(remaining).await;
+                            }
+                            None => futures::future::pending::<()>().await,
+                        }
+                    }
+                    .fuse();
+                    pin!(quiet_timer);
+                    let output = output_rx.recv().fuse();
+                    pin!(output);
                     select! {
                         val = block_metadata_received_rx.as_mut() => match val {
                             Ok(_) => break WakeReason::BlockFinished,
@@ -820,17 +948,13 @@ impl ShellCommandExecutor {
                             Err(_) => return ActionResult::Cancelled,
                         },
                         _ = deadline.as_mut() => break WakeReason::Timeout,
-                        _ = tick => {
-                            let fingerprint = {
-                                let model = terminal_model.lock();
-                                stall_fingerprint(&model, &block_selector)
-                            };
-                            let stalled_for =
-                                tracker.observe(fingerprint, instant::Instant::now());
-                            if stalled_for >= STALL_SNAPSHOT_AFTER {
-                                break WakeReason::Stalled;
-                            }
-                        }
+                        val = output => match val {
+                            Ok(()) => {}
+                            // The executor dropped the watcher: the action was cancelled.
+                            Err(_) => return ActionResult::Cancelled,
+                        },
+                        // Re-judge the screen once when the quiet period is up.
+                        _ = quiet_timer => {}
                     }
                 }
             } else if let Some(timeout_duration) = timeout_duration {
@@ -899,6 +1023,7 @@ impl ShellCommandExecutor {
                             exit_code: block.exit_code(),
                             start_ts: block.start_ts().cloned(),
                             completed_ts: block.completed_ts().cloned(),
+                            interrupted: block.was_interrupted_by_ctrl_c(),
                         }
                     } else {
                         let grid_contents = if model.is_alt_screen_active() {
@@ -955,27 +1080,31 @@ impl ShellCommandExecutor {
         }
         // The RequestedCommand path uses action id as the selector and cleans up
         // unconditionally. It can't rely on the `is_active_and_long_running()` guard:
-        // within the ~50ms window after a command is spawned
-        // (LONG_RUNNING_COMMAND_DURATION_MS) the guard is false, which would leave
+        // until the command becomes interactive (a latched pty event, #1373) the guard is false, which would leave
         // senders lingering and cause the detached future to hang around until the
         // command truly finishes (especially impactful for wait_until_completion=true,
         // i.e. ActionResultDelay::UntilCompletion).
         let requested_selector = BlockSelector::RequestedCommandId(id.clone());
         self.block_finished_senders.remove(&requested_selector);
         self.force_refresh_senders.remove(&requested_selector);
+        self.output_watchers.remove(&requested_selector);
         self.awaiting_completion_action_ids.remove(id);
 
-        // No longer using `BlockSelector::Id(active_block.id())` as a fallback
-        // cleanup. The sender key for WriteToLRC / ReadShellCommandOutput /
-        // TransferShellCommandControlToUser comes from the block_id in the action's
-        // parameters, or the active_block at creation time — neither reliably
-        // corresponds to the active_block at cancel time: if the user switched the
-        // active block after the action was spawned, the old active-block fallback
-        // won't match; if they didn't switch, the cleanup only works "by accident".
-        // Their senders get cleaned up by each one's own on_complete callback once the
-        // future finishes naturally; immediate cleanup would require introducing an
-        // action_id → BlockSelector reverse index, which is a separate change outside
-        // this issue's scope.
+        // A write / read / transfer action: drop its senders now, which resolves its detached
+        // future with `Cancelled` instead of leaving it alive until its timeout or the block
+        // finishing (#1278).
+        if let Some((selector, is_transfer)) = self.block_action_selectors.remove(id) {
+            self.block_finished_senders.remove(&selector);
+            self.force_refresh_senders.remove(&selector);
+            self.output_watchers.remove(&selector);
+            if is_transfer {
+                self.control_handback_sender = None;
+            }
+        }
+
+        // No `BlockSelector::Id(active_block.id())` fallback: the active block at cancel time
+        // need not be the one the action was spawned against. The action-id index above is the
+        // exact key.
     }
 
     /// Force any in-flight poll for the given long-running command block to resolve
@@ -1030,6 +1159,7 @@ fn kill_own_shell_refusal(command: &str) -> RequestCommandOutputResult {
         exit_code: ExitCode::from(1),
         start_ts: None,
         completed_ts: None,
+        interrupted: false,
     }
 }
 
@@ -1059,6 +1189,7 @@ fn exec_into_shell_refusal(command: &str, shell: &str) -> RequestCommandOutputRe
         exit_code: ExitCode::from(1),
         start_ts: None,
         completed_ts: None,
+        interrupted: false,
     }
 }
 
@@ -1198,6 +1329,22 @@ fn handles_command_snapshots_for(providers: &[AgentProvider], llm_id: &str) -> b
         .unwrap_or(false)
 }
 
+/// What the model is told when it wrote to a command that had already exited. The result is
+/// the same `CommandFinished` a write that landed just before the exit gets, so this note is
+/// the only thing that says the input went nowhere.
+const INPUT_NOT_DELIVERED_NOTE: &str = "[The command had already exited before this input was \
+                                        written, so nothing was sent to it. Start the command \
+                                        again if the input is still needed.]";
+
+/// Appends [`INPUT_NOT_DELIVERED_NOTE`] to a finished command's output.
+fn with_input_not_delivered_note(mut output: String) -> String {
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(INPUT_NOT_DELIVERED_NOTE);
+    output
+}
+
 /// What the model is told when Phosphor closed a pager the command had opened.
 fn pager_closed_note() -> String {
     crate::t!("agent-command-pager-closed-note")
@@ -1212,6 +1359,7 @@ fn with_pager_closed_note(result: ActionResult) -> ActionResult {
             exit_code,
             start_ts,
             completed_ts,
+            interrupted,
         } => {
             if !output.ends_with('\n') && !output.is_empty() {
                 output.push('\n');
@@ -1223,6 +1371,7 @@ fn with_pager_closed_note(result: ActionResult) -> ActionResult {
                 exit_code,
                 start_ts,
                 completed_ts,
+                interrupted,
             }
         }
         other => other,
@@ -1578,6 +1727,7 @@ fn action_result_for_requested_command(
             exit_code,
             start_ts,
             completed_ts,
+            interrupted,
         } => AIAgentActionResultType::RequestCommandOutput(RequestCommandOutputResult::Completed {
             command,
             block_id,
@@ -1585,6 +1735,7 @@ fn action_result_for_requested_command(
             exit_code,
             start_ts,
             completed_ts,
+            interrupted,
         }),
         ActionResult::LongRunningCommandSnapshot {
             block_id,
@@ -1609,6 +1760,92 @@ fn action_result_for_requested_command(
     }
 }
 
+/// The longest line, in bytes, that is safe to write to a program reading in the tty's line mode
+/// (`cat`, `read`, `sort`...). macOS caps a line at `MAX_CANON` (1024 bytes with its newline),
+/// Linux at 4095; the rest of a longer line is silently dropped. The macOS figure applies when
+/// the program runs on a Mac reached over ssh, so it is the one used (#1129).
+const MAX_LINE_MODE_LINE_BYTES: usize = 1023;
+
+/// The length of the longest line (bytes between newlines) in `input`.
+fn longest_line_bytes(input: &[u8]) -> usize {
+    input
+        .split(|&byte| byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line).len())
+        .max()
+        .unwrap_or(0)
+}
+
+/// A warning for the agent when `input` has a line the terminal may truncate on its way to a
+/// program in line mode, e.g. `cat > file` fed a minified or base64 blob. Nothing is changed
+/// about the write: the bytes cannot be delivered exactly through that limit, so the agent is
+/// told, instead of finding a short file later (#1129).
+fn long_line_write_note(input: &[u8]) -> Option<String> {
+    let longest = longest_line_bytes(input);
+    (longest > MAX_LINE_MODE_LINE_BYTES).then(|| {
+        format!(
+            "NOTE: this input has a line of {longest} bytes. If the running program reads in the \
+             terminal's line mode (cat, read, sort, ...), the terminal truncates any line over \
+             1023 bytes (macOS) or 4095 bytes (Linux) without an error, so the data may have \
+             arrived cut short. Check the result; to write long lines, run a command that \
+             creates the file in one go (a here-doc or printf in the shell) or send the data \
+             in lines under 1000 bytes (for example base64 -w 76 and then `base64 -d`)."
+        )
+    })
+}
+
+/// Appends `note` to the output of a write-to-command result.
+fn with_long_line_note(result: AIAgentActionResultType, note: &str) -> AIAgentActionResultType {
+    fn append(text: &mut String, note: &str) {
+        if !text.ends_with('\n') && !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(note);
+    }
+    match result {
+        AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::CommandFinished {
+                block_id,
+                mut output,
+                exit_code,
+                start_ts,
+                completed_ts,
+            },
+        ) => {
+            append(&mut output, note);
+            AIAgentActionResultType::WriteToLongRunningShellCommand(
+                WriteToLongRunningShellCommandResult::CommandFinished {
+                    block_id,
+                    output,
+                    exit_code,
+                    start_ts,
+                    completed_ts,
+                },
+            )
+        }
+        AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::Snapshot {
+                block_id,
+                mut grid_contents,
+                cursor,
+                is_alt_screen_active,
+                is_preempted,
+            },
+        ) => {
+            append(&mut grid_contents, note);
+            AIAgentActionResultType::WriteToLongRunningShellCommand(
+                WriteToLongRunningShellCommandResult::Snapshot {
+                    block_id,
+                    grid_contents,
+                    cursor,
+                    is_alt_screen_active,
+                    is_preempted,
+                },
+            )
+        }
+        other => other,
+    }
+}
+
 /// Returns the result from writing to a long-running shell command.
 fn action_result_for_write_to_long_running_shell_command(
     result: ActionResult,
@@ -1620,6 +1857,7 @@ fn action_result_for_write_to_long_running_shell_command(
             exit_code,
             start_ts,
             completed_ts,
+            ..
         } => AIAgentActionResultType::WriteToLongRunningShellCommand(
             WriteToLongRunningShellCommandResult::CommandFinished {
                 block_id,
@@ -1665,6 +1903,7 @@ fn action_result_for_read_shell_command_output(
             block_id,
             start_ts,
             completed_ts,
+            ..
         } => AIAgentActionResultType::ReadShellCommandOutput(
             ReadShellCommandOutputResult::CommandFinished {
                 command,
@@ -1711,6 +1950,7 @@ fn action_result_for_transfer_shell_command_control_to_user(
             exit_code,
             start_ts,
             completed_ts,
+            ..
         } => AIAgentActionResultType::TransferShellCommandControlToUser(
             TransferShellCommandControlToUserResult::CommandFinished {
                 block_id,
@@ -1790,6 +2030,8 @@ enum ActionResult {
         /// tool-call result records how long the command actually ran.
         start_ts: Option<DateTime<Local>>,
         completed_ts: Option<DateTime<Local>>,
+        /// A ^C was written to the command by the user or Phosphor (#1178).
+        interrupted: bool,
     },
     LongRunningCommandSnapshot {
         block_id: BlockId,

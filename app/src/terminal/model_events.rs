@@ -45,7 +45,6 @@ use crate::{send_telemetry_from_ctx, TelemetryEvent};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SshRemoteServerSupport {
     Enabled,
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     Disabled,
 }
 
@@ -332,6 +331,9 @@ impl ModelEventDispatcher {
                 ModelEvent::BlockWorkingDirectoryUpdated(block_working_directory_updated_event)
             }
             Event::BackgroundBlockStarted => ModelEvent::BackgroundBlockStarted,
+            Event::CommandBecameInteractive { block_id } => {
+                ModelEvent::CommandBecameInteractive { block_id }
+            }
             Event::ClipboardStore(clipboard_type, text) => {
                 ModelEvent::ClipboardStore(clipboard_type, text)
             }
@@ -362,6 +364,7 @@ impl ModelEventDispatcher {
             Event::PreInteractiveSSHSession => ModelEvent::PreInteractiveSSHSession,
             Event::SSH(ssh) => ModelEvent::SSH(ssh),
             Event::SSHControlMasterError => ModelEvent::SSHControlMasterError,
+            Event::InputBufferOverflow => ModelEvent::InputBufferOverflow,
             Event::TerminalModeSwapped(terminal_mode) => {
                 ModelEvent::TerminalModeSwapped(terminal_mode)
             }
@@ -399,6 +402,14 @@ impl ModelEventDispatcher {
                 ModelEvent::PluggableNotification { title, body }
             }
             Event::ExitShell { session_id } => ModelEvent::ExitShell { session_id },
+            Event::LineEditorReading { session_id, seq } => {
+                ModelEvent::LineEditorReading { session_id, seq }
+            }
+            Event::ContinuationPrompt { session_id, seq } => {
+                ModelEvent::ContinuationPrompt { session_id, seq }
+            }
+            Event::YoungHoldReevaluated => ModelEvent::YoungHoldReevaluated,
+            Event::CommandFileFailed { session_id } => ModelEvent::CommandFileFailed { session_id },
             _ => return,
         };
 
@@ -494,6 +505,10 @@ pub enum ModelEvent {
     BlockWorkingDirectoryUpdated(BlockWorkingDirectoryUpdatedEvent),
     /// Sent after a background block is started and added to the block list.
     BackgroundBlockStarted,
+    /// A program took over the running command's terminal (#1373); see `Event`.
+    CommandBecameInteractive {
+        block_id: BlockId,
+    },
     ClipboardStore(ClipboardType, String),
     ClipboardLoad(
         ClipboardType,
@@ -514,6 +529,8 @@ pub enum ModelEvent {
     /// Sent when the model detects an SSH ControlMaster error, which means that
     /// completions reliant on command execution will not work.
     SSHControlMasterError,
+    /// Input was dropped because a buffer on the way to the pty was full (#1442).
+    InputBufferOverflow,
     TerminalModeSwapped(TerminalMode),
     ExecutedInBandCommand(ExecutedExecutorCommandEvent),
     TmuxControlModeReady {
@@ -587,6 +604,30 @@ pub enum ModelEvent {
     /// tear down per-session resources (e.g. the remote-server-proxy ssh
     /// child) before the outer ssh tunnel starts closing.
     ExitShell {
+        session_id: SessionId,
+    },
+    /// The shell's line editor is about to read a line (#1390): bash readline, zsh zle, fish,
+    /// nushell's reedline, PowerShell's PSReadLine. Fires once per primary prompt, after that
+    /// prompt's Precmd (`seq` equals the Precmd's), and never for a builtin raw read (`read -k`,
+    /// `read -n1`), which runs after the command's Preexec. `seq` is `None` for a bootstrap
+    /// that predates sequence numbers.
+    LineEditorReading {
+        session_id: SessionId,
+        seq: Option<u64>,
+    },
+    /// The shell is about to read a continuation line (#1391; bash PS2, zsh PS2). `seq` is the
+    /// last Precmd's. fish, nushell and PowerShell keep an unfinished command in the same editor
+    /// and never send it.
+    ContinuationPrompt {
+        session_id: SessionId,
+        seq: Option<u64>,
+    },
+    /// A young-Enter hold waiting on the pty stream barrier was decided again (#1614); see
+    /// `Event::YoungHoldReevaluated`. Consumed by the pty controller.
+    YoungHoldReevaluated,
+    /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command pipe and inserted
+    /// nothing: the pty controller retypes the command.
+    CommandFileFailed {
         session_id: SessionId,
     },
 }

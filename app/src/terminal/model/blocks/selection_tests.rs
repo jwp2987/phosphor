@@ -1582,3 +1582,183 @@ pub fn test_rect_selection_inverted_multi_block() {
         })
     })
 }
+
+/// #1304: a selection over the deferral threshold is captured as snapshots that render to the
+/// exact text the inline path builds; a smaller one stays inline.
+#[test]
+fn test_selection_to_parts_defers_big_selections_with_identical_text() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let mut block_list =
+                new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+            let first_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let second_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let first_block = block_list
+                .block_at(first_block_index)
+                .expect("block should exist");
+            let second_block = block_list
+                .block_at(second_block_index)
+                .expect("block should exist");
+            let first_command_grid_offset = first_block.command_grid_offset();
+            let second_output_grid_offset =
+                first_block.height(&TranscriptScope::Terminal) + second_block.output_grid_offset();
+            let semantic_selection = SemanticSelection::mock(false, "");
+
+            for inverted in [false, true] {
+                // An inverted list shows later blocks first, so the same two blocks are selected
+                // by dragging from the later block's point to the earlier one's (as in
+                // `test_selection_to_string_inverted_blocklist`); the points themselves are the
+                // same absolute rows.
+                let first_point = BlockListPoint::new(first_command_grid_offset, 0);
+                let second_point = BlockListPoint::new(second_output_grid_offset, 3);
+                let (start, start_side, end, end_side) = if inverted {
+                    (second_point, Side::Left, first_point, Side::Right)
+                } else {
+                    (first_point, Side::Left, second_point, Side::Right)
+                };
+                block_list.start_selection(start, SelectionType::Simple, start_side);
+                block_list.update_selection(end, end_side);
+
+                let inline = block_list
+                    .selection_to_string(&semantic_selection, inverted, ctx)
+                    .expect("selection should have text");
+                assert!(inline.contains("bazz"));
+
+                // Over the threshold: only snapshots, no built block text.
+                let deferred = block_list
+                    .selection_to_parts(&semantic_selection, inverted, ctx, Some(2))
+                    .expect("selection should have parts");
+                assert!(deferred.has_snapshots());
+                assert_eq!(deferred.render(), inline);
+
+                // Under the threshold: built inline, nothing left to render.
+                let small = block_list
+                    .selection_to_parts(&semantic_selection, inverted, ctx, Some(1_000_000))
+                    .expect("selection should have parts");
+                assert!(!small.has_snapshots());
+                assert_eq!(small.render(), inline);
+            }
+        })
+    })
+}
+
+/// #1377: the sliced selection snapshot takes no snapshot under the first lock, fills block
+/// ranges over several short slices, and renders exactly the inline text.
+#[test]
+fn test_selection_snapshot_yields_across_slices_with_identical_text() {
+    use std::time::Duration;
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let mut block_list =
+                new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+            let big: String = (0..600).map(|i| format!("line number {i}\n")).collect();
+            let first_block_index = insert_block(&mut block_list, "echo a\n", &big);
+            let second_block_index = insert_block(&mut block_list, "echo b\n", &big);
+            let first_block = block_list.block_at(first_block_index).expect("block");
+            let second_block = block_list.block_at(second_block_index).expect("block");
+            let first_point = BlockListPoint::new(first_block.command_grid_offset(), 0);
+            let second_point = BlockListPoint::new(
+                first_block.height(&TranscriptScope::Terminal) + second_block.output_grid_offset(),
+                3,
+            );
+            let semantic_selection = SemanticSelection::mock(false, "");
+            block_list.start_selection(first_point, SelectionType::Simple, Side::Left);
+            block_list.update_selection(second_point, Side::Right);
+
+            let inline = block_list
+                .selection_to_string(&semantic_selection, false, ctx)
+                .expect("selection should have text");
+
+            let mut parts = block_list
+                .selection_to_parts_sliced(&semantic_selection, false, ctx, Some(2))
+                .expect("selection should have parts");
+            assert!(parts.has_snapshots());
+            assert!(
+                parts.needs_slicing(),
+                "nothing is snapshotted under the first lock"
+            );
+
+            // A zero budget stops at the first deadline check, so this must take many slices.
+            let mut slices = 0;
+            while !parts
+                .advance(&block_list, Duration::ZERO)
+                .expect("blocks exist")
+            {
+                slices += 1;
+                assert!(slices < 10_000, "must make progress");
+            }
+            assert!(slices > 4, "expected several slices, got {slices}");
+            assert!(!parts.needs_slicing());
+            assert_eq!(parts.render(), inline);
+        })
+    })
+}
+
+/// #1304 follow-up: preview callers (Find-bar prefill, a11y) get the text of a small selection,
+/// but a selection over their row cap is reported as too large without building any text.
+/// `has_renderable_selection` answers "is anything selected" without a string at all.
+#[test]
+fn test_bounded_selection_does_not_build_big_selections() {
+    use crate::terminal::model::grid::text_snapshot::BoundedSelection;
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let mut block_list =
+                new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+            let semantic_selection = SemanticSelection::mock(false, "");
+            assert!(!block_list.has_renderable_selection(&semantic_selection, false));
+            assert_eq!(
+                BoundedSelection::from_parts(block_list.selection_to_parts(
+                    &semantic_selection,
+                    false,
+                    ctx,
+                    Some(1_000_000),
+                )),
+                BoundedSelection::None
+            );
+
+            let first_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let second_block_index =
+                insert_block(&mut block_list, "foo\nbar\nbazz\n", "foo\nbar\nbazz\n");
+            let first_block = block_list.block_at(first_block_index).expect("block");
+            let second_block = block_list.block_at(second_block_index).expect("block");
+            let first_command_grid_offset = first_block.command_grid_offset();
+            let second_output_grid_offset =
+                first_block.height(&TranscriptScope::Terminal) + second_block.output_grid_offset();
+            block_list.start_selection(
+                BlockListPoint::new(first_command_grid_offset, 0),
+                SelectionType::Simple,
+                Side::Left,
+            );
+            block_list.update_selection(
+                BlockListPoint::new(second_output_grid_offset, 3),
+                Side::Right,
+            );
+            assert!(block_list.has_renderable_selection(&semantic_selection, false));
+
+            let inline = block_list
+                .selection_to_string(&semantic_selection, false, ctx)
+                .expect("selection should have text");
+            assert_eq!(
+                BoundedSelection::from_parts(block_list.selection_to_parts(
+                    &semantic_selection,
+                    false,
+                    ctx,
+                    Some(1_000_000),
+                )),
+                BoundedSelection::Text(inline)
+            );
+            assert_eq!(
+                BoundedSelection::from_parts(block_list.selection_to_parts(
+                    &semantic_selection,
+                    false,
+                    ctx,
+                    Some(2),
+                )),
+                BoundedSelection::TooLarge
+            );
+        })
+    })
+}

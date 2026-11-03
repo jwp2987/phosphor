@@ -189,11 +189,6 @@ impl AccessibilityContent {
         }
     }
 
-    pub fn with_frame(mut self, frame: Option<RectF>) -> Self {
-        self.frame = frame;
-        self
-    }
-
     pub fn with_verbosity(mut self, verbosity: AccessibilityVerbosity) -> Self {
         if matches!(verbosity, AccessibilityVerbosity::Concise) {
             self.help = None;

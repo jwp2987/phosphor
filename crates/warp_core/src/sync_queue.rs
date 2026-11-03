@@ -52,7 +52,6 @@ pub trait SyncQueueTaskTrait: Send + 'static {
 
     /// The future should return a result of Self::Result or Self::Error. Note that
     /// we can only implement Send on non-wasm platforms.
-    #[cfg(not(target_arch = "wasm32"))]
     type Fut: Future<Output = Result<Self::Result, Self::Error>> + Send;
     #[cfg(target_arch = "wasm32")]
     type Fut: Future<Output = Result<Self::Result, Self::Error>>;

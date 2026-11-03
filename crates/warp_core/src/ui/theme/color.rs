@@ -215,10 +215,6 @@ impl WarpTheme {
         self.disabled_text_color(self.surface_2())
     }
 
-    pub fn active_highlighted_text_color(&self) -> Fill {
-        self.main_text_color(self.accent())
-    }
-
     pub fn settings_import_config_hover_opacity(&self) -> Opacity {
         10
     }
@@ -490,7 +486,6 @@ pub mod internal_colors {
     /// Pressed state for UI elements like buttons
     /// to which we want to call attention.
     /// Allows gradients so shouldn't be used for small elements.
-    #[allow(dead_code)]
     pub fn accent_pressed(warp_theme: &WarpTheme) -> Fill {
         warp_theme
             .accent()
@@ -598,11 +593,6 @@ pub mod internal_colors {
         warp_theme.foreground().with_opacity(90)
     }
 
-    pub fn accent_bg_strong(warp_theme: &WarpTheme) -> Fill {
-        Fill::Solid(warp_theme.background().into_solid())
-            .blend(&warp_theme.accent().with_opacity(60))
-    }
-
     pub fn accent_bg(warp_theme: &WarpTheme) -> Fill {
         Fill::Solid(warp_theme.background().into_solid())
             .blend(&warp_theme.accent().with_opacity(40))
@@ -612,12 +602,6 @@ pub mod internal_colors {
         warp_theme
             .foreground()
             .blend(&warp_theme.accent().with_opacity(60))
-    }
-
-    pub fn accent_fg(warp_theme: &WarpTheme) -> Fill {
-        warp_theme
-            .foreground()
-            .blend(&warp_theme.accent().with_opacity(40))
     }
 
     pub fn accent_overlay_1(warp_theme: &WarpTheme) -> Fill {

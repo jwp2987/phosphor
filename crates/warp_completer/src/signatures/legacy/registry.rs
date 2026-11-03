@@ -283,15 +283,23 @@ impl CommandRegistry {
                 ));
             }
             // Check if there is any alias at the current signature.
-            if let Some(alias) =
-                curr_signature.alias(dynamic_completion_data.map(DynamicCompletionData::aliases))
+            // #1342: a token that cannot be an alias is not looked up (each lookup is a process,
+            // on Windows a PowerShell as well): `git config --global alias.zz x` used to look up
+            // `config`, `--global` and `alias.zz` as if they were subcommands.
+            let may_be_alias = can_be_alias(signature, curr_signature, token, signature_start_idx);
+            if let Some(alias) = may_be_alias
+                .then(|| {
+                    curr_signature
+                        .alias(dynamic_completion_data.map(DynamicCompletionData::aliases))
+                })
+                .flatten()
             {
                 // Get the shell command to execute for getting the alias.
                 let command_to_run = alias.command(&tokens[..token_idx + 1]);
 
                 if let Some(generator_context) = context.generator_context() {
                     if let Ok(output) = generator_context
-                        .execute_command_at_pwd(&command_to_run, None)
+                        .execute_generator_at_pwd(&command_to_run, None)
                         .await
                     {
                         match output.to_string() { Ok(output_string) => {
@@ -571,6 +579,38 @@ fn is_completed_options_terminator(
     !signature.parser_directives.flags_are_posix_noncompliant
         && token == "--"
         && (token_idx + 1 < num_tokens || has_post_whitespace)
+}
+
+/// Whether `token`, seen while `curr_signature` is current, can still be a user-defined alias
+/// for a subcommand. It cannot when it is an option, when it already names one of the
+/// signature's own subcommands (tools ignore aliases that shadow a real command: git's
+/// documentation says "aliases that hide existing Git commands are ignored"), or when the
+/// signature was reached by descending into a subcommand that has no subcommands of its own, so
+/// the token is that subcommand's argument.
+///
+/// Owner decision on #1342: this narrowing is for git only (`root_signature` is the top-level
+/// command's signature). Every other tool keeps the old behaviour, where any token may be an
+/// alias.
+fn can_be_alias(
+    root_signature: &Signature,
+    curr_signature: &Signature,
+    token: &str,
+    signature_start_idx: usize,
+) -> bool {
+    if root_signature.name() != "git" {
+        return true;
+    }
+    if token.starts_with('-') {
+        return false;
+    }
+    if curr_signature
+        .subcommands()
+        .iter()
+        .any(|subcommand| subcommand.name() == token)
+    {
+        return false;
+    }
+    !(signature_start_idx > 0 && curr_signature.subcommands().is_empty())
 }
 
 /// Finds an option by exact name match against the token.

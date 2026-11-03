@@ -1,0 +1,1274 @@
+{
+ "meta": {
+  "platform": "linux-wayland",
+  "backend": "wayland",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "332fd97b",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-02T18:35:14-0600",
+ "summary": {
+  "pass": 24,
+  "fail": 8,
+  "skip": 2,
+  "noref": 6
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 1.5,
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "terminal",
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": false
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.2,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 19.42,
+     "p95": 19.59,
+     "max": 19.67
+    }
+   },
+   "shots": [
+    "shots/terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 88.6,
+   "detail": [
+    "Phosphor lost keys the reference keeps with the SAME injection (perline-unprimed): Phosphor 12/12 bad lines (first char lost 12), foot 0/12 -- a Phosphor-side drop (#1414)",
+    "phosphor / perline-unprimed: first char lost on 12/12 lines, other bad 0, missing 0",
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline-unprimed: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / oneshot: first char lost on 0/12 lines, other bad 0, missing 0"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline-unprimed",
+       "n": 12,
+       "lost_first": 12,
+       "other_bad": 0,
+       "missing": 0,
+       "example": [
+        "echo t1_ieqh524yng >> kl_pho_perlineunprimed.txt",
+        "cho t1_ieqh524yng >> kl_pho_perlineunprimed.txt"
+       ]
+      },
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "phosphor",
+       "inject": "oneshot",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline-unprimed",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "oneshot",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "foot"
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control_FAIL.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 132.7,
+   "detail": [
+    "reference foot gap 0.00s: 30/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted None Enters",
+    "reference foot gap 0.25s: 30/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted None Enters",
+    "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "foot",
+     "runs": {
+      "0.0": {
+       "ref": "foot",
+       "n": 30,
+       "bad": 30,
+       "posted": null,
+       "lines": 0,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "foot",
+       "n": 30,
+       "bad": 30,
+       "posted": null,
+       "lines": 0,
+       "exact_bad": 0
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 56.7,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.5,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 17.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 275.7,
+   "detail": [
+    "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 35.29 ms includes the input-tool spawn (harness floor 1.9825287163257599 ms)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 35.29,
+     "p95": 40.91,
+     "max": 42.57
+    },
+    "harness_floor_ms": 1.983,
+    "reference_ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "reference": "foot",
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 30,
+       "p50": 35.29,
+       "p95": 40.91,
+       "max": 42.57
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 1.9825287163257599,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 35.29 ms includes the input-tool spawn (harness floor 1.9825287163257599 ms)"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 22,
+      "got": 22,
+      "bad": 0,
+      "examples": []
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 28.7,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.0,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 47.3,
+   "detail": [
+    "app share of Enter->start: enter_begin -> pty_write median 0.40 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "NO-REFERENCE: Enter to command start: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 30,
+     "p50": 40.42,
+     "p95": 45.11,
+     "max": 45.75
+    },
+    "app_enter_to_pty_write_ms": 0.4,
+    "harness_floor_ms": 1.983,
+    "reference_enter_to_start_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "reference": "foot",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 30,
+       "p50": 40.42,
+       "p95": 45.11,
+       "max": 45.75
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 1.9825287163257599,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "noref",
+   "seconds": 15.0,
+   "detail": [
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 5.34,
+     "p95": 12.28,
+     "max": 15.55
+    },
+    "lat": {
+     "key_to_frame": {
+      "phosphor": {
+       "n": 60,
+       "p50": 5.34,
+       "p95": 12.28,
+       "max": 15.55
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "slow-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.6,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 38.0,
+   "detail": [
+    "ambiguous 'find the bug in main.rs': went to shell (no routing log line, so no rule to check)",
+    "ambiguous 'make a PR': went to shell (no routing log line, so no rule to check)",
+    "ambiguous 'cat the error log and tell me what is wrong': went to agent (no routing log line, so no rule to check)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": null,
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": null,
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": null,
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     }
+    ],
+    "misroutes": 0
+   },
+   "shots": [
+    "shots/terminal_routing_table.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 29.7,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 39.8,
+   "detail": [
+    "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane",
+    "nu app log: 2026-11-03T00:20:16Z [DEBUG] frame 1: updated=[\"EditorView\", \"FeaturePopup\", \"FeaturePopup\", \"WarpifyFooterView\", \"AutosuggestionIgnore\", \"DisplayChip\", \"ActionButton\", \"RightPanelView\", \"EditorView\",",
+    "nu app log: 2026-11-03T00:20:18Z [DEBUG] frame 1: updated=[\"DisplayChip\", \"DisplayChip\", \"FeaturePopup\", \"AutosuggestionIgnore\", \"AutosuggestionIgnore\", \"DisplayMenu\", \"FeaturePopup\", \"AcceptAutosuggestionKeybind"
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 2
+   },
+   "shots": [
+    "shots/terminal_shell_nu.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 3.5,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 0.49
+   },
+   "shots": [
+    "shots/terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0.7,
+   "detail": [],
+   "metrics": {
+    "log_view_mode": "agent",
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 6.4,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 19.9,
+     "p95": 20.0,
+     "max": 20.05
+    }
+   },
+   "shots": [
+    "shots/agent_cadence.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 57.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "left_agent_mode_after_fast_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_fast_typing.png"
+   ],
+   "detail": [
+    "after fast_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 21.4,
+   "detail": [
+    "paste + instant Enter: 0/6 md5 digest lines exact (first got [], expected ['5adab3d97a990aa6e1bec241daf9082a'])"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 17.5,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 277.8,
+   "detail": [
+    "NO-REFERENCE: Ctrl-C: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 42.1 ms includes the input-tool spawn (harness floor 2.0698774605989456 ms)"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 30,
+     "p50": 42.1,
+     "p95": 57.04,
+     "max": 57.48
+    },
+    "harness_floor_ms": 2.07,
+    "reference_ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "reference": "foot",
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 30,
+       "p50": 42.1,
+       "p95": 57.04,
+       "max": 57.48
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 2.0698774605989456,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 42.1 ms includes the input-tool spawn (harness floor 2.0698774605989456 ms)"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     },
+     "reference": {
+      "n": 22,
+      "got": 22,
+      "bad": 0,
+      "examples": []
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 28.5,
+   "detail": [],
+   "metrics": {
+    "trials": 12
+   },
+   "shots": [
+    "shots/agent_ssh_connect_typing.png"
+   ]
+  },
+  {
+   "name": "left_agent_mode_after_ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_ssh_connect_typing.png"
+   ],
+   "detail": [
+    "after ssh_connect_typing the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+   ]
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ssh_enter_then_immediate_command.png"
+   ]
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 6.0,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_ssh_nested_typeahead.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 47.2,
+   "detail": [
+    "app share of Enter->start: enter_begin -> pty_write median 1.64 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "NO-REFERENCE: Enter to command start: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 30,
+     "p50": 44.69,
+     "p95": 45.55,
+     "max": 45.65
+    },
+    "app_enter_to_pty_write_ms": 1.64,
+    "harness_floor_ms": 2.07,
+    "reference_enter_to_start_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "reference": "foot",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 30,
+       "p50": 44.69,
+       "p95": 45.55,
+       "max": 45.65
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 2.0698774605989456,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_latency_enter.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "noref",
+   "seconds": 15.4,
+   "detail": [
+    "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+    "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 60,
+     "p50": 3.67,
+     "p95": 9.65,
+     "max": 14.32
+    },
+    "lat": {
+     "key_to_frame": {
+      "phosphor": {
+       "n": 60,
+       "p50": 3.67,
+       "p95": 9.65,
+       "max": 14.32
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": null,
+      "notes": [
+       "Phosphor-side keydown to first frame; no same-method reference exists"
+      ],
+      "overhead_ms": null,
+      "budget_verdict": "no-reference",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "no-reference"
+     },
+     "ui_work": {
+      "phosphor": {
+       "n": 0,
+       "p50": null,
+       "p95": null,
+       "max": 0.0
+      },
+      "reference": null,
+      "budget_ms": 4,
+      "budget_kind": "slow-log",
+      "overhead_ms": null,
+      "prev": null,
+      "baseline": {
+       "status": "n/a"
+      },
+      "budget_verdict": "pass",
+      "verdict": "pass",
+      "notes": [
+       "slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"
+      ]
+     }
+    },
+    "ui_slow_ops": {
+     "count": 0,
+     "worst_ms": 0,
+     "ops": []
+    }
+   },
+   "shots": [
+    "shots/agent_latency_key_log.png"
+   ]
+  },
+  {
+   "name": "left_agent_mode_after_latency_key_log",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_latency_key_log.png"
+   ],
+   "detail": [
+    "after latency_key_log the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "skip",
+   "seconds": 0.6,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  },
+  {
+   "name": "agent_stream_cancel",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 17.7,
+   "detail": [
+    "text typed at 10-25 ms/key while the reply streamed is not visible in the input ('keepmet115_qm09d8')"
+   ],
+   "metrics": {
+    "request_start_s": 2.16,
+    "stream_opened_s": 2.41,
+    "first_visible_change_s": 5.81,
+    "distinct_frames_after_cancel": 1
+   },
+   "shots": [
+    "shots/agent_agent_stream_cancel_FAIL.png"
+   ]
+  },
+  {
+   "name": "routing_table",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 42.0,
+   "detail": [
+    "ambiguous 'find the bug in main.rs': went to shell (no routing log line, so no rule to check)",
+    "ambiguous 'make a PR': went to agent (no routing log line, so no rule to check)",
+    "ambiguous 'cat the error log and tell me what is wrong': went to agent (no routing log line, so no rule to check)"
+   ],
+   "metrics": {
+    "settings_nld_in_terminal": true,
+    "settings_ai_auto_detection": true,
+    "routing_rows": [
+     {
+      "line": "ls -la",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "git status",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "grep foo foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "echo hello world",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "pwd",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "cat foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "wc -l foo.txt",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "uname -a",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "ls the",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "date",
+      "kind": "shell",
+      "want": "shell",
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "what does this error mean",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "how do I undo my last git commit",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "explain why the build is failing",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "why is my disk full",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "can you summarize the changes in this repo",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "please walk me through the failing test",
+      "kind": "prose",
+      "want": "agent",
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "find the bug in main.rs",
+      "kind": "ambiguous",
+      "want": null,
+      "got": "shell",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "make a PR",
+      "kind": "ambiguous",
+      "want": null,
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     },
+     {
+      "line": "cat the error log and tell me what is wrong",
+      "kind": "ambiguous",
+      "want": null,
+      "got": "agent",
+      "surface": null,
+      "rule": null
+     }
+    ],
+    "misroutes": 0
+   },
+   "shots": [
+    "shots/agent_routing_table.png"
+   ]
+  },
+  {
+   "name": "left_agent_mode_after_routing_table",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_routing_table.png"
+   ],
+   "detail": [
+    "after routing_table the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 29.8,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_shell_fish.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 39.5,
+   "detail": [
+    "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane",
+    "nu app log: 2026-11-03T00:33:34Z [DEBUG] frame 1: updated=[\"ActionButton\", \"AutosuggestionIgnore\", \"InlineMenuMessageBar\", \"FeaturePopup\", \"FeaturePopup\", \"Dropdown\", \"RemoveTabConfigConfirmationDialog\", \"Autosug",
+    "nu app log: 2026-11-03T00:34:05Z [DEBUG] frame 1: updated=[\"ActionButton\", \"TerminalViewZeroStateBlock\", \"Terminal\", \"Workspace\", \"ActionButton\", \"Menu\", \"AgentViewZeroState\", \"PaneView\", \"Input\", \"WarpifyFooterV"
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 2
+   },
+   "shots": [
+    "shots/agent_shell_nu.png"
+   ]
+  },
+  {
+   "name": "left_agent_mode_after_shell_nu",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "shots/agent_left_agent_after_shell_nu.png"
+   ],
+   "detail": [
+    "after shell_nu the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 3.8,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 0.64
+   },
+   "shots": [
+    "shots/agent_md_viewer.png"
+   ]
+  }
+ ]
+}

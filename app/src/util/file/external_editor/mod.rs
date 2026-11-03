@@ -9,9 +9,8 @@ mod windows;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use settings::EditorChoice;
 use warp_util::path::LineAndColumnArg;
-use warpui::{AppContext, SingletonEntity};
+use warpui::AppContext;
 
 pub use self::settings::{EditorLayout, EditorSettings};
 
@@ -287,21 +286,6 @@ pub fn generate_editor_command(
     }
 }
 
-/// Opens a file in an external editor, respecting the user's editor settings.
-/// This reads the configured external editor from EditorSettings and uses it if set,
-/// otherwise falls back to system default.
-pub fn open_file_path_in_external_editor(
-    line_column_number: Option<LineAndColumnArg>,
-    full_path: PathBuf,
-    ctx: &mut AppContext,
-) {
-    let editor = match *EditorSettings::as_ref(ctx).open_file_editor {
-        EditorChoice::ExternalEditor(editor) => Some(editor),
-        _ => None,
-    };
-    open_file_path_with_editor(line_column_number, full_path, editor, ctx);
-}
-
 pub fn open_file_path_with_editor(
     line_column_number: Option<LineAndColumnArg>,
     full_path: PathBuf,
@@ -325,6 +309,11 @@ pub fn open_file_path_with_editor(
 /// is a known [`Editor`]; returns whether it was opened. Never hands the file to the OS
 /// handler. Used for launchable text under the system-default editor choice (#681): the
 /// caller falls back to Zap's code editor on `false`.
+///
+/// Not available on Linux/FreeBSD, where resolving the default editor shells out to `xdg-mime`
+/// and must happen off the UI thread (#1318): use [`default_editor_for_file`] then
+/// [`open_file_path_in_resolved_editor_only`].
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
 pub fn open_file_path_in_default_editor_only(
     line_column_number: Option<LineAndColumnArg>,
     full_path: &std::path::Path,
@@ -333,14 +322,27 @@ pub fn open_file_path_in_default_editor_only(
     cfg_if::cfg_if! {
         if #[cfg(target_os = "macos")] {
             mac::open_in_default_editor_only(line_column_number, full_path, ctx)
-        } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
-            linux::open_in_default_editor_only(line_column_number, full_path, ctx)
         } else {
             // Windows has no editor-only lookup here; the in-app editor is the safe choice.
             let _ = (line_column_number, full_path, ctx);
             false
         }
     }
+}
+
+/// Resolves the XDG default editor for `path` off the calling thread (#1318).
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub use linux::default_editor_for_file;
+
+/// Linux/FreeBSD half of [`open_file_path_in_default_editor_only`]: launches an already
+/// resolved editor; returns whether it was opened.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub fn open_file_path_in_resolved_editor_only(
+    line_column_number: Option<LineAndColumnArg>,
+    full_path: &std::path::Path,
+    editor: Option<Editor>,
+) -> bool {
+    linux::open_in_editor_only(line_column_number, full_path, editor)
 }
 
 #[cfg(test)]

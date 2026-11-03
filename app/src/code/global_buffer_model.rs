@@ -417,6 +417,12 @@ impl GlobalBufferModel {
             })
             .collect();
 
+        log::debug!(
+            target: "code::buffer_lifecycle",
+            "sweep: registered={} dead={}",
+            self.buffers.len(),
+            ids_to_remove.len()
+        );
         if ids_to_remove.is_empty() {
             return;
         }
@@ -440,6 +446,11 @@ impl GlobalBufferModel {
 
         for id in ids_to_remove {
             self.buffers.remove(&id);
+            log::debug!(
+                target: "code::buffer_lifecycle",
+                "unregister (swept): registered={}",
+                self.buffers.len()
+            );
 
             #[cfg(feature = "local_fs")]
             {
@@ -450,6 +461,56 @@ impl GlobalBufferModel {
                 });
             }
         }
+    }
+
+    /// Runs [`Self::remove_deallocated_buffers`] once the app is next idle. The editors a caller
+    /// just dropped are only freed when the effects of the current update flush, which is after
+    /// the caller returns, so a scan made inline still sees their buffers alive and leaves their
+    /// file watcher and LSP document registered (#1407). Event-driven: the future completes on
+    /// the next executor turn; there is no timer. A singleton, so the scan runs even when the
+    /// caller's own view has been dropped by then. With `trim`, the freed heap is then handed
+    /// back to the OS on a worker (the caller released a large editor).
+    pub fn sweep_deallocated_buffers_when_idle(
+        &mut self,
+        trim: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        ctx.spawn(async {}, move |me, _, ctx| {
+            me.remove_deallocated_buffers(ctx);
+            if trim {
+                ctx.background_executor()
+                    .spawn(async { crate::alloc::trim_free_memory() })
+                    .detach();
+            }
+        });
+    }
+
+    /// Prunes the registry when `buffer` is actually dropped. The buffer carries a channel sender
+    /// that closes with it, so the sweep runs on the drop event itself. The idle sweep a closing
+    /// pane requests can run before the editors are freed (#1478), leaving the weak entry
+    /// registered. Event-driven; no timer.
+    fn watch_buffer_drop(&mut self, buffer: &ModelHandle<Buffer>, ctx: &mut ModelContext<Self>) {
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        buffer.update(ctx, |buffer, _| buffer.set_drop_notifier(tx));
+        log::debug!(
+            target: "code::buffer_lifecycle",
+            "register: registered={}",
+            self.buffers.len()
+        );
+        ctx.spawn_stream_local(
+            rx,
+            |_, _, _| {},
+            |me, ctx| {
+                log::debug!(target: "code::buffer_lifecycle", "buffer dropped; pruning");
+                me.remove_deallocated_buffers(ctx);
+            },
+        );
+    }
+
+    /// How many buffers are registered (for tests).
+    #[cfg(test)]
+    pub(crate) fn buffer_count(&self) -> usize {
+        self.buffers.len()
     }
 
     pub fn buffer_loaded(&self, file_id: FileId) -> bool {
@@ -468,6 +529,11 @@ impl GlobalBufferModel {
         }
 
         self.buffers.remove(&file_id);
+        log::debug!(
+            target: "code::buffer_lifecycle",
+            "unregister (cleanup): registered={}",
+            self.buffers.len()
+        );
 
         #[cfg(feature = "local_fs")]
         {
@@ -1060,6 +1126,7 @@ impl GlobalBufferModel {
                 },
             },
         );
+        self.watch_buffer_drop(&buffer, ctx);
 
         // Unsubscribe any existing buffer subscription (e.g. from a previous path)
         // before subscribing with the new path.
@@ -1308,6 +1375,7 @@ impl GlobalBufferModel {
                 source,
             },
         );
+        self.watch_buffer_drop(&buffer, ctx);
 
         BufferState::new(file_id, buffer)
     }
@@ -1683,6 +1751,7 @@ impl GlobalBufferModel {
                 },
             },
         );
+        self.watch_buffer_drop(&buffer, ctx);
 
         #[cfg(feature = "local_tty")]
         {
@@ -2174,11 +2243,13 @@ impl GlobalBufferModel {
             return false;
         }
 
-        sync_clock.client_version = new_client_version;
-
         let Some(buffer) = state.buffer.upgrade(ctx) else {
             return false;
         };
+
+        // Only advance the client version once the edit can actually be applied;
+        // a dropped buffer rejects the edit, so the clock must stay untouched.
+        sync_clock.client_version = new_client_version;
 
         // Wire offsets are 1-indexed (matching CharOffset), so no conversion needed.
         // Apply each edit sequentially: the offsets are in sequential

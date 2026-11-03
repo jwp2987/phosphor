@@ -42,7 +42,6 @@ app/src/ai/agent/api_tests.rs crate::cloud_object::update_manager::UpdateManager
 app/src/ai/agent/api_tests.rs crate::server::ids::SyncId
 app/src/ai/agent/task.rs crate::server::datetime_ext::DateTimeExt
 app/src/ai/agent/telemetry.rs crate::server::telemetry::AgentModeCitation
-app/src/ai/agent_sdk/common.rs crate::cloud_object::Owner
 app/src/ai/agent_sdk/common.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/ai/agent_sdk/mcp.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/ai/agent_sdk/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
@@ -214,14 +213,6 @@ app/src/ai/mcp/templatable_manager/wasm.rs crate::cloud_object::Space
 app/src/ai/mcp/templatable_manager/wasm.rs crate::cloud_object::update_manager::InitiatedBy
 app/src/ai/mcp/templatable_manager/wasm.rs crate::server::ids::ServerId
 app/src/ai/predict/next_command_model.rs crate::cloud_object::model::persistence::ObjectStoreModel
-app/src/ai_assistant/mod.rs crate::server::telemetry::OpenedWarpAISource
-app/src/ai_assistant/panel.rs crate::server::telemetry::TelemetryEvent
-app/src/ai_assistant/panel.rs crate::server::telemetry::WarpAIActionType
-app/src/ai_assistant/requests.rs crate::server::telemetry::TelemetryEvent
-app/src/ai_assistant/requests.rs crate::server::telemetry::WarpAIRequestResult
-app/src/ai_assistant/transcript.rs crate::server::telemetry::SaveAsWorkflowModalSource
-app/src/ai_assistant/transcript.rs crate::server::telemetry::TelemetryEvent
-app/src/ai_assistant/transcript.rs crate::server::telemetry::WarpAIActionType
 app/src/app_menus.rs crate::server::telemetry::LaunchConfigUiLocation
 app/src/app_state.rs crate::server::ids::SyncId
 app/src/autoupdate/mod.rs crate::server::datetime_ext::DateTimeExt
@@ -450,8 +441,6 @@ app/src/integration_testing/cloud_object/assertion.rs crate::server::ids::ToServ
 app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::Space
 app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::update_manager::UpdateManager
-app/src/integration_testing/notebook/assertion.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
-app/src/integration_testing/notebook/assertion.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/integration_testing/notebook/assertion.rs crate::server::ids::SyncId
 app/src/integration_testing/notebook/step.rs crate::cloud_object::Space
 app/src/integration_testing/notebook/step.rs crate::cloud_object::StoredObjectEventEntrypoint
@@ -480,7 +469,6 @@ app/src/lib.rs crate::cloud_object::model::actions::ObjectActions
 app/src/lib.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/lib.rs crate::cloud_object::model::view::ObjectStoreViewModel
 app/src/lib.rs crate::cloud_object::update_manager::UpdateManager
-app/src/lib.rs crate::server::experiments::ServerExperiments
 app/src/lib.rs crate::server::telemetry::AgentModeEntrypoint
 app/src/lib.rs crate::server::telemetry::AgentModeEntrypointSelectionType
 app/src/lib.rs crate::server::telemetry::AppStartupInfo
@@ -565,9 +553,7 @@ app/src/notebooks/notebook.rs crate::server::ids::ServerId
 app/src/notebooks/notebook.rs crate::server::ids::SyncId
 app/src/notebooks/notebook.rs crate::server::telemetry::NotebookActionEvent
 app/src/notebooks/notebook.rs crate::server::telemetry::NotebookTelemetryMetadata
-app/src/notebooks/notebook.rs crate::server::telemetry::ObjectTelemetryMetadata
 app/src/notebooks/notebook.rs crate::server::telemetry::TelemetryEvent
-app/src/notebooks/notebook.rs crate::server::telemetry::TelemetryObjectType
 app/src/notebooks/notebook/details_bar.rs crate::cloud_object::breadcrumbs::ContainingObject
 app/src/notebooks/notebook/details_bar.rs crate::cloud_object::model::view::Editor
 app/src/notebooks/notebook/details_bar.rs crate::cloud_object::model::view::EditorState
@@ -586,7 +572,6 @@ app/src/notebooks/notebook_tests.rs crate::server::ids::SyncId
 app/src/notebooks/telemetry.rs crate::server::ids::ServerId
 app/src/notifications/model.rs crate::server::telemetry::TelemetryEvent
 app/src/pane_group/mod.rs crate::cloud_object::Space
-app/src/pane_group/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/pane_group/mod.rs crate::server::ids::ObjectUid
 app/src/pane_group/mod.rs crate::server::ids::SyncId
 app/src/pane_group/mod.rs crate::server::telemetry::PaletteSource
@@ -614,7 +599,6 @@ app/src/persistence/mod.rs crate::cloud_object::StoredObject
 app/src/persistence/mod.rs crate::cloud_object::StoredObjectMetadata
 app/src/persistence/mod.rs crate::cloud_object::model::actions::ObjectAction
 app/src/persistence/mod.rs crate::cloud_object::model::generic_string_model::StoredStringObject
-app/src/persistence/mod.rs crate::server::experiments::ServerExperiment
 app/src/persistence/mod.rs crate::server::ids::SyncId
 app/src/persistence/sqlite.rs crate::cloud_object::GENERIC_STRING_OBJECT_PREFIX
 app/src/persistence/sqlite.rs crate::cloud_object::JSON_OBJECT_PREFIX
@@ -633,7 +617,6 @@ app/src/persistence/sqlite.rs crate::cloud_object::model::actions::ObjectAction
 app/src/persistence/sqlite.rs crate::cloud_object::model::actions::ObjectActionSubtype
 app/src/persistence/sqlite.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
 app/src/persistence/sqlite.rs crate::cloud_object::model::generic_string_model::StoredStringObject
-app/src/persistence/sqlite.rs crate::server::experiments::ServerExperiment
 app/src/persistence/sqlite.rs crate::server::ids::ClientId
 app/src/persistence/sqlite.rs crate::server::ids::HashableId
 app/src/persistence/sqlite.rs crate::server::ids::ServerId
@@ -740,16 +723,6 @@ app/src/search/notebooks/fuzzy_match.rs crate::server::ids::SyncId
 app/src/search/welcome_palette/view.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/search/welcome_palette/view.rs crate::server::ids::SyncId
 app/src/search/welcome_palette/view.rs crate::server::telemetry::TelemetryEvent
-app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStoredObject
-app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStringObjectFormat
-app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStringObjectUniqueKey
-app/src/settings/cloud_preferences.rs crate::cloud_object::JsonObjectType
-app/src/settings/cloud_preferences.rs crate::cloud_object::UniquePer
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::GenericStringModel
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::StringModel
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::json_model::JsonModel
-app/src/settings/cloud_preferences.rs crate::cloud_object::model::json_model::JsonSerializer
 app/src/settings/onboarding_tests.rs crate::cloud_object::StoredObjectMetadata
 app/src/settings/onboarding_tests.rs crate::cloud_object::StoredObjectPermissions
 app/src/settings/onboarding_tests.rs crate::cloud_object::model::persistence::ObjectStoreEvent
@@ -1028,7 +1001,6 @@ app/src/workspace/view.rs crate::server::telemetry::KnowledgePaneEntrypoint
 app/src/workspace/view.rs crate::server::telemetry::LaunchConfigUiLocation
 app/src/workspace/view.rs crate::server::telemetry::MCPServerCollectionPaneEntrypoint
 app/src/workspace/view.rs crate::server::telemetry::NotificationsTurnedOnSource
-app/src/workspace/view.rs crate::server::telemetry::OpenedWarpAISource
 app/src/workspace/view.rs crate::server::telemetry::PaletteSource
 app/src/workspace/view.rs crate::server::telemetry::TabRenameEvent
 app/src/workspace/view.rs crate::server::telemetry::WarpDriveSource
@@ -1039,12 +1011,10 @@ app/src/workspace/view/left_panel.rs crate::server::telemetry::WarpDriveSource
 app/src/workspace/view_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/workspace/view_test.rs crate::cloud_object::model::view::ObjectStoreViewModel
 app/src/workspace/view_test.rs crate::cloud_object::update_manager::UpdateManager
-app/src/workspace/view_test.rs crate::server::experiments::ServerExperiments
 app/src/workspaces/team.rs crate::server::ids::ServerId
 app/src/workspaces/user_workspaces.rs crate::cloud_object::ObjectType
 app/src/workspaces/user_workspaces.rs crate::cloud_object::Owner
 app/src/workspaces/user_workspaces.rs crate::cloud_object::Space
-app/src/workspaces/user_workspaces.rs crate::cloud_object::StoredObjectEventEntrypoint
 app/src/workspaces/user_workspaces.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/workspaces/user_workspaces.rs crate::server::ids::ServerId
 app/src/workspaces/workspace.rs crate::server::ids::ServerId

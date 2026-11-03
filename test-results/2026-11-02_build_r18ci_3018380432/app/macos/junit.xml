@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="28" failures="14" skipped="0">
+<testcase classname="terminal" name="mode_proof" time="3.80">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.20">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="26.90">
+<failure message="harness exception: RuntimeError(&quot;frontmost app is 'Phosphor', not Terminal: refusing to send keys&quot;)">harness exception: RuntimeError("frontmost app is 'Phosphor', not Terminal: refusing to send keys")
+reference windows left open: Terminal was already running (pid 66832)</failure>
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="73.10">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="64.40">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.40">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="22.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="399.20">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-D in cat: file ['helloecho done1 &gt;&gt; cd.txt']
+nested bash not entered (SHLVL lines []): Ctrl-D NOT sent (it would exit the pane's own shell and quit the app)
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 199.01 ms includes the input-tool spawn (harness floor 23.075833916664124 ms)
+Ctrl-C: n=28 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="23.80">
+<failure message="ssh_connect_typing (gap 0.0 s): T163_c71lmo never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_connect_typing (gap 0.0 s): T163_c71lmo never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="116.00">
+<failure message="only 22/30 Enter timings captured">only 22/30 Enter timings captured
+Enter to command start: Phosphor overhead 10.33 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+reference windows left open: Terminal was already running (pid 66832)
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+Enter to command start: n=22 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="23.80">
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="72.40">
+<failure message="Key to paint: Phosphor overhead 7.33 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Key to paint: Phosphor overhead 7.33 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session</failure>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="61.30">
+<failure message="fish: autosuggestion (a history line sharing the typed prefix) did not change the executed line: expected ['AUTOSUGG_alpha_t180_dmdhfosq', 'AUTOSUGG_beta_t181_71pcqmuw'], got ['AUTOSUGG_alpha_t180_dmd">fish: autosuggestion (a history line sharing the typed prefix) did not change the executed line: expected ['AUTOSUGG_alpha_t180_dmdhfosq', 'AUTOSUGG_beta_t181_71pcqmuw'], got ['AUTOSUGG_alpha_t180_dmdhfosq AUTOSUGG_beta_t181_71pcqmuw']
+fish: nested `fish -c`: expected ['AUTOSUGG_alpha_t180_dmdhfosq', 'AUTOSUGG_beta_t181_71pcqmuw', 't182_w3yyf1p5'], got ['AUTOSUGG_alpha_t180_dmdhfosq AUTOSUGG_beta_t181_71pcqmuw', 't182_w3yyf1p5']
+fish: after exit the pane's bash ran the next command: expected ['t184_tvx03xwu'], got []
+fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)</failure>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="100.90">
+<failure message="nu: 12 typed lines: expected ['t185_z46bxitkti', 't186_k3jikfqpwu', 't187_r4te1j9w2g', 't188_uel48ccmwx', 't189_6xvhlycrnd', 't190_tuzpxdosam', 't191_iox6rjkoet', 't192_264l6wm1er', 't193_ojinbk5xld',">nu: 12 typed lines: expected ['t185_z46bxitkti', 't186_k3jikfqpwu', 't187_r4te1j9w2g', 't188_uel48ccmwx', 't189_6xvhlycrnd', 't190_tuzpxdosam', 't191_iox6rjkoet', 't192_264l6wm1er', 't193_ojinbk5xld', 't194_fpnf2mvkbn', 't195_49cdx59wi5', 't196_6utuf4v0eq'], got ['t185_z46bxitktit186_k3jikfqpwut187_r4te1j9w2gt188_uel48ccmwxt189_6xvhlycrndt190_tuzpxdosamt191_iox6rjkoett192_264l6wm1ert193_ojinbk5xldt194_fpnf2mvkbnt195_49cdx59wi5t196_6utuf4v0eq']
+nu: pasted lines + instant Enter: expected ['t197_ubluouqqt5', 't198_0asksdh11n', 't199_rw5sqlujwg', 't200_zw7mz2j4pc'], got ['t198_0asksdh11nt199_rw5sqlujwgt200_zw7mz2j4pc']
+nu: nested nu, exit to the outer nu, next line: expected ['t201_pfec7644', 't202_u7k5zay9', 't203_92kxdxw2'], got ['t201_pfec7644t202_u7k5zay9t203_92kxdxw2']</failure>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="6.40">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="3.90">
+</testcase>
+<testcase classname="agent" name="cadence" time="21.30">
+<failure message="ts_reader produced no output (python3 missing or app did not run it)">ts_reader produced no output (python3 missing or app did not run it)</failure>
+</testcase>
+<testcase classname="agent" name="fast_typing" time="62.60">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.40">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="32.00">
+<failure message="Tab+Enter: completed file has 1/12 expected lines">Tab+Enter: completed file has 1/12 expected lines
+Tab+Enter ran the UNCOMPLETED line, stray files: ['zzcompl_alpha_u']</failure>
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="421.80">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+`cat &gt; cd.txt` never started (its Enter was lost?): Ctrl-D NOT sent (it would hit the top-level shell)
+nested bash not entered (SHLVL lines []): Ctrl-D NOT sent (it would exit the pane's own shell and quit the app)
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 200.96 ms includes the input-tool spawn (harness floor 10.892124846577644 ms)
+Ctrl-C: n=28 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="23.70">
+<failure message="ssh_connect_typing (gap 0.0 s): T79_1ereql never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)">ssh_connect_typing (gap 0.0 s): T79_1ereql never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="118.50">
+<failure message="only 20/30 Enter timings captured">only 20/30 Enter timings captured
+Enter to command start: Phosphor overhead 8.88 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+reference windows left open: Terminal was already running (pid 66832)
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+Enter to command start: n=20 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="23.80">
+</testcase>
+<testcase classname="agent" name="latency_paint" time="71.90">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="44.50">
+<failure message="fish: after exit the pane's bash ran the next command: expected ['t100_q08s58nv'], got []">fish: after exit the pane's bash ran the next command: expected ['t100_q08s58nv'], got []
+fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)</failure>
+</testcase>
+<testcase classname="agent" name="shell_nu" time="108.70">
+<failure message="nu: 12 typed lines: expected ['t101_5gawrd82tg', 't102_6rrp0jiqm0', 't103_86j0rr4tr5', 't104_5x4pvll28j', 't105_6u7inu54vh', 't106_iqof8dlhom', 't107_1uabtoforv', 't108_7ybhvwihqj', 't109_wefgtupr7d',">nu: 12 typed lines: expected ['t101_5gawrd82tg', 't102_6rrp0jiqm0', 't103_86j0rr4tr5', 't104_5x4pvll28j', 't105_6u7inu54vh', 't106_iqof8dlhom', 't107_1uabtoforv', 't108_7ybhvwihqj', 't109_wefgtupr7d', 't110_bfizxpgvra', 't111_hwirzf7408', 't112_tot9id6hlp'], got ['t101_5gawrd82tgt102_6rrp0jiqm0t103_86j0rr4tr5t104_5x4pvll28jt105_6u7inu54vht106_iqof8dlhomt107_1uabtoforvt108_7ybhvwihqjt111_hwirzf7408t112_tot9id6hlp']
+nu: pasted lines + instant Enter: expected ['t113_1r8bq8r7q4', 't114_izgxe8x896', 't115_bt2ijejn4v', 't116_xskjy2zhjr'], got ['t113_1r8bq8r7q4t114_izgxe8x896t115_bt2ijejn4vt116_xskjy2zhjr']
+nu: nested nu, exit to the outer nu, next line: expected ['t117_sa8aiy9g', 't118_3b11rx0z', 't119_3dg4cach'], got ['t117_sa8aiy9gt118_3b11rx0z']
+nu: after exit the pane's bash ran the next command: expected ['t121_ppg9wkhc'], got []</failure>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="6.30">
+</testcase>
+</testsuite>

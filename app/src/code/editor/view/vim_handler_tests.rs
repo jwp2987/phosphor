@@ -2459,3 +2459,123 @@ fn quiescent_unfocused_editor_schedules_no_further_frames() {
         );
     });
 }
+
+/// #1267: an editor owns no find bar, go-to-line dialog or comment editor (three to four full
+/// text editors) until one is first used. Agent answers keep one editor per fenced code block.
+#[test]
+fn test_find_goto_and_comment_subviews_are_created_lazily() {
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor(FIND_BAR_TEST_TEXT, &mut app);
+        editor.read(&app, |view, _| {
+            assert!(view.find_bar.is_none());
+            assert!(view.goto_line_dialog.is_none());
+            assert!(view.active_comment_editor.is_none());
+            assert!(view.find_enabled);
+        });
+
+        editor.update(&mut app, |view, ctx| {
+            view.handle_action(&CodeEditorViewAction::ShowFindBar, ctx);
+        });
+        editor.read(&app, |view, ctx| {
+            assert!(view.find_bar.as_ref().is_some_and(|bar| bar.as_ref(ctx).is_open()));
+            assert!(view.goto_line_dialog.is_none());
+        });
+    });
+}
+
+/// Yields to the app's executor until the editor text becomes `expected`, so a clipboard read that
+/// lands through `ctx.spawn` has run. Condition-driven, not a fixed sleep; it fails instead of
+/// hanging when the read never completes.
+async fn wait_for_buffer_text(editor: &ViewHandle<CodeEditorView>, expected: &str, app: &mut App) {
+    for _ in 0..10_000 {
+        if buffer_text(editor, app) == expected {
+            return;
+        }
+        Timer::after(Duration::from_millis(1)).await;
+    }
+    assert_eq!(
+        buffer_text(editor, app),
+        expected,
+        "the register read never completed"
+    );
+}
+
+/// #1405: `"+p` reads the system clipboard off the UI thread. Keys typed while the read is out
+/// are held and applied right after the paste, in typing order: paste "Z" after `a`, then `x`
+/// deletes the pasted `Z`, then the second `x` deletes `b`. Run in the old order (blocking read
+/// excepted) the two `x` would delete `a` and `b` first and the paste would land last.
+#[test]
+fn test_vim_system_register_paste_keeps_keys_typed_during_the_read_in_order() {
+    let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor("abc", &mut app);
+        set_cursor_position(&editor, 1, 0, &mut app);
+
+        let reply = VimRegisters::defer_next_system_clipboard_read_for_test();
+        vim_user_insert(&editor, "\"+p", &mut app);
+        vim_user_insert(&editor, "x", &mut app);
+        vim_user_insert(&editor, "x", &mut app);
+        assert_eq!(
+            buffer_text(&editor, &app),
+            "abc",
+            "the keys wait for the read"
+        );
+
+        reply.send("Z".to_owned()).unwrap();
+        wait_for_buffer_text(&editor, "ac", &mut app).await;
+    });
+}
+
+/// #1405: the keys that follow `"+p` inside the SAME typed input also wait for the read.
+#[test]
+fn test_vim_system_register_paste_holds_the_rest_of_the_same_input() {
+    let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor("abc", &mut app);
+        set_cursor_position(&editor, 1, 0, &mut app);
+
+        let reply = VimRegisters::defer_next_system_clipboard_read_for_test();
+        vim_user_insert(&editor, "\"+pxx", &mut app);
+        assert_eq!(
+            buffer_text(&editor, &app),
+            "abc",
+            "the rest of the input waits"
+        );
+
+        reply.send("Z".to_owned()).unwrap();
+        wait_for_buffer_text(&editor, "ac", &mut app).await;
+    });
+}
+
+/// #1405: visual-mode `"+p` replaces the selection with the clipboard text once the read lands,
+/// and a key typed meanwhile applies after it.
+#[test]
+fn test_vim_system_register_visual_paste_waits_for_the_read() {
+    let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor("abc", &mut app);
+        set_cursor_position(&editor, 1, 0, &mut app);
+
+        vim_user_insert(&editor, "v", &mut app);
+        let reply = VimRegisters::defer_next_system_clipboard_read_for_test();
+        vim_user_insert(&editor, "\"+p", &mut app);
+        vim_user_insert(&editor, "0x", &mut app);
+        assert_eq!(
+            buffer_text(&editor, &app),
+            "abc",
+            "nothing applies before the read"
+        );
+
+        reply.send("Z".to_owned()).unwrap();
+        // `a` becomes `Z`; the held `x` applies after it. `0` first so the result does not
+        // depend on where the cursor is left after a visual paste.
+        wait_for_buffer_text(&editor, "bc", &mut app).await;
+    });
+}

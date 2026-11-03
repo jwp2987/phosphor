@@ -29,7 +29,6 @@ use crate::{
     util::git::{Commit, FileChangeEntry},
 };
 
-#[cfg(not(target_family = "wasm"))]
 use crate::code::buffer_location::RemotePath;
 
 /// Push-specific sub-actions, dispatched wrapped in `GitDialogAction::Push`.
@@ -151,7 +150,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     me.set_loading(loading_label(publish), ctx);
 
     // Remote repos push on the daemon over RPC (#116).
-    #[cfg(not(target_family = "wasm"))]
     if let Some(remote) = me.remote().cloned() {
         start_confirm_remote(remote, branch, publish, ctx);
         return;
@@ -187,7 +185,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 
 /// Sends the push to the remote host's daemon and surfaces the same toasts as
 /// the local path.
-#[cfg(not(target_family = "wasm"))]
 fn start_confirm_remote(
     remote: RemotePath,
     branch: String,

@@ -12,10 +12,15 @@ use warp_completer::signatures::CommandRegistry;
 use warp_util::path::ShellDialect;
 use warpui::App;
 
+use std::time::Instant;
+
+use super::{
+    SHARED_DIRECTORY_CACHE_TTL, invalidate_shared_directory_cache, shared_directory_cache_at,
+};
 use crate::completer::SessionContext;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, SessionInfo,
+    BootstrapSessionType, SessionId, SessionInfo, command_executor::testing::TestCommandExecutor,
 };
 use crate::test_util::{Stub, VirtualFS};
 
@@ -30,6 +35,29 @@ fn working_directory() -> TypedPathBuf {
     let cwd = TypedPathBuf::from_windows(shellexpand::tilde("~").into_owned());
 
     cwd
+}
+
+/// #1158: the classification parse runs no generators on any session, local included; Enter may be
+/// waiting on its verdict. The ordinary context still has them.
+#[test]
+pub fn test_for_classification_context_has_no_generators() {
+    App::test((), |app| async move {
+        let session = Session::new(
+            SessionInfo::new_for_test(),
+            Arc::new(TestCommandExecutor::default()),
+        );
+        let ctx = test_session_context(session, working_directory(), &app);
+        assert!(ctx.generator_context().is_some());
+
+        let classification = ctx.clone().for_classification();
+        assert!(classification.generator_context().is_none());
+        // Everything else the classifier reads is intact.
+        assert!(classification.path_completion_context().is_some());
+        assert_eq!(
+            classification.top_level_commands().collect_vec(),
+            ctx.top_level_commands().collect_vec()
+        );
+    });
 }
 
 #[test]
@@ -620,8 +648,7 @@ pub fn test_concurrent_directory_refreshes_are_coalesced() {
                 // it must never turn `refresh_` into a cache read. Adding a file after the
                 // burst has settled has to be visible.
                 sandbox.touch(vec![Stub::EmptyFile("second.txt")]);
-                let after =
-                    warpui::r#async::block_on(ctx.refresh_directory_entries(tests_dir));
+                let after = warpui::r#async::block_on(ctx.refresh_directory_entries(tests_dir));
                 assert_eq!(
                     HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(after)),
                     HashSet::from_iter([
@@ -748,4 +775,481 @@ pub fn test_parse_ls_script_output_truncated_mid_file_entry_fails() {
     let output = b"./dir\0\0./whole_file.txt\0./partial_fil";
 
     assert_eq!(super::parse_ls_script_output(output), None);
+}
+
+fn remote_session_with_id(id: u64) -> Session {
+    Session::new(
+        SessionInfo::new_for_test()
+            .with_session_type(BootstrapSessionType::WarpifiedRemote)
+            .with_id(id),
+        Arc::new(TestCommandExecutor::default()),
+    )
+}
+
+/// #1130: `SessionContext::new` runs on every keystroke. For a remote session the directory
+/// cache must be the same allocation across contexts (it used to be a fresh map per context, so
+/// it never hit across keystrokes and each one re-listed the directory over ssh).
+#[test]
+pub fn test_remote_contexts_share_directory_cache_for_same_cwd() {
+    App::test((), |app| async move {
+        let cwd = TypedPathBuf::from("/remote/shared-cache-same-cwd");
+        let first = test_session_context(remote_session_with_id(9_130_001), cwd.clone(), &app);
+        let second = test_session_context(remote_session_with_id(9_130_001), cwd, &app);
+        assert!(Arc::ptr_eq(
+            &first.cached_directory_entries,
+            &second.cached_directory_entries
+        ));
+    });
+}
+
+/// Local sessions keep a private cache per context: behaviour there is unchanged.
+#[test]
+pub fn test_local_contexts_do_not_share_directory_cache() {
+    App::test((), |app| async move {
+        let cwd = TypedPathBuf::from("/local/not-shared");
+        let first = test_session_context(Session::test(), cwd.clone(), &app);
+        let second = test_session_context(Session::test(), cwd, &app);
+        assert!(!Arc::ptr_eq(
+            &first.cached_directory_entries,
+            &second.cached_directory_entries
+        ));
+    });
+}
+
+#[test]
+pub fn test_shared_directory_cache_resets_on_cwd_change_and_invalidate() {
+    let id = SessionId::from(9_130_010);
+    let a = TypedPathBuf::from("/remote/a");
+    let b = TypedPathBuf::from("/remote/b");
+    let now = Instant::now();
+
+    let first = shared_directory_cache_at(id, &a, now);
+    assert!(Arc::ptr_eq(&first, &shared_directory_cache_at(id, &a, now)));
+
+    // A different cwd gets a different cache.
+    let other_cwd = shared_directory_cache_at(id, &b, now);
+    assert!(!Arc::ptr_eq(&first, &other_cwd));
+    assert!(Arc::ptr_eq(
+        &other_cwd,
+        &shared_directory_cache_at(id, &b, now)
+    ));
+
+    // Block completion / submit drops it, so `mkdir`/`touch` in the shell is seen.
+    invalidate_shared_directory_cache(id);
+    assert!(!Arc::ptr_eq(
+        &other_cwd,
+        &shared_directory_cache_at(id, &b, now)
+    ));
+}
+
+#[test]
+pub fn test_shared_directory_cache_expires_after_ttl() {
+    let id = SessionId::from(9_130_011);
+    let cwd = TypedPathBuf::from("/remote/ttl");
+    // Created in the past so the lookup at the real "now" is past the TTL; never advance the
+    // clock forward, which would sweep other tests' slots.
+    let Some(past) = Instant::now().checked_sub(SHARED_DIRECTORY_CACHE_TTL * 2) else {
+        return;
+    };
+    let old = shared_directory_cache_at(id, &cwd, past);
+    let fresh = shared_directory_cache_at(id, &cwd, Instant::now());
+    assert!(!Arc::ptr_eq(&old, &fresh));
+}
+
+/// #1130: highlighting on a remote session must not expose a generator context; local keeps it.
+#[test]
+pub fn test_for_decoration_disables_generators_only_on_remote_sessions() {
+    App::test((), |app| async move {
+        let cwd = TypedPathBuf::from("/remote/decoration");
+        let remote = test_session_context(remote_session_with_id(9_130_020), cwd.clone(), &app);
+        assert!(remote.generator_context().is_some());
+        assert!(remote.for_decoration().generator_context().is_none());
+
+        let local = test_session_context(Session::test(), cwd, &app);
+        assert!(local.for_decoration().generator_context().is_some());
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn slow_local_listing_times_out_without_blocking_other_tasks() {
+    use super::list_local_dir_off_pool;
+    use std::time::{Duration, Instant};
+
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let started = Instant::now();
+
+    let listing = tokio::spawn(list_local_dir_off_pool(
+        "/hung/mount".into(),
+        Duration::from_millis(100),
+        move |_| {
+            // Simulates a read_dir stuck on a dead network mount.
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            Vec::new()
+        },
+    ));
+
+    // The only async worker must stay free while the listing is stuck.
+    let other = tokio::spawn(async { 7 });
+    assert_eq!(other.await.unwrap(), 7);
+
+    let result = listing.await.unwrap();
+    assert!(result.is_none(), "a timed-out listing yields no entries");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "timed out in {:?}, expected ~100ms",
+        started.elapsed()
+    );
+    let _ = release_tx.send(());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn fast_local_listing_returns_entries() {
+    use super::list_local_dir_off_pool;
+    use std::time::Duration;
+    use warp_completer::completer::EngineFileType;
+
+    let entries = list_local_dir_off_pool("/x".into(), Duration::from_secs(5), |_| {
+        vec![EngineDirEntry {
+            file_name: "a".to_owned(),
+            file_type: EngineFileType::File,
+        }]
+    })
+    .await;
+    assert_eq!(entries.map(|e| e.len()), Some(1));
+}
+
+/// #1239: a subshell Phosphorized inside an ssh session (`sudo -s`, `ksu`) is a `WarpifiedRemote`
+/// session with no host id of its own and no ssh socket, and its in-band executor is its final
+/// one. The pre-connect guard (empty listing until the remote-server handshake) must not apply
+/// to it: it withheld every path completion from root shells over ssh.
+#[cfg(unix)]
+#[test]
+pub fn test_remote_subshell_lists_directory_entries_before_any_host_id() {
+    use crate::terminal::shell::ShellType;
+    use warp_core::features::FeatureFlag;
+
+    App::test((), |app| async move {
+        let _remote_server = FeatureFlag::SshRemoteServer.override_enabled(true);
+        VirtualFS::test(
+            "test_remote_subshell_lists_directory_entries_before_any_host_id",
+            |dirs, mut sandbox| {
+                sandbox.mkdir("etc");
+                sandbox.touch(vec![Stub::EmptyFile("root.txt")]);
+                let cwd = TypedPathBuf::from(dirs.tests().to_string_lossy().as_bytes());
+
+                let subshell = Session::new(
+                    SessionInfo::new_for_test()
+                        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                        .with_shell_type(ShellType::Bash)
+                        .with_spawning_session_id(SessionId::from(7u64))
+                        .with_subshell_spawned_by("sudo -s"),
+                    Arc::new(TestCommandExecutor::default()),
+                );
+                let ctx = test_session_context(subshell, cwd.clone(), &app);
+                let mut entries = HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(
+                    warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone())),
+                ));
+                entries.remove(&EngineDirEntry::test_dir("."));
+                assert_eq!(
+                    entries,
+                    HashSet::from_iter([
+                        EngineDirEntry::test_dir("etc"),
+                        EngineDirEntry::test_file("root.txt"),
+                    ])
+                );
+
+                // The ssh session itself, before its handshake, still gets the (uncached) empty
+                // answer: its executor is about to be replaced.
+                // A distinct id: a remote session's listings are cached per (session id, cwd), and
+                // `new_for_test` gives both sessions id 0, so the subshell's listing would answer.
+                let connecting = Session::new(
+                    SessionInfo::new_for_test()
+                        .with_id(1u64)
+                        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                        .with_shell_type(ShellType::Bash),
+                    Arc::new(TestCommandExecutor::default()),
+                );
+                let ctx = test_session_context(connecting, cwd.clone(), &app);
+                assert!(warpui::r#async::block_on(ctx.list_directory_entries(cwd)).is_empty());
+            },
+        );
+    });
+}
+
+/// Executor for #1289: the first `failures` calls fail like a request caught by a remote-server
+/// connection drop; every later call returns a fixed listing.
+#[derive(Debug)]
+struct DropThenListExecutor {
+    failures: std::sync::atomic::AtomicUsize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl DropThenListExecutor {
+    fn new(failures: usize) -> Arc<Self> {
+        Arc::new(Self {
+            failures: std::sync::atomic::AtomicUsize::new(failures),
+            calls: Default::default(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::terminal::model::session::command_executor::CommandExecutor for DropThenListExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &crate::terminal::shell::Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _options: crate::terminal::model::session::command_executor::ExecuteCommandOptions,
+    ) -> anyhow::Result<warp_completer::completer::CommandOutput> {
+        use std::sync::atomic::Ordering;
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let failing = self
+            .failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if failing {
+            anyhow::bail!("Remote command failed: connection to the remote server was lost");
+        }
+        Ok(warp_completer::completer::CommandOutput {
+            stdout: b"./src\0.\0\0./a.txt\0".to_vec(),
+            stderr: vec![],
+            status: warp_completer::completer::CommandExitStatus::Success,
+            exit_code: Some(warp_core::command::ExitCode::from(0)),
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        true
+    }
+}
+
+fn remote_session_with(executor: Arc<DropThenListExecutor>) -> Session {
+    let info = SessionInfo::new_for_test()
+        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+        .with_shell_type(crate::terminal::shell::ShellType::Bash);
+    Session::new(info, executor)
+}
+
+/// #1289: a listing request that fails once (the remote-server connection dropped under it, the
+/// session then swapped executors) is retried on the current executor instead of completing as
+/// an empty directory.
+#[test]
+pub fn test_remote_listing_retries_a_dropped_request() {
+    App::test((), |app| async move {
+        let executor = DropThenListExecutor::new(1);
+        let cwd = TypedPathBuf::from("/test-1289-retry/");
+        let ctx = test_session_context(remote_session_with(executor.clone()), cwd.clone(), &app);
+        let entries = warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(
+            HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(entries)),
+            HashSet::from_iter([
+                EngineDirEntry::test_dir("src"),
+                EngineDirEntry::test_file("a.txt")
+            ]),
+            "the retry must serve the listing, not an empty directory"
+        );
+        assert_eq!(executor.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    });
+}
+
+/// #1289: when both attempts fail the empty result is NOT stored, so the next Tab lists again
+/// (and gets the real entries) instead of reading a cached empty directory for the rest of the
+/// cache window.
+#[test]
+pub fn test_remote_listing_failure_is_not_cached() {
+    App::test((), |app| async move {
+        let executor = DropThenListExecutor::new(2);
+        let cwd = TypedPathBuf::from("/test-1289-nocache/");
+        let ctx = test_session_context(remote_session_with(executor.clone()), cwd.clone(), &app);
+        let first = warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        assert!(first.is_empty(), "both attempts failed");
+
+        let second = warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(
+            HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(second)),
+            HashSet::from_iter([
+                EngineDirEntry::test_dir("src"),
+                EngineDirEntry::test_file("a.txt")
+            ]),
+            "a failed listing must not be cached as an empty directory"
+        );
+    });
+}
+
+/// Executor for #1295: every call counts itself and returns the shell's failure with `exit`.
+#[derive(Debug)]
+struct FailingListExecutor {
+    exit: i32,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl FailingListExecutor {
+    fn new(exit: i32) -> Arc<Self> {
+        Arc::new(Self {
+            exit,
+            calls: Default::default(),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::terminal::model::session::command_executor::CommandExecutor for FailingListExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &crate::terminal::shell::Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _options: crate::terminal::model::session::command_executor::ExecuteCommandOptions,
+    ) -> anyhow::Result<warp_completer::completer::CommandOutput> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(warp_completer::completer::CommandOutput {
+            stdout: vec![],
+            stderr: b"cd: no such file or directory".to_vec(),
+            status: warp_completer::completer::CommandExitStatus::Failure,
+            exit_code: Some(warp_core::command::ExitCode::from(self.exit)),
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        true
+    }
+}
+
+fn failing_remote_session(id: u64, executor: Arc<FailingListExecutor>) -> Session {
+    let info = SessionInfo::new_for_test()
+        .with_id(id)
+        .with_session_type(BootstrapSessionType::WarpifiedRemote)
+        .with_shell_type(crate::terminal::shell::ShellType::Bash);
+    Session::new(info, executor)
+}
+
+/// #1295: a directory the remote shell cannot list is asked for once, not once per command. The
+/// positive cache is dropped on every command submit (#1130), so this survives that.
+#[test]
+pub fn test_remote_listing_failure_is_remembered_across_command_submits() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(1);
+        let cwd = TypedPathBuf::from("/test-1295-negative/");
+        let id = SessionId::from(9501u64);
+        let session = failing_remote_session(9501, executor.clone());
+        let ctx = test_session_context(session, cwd.clone(), &app);
+        for _ in 0..5 {
+            assert!(warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone())).is_empty());
+            // A command ran: the listing cache is dropped, as `execute_command` does.
+            invalidate_shared_directory_cache(id);
+        }
+        assert_eq!(executor.calls(), 1, "a failing directory is listed once");
+    });
+}
+
+/// #1295: an explicit Tab asks the remote again even for a directory that failed a moment ago.
+#[test]
+pub fn test_explicit_tab_forgets_failed_remote_listings() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(1);
+        let cwd = TypedPathBuf::from("/test-1295-tab/");
+        let id = SessionId::from(9502u64);
+        let ctx = test_session_context(
+            failing_remote_session(9502, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        invalidate_shared_directory_cache(id);
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        assert_eq!(executor.calls(), 1);
+
+        super::forget_failed_remote_listings(id);
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(executor.calls(), 2, "Tab must try the remote again");
+    });
+}
+
+/// #1295: ssh's own exit status (255, no usable master) says nothing about the directory, so it
+/// is not remembered as a bad directory.
+#[test]
+pub fn test_ssh_transport_failure_is_not_remembered_as_a_bad_directory() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(255);
+        let cwd = TypedPathBuf::from("/test-1295-255/");
+        let id = SessionId::from(9503u64);
+        let ctx = test_session_context(
+            failing_remote_session(9503, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd.clone()));
+        invalidate_shared_directory_cache(id);
+        warpui::r#async::block_on(ctx.list_directory_entries(cwd));
+        assert_eq!(executor.calls(), 2);
+    });
+}
+
+/// #1295: background consumers (autosuggestion, highlighting, classification, next-command) on a
+/// remote session never issue a listing; they read the cache only.
+#[test]
+pub fn test_background_contexts_never_list_over_a_remote_session() {
+    App::test((), |app| async move {
+        let executor = FailingListExecutor::new(0);
+        let cwd = TypedPathBuf::from("/test-1295-background/");
+        let ctx = test_session_context(
+            failing_remote_session(9504, executor.clone()),
+            cwd.clone(),
+            &app,
+        );
+        for background in [
+            ctx.clone().for_background(),
+            ctx.clone().for_decoration(),
+            ctx.clone().for_classification(),
+        ] {
+            for _ in 0..10 {
+                assert!(
+                    warpui::r#async::block_on(background.list_directory_entries(cwd.clone()))
+                        .is_empty()
+                );
+            }
+        }
+        assert_eq!(executor.calls(), 0, "no remote command per keystroke");
+    });
+}
+
+/// #1295: the listing script is quoted for the session's own shell for awkward directory names,
+/// so it does not fail on the remote for a reason of its own.
+#[test]
+pub fn test_ls_script_quotes_awkward_directory_names_per_shell() {
+    let directory = TypedPath::unix("/home/u/it's a $dir (x)");
+    for dialect in [ShellDialect::Posix, ShellDialect::Fish] {
+        let script = super::ls_script_for_dir(&directory, dialect).expect("UTF-8 path");
+        assert!(!script.contains('\n'), "{script:?}");
+        assert!(script.contains("cd /home/u/it"), "{script:?}");
+        // No unescaped space, quote, `$` or paren between `cd ` and the first ` &&`.
+        let arg = script
+            .split_once("cd ")
+            .and_then(|(_, rest)| rest.split_once(" &&"))
+            .map(|(arg, _)| arg.to_owned())
+            .expect("cd <dir> && ...");
+        let mut chars = arg.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                chars.next();
+            } else {
+                assert!(!" '$()".contains(c), "{dialect:?}: {arg:?}");
+            }
+        }
+    }
 }

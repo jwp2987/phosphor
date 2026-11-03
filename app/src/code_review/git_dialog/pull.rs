@@ -46,7 +46,6 @@ use crate::{
     ui_components::icons::Icon,
 };
 
-#[cfg(not(target_family = "wasm"))]
 use crate::code::buffer_location::RemotePath;
 
 pub struct PullState;
@@ -77,7 +76,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     me.set_loading(loading_label(), ctx);
 
     // Remote repos pull on the daemon over RPC (#116), same split as push.
-    #[cfg(not(target_family = "wasm"))]
     if let Some(remote) = me.remote().cloned() {
         start_confirm_remote(remote, branch, ctx);
         return;
@@ -112,7 +110,6 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 
 /// Sends the pull to the remote host's daemon and surfaces the same toasts as
 /// the local path.
-#[cfg(not(target_family = "wasm"))]
 fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContext<GitDialog>) {
     use crate::code_review::git_dialog::remote_client_for;
     use crate::remote_server::proto;

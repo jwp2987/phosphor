@@ -321,7 +321,7 @@ fn synthetic_line(glyph_count: usize, glyph_width: f32, clip_config: ClipConfig)
         .map(|i| Glyph {
             id: 0,
             position_along_baseline: vec2f(glyph_width * i as f32, 0.),
-            index: i,
+            index: i as u32,
             width: glyph_width,
         })
         .collect();
@@ -418,7 +418,7 @@ fn test_run_background_painted_before_underline() {
                 .map(|i| Glyph {
                     id: 0,
                     position_along_baseline: vec2f(glyph_width * i as f32, 0.),
-                    index: i,
+                    index: i as u32,
                     width: glyph_width,
                 })
                 .collect();
@@ -500,7 +500,7 @@ fn test_run_background_clamped_to_visible_glyph_span() {
                 .map(|i| Glyph {
                     id: 0,
                     position_along_baseline: vec2f(glyph_width * i as f32, 0.),
-                    index: i,
+                    index: i as u32,
                     width: glyph_width,
                 })
                 .collect();
@@ -572,7 +572,7 @@ fn test_fully_truncated_run_paints_no_background() {
                     .map(|i| Glyph {
                         id: 0,
                         position_along_baseline: vec2f(glyph_width * (start + i) as f32, 0.),
-                        index: start + i,
+                        index: (start + i) as u32,
                         width: glyph_width,
                     })
                     .collect::<Vec<_>>()
@@ -672,7 +672,7 @@ fn test_unlaid_tail_keeps_true_end_offsets() {
     let line = frame.lines().last().unwrap();
     assert_eq!(line.end_index(), total, "End key / row end");
     assert_eq!(
-        line.last_glyph().unwrap().index + 1,
+        line.last_glyph().unwrap().char_index() + 1,
         total,
         "Down / clamp column"
     );
@@ -700,7 +700,7 @@ fn test_unlaid_tail_without_blank_glyph_still_extends_carets() {
     assert_eq!(line.end_index(), 50);
     let last = line.last_glyph().unwrap();
     assert_eq!(
-        last.index + 1,
+        last.char_index() + 1,
         50,
         "zero-width fallback glyph agrees with the caret end"
     );
@@ -736,7 +736,7 @@ fn test_elided_middle_rebases_tail_offsets() {
     assert_eq!(line.first_index(), 0, "Home");
     assert_eq!(line.end_index(), total, "End key / row end is the true end");
     assert_eq!(
-        line.last_glyph().unwrap().index,
+        line.last_glyph().unwrap().char_index(),
         total - 1,
         "the last laid glyph is the row's last char"
     );
@@ -750,8 +750,61 @@ fn test_elided_middle_rebases_tail_offsets() {
     assert_eq!(frame.row_within_frame(total, true), frame.lines().len() - 1);
 }
 
+/// #1340 P1: offsets are stored as `u32`; rebasing past `u32::MAX` clamps instead of wrapping,
+/// and the `usize` boundary helpers round-trip.
+#[test]
+fn test_offset_narrowing_clamps_at_u32_max() {
+    assert_eq!(narrow_offset(0), 0);
+    assert_eq!(narrow_offset(u32::MAX as usize), u32::MAX);
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(narrow_offset(u32::MAX as usize + 1), u32::MAX);
+    assert_eq!(narrow_offset(usize::MAX), u32::MAX);
+
+    let caret = CaretPosition::new(1., 3, usize::MAX);
+    assert_eq!((caret.start(), caret.last()), (3, u32::MAX as usize));
+
+    // Rebasing a tail by a delta that overflows u32 saturates.
+    #[cfg(target_pointer_width = "64")]
+    {
+        let frame = TextFrame::mock_with_positions("abcd", 10.);
+        let rebased = frame.with_elided_middle(2, 4, u32::MAX as usize + 10);
+        let line = rebased.lines().last().unwrap();
+        assert_eq!(line.last_glyph().unwrap().index, u32::MAX);
+        assert_eq!(line.caret_positions.last().unwrap().last_offset, u32::MAX);
+        assert_eq!(line.first_index(), 0);
+    }
+}
+
 #[test]
 fn test_elided_middle_noop_when_fully_laid_out() {
     let frame = TextFrame::mock_with_positions("abcd", 10.).with_elided_middle(2, 4, 4);
     assert_eq!(frame.lines().last().unwrap().end_index(), 4);
+}
+
+/// The two-generation cache keeps an entry that was fetched in the previous frame, drops one that
+/// was not, and answers a lookup through a borrowed key for an entry inserted by value.
+#[test]
+fn text_cache_keeps_entries_fetched_within_two_frames() {
+    let cache: TextCache<u32> = TextCache::new();
+    let key = |text: &str| CacheKeyValue {
+        text: text.to_owned(),
+        font_size: 12.0.into(),
+        line_height_ratio: 1.2.into(),
+        fixed_width_tab_size: None,
+        style_runs: Default::default(),
+        max_width: f32::MAX.into(),
+        max_height: None,
+        alignment: TextAlignment::Left,
+        first_line_head_indent: None,
+        clip_config: None,
+    };
+    cache.insert(key("kept"), Arc::new(1));
+    cache.insert(key("dropped"), Arc::new(2));
+
+    cache.finish_frame();
+    assert_eq!(cache.get(&key("kept") as &dyn CacheKey).as_deref(), Some(&1));
+
+    cache.finish_frame();
+    assert_eq!(cache.get(&key("kept") as &dyn CacheKey).as_deref(), Some(&1));
+    assert_eq!(cache.get(&key("dropped") as &dyn CacheKey), None);
 }

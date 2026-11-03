@@ -8,24 +8,66 @@ use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::vec2f;
 use std::borrow::Cow;
 use std::sync::{atomic::AtomicBool, Arc};
-use wgpu::util::BufferInitDescriptor;
-use wgpu::{BindGroupLayout, ColorTargetState, Device, RenderPass, RenderPipeline};
+use wgpu::{BindGroupLayout, ColorTargetState, Device, Queue, RenderPass, RenderPipeline};
 
-use super::util::create_buffer_init;
+use super::util::InstanceBuffers;
 
 pub(super) struct Pipeline {
     render_pipeline: RenderPipeline,
 }
 
+/// The line of `rect_shader.wgsl` that switches the solid-rect fast path (#1225).
+const FAST_PATH_ON: &str = "const SOLID_FAST_PATH: bool = true;";
+const FAST_PATH_OFF: &str = "const SOLID_FAST_PATH: bool = false;";
+
+/// The rect shader's source. Setting `PHOSPHOR_RECT_FAST_PATH=0` compiles it without the
+/// solid-rect early return, to compare frame cost (and look for a rendering difference) with the
+/// general path alone.
+fn shader_source() -> Cow<'static, str> {
+    shader_source_with(
+        include_str!("../shaders/rect_shader.wgsl"),
+        std::env::var("PHOSPHOR_RECT_FAST_PATH").is_ok_and(|value| value == "0"),
+    )
+}
+
+fn shader_source_with(source: &'static str, disable_fast_path: bool) -> Cow<'static, str> {
+    if disable_fast_path {
+        Cow::Owned(source.replace(FAST_PATH_ON, FAST_PATH_OFF))
+    } else {
+        Cow::Borrowed(source)
+    }
+}
+
+/// Kept across frames so the instance vector and vertex buffer are reused; see `begin_frame`.
 #[derive(Default)]
 pub(super) struct PerFrameState {
     rect_data: Vec<shader_types::RectData>,
-    buffer: Option<wgpu::Buffer>,
+    buffers: InstanceBuffers,
 }
+
+impl PerFrameState {
+    pub(super) fn begin_frame(&mut self) {
+        self.rect_data.clear();
+        self.buffers.begin_frame();
+    }
+}
+
+// `Queue::write_buffer` requires a size that is a multiple of `COPY_BUFFER_ALIGNMENT` (4).
+const _: () = assert!(std::mem::size_of::<shader_types::RectData>() % 4 == 0);
 
 pub(super) struct LayerState {
     start_offset: usize,
     len: usize,
+}
+
+impl LayerState {
+    /// The same draw without its first instance, or `None` if that was the only one.
+    pub(super) fn without_first(self) -> Option<Self> {
+        (self.len > 1).then(|| Self {
+            start_offset: self.start_offset + 1,
+            len: self.len - 1,
+        })
+    }
 }
 
 impl Pipeline {
@@ -36,9 +78,7 @@ impl Pipeline {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Rect Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../shaders/rect_shader.wgsl"
-            ))),
+            source: wgpu::ShaderSource::Wgsl(shader_source()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -80,132 +120,22 @@ impl Pipeline {
         scene: &Scene,
         per_frame_state: &mut PerFrameState,
     ) -> Option<LayerState> {
-        if layer.rects.is_empty() {
-            // It's a mac assertion error to create an empty metal buffer, so exit early
-            return None;
-        }
-
-        let scale_factor = scene.scale_factor();
-        let mut rect_instance_data = Vec::with_capacity(layer.rects.len());
-        for rect in &layer.rects {
-            let bounds = rect.bounds * scale_factor;
-
-            if let Some(drop_shadow) = rect.drop_shadow {
-                let sigma = drop_shadow.blur_radius * scale_factor;
-                let padding = drop_shadow.spread_radius * scale_factor;
-                let shadow_origin = bounds.origin() + drop_shadow.offset * scale_factor - padding;
-                let shadow_size = bounds.size() + vec2f(2. * padding, 2. * padding);
-
-                let min_dimension = f32::min(shadow_size.x(), shadow_size.y());
-                let corner_radius = crate::rendering::CornerRadius::from_ui_corner_radius(
-                    rect.corner_radius,
-                    scale_factor,
-                    min_dimension,
-                );
-                let bounds = RectF::new(shadow_origin, shadow_size);
-                let shadow_color = shader_types::Color {
-                    start: vec2f(0., 0.).into(),
-                    start_color: drop_shadow.color.into(),
-                    end: vec2f(1., 0.).into(),
-                    end_color: drop_shadow.color.into(),
-                };
-
-                let border_color = shader_types::Color {
-                    start: vec2f(0., 0.).into(),
-                    start_color: ColorU::transparent_black().into(),
-                    end: vec2f(1., 0.).into(),
-                    end_color: ColorU::transparent_black().into(),
-                };
-
-                rect_instance_data.push(shader_types::RectData::new(
-                    bounds,
-                    shadow_color,
-                    border_color,
-                    corner_radius.clone(),
-                    BorderWidth::default(),
-                    sigma,
-                    padding,
-                    0.,
-                    vec2f(0., 0.),
-                ));
-            }
-
-            let min_dimension = f32::min(bounds.height(), bounds.width());
-            let corner_radius = crate::rendering::CornerRadius::from_ui_corner_radius(
-                rect.corner_radius,
-                scale_factor,
-                min_dimension,
-            );
-            let background_color = shader_types::Color {
-                start: rect.background.start().into(),
-                start_color: (rect.background.start_color().into()),
-                end: rect.background.end().into(),
-                end_color: (rect.background.end_color().into()),
-            };
-
-            let border_color = shader_types::Color {
-                start: rect.border.color.start().into(),
-                start_color: (rect.border.color.start_color().into()),
-                end: rect.border.color.end().into(),
-                end_color: (rect.border.color.end_color().into()),
-            };
-
-            let border_width = shader_types::BorderWidth {
-                top: rect.border.top_width() * scale_factor,
-                right: rect.border.right_width() * scale_factor,
-                bottom: rect.border.bottom_width() * scale_factor,
-                left: rect.border.left_width() * scale_factor,
-            };
-
-            let dash = rect
-                .border
-                .dash
-                .map(|mut dash| {
-                    dash.dash_length *= scale_factor;
-                    dash.gap_length *= scale_factor;
-                    dash
-                })
-                .unwrap_or_default();
-            let horizontal_gap = get_best_dash_gap(bounds.width(), dash);
-            let vertical_gap = get_best_dash_gap(bounds.height(), dash);
-            let gap_lengths = vec2f(horizontal_gap, vertical_gap);
-
-            let rect_data = shader_types::RectData::new(
-                bounds,
-                background_color,
-                border_color,
-                corner_radius,
-                border_width,
-                0.,
-                0.,
-                dash.dash_length,
-                gap_lengths,
-            );
-            rect_instance_data.push(rect_data);
-        }
-
-        let start_offset = per_frame_state.rect_data.len();
-        let len = rect_instance_data.len();
-        per_frame_state.rect_data.append(&mut rect_instance_data);
-
-        Some(LayerState { start_offset, len })
+        encode_layer(layer, scene.scale_factor(), &mut per_frame_state.rect_data)
     }
 
     pub(super) fn finalize_per_frame_state(
         per_frame_state: &mut PerFrameState,
         device: &Device,
+        queue: &Queue,
         device_lost: &Arc<AtomicBool>,
     ) {
-        per_frame_state.buffer = create_buffer_init(
+        per_frame_state.buffers.upload(
+            "Rect instance buffer",
             device,
+            queue,
             device_lost,
-            &BufferInitDescriptor {
-                label: Some("Rect instance buffer"),
-                contents: bytemuck::cast_slice(&per_frame_state.rect_data),
-                usage: wgpu::BufferUsages::VERTEX,
-            },
-        )
-        .ok();
+            bytemuck::cast_slice(&per_frame_state.rect_data),
+        );
     }
 
     pub(super) fn draw<'a>(
@@ -214,7 +144,7 @@ impl Pipeline {
         layer_state: &LayerState,
         per_frame_state: &'a PerFrameState,
     ) {
-        let Some(buffer) = per_frame_state.buffer.as_ref() else {
+        let Some(buffer) = per_frame_state.buffers.vertex_buffer() else {
             return;
         };
 
@@ -229,3 +159,130 @@ impl Pipeline {
         );
     }
 }
+
+/// Appends the instance data for `layer`'s rects to `rect_instance_data` and says where in it
+/// they landed, or `None` for a layer with no rects.
+fn encode_layer(
+    layer: &Layer,
+    scale_factor: f32,
+    rect_instance_data: &mut Vec<shader_types::RectData>,
+) -> Option<LayerState> {
+    if layer.rects.is_empty() {
+        // It's a mac assertion error to create an empty metal buffer, so exit early
+        return None;
+    }
+
+    let start_offset = rect_instance_data.len();
+    for rect in &layer.rects {
+        let bounds = rect.bounds * scale_factor;
+
+        if let Some(drop_shadow) = rect.drop_shadow {
+            let sigma = drop_shadow.blur_radius * scale_factor;
+            let padding = drop_shadow.spread_radius * scale_factor;
+            let shadow_origin = bounds.origin() + drop_shadow.offset * scale_factor - padding;
+            let shadow_size = bounds.size() + vec2f(2. * padding, 2. * padding);
+
+            let min_dimension = f32::min(shadow_size.x(), shadow_size.y());
+            let corner_radius = crate::rendering::CornerRadius::from_ui_corner_radius(
+                rect.corner_radius,
+                scale_factor,
+                min_dimension,
+            );
+            let bounds = RectF::new(shadow_origin, shadow_size);
+            let shadow_color = shader_types::Color {
+                start: vec2f(0., 0.).into(),
+                start_color: drop_shadow.color.into(),
+                end: vec2f(1., 0.).into(),
+                end_color: drop_shadow.color.into(),
+            };
+
+            let border_color = shader_types::Color {
+                start: vec2f(0., 0.).into(),
+                start_color: ColorU::transparent_black().into(),
+                end: vec2f(1., 0.).into(),
+                end_color: ColorU::transparent_black().into(),
+            };
+
+            rect_instance_data.push(shader_types::RectData::new(
+                bounds,
+                shadow_color,
+                border_color,
+                corner_radius.clone(),
+                BorderWidth::default(),
+                sigma,
+                padding,
+                0.,
+                vec2f(0., 0.),
+            ));
+        }
+
+        if rect.draws_nothing() {
+            continue;
+        }
+
+        let min_dimension = f32::min(bounds.height(), bounds.width());
+        let corner_radius = crate::rendering::CornerRadius::from_ui_corner_radius(
+            rect.corner_radius,
+            scale_factor,
+            min_dimension,
+        );
+        let background_color = shader_types::Color {
+            start: rect.background.start().into(),
+            start_color: (rect.background.start_color().into()),
+            end: rect.background.end().into(),
+            end_color: (rect.background.end_color().into()),
+        };
+
+        let border_color = shader_types::Color {
+            start: rect.border.color.start().into(),
+            start_color: (rect.border.color.start_color().into()),
+            end: rect.border.color.end().into(),
+            end_color: (rect.border.color.end_color().into()),
+        };
+
+        let border_width = shader_types::BorderWidth {
+            top: rect.border.top_width() * scale_factor,
+            right: rect.border.right_width() * scale_factor,
+            bottom: rect.border.bottom_width() * scale_factor,
+            left: rect.border.left_width() * scale_factor,
+        };
+
+        let dash = rect
+            .border
+            .dash
+            .map(|mut dash| {
+                dash.dash_length *= scale_factor;
+                dash.gap_length *= scale_factor;
+                dash
+            })
+            .unwrap_or_default();
+        let horizontal_gap = get_best_dash_gap(bounds.width(), dash);
+        let vertical_gap = get_best_dash_gap(bounds.height(), dash);
+        let gap_lengths = vec2f(horizontal_gap, vertical_gap);
+
+        let rect_data = shader_types::RectData::new(
+            bounds,
+            background_color,
+            border_color,
+            corner_radius,
+            border_width,
+            0.,
+            0.,
+            dash.dash_length,
+            gap_lengths,
+        );
+        rect_instance_data.push(rect_data);
+    }
+
+    let len = rect_instance_data.len() - start_offset;
+    if len == 0 {
+        // Every rect of the layer draws nothing (`Rect::draws_nothing`).
+        return None;
+    }
+
+    Some(LayerState { start_offset, len })
+}
+
+#[cfg(test)]
+#[path = "rect_tests.rs"]
+mod tests;

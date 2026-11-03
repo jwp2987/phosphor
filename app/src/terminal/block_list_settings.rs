@@ -43,4 +43,15 @@ define_settings_group!(BlockListSettings, settings: [
        toml_path: "appearance.blocks.show_block_dividers",
        description: "Whether to show dividers between terminal blocks.",
    }
+   // #1145: with the shell's own prompt (PS1) the block label (and so the run time) is not
+   // laid out, so the duration is drawn right-aligned on the block's first line instead.
+   show_block_duration_with_shell_prompt: ShowBlockDurationWithShellPrompt {
+       type: bool,
+       default: true,
+       supported_platforms: SupportedPlatforms::ALL,
+       sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+       private: false,
+       toml_path: "appearance.blocks.show_block_duration_with_shell_prompt",
+       description: "Whether to show how long a command ran on its block when the shell's own prompt is used.",
+   }
 ]);

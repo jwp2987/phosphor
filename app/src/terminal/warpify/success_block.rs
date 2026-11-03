@@ -322,8 +322,6 @@ impl Entity for WarpifySuccessBlock {
     type Event = WarpifySuccessBlockEvent;
 }
 
-pub const WARPIFY_SUCCESS_BLOCK_VISIBLE_KEY: &str = "WarpifySuccessBlockVisible";
-
 impl View for WarpifySuccessBlock {
     fn ui_name() -> &'static str {
         "WarpifySuccessBlock"

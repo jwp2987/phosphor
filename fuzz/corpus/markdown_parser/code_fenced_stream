@@ -1,0 +1,31 @@
+```rust
+fn main() {
+    println!("hello");
+}
+```
+
+~~~python
+print("tilde fence")
+~~~
+
+```
+no language
+```
+
+```bash {title="x"}
+echo info string
+```
+
+````md
+```nested
+inner
+```
+````
+
+```mermaid
+graph TD
+A[Start] --> B[Finish]
+```
+
+```unterminated
+this fence never closes

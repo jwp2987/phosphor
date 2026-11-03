@@ -4,7 +4,8 @@ use line_ending::LineEnding;
 use markdown_parser::{
     CodeBlockText, FormattedIndentTextInline, FormattedTable, FormattedTaskList, FormattedText,
     FormattedTextFragment, FormattedTextHeader, FormattedTextLine, FormattedTextStyles,
-    OrderedFormattedIndentTextInline, parse_markdown, parse_markdown_with_gfm_tables,
+    OrderedFormattedIndentTextInline, parse_markdown_with_gfm_tables_without_blockquotes,
+    parse_markdown_without_blockquotes,
 };
 use num_traits::SaturatingSub;
 use pathfinder_color::ColorU;
@@ -28,7 +29,7 @@ use super::{
     text::{
         BlockCount, BlockLineBreakBehavior, BlockType, BufferBlockItem, BufferBlockStyle,
         BufferSummary, BufferText, BufferTextStyle, Bytes, CodeBlockType, IndentBehavior,
-        LineCount, LinkCount, LinkMarker, MarkerDir, StyleSummary, SyntaxColorId, TextStyles,
+        LineCount, LinkCount, LinkMarker, MarkerDir, StyleSummary, TextStyles,
         TextStylesWithMetadata, TextSummary, inline_to_text,
     },
     undo::{NonAtomicType, UndoActionType, UndoArg, UndoStack},
@@ -543,6 +544,11 @@ impl BufferSnapshot {
         Self { content, byte_len }
     }
 
+    /// Length of the snapshot's content in bytes.
+    pub fn byte_len(&self) -> usize {
+        self.byte_len.as_usize()
+    }
+
     /// Returns a `Bytes` iterator positioned at the start of the content,
     /// suitable for reuse across multiple seeks during tree-sitter parsing.
     pub fn bytes(&self) -> Bytes<'_> {
@@ -571,6 +577,10 @@ pub struct Buffer {
     /// The session platform, used as a fallback when inferring line endings from content that
     /// has no line endings (e.g. single-line text).
     session_platform: Option<SessionPlatform>,
+    /// Dropped with the buffer; closing the channel tells the owner of a `Weak` registry entry
+    /// that the buffer is gone (#1478), so it can prune on the drop event instead of a sweep that
+    /// may have run before the drop.
+    drop_notifier: Option<async_channel::Sender<()>>,
 }
 
 impl Default for Buffer {
@@ -594,6 +604,7 @@ impl Default for Buffer {
             version: BufferVersion::new(),
             line_ending_mode: LineEnding::LF,
             session_platform: None,
+            drop_notifier: None,
         }
     }
 }
@@ -642,13 +653,6 @@ impl Buffer {
         self
     }
 
-    pub fn set_embedded_item_conversion(
-        &mut self,
-        embedded_item_conversion: EmbeddedItemConversion,
-    ) {
-        self.embedded_item_conversion = Some(embedded_item_conversion);
-    }
-
     pub fn set_tab_indentation(&mut self, tab_indentation: TabIndentation) {
         self.tab_indentation = tab_indentation;
     }
@@ -656,10 +660,6 @@ impl Buffer {
     /// The line ending mode inferred from the buffer content.
     pub fn line_ending_mode(&self) -> LineEnding {
         self.line_ending_mode
-    }
-
-    pub fn set_line_ending_mode(&mut self, mode: LineEnding) {
-        self.line_ending_mode = mode;
     }
 
     pub fn set_session_platform(&mut self, platform: Option<SessionPlatform>) {
@@ -773,7 +773,13 @@ impl Buffer {
             version: BufferVersion::new(),
             line_ending_mode: LineEnding::LF,
             session_platform: None,
+            drop_notifier: None,
         }
+    }
+
+    /// Holds `notifier` until this buffer is dropped; its receiver then sees the channel close.
+    pub fn set_drop_notifier(&mut self, notifier: async_channel::Sender<()>) {
+        self.drop_notifier = Some(notifier);
     }
 
     pub fn reset_undo_stack(&mut self) {
@@ -847,9 +853,11 @@ impl Buffer {
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         let parse_fn = if warp_core::features::FeatureFlag::MarkdownTables.is_enabled() {
-            parse_markdown_with_gfm_tables
+            parse_markdown_with_gfm_tables_without_blockquotes
         } else {
-            parse_markdown
+            // Quotes stay literal text here: the editor stores text and writes it back, so a `> `
+            // line must survive open and save byte for byte.
+            parse_markdown_without_blockquotes
         };
         let parsed_formatted_text = match parse_fn(markdown) {
             Ok(parsed) => parsed,
@@ -1094,86 +1102,6 @@ impl Buffer {
         }
     }
 
-    /// Return the character offset of the previous block marker of a certain block style. If there is no previous block marker for
-    /// such style, return None.
-    pub fn previous_block_marker_of_type(
-        &self,
-        offset: CharOffset,
-        style: BufferBlockStyle,
-    ) -> Option<CharOffset> {
-        let mut cursor = self.content.cursor::<CharOffset, BufferSummary>();
-
-        let summary = cursor.summary::<BufferSummary>(&offset, SeekBias::Right);
-        let mut target_marker_count = summary.block.block;
-
-        while target_marker_count > BlockCount::zero() {
-            let mut block_cursor = self.content.cursor::<BlockCount, CharOffset>();
-
-            let found = block_cursor.seek(&target_marker_count, SeekBias::Left);
-
-            if !found {
-                return None;
-            }
-
-            match block_cursor.item() {
-                Some(BufferText::BlockMarker { marker_type }) if *marker_type == style => {
-                    return Some(*block_cursor.start());
-                }
-                Some(BufferText::BlockMarker { .. }) | Some(BufferText::BlockItem { .. }) => {
-                    target_marker_count -= 1;
-                }
-                _ => {
-                    debug_assert!(false, "Encountering unexpected buffer text type. Breaking");
-                    return None;
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Return the character offset of the next block marker of a certain block style. If there is no next block marker for
-    /// such style, return None.
-    pub fn next_block_marker_of_type(
-        &self,
-        offset: CharOffset,
-        style: BufferBlockStyle,
-    ) -> Option<CharOffset> {
-        let mut cursor = self.content.cursor::<CharOffset, BufferSummary>();
-
-        let summary = cursor.summary::<BufferSummary>(&offset, SeekBias::Right);
-        let mut target_marker_count = summary.block.block;
-
-        while target_marker_count > BlockCount::zero() {
-            let mut block_cursor = self.content.cursor::<BlockCount, CharOffset>();
-
-            let found = block_cursor.seek(&target_marker_count, SeekBias::Right);
-
-            if !found {
-                return None;
-            }
-
-            match block_cursor.item() {
-                Some(BufferText::BlockMarker { marker_type }) if *marker_type == style => {
-                    return Some(*block_cursor.start());
-                }
-                Some(BufferText::BlockMarker { .. }) | Some(BufferText::BlockItem { .. }) => {
-                    target_marker_count += 1;
-                }
-                None => return None,
-                other => {
-                    debug_assert!(
-                        false,
-                        "Encountering unexpected buffer text type {other:?}. Breaking"
-                    );
-                    return None;
-                }
-            }
-        }
-
-        None
-    }
-
     /// Validates that the buffer is internally consistent, panicking if not.
     pub(crate) fn validate(&self, anchors: &Anchors) {
         validate_content(&self.content);
@@ -1268,22 +1196,6 @@ impl Buffer {
         }
 
         Some(*cursor.start())
-    }
-
-    fn color_count_at_offset(&self, offset: CharOffset) -> Option<SyntaxColorId> {
-        let mut cursor = self.content.cursor::<CharOffset, SyntaxColorId>();
-
-        let summary = cursor.summary::<BufferSummary>(&offset, SeekBias::Right);
-        if !summary.style_summary().text_styles().is_colored() {
-            return None;
-        }
-
-        Some(*cursor.start())
-    }
-
-    pub fn color_at_offset(&self, offset: CharOffset) -> Option<ColorU> {
-        let color_clount = self.color_count_at_offset(offset)?;
-        self.content.color_at_color_count(&color_clount)
     }
 
     /// If the offset is in a link, return the offset of the first character in the link (inclusive).

@@ -20,7 +20,7 @@ if ($env.WARP_PATH_APPEND? | default "" | is-not-empty) {
 # A JSON string literal (quotes included) for any string. nushell's `to json` leaves control
 # characters raw, which is not valid JSON, so they are written as \u00XX here.
 def __warp_jstr [s: string]: nothing -> string {
-    let e = ($s | str replace -a '\' '\\' | str replace -a '"' '\"')
+    let e = ($s | str replace -a '\' '\\' | str replace -a '"' '\"' | str replace -a (char nl) '\u000a')
     if ($e =~ '[\x00-\x1f\x7f]') {
         let digits = ('0123456789abcdef' | split chars)
         let body = ($e | split chars | each {|c|
@@ -46,6 +46,18 @@ def __warp_send [json: string] {
         print -n $"\eP$d($hex)"
         print -n -r 0x[9c]
     }
+}
+
+# Phosphor (#1390, #1391): tells the app the line editor is about to read. nushell has no hook
+# between drawing the prompt and reedline's first read, and reedline measures prompt strings, so
+# nothing printable can ride on the prompt: the marker goes out as the LAST thing __warp_precmd
+# does (pre_prompt runs right before reedline paints the prompt and reads). It carries the seq of
+# the Precmd just sent. reedline keeps an unfinished multi-line command in the same editor
+# (PROMPT_MULTILINE_INDICATOR) and runs no hook for it, so nu has no ContinuationPrompt. `input`
+# and other builtins read without pre_prompt, so a builtin read never sends this. print -n only.
+def __warp_line_editor_marker [] {
+    if ($env.PHOSPHOR_LINE_EDITOR_MARKERS? | default "1") == "0" { return }
+    print -n $"\e]9278;f;{\"hook\": \"LineEditorReading\", \"value\": {\"session_id\": ($env.WARP_SESSION_ID), \"seq\": ($env.__warp_seq? | default 0)}}\u{7}"
 }
 
 # Drops the replies to terminal queries (DA, cursor position, colour) that ended up in the line
@@ -129,6 +141,66 @@ def --wrapped __warp_git [...args: string]: nothing -> string {
     if $r.exit_code == 0 { $r.stdout | str trim } else { "" }
 }
 
+# Phosphor (#1233): finds the branch `git symbolic-ref --short HEAD` would print by reading
+# .git/HEAD, without forking git (that fork ran on every prompt: ~3 ms of a 6 ms hook). Returns
+# {branch, packed}: branch "" outside any repository (git prints nothing there either). Returns
+# null, leaving the answer to git as before, for anything it cannot answer with certainty; the
+# same cases as __warp_git_head_fast in fish.sh: a .git file (worktree, submodule), a bare repo or
+# the .git directory itself, a symlinked .git, a repo owned by someone else (git refuses it),
+# reftable (HEAD is refs/heads/.invalid), a detached HEAD (needs an abbreviated hash), a branch
+# whose short name git would qualify because a ref of the same name exists elsewhere, and any
+# error. The user name (one `id -un`, once, only inside a repository) is for the owner check. The walk starts at the physical path (`path expand` follows symlinks), as git's does.
+def --env __warp_git_probe []: nothing -> any {
+    mut p = ($env.PWD | path expand)
+    mut gd = ""
+    for _ in 1..64 {
+        let g = ($p | path join .git)
+        let t = (if ($g | path exists) { $g | path type | default "" } else { "" })
+        if $t == "dir" { $gd = $g; break }
+        if $t != "" { return null }
+        if (($p | path join HEAD | path exists) and ($p | path join refs | path exists)) { return null }
+        let parent = ($p | path dirname)
+        if $parent == $p { return {branch: "", packed: false} }
+        $p = $parent
+    }
+    if $gd == "" { return null }
+    if ($env.__warp_me? | default "") == "" { $env.__warp_me = (do -i { ^id -un } | default "" | into string | str trim) }
+    let me = $env.__warp_me
+    if $me == "" { return null }
+    let owners = (ls --long --directory $gd $p | get user)
+    if ($owners | any {|u| $u != $me }) { return null }
+    if not (($gd | path join objects | path exists) and ($gd | path join refs | path exists)) { return null }
+    let line = (open --raw ($gd | path join HEAD) | lines | first)
+    if not ($line | str starts-with "ref: refs/heads/") { return null }
+    let branch = ($line | str substring 16..)
+    if $branch == "" or $branch == ".invalid" { return null }
+    if (($gd | path join $branch | path exists) or ($gd | path join refs $branch | path exists) or ($gd | path join refs tags $branch | path exists)) { return null }
+    {branch: $branch, packed: ($gd | path join packed-refs | path exists)}
+}
+
+# The current branch ("" when there is none) and the HEAD name for the Precmd hook. A packed tag
+# of the branch's name cannot be seen without reading all of packed-refs, so git is asked once per
+# directory and branch in a repository that has one.
+def --env __warp_git_info []: nothing -> record {
+    if (which git | is-empty) { return {branch: "", head: ""} }
+    let plain = ($nu.os-info.name != "windows" and $env.GIT_DIR? == null and $env.GIT_WORK_TREE? == null and $env.GIT_CEILING_DIRECTORIES? == null and $env.GIT_DISCOVERY_ACROSS_FILESYSTEM? == null and $env.GIT_NAMESPACE? == null and $env.GIT_COMMON_DIR? == null)
+    if $plain {
+        let r = (try { __warp_git_probe } catch { null })
+        if $r != null {
+            let key = $"($env.PWD)|($r.branch)"
+            if not $r.packed or ($env.__warp_git_checked? | default "") == $key {
+                return {branch: $r.branch, head: $r.branch}
+            }
+            if (__warp_git symbolic-ref --short HEAD) == $r.branch {
+                $env.__warp_git_checked = $key
+                return {branch: $r.branch, head: $r.branch}
+            }
+        }
+    }
+    let branch = (__warp_git symbolic-ref --short HEAD)
+    {branch: $branch, head: (if ($branch | is-empty) { __warp_git rev-parse --short HEAD } else { $branch })}
+}
+
 # The Node.js version, only inside a git repository that holds a package.json, cached per PWD+PATH.
 def --env __warp_node_version []: nothing -> string {
     if ($env.WARP_PROMPT_NODE_VERSION_ENABLED? | default "1") == "0" or (which node | is-empty) { return "" }
@@ -161,6 +233,8 @@ def --env __warp_node_version []: nothing -> string {
 def --env __warp_precmd [] {
     if ($env.__warp_internal? | default false) {
         $env.__warp_internal = false
+        # A key-bound helper (report input, prompt switch) ran and reedline reads again: same seq.
+        __warp_line_editor_marker
         return
     }
     let code = ($env.LAST_EXIT_CODE? | default 0 | into int)
@@ -169,10 +243,13 @@ def --env __warp_precmd [] {
     let next_block_id = $"precmd-($sid)-($n)"
     __warp_send $'{"hook": "CommandFinished", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "session_id": ($sid)}}'
     $env.__warp_block_id = ($n + 1)
+    # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
+    $env.__warp_seq = (($env.__warp_seq? | default 0 | into int) + 1)
 
     if ($env._WARP_GENERATOR_COMMAND? | default "" | is-not-empty) {
         hide-env _WARP_GENERATOR_COMMAND
-        __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": "", "ps1": "", "git_head": "", "git_branch": "", "virtual_env": "", "conda_env": "", "node_version": "", "session_id": ($sid), "is_after_in_band_command": true}}'
+        __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": "", "ps1": "", "git_head": "", "git_branch": "", "virtual_env": "", "conda_env": "", "node_version": "", "session_id": ($sid), "seq": ($env.__warp_seq), "is_after_in_band_command": true}}'
+        __warp_line_editor_marker
         return
     }
 
@@ -188,9 +265,9 @@ def --env __warp_precmd [] {
         $venv = (__warp_jstr ($env.VIRTUAL_ENV? | default ""))
         $conda = (__warp_jstr ($env.CONDA_DEFAULT_ENV? | default ""))
         $node = (__warp_jstr (__warp_node_version))
-        let branch = (__warp_git symbolic-ref --short HEAD)
-        $git_branch = (__warp_jstr $branch)
-        $git_head = (__warp_jstr (if ($branch | is-empty) { __warp_git rev-parse --short HEAD } else { $branch }))
+        let git = (__warp_git_info)
+        $git_branch = (__warp_jstr $git.branch)
+        $git_head = (__warp_jstr $git.head)
     }
 
     __warp_update_prompt_vars
@@ -198,7 +275,8 @@ def --env __warp_precmd [] {
     let ps1_preview = if $honor == "1" { "" } else { __warp_orig_prompt_text | encode hex --lower }
     let ignore_markers = if $honor == "1" { "false" } else { "true" }
     let ps1 = if $honor == "1" { '""' } else { $'"($ps1_preview)"' }
-    __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": ($pwd), "ignore_prompt_markers": ($ignore_markers), "ps1": ($ps1), "rprompt": "", "git_head": ($git_head), "git_branch": ($git_branch), "virtual_env": ($venv), "conda_env": ($conda), "node_version": ($node), "session_id": ($sid)}}'
+    __warp_send $'{"hook": "Precmd", "value": {"exit_code": ($code), "next_block_id": "($next_block_id)", "pwd": ($pwd), "ignore_prompt_markers": ($ignore_markers), "ps1": ($ps1), "rprompt": "", "git_head": ($git_head), "git_branch": ($git_branch), "virtual_env": ($venv), "conda_env": ($conda), "node_version": ($node), "session_id": ($sid), "seq": ($env.__warp_seq)}}'
+    __warp_line_editor_marker
 }
 
 # pre_execution hook.
@@ -206,7 +284,8 @@ def --env __warp_preexec [] {
     let line = (commandline)
     # The commands bound to keys run through executehostcommand; they are not user commands.
     if ($line | str trim | str starts-with "__warp_") { return }
-    __warp_send $'{"hook": "Preexec", "value": {"command": (__warp_jstr $line), "session_id": ($env.WARP_SESSION_ID)}}'
+    $env.__warp_seq = (($env.__warp_seq? | default 0 | into int) + 1)
+    __warp_send $'{"hook": "Preexec", "value": {"command": (__warp_jstr $line), "session_id": ($env.WARP_SESSION_ID), "seq": ($env.__warp_seq)}}'
 }
 
 # In-band generator: runs the POSIX command with bash (or sh), merges stderr into stdout, and
@@ -244,10 +323,12 @@ def __warp_bootstrapped [] {
         if ($rel | is-empty) { "" } else { open --raw $rel | lines | where {|l| $l | str starts-with 'NAME="' } | get 0? | default "" | str replace 'NAME="' '' | str replace '"' '' }
     } else { "" }
     let histfile = if ($env.config.history.file_format? | default "plaintext") == "plaintext" { ($nu.history-path? | default "") } else { "" }
+    # The default history format is sqlite; the app reads that file itself (#1203).
+    let history_sqlite = if ($env.config.history.file_format? | default "plaintext") == "sqlite" { ($nu.history-path? | default "") } else { "" }
     let vi = if ($env.config.edit_mode? | default "emacs") == "vi" { "1" } else { "" }
     let options = if ($env.config.history.ignore_space_prefixed? | default true) { "ignore_space_prefixed" } else { "" }
     let path = ($env.PATH | each {|p| $p | into string } | str join (char esep))
-    __warp_send $'{"hook": "Bootstrapped", "value": {"histfile": (__warp_jstr $histfile), "session_id": ($env.WARP_SESSION_ID), "shell": "nu", "home_dir": (__warp_jstr ($nu.home-dir? | default "")), "path": (__warp_jstr $path), "editor": (__warp_jstr ($env.EDITOR? | default "")), "abbreviations": "", "aliases": (__warp_jstr $aliases), "function_names": (__warp_jstr $functions), "env_var_names": (__warp_jstr $env_names), "builtins": (__warp_jstr $builtins), "keywords": "", "shell_version": (__warp_jstr (version | get version)), "shell_options": (__warp_jstr $options), "vi_mode_enabled": "($vi)", "os_category": "($os_category)", "linux_distribution": (__warp_jstr $distro), "wsl_name": (__warp_jstr ($env.WSL_DISTRO_NAME? | default "")), "shell_path": (__warp_jstr ($nu.current-exe? | default ""))}}'
+    __warp_send $'{"hook": "Bootstrapped", "value": {"histfile": (__warp_jstr $histfile), "history_sqlite": (__warp_jstr $history_sqlite), "session_id": ($env.WARP_SESSION_ID), "shell": "nu", "home_dir": (__warp_jstr ($nu.home-dir? | default "")), "path": (__warp_jstr $path), "editor": (__warp_jstr ($env.EDITOR? | default "")), "abbreviations": "", "aliases": (__warp_jstr $aliases), "function_names": (__warp_jstr $functions), "env_var_names": (__warp_jstr $env_names), "builtins": (__warp_jstr $builtins), "keywords": "", "shell_version": (__warp_jstr (version | get version)), "shell_options": (__warp_jstr $options), "vi_mode_enabled": "($vi)", "os_category": "($os_category)", "linux_distribution": (__warp_jstr $distro), "wsl_name": (__warp_jstr ($env.WSL_DISTRO_NAME? | default "")), "shell_path": (__warp_jstr ($nu.current-exe? | default ""))}}'
 }
 
 # Hooks. Ours is first in pre_prompt so user hooks cannot disturb $env.LAST_EXIT_CODE before the

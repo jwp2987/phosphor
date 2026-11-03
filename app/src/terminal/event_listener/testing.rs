@@ -1,11 +1,11 @@
 use async_channel::Sender;
 use std::sync::Arc;
 
-use super::ChannelEventListener;
+use super::{ChannelEventListener, Wakeup};
 use crate::terminal::event::Event as TerminalEvent;
 
 pub struct ChannelEventListenerBuilder {
-    wakeups_tx: Option<Sender<()>>,
+    wakeups_tx: Option<Sender<Wakeup>>,
     events_tx: Option<Sender<TerminalEvent>>,
     pty_bytes_read_tx: Option<async_broadcast::Sender<Arc<Vec<u8>>>>,
 }
@@ -19,21 +19,13 @@ impl ChannelEventListenerBuilder {
         }
     }
 
-    pub fn with_wakeups_tx(mut self, wakeups_tx: Sender<()>) -> Self {
+    pub fn with_wakeups_tx(mut self, wakeups_tx: Sender<Wakeup>) -> Self {
         self.wakeups_tx = Some(wakeups_tx);
         self
     }
 
     pub fn with_terminal_events_tx(mut self, events_tx: Sender<TerminalEvent>) -> Self {
         self.events_tx = Some(events_tx);
-        self
-    }
-
-    pub fn with_pty_bytes_read_tx(
-        mut self,
-        pty_bytes_read_tx: async_broadcast::Sender<Arc<Vec<u8>>>,
-    ) -> Self {
-        self.pty_bytes_read_tx = Some(pty_bytes_read_tx);
         self
     }
 

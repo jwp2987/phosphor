@@ -157,3 +157,26 @@ fn finish_spawning_local_child_agent_supports_multiple_children_under_one_parent
         });
     });
 }
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn should_upsert_ai_query_writes_streaming_exchange_once_per_status() {
+    use crate::ai::agent::AIAgentExchangeId;
+    use crate::ai::blocklist::AIQueryHistoryOutputStatus::{Completed, Pending};
+
+    let mut persisted = Default::default();
+    let id = AIAgentExchangeId::new();
+    // AppendedExchange always writes.
+    assert!(should_upsert_ai_query(&mut persisted, id, &Pending, 1, false));
+    // Every later delta of the same Pending exchange is identical: skipped.
+    for _ in 0..50 {
+        assert!(!should_upsert_ai_query(&mut persisted, id, &Pending, 1, true));
+    }
+    // A change in the persisted inputs writes again.
+    assert!(should_upsert_ai_query(&mut persisted, id, &Pending, 2, true));
+    // The terminal status is always written, and forgets the entry.
+    assert!(should_upsert_ai_query(&mut persisted, id, &Completed, 2, true));
+    assert!(persisted.is_empty());
+    // A first delta with nothing cached (e.g. restored mid-stream) still writes.
+    assert!(should_upsert_ai_query(&mut persisted, id, &Pending, 2, true));
+}

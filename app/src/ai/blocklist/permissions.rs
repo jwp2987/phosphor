@@ -20,8 +20,8 @@ use warp_core::execution_mode::AppExecutionMode;
 use crate::ai::paths::host_native_absolute_path;
 use crate::terminal::ShellLaunchData;
 
+use super::SessionContext;
 use super::protected_paths::is_protected_write_path;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::TemplatableMCPServerManager;
 
 use anyhow::Result;
@@ -787,16 +787,19 @@ impl BlocklistAIPermissions {
         &self,
         conversation_id: &AIConversationId,
         file_edits: &[FileEdit],
-        shell: &Option<ShellLaunchData>,
-        current_working_directory: &Option<String>,
+        session: &SessionContext,
         terminal_view_id: Option<EntityId>,
         ctx: &AppContext,
     ) -> FileWritePermission {
-        let paths = file_edit_guard_paths(file_edits, shell, current_working_directory);
+        // A `~` that cannot be resolved (remote session, home unknown) would be judged, and
+        // later written, against the wrong host's path. Never auto-apply it (#1288).
+        if file_edits_have_unresolvable_tilde(file_edits, session) {
+            return FileWritePermission::Denied(FileWritePermissionDeniedReason::Inconclusive);
+        }
+        let paths = file_edit_guard_paths_in_session(file_edits, session);
         self.can_write_files(conversation_id, &paths, terminal_view_id, ctx)
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn can_call_mcp_tool(
         &self,
         server_id: Option<&uuid::Uuid>,
@@ -828,7 +831,6 @@ impl BlocklistAIPermissions {
     }
 
     /// Returns whether or not Agent Mode can automatically read the given MCP resource.
-    #[cfg(not(target_family = "wasm"))]
     pub fn can_read_mcp_resource(
         &self,
         server_id: Option<&uuid::Uuid>,
@@ -862,7 +864,6 @@ impl BlocklistAIPermissions {
 
     /// Checks whether the given MCP server (identified by its template UUID) is permitted
     /// to be used based on the current MCP permission setting and allowlist/denylist.
-    #[cfg(not(target_family = "wasm"))]
     fn can_use_mcp_server(
         &self,
         conversation_id: &AIConversationId,
@@ -1360,9 +1361,36 @@ pub(crate) fn file_edit_guard_paths(
     shell: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
 ) -> Vec<PathBuf> {
+    guard_paths_with(file_edits, |path| {
+        host_native_absolute_path(path, shell, current_working_directory)
+    })
+}
+
+/// [`file_edit_guard_paths`] resolved the way the session's writer resolves: on a remote
+/// session `~` is the remote home, so the protected-path guard sees the file the edit really
+/// lands on (#1288).
+pub(crate) fn file_edit_guard_paths_in_session(
+    file_edits: &[FileEdit],
+    session: &SessionContext,
+) -> Vec<PathBuf> {
+    guard_paths_with(file_edits, |path| session.resolve_path(path))
+}
+
+/// Whether any path `file_edits` write starts with a `~` this session cannot resolve.
+pub(crate) fn file_edits_have_unresolvable_tilde(
+    file_edits: &[FileEdit],
+    session: &SessionContext,
+) -> bool {
+    file_edits
+        .iter()
+        .flat_map(|edit| edit.written_paths())
+        .any(|path| session.tilde_unresolvable(path))
+}
+
+fn guard_paths_with(file_edits: &[FileEdit], resolve: impl Fn(&str) -> String) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for path in file_edits.iter().flat_map(|edit| edit.written_paths()) {
-        let resolved = host_native_absolute_path(path, shell, current_working_directory);
+        let resolved = resolve(path);
         if resolved != path {
             paths.push(PathBuf::from(resolved));
         }
@@ -1402,15 +1430,13 @@ fn check_protected_write_paths(paths: &[PathBuf]) -> Option<FileWritePermission>
 /// a protected write needs the user's own click, not an inferred one.
 pub(crate) fn file_edits_touch_protected_path(
     file_edits: &[FileEdit],
-    shell: &Option<ShellLaunchData>,
-    current_working_directory: &Option<String>,
+    session: &SessionContext,
 ) -> bool {
-    check_protected_write_paths(&file_edit_guard_paths(
-        file_edits,
-        shell,
-        current_working_directory,
-    ))
-    .is_some()
+    // An unresolvable `~` could be anything, protected files included: treat it as protected
+    // so only the user's own click approves it (#1288).
+    file_edits_have_unresolvable_tilde(file_edits, session)
+        || check_protected_write_paths(&file_edit_guard_paths_in_session(file_edits, session))
+            .is_some()
 }
 
 impl Entity for BlocklistAIPermissions {

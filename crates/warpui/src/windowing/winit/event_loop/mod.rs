@@ -1,7 +1,12 @@
+mod draw_retry;
 mod key_events;
 
 #[cfg(test)]
 mod drag_drop_tests;
+#[cfg(test)]
+mod focus_modifiers_tests;
+#[cfg(test)]
+mod touch_long_press_tests;
 
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
@@ -9,6 +14,7 @@ use std::mem::ManuallyDrop;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use crate::notification::RequestPermissionsOutcome;
 
+use draw_retry::{is_slow_frame, DrawRetryState, MinimizedRedrawGate, RateLimitedSummary};
 use futures_util::future::LocalBoxFuture;
 use futures_util::stream::AbortHandle;
 use instant::{Duration, Instant};
@@ -24,7 +30,6 @@ use winit::{
     event_loop::{ActiveEventLoop, ControlFlow},
 };
 
-use crate::actions::StandardAction;
 use crate::event::ModifiersState;
 use crate::platform::NotificationInfo;
 use crate::platform::OperatingSystem;
@@ -34,16 +39,11 @@ use crate::platform::{
     TerminationMode, WindowContext,
 };
 use crate::r#async::Timer;
-use crate::rendering::wgpu::renderer;
 use crate::windowing::winit::app::RequestPermissionsCallback;
 use crate::windowing::winit::window::MIN_WINDOW_SIZE;
 use crate::Event::{ClearMarkedText, SetMarkedText, TypedCharacters};
 use crate::{AppContext, WindowId};
 
-#[cfg(target_family = "wasm")]
-use wasm_bindgen::JsCast;
-
-use super::app::ClipboardEvent;
 use super::window::DEFAULT_TITLEBAR_HEIGHT;
 use super::CustomEvent;
 
@@ -51,12 +51,12 @@ use super::CustomEvent;
 use super::windows::{add_network_connection_listener, WindowsNetworkConnectionPoint};
 
 use self::key_events::{
-    convert_keyboard_input_event, text_fallback_event_for_unconverted_key, KeyConversion,
+    convert_keyboard_input_event, text_fallback_event_for_unconverted_key,
+    typed_characters_follow_keydown, KeyConversion,
 };
 
-/// This is the time duration beyond which clicks get treated as separate single clicks instead of
-/// double-click, triple-click, etc.
-const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
+/// At most one WARN summary of transiently skipped frames per this interval.
+const SKIPPED_FRAME_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// The debounce timeout for drag-and-drop files. Multiple DroppedFile events
 /// are received within this time window and then combined into a single DragAndDropFiles event.
@@ -123,6 +123,9 @@ enum TouchPurpose {
     /// A tap that hasn't yet been classified.
     /// Stores (initial touch, click count, start time for long-press detection).
     Tap(Touch, u32, Instant),
+    /// The long-press timer fired while the finger was still down and the context menu has been
+    /// requested; the rest of the touch (moves, release) does nothing more.
+    LongPressed,
     /// Dragging the window via touch in the titlebar region.
     /// Stores the starting touch position (window-relative).
     WindowDrag {
@@ -173,11 +176,21 @@ struct WindowState {
     scroll_velocity: Option<ScrollVelocity>,
     /// Abort handle for momentum scrolling timer. Present only during the momentum phase.
     momentum_scroll_abort: Option<AbortHandle>,
-    /// For touch events, stores whether soft keyboard was requested during LeftMouseDown.
-    /// This is needed because touch keyboard updates are deferred to LeftMouseUp, but the
-    /// UI element only requests the keyboard during LeftMouseDown.
-    #[cfg(target_family = "wasm")]
-    pending_soft_keyboard_request: bool,
+    /// Abort handle for the long-press timer armed at touch-down; cleared when the touch moves
+    /// out of its tap slop, ends or is cancelled.
+    long_press_abort: Option<AbortHandle>,
+    /// Bumped for every touch-down and every touch end, so a long-press event that was already
+    /// in flight when its touch finished is recognised as stale.
+    touch_generation: u64,
+    /// Failure history for frames that could not be drawn; see [`draw_retry`].
+    draw_retry: DrawRetryState,
+    /// When set, a frame was skipped for a transient reason and a redraw must be requested once
+    /// this instant passes. Serviced at the top of [`EventLoop::handle_event`].
+    redraw_retry_at: Option<Instant>,
+    /// A redraw arrived while the app was mutably borrowed; see [`draw_retry::OwedRedraw`].
+    owed_redraw: draw_retry::OwedRedraw,
+    /// Skips redraws while the window is minimized; see [`MinimizedRedrawGate`].
+    minimized_gate: MinimizedRedrawGate,
 }
 
 impl WindowState {
@@ -195,9 +208,28 @@ impl WindowState {
             last_touch_purpose: None,
             scroll_velocity: None,
             momentum_scroll_abort: None,
-            #[cfg(target_family = "wasm")]
-            pending_soft_keyboard_request: false,
+            long_press_abort: None,
+            touch_generation: 0,
+            draw_retry: DrawRetryState::default(),
+            redraw_retry_at: None,
+            owed_redraw: Default::default(),
+            minimized_gate: MinimizedRedrawGate::default(),
         }
+    }
+
+    /// Forgets every held modifier (and the per-side Alt flags) when the window loses or regains
+    /// focus (#1443). A key-up delivered to another window, or dropped across the focus change,
+    /// would otherwise leave Ctrl/Cmd/Alt believed held, turning every following keystroke into a
+    /// chord. After a focus-in the platform sends `ModifiersChanged` with what is really held (a
+    /// key still down comes back), so resetting is never wrong for long. Returns whether anything
+    /// was held, i.e. whether the app must be told the modifiers changed.
+    fn reset_modifiers_for_focus_change(&mut self) -> bool {
+        let was_held =
+            !self.modifiers.is_empty() || self.left_alt_pressed || self.right_alt_pressed;
+        self.modifiers = Default::default();
+        self.left_alt_pressed = false;
+        self.right_alt_pressed = false;
+        was_held
     }
 
     /// Cancels ongoing momentum scroll, clearing both the animation timer and velocity state.
@@ -206,6 +238,14 @@ impl WindowState {
             abort_handle.abort();
         }
         self.scroll_velocity = None;
+    }
+
+    /// Cancels the pending long-press timer, if any, and invalidates its in-flight event.
+    fn cancel_long_press(&mut self) {
+        if let Some(abort_handle) = self.long_press_abort.take() {
+            abort_handle.abort();
+        }
+        self.touch_generation = self.touch_generation.wrapping_add(1);
     }
 
     /// Clears the held-button state, but only if `button` is the one recorded as held.
@@ -226,13 +266,14 @@ impl WindowState {
         }
         let now = Instant::now();
         // Increment the click_count if the button type is the same and the duration is faster than
-        // MULTI_CLICK_INTERVAL.
+        // the OS multi-click interval (`warpui_core::multi_click`).
         let click_count = self
             .last_mouse_button_pressed
             .take()
             .filter(|old_state| {
                 old_state.button_pressed == button
-                    && now.duration_since(old_state.pressed_at) <= MULTI_CLICK_INTERVAL
+                    && now.duration_since(old_state.pressed_at)
+                        <= warpui_core::multi_click::multi_click_interval()
             })
             .map(|old_state| old_state.click_count + 1)
             .unwrap_or(1);
@@ -312,6 +353,9 @@ fn convert_touch_started(
     let click_count = window_state.determine_click_count_and_update_button_state(MouseButton::Left);
     window_state.current_mouse_button_pressed = None;
 
+    // A new touch: any earlier long-press event still in flight is stale.
+    window_state.touch_generation = window_state.touch_generation.wrapping_add(1);
+
     // Store click_count and start time for double-tap and long-press detection.
     window_state.last_touch_purpose = Some(TouchPurpose::Tap(touch, click_count, Instant::now()));
 
@@ -321,6 +365,60 @@ fn convert_touch_started(
         is_first_mouse: false,
         modifiers: from_winit_modifiers_state(window_state.modifiers),
     }))
+}
+
+/// Arms the long-press timer for the touch that just began. The press-and-hold is judged by this
+/// timer firing while the finger is still down (and has not left its tap slop), not by comparing
+/// elapsed time at release.
+fn start_long_press_timer(
+    ui_app: &crate::App,
+    proxy: &EventLoopProxy<CustomEvent>,
+    window_id: winit::window::WindowId,
+    window_state: &mut WindowState,
+) {
+    if let Some(previous) = window_state.long_press_abort.take() {
+        previous.abort();
+    }
+    let generation = window_state.touch_generation;
+    let proxy = proxy.clone();
+    let (future, abort_handle) = futures::future::abortable(async move {
+        Timer::after(LONG_PRESS_DURATION).await;
+        let _ = proxy.send_event(CustomEvent::TouchLongPress {
+            window_id,
+            generation,
+        });
+    });
+    ui_app.read(|ctx| {
+        ctx.foreground_executor()
+            .spawn(async move {
+                let _ = future.await;
+            })
+            .detach();
+    });
+    window_state.long_press_abort = Some(abort_handle);
+}
+
+/// Decides what the long-press timer firing means for the touch it was armed for: the context
+/// menu opens only if that touch is still a pending tap; any other state (the touch moved, ended,
+/// was cancelled, or a newer touch began) means the event is stale.
+fn convert_touch_long_press(
+    window_state: &mut WindowState,
+    generation: u64,
+) -> Option<crate::event::Event> {
+    if window_state.touch_generation != generation
+        || !matches!(window_state.last_touch_purpose, Some(TouchPurpose::Tap(..)))
+    {
+        return None;
+    }
+    window_state.long_press_abort = None;
+    window_state.last_touch_purpose = Some(TouchPurpose::LongPressed);
+    window_state.current_mouse_button_pressed = None;
+    Some(crate::event::Event::RightMouseDown {
+        position: window_state.last_cursor_position.to_vec2f(),
+        cmd: window_state.modifiers.super_key(),
+        shift: window_state.modifiers.shift_key(),
+        click_count: 1,
+    })
 }
 
 /// Handles the `TouchPhase::Moved` phase of a touch event.
@@ -346,6 +444,8 @@ fn convert_touch_moved(
             }
 
             window_state.last_cursor_position = touch.location.to_logical(scale_factor as f64);
+            // Moved out of the tap slop: this is no longer a press-and-hold.
+            window_state.cancel_long_press();
 
             // Double-tap + drag = text selection
             if click_count >= 2 {
@@ -361,7 +461,7 @@ fn convert_touch_moved(
             // Touch in titlebar = window drag
             let initial_pos: winit::dpi::LogicalPosition<f32> =
                 last_touch.location.to_logical(scale_factor as f64);
-            if initial_pos.y < titlebar_height && !cfg!(target_family = "wasm") {
+            if initial_pos.y < titlebar_height {
                 let start_touch = last_touch.location;
                 window_state.last_touch_purpose = Some(TouchPurpose::WindowDrag { start_touch });
                 return Some(ConvertedEvent::MoveWindowBy {
@@ -432,6 +532,8 @@ fn convert_touch_moved(
             current_touch: touch.location,
             start_touch,
         }),
+        // The context menu is already requested; further finger movement does nothing.
+        Some(TouchPurpose::LongPressed) => None,
         None => None,
     }
 }
@@ -446,9 +548,28 @@ fn convert_touch_ended(
     window_state: &mut WindowState,
     scale_factor: f32,
 ) -> Option<ConvertedEvent> {
+    // The touch is over: the long-press timer (if it has not fired) must not fire later.
+    window_state.cancel_long_press();
+
+    // The timer already requested the context menu while the finger was down; the release has
+    // nothing left to do.
+    if matches!(
+        &window_state.last_touch_purpose,
+        Some(TouchPurpose::LongPressed)
+    ) {
+        window_state.last_touch_purpose = None;
+        window_state.last_cursor_position = touch.location.to_logical(scale_factor as f64);
+        window_state.current_mouse_button_pressed = None;
+        return None;
+    }
+
     // Check the purpose but don't clear it yet - we'll clear it later
     // in handle_converted_warpui_event after checking if we need to
     // update the soft keyboard.
+    //
+    // Fallback only: the long-press timer armed at touch-down normally fires first. If the event
+    // loop was too busy to deliver it before the release, the hold is still honoured here (and
+    // the late timer event is stale, so the menu opens exactly once).
     let is_long_press =
         if let Some(TouchPurpose::Tap(_, _, start_time)) = &window_state.last_touch_purpose {
             start_time.elapsed() >= LONG_PRESS_DURATION
@@ -499,6 +620,7 @@ fn convert_touch_cancelled(
     window_state: &mut WindowState,
     scale_factor: f32,
 ) -> Option<ConvertedEvent> {
+    window_state.cancel_long_press();
     window_state.last_touch_purpose.take();
     window_state.last_cursor_position = touch.location.to_logical(scale_factor as f64);
     window_state.current_mouse_button_pressed = None;
@@ -538,9 +660,6 @@ pub(super) struct EventLoop {
     /// the Integrated GPU won't be rendered to and puts it in an idle / partially loaded state that
     /// will eventually trigger these DRI3 `BadMatch` errors when we attempt to render to it.
     downrank_non_nvidia_vulkan_adapters: bool,
-    /// Soft keyboard manager for mobile WASM.
-    #[cfg(target_family = "wasm")]
-    soft_keyboard_manager: Option<std::rc::Rc<crate::platform::wasm::SoftKeyboardManager>>,
     /// The signal that requested the termination request currently driving this
     /// loop's exit, if any -- set only by [`CustomEvent::TerminateFromSignal`],
     /// right before the `window_target.exit()` call it caused, and consumed once by
@@ -550,6 +669,11 @@ pub(super) struct EventLoop {
     /// signal that merely happened to arrive around the same time
     /// (jwp2987/phosphor#726).
     terminating_signal: Option<i32>,
+    /// Rate limits the WARN summary of frames skipped for transient reasons (acquire timeouts,
+    /// occlusion), which can repeat many times a second while a window stays occluded.
+    skipped_frame_log: RateLimitedSummary,
+    /// Same, for frames that drew but took long or waited long for the swapchain.
+    slow_frame_log: RateLimitedSummary,
 }
 
 impl EventLoop {
@@ -571,15 +695,79 @@ impl EventLoop {
             last_preedit: None,
             last_ime_cursor_area: None,
             downrank_non_nvidia_vulkan_adapters: false,
-            #[cfg(target_family = "wasm")]
-            soft_keyboard_manager: None,
             terminating_signal: None,
+            skipped_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
+            slow_frame_log: RateLimitedSummary::new(SKIPPED_FRAME_LOG_INTERVAL),
+        }
+    }
+
+    /// Requests the redraws that skipped frames asked for (see [`draw_retry`]) once their delay
+    /// has passed, and, if any are still pending, makes the loop wake for the earliest one.
+    /// `handle_event` resets the control flow to `Wait` on every event, so this runs right after
+    /// that and re-arms the deadline each time.
+    fn service_redraw_retries(&mut self, window_target: &ActiveEventLoop) {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        let mut next_deadline: Option<Instant> = None;
+        for state in self.state.windows.values_mut() {
+            match state.redraw_retry_at {
+                Some(deadline) if deadline <= now => {
+                    state.redraw_retry_at = None;
+                    due.push(state.window_id);
+                }
+                Some(deadline) => {
+                    next_deadline = Some(next_deadline.map_or(deadline, |d| d.min(deadline)));
+                }
+                None => {}
+            }
+        }
+
+        for window_id in due {
+            let window = self
+                .ui_app
+                .read(|ctx| ctx.windows().platform_window(window_id));
+            if let Some(window) = window {
+                downcast_window(window.as_ref()).request_redraw_keeping_scene();
+            }
+        }
+
+        if let Some(deadline) = next_deadline {
+            window_target.set_control_flow(ControlFlow::WaitUntil(deadline));
+        }
+    }
+
+    /// Pays redraws that were owed because the app was mutably borrowed when winit asked for them
+    /// (UI-R8). `queued_flush` is true when called for the [`CustomEvent::FlushOwedRedraws`] that
+    /// was queued for the debt; otherwise (top of any later event) only a debt with no flush
+    /// queued is paid, which covers a flush that found the borrow still held.
+    fn flush_owed_redraws(&mut self, queued_flush: bool) {
+        let can_draw = self.callbacks.can_borrow_mut();
+        let mut to_request = Vec::new();
+        for state in self.state.windows.values_mut() {
+            let pay = if queued_flush {
+                state.owed_redraw.take_for_flush(can_draw)
+            } else {
+                can_draw && state.owed_redraw.pending() && state.owed_redraw.take_for_flush(true)
+            };
+            if pay {
+                to_request.push(state.window_id);
+            }
+        }
+        for window_id in to_request {
+            let window = self
+                .ui_app
+                .read(|ctx| ctx.windows().platform_window(window_id));
+            if let Some(window) = window {
+                downcast_window(window.as_ref()).request_redraw_keeping_scene();
+            }
         }
     }
 
     /// Handles a single [`winit::event::Event`].
     pub fn handle_event(&mut self, evt: Event<CustomEvent>, window_target: &ActiveEventLoop) {
         window_target.set_control_flow(ControlFlow::Wait);
+        self.service_redraw_retries(window_target);
+        self.flush_owed_redraws(false);
 
         match evt {
             Event::NewEvents(StartCause::Init) => {
@@ -596,6 +784,14 @@ impl EventLoop {
                         log::warn!("Could not set global static for windowing system: {err:?}");
                     }
                 }
+
+                // Start the system color scheme query off-thread before the app initializes,
+                // so reading it never blocks the UI thread on D-Bus.
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                super::linux::prefetch_system_theme(
+                    self.proxy.clone(),
+                    &self.ui_app.background_executor(),
+                );
 
                 if let Some(init_fn) = self.init_fn.take() {
                     self.callbacks.initialize_app(init_fn);
@@ -628,12 +824,6 @@ impl EventLoop {
                     Err(e) => {
                         log::warn!("Creating a network connection listener failed: {e:?}");
                     }
-                }
-
-                // Initialize soft keyboard support on mobile WASM devices.
-                #[cfg(target_family = "wasm")]
-                {
-                    self.initialize_soft_keyboard();
                 }
             }
             Event::UserEvent(CustomEvent::OpenWindow {
@@ -708,6 +898,13 @@ impl EventLoop {
                 {
                     self.terminating_signal = Some(signal);
                     window_target.exit();
+                    // `WM_ENDSESSION(TRUE)` is waiting inside its window procedure for the shutdown
+                    // and winit's `LoopExiting` cannot come until that returns, so run the exit
+                    // sequence here; it ends the process (jwp2987/phosphor#1075).
+                    #[cfg(windows)]
+                    if super::windows::session_end::take_inline_shutdown_request() {
+                        self.run_exit_sequence();
+                    }
                 }
             }
             Event::UserEvent(CustomEvent::UpdateUIApp(callback)) => {
@@ -798,9 +995,6 @@ impl EventLoop {
                     window.stop_requesting_user_attention();
                 });
             }
-            Event::UserEvent(CustomEvent::Clipboard(clipboard_event)) => {
-                self.handle_clipboard_event(clipboard_event);
-            }
             Event::UserEvent(CustomEvent::SetCursorShape(cursor)) => {
                 self.ui_app.update(|ctx| {
                     let Some(window_id) = ctx.windows().active_window() else {
@@ -877,13 +1071,19 @@ impl EventLoop {
             Event::UserEvent(CustomEvent::DragAndDropFilesDebounced { window_id }) => {
                 self.handle_debounced_drag_drop(window_id);
             }
-            #[cfg(target_family = "wasm")]
-            Event::UserEvent(CustomEvent::SoftKeyboardInput(input)) => {
-                self.handle_soft_keyboard_input(input);
+            Event::UserEvent(CustomEvent::FlushOwedRedraws) => {
+                self.flush_owed_redraws(true);
             }
-            #[cfg(target_family = "wasm")]
-            Event::UserEvent(CustomEvent::VisualViewportResized { width, height }) => {
-                self.handle_visual_viewport_resize(width, height);
+            Event::UserEvent(CustomEvent::TouchLongPress {
+                window_id,
+                generation,
+            }) => {
+                let Some(window_state) = self.state.windows.get_mut(&window_id) else {
+                    return;
+                };
+                if let Some(event) = convert_touch_long_press(window_state, generation) {
+                    self.handle_converted_warpui_event(window_id, event);
+                }
             }
             Event::UserEvent(CustomEvent::MomentumScroll { window_id }) => {
                 let Some(window_state) = self.state.windows.get_mut(&window_id) else {
@@ -1008,55 +1208,56 @@ impl EventLoop {
                 }
             }
             Event::WindowEvent { window_id, event } => self.handle_window_event(window_id, event),
-            Event::LoopExiting => {
-                // Hide all open windows such that, if the application takes a
-                // second or two to clean up before exiting, this isn't visible
-                // to the end user.
-                self.ui_app.update(|ctx| {
-                    use crate::SingletonEntity as _;
-                    crate::windowing::WindowManager::handle(ctx).update(
-                        ctx,
-                        |window_manager, _| {
-                            window_manager.hide_app();
-                        },
-                    );
-                });
-
-                #[cfg(windows)]
-                if let Some(network_listener) = self.state.network_connection_listener.take() {
-                    network_listener.clean_up();
-                }
-
-                self.callbacks.app_will_terminate();
-
-                #[cfg(windows)]
-                super::windows::session_end::notify_shutdown_complete();
-
-                // A signal-initiated quit ends the way the signal would have
-                // (jwp2987/phosphor#685); otherwise this returns. Uses this exit's
-                // own attribution (set only by `CustomEvent::TerminateFromSignal`,
-                // right before the `exit()` call that got us here), not
-                // `exit_after_signal_shutdown`'s process-wide latch: a key binding or
-                // menu quit reaches this same handler and must not re-raise a signal
-                // that merely happened to arrive around the same time, rather than
-                // actually being what drove this exit (jwp2987/phosphor#726).
-                #[cfg(not(target_family = "wasm"))]
-                crate::platform::termination_signals::exit_after_signal_shutdown_for(
-                    self.terminating_signal.take(),
-                );
-
-                // On non-web platforms, immediately terminate the process instead of returning
-                // from the event loop.  This matches the behavior of
-                // `[NSApp terminate]` on macOS, and may avoid some at-exit
-                // crashes that produce noise in our crash reporting data.
-                // On web, it's not possible to exit cleanly, so just return from the event loop
-                // instead.
-                #[cfg(not(target_family = "wasm"))]
-                std::process::exit(0);
-            }
+            Event::LoopExiting => self.run_exit_sequence(),
 
             _ => {}
         }
+    }
+
+    /// The app's exit sequence, run on winit's `LoopExiting`: hide the windows, `app_will_terminate`,
+    /// then end the process. On Windows a `WM_ENDSESSION(TRUE)` shutdown runs it earlier, from the
+    /// `TerminateFromSignal` handler, because the process must be done before that message returns
+    /// (jwp2987/phosphor#1075).
+    fn run_exit_sequence(&mut self) {
+        // Hide all open windows such that, if the application takes a
+        // second or two to clean up before exiting, this isn't visible
+        // to the end user.
+        self.ui_app.update(|ctx| {
+            use crate::SingletonEntity as _;
+            crate::windowing::WindowManager::handle(ctx).update(ctx, |window_manager, _| {
+                window_manager.hide_app();
+            });
+        });
+
+        #[cfg(windows)]
+        if let Some(network_listener) = self.state.network_connection_listener.take() {
+            network_listener.clean_up();
+        }
+
+        self.callbacks.app_will_terminate();
+
+        #[cfg(windows)]
+        super::windows::session_end::notify_shutdown_complete();
+
+        // A signal-initiated quit ends the way the signal would have
+        // (jwp2987/phosphor#685); otherwise this returns. Uses this exit's
+        // own attribution (set only by `CustomEvent::TerminateFromSignal`,
+        // right before the `exit()` call that got us here), not
+        // `exit_after_signal_shutdown`'s process-wide latch: a key binding or
+        // menu quit reaches this same handler and must not re-raise a signal
+        // that merely happened to arrive around the same time, rather than
+        // actually being what drove this exit (jwp2987/phosphor#726).
+        crate::platform::termination_signals::exit_after_signal_shutdown_for(
+            self.terminating_signal.take(),
+        );
+
+        // On non-web platforms, immediately terminate the process instead of returning
+        // from the event loop.  This matches the behavior of
+        // `[NSApp terminate]` on macOS, and may avoid some at-exit
+        // crashes that produce noise in our crash reporting data.
+        // On web, it's not possible to exit cleanly, so just return from the event loop
+        // instead.
+        std::process::exit(0);
     }
 
     fn redraw_window(
@@ -1064,6 +1265,7 @@ impl EventLoop {
         window_id: winit::window::WindowId,
         window_target: &ActiveEventLoop,
     ) {
+        let winit_window_id = window_id;
         let Some(window_id) = self
             .state
             .windows
@@ -1073,6 +1275,19 @@ impl EventLoop {
             log::warn!("Redraw requested for a window for which we have no state");
             return;
         };
+
+        // Re-entrant draw (a nested native loop delivered this while the app is mutably
+        // borrowed): drawing now would panic on the RefCell. The draw is owed; queue one flush
+        // that runs once the borrow is released (UI-R8; macOS does the same, #1358).
+        if !self.callbacks.can_borrow_mut() {
+            log::debug!("Redraw requested while the app is mutably borrowed; deferring it");
+            if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+                if state.owed_redraw.note_deferred() {
+                    let _ = self.proxy.send_event(CustomEvent::FlushOwedRedraws);
+                }
+            }
+            return;
+        }
         let Some(window) = self
             .ui_app
             .read(|ctx| ctx.windows().platform_window(window_id))
@@ -1082,6 +1297,15 @@ impl EventLoop {
         };
 
         let window = downcast_window(window.as_ref());
+
+        // A minimized window cannot show a frame: skip the scene build, the texture acquire and
+        // the retry timer. The next event after it is restored requests the redraw again.
+        if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+            if state.minimized_gate.should_skip_redraw(window.is_minimized()) {
+                state.redraw_retry_at = None;
+                return;
+            }
+        }
 
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         if crate::windowing::winit::linux::take_encountered_bad_match_from_dri3_fence_from_fd() {
@@ -1100,6 +1324,7 @@ impl EventLoop {
             })
         }
 
+        let redraw_start = Instant::now();
         let render_result = (|| {
             // Before building the scene, make sure the window size is up-to-date, to ensure
             // that the scene is built at a size that matches the size we're about to render at.
@@ -1115,25 +1340,95 @@ impl EventLoop {
                 .with_mutable_app_context(|ctx| window.render(new_scene, ctx.font_cache()))
         })();
 
-        match render_result {
-            Ok(_) => self.callbacks.for_window(window).frame_drawn(),
-            Err(err) => {
-                log::warn!("Failed to render frame: {err:#}");
-                self.callbacks.for_window(window).frame_failed_to_draw();
+        let redraw_elapsed = redraw_start.elapsed();
+        let acquire_wait = window.last_acquire_wait();
+        // #1225: one timestamped line per frame so a key's `keydown` line and the frame that shows
+        // it can be put on one clock without a profiler (the `Frame drawn` line below has no
+        // millisecond timestamp). Costs one atomic load when input-order logging is off.
+        crate::input_order::log_hop("frame_drawn", || {
+            format!(
+                "total_ms={:.1} acquire_ms={:.1}",
+                redraw_elapsed.as_secs_f64() * 1e3,
+                acquire_wait.map_or(0., |wait| wait.as_secs_f64() * 1e3)
+            )
+        });
+        log::debug!(
+            "Frame {}: total={:.1}ms acquire={:.1}ms",
+            if render_result.is_ok() {
+                "drawn"
+            } else {
+                "failed"
+            },
+            redraw_elapsed.as_secs_f64() * 1e3,
+            acquire_wait.map_or(0., |wait| wait.as_secs_f64() * 1e3),
+        );
+        if is_slow_frame(redraw_elapsed, acquire_wait) {
+            let slowest_ms = redraw_elapsed
+                .max(acquire_wait.unwrap_or_default())
+                .as_secs_f64()
+                * 1e3;
+            if let Some(summary) = self.slow_frame_log.record(Instant::now(), slowest_ms) {
+                log::warn!(
+                    "{} slow frame(s) (redraw >50ms or swapchain acquire >8ms) since the last \
+                     report, slowest {:.1}ms; latest: total={:.1}ms acquire={:.1}ms",
+                    summary.count,
+                    summary.max,
+                    redraw_elapsed.as_secs_f64() * 1e3,
+                    acquire_wait.map_or(0., |wait| wait.as_secs_f64() * 1e3),
+                );
+            }
+        }
 
-                match err {
-                    // If we failed to configure the surface, or...
-                    renderer::Error::SurfaceConfigureError { .. }
-                    // If the device was lost, or...
-                    | renderer::Error::SurfaceError(renderer::GetSurfaceTextureError::Lost)
-                    | renderer::Error::DeviceLost
-                    // If we ran into any other wgpu error -
-                    | renderer::Error::Unknown(_)=> {
-                        log::warn!("Recreating the renderer in an attempt to recover...");
-                        window.drop_renderer(Box::new(window_target.owned_display_handle()));
-                        window.recreate_renderer(self.downrank_non_nvidia_vulkan_adapters);
+        match render_result {
+            Ok(_) => {
+                if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+                    state.draw_retry.on_frame_drawn();
+                    state.owed_redraw.note_draw_ran();
+                }
+                self.callbacks.for_window(window).frame_drawn()
+            }
+            Err(err) => {
+                let decision = match self.state.windows.get_mut(&winit_window_id) {
+                    Some(state) => state.draw_retry.on_frame_error(&err),
+                    None => draw_retry::FrameErrorDecision {
+                        counts_toward_exit: true,
+                        recreate_renderer: false,
+                        retry_after: None,
+                    },
+                };
+
+                if decision.retry_after.is_some() && !decision.counts_toward_exit {
+                    // A skipped frame, not a render fault. `Timeout` costs a full second of
+                    // blocked main thread, so say so, but only once per interval.
+                    log::debug!("Skipping frame: {err:#}");
+                    if let Some(summary) = self.skipped_frame_log.record(Instant::now(), 0.) {
+                        log::warn!(
+                            "Skipped {} frame(s) that could not be drawn (last: {err:#}); \
+                             retrying",
+                            summary.count
+                        );
                     }
-                    _ => {}
+                } else {
+                    log::warn!("Failed to render frame: {err:#}");
+                }
+
+                // Skipped frames are not render faults and must not feed the crash-recovery
+                // exit (three consecutive reports call `process::exit(1)`).
+                if decision.counts_toward_exit {
+                    self.callbacks.for_window(window).frame_failed_to_draw();
+                }
+
+                if decision.recreate_renderer {
+                    log::warn!("Recreating the renderer in an attempt to recover...");
+                    window.drop_renderer(Box::new(window_target.owned_display_handle()));
+                    window.recreate_renderer(self.downrank_non_nvidia_vulkan_adapters);
+                }
+
+                if let Some(delay) = decision.retry_after {
+                    if let Some(state) = self.state.windows.get_mut(&winit_window_id) {
+                        state.redraw_retry_at = Some(Instant::now() + delay);
+                    }
+                    self.service_redraw_retries(window_target);
                 }
             }
         }
@@ -1153,6 +1448,13 @@ impl EventLoop {
         else {
             return;
         };
+
+        if window_state
+            .minimized_gate
+            .redraw_due_on_event(downcast_window(window.as_ref()).is_minimized())
+        {
+            downcast_window(window.as_ref()).request_redraw_keeping_scene();
+        }
 
         match event {
             ConvertedEvent::Event(event) => {
@@ -1181,14 +1483,21 @@ impl EventLoop {
                 // that include the cmd key because they are assumed to be
                 // intended as OS-level or application-level shortcuts. This matches the behavior
                 // on macOS.)
-                let cmd_pressed = match &event {
-                    crate::event::Event::KeyDown { keystroke, .. } => keystroke.cmd,
-                    _ => false,
+                let (cmd_pressed, ctrl_pressed, alt_pressed) = match &event {
+                    crate::event::Event::KeyDown { keystroke, .. } => {
+                        (keystroke.cmd, keystroke.ctrl, keystroke.alt)
+                    }
+                    _ => (false, false, false),
                 };
 
                 let mut window_callbacks = self.callbacks.for_window(window.as_ref());
                 let result = window_callbacks.dispatch_event(event);
-                if !result.handled && !cmd_pressed {
+                if typed_characters_follow_keydown(
+                    result.handled,
+                    cmd_pressed,
+                    ctrl_pressed,
+                    alt_pressed,
+                ) {
                     if let Some(chars) = chars {
                         window_callbacks.dispatch_event(TypedCharacters { chars });
                     }
@@ -1336,7 +1645,13 @@ impl EventLoop {
             },
             // Handle and convert touch events into mouse events.
             WindowEvent::Touch(touch) => match touch.phase {
-                TouchPhase::Started => convert_touch_started(touch, window_state, scale_factor),
+                TouchPhase::Started => {
+                    let converted = convert_touch_started(touch, window_state, scale_factor);
+                    if converted.is_some() {
+                        start_long_press_timer(&self.ui_app, &self.proxy, window_id, window_state);
+                    }
+                    converted
+                }
                 TouchPhase::Moved => {
                     let titlebar_height = self
                         .ui_app
@@ -1423,21 +1738,13 @@ impl EventLoop {
             }
             WindowEvent::Resized(_) => Some(ConvertedEvent::Resize),
             WindowEvent::Focused(is_focused) => {
-                // On mobile WASM, ignore focus-out events. The soft keyboard's hidden input
-                // causes spurious focus events, and mobile doesn't have the concept of
-                // "unfocused windows" anyway - you're either in the app or switched away entirely.
-                #[cfg(target_family = "wasm")]
-                if !is_focused && crate::platform::wasm::is_mobile_device() {
-                    return None;
-                }
-
                 // Clear tracked per-side Alt state when we lose focus so that a release
                 // event dropped while another window had focus can't leave us believing a
                 // side is still held.
-                if !is_focused {
-                    window_state.left_alt_pressed = false;
-                    window_state.right_alt_pressed = false;
-                }
+                // The same for every modifier (#1443), on loss and on regain: the held state
+                // may have changed while another window had the keyboard. The app is told when
+                // something was held so nothing keeps showing a held modifier.
+                let modifiers_reset = window_state.reset_modifiers_for_focus_change();
 
                 // On the next tick of the event loop, notify the ui_app that focus has
                 // transferred, but only if there isn't already one of these
@@ -1452,7 +1759,13 @@ impl EventLoop {
                 } else {
                     self.state.pending_active_window_change = Some(ActiveWindowChange::FocusOut);
                 }
-                None
+                modifiers_reset.then(|| {
+                    ConvertedEvent::Event(crate::event::Event::ModifierStateChanged {
+                        mouse_position: window_state.last_cursor_position.to_vec2f(),
+                        modifiers: from_winit_modifiers_state(window_state.modifiers),
+                        key_code: None,
+                    })
+                })
             }
             WindowEvent::DroppedFile(path_buf) => {
                 let Some(path) = path_buf.as_os_str().to_str() else {
@@ -1519,12 +1832,6 @@ impl EventLoop {
         self.ui_app.update(|ctx| {
             ctx.background_executor()
                 .spawn(async move {
-                    #[cfg(target_family = "wasm")]
-                    crate::windowing::winit::notifications::request_notification_permissions(
-                        callback, proxy,
-                    )
-                    .await;
-
                     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                     {
                         // On Linux, there is no concept of requesting notification permissions. This
@@ -1784,9 +2091,8 @@ impl EventLoop {
                 ..
             } = event
             {
-                // The WASM "window" does not support dragging or maximization.
                 let titlebar_height = winit_window.titlebar_height();
-                if position.y() < titlebar_height && !cfg!(target_family = "wasm") {
+                if position.y() < titlebar_height {
                     // Double-clicking the titlebar does maximize/restore.
                     if click_count >= 2 {
                         window.toggle_maximized();
@@ -1806,49 +2112,6 @@ impl EventLoop {
                     }
                 }
             }
-        }
-
-        // On mobile WASM, update soft keyboard state based on touch/click events.
-        // This must happen synchronously within the touch event handler (user gesture context)
-        // for the browser to allow focusing the hidden input element.
-        //
-        // For touch events, we defer keyboard updates until LeftMouseUp to avoid showing
-        // the keyboard during drags/scrolls (which start with LeftMouseDown but later get
-        // reclassified as scroll gestures). We only trigger the keyboard if the touch purpose
-        // is still Tap (meaning it was never reclassified to Scroll, Select, or WindowDrag).
-        #[cfg(target_family = "wasm")]
-        {
-            // First, check what kind of event we have without holding a mutable borrow.
-            let touch_info = self.state.windows.get(&window_id).and_then(|ws| {
-                ws.last_touch_purpose.as_ref().map(|purpose| {
-                    // Check if this is still a tap (not a scroll/drag/select)
-                    matches!(purpose, TouchPurpose::Tap(..))
-                })
-            });
-
-            match (&event, touch_info) {
-                // Regular mouse click (not touch) - update keyboard immediately.
-                (crate::event::Event::LeftMouseDown { .. }, None) => {
-                    self.update_soft_keyboard_state(dispatch_result.soft_keyboard_requested);
-                }
-                // Touch LeftMouseDown - store keyboard request for later use on LeftMouseUp.
-                (crate::event::Event::LeftMouseDown { .. }, Some(_)) => {
-                    if let Some(ws) = self.state.windows.get_mut(&window_id) {
-                        ws.pending_soft_keyboard_request = dispatch_result.soft_keyboard_requested;
-                    }
-                }
-                // Touch tap completed and purpose is still Tap - use stored keyboard request.
-                (crate::event::Event::LeftMouseUp { .. }, Some(true)) => {
-                    let should_show = self
-                        .state
-                        .windows
-                        .get(&window_id)
-                        .map(|ws| ws.pending_soft_keyboard_request)
-                        .unwrap_or(false);
-                    self.update_soft_keyboard_state(should_show);
-                }
-                _ => {}
-            };
         }
 
         // On LeftMouseUp: clear touch state and start momentum scrolling if applicable.
@@ -1890,27 +2153,6 @@ impl EventLoop {
                 if let Some(ws) = self.state.windows.get_mut(&window_id) {
                     ws.momentum_scroll_abort = Some(abort_handle);
                 }
-            }
-        }
-    }
-
-    fn handle_clipboard_event(&mut self, clipboard_event: ClipboardEvent) {
-        let Some(active_window_id) = self.ui_app.read(|ctx| ctx.windows().active_window()) else {
-            return;
-        };
-
-        match clipboard_event {
-            #[allow(unused_variables)]
-            ClipboardEvent::Paste(content) => {
-                cfg_if::cfg_if! {
-                    if #[cfg(target_family = "wasm")] {
-                        self.ui_app.update(|ctx| {
-                            ctx.clipboard().save(content);
-                        })
-                    }
-                }
-                self.ui_app
-                    .dispatch_standard_action(active_window_id, StandardAction::Paste);
             }
         }
     }
@@ -2042,200 +2284,6 @@ impl EventLoop {
                 winit_window.recreate_renderer(self.downrank_non_nvidia_vulkan_adapters);
             }
         });
-    }
-
-    /// Initializes the soft keyboard manager on mobile WASM devices.
-    ///
-    /// This creates the hidden input element that triggers the soft keyboard
-    /// when focused. The manager is only created on mobile devices.
-    #[cfg(target_family = "wasm")]
-    fn initialize_soft_keyboard(&mut self) {
-        use crate::platform::wasm::{is_mobile_device, SoftKeyboardInput, SoftKeyboardManager};
-
-        if !is_mobile_device() {
-            log::info!("Not a mobile device, skipping soft keyboard initialization");
-            return;
-        }
-
-        log::info!("Initializing soft keyboard for mobile WASM");
-
-        // Create a callback that handles soft keyboard input events.
-        // These are forwarded to the event loop via CustomEvent, where they
-        // will be dispatched to the active window as TypedCharacters/IME events.
-        let proxy = self.proxy.clone();
-        let on_input = Box::new(move |input: SoftKeyboardInput| {
-            // Never `{:?}` the input here: `SoftKeyboardInput::TextInserted` holds the
-            // user's typed text verbatim, and this line runs on the *success* path, so
-            // `{:?}` published every keystroke on a mobile WASM session at debug level.
-            // `log_shape()` keeps the variant and the payload length, which is what the
-            // diagnostic was actually for.
-            log::debug!(
-                "Soft keyboard callback received input: {}",
-                input.log_shape()
-            );
-            if proxy
-                .send_event(CustomEvent::SoftKeyboardInput(input))
-                .is_err()
-            {
-                // `EventLoopClosed<T>`'s `Debug` is derived over the undelivered event,
-                // so `{:?}` on it re-published the same typed text at error level. Its
-                // `Display` is the static "Tried to wake up a closed `EventLoop`" -- the
-                // failure carries no information beyond that, so state it directly and
-                // never name the payload at all.
-                log::error!("Failed to send SoftKeyboardInput event: the event loop is closed");
-            }
-        });
-
-        match SoftKeyboardManager::new(on_input) {
-            Ok(manager) => {
-                log::info!("Soft keyboard manager initialized successfully");
-                self.soft_keyboard_manager = Some(manager);
-            }
-            Err(err) => {
-                log::error!("Failed to initialize soft keyboard manager: {:?}", err);
-            }
-        }
-    }
-
-    /// Updates the soft keyboard visibility based on the dispatch result.
-    ///
-    /// This is called after processing touch events, while still in user gesture context.
-    /// Since everything renders to a canvas, the browser can't detect taps "outside" the
-    /// keyboard input, so we must explicitly show/hide based on what the app requested.
-    #[cfg(target_family = "wasm")]
-    fn update_soft_keyboard_state(&mut self, requested: bool) {
-        let Some(manager) = &self.soft_keyboard_manager else {
-            return;
-        };
-
-        if requested {
-            log::debug!("App requested soft keyboard, showing it");
-            manager.show_keyboard();
-        } else {
-            log::debug!("App did not request soft keyboard, hiding it");
-            manager.hide_keyboard();
-        }
-    }
-
-    /// Attempts to refocus the main canvas element.
-    ///
-    /// This is needed to restore app interactivity after the soft keyboard is dismissed,
-    /// particularly on iOS Safari which can leave the app in a "blurred" state.
-    ///
-    /// We defer the focus to the next frame using setTimeout(0) because calling focus()
-    /// synchronously during event processing may not work reliably on iOS Safari.
-    #[cfg(target_family = "wasm")]
-    fn refocus_canvas() {
-        use wasm_bindgen::{prelude::Closure, JsCast};
-
-        // Defer focus to next frame to ensure we're outside the current event processing.
-        let callback = Closure::once(Box::new(|| {
-            if let Some(canvas) = gloo::utils::document()
-                .query_selector("canvas")
-                .ok()
-                .flatten()
-            {
-                if let Ok(html_element) = canvas.dyn_into::<web_sys::HtmlElement>() {
-                    let _ = html_element.focus();
-                }
-            }
-        }) as Box<dyn FnOnce()>);
-
-        let _ = gloo::utils::window().set_timeout_with_callback(callback.as_ref().unchecked_ref());
-        // Prevent the closure from being dropped immediately
-        callback.forget();
-    }
-
-    /// Handles input events from the soft keyboard on mobile WASM.
-    ///
-    /// Converts `SoftKeyboardInput` events into warpui `Event`s and dispatches
-    /// them to the active window, similar to how `handle_ime_event` works.
-    #[cfg(target_family = "wasm")]
-    fn handle_soft_keyboard_input(&mut self, input: crate::platform::wasm::SoftKeyboardInput) {
-        use crate::platform::wasm::SoftKeyboardInput;
-
-        // On WASM, get the first (and typically only) window if there's no "active" window
-        let window_id = self.ui_app.read(|ctx| {
-            ctx.windows()
-                .active_window()
-                .or_else(|| ctx.window_ids().next())
-        });
-
-        let Some(window_id) = window_id else {
-            log::debug!("No window for soft keyboard input");
-            return;
-        };
-        let Some(window) = self
-            .ui_app
-            .read(|ctx| ctx.windows().platform_window(window_id))
-        else {
-            log::debug!("Could not get platform window for soft keyboard input");
-            return;
-        };
-
-        let mut window_callbacks = self.callbacks.for_window(window.as_ref());
-
-        match input {
-            SoftKeyboardInput::TextInserted(text) => {
-                window_callbacks.dispatch_event(TypedCharacters { chars: text });
-            }
-            SoftKeyboardInput::Backspace => {
-                window_callbacks.dispatch_event(crate::Event::KeyDown {
-                    keystroke: crate::keymap::Keystroke {
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                        cmd: false,
-                        meta: false,
-                        key: "backspace".to_string(),
-                    },
-                    chars: String::new(),
-                    details: crate::event::KeyEventDetails::default(),
-                    is_composing: false,
-                });
-            }
-            SoftKeyboardInput::KeyboardDismissed => {
-                // The keyboard was dismissed (user tapped elsewhere or pressed "Done").
-                // Refocus the canvas to restore interactivity.
-                log::debug!("Soft keyboard was dismissed, refocusing canvas");
-                Self::refocus_canvas();
-            }
-            SoftKeyboardInput::KeyDown(key) => {
-                // Map special key names to their control characters (e.g., Enter → "\r")
-                // so the terminal's key_down handler can process them.
-                let chars = match key.to_lowercase().as_str() {
-                    "enter" => "\r".to_string(),
-                    _ => String::new(),
-                };
-                window_callbacks.dispatch_event(crate::Event::KeyDown {
-                    keystroke: crate::keymap::Keystroke {
-                        ctrl: false,
-                        alt: false,
-                        shift: false,
-                        cmd: false,
-                        meta: false,
-                        key: key.to_lowercase(),
-                    },
-                    chars,
-                    details: crate::event::KeyEventDetails::default(),
-                    is_composing: false,
-                });
-            }
-        }
-    }
-
-    /// Resizes container when visual viewport changes (e.g., soft keyboard appears).
-    #[cfg(target_family = "wasm")]
-    fn handle_visual_viewport_resize(&mut self, _width: f32, height: f32) {
-        log::debug!("Visual viewport resized, height = {}px", height);
-
-        if let Some(container) = gloo::utils::document().get_element_by_id("wasm-container") {
-            if let Some(html_element) = container.dyn_ref::<web_sys::HtmlElement>() {
-                let _ = html_element
-                    .style()
-                    .set_property("height", &format!("{}px", height));
-            }
-        }
     }
 }
 

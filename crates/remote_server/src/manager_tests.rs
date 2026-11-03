@@ -402,3 +402,499 @@ fn deregister_after_shell_exit_leaves_the_master_to_the_wrapper() {
         );
     });
 }
+
+// ---------------------------------------------------------------------------
+// run_binary_check_probes: setup probes overlap (#1136)
+// ---------------------------------------------------------------------------
+
+mod binary_check_probes {
+    use std::pin::Pin;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use futures::channel::oneshot;
+
+    use crate::setup::{PreinstallStatus, RemoteArch, RemoteLibc};
+
+    use super::*;
+
+    type Fut<T> = Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+    /// A transport whose probes resolve immediately, except that `detect_platform` can be held
+    /// back until `run_preinstall_check` has started.
+    #[derive(Debug)]
+    struct FakeTransport {
+        platform: Result<RemotePlatform, String>,
+        preinstall: Result<PreinstallCheckResult, String>,
+        preinstall_started_tx: Mutex<Option<oneshot::Sender<()>>>,
+        detect_gate_rx: Mutex<Option<oneshot::Receiver<()>>>,
+        preinstall_gate_rx: Mutex<Option<oneshot::Receiver<()>>>,
+        preinstall_calls: AtomicUsize,
+    }
+
+    impl FakeTransport {
+        fn new(
+            platform: Result<RemotePlatform, String>,
+            preinstall: Result<PreinstallCheckResult, String>,
+        ) -> Self {
+            Self {
+                platform,
+                preinstall,
+                preinstall_started_tx: Mutex::new(None),
+                detect_gate_rx: Mutex::new(None),
+                preinstall_gate_rx: Mutex::new(None),
+                preinstall_calls: AtomicUsize::new(0),
+            }
+        }
+
+        /// `detect_platform` will not resolve until `run_preinstall_check` has been polled.
+        fn gate_detect_on_preinstall(self) -> Self {
+            let (tx, rx) = oneshot::channel();
+            *self.preinstall_started_tx.lock().unwrap() = Some(tx);
+            *self.detect_gate_rx.lock().unwrap() = Some(rx);
+            self
+        }
+    }
+
+    impl RemoteTransport for FakeTransport {
+        fn detect_platform(&self) -> Fut<Result<RemotePlatform, String>> {
+            let gate = self.detect_gate_rx.lock().unwrap().take();
+            let platform = self.platform.clone();
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+                platform
+            })
+        }
+
+        fn run_preinstall_check(&self) -> Fut<Result<PreinstallCheckResult, String>> {
+            self.preinstall_calls.fetch_add(1, Ordering::SeqCst);
+            let started = self.preinstall_started_tx.lock().unwrap().take();
+            let gate = self.preinstall_gate_rx.lock().unwrap().take();
+            let result = self.preinstall.clone();
+            Box::pin(async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+                result
+            })
+        }
+
+        fn check_binary(&self) -> Fut<Result<bool, String>> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn check_has_old_binary(&self) -> Fut<anyhow::Result<bool>> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn install_binary(&self) -> Fut<Result<(), String>> {
+            Box::pin(async { Err("unused".to_string()) })
+        }
+
+        fn connect(
+            &self,
+            _executor: Arc<warpui::r#async::executor::Background>,
+        ) -> Fut<anyhow::Result<Connection>> {
+            Box::pin(async { Err(anyhow::anyhow!("unused")) })
+        }
+
+        fn remove_remote_server_binary(&self) -> Fut<anyhow::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn platform(os: RemoteOs) -> RemotePlatform {
+        RemotePlatform {
+            os,
+            arch: RemoteArch::X86_64,
+        }
+    }
+
+    fn supported() -> PreinstallCheckResult {
+        PreinstallCheckResult {
+            status: PreinstallStatus::Supported,
+            libc: RemoteLibc::Unknown,
+            raw: "status=supported".to_string(),
+        }
+    }
+
+    /// Runs the probes on a helper thread so that a regression to serial probing (which can
+    /// never finish with a gated transport) fails the test instead of hanging it.
+    fn run(transport: FakeTransport) -> (BinaryCheckProbes, Arc<FakeTransport>) {
+        let transport = Arc::new(transport);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let for_thread = transport.clone();
+        std::thread::spawn(move || {
+            let probes = futures::executor::block_on(run_binary_check_probes(
+                &*for_thread,
+                SessionId::from(1u64),
+            ));
+            let _ = tx.send(probes);
+        });
+        let probes = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("setup probes did not run concurrently");
+        (probes, transport)
+    }
+
+    #[test]
+    fn preinstall_check_starts_without_waiting_for_platform_detection() {
+        // Fails on the old code: `run_preinstall_check` was only called after `detect_platform`
+        // resolved, but detection here resolves only once preinstall has started.
+        let transport = FakeTransport::new(Ok(platform(RemoteOs::Linux)), Ok(supported()))
+            .gate_detect_on_preinstall();
+        let (probes, _) = run(transport);
+        assert_eq!(probes.platform, Some(platform(RemoteOs::Linux)));
+        assert_eq!(probes.preinstall, Some(supported()));
+        assert_eq!(probes.check_result, Ok(true));
+        assert!(!probes.has_old_binary);
+    }
+
+    #[test]
+    fn present_binary_is_reported_before_the_slower_probes_finish() {
+        // #1172: the preinstall probe here resolves only once the early signal has been
+        // received, so the signal must not wait for the other probes. On the old code the
+        // check result was only available after all four probes joined and this never completes.
+        let transport = FakeTransport::new(Ok(platform(RemoteOs::Linux)), Ok(supported()));
+        let (release_tx, release_rx) = oneshot::channel();
+        *transport.preinstall_gate_rx.lock().unwrap() = Some(release_rx);
+        let transport = Arc::new(transport);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let for_thread = transport.clone();
+        std::thread::spawn(move || {
+            let (early_tx, early_rx) = oneshot::channel();
+            let probes = futures::executor::block_on(async {
+                futures::join!(
+                    run_binary_check_probes_staged(
+                        &*for_thread,
+                        SessionId::from(1u64),
+                        Some(early_tx)
+                    ),
+                    async {
+                        let early = early_rx.await.is_ok();
+                        let _ = release_tx.send(());
+                        early
+                    },
+                )
+            });
+            let _ = tx.send(probes);
+        });
+        let (probes, early) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the early signal waited for the slowest probe");
+        assert!(early);
+        assert_eq!(probes.check_result, Ok(true));
+        assert_eq!(probes.preinstall, Some(supported()));
+    }
+
+    #[test]
+    fn preinstall_result_is_dropped_for_non_linux_hosts() {
+        let transport = FakeTransport::new(Ok(platform(RemoteOs::MacOs)), Ok(supported()));
+        let (probes, transport) = run(transport);
+        assert_eq!(probes.platform, Some(platform(RemoteOs::MacOs)));
+        assert_eq!(probes.preinstall, None);
+        // Started in parallel with everything else, but its answer is ignored.
+        assert_eq!(transport.preinstall_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn preinstall_result_is_dropped_when_platform_detection_fails() {
+        let transport = FakeTransport::new(Err("uname failed".to_string()), Ok(supported()));
+        let (probes, _) = run(transport);
+        assert_eq!(probes.platform, None);
+        assert_eq!(probes.preinstall, None);
+    }
+
+    #[test]
+    fn preinstall_failure_on_linux_is_inconclusive() {
+        let transport = FakeTransport::new(
+            Ok(platform(RemoteOs::Linux)),
+            Err("ssh timed out".to_string()),
+        );
+        let (probes, _) = run(transport);
+        assert_eq!(probes.platform, Some(platform(RemoteOs::Linux)));
+        assert_eq!(probes.preinstall, None);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// classify_proxy_exit / bound_reconnect_attempt (#1171)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn proxy_death_with_a_live_control_master_is_not_a_user_exit() {
+    // The proxy was killed (exit status seen within the 200 ms wait) but the
+    // ssh ControlPath socket is still there: the user is still on the box.
+    // Old code keyed on `exit_status.is_some()` alone and said "user exited".
+    assert_eq!(classify_proxy_exit(Some(true), true), ProxyExit::ProxyOnly);
+    assert_eq!(classify_proxy_exit(Some(true), false), ProxyExit::ProxyOnly);
+}
+
+#[test]
+fn a_gone_control_socket_means_the_user_exited() {
+    assert_eq!(
+        classify_proxy_exit(Some(false), true),
+        ProxyExit::UserExited
+    );
+    assert_eq!(
+        classify_proxy_exit(Some(false), false),
+        ProxyExit::UserExited
+    );
+}
+
+#[test]
+fn without_a_control_master_the_old_exit_status_heuristic_applies() {
+    assert_eq!(classify_proxy_exit(None, true), ProxyExit::UserExited);
+    assert_eq!(classify_proxy_exit(None, false), ProxyExit::ProxyOnly);
+}
+
+#[test]
+fn a_hung_reconnect_attempt_times_out_into_an_initialize_error() {
+    // A short injected timeout stands in for RECONNECT_ATTEMPT_TIMEOUT; the
+    // future never resolves, so only the outer bound can end it.
+    let started = std::time::Instant::now();
+    let result: Result<(), ConnectAndHandshakeError> = futures::executor::block_on(
+        bound_reconnect_attempt(futures::future::pending(), Duration::from_millis(50)),
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    match result {
+        Err(ConnectAndHandshakeError::Initialize(e)) => {
+            assert!(e.to_string().contains("timed out"), "{e}")
+        }
+        _ => panic!("expected a timeout error"),
+    }
+}
+
+#[test]
+fn a_reconnect_attempt_that_finishes_in_time_is_passed_through() {
+    let ok: Result<u32, ConnectAndHandshakeError> = futures::executor::block_on(
+        bound_reconnect_attempt(async { Ok(7) }, Duration::from_secs(5)),
+    );
+    assert!(matches!(ok, Ok(7)));
+    let err: Result<u32, ConnectAndHandshakeError> =
+        futures::executor::block_on(bound_reconnect_attempt(
+            async { Err(ConnectAndHandshakeError::Connect(anyhow::anyhow!("boom"))) },
+            Duration::from_secs(5),
+        ));
+    assert!(matches!(err, Err(ConnectAndHandshakeError::Connect(_))));
+}
+
+/// #1171: a reconnect attempt invalidates the previous stream's generation, so the end handler of
+/// a stream left behind by a timed-out attempt (which compares its captured generation with this
+/// map) no longer marks the session disconnected over `Reconnecting`.
+/// Old code: no generation existed; the stale end handler always called `mark_session_disconnected`.
+/// Not compiled/run when written.
+#[test]
+fn a_new_connection_attempt_invalidates_the_previous_streams_generation() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(7u64);
+        manager.update(&mut app, |manager, _ctx| {
+            let stale = manager.bump_connection_generation(session_id);
+            assert_eq!(manager.connection_generation.get(&session_id), Some(&stale));
+            let fresh = manager.bump_connection_generation(session_id);
+            assert_ne!(stale, fresh);
+            assert_ne!(manager.connection_generation.get(&session_id), Some(&stale));
+            assert_eq!(manager.connection_generation.get(&session_id), Some(&fresh));
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// consecutive_short_lived_connections (#1250)
+// ---------------------------------------------------------------------------
+
+/// A daemon that dies right after each handshake is reconnected to at most
+/// `MAX_SHORT_LIVED_CONNECTIONS` times; one connection that stays up resets the count, and a
+/// disconnect from a session that never reached `Connected` counts as nothing.
+#[test]
+fn short_lived_connections_count_up_and_a_stable_one_resets() {
+    let short = Some(STABLE_CONNECTION_AFTER / 2);
+    let mut count = 0;
+    for expected in 1..=MAX_SHORT_LIVED_CONNECTIONS {
+        count = consecutive_short_lived_connections(count, short);
+        assert_eq!(count, expected);
+    }
+    assert!(count >= MAX_SHORT_LIVED_CONNECTIONS);
+    assert_eq!(
+        consecutive_short_lived_connections(count, Some(STABLE_CONNECTION_AFTER)),
+        0
+    );
+    assert_eq!(consecutive_short_lived_connections(2, None), 0);
+    assert_eq!(
+        consecutive_short_lived_connections(u32::MAX, short),
+        u32::MAX
+    );
+}
+
+/// #1266: a speculative connect is identified by its attempt id. Cancelling it drops the
+/// connection it had started (the proxy child goes with the state) and makes a late result
+/// of that attempt inert, so a probe-driven connect started afterwards is never clobbered.
+#[test]
+fn a_cancelled_speculative_connect_is_dropped_and_its_late_result_is_inert() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(9u64);
+        let other = SessionId::from(10u64);
+        manager.update(&mut app, |manager, _ctx| {
+            manager.speculative_attempts.insert(session_id, 1);
+            manager
+                .sessions
+                .insert(session_id, RemoteSessionState::Connecting);
+            assert!(manager.has_speculative_connect(session_id));
+            assert!(!manager.has_speculative_connect(other));
+
+            assert!(manager.cancel_speculative_connect(session_id));
+            assert!(!manager.has_speculative_connect(session_id));
+            assert!(!manager.sessions.contains_key(&session_id));
+            // Nothing to cancel the second time.
+            assert!(!manager.cancel_speculative_connect(session_id));
+
+            // A probe-driven connect takes the session over; the cancelled attempt's id no
+            // longer matches, so `run_connect_and_handshake` refuses to install for it.
+            manager
+                .sessions
+                .insert(session_id, RemoteSessionState::Connecting);
+            assert_ne!(manager.speculative_attempts.get(&session_id), Some(&1));
+        });
+    });
+}
+
+/// #1266: cancelling never touches a session that already connected (the attempt succeeded and
+/// was promoted by `mark_session_connected`); only the attempt bookkeeping goes.
+#[test]
+fn cancelling_after_a_speculative_success_keeps_the_connection() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(11u64);
+        manager.update(&mut app, |manager, _ctx| {
+            manager.speculative_attempts.insert(session_id, 3);
+            manager.sessions.insert(
+                session_id,
+                RemoteSessionState::AwaitingExitStatus {
+                    control_path: None,
+                    host_id: HostId::new("h".to_string()),
+                },
+            );
+            assert!(manager.cancel_speculative_connect(session_id));
+            assert!(matches!(
+                manager.sessions.get(&session_id),
+                Some(RemoteSessionState::AwaitingExitStatus { .. })
+            ));
+        });
+    });
+}
+
+/// A transport that is never used: `finish_speculative_connect` only stores it on success.
+#[derive(Debug)]
+struct NullTransport;
+
+impl RemoteTransport for NullTransport {
+    fn detect_platform(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RemotePlatform, String>> + Send>>
+    {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn run_preinstall_check(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PreinstallCheckResult, String>> + Send>,
+    > {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn check_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>> {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn check_has_old_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send>> {
+        Box::pin(async { Err(anyhow::anyhow!("unused")) })
+    }
+
+    fn install_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+        Box::pin(async { Err("unused".to_string()) })
+    }
+
+    fn connect(
+        &self,
+        _executor: Arc<warpui::r#async::executor::Background>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Connection>> + Send>>
+    {
+        Box::pin(async { Err(anyhow::anyhow!("unused")) })
+    }
+
+    fn remove_remote_server_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// #1266: a failed speculative attempt that is still the current one clears its own entry and
+/// reports; a stale one (superseded by a probe-driven connect) changes nothing and stays silent.
+#[test]
+fn a_failed_speculative_connect_reports_only_while_it_is_current() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let session_id = SessionId::from(12u64);
+        let failures = Rc::new(RefCell::new(0usize));
+        let seen = failures.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&manager, move |_, event, _| {
+                if let RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. } = event {
+                    *seen.borrow_mut() += 1;
+                }
+            })
+        });
+        let transport: Arc<dyn RemoteTransport> = Arc::new(NullTransport);
+        manager.update(&mut app, |manager, ctx| {
+            manager.speculative_attempts.insert(session_id, 5);
+            manager
+                .sessions
+                .insert(session_id, RemoteSessionState::Connecting);
+            // Stale attempt: a probe-driven connect replaced it meanwhile.
+            manager.finish_speculative_connect(
+                session_id,
+                4,
+                Err(ConnectAndHandshakeError::Connect(anyhow::anyhow!("127"))),
+                "id".to_string(),
+                transport.clone(),
+                ctx,
+            );
+            assert!(manager.has_speculative_connect(session_id));
+            assert!(manager.sessions.contains_key(&session_id));
+            // The current attempt: entry gone, failure reported.
+            manager.finish_speculative_connect(
+                session_id,
+                5,
+                Err(ConnectAndHandshakeError::Connect(anyhow::anyhow!("127"))),
+                "id".to_string(),
+                transport,
+                ctx,
+            );
+            assert!(!manager.has_speculative_connect(session_id));
+            assert!(!manager.sessions.contains_key(&session_id));
+            // A speculative miss is not a connection that died: #1250's tally is untouched.
+            assert!(!manager.connected_at.contains_key(&session_id));
+            assert!(!manager.short_lived_connections.contains_key(&session_id));
+        });
+        assert_eq!(*failures.borrow(), 1);
+    });
+}

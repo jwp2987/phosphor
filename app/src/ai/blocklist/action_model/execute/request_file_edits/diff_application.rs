@@ -20,7 +20,6 @@ use crate::{
     ai::{
         agent::{AIIdentifiers, FileEdit},
         blocklist::SessionContext,
-        paths::host_native_absolute_path,
     },
     auth::AuthState,
     safe_debug, safe_warn, send_telemetry_on_executor,
@@ -70,9 +69,31 @@ pub(crate) enum DiffApplicationError {
     /// The file could not be read (I/O error, permissions, remote connectivity, etc.).
     ReadFailed {
         file: String,
-        // TODO(CODE-353): Display I/O errors to the user, since they may be able to fix them.
-        #[expect(dead_code)]
+        /// The underlying cause (non-UTF-8, binary, EACCES, ...). Surfaced to the model.
         message: String,
+    },
+    /// An edit carried neither a search nor a replacement, so it changes nothing. Reported
+    /// instead of silently dropped, so the model does not believe the edit happened.
+    EmptyEdit {
+        file: String,
+    },
+    /// An edit to an existing, non-empty file had an empty `search`. That used to prepend the
+    /// replacement at line 0, which is never what a model meaning "overwrite" or "append" wants.
+    EmptySearch {
+        file: String,
+    },
+    /// (Agent tool only.) A search block matched in more than one place, so the edit would
+    /// have changed a place the model may not have meant. Nothing is applied.
+    AmbiguousMatch {
+        file: String,
+        /// 1-indexed block number within this file's edits.
+        block_number: usize,
+        /// 1-indexed start lines of the matches.
+        lines: Vec<usize>,
+    },
+    /// A create operation had no content. Reported instead of silently dropped.
+    EmptyCreate {
+        file: String,
     },
     /// A file that was supposed to be new already exists.
     AlreadyExists {
@@ -126,11 +147,39 @@ impl DiffApplicationError {
             DiffApplicationError::MissingFile { file } => {
                 format!("{file} does not exist. Is the path correct?")
             }
+            DiffApplicationError::EmptyEdit { file } => {
+                format!(
+                    "The edit to {file} has an empty search and an empty replace, so it would \
+                     change nothing. Nothing was applied for it."
+                )
+            }
+            DiffApplicationError::EmptySearch { file } => {
+                format!(
+                    "The edit to {file} has an empty search, which is only valid when creating a \
+                     new file. To change an existing file, set `search` to the exact text to \
+                     replace; to replace the whole file, delete it and create it again."
+                )
+            }
+            DiffApplicationError::AmbiguousMatch {
+                file,
+                block_number,
+                lines,
+            } => ambiguous_match_message(file, *block_number, lines),
+            DiffApplicationError::EmptyCreate { file } => {
+                format!(
+                    "Could not create {file}: the content is empty. This tool cannot create an \
+                     empty file; provide the file's content."
+                )
+            }
             DiffApplicationError::AlreadyExists { file } => {
                 format!("Could not create {file} because it already exists.")
             }
-            DiffApplicationError::ReadFailed { file, .. } => {
-                format!("Could not read {file}")
+            DiffApplicationError::ReadFailed { file, message } => {
+                if message.is_empty() {
+                    format!("Could not read {file}")
+                } else {
+                    format!("Could not read {file}: {message}")
+                }
             }
             DiffApplicationError::MultipleFileCreation { file } => {
                 format!("There can only be one attempt to create {file}.")
@@ -181,6 +230,27 @@ impl DiffApplicationError {
     }
 }
 
+/// The model-facing refusal for a search that matches in several places.
+fn ambiguous_match_message(file: &str, block_number: usize, lines: &[usize]) -> String {
+    let at = lines
+        .iter()
+        .take(8)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = if lines.len() > 8 { ", ..." } else { "" };
+    format!(
+        "Search block {block_number} for {file} matched {} places (starting at lines {at}{more}), so nothing was \
+         applied to {file}. Include more surrounding context in `search` so it matches exactly one place.",
+        lines.len()
+    )
+}
+
+/// The note the model gets when its search only matched ignoring whitespace/indentation.
+pub(crate) fn loose_match_note(start: usize, end: usize) -> String {
+    format!("applied via loose whitespace match at lines {start}–{end}")
+}
+
 fn append_fuzzy_match_failure_details(message: &mut String, match_failures: &DiffMatchFailures) {
     if match_failures.fuzzy_match_failure_details.is_empty() {
         return;
@@ -217,7 +287,64 @@ where
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let result = apply_edits_internal(edits, session_context, &read_file).await;
+    apply_edits_impl(
+        edits,
+        session_context,
+        ai_identifiers,
+        background_executor,
+        auth_state,
+        passive_diff,
+        read_file,
+        false,
+    )
+    .await
+}
+
+/// [`apply_edits`] for the Phosphor agent's `apply_file_diffs` tool: additionally refuses a
+/// search that matches in more than one place and reports a whitespace-insensitive-only match
+/// to the model (#1277). Other callers keep [`apply_edits`]'s behaviour.
+pub(crate) async fn apply_edits_strict<F, Fut>(
+    edits: Vec<FileEdit>,
+    session_context: &SessionContext,
+    ai_identifiers: &AIIdentifiers,
+    background_executor: Arc<Background>,
+    auth_state: Arc<AuthState>,
+    passive_diff: bool,
+    read_file: F,
+) -> Result<Vec<AIRequestedCodeDiff>, Vec1<DiffApplicationError>>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = FileReadResult>,
+{
+    apply_edits_impl(
+        edits,
+        session_context,
+        ai_identifiers,
+        background_executor,
+        auth_state,
+        passive_diff,
+        read_file,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_edits_impl<F, Fut>(
+    edits: Vec<FileEdit>,
+    session_context: &SessionContext,
+    ai_identifiers: &AIIdentifiers,
+    background_executor: Arc<Background>,
+    auth_state: Arc<AuthState>,
+    passive_diff: bool,
+    read_file: F,
+    strict: bool,
+) -> Result<Vec<AIRequestedCodeDiff>, Vec1<DiffApplicationError>>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = FileReadResult>,
+{
+    let result = apply_edits_internal(edits, session_context, &read_file, strict).await;
 
     // Send telemetry for all diff application errors.
 
@@ -239,6 +366,10 @@ where
             }
             DiffApplicationError::MissingFile { .. }
             | DiffApplicationError::ReadFailed { .. }
+            | DiffApplicationError::EmptyEdit { .. }
+            | DiffApplicationError::AmbiguousMatch { .. }
+            | DiffApplicationError::EmptySearch { .. }
+            | DiffApplicationError::EmptyCreate { .. }
             | DiffApplicationError::AlreadyExists { .. }
             | DiffApplicationError::MultipleFileCreation { .. }
             | DiffApplicationError::MutatedDeletedFile { .. }
@@ -309,6 +440,9 @@ struct DiffResult {
     errors: Vec<DiffApplicationError>,
     /// All warnings that occurred while applying diffs.
     warnings: Vec<DiffWarning>,
+    /// Agent-tool matching: refuse a search that matches in several places and report a loose
+    /// (whitespace-insensitive) match. Off for every other caller (#1277).
+    strict: bool,
 }
 
 /// You generally want to use `apply_edits`, however, if you don't want to report telemetry or be as
@@ -317,6 +451,7 @@ async fn apply_edits_internal<F, Fut>(
     edits: Vec<FileEdit>,
     session_context: &SessionContext,
     read_file: &F,
+    strict: bool,
 ) -> DiffResult
 where
     F: Fn(String) -> Fut,
@@ -327,7 +462,31 @@ where
     let mut new_files: HashMap<String, String> = HashMap::new();
     let mut deleted_files: HashSet<String> = HashSet::new();
     let mut file_renames: HashMap<String, String> = HashMap::new();
-    let mut result = DiffResult::default();
+    let mut result = DiffResult {
+        strict,
+        ..Default::default()
+    };
+
+    // A `~` path on a remote session whose home is unknown would resolve against the LOCAL
+    // home and read or write a different file than the model named. Refuse the whole batch
+    // rather than guess (#1288).
+    let unresolvable: Vec<String> = edits
+        .iter()
+        .flat_map(|edit| edit.written_paths())
+        .filter(|path| session_context.tilde_unresolvable(path))
+        .map(str::to_owned)
+        .collect();
+    if !unresolvable.is_empty() {
+        for file in unresolvable {
+            result.errors.push(DiffApplicationError::ReadFailed {
+                file,
+                message: "the remote host's home directory is not known, so `~` cannot be \
+                          resolved; retry with an absolute path"
+                    .to_owned(),
+            });
+        }
+        return result;
+    }
 
     for edit in edits {
         match edit {
@@ -338,9 +497,14 @@ where
 
                 match diff {
                     ParsedDiff::StrReplaceEdit { .. } => {
-                        let deltas = search_replace_deltas.entry(file_path).or_default();
-                        if let Ok(d) = diff.try_into() {
-                            deltas.push(d);
+                        match SearchAndReplace::try_from(diff) {
+                            Ok(d) if !(d.search.is_empty() && d.replace.is_empty()) => {
+                                search_replace_deltas.entry(file_path).or_default().push(d);
+                            }
+                            // Neither string: nothing to apply. Say so rather than drop it.
+                            _ => result
+                                .errors
+                                .push(DiffApplicationError::EmptyEdit { file: file_path }),
                         }
                     }
                     ParsedDiff::V4AEdit { hunks, move_to, .. } => {
@@ -376,7 +540,10 @@ where
                         continue;
                     }
                     Entry::Vacant(entry) => {
-                        let Some(content) = content else {
+                        let Some(content) = content.filter(|c| !c.is_empty()) else {
+                            result.errors.push(DiffApplicationError::EmptyCreate {
+                                file: entry.key().clone(),
+                            });
                             continue;
                         };
                         entry.insert(content);
@@ -473,11 +640,7 @@ async fn apply_replace_file<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::Found(file_content) => {
@@ -530,11 +693,7 @@ async fn apply_create_file<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::Found(_) => {
@@ -576,11 +735,7 @@ async fn apply_delete_file<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::Found(file_content) => {
@@ -621,11 +776,7 @@ async fn apply_search_replace<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     match read_file(absolute_path.clone()).await {
         FileReadResult::NotFound => {
@@ -678,6 +829,51 @@ async fn apply_search_replace<F, Fut>(
                 safe: ("Matching diffs"),
                 full: ("Matching diffs for: {file_path:?}")
             );
+            // An empty search means "create"; on an existing file with content it would
+            // silently prepend at line 0. (An existing empty file has nothing to prepend to.)
+            if !file_content.is_empty() && deltas.iter().any(|d| d.search.is_empty()) {
+                result
+                    .errors
+                    .push(DiffApplicationError::EmptySearch { file: file_path });
+                return;
+            }
+            if result.strict {
+                crate::ai::agent_providers::tools::edit::clear_edit_notes(&absolute_path);
+                let mut ambiguous = false;
+                for (index, delta) in deltas.iter().enumerate() {
+                    // A line-number hint disambiguates on its own; only an unhinted search is
+                    // judged here.
+                    let (hint, search) = ai::diff_validation::parse_line_numbers(&delta.search);
+                    if hint.is_some() || search.is_empty() {
+                        continue;
+                    }
+                    let summary =
+                        ai::diff_validation::summarize_search_matches(&search, &file_content);
+                    let places = if summary.exact_starts.is_empty() {
+                        &summary.loose_starts
+                    } else {
+                        &summary.exact_starts
+                    };
+                    if places.len() > 1 {
+                        ambiguous = true;
+                        result.errors.push(DiffApplicationError::AmbiguousMatch {
+                            file: file_path.clone(),
+                            block_number: index + 1,
+                            lines: places.clone(),
+                        });
+                    } else if summary.exact_starts.is_empty() && summary.loose_starts.len() == 1 {
+                        let start = summary.loose_starts[0];
+                        crate::ai::agent_providers::tools::edit::record_edit_note(
+                            &absolute_path,
+                            loose_match_note(start, start + summary.search_lines.saturating_sub(1)),
+                        );
+                    }
+                }
+                if ambiguous {
+                    crate::ai::agent_providers::tools::edit::clear_edit_notes(&absolute_path);
+                    return;
+                }
+            }
             let fuzzy_match_diffs = fuzzy_match_diffs(&file_path, &deltas, file_content);
 
             // Add warnings from the failure info - the `DiffMatchFailures` type includes both
@@ -723,11 +919,7 @@ async fn apply_v4a_update<F, Fut>(
     F: Fn(String) -> Fut,
     Fut: Future<Output = FileReadResult>,
 {
-    let absolute_path = host_native_absolute_path(
-        &file_path,
-        session_context.shell(),
-        session_context.current_working_directory(),
-    );
+    let absolute_path = session_context.resolve_path(&file_path);
 
     let file_content = match read_file(absolute_path.clone()).await {
         FileReadResult::NotFound => {
@@ -766,13 +958,7 @@ async fn apply_v4a_update<F, Fut>(
     // `move_to` through meant `~` was never expanded and a relative destination landed
     // against the PROCESS cwd rather than the session's, so the guard and the writer named
     // different files (#682).
-    let rename_to = rename_to.map(|target| {
-        host_native_absolute_path(
-            &target,
-            session_context.shell(),
-            session_context.current_working_directory(),
-        )
-    });
+    let rename_to = rename_to.map(|target| session_context.resolve_path(&target));
 
     // Check if we're renaming to an existing file.
     let rename_target_content = if let Some(target_absolute) = &rename_to {

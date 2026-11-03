@@ -19,7 +19,7 @@ use crate::ai::agent::{
 use crate::ai::blocklist::{
     BlocklistAIPermissions, telemetry_banner::should_collect_ai_ugc_telemetry,
 };
-use crate::ai::paths::{host_native_absolute_path, shell_native_absolute_path};
+use crate::ai::paths::{PathHost, host_native_absolute_path_for, shell_native_absolute_path_for};
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::model::session::command_executor::{sh_script_quote_arg, shell_quote_arg};
 use crate::{
@@ -220,7 +220,14 @@ impl GrepExecutor {
             .current_working_directory()
             .cloned();
         let shell = self.active_session.as_ref(ctx).shell_launch_data(ctx);
-        let absolute_path = host_native_absolute_path(path, &shell, &current_working_directory);
+        // Fail closed on a `~` we cannot resolve on a remote session (#1288).
+        if super::session_tilde_unresolved(self.active_session.as_ref(ctx), path, ctx) {
+            return false;
+        }
+        let path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
+        let absolute_path =
+            host_native_absolute_path_for(&path, &shell, &current_working_directory, remote);
 
         BlocklistAIPermissions::handle(ctx)
             .as_ref(ctx)
@@ -253,10 +260,13 @@ impl GrepExecutor {
             .as_ref(ctx)
             .current_working_directory()
             .cloned();
-        let absolute_path = shell_native_absolute_path(
-            path,
+        let expanded_path = super::expand_session_tilde(self.active_session.as_ref(ctx), path, ctx);
+        let remote = super::session_path_host(self.active_session.as_ref(ctx), ctx);
+        let absolute_path = shell_native_absolute_path_for(
+            &expanded_path,
             shell_launch_data.as_ref(),
             current_working_directory.as_ref(),
+            remote,
         );
 
         let session = self.active_session.as_ref(ctx).session(ctx);
@@ -343,6 +353,15 @@ impl GrepExecutor {
 /// - otherwise, if the search is against the local file system, we run `ripgrep` via the library.
 ///   `ripgrep` is a more optimized version of `grep`.
 /// - otherwise, we run vanilla `grep` in the session
+/// The path rules of the host `session` runs on: its reported OS when remote and known.
+fn session_path_host(session: &Session) -> PathHost {
+    if session.is_local() {
+        PathHost::Local
+    } else {
+        PathHost::for_remote(session.host_info().os_category.as_deref())
+    }
+}
+
 async fn run_grep(
     queries: Vec<String>,
     absolute_path: String,
@@ -356,7 +375,18 @@ async fn run_grep(
         return Err(GrepError::new("No session provided to grep".to_string()));
     };
 
-    let is_file = is_file_path(&absolute_path, &session).await;
+    // The common case is a directory, where the git probe targets `absolute_path` itself. When
+    // the executor can run commands concurrently (remote sessions), probe both at once so the
+    // two serial round trips collapse into one; otherwise keep them serial.
+    let (is_file, speculative_git_probe) = if session.supports_parallel_command_execution() {
+        let (is_file, probe) = futures::join!(
+            is_file_path(&absolute_path, &session),
+            is_git_repository(&absolute_path, &session)
+        );
+        (is_file, Some(probe))
+    } else {
+        (is_file_path(&absolute_path, &session).await, None)
+    };
     let execute_directory = if is_file {
         // If path is a file, use its parent directory as the execution directory.
         // Use StandardizedPath instead of std::path::Path to avoid encoding a
@@ -376,13 +406,15 @@ async fn run_grep(
         Cow::Borrowed(absolute_path.as_str())
     };
 
-    // TODO(CODE-239): Cache the result of this check.
-    let is_grep_in_git_repo = is_git_repository(&execute_directory, &session)
-        .await
-        .unwrap_or_else(|e| {
-            log::error!("Failed to run command to check if in git repository: {e:?}");
-            false
-        });
+    // `is_git_repository` caches successful probes briefly (see `GIT_REPO_PROBE_TTL`).
+    let git_probe = match speculative_git_probe {
+        Some(probe) if !is_file => probe,
+        _ => is_git_repository(&execute_directory, &session).await,
+    };
+    let is_grep_in_git_repo = git_probe.unwrap_or_else(|e| {
+        log::error!("Failed to run command to check if in git repository: {e:?}");
+        false
+    });
     // These commands run through the session's command executor, not the user's prompt.
     let shell_type = session.shell().shell_type().executor_syntax();
 
@@ -402,7 +434,6 @@ async fn run_grep(
         )
         .await
     } else {
-        #[cfg(not(target_family = "wasm"))]
         if session.is_local() {
             return run_ripgrep(&queries, absolute_path).await;
         }
@@ -429,7 +460,6 @@ async fn run_grep(
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 async fn run_ripgrep(queries: &[String], absolute_path: String) -> Result<GrepResult, GrepError> {
     let path = PathBuf::from(absolute_path);
     let result = warp_ripgrep::search::search(queries, &[path], false, false).await;
@@ -445,6 +475,10 @@ async fn run_ripgrep(queries: &[String], absolute_path: String) -> Result<GrepRe
                         line_number: m.line_number as usize,
                     });
             }
+            let mut files_map: Vec<_> = files_map.into_iter().collect();
+            // A HashMap's order changes from run to run; a stable order keeps results (and the
+            // model's prompt cache) reproducible.
+            files_map.sort_by(|(a, _), (b, _)| a.cmp(b));
             let matched_files: Vec<GrepFileMatch> = files_map
                 .into_iter()
                 .map(|(file_path, matched_lines)| GrepFileMatch {
@@ -466,6 +500,17 @@ enum GrepCommandOutcome {
     Matches(String),
 }
 
+/// The size a remote `RunCommand` reply is cut to (`MAX_MESSAGE_SIZE - 1024`, see
+/// `server_model::handle_run_command`).
+const REMOTE_OUTPUT_CAP_BYTES: usize = remote_server::protocol::MAX_MESSAGE_SIZE - 1024;
+
+const REMOTE_OUTPUT_CUT_MESSAGE: &str = "The grep output reached the remote connection's size limit and was cut off, so the results would be incomplete. Narrow the query or the search path and try again.";
+
+/// Whether `len` bytes of remote command output is at the point where the host truncated it.
+fn remote_output_was_cut(len: usize) -> bool {
+    len >= REMOTE_OUTPUT_CAP_BYTES - 1024
+}
+
 async fn execute_grep_command(
     command: &str,
     session: &Session,
@@ -480,6 +525,14 @@ async fn execute_grep_command(
         )
         .await
         .map_err(|e| GrepError::new(e.to_string()).with_command(command.to_string()))?;
+
+    // A remote host's RunCommand reply is cut at the wire limit with no marker, so a result
+    // that long ends mid-record and would be reported as the complete answer (#1278).
+    if !session.is_local() && remote_output_was_cut(command_output.output().len()) {
+        return Err(
+            GrepError::new(REMOTE_OUTPUT_CUT_MESSAGE.to_string()).with_command(command.to_string())
+        );
+    }
 
     if command_output.success() {
         Ok(GrepCommandOutcome::Matches(
@@ -516,6 +569,7 @@ async fn run_git_grep_command(
             &output,
             shell_launch_data,
             Some(execute_directory.to_string()),
+            session_path_host(session),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -544,6 +598,7 @@ async fn run_grep_command(
             &output,
             shell_launch_data,
             Some(execute_directory.to_string()),
+            session_path_host(session),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -614,6 +669,7 @@ async fn run_grep_per_file_fallback(
                 &output,
                 &shell_launch_data,
                 &Some(execute_directory.to_string()),
+                session_path_host(session),
             ),
         }),
         Err(_) => Err(original_error),
@@ -705,6 +761,7 @@ fn parse_grep_content_scan_output(
     output: &str,
     shell_launch_data: &Option<ShellLaunchData>,
     current_working_directory: &Option<String>,
+    remote: PathHost,
 ) -> Vec<GrepFileMatch> {
     let mut segments = output.split('\0');
     // Text before the first marker; empty in well-formed output.
@@ -725,10 +782,11 @@ fn parse_grep_content_scan_output(
             continue;
         }
         matched_files.push(GrepFileMatch {
-            file_path: host_native_absolute_path(
+            file_path: host_native_absolute_path_for(
                 path,
                 shell_launch_data,
                 current_working_directory,
+                remote,
             ),
             matched_lines,
         });
@@ -768,6 +826,7 @@ async fn run_select_string_command(
             output.as_ref(),
             shell_launch_data,
             Some(execute_directory.to_string()),
+            session_path_host(session),
         )
         .map(|matched_files| GrepResult::Success { matched_files })
         .map_err(|e| {
@@ -885,6 +944,7 @@ fn parse_null_delimited_grep_output(
     output: &str,
     shell_launch_data: Option<ShellLaunchData>,
     current_working_directory: Option<String>,
+    remote: PathHost,
 ) -> anyhow::Result<Vec<GrepFileMatch>> {
     let mut matched_files: HashMap<&str, Vec<GrepLineMatch>> = HashMap::new();
     let mut unparseable_record_count = 0usize;
@@ -939,10 +999,11 @@ fn parse_null_delimited_grep_output(
     Ok(matched_files
         .into_iter()
         .map(|(file, matched_lines)| GrepFileMatch {
-            file_path: host_native_absolute_path(
+            file_path: host_native_absolute_path_for(
                 file,
                 &shell_launch_data,
                 &current_working_directory,
+                remote,
             ),
             matched_lines,
         })

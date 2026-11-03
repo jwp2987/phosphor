@@ -1,0 +1,32 @@
+{
+ "lines": [
+  "Running with gitlab-runner 19.5.1 (f411f264)",
+  "Running on <runner>...",
+  "Running on CPU: Intel(R) Core(TM) i7-8700B CPU @ 3.20GHz (avx, avx2)",
+  "[prune_target] ci-fuzz: 12893M -> 12893M (freed 0M), disk free 174722M -> 174722M",
+  "Running benches/ansi_bench.rs (/home/<user>/.phosphor-build/targets/ci-bench/release/deps/ansi_bench-732a446934716798)",
+  "Benchmarking ansi/mixed_1mb_in_4k_reads: Collecting 20 samples in estimated 6.1084 s (80 iterations)",
+  "time:   [76.032 ms 76.478 ms 76.902 ms]",
+  "time:   [-0.2017% +0.5711% +1.3561%] (p = 0.16 > 0.05)",
+  "Running benches/key_path_bench.rs (/home/<user>/.phosphor-build/targets/ci-bench/release/deps/key_path_bench-648d5ed1afb4689f)",
+  "Benchmarking pane_queue/idle_key: Collecting 100 samples in estimated 5.0002 s (118M iterations)",
+  "pane_queue/idle_key     time:   [42.852 ns 43.072 ns 43.297 ns]",
+  "Benchmarking pane_queue/gate_open_offer_drain: Collecting 100 samples in estimated 5.0196 s (1.1M iterations)",
+  "time:   [4.2942 \u00b5s 4.3376 \u00b5s 4.3828 \u00b5s]",
+  "time:   [-6.7981% -6.1141% -5.3862%] (p = 0.00 < 0.05)",
+  "Benchmarking destination_for: Collecting 100 samples in estimated 5.0001 s (191M iterations)",
+  "destination_for         time:   [26.535 ns 26.554 ns 26.581 ns]",
+  "Benchmarking table_decide: Collecting 100 samples in estimated 5.0010 s (18M iterations)",
+  "table_decide            time:   [317.22 ns 332.59 ns 349.77 ns]",
+  "Benchmarking handoff/young_submit_decision: Collecting 100 samples in estimated 5.0000 s (1.9B iterations)",
+  "time:   [2.5410 ns 2.5643 ns 2.5909 ns]",
+  "Benchmarking handoff/key_facts_load: Collecting 100 samples in estimated 5.0000 s (1.8B iterations)",
+  "handoff/key_facts_load  time:   [2.8633 ns 2.8714 ns 2.8808 ns]",
+  "Benchmarking handoff/pane_handoff_read: Collecting 100 samples in estimated 5.0000 s (378M iterations)",
+  "time:   [13.220 ns 13.243 ns 13.269 ns]"
+ ],
+ "truncated": 0,
+ "job": "bench",
+ "status": "success",
+ "duration": 661.974516
+}

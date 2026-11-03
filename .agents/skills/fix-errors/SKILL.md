@@ -55,8 +55,7 @@ cargo clippy --target wasm32-unknown-unknown --profile release-wasm-debug_assert
 
 **All tests:**
 ```bash
-cargo nextest run --no-fail-fast --workspace --exclude command-signatures-v2
-cargo nextest run -p warp_completer --features v2
+cargo nextest run --no-fail-fast --workspace
 ```
 
 **Doc tests:**

@@ -1650,10 +1650,34 @@ fn rejected_tool_call_drops_the_deferral() {
     assert!(state.is_idle());
 }
 
-/// Results of a subagent's task (a CLI/LRC subagent's own loop) never carry the summary:
+/// A subagent's own loop (CLI/LRC subagent task) is compacted like the root task's (#1074):
+/// results that all answer calls of one task, whichever task it is, carry the summary in that
+/// task; only results spanning tasks have no single task for it.
+#[test]
+fn single_task_id_names_a_subagent_task_too() {
+    use super::single_task_id;
+    let root = "root".to_owned();
+    let sub = "cli-subagent".to_owned();
+    assert_eq!(single_task_id([&sub, &sub]), Some(&sub));
+    assert_eq!(single_task_id([&root]), Some(&root));
+    assert_eq!(single_task_id([&root, &sub]), None);
+    assert_eq!(single_task_id(std::iter::empty::<&String>()), None);
+}
+
+/// A subagent loop over the threshold is deferred and then summarized with its results, like
+/// the root loop (#1074): the state machine does not care which task the results are in.
+#[test]
+fn subagent_loop_over_the_threshold_is_summarized_with_its_results() {
+    use super::{ToolResultsRequest as R, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(true, Some(true)));
+    assert_eq!(state.on_tool_results_ready(true), R::SummarizeWithResults);
+}
+
+/// Results spanning several tasks never carry the summary:
 /// they go as a plain follow-up, the deferral is dropped, and the allowance is not spent.
 #[test]
-fn subagent_task_results_go_as_a_plain_follow_up() {
+fn results_spanning_tasks_go_as_a_plain_follow_up() {
     use super::{ToolResultsRequest as R, TurnCompactionState};
     let mut state = TurnCompactionState::default();
     state.on_stream_finished(turn(true, Some(true)));
@@ -2587,4 +2611,201 @@ fn a_recent_turn_with_a_pdf_stays_in_the_tail() {
         (older_turn..older_turn + 100).contains(&summarizable),
         "only the older turn (and its PDF) is summarized; u2 and its PDF are kept: {summarizable}"
     );
+}
+
+// -- empty reply to the continue message (#1102) -------------------------
+
+/// A reasoning-only or blank reply shows the user nothing; text or a tool call does.
+#[test]
+fn turn_has_visible_output_ignores_blank_and_reasoning_only_replies() {
+    use super::overflow::turn_has_visible_output;
+
+    let mut blank = agent_output("a-blank", "root", "r2", 3);
+    if let Some(api::message::Message::AgentOutput(a)) = blank.message.as_mut() {
+        a.text = " \n".to_owned();
+    }
+    let msgs = vec![
+        agent_output("a-old", "root", "r1", 1),
+        blank,
+        agent_output("a-new", "root", "r2", 4),
+        tool_call("t-new", "root", "r2", 5),
+    ];
+    assert!(turn_has_visible_output(&msgs, |id| id == "a-new"));
+    assert!(turn_has_visible_output(&msgs, |id| id == "t-new"));
+    // Only a blank message from this stream (the old output belongs to an earlier turn).
+    assert!(!turn_has_visible_output(&msgs, |id| id == "a-blank"));
+    assert!(!turn_has_visible_output(&msgs, |_| false));
+}
+
+/// An empty reply to the continue message is retried once, then fails visibly; a reply with
+/// output (or one that is not a continue reply) is left alone, and the bound resets.
+#[test]
+fn an_empty_continue_reply_retries_once_then_fails() {
+    use super::{ContinueReplyAction as A, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    // Not a reply to a continue message: nothing, however empty.
+    assert_eq!(state.on_continue_reply(false), A::None);
+    assert!(state.is_idle());
+
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Retry);
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Fail);
+    assert!(state.is_idle(), "the failure leaves nothing behind");
+
+    // A reply with output clears the bound: the next empty one is retried again.
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Retry);
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(true), A::None);
+    state.on_continue_sent();
+    assert_eq!(state.on_continue_reply(false), A::Retry);
+}
+
+/// A stopped or failed continue request is no longer "mid compaction" (#1238): a monitored
+/// command's completion report is not held for a reply that will never come, and the state
+/// goes idle. Fails on the old code, where only a clean reply or a new user turn cleared it.
+#[test]
+fn a_stopped_or_failed_continue_request_is_no_longer_pending() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_continue_sent();
+    assert!(state.is_mid_compaction());
+    state.on_conversation_stopped();
+    assert!(!state.is_mid_compaction());
+    assert!(state.is_idle());
+
+    state.on_continue_sent();
+    state.on_request_failed();
+    assert!(!state.is_mid_compaction());
+    assert!(state.is_idle());
+}
+
+/// A failed request drops a tool-loop deferral but leaves the allowance as it was (#1238).
+#[test]
+fn a_failed_request_drops_the_deferral_but_not_the_allowance() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    assert!(
+        state
+            .on_stream_finished(turn(true, Some(true)))
+            .compact_after_tool_results
+    );
+    state.on_request_failed();
+    assert!(!state.compaction_deferred_to_tool_results());
+    assert!(state.is_idle());
+
+    state.on_stream_finished(turn(false, Some(true)));
+    assert!(state.auto_compacted());
+    state.on_request_failed();
+    assert!(
+        state.auto_compacted(),
+        "a failed summary did not compact; no second try"
+    );
+}
+
+/// #1238: a deferred summary that failed for good did not compact, so its allowance comes back
+/// -- once per turn, so a summary that fails every time cannot loop.
+#[test]
+fn a_failed_deferred_summary_restores_the_allowance_once_per_turn() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_deferred_summary_sent();
+    assert!(state.auto_compacted());
+    state.on_request_failed();
+    assert!(!state.auto_compacted(), "nothing was compacted");
+
+    state.on_deferred_summary_sent();
+    state.on_request_failed();
+    assert!(
+        state.auto_compacted(),
+        "the second failure in the same turn keeps the allowance spent"
+    );
+
+    state.on_new_user_turn();
+    state.on_deferred_summary_sent();
+    state.on_request_failed();
+    assert!(!state.auto_compacted(), "a new turn gets its restore back");
+}
+
+/// #1238: a transport error that goes the Resume path resumes without the summary, so it gives the
+/// allowance back too -- once per turn, sharing the budget with `on_request_failed`.
+#[test]
+fn a_resumed_deferred_summary_restores_the_allowance_once_per_turn() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_deferred_summary_sent();
+    state.on_request_resumed();
+    assert!(
+        !state.auto_compacted(),
+        "the resume does not re-ask the summary"
+    );
+
+    // The resumed request is not a summary: a further resume/failure changes nothing.
+    state.on_request_resumed();
+    assert!(!state.auto_compacted());
+
+    // Second deferred summary in the same turn: the restore is already used up.
+    state.on_deferred_summary_sent();
+    state.on_request_resumed();
+    assert!(state.auto_compacted());
+    state.on_request_failed();
+    assert!(state.auto_compacted());
+
+    // A resume with no deferred summary in flight never touches the allowance.
+    let mut other = TurnCompactionState::default();
+    other.on_stream_finished(turn(false, Some(true)));
+    assert!(other.auto_compacted());
+    other.on_request_resumed();
+    assert!(other.auto_compacted());
+}
+
+/// A deferred summary that finished (cleanly) is not restored by a later unrelated failure.
+#[test]
+fn a_finished_deferred_summary_keeps_the_allowance_spent() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_deferred_summary_sent();
+    state.on_stream_finished(turn(false, Some(true)));
+    state.on_request_failed();
+    assert!(state.auto_compacted());
+}
+
+/// A new user turn forgets a pending continue, so an unrelated empty reply is not retried.
+#[test]
+fn a_new_user_turn_drops_the_pending_continue() {
+    use super::{ContinueReplyAction as A, TurnCompactionState};
+    let mut state = TurnCompactionState::default();
+    state.on_continue_sent();
+    state.on_new_user_turn();
+    assert_eq!(state.on_continue_reply(false), A::None);
+}
+
+/// A summary the model answered with a tool call (providers that ignore `tool_choice`) is
+/// re-asked once (#1079), within the same allowance; a second failure does not loop, and a
+/// committed summary or a restored allowance re-arms the retry for the next compaction.
+#[test]
+fn summary_answered_with_a_tool_call_is_retried_once() {
+    use super::TurnCompactionState;
+    let mut state = TurnCompactionState::default();
+    state.on_stream_finished(turn(false, Some(true)));
+    assert!(state.auto_compacted());
+    state.on_stream_finished(summary_stream(true, false));
+    assert!(state.claim_summary_retry());
+    assert!(
+        state.auto_compacted(),
+        "the retry does not respend or restore the allowance"
+    );
+    state.on_stream_finished(summary_stream(true, false));
+    assert!(
+        !state.claim_summary_retry(),
+        "only one retry per compaction"
+    );
+    state.on_stream_finished(summary_stream(true, true));
+    assert!(
+        state.claim_summary_retry(),
+        "a committed summary re-arms the retry"
+    );
+    state.on_new_user_turn();
+    assert!(state.is_idle());
 }

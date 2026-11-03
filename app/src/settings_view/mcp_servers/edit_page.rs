@@ -1,10 +1,7 @@
-#[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
-#[cfg(not(target_family = "wasm"))]
 use diesel::SqliteConnection;
-#[cfg(not(target_family = "wasm"))]
 use parking_lot::Mutex;
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting;
@@ -33,14 +30,12 @@ use crate::{
         mcp::{
             parsing::{prettify_json, resolve_json, ParsedTemplatableMCPServerResult},
             templatable::TemplatableMCPServerObject,
-            MCPServer, TemplatableMCPServer, TemplatableMCPServerInstallation,
-            TemplatableMCPServerManager, TransportType,
-        },
+            TemplatableMCPServer, TemplatableMCPServerInstallation,
+            TemplatableMCPServerManager, },
     },
     banner::{Banner, BannerTextContent},
     cloud_object::{update_manager::InitiatedBy, Space, StoredObject},
     code::editor::view::{CodeEditorRenderOptions, CodeEditorView},
-    persistence::ModelEvent,
     server::telemetry::{MCPTemplateCreationSource, TelemetryEvent},
     settings::PrivacySettings,
     settings_view::mcp_servers::{
@@ -57,8 +52,7 @@ use crate::{
         DismissibleToast,
     },
     workspace::ToastStack,
-    GlobalResourceHandlesProvider,
-};
+    };
 
 const DEFAULT_JSON_TEXT: &str = r#"{
     "": {
@@ -122,7 +116,6 @@ pub struct MCPServersEditPageView {
     log_out_icon_button_mouse_handle: MouseStateHandle,
     editing_disabled_banner: ViewHandle<Banner<()>>,
 
-    #[cfg(not(target_family = "wasm"))]
     #[allow(dead_code)]
     database_connection: Option<Arc<Mutex<SqliteConnection>>>,
 }
@@ -154,7 +147,6 @@ impl MCPServersEditPageView {
         });
 
         let json_editor = ctx.add_typed_action_view(|ctx| {
-            #[cfg_attr(target_family = "wasm", allow(unused_mut))]
             let mut editor = CodeEditorView::new(
                 None,
                 None,
@@ -184,7 +176,6 @@ impl MCPServersEditPageView {
             .with_icon(Icon::Warning)
         });
 
-        #[cfg(not(target_family = "wasm"))]
         let database_connection =
             crate::persistence::database_file_path()
                 .to_str()
@@ -206,7 +197,6 @@ impl MCPServersEditPageView {
             log_out_icon_button_mouse_handle: Default::default(),
             editing_disabled_banner,
 
-            #[cfg(not(target_family = "wasm"))]
             database_connection,
         }
     }
@@ -595,32 +585,6 @@ impl MCPServersEditPageView {
                         });
                     ctx.notify();
                 }
-            }
-        }
-    }
-
-    pub fn save_mcp_server_env_vars(mcp_server: MCPServer, ctx: &mut ViewContext<Self>) {
-        if let TransportType::CLIServer(cli_server) = &mcp_server.transport_type {
-            let env_vars: HashMap<String, String> = cli_server
-                .static_env_vars
-                .iter()
-                .map(|env_var| (env_var.name.clone(), env_var.value.clone()))
-                .collect();
-            let Ok(env_vars_string) = serde_json::to_string(&env_vars) else {
-                log::error!("Could not serialize MCP env vars");
-                return;
-            };
-            let global_resource_handles = GlobalResourceHandlesProvider::as_ref(ctx).get().clone();
-
-            if let Some(model_event_sender) = &global_resource_handles.model_event_sender {
-                if let Err(e) =
-                    model_event_sender.send(ModelEvent::UpsertMCPServerEnvironmentVariables {
-                        mcp_server_uuid: mcp_server.uuid.as_bytes().to_vec(),
-                        environment_variables: env_vars_string,
-                    })
-                {
-                    log::error!("Error persisting MCP server env vars to database: {e:?}");
-                };
             }
         }
     }

@@ -1,7 +1,6 @@
 use std::sync::mpsc;
 #[cfg(not(test))]
 use std::sync::OnceLock;
-#[cfg(not(target_family = "wasm"))]
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write as _},
@@ -99,7 +98,6 @@ impl PromptChipLogger {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn init_runtime() -> Self {
         if !warp_core::channel::ChannelState::enable_debug_features() {
             return Self::Disabled;
@@ -125,13 +123,8 @@ impl PromptChipLogger {
         }
     }
 
-    #[cfg(target_family = "wasm")]
-    fn init_runtime() -> Self {
-        Self::Disabled
-    }
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub(crate) fn log_file_path() -> anyhow::Result<PathBuf> {
     let log_path = warp_logging::log_file_path()?;
     prompt_chip_log_file_path(&log_path)
@@ -141,7 +134,6 @@ pub(crate) fn log_file_path() -> anyhow::Result<PathBuf> {
 /// log path, keeping it in the same directory (so `oz/warp.log` gets
 /// `oz/warp.prompt_chips.log`, not a path back at the top-level log
 /// directory).
-#[cfg(not(target_family = "wasm"))]
 fn prompt_chip_log_file_path(log_path: &Path) -> anyhow::Result<PathBuf> {
     let channel_logfile_name = log_path
         .file_name()
@@ -150,7 +142,6 @@ fn prompt_chip_log_file_path(log_path: &Path) -> anyhow::Result<PathBuf> {
     Ok(log_path.with_file_name(prompt_chip_log_filename(channel_logfile_name)))
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn spawn_log_writer(log_path: PathBuf) -> io::Result<mpsc::Sender<String>> {
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;
@@ -171,7 +162,6 @@ fn spawn_log_writer(log_path: PathBuf) -> io::Result<mpsc::Sender<String>> {
     Ok(tx)
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn write_log_entries(mut file: File, rx: mpsc::Receiver<String>, log_path: PathBuf) {
     while let Ok(entry) = rx.recv() {
         if let Err(err) = file.write_all(entry.as_bytes()).and_then(|_| file.flush()) {

@@ -453,6 +453,39 @@ fn apply_paragraph_style_settings(
     }
 }
 
+/// Merges adjacent style runs that are contiguous (no gap between them) and share an identical
+/// [`StyleAndFont`] into a single run.
+///
+/// Core Text's attribute-range bookkeeping gets costly, in both time and memory, as the number
+/// of distinct ranges in an attributed string grows, even when many of them are stylistically
+/// identical. Coalescing adjacent identical runs up front bounds that range count without
+/// changing the visual output.
+fn merge_adjacent_identical_runs(
+    style_runs: &[(Range<usize>, StyleAndFont)],
+) -> Cow<'_, [(Range<usize>, StyleAndFont)]> {
+    // Avoid allocating when the runs are already maximally coalesced, the common case.
+    let first_mergeable = style_runs
+        .windows(2)
+        .position(|pair| pair[0].0.end == pair[1].0.start && pair[0].1 == pair[1].1);
+    let Some(first_mergeable) = first_mergeable else {
+        return Cow::Borrowed(style_runs);
+    };
+
+    let mut merged: Vec<(Range<usize>, StyleAndFont)> = Vec::with_capacity(style_runs.len());
+    merged.extend_from_slice(&style_runs[..first_mergeable]);
+    for (range, style) in &style_runs[first_mergeable..] {
+        if let Some(last) = merged.last_mut()
+            && last.0.end == range.start
+            && last.1 == *style
+        {
+            last.0.end = range.end;
+        } else {
+            merged.push((range.clone(), *style));
+        }
+    }
+    Cow::Owned(merged)
+}
+
 /// Creates a `CFAttributedString` out of `text` with the correct font ranges based on `runs`.
 fn create_attributed_string(
     text: &str,
@@ -470,6 +503,9 @@ fn create_attributed_string(
     unsafe {
         CFAttributedStringBeginEditing(attributed_string.as_concrete_TypeRef());
     }
+
+    let style_runs = merge_adjacent_identical_runs(style_runs);
+    let style_runs = style_runs.as_ref();
 
     let mut utf16_lens = text.chars().map(|c| c.len_utf16());
     let mut prev_char_ix: usize = 0;
@@ -787,7 +823,7 @@ fn line_from_ct_line(
             Glyph {
                 id: *glyph_id as GlyphId,
                 position_along_baseline: vec2f(position.x as f32, position.y as f32),
-                index: char_offset + char_index,
+                index: crate::text_layout::narrow_offset(char_offset + char_index),
                 width: advance.width as f32,
             }
         })
@@ -976,11 +1012,7 @@ fn caret_positions_for_line(
                 (second_index, first_index)
             };
 
-            CaretPosition {
-                position_in_line: pixel_offset as f32,
-                start_offset: start,
-                last_offset: end,
-            }
+            CaretPosition::new(pixel_offset as f32, start, end)
         })
         .collect();
     // Callers assume that carets are sorted by left-to-right visual display order,

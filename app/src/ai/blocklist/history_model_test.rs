@@ -9,7 +9,7 @@ use crate::{
     ai::{
         agent::{
             api::ServerConversationToken,
-            conversation::{AIConversationId, ConversationStatus, TodoStatus},
+            conversation::{AIConversation, AIConversationId, ConversationStatus, TodoStatus},
             todos::AIAgentTodoList,
             AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus, AIAgentTodo,
             AIAgentTodoId, FinishedAIAgentOutput, RenderableAIError, Shared,
@@ -2749,7 +2749,7 @@ fn straddle_rewind_followup_requests_are_clean_and_durable() {
         let restored_tasks: Vec<api::Task> = loop {
             match receiver.recv_timeout(Duration::from_secs(2)) {
                 Ok(ModelEvent::UpdateMultiAgentConversation { updated_tasks, .. }) => {
-                    break updated_tasks;
+                    break updated_tasks.into_iter().map(|t| (*t).clone()).collect();
                 }
                 Ok(_) => continue,
                 Err(_) => panic!("rewind must persist a task snapshot"),
@@ -3570,7 +3570,7 @@ fn persisted_agent_conversation_from_update_event(event: ModelEvent) -> AgentCon
             last_modified_at: Utc::now().naive_utc(),
             summary: None,
         },
-        tasks: updated_tasks,
+        tasks: updated_tasks.into_iter().map(|t| (*t).clone()).collect(),
     }
 }
 
@@ -4353,7 +4353,7 @@ fn test_optimistic_root_restore_round_trip_yields_in_progress_optimistic_root() 
                 last_modified_at: Utc::now().naive_utc(),
                 summary: None,
             },
-            tasks: updated_tasks,
+            tasks: updated_tasks.into_iter().map(|t| (*t).clone()).collect(),
         };
         let restored = convert_persisted_conversation_to_ai_conversation_with_metadata(persisted)
             .expect("empty-tasks restore must succeed");
@@ -5455,6 +5455,175 @@ fn test_forget_terminal_view_drops_per_view_maps_and_keeps_conversations() {
     });
 }
 
+/// A done conversation with one exchange, restored for `view`: what `forget_terminal_view`
+/// evicts from memory when SQLite can hand it back (#1202).
+fn restore_done_conversation_for_view(
+    app: &mut App,
+    history_model: &warpui::ModelHandle<BlocklistAIHistoryModel>,
+    view: EntityId,
+) -> AIConversationId {
+    let conversation_id = AIConversationId::new();
+    let persisted_conversation = persisted_agent_conversation_for_test(
+        conversation_id,
+        Utc::now().naive_utc(),
+        vec![
+            byop_user_query_message("user-query-1", "request-1", "list files", None),
+            byop_tool_call_message("root-task", "tool-call-1", "call_1"),
+        ],
+    );
+    let conversation =
+        convert_persisted_conversation_to_ai_conversation_with_metadata(persisted_conversation)
+            .expect("persisted conversation should restore");
+    history_model.update(app, |history_model, ctx| {
+        history_model.restore_conversations(view, vec![conversation], ctx);
+    });
+    conversation_id
+}
+
+/// #1202: closing the tab of a done conversation drops it from memory only when SQLite holds it.
+/// With `persist_conversations` off nothing was ever written, so the conversation stays in
+/// memory; evicting it would lose it while the history list still offers it.
+#[test]
+fn forget_terminal_view_keeps_a_done_conversation_when_conversations_are_not_persisted() {
+    use settings::Setting as _;
+    use warpui::SingletonEntity as _;
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.update(|ctx| {
+            crate::terminal::general_settings::GeneralSettings::handle(ctx).update(
+                ctx,
+                |settings, ctx| {
+                    settings
+                        .persist_conversations
+                        .set_value(false, ctx)
+                        .expect("setting should update");
+                },
+            );
+        });
+        let _receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_some(),
+                "a conversation that was never persisted must stay in memory"
+            );
+            assert!(model.all_conversations_metadata.contains_key(&id));
+            assert!(
+                !model
+                    .live_conversation_ids_for_terminal_view
+                    .contains_key(&view)
+            );
+        });
+    });
+}
+
+/// #1202: the same when persistence is on but there is no SQLite writer to have written it.
+#[test]
+fn forget_terminal_view_keeps_a_done_conversation_without_a_sqlite_writer() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let mut global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        global_resource_handles.model_event_sender = None;
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_some(),
+                "a conversation no writer could have persisted must stay in memory"
+            );
+        });
+    });
+}
+
+/// #1202/#1252: with persistence on and a writer present, the done conversation leaves memory
+/// once the writer has answered the barrier queued behind its last write, and stays in the
+/// history list to be reloaded from SQLite.
+#[test]
+fn forget_terminal_view_evicts_a_done_conversation_once_sqlite_has_written_it() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+        while receiver.try_recv().is_ok() {}
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_some(),
+                "not evicted before the writer has caught up"
+            );
+        });
+        let Ok(ModelEvent::WriteBarrier(barrier)) = receiver.try_recv() else {
+            panic!("a write barrier must be queued behind the conversation's writes");
+        };
+        barrier.reached();
+        for _ in 0..50 {
+            futures_lite::future::yield_now().await;
+            if history_model.read(&app, |model, _| model.conversation(&id).is_none()) {
+                break;
+            }
+        }
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_none(),
+                "a persisted, done conversation is dropped from memory once written"
+            );
+            assert!(
+                model.all_conversations_metadata.contains_key(&id),
+                "it stays in the history list"
+            );
+        });
+    });
+}
+
+/// #1252: a barrier the writer never answers (it stopped, or dropped the event) keeps the
+/// conversation in memory rather than evicting a copy SQLite may not hold.
+#[test]
+fn forget_terminal_view_keeps_the_conversation_while_the_writer_has_not_answered() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        let receiver = install_byop_preflight_sqlite_receiver(&mut app);
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let view = EntityId::new();
+        let id = restore_done_conversation_for_view(&mut app, &history_model, view);
+        while receiver.try_recv().is_ok() {}
+
+        history_model.update(&mut app, |model, ctx| model.forget_terminal_view(view, ctx));
+        let Ok(ModelEvent::WriteBarrier(barrier)) = receiver.try_recv() else {
+            panic!("a write barrier must be queued");
+        };
+        // The writer went away with the barrier unanswered.
+        drop(barrier);
+        for _ in 0..10 {
+            futures_lite::future::yield_now().await;
+        }
+        history_model.read(&app, |model, _| {
+            assert!(
+                model.conversation(&id).is_some(),
+                "an unanswered barrier must not evict"
+            );
+        });
+    });
+}
+
 /// #972: a title delivered by `UpdateTaskDescription` (e.g. generated after the
 /// response finished) must be written to the SQLite writer immediately, not
 /// only with the next exchange or on clean shutdown.
@@ -5817,4 +5986,94 @@ fn test_byop_preflight_persistence_failure_sees_through_update_history_error() {
         UpdateConversationError::TaskNotFound,
     ));
     assert!(super::byop_preflight_persistence_failure(&unrelated).is_none());
+}
+
+/// Loading a not-in-memory conversation returns a future that resolves (here to `None`, since the
+/// test model has no database); the database read happens on a worker thread, not inside the
+/// `load_conversation_data` call itself.
+#[cfg(feature = "local_fs")]
+#[test]
+fn load_conversation_data_resolves_through_worker_thread() {
+    let mut model = BlocklistAIHistoryModel::new_for_test();
+    let conversation_id = AIConversationId::new();
+    model.all_conversations_metadata.insert(
+        conversation_id,
+        AIConversationMetadata {
+            id: conversation_id,
+            title: "t".to_string(),
+            initial_query: String::new(),
+            last_modified_at: Utc::now().naive_utc(),
+            initial_working_directory: None,
+            credits_spent: None,
+            server_conversation_token: None,
+            has_local_data: true,
+            artifacts: vec![],
+            ambient_agent_task_id: None,
+            parent_conversation_id: None,
+            parent_agent_id: None,
+        },
+    );
+    let future = model.load_conversation_data(conversation_id);
+    assert!(futures::executor::block_on(future).is_none());
+    assert!(
+        super::conversation_loader::read_conversation_from_db(None, &conversation_id).is_none()
+    );
+}
+
+/// #1363: startup with orchestration children whose rows carry no tasks does no DB read on the
+/// constructing (UI) thread: they are queued for off-thread hydration and are not in memory yet.
+/// When a load lands the child appears; a child whose parent was closed meanwhile, or that a pane
+/// already restored, is left alone.
+#[test]
+fn test_orchestration_children_without_tasks_hydrate_asynchronously() {
+    let parent_id = AIConversationId::new();
+    let child_ids: Vec<_> = (0..3).map(|_| AIConversationId::new()).collect();
+    let now = Utc::now().naive_utc();
+    let mut conversations = vec![persisted_agent_conversation_with_data(
+        parent_id,
+        empty_agent_conversation_data_for_test(),
+        now - chrono::Duration::seconds(10),
+        Some("Parent query"),
+    )];
+    for child_id in &child_ids {
+        let mut row = persisted_agent_conversation_with_data(
+            *child_id,
+            AgentConversationData {
+                parent_conversation_id: Some(parent_id.to_string()),
+                ..empty_agent_conversation_data_for_test()
+            },
+            now,
+            None,
+        );
+        row.conversation.summary = Some(
+            serde_json::to_string(&AgentConversationSummary {
+                initial_query: String::new(),
+                title: String::new(),
+                initial_working_directory: None,
+                is_restorable: true,
+                is_unlisted_auto_code_diff: false,
+            })
+            .unwrap(),
+        );
+        conversations.push(row);
+    }
+
+    let mut model = BlocklistAIHistoryModel::new(vec![], vec![], &conversations);
+    for child_id in &child_ids {
+        assert!(
+            model.conversation(child_id).is_none(),
+            "no synchronous read: the child is not in memory right after construction"
+        );
+    }
+    assert_eq!(model.child_conversation_ids_of(&parent_id).len(), 3);
+    assert_eq!(model.pending_child_hydrations.len(), 3);
+
+    // First child lands: appears.
+    model.finish_orchestration_child_hydration(child_ids[0], Some(AIConversation::new(false)));
+    assert!(model.conversation(&child_ids[0]).is_some());
+
+    // Parent closed before the second child lands: nothing is inserted.
+    model.children_by_parent.remove(&parent_id);
+    model.finish_orchestration_child_hydration(child_ids[1], Some(AIConversation::new(false)));
+    assert!(model.conversation(&child_ids[1]).is_none());
 }

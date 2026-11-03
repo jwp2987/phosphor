@@ -311,6 +311,10 @@ pub struct LocalRepoMetadataModel {
     /// alias rather than using a one-to-one bidirectional map.
     #[cfg(feature = "local_fs")]
     symlink_targets: HashMap<PathBuf, HashSet<SymlinkTarget>>,
+    /// Per-repo generation for background symlink scans; a result whose epoch no longer matches
+    /// is dropped (#1322).
+    #[cfg(feature = "local_fs")]
+    symlink_scan_epoch: HashMap<StandardizedPath, u64>,
     /// Tracks how each repository is registered with the filesystem watcher, so
     /// on-demand per-directory watches (see [`Self::watch_subdir`]) can be
     /// registered/unregistered without duplicating or leaking OS watches.
@@ -336,6 +340,40 @@ struct RepoUpdate {
 struct SymlinkTarget {
     repo_path: StandardizedPath,
     current_path: PathBuf,
+}
+
+/// Blocking directory scan behind symlink-target tracking; run it off the UI thread.
+#[cfg(feature = "local_fs")]
+fn scan_symlink_targets(
+    repo_path: &StandardizedPath,
+    interests: &[PathBuf],
+) -> Vec<(PathBuf, SymlinkTarget)> {
+    let mut found = Vec::new();
+    let Some(local_repo_path) = repo_path.to_local_path() else {
+        return found;
+    };
+    for interest in interests {
+        let Ok(entries) = std::fs::read_dir(local_repo_path.join(interest)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let current_path = entry.path();
+            if !current_path.is_symlink() || !current_path.is_dir() {
+                continue;
+            }
+            let Ok(original_path) = dunce::canonicalize(&current_path) else {
+                continue;
+            };
+            found.push((
+                original_path,
+                SymlinkTarget {
+                    repo_path: repo_path.clone(),
+                    current_path,
+                },
+            ));
+        }
+    }
+    found
 }
 
 /// Describes a single file-tree mutation computed on a background thread.
@@ -421,6 +459,8 @@ impl LocalRepoMetadataModel {
             emit_incremental_updates: false,
             #[cfg(feature = "local_fs")]
             symlink_targets: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            symlink_scan_epoch: HashMap::new(),
             #[cfg(feature = "local_fs")]
             repo_watches: HashMap::new(),
             auto_indexed: std::collections::HashSet::new(),
@@ -770,7 +810,11 @@ impl LocalRepoMetadataModel {
     }
 
     /// Synchronizes producer-side target watches for symlinked children of ignored-path interests.
-    #[cfg(feature = "local_fs")]
+    ///
+    /// Blocking: does `read_dir` + `canonicalize` inline. Production callers on the UI thread
+    /// use [`Self::schedule_symlink_refresh`] instead (#1322); this stays for tests and as the
+    /// single apply path.
+    #[cfg(all(test, feature = "local_fs"))]
     fn refresh_symlink_targets(
         &mut self,
         repo_path: &StandardizedPath,
@@ -779,31 +823,78 @@ impl LocalRepoMetadataModel {
         if !self.emit_incremental_updates {
             return;
         }
+        let scan = scan_symlink_targets(repo_path, &self.force_included_paths);
+        self.apply_symlink_scan(repo_path, scan, ctx);
+    }
+
+    /// Off-main-thread variant of [`Self::refresh_symlink_targets`]: the directory scan runs on
+    /// the background executor and only the result is applied on the main thread. A per-repo
+    /// epoch drops a result that was superseded by a newer refresh or by the repo being
+    /// cleared/removed while the scan was in flight.
+    #[cfg(feature = "local_fs")]
+    fn schedule_symlink_refresh(
+        &mut self,
+        repo_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.emit_incremental_updates {
+            return;
+        }
+        let epoch = self.next_symlink_epoch(repo_path);
+        let scan_repo_path = repo_path.clone();
+        let interests = self.force_included_paths.clone();
+        let repo_path = repo_path.clone();
+        let _ = ctx.spawn(
+            async move { scan_symlink_targets(&scan_repo_path, &interests) },
+            move |model, scan, ctx| {
+                if !model.symlink_epoch_is_current(&repo_path, epoch) {
+                    return;
+                }
+                if !model.repositories.contains_key(&repo_path) {
+                    return;
+                }
+                model.apply_symlink_scan(&repo_path, scan, ctx);
+            },
+        );
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn next_symlink_epoch(&mut self, repo_path: &StandardizedPath) -> u64 {
+        // Epochs come from one process-wide counter, never from the per-repo slot, so removing
+        // a repo's slot (see `forget_symlink_epoch`) can never let a stale in-flight scan match
+        // a later epoch of the same repo path (#1382).
+        static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let epoch = NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.symlink_scan_epoch.insert(repo_path.clone(), epoch);
+        epoch
+    }
+
+    /// Drops the epoch slot of a repo that is gone; any scan still in flight for it no longer
+    /// matches and is ignored, and the map does not keep an entry per repo ever seen.
+    #[cfg(feature = "local_fs")]
+    fn forget_symlink_epoch(&mut self, repo_path: &StandardizedPath) {
+        self.symlink_scan_epoch.remove(repo_path);
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn symlink_epoch_is_current(&self, repo_path: &StandardizedPath, epoch: u64) -> bool {
+        self.symlink_scan_epoch.get(repo_path) == Some(&epoch)
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn apply_symlink_scan(
+        &mut self,
+        repo_path: &StandardizedPath,
+        scan: Vec<(PathBuf, SymlinkTarget)>,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let previously_watched = self.symlink_targets.keys().cloned().collect::<HashSet<_>>();
         self.remove_symlink_targets_for_repo(repo_path);
-        let Some(local_repo_path) = repo_path.to_local_path() else {
-            return;
-        };
-        for interest in &self.force_included_paths {
-            let Ok(entries) = std::fs::read_dir(local_repo_path.join(interest)) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let current_path = entry.path();
-                if !current_path.is_symlink() || !current_path.is_dir() {
-                    continue;
-                }
-                let Ok(original_path) = dunce::canonicalize(&current_path) else {
-                    continue;
-                };
-                self.symlink_targets
-                    .entry(original_path)
-                    .or_default()
-                    .insert(SymlinkTarget {
-                        repo_path: repo_path.clone(),
-                        current_path,
-                    });
-            }
+        for (original_path, target) in scan {
+            self.symlink_targets
+                .entry(original_path)
+                .or_default()
+                .insert(target);
         }
         self.sync_symlink_target_watches(previously_watched, ctx);
     }
@@ -826,6 +917,8 @@ impl LocalRepoMetadataModel {
         repo_path: &StandardizedPath,
         ctx: &mut ModelContext<Self>,
     ) {
+        // Invalidate any in-flight background scan for this repo (its epoch no longer matches).
+        self.forget_symlink_epoch(repo_path);
         let previously_watched = self.symlink_targets.keys().cloned().collect();
         self.remove_symlink_targets_for_repo(repo_path);
         self.sync_symlink_target_watches(previously_watched, ctx);
@@ -982,7 +1075,7 @@ impl LocalRepoMetadataModel {
                                 .entry(repo_path.clone())
                                 .or_default()
                                 .replace_subtrees(&removed_roots, discovered_results);
-                            model.refresh_symlink_targets(&repo_path, ctx);
+                            model.schedule_symlink_refresh(&repo_path, ctx);
                             // `apply_file_tree_mutations` always returns a default
                             // (empty) `standing_results_delta` since it only sees
                             // file-tree mutations, not the standing-query delta
@@ -1185,7 +1278,7 @@ impl LocalRepoMetadataModel {
         let repo_path_for_event = repo_path.clone();
         self.replace_repository_state(repo_path, IndexedRepoState::Indexed(state));
         #[cfg(feature = "local_fs")]
-        self.refresh_symlink_targets(&repo_path_for_event, ctx);
+        self.schedule_symlink_refresh(&repo_path_for_event, ctx);
 
         ctx.emit(RepositoryMetadataEvent::RepositoryUpdated {
             path: repo_path_for_event,

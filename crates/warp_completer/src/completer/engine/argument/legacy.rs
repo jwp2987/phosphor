@@ -757,7 +757,7 @@ async fn generate_suggestions_for_argument_type(
             };
 
             let Ok(output) = generator_context
-                .execute_command_at_pwd(&shell_command, session_env_vars.cloned())
+                .execute_generator_at_pwd(&shell_command, session_env_vars.cloned())
                 .await
             else {
                 return vec![];

@@ -368,3 +368,76 @@ fn test_shell_native_wsl_paths() {
         "/home/user/file.txt"
     );
 }
+
+#[test]
+fn expand_tilde_against_uses_the_given_home_not_the_local_one() {
+    assert_eq!(
+        expand_tilde_against("~/proj/a.rs", Some("/home/remote")),
+        "/home/remote/proj/a.rs"
+    );
+    assert_eq!(
+        expand_tilde_against("~", Some("/home/remote")),
+        "/home/remote"
+    );
+    assert_eq!(
+        expand_tilde_against("~/a", Some("/home/remote/")),
+        "/home/remote/a"
+    );
+}
+
+#[test]
+fn expand_tilde_against_leaves_everything_else_alone() {
+    assert_eq!(expand_tilde_against("/etc/hosts", Some("/h")), "/etc/hosts");
+    assert_eq!(expand_tilde_against("rel/x", Some("/h")), "rel/x");
+    assert_eq!(expand_tilde_against("~bob/x", Some("/h")), "~bob/x");
+    assert_eq!(expand_tilde_against("~/x", None), "~/x");
+    assert_eq!(expand_tilde_against("~/x", Some("")), "~/x");
+}
+
+/// #1278: a remote session is joined and normalised with the REMOTE OS's rules, whatever the
+/// local OS is. The local OS is passed explicitly so this runs on any host.
+#[test]
+fn remote_session_uses_the_remote_oss_rules() {
+    let unix = PathHost::for_remote(Some("Linux"));
+    let win = PathHost::for_remote(Some("Windows"));
+    assert_eq!(PathHost::for_remote(Some("MacOS")), PathHost::RemoteUnix);
+    // Unknown remote OS keeps the previous (local) behaviour.
+    assert_eq!(PathHost::for_remote(None), PathHost::Local);
+    assert_eq!(PathHost::for_remote(Some("plan9")), PathHost::Local);
+
+    // Windows local + Linux remote: unix. Linux local + Windows remote: windows.
+    assert!(remote_style_for_test(false, unix));
+    assert!(!remote_style_for_test(true, win));
+    // Local stays OS-driven.
+    assert!(!remote_style_for_test(false, PathHost::Local));
+    assert!(remote_style_for_test(true, PathHost::Local));
+
+    assert_eq!(
+        join_for_test(
+            &["/home/u/proj", "src", "a.rs"],
+            remote_style_for_test(false, unix)
+        ),
+        "/home/u/proj/src/a.rs"
+    );
+    assert_eq!(
+        normalize_for_test(
+            "../lib/b.rs",
+            "/home/u/proj",
+            remote_style_for_test(false, unix)
+        ),
+        "/home/u/lib/b.rs"
+    );
+    // A Windows remote driven from a Linux host joins with backslashes.
+    assert_eq!(
+        join_for_test(&["C:\\proj", "src"], remote_style_for_test(true, win)),
+        "C:\\proj\\src"
+    );
+    assert_eq!(
+        normalize_for_test(
+            "..\\lib\\b.rs",
+            "C:\\proj\\app",
+            remote_style_for_test(true, win)
+        ),
+        "C:\\proj\\lib\\b.rs"
+    );
+}

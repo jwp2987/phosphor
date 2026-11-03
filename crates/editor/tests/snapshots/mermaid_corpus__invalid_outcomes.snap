@@ -1,0 +1,13 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: out
+---
+invalid_unknown_type.mmd: Err (app falls back to showing the source)
+invalid_garbage.mmd: Ok (2 labels)
+invalid_empty_flowchart.mmd: Ok (0 labels)
+invalid_bad_direction.mmd: Err (app falls back to showing the source)
+invalid_sequence.mmd: Err (app falls back to showing the source)
+invalid_pie.mmd: Err (app falls back to showing the source)
+invalid_gantt.mmd: Err (app falls back to showing the source)
+invalid_empty.mmd: Err (app falls back to showing the source)
+invalid_comment_only.mmd: Err (app falls back to showing the source)

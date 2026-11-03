@@ -604,3 +604,120 @@ fn test_stale_async_results_do_not_poison_newer_query() {
         });
     });
 }
+
+fn result_ids(mixer: &SearchMixer<TestAction>) -> Vec<String> {
+    mixer
+        .results()
+        .iter()
+        .map(|result| result.accept_result().id)
+        .collect()
+}
+
+fn actions_query() -> Query {
+    Query {
+        text: "a".to_string(),
+        filters: HashSet::from([QueryFilter::Actions]),
+    }
+}
+
+fn slow_async_source(id: &str) -> DelayedAsyncSource {
+    DelayedAsyncSource {
+        delay: Duration::from_millis(200),
+        result: TestSearchItem {
+            id: id.to_string(),
+            priority_tier: 0,
+            score: 0.0,
+            dedup_key: None,
+        },
+    }
+}
+
+const NO_DEBOUNCE: AddAsyncSourceOptions = AddAsyncSourceOptions {
+    debounce_interval: None,
+    run_in_zero_state: false,
+    run_when_unfiltered: false,
+};
+
+#[test]
+fn test_early_sync_commit_shows_sync_results_immediately_and_appends_async_below() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let mixer = app.add_model(|_| SearchMixer::<TestAction>::new());
+        mixer.update(&mut app, |mixer, ctx| {
+            mixer.set_early_sync_commit(true);
+            mixer.add_sync_source(
+                StaticSyncSource {
+                    result: TestSearchItem {
+                        id: "sync".to_string(),
+                        priority_tier: 0,
+                        score: 10.0,
+                        dedup_key: None,
+                    },
+                },
+                [QueryFilter::Actions],
+            );
+            mixer.add_async_source(
+                slow_async_source("late_async"),
+                [QueryFilter::Actions],
+                NO_DEBOUNCE,
+                ctx,
+            );
+            mixer.run_query(actions_query(), ctx);
+        });
+
+        // Right after run_query (the async source needs 200 ms) the sync result is already
+        // visible. Without early commit this is empty until the async source finishes or the
+        // 500 ms timeout passes.
+        app.read(|app| {
+            let mixer = mixer.as_ref(app);
+            assert_eq!(result_ids(mixer), vec!["sync"]);
+            assert!(!mixer.is_loading());
+            assert!(!mixer.last_change_was_append());
+        });
+
+        Timer::after(Duration::from_millis(400)).await;
+
+        // The async result arrives afterwards. Top-down lists render `results` reversed, so
+        // it sits below the sync result, and the change is flagged as an append so the view
+        // keeps the selection where it is.
+        app.read(|app| {
+            let mixer = mixer.as_ref(app);
+            assert_eq!(result_ids(mixer), vec!["late_async", "sync"]);
+            assert!(mixer.last_change_was_append());
+        });
+    });
+}
+
+#[test]
+fn test_early_sync_commit_does_not_commit_an_empty_result_set() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let mixer = app.add_model(|_| SearchMixer::<TestAction>::new());
+        mixer.update(&mut app, |mixer, ctx| {
+            mixer.set_early_sync_commit(true);
+            mixer.add_async_source(
+                slow_async_source("only_async"),
+                [QueryFilter::Actions],
+                NO_DEBOUNCE,
+                ctx,
+            );
+            mixer.run_query(actions_query(), ctx);
+        });
+
+        // Nothing to show yet: stay in the loading state instead of flashing "no results".
+        app.read(|app| {
+            let mixer = mixer.as_ref(app);
+            assert!(mixer.is_loading());
+            assert!(result_ids(mixer).is_empty());
+        });
+
+        Timer::after(Duration::from_millis(400)).await;
+
+        app.read(|app| {
+            let mixer = mixer.as_ref(app);
+            assert!(!mixer.is_loading());
+            assert_eq!(result_ids(mixer), vec!["only_async"]);
+            assert!(!mixer.last_change_was_append());
+        });
+    });
+}

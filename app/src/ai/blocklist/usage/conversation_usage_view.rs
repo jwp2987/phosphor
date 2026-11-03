@@ -1668,7 +1668,7 @@ mod tests {
     /// have a `parent_conversation_id` at all.
     #[test]
     fn effective_usage_info_and_timing_fall_back_to_the_snapshot_without_a_parent_conversation() {
-        App::test((), |mut app| async move {
+        App::test((), |app| async move {
             let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
             let usage_info = ConversationUsageInfo {

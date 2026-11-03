@@ -375,3 +375,78 @@ fn reopen_remote_buffer_keeps_the_buffer_when_the_host_has_no_client() {
         });
     })
 }
+
+/// #1478: the registry prunes on the buffer's drop event, with no explicit sweep, and a file
+/// reopened after the close gets a fresh registration (a new `FileId`, count back to 1).
+#[cfg(feature = "local_fs")]
+#[test]
+fn dropped_buffer_is_pruned_on_drop_and_reopen_registers_afresh() {
+    use super::BufferLocation;
+
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let dir = std::env::temp_dir().join(format!("gbm-reopen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "line\n".repeat(10)).unwrap();
+
+        let state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.open(BufferLocation::Local(path.clone()), ctx)
+        });
+        let first_id = state.file_id;
+        let handle = gbm(&app);
+        app.read(|ctx| assert_eq!(handle.as_ref(ctx).buffer_count(), 1));
+
+        drop(state);
+        // Event-driven: the drop closes the buffer's notifier channel, whose callback prunes.
+        for _ in 0..1000 {
+            if app.read(|ctx| handle.as_ref(ctx).buffer_count() == 0) {
+                break;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        app.read(|ctx| assert_eq!(handle.as_ref(ctx).buffer_count(), 0));
+
+        let reopened = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.open(BufferLocation::Local(path.clone()), ctx)
+        });
+        assert_ne!(reopened.file_id, first_id);
+        app.read(|ctx| assert_eq!(handle.as_ref(ctx).buffer_count(), 1));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// #1329: once the last strong handle to a buffer is dropped (the editor closed),
+/// `remove_deallocated_buffers` must drop the model's bookkeeping for it, so the file's content
+/// is not kept alive by `GlobalBufferModel`.
+#[cfg(feature = "local_fs")]
+#[test]
+fn dropping_the_last_buffer_handle_lets_the_model_release_it() {
+    use super::BufferLocation;
+
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let dir = std::env::temp_dir().join(format!("gbm-release-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.txt");
+        std::fs::write(&path, "line\n".repeat(1000)).unwrap();
+
+        let state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.open(BufferLocation::Local(path.clone()), ctx)
+        });
+        let file_id = state.file_id;
+        let handle = gbm(&app);
+        app.read(|ctx| assert!(handle.as_ref(ctx).buffers.contains_key(&file_id)));
+
+        drop(state);
+        gbm(&app).update(&mut app, |gbm, ctx| gbm.remove_deallocated_buffers(ctx));
+        app.read(|ctx| assert!(!handle.as_ref(ctx).buffers.contains_key(&file_id)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}

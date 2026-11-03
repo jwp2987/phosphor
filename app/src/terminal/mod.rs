@@ -19,6 +19,7 @@ use warpui::SingletonEntity;
 use warpui::WindowId;
 pub use {history::History, history::HistoryEntry, history::HistoryEvent, history::ShellHost};
 mod block_list_settings;
+pub mod model_lock_trace;
 
 mod alias;
 pub(crate) mod alt_screen;
@@ -28,6 +29,8 @@ pub use audible_bell::AudibleBell;
 pub mod available_shells;
 
 mod block_filter;
+pub(crate) mod input_queue;
+pub(crate) mod paste_sequencer;
 pub mod block_list_element;
 pub mod block_list_viewport;
 pub mod blockgrid_element;
@@ -60,12 +63,12 @@ mod meta_shortcuts;
 pub mod mock_terminal_manager;
 pub mod model;
 pub mod model_events;
+pub(crate) mod pane_key;
 pub mod platform;
 pub mod profile_model_selector;
 pub mod prompt;
 pub mod prompt_render_helper;
 pub mod recorder;
-pub mod remote_tty;
 pub mod resizable_data;
 pub mod rich_history;
 pub mod safe_mode_settings;
@@ -493,7 +496,6 @@ impl SizeInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ClipboardType {
     Clipboard,
     Selection,

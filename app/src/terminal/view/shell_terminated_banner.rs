@@ -3,14 +3,14 @@ use std::{borrow::Cow, cell::RefCell};
 use warp_core::ui::{
     appearance::Appearance,
     builder::UiBuilder,
-    theme::{color::internal_colors, WarpTheme},
+    theme::{WarpTheme, color::internal_colors},
 };
 use warpui::{
+    Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
     clipboard::ClipboardContent,
     elements::*,
     text_layout::ClipConfig,
     ui_components::{button::ButtonVariant, components::UiComponent as _},
-    Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
 };
 
 use crate::{terminal::model::terminal_model::ExitReason, ui_components, util::links};
@@ -119,14 +119,7 @@ impl TypedActionView for ShellTerminatedBanner {
 }
 
 pub enum TerminationType {
-    /// The shell process terminated normally.
-    ///
-    /// TODO(vorporeal): Use this instead of the old inline banner.  Requires
-    /// updating styling to support this properly.
-    #[allow(dead_code)]
-    Normal,
     /// The PTY failed to spawn and the shell process never started.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     PtySpawnFailure { pty_spawn_error: anyhow::Error },
     /// The shell process terminated before we were able to bootstrap.
     Premature {
@@ -140,7 +133,6 @@ impl TerminationType {
         const ICON_SIZE: f32 = 16.;
 
         let icon_type = match self {
-            TerminationType::Normal => ui_components::icons::Icon::Info,
             TerminationType::Premature { .. } | TerminationType::PtySpawnFailure { .. } => {
                 ui_components::icons::Icon::Warning
             }
@@ -162,7 +154,6 @@ impl TerminationType {
 
     fn text(&self, appearance: &Appearance) -> Box<dyn Element> {
         let text = match self {
-            TerminationType::Normal => crate::t!("terminal-shell-process-exited"),
             TerminationType::PtySpawnFailure { .. } => {
                 crate::t!("terminal-shell-process-could-not-start")
             }
@@ -179,7 +170,6 @@ impl TerminationType {
 
     fn subtext(&self, appearance: &Appearance) -> Option<Box<dyn Element>> {
         let text: Cow<str> = match self {
-            TerminationType::Normal => return None,
             TerminationType::PtySpawnFailure { pty_spawn_error } => {
                 format!("{pty_spawn_error:#}").into()
             }
@@ -204,7 +194,6 @@ impl TerminationType {
         handles: &mut Vec<MouseStateHandle>,
     ) -> Vec<Box<dyn Element>> {
         match self {
-            TerminationType::Normal => vec![],
             TerminationType::Premature { .. } => {
                 let ui_builder = inverted_color_ui_builder(appearance);
 

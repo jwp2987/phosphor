@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::ai::agent::conversation::ConversationStatus;
 use warp_multi_agent_api as api;
 use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START, C0};
-use warpui::{notification::UserNotification, Presenter, WindowInvalidation};
+use warpui::{Presenter, WindowInvalidation, notification::UserNotification};
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
 use crate::ai::agent::task::TaskId;
@@ -14,13 +14,13 @@ use crate::ai::agent::{
     AIAgentActionId, AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
     AIAgentOutputStatus, UserQueryMode,
 };
-use crate::ai::llms::{LLMId, LLMPreferences};
+use crate::ai::blocklist::SerializedBlockListItem;
 #[cfg(windows)]
 use crate::ai::blocklist::block::cli::CLISubagentViewEvent;
 use crate::ai::blocklist::block::cli_controller::{
     CLISubagentEvent, LongRunningCommandControlState, UserTakeOverReason,
 };
-use crate::ai::blocklist::SerializedBlockListItem;
+use crate::ai::llms::{LLMId, LLMPreferences};
 use warpui::App;
 
 use crate::pane_group::focus_state::PaneGroupFocusState;
@@ -37,14 +37,15 @@ use crate::editor::{AutosuggestionLocation, AutosuggestionType};
 use crate::settings::{AISettings, AppEditorSettings, RightClickBehavior, WarpPromptSeparator};
 use crate::tab::NewSessionMenuItem;
 
+use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::ai::blocklist::agent_view::toolbar_item::AgentToolbarItemKind;
 use crate::ai::blocklist::controller::response_stream::{ResponseStream, ResponseStreamId};
 use crate::ai::blocklist::{
-    agent_view::AgentViewEntryOrigin, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    FakeAIBlockModel, InputConfig, InputType,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, FakeAIBlockModel, InputConfig, InputType,
+    agent_view::AgentViewEntryOrigin,
 };
-use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::features::FeatureFlag;
+use crate::terminal::CLIAgent;
 use crate::terminal::cli_agent_sessions::event::{
     CLI_AGENT_NOTIFICATION_SENTINEL, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource,
     CLIAgentEventType,
@@ -54,7 +55,6 @@ use crate::terminal::cli_agent_sessions::{
     CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentRichInputCloseReason, CLIAgentSession,
     CLIAgentSessionContext, CLIAgentSessionStatus, CLIAgentSessionsModel,
 };
-use crate::terminal::CLIAgent;
 
 use crate::terminal::block_list_element::{
     BlockListMenuSource, SnackbarPoint, SnackbarTranslationMode,
@@ -69,7 +69,7 @@ use crate::terminal::model::ansi::{BootstrappedValue, PreexecValue};
 use crate::terminal::model::block::{
     AgentInteractionMetadata, AgentViewVisibility, BlockId, SerializedAIMetadata, SerializedBlock,
 };
-use crate::terminal::model::blocks::{insert_block, TotalIndex};
+use crate::terminal::model::blocks::{TotalIndex, insert_block};
 use crate::terminal::model::terminal_model::WithinBlock;
 use crate::terminal::model::typeahead_handoff::{ActiveDecision, HandoffState, HeldAgentCommand};
 use crate::terminal::view::load_ai_conversation::{
@@ -113,6 +113,19 @@ fn blocked_on_confirmation_no_longer_hides_the_input() {
 fn expanded_running_commands_still_hides_the_input() {
     // Unchanged pre-existing behavior.
     assert!(should_hide_input_for_blocked_ai_block(true));
+}
+
+// #1195/#1350: an approval card never takes focus from the focused input, however long ago the
+// user last typed (a >1 s pause with an empty input used to hand the card focus, so the next Enter
+// approved an unread command). Only with the input unfocused may the card take focus.
+#[test]
+fn focused_input_keeps_focus_regardless_of_typing_age() {
+    assert!(!approval_card_may_take_focus(true));
+}
+
+#[test]
+fn unfocused_input_lets_the_approval_card_take_focus() {
+    assert!(approval_card_may_take_focus(false));
 }
 
 fn tool_call_message_with_tool_for_test(
@@ -584,9 +597,7 @@ fn exiting_restored_cli_subagent_agent_view_inserts_entry_card() {
     });
 }
 
-fn assert_exiting_restored_ordinary_agent_view_inserts_entry_card(
-    origin: AgentViewEntryOrigin,
-) {
+fn assert_exiting_restored_ordinary_agent_view_inserts_entry_card(origin: AgentViewEntryOrigin) {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
@@ -641,10 +652,8 @@ fn skips_cli_subagent_view_restore_without_matching_ai_metadata() {
 
         let block_id = BlockId::from("cli-block-1".to_string());
         let task_id = TaskId::new("cli-task-1".to_string());
-        let conversation = build_restored_conversation_with_cli_subagent_for_test(
-            block_id.clone(),
-            task_id,
-        );
+        let conversation =
+            build_restored_conversation_with_cli_subagent_for_test(block_id.clone(), task_id);
         let mut serialized_blocks =
             serialized_blocks_for_restored_cli_subagent_for_test(&conversation);
         clear_ai_metadata_for_serialized_blocks_for_test(&mut serialized_blocks);
@@ -707,7 +716,9 @@ fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
         initialize_app_for_terminal_view(&mut app);
         // FinishedSubagent triggers sidecar persistence, which needs GlobalResourceHandlesProvider.
         let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
 
         // First restore a history session with a CLI subagent, establishing a command block with matching metadata
         // and a RestoredReadOnly view, simulating the state after an SSH session is expanded in the agent view.
@@ -1684,9 +1695,11 @@ fn unregister_cli_agent_session_restores_unlocked_input_config() {
                 sessions.remove_session(view.view_id, ctx);
             });
             assert!(!view.has_active_cli_agent_input_session(ctx));
-            assert!(CLIAgentSessionsModel::as_ref(ctx)
-                .session(view.view_id)
-                .is_none());
+            assert!(
+                CLIAgentSessionsModel::as_ref(ctx)
+                    .session(view.view_id)
+                    .is_none()
+            );
         });
 
         terminal.read(&app, |view, ctx| {
@@ -1839,10 +1852,12 @@ fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
         let terminal = add_window_with_terminal(&mut app, None);
 
         terminal.read(&app, |view, ctx| {
-            assert!(!view
-                .keymap_context(ctx)
-                .set
-                .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY));
+            assert!(
+                !view
+                    .keymap_context(ctx)
+                    .set
+                    .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY)
+            );
         });
 
         terminal.update(&mut app, |view, ctx| {
@@ -1852,10 +1867,11 @@ fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
         });
 
         terminal.read(&app, |view, ctx| {
-            assert!(view
-                .keymap_context(ctx)
-                .set
-                .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY));
+            assert!(
+                view.keymap_context(ctx)
+                    .set
+                    .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY)
+            );
         });
 
         terminal.update(&mut app, |view, ctx| {
@@ -1865,10 +1881,12 @@ fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
         });
 
         terminal.read(&app, |view, ctx| {
-            assert!(!view
-                .keymap_context(ctx)
-                .set
-                .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY));
+            assert!(
+                !view
+                    .keymap_context(ctx)
+                    .set
+                    .contains(init::ROOT_AMBIENT_AGENT_PANE_KEY)
+            );
         });
     });
 }
@@ -1906,8 +1924,8 @@ fn test_clear_session_flag_state() {
     use warp_terminal::shell::ShellType;
 
     use crate::ai::blocklist::SerializedBlockListItem;
-    use crate::terminal::model::block::SerializedBlock;
     use crate::terminal::ShellHost;
+    use crate::terminal::model::block::SerializedBlock;
 
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -1974,9 +1992,11 @@ fn test_clear_session_flag_state() {
 }
 
 fn assert_block_has_find_match(find_model: &TerminalFindModel, block_index: BlockIndex) {
-    assert!(find_model
-        .block_list_find_run()
-        .is_some_and(|run| run.matches_for_block(block_index).next().is_some()));
+    assert!(
+        find_model
+            .block_list_find_run()
+            .is_some_and(|run| run.matches_for_block(block_index).next().is_some())
+    );
 }
 
 impl TerminalView {
@@ -2229,7 +2249,7 @@ fn context_menu_copy_blocks_prefers_selected_blocks_over_lingering_text_selectio
 
             terminal_view.context_menu_copy_blocks(ctx);
 
-            let copied = ctx.clipboard().read().plain_text;
+            let copied = warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text;
             assert!(
                 copied.contains("output_b"),
                 "expected the selected block B to be copied, got {copied:?}"
@@ -2964,10 +2984,12 @@ fn test_stable_scrolling_during_grid_truncation() {
                 // Create a dummy, finished block and a long-running block.
                 model.simulate_block("ls", "foo");
                 model.simulate_long_running_block("cat", "");
-                assert!(model
-                    .block_list()
-                    .active_block()
-                    .is_active_and_long_running());
+                assert!(
+                    model
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running()
+                );
 
                 // Add enough newlines so that the long-running block spans at
                 // least the viewport and surely exceeds the grid size.
@@ -3245,7 +3267,8 @@ fn test_retained_line_eviction_shifts_view_state_in_one_step() {
 /// scrollback history that lives in flat storage, not just the live grid rows.
 #[test]
 fn test_max_retained_lines_setting_bounds_retained_history() {
-    // Release builds enable this flag; it moves a finished block's scrollback into flat storage.
+    // Shipped builds enable this flag by default (`enabled_features()`); tests start with every
+    // flag off, so force it to move a finished block's scrollback into flat storage.
     let _flat = FeatureFlag::MaximizeFlatStorage.override_enabled(true);
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -5137,12 +5160,15 @@ fn test_scroll_position_doesnt_change_when_block_finished() {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
 
+        // The completed event carries only the block's metadata (no output bytes: persistence
+        // reads those off the UI thread), so the long-running block is told apart by its id.
+        let long_running_block_id: Rc<RefCell<Option<BlockId>>> = Rc::new(RefCell::new(None));
         let (tx, rx) = async_channel::bounded(1);
         app.update(|ctx| {
+            let long_running_block_id = long_running_block_id.clone();
             ctx.subscribe_to_view(&terminal, move |_, event, _| {
                 if let Event::BlockCompleted { block, .. } = event {
-                    let output = std::str::from_utf8(&block.stylized_output).unwrap();
-                    if output.trim() == "lr" {
+                    if long_running_block_id.borrow().as_ref() == Some(&block.id) {
                         tx.try_send(()).expect("Can send over channel");
                     }
                 }
@@ -5170,6 +5196,8 @@ fn test_scroll_position_doesnt_change_when_block_finished() {
             ));
 
             // Finish the block.
+            *long_running_block_id.borrow_mut() =
+                Some(view.model.lock().block_list().active_block().id().clone());
             view.model.lock().finish_block();
 
             scroll_position_before_finished
@@ -5228,12 +5256,13 @@ fn inline_agent_view_exits_when_tagged_in_long_running_command_is_tagged_out() {
                 .set_is_agent_tagged_in(true);
 
             assert!(view.agent_view_controller().as_ref(ctx).is_inline());
-            assert!(view
-                .model
-                .lock()
-                .block_list()
-                .active_block()
-                .is_agent_tagged_in());
+            assert!(
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_tagged_in()
+            );
 
             let model = view.model.lock();
             assert!(view.is_input_box_visible(&model, ctx));
@@ -5349,9 +5378,10 @@ fn completed_user_controlled_lrc_resumes_when_not_suppressed() {
             crate::GlobalResourceHandlesProvider::new(global_resource_handles)
         });
         terminal.update(&mut app, |view, ctx| {
-            let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-                history.start_new_conversation(view.view_id, false, false, ctx)
-            });
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
 
             view.model
                 .lock()
@@ -5366,7 +5396,10 @@ fn completed_user_controlled_lrc_resumes_when_not_suppressed() {
                     conversation_id,
                 );
                 active_block
-                    .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        conversation_id,
+                    )
                     .expect("command should become agent monitored");
                 active_block
                     .take_over_control_for_user(UserTakeOverReason::Stop {
@@ -5408,9 +5441,10 @@ fn completed_user_controlled_lrc_skips_resume_when_suppressed() {
 
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-                history.start_new_conversation(view.view_id, false, false, ctx)
-            });
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
 
             view.model
                 .lock()
@@ -5425,7 +5459,10 @@ fn completed_user_controlled_lrc_skips_resume_when_suppressed() {
                     conversation_id,
                 );
                 active_block
-                    .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        conversation_id,
+                    )
                     .expect("command should become agent monitored");
                 // Mirrors rewind / stop tearing down the conversation.
                 active_block.set_user_control_with_stop_reason();
@@ -5694,10 +5731,12 @@ fn use_agent_footer_renders_for_transfer_handoff_even_when_user_command_footer_s
                 let model = view.model.lock();
                 assert!(!view.should_render_use_agent_footer(&model, ctx));
                 let active_block_index = model.block_list().active_block_index();
-                assert!(model
-                    .block_list()
-                    .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                    .is_none());
+                assert!(
+                    model
+                        .block_list()
+                        .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
+                        .is_none()
+                );
                 // The block-list assertion above is now vacuous -- nothing inserts the
                 // footer there any more (§8 step 3) -- so assert what actually decides
                 // visibility: the window footer bar's per-frame predicate.
@@ -7023,18 +7062,20 @@ fn ctrl_c_does_not_accept_prompt_suggestion_banner() {
                 ctx,
             );
 
-            assert!(view
-                .inline_banners_state
-                .prompt_suggestions_banner
-                .is_some());
+            assert!(
+                view.inline_banners_state
+                    .prompt_suggestions_banner
+                    .is_some()
+            );
 
             // Ctrl-C should not accept the prompt suggestion.
             view.handle_action(&TerminalAction::CtrlC, ctx);
 
-            assert!(view
-                .inline_banners_state
-                .prompt_suggestions_banner
-                .is_some());
+            assert!(
+                view.inline_banners_state
+                    .prompt_suggestions_banner
+                    .is_some()
+            );
         });
     })
 }
@@ -7118,11 +7159,12 @@ fn linear_deeplink_does_not_auto_submit_when_already_in_agent_view() {
         });
 
         terminal.read(&app, |view, ctx| {
-            assert!(view
-                .agent_view_controller()
-                .as_ref(ctx)
-                .agent_view_state()
-                .is_fullscreen());
+            assert!(
+                view.agent_view_controller()
+                    .as_ref(ctx)
+                    .agent_view_state()
+                    .is_fullscreen()
+            );
         });
 
         // Now dispatch the Linear deeplink while already in fullscreen agent view.
@@ -7241,8 +7283,8 @@ fn ctrl_c_after_stop_takeover_cancels_conversation() {
         });
 
         let conversation_id = terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
 
@@ -7306,8 +7348,8 @@ fn stopping_a_conversation_at_an_idle_prompt_writes_no_ctrl_c() {
         });
 
         terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
             assert!(
@@ -7463,7 +7505,7 @@ fn escape_does_not_stop_agent_command_the_agent_is_not_waiting_on() {
     })
 }
 
-/// #850 follow-up: within `LONG_RUNNING_COMMAND_DURATION_MS` of an agent command starting,
+/// #850 follow-up: before an agent command has become interactive (#1373),
 /// ctrl-c fell through to the rich-content path and cancelled the whole conversation. It must
 /// interrupt the command instead, exactly as it does a moment later.
 #[test]
@@ -7478,11 +7520,6 @@ fn ctrl_c_interrupts_agent_command_before_it_counts_as_long_running() {
             let mut model = view.model.lock();
             let active_block = model.block_list_mut().active_block_mut();
             active_block.set_was_long_running(false.into());
-            // A start time in the future holds the block inside the grace window however slowly
-            // the test runs.
-            active_block.set_command_start_time_for_test(
-                std::time::Instant::now() + std::time::Duration::from_secs(3600),
-            );
             assert!(active_block.is_executing());
             assert!(
                 !active_block.is_active_and_long_running(),
@@ -7528,8 +7565,8 @@ fn ctrl_c_interrupts_agent_command_written_but_not_yet_preexeced() {
             });
         });
         let conversation_id = terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
             let mut model = view.model.lock();
@@ -7606,6 +7643,193 @@ fn cancel_execution_event_interrupts_an_agent_held_command_once() {
                     .is_some_and(UserTakeOverReason::is_stop)
             );
         });
+    })
+}
+
+/// #1179: printable keys typed while the agent runs an ordinary command (no CLI subagent, so
+/// `is_agent_in_control` is false) are steer text for the agent's input, never bytes for the
+/// command's pty -- the shell read those as typeahead after the command and Phosphor wiped them.
+/// Old code: `pty_writes` held `abc` and the input stayed empty. Not compiled/run when written.
+#[test]
+fn typing_during_an_agent_driven_command_goes_to_the_input_not_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_in_control()
+            );
+            view.typed_characters_on_terminal("a", ctx);
+            view.typed_characters_on_terminal("bc", ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "no user byte may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "abc");
+        });
+    })
+}
+
+/// #1179: with the input hidden the keys used to be dropped (`refused_with_hidden_input`); while
+/// the agent owns the command they are buffered in the input instead.
+#[test]
+fn typing_during_an_agent_driven_command_with_hidden_input_is_not_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            // Hide the input the way a pending shared-session view does.
+            view.model.lock().set_shared_session_status(
+                crate::terminal::shared_session::SharedSessionStatus::ViewPending,
+            );
+            {
+                let model = view.model.lock();
+                assert!(
+                    !view.is_input_box_visible(&model, ctx),
+                    "precondition: input hidden"
+                );
+            }
+            view.typed_characters_on_terminal("x", ctx);
+        });
+
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
+        });
+    })
+}
+
+/// #1217: a replayed Enter goes where the text before it went. While the agent drives the running
+/// command the replayed text is steer text for the input (#1179), so the Enter behind it submits
+/// the input instead of reaching the command's pty as a bare Enter.
+#[test]
+fn replayed_enter_follows_its_text_into_the_input_while_the_agent_drives_the_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.input.update(ctx, |input, ctx| {
+                input.open_submitted_enter_gate_for_test(
+                    vec![
+                        AfterEnterInput::Text("ls".to_string()),
+                        AfterEnterInput::Enter,
+                    ],
+                    false,
+                    ctx,
+                )
+            });
+            view.replay_after_deferred_enter(ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "neither the text nor its Enter may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).enter_queue_holds_keys(ctx));
+        });
+    })
+}
+
+/// #1179: once the user takes the command over (here the non-resuming `Stop` Ctrl-C installs) the
+/// agent no longer owns it and keys go to the pty again, not the input.
+#[test]
+fn typing_after_the_user_takes_over_an_agent_command_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_user_control_with_stop_reason();
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("abc", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"abc".to_vec()]);
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// #1179: a command the user started keeps raw typeahead to the pty, exactly as before.
+#[test]
+fn typing_during_a_user_owned_long_command_still_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100000", "");
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("abc", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"abc".to_vec()]);
+    })
+}
+
+/// #1179: an agent command that stops on a prompt (`Password:`, `[y/N]`) is answered by typing,
+/// so the agent does not own the pty while the cursor sits on that prompt line.
+#[test]
+fn typing_at_a_prompt_of_an_agent_driven_command_reaches_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            // Typed text only reaches the pty once the pane has a session (see the helper).
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .process_bytes(b"[sudo] password for me: ".as_slice());
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("pw", ctx);
+        });
+
+        assert_eq!(*pty_writes.borrow(), vec![b"pw".to_vec()]);
     })
 }
 
@@ -7808,7 +8032,9 @@ fn typing_while_an_approval_card_is_focused_goes_to_the_input_and_never_approves
             );
         });
 
-        terminal.update(&mut app, |view, ctx| view.typed_characters_on_terminal("x", ctx));
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("x", ctx)
+        });
 
         assert_ne!(
             app.focused_view_id(window_id),
@@ -7906,7 +8132,9 @@ fn clicking_the_approval_card_keeps_focus_on_the_card() {
         );
 
         // Typing afterwards still moves to the input.
-        terminal.update(&mut app, |view, ctx| view.typed_characters_on_terminal("x", ctx));
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("x", ctx)
+        });
         assert_ne!(app.focused_view_id(window_id), Some(card.id()));
         terminal.read(&app, |view, ctx| {
             assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
@@ -8101,6 +8329,11 @@ fn typing_on_a_finished_card_reaches_the_input_and_focus_follows() {
             assert!(
                 view.settled_ai_focus_view_ids(ctx).contains(&card.id()),
                 "precondition: the finished card is a settled card"
+            );
+            assert_eq!(
+                view.focused_settled_ai_target(ctx),
+                Some(card.id()),
+                "the render context carries the focused settled card"
             );
         });
 
@@ -8485,8 +8718,8 @@ fn ctrl_c_after_transfer_takeover_does_not_cancel_conversation() {
         });
 
         let conversation_id = terminal.update(&mut app, |view, ctx| {
-            let conversation_id =
-                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
                     history.start_new_conversation(view.view_id, false, false, ctx)
                 });
 
@@ -10110,7 +10343,10 @@ fn agent_transcript_navigation_marks_target_user_query() {
 
             // Every stop on a user query marks exactly that query.
             view.select_less_recent_block(false /* is_shift_down */, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_2)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
 
             // Stopping on a shell block moves the mark off the query.
@@ -10121,13 +10357,19 @@ fn agent_transcript_navigation_marks_target_user_query() {
 
             // The mark follows the cursor to the other query.
             view.select_less_recent_block(false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_1));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_1)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_1]);
 
             // Clamped at the oldest stop: the target stays identifiable even though
             // neither the cursor nor the viewport moves.
             view.select_less_recent_block(false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_1));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_1)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_1]);
 
             // Cmd-Down back through the stops, then past the newest one, which clears
@@ -10136,7 +10378,10 @@ fn agent_transcript_navigation_marks_target_user_query() {
             assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
             assert!(navigation_ring_targets(view, ctx).is_empty());
             view.select_more_recent_block(true, false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_2)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
             view.select_more_recent_block(true, false, ctx);
             assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
@@ -10145,7 +10390,10 @@ fn agent_transcript_navigation_marks_target_user_query() {
 
             // Re-mark a query, then exit the agent view below.
             view.select_less_recent_block(false, ctx);
-            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(
+                view.agent_transcript_navigated_ai_block(ctx),
+                Some(prompt_2)
+            );
             assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
         });
 
@@ -10469,7 +10717,12 @@ fn append_exchange_and_handle_event(
     view: &mut TerminalView,
     input: AIAgentInput,
     ctx: &mut ViewContext<TerminalView>,
-) -> (AIConversationId, TaskId, AIAgentExchangeId, ResponseStreamId) {
+) -> (
+    AIConversationId,
+    TaskId,
+    AIAgentExchangeId,
+    ResponseStreamId,
+) {
     append_exchange_with_inputs_and_handle_event(view, vec![input], ctx)
 }
 
@@ -10477,7 +10730,12 @@ fn append_exchange_with_inputs_and_handle_event(
     view: &mut TerminalView,
     inputs: Vec<AIAgentInput>,
     ctx: &mut ViewContext<TerminalView>,
-) -> (AIConversationId, TaskId, AIAgentExchangeId, ResponseStreamId) {
+) -> (
+    AIConversationId,
+    TaskId,
+    AIAgentExchangeId,
+    ResponseStreamId,
+) {
     let history_model = BlocklistAIHistoryModel::handle(ctx);
     let (conversation_id, task_id, exchange_id, response_stream_id) =
         history_model.update(ctx, |history_model, ctx| {
@@ -12659,7 +12917,9 @@ fn cmd_enter_from_terminal_with_selected_block_enters_agent_view_with_context() 
         // Starting a new conversation persists conversation history, which needs
         // GlobalResourceHandlesProvider registered (same idiom as elsewhere in this file).
         let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
-        app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
         app.add_singleton_model(ImportedConfigModel::new);
         app.update(|ctx| {
             crate::terminal::init(ctx);
@@ -12955,7 +13215,7 @@ fn ai_block_copy_output_does_not_clobber_clipboard_when_nothing_streamed() {
 
         ai_block.update(&mut app, |_block, ctx| {
             assert_eq!(
-                ctx.clipboard().read().plain_text,
+                warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text,
                 "sentinel",
                 "copying output before anything has streamed must not overwrite the clipboard \
                  with an empty string"
@@ -13996,6 +14256,7 @@ fn terminal_with_real_async_agent_command(
                 requires_result: true,
             },
             conversation_id,
+            /*execution*/ None,
             ctx,
         );
     });
@@ -14008,6 +14269,115 @@ fn terminal_with_real_async_agent_command(
         );
     });
     (terminal, conversation_id, action_id)
+}
+
+/// Stop aborts the work of a running non-shell tool (a read, a search, an MCP call), not just
+/// its result. The spawned execution used to run to completion and be thrown away on arrival;
+/// over ssh that was remote work streaming back over the shared connection (#1241). Fails on
+/// the old code: the handle was never kept, so nothing was aborted.
+#[test]
+fn stopping_the_conversation_aborts_a_running_tools_execution() {
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_with_agent_command(&mut app, true);
+        let action_id = AIAgentActionId::from("grep-call".to_owned());
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        let execution = action_model.update(&mut app, |action_model, ctx| {
+            let execution = ctx.spawn(futures::future::pending::<()>(), |_, (), _| {});
+            action_model.start_running_async_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::Grep {
+                        queries: vec!["needle".to_owned()],
+                        path: ".".to_owned(),
+                    },
+                    requires_result: true,
+                },
+                conversation_id,
+                Some(execution.clone()),
+                ctx,
+            );
+            execution
+        });
+        assert!(!execution.abort_handle().is_aborted());
+
+        terminal.update(&mut app, |view, ctx| {
+            view.ai_controller.update(ctx, |controller, ctx| {
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+            });
+        });
+
+        assert!(
+            execution.abort_handle().is_aborted(),
+            "the tool's spawned execution is aborted, not left to finish"
+        );
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_none_or(|status| !status.is_running()),
+                "the cancelled action is no longer running"
+            );
+        });
+    })
+}
+
+/// Stop while a file edit is being saved (#1277): the writes are spawned by `FileModel` and
+/// cannot be recalled, so the action must not be reported Cancelled and its execution not
+/// aborted at once -- it waits (bounded) for the real outcome. Fails on the old code, which
+/// removed the action and emitted Cancelled immediately while the write could still land.
+#[test]
+fn stopping_while_a_file_edit_is_saving_does_not_report_cancelled() {
+    App::test((), |mut app| async move {
+        let (terminal, conversation_id) = terminal_with_agent_command(&mut app, true);
+        let action_id = AIAgentActionId::from("edit-call".to_owned());
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        let execution = action_model.update(&mut app, |action_model, ctx| {
+            let execution = ctx.spawn(futures::future::pending::<()>(), |_, (), _| {});
+            action_model.start_running_async_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::RequestFileEdits {
+                        file_edits: vec![],
+                        title: None,
+                    },
+                    requires_result: true,
+                },
+                conversation_id,
+                Some(execution.clone()),
+                ctx,
+            );
+            execution
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.ai_controller.update(ctx, |controller, ctx| {
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+            });
+        });
+
+        assert!(
+            !execution.abort_handle().is_aborted(),
+            "a save in flight is not aborted: its write would land anyway"
+        );
+        action_model.read(&app, |action_model, _| {
+            assert!(
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_running()),
+                "the action keeps running until its real result (or the grace period) arrives"
+            );
+        });
+    })
 }
 
 /// Closing a pane whose agent is running a command with a real async action: exactly one ^C and
@@ -14276,7 +14646,7 @@ fn typeahead_handoff_holds_keys_behind_a_deferred_enter() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_user_bytes(b"ec");
                 handoff.on_user_write_flushed();
@@ -14295,11 +14665,12 @@ fn typeahead_handoff_holds_keys_behind_a_deferred_enter() {
         terminal.read(&app, |view, _| {
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
-                &HandoffState::HoldAfterEnter {
-                    held: b"\r\x7f".to_vec(),
-                    released: false,
-                }
+                &HandoffState::HoldAfterEnter { released: false }
             );
+            // The hand-off holds no bytes: the two keys are entries behind the Enter's gate.
+            let queue = view.paste_queue.queue.borrow();
+            assert!(queue.has_gate_kind(crate::terminal::input_queue::GateKind::HandoffReport));
+            assert_eq!(queue.queued_len(), 2);
         });
     })
 }
@@ -14317,7 +14688,7 @@ fn typeahead_handoff_ctrl_c_cancels_a_deferred_enter() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_user_bytes(b"ec");
                 handoff.on_user_write_flushed();
@@ -14365,7 +14736,7 @@ fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
         terminal.update(&mut app, |view, ctx| {
             {
                 let mut model = view.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_precmd();
             }
@@ -14382,6 +14753,140 @@ fn typeahead_handoff_precmd_hands_back_when_nothing_was_typed() {
     })
 }
 
+/// #1353 phase 6 (INP-4 / PTY-12): ^C at a zsh prompt, where no prompt cycle follows, no longer
+/// waits 250 ms for one. The controller is asked to decide at once, and the request it writes behind
+/// the interrupt is answered by a report that hands input back.
+#[test]
+fn typeahead_handoff_ctrl_c_with_no_prompt_cycle_decides_at_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.set_prompt_seq_enabled(true);
+                handoff.on_precmd_seq(Some(1), Some(1));
+                handoff.on_command_written();
+                handoff.on_precmd();
+            }
+            view.handle_typeahead_handoff_interrupt_for_shell(false, ctx);
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_barrier_pending()
+            );
+        });
+        assert_eq!(
+            *retries.borrow(),
+            1,
+            "decided at the interrupt, not after a settle period"
+        );
+    })
+}
+
+/// A shell that does run a prompt cycle hands input back on the cycle's Precmd: nothing is asked of
+/// the controller at the interrupt, and the Precmd commits.
+#[test]
+fn typeahead_handoff_ctrl_c_with_a_prompt_cycle_hands_back_on_its_precmd() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.set_prompt_seq_enabled(true);
+                handoff.on_precmd_seq(Some(1), Some(1));
+                handoff.on_command_written();
+                handoff.on_precmd();
+            }
+            view.handle_typeahead_handoff_interrupt_for_shell(true, ctx);
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .interrupt_awaiting_cycle()
+            );
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    wrote_user_bytes: false,
+                    enters_written: 1,
+                    precmds_seen: 1
+                }
+            );
+            // The cycle's Precmd.
+            {
+                let mut model = view.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_precmd();
+                handoff.on_precmd_seq(Some(1), Some(3));
+            }
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+        });
+        assert_eq!(*retries.borrow(), 1, "only the Precmd's own retry");
+    })
+}
+
+/// #1353 phase 6 (INP-10): the keys typed behind an Enter that ran a shell command wait for the
+/// pty to take it; when the hand-off says it will not engage, they are released by that event.
+#[test]
+fn typeahead_handoff_not_engaged_releases_the_keys_waiting_for_the_route() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let input = terminal.read(&app, |view, _| view.input.clone());
+        input.update(&mut app, |input, ctx| {
+            input.open_submitted_enter_gate_awaiting_pty_for_test(ctx)
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.enter_queue_awaits_route(ctx),
+                "keys wait behind the Enter"
+            );
+            assert!(input.enter_queue_awaits_pty());
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_typeahead_handoff_not_engaged(ctx)
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input.enter_queue_holds_keys(ctx),
+                "released by the negative event, not by the 300 ms give-up"
+            );
+        });
+    })
+}
 /// Ctrl-D at the prompt with nothing typed would exit the shell; it is not written.
 #[test]
 fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {
@@ -14395,7 +14900,7 @@ fn typeahead_handoff_ctrl_d_on_an_empty_shell_line_is_not_written() {
             {
                 let mut model = view.model.lock();
                 model.block_list_mut().set_bootstrapped();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 // A further Enter the shell answers with a prompt; both prompts have come.
                 handoff.on_user_bytes(b"\r");
@@ -14495,7 +15000,7 @@ fn typeahead_handoff_ctrl_c_settle_asks_for_a_new_decision() {
 /// Drives the hand-off to "Enter deferred while the report is outstanding".
 fn hold_after_deferred_enter(view: &TerminalView) {
     let mut model = view.model.lock();
-    let handoff = model.typeahead_handoff_mut();
+    let mut handoff = model.typeahead_handoff_mut();
     handoff.on_command_written();
     handoff.on_user_bytes(b"ec");
     handoff.on_user_write_flushed();
@@ -14552,15 +15057,365 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
+/// #1331/#1577: a terminal-bound paste whose clipboard read never answers fails at the backstop;
+/// the keys typed meanwhile are HANDED BACK to the editor in typing order (none dropped, the Enter
+/// a new line after the fragment it followed, the next Enter held with a toast), not written to
+/// the pty by the timer (owner rule 2026-11-01; this test used to assert the pty write). The
+/// reader's late answer writes nothing. Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("LATE".to_string()))
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.start_background_paste_with_backstop(
+                reader,
+                None,
+                false,
+                Some(Duration::from_millis(100)),
+                ctx,
+            );
+            for key in [b"l".to_vec(), b"s".to_vec(), b"\r".to_vec()] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+            }
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "keys typed behind a pending paste are held"
+        );
+        for _ in 0..1000 {
+            if !terminal.read(&app, |view, _| view.paste_pending()) {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        let buffer_of =
+            |app: &App| terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "the backstop wrote to the pty: {:?}",
+            pty_writes.borrow()
+        );
+        assert_eq!(buffer_of(&app), "ls\n", "held keys handed back in order");
+        release.send(()).unwrap();
+        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+        assert!(pty_writes.borrow().is_empty());
+        assert_eq!(buffer_of(&app), "ls\n", "the late answer is ignored");
+    })
+}
+
+/// What a pty-bound paste scenario does.
+#[derive(Clone, Copy, Debug)]
+enum PtyPasteScenario {
+    /// The read answers after the keys were typed.
+    SlowRead,
+    /// The clipboard owner never answers (the reader reports a time-out).
+    FailedRead,
+    /// The clipboard is over the paste size cap (the reader reports `TooLarge`, #1382).
+    TooLargeRead,
+    /// Ctrl-C is typed while the read is pending.
+    CtrlC,
+    /// The reader parks past the 100 ms backstop, then answers late.
+    BackstopThenLateResult,
+}
+
+/// Runs one pty-paste scenario on the queue path and returns every byte that reached the pty, in
+/// order (#1353 phase 1).
+async fn pty_paste_bytes(app: &mut App, scenario: PtyPasteScenario) -> Vec<u8> {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    initialize_app_for_terminal_view(app);
+    let terminal = add_window_with_terminal(app, None);
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                writes.borrow_mut().push(bytes.to_vec())
+            }
+            _ => {}
+        });
+    });
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    let fails = matches!(scenario, PtyPasteScenario::FailedRead);
+    let too_large = matches!(scenario, PtyPasteScenario::TooLargeRead);
+    let reader: BackgroundTextReader = Box::new(move || {
+        let _ = parked.recv_timeout(Duration::from_secs(20));
+        if fails {
+            BackgroundTextRead::TimedOut
+        } else if too_large {
+            BackgroundTextRead::TooLarge(warpui::clipboard::MAX_PASTE_BYTES + 1)
+        } else {
+            BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+        }
+    });
+    let backstop = match scenario {
+        PtyPasteScenario::BackstopThenLateResult => Some(Duration::from_millis(100)),
+        _ => None,
+    };
+    terminal.update(app, |view, ctx| {
+        // Typed before the paste: goes straight out.
+        assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+        view.start_background_paste_with_backstop(reader, None, false, backstop, ctx);
+        assert!(view.paste_pending(), "the read is pending");
+        assert!(
+            !view.paste_queue.queue.borrow().is_idle(),
+            "the queue holds the paste"
+        );
+        let typed: &[&[u8]] = match scenario {
+            PtyPasteScenario::CtrlC => &[b"l", b"\x03"],
+            _ => &[b"l", b"s", b"\r"],
+        };
+        for key in typed {
+            assert!(view.write_user_bytes_to_pty(key.to_vec(), ctx));
+        }
+    });
+    let flat = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| -> Vec<u8> {
+        writes.borrow().iter().flatten().copied().collect()
+    };
+    match scenario {
+        PtyPasteScenario::CtrlC => {
+            // The paste is cancelled on the spot: what was typed before the abort, then the abort.
+            assert!(!terminal.read(app, |view, _| view.paste_pending()));
+            assert_eq!(flat(&pty_writes), b"al\x03".to_vec());
+            release.send(()).unwrap();
+            warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+            assert_eq!(
+                flat(&pty_writes),
+                b"al\x03".to_vec(),
+                "the cancelled paste is never written, even when the read answers"
+            );
+        }
+        PtyPasteScenario::BackstopThenLateResult => {
+            for _ in 0..1000 {
+                if !terminal.read(app, |view, _| view.paste_pending()) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            // #1577: the keys typed behind the paste are handed back to the editor at the
+            // backstop, not written by the timer; only the key typed before the paste was sent.
+            assert_eq!(
+                flat(&pty_writes),
+                b"a".to_vec(),
+                "nothing was written at the backstop"
+            );
+            assert_eq!(
+                terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx)),
+                "ls\n",
+                "keys handed back to the editor at the backstop"
+            );
+            release.send(()).unwrap();
+            warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+            assert_eq!(
+                flat(&pty_writes),
+                b"a".to_vec(),
+                "the late result is ignored"
+            );
+        }
+        PtyPasteScenario::SlowRead
+        | PtyPasteScenario::FailedRead
+        | PtyPasteScenario::TooLargeRead => {
+            assert_eq!(
+                flat(&pty_writes),
+                b"a".to_vec(),
+                "keys typed behind the pending paste are held"
+            );
+            release.send(()).unwrap();
+            for _ in 0..1000 {
+                if !terminal.read(app, |view, _| view.paste_pending()) {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+        }
+    }
+    flat(&pty_writes)
+}
+
+/// #1353 phase 1: a slow clipboard read with keys (and an Enter) typed behind it. The keys wait for
+/// the read, the paste goes out first, then `ls\r`: typed order. Same bytes on the legacy path.
+#[test]
+fn pty_paste_with_keys_and_enter_behind_a_slow_read_delivers_in_typed_order() {
+    App::test((), move |mut app| async move {
+        let written = pty_paste_bytes(&mut app, PtyPasteScenario::SlowRead).await;
+        assert_eq!(written, b"aPASTEls\r".to_vec());
+    });
+}
+
+/// #1389, pty / alt-screen destination: cursor keys (Left, End as escape sequences) and the text
+/// typed behind a LARGE paste that is still being read go to the pty after the whole paste, in
+/// typed order; nothing is written before the paste, lost or duplicated. Both destination modes.
+#[test]
+fn pty_cursor_keys_behind_a_large_pending_paste_follow_it_in_order() {
+    use crate::terminal::input_queue::DestinationMode;
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for size in [100 * 1024usize, 1024 * 1024] {
+            App::test((), move |mut app| async move {
+                let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+                let writes = pty_writes.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                        Event::WriteBytesToPty { bytes }
+                        | Event::WriteHandoffUserBytesToPty { bytes } => {
+                            writes.borrow_mut().push(bytes.to_vec())
+                        }
+                        _ => {}
+                    });
+                });
+                let pasted = "p".repeat(size);
+                let content = pasted.clone();
+                let (release, parked) = std::sync::mpsc::channel::<()>();
+                let reader: BackgroundTextReader = Box::new(move || {
+                    let _ = parked.recv_timeout(Duration::from_secs(20));
+                    BackgroundTextRead::Content(ClipboardContent::plain_text(content))
+                });
+                terminal.update(&mut app, |view, ctx| {
+                    assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+                    view.start_background_paste_with_backstop(reader, None, false, None, ctx);
+                    assert!(view.paste_pending(), "the read is pending");
+                    for key in [
+                        &b"x"[..],
+                        b"y",
+                        b"\x1b[D",
+                        b"z",
+                        b"\x1b[F",
+                        b"!",
+                    ] {
+                        assert!(view.write_user_bytes_to_pty(key.to_vec(), ctx));
+                    }
+                });
+                let flat = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| -> Vec<u8> {
+                    writes.borrow().iter().flatten().copied().collect()
+                };
+                assert_eq!(
+                    flat(&pty_writes),
+                    b"a".to_vec(),
+                    "{mode:?}: keys typed behind the pending paste are held"
+                );
+                release.send(()).unwrap();
+                for _ in 0..4000 {
+                    if !terminal.read(&app, |view, _| view.paste_pending()) {
+                        break;
+                    }
+                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                }
+                let mut expected = b"a".to_vec();
+                expected.extend_from_slice(pasted.as_bytes());
+                expected.extend_from_slice(b"xy\x1b[Dz\x1b[F!");
+                let written = flat(&pty_writes);
+                assert_eq!(written.len(), expected.len(), "{mode:?} size {size}");
+                assert!(
+                    written == expected,
+                    "{mode:?} size {size}: the pty saw the keys out of order"
+                );
+            });
+        }
+    }
+}
+
+/// #1353 phase 1: a read that fails writes no paste, keeps the typing, in order, on both paths.
+#[test]
+fn pty_paste_failed_read_keeps_the_typing_in_order() {
+    App::test((), move |mut app| async move {
+        let written = pty_paste_bytes(&mut app, PtyPasteScenario::FailedRead).await;
+        assert_eq!(written, b"als\r".to_vec());
+    });
+}
+
+/// #1382: a clipboard over the paste cap writes nothing (never a truncated paste) and the typing
+/// behind it follows in order, on both paths.
+#[test]
+fn pty_paste_over_the_size_cap_is_refused_and_the_typing_kept() {
+    App::test((), move |mut app| async move {
+        let written = pty_paste_bytes(&mut app, PtyPasteScenario::TooLargeRead).await;
+        assert_eq!(written, b"als\r".to_vec());
+    });
+}
+
+/// #1353 phase 1: Ctrl-C during a pending paste cancels it; earlier typing goes first, the abort
+/// last, and the cancelled read never writes on either path.
+#[test]
+fn pty_paste_ctrl_c_during_a_pending_read_cancels_it() {
+    App::test((), move |mut app| async move {
+        let written = pty_paste_bytes(&mut app, PtyPasteScenario::CtrlC).await;
+        assert_eq!(written, b"al\x03".to_vec());
+    });
+}
+
+/// #1353 phase 1 / #1577: the backstop gives up once, hands the keys behind the paste back to the
+/// editor (the scenario asserts the editor's text) and the reader's late answer writes nothing.
+/// Only the key typed before the paste reaches the pty.
+#[test]
+fn pty_paste_backstop_gives_up_then_the_late_result_is_ignored() {
+    App::test((), move |mut app| async move {
+        let written = pty_paste_bytes(&mut app, PtyPasteScenario::BackstopThenLateResult).await;
+        assert_eq!(written, b"a".to_vec());
+    });
+}
+
+/// #1353 phase 1: with nothing pending, keys neither allocate a queue entry nor change the queue:
+/// the idle fast path leaves the queue idle after every write.
+#[test]
+fn pty_keys_with_no_paste_pending_leave_the_queue_idle() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            for key in [b"l".to_vec(), b"s".to_vec(), b"\r".to_vec(), vec![0x03]] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+            }
+            assert!(!view.paste_pending());
+        });
+    })
+}
+
 /// #933 x ^C: an Enter held because the command may already have finished does not swallow a
 /// Ctrl-C typed within the window. The ETX is written to the pty, once, and the hold is dropped.
+/// Keys held for an unfinished subshell setup, as (entries, bytes): on the input queue.
+fn held_for_subshell_setup(view: &TerminalView) -> (usize, usize) {
+    view.paste_queue.queue.borrow().queued_summary()
+}
+
+/// The keys held by the PowerShell setup gate (#1048), one chunk per entry, in typed order.
+fn powershell_held(view: &TerminalView) -> Vec<Vec<u8>> {
+    view.paste_queue
+        .queue
+        .borrow()
+        .entries()
+        .filter_map(|entry| match &entry.kind {
+            input_queue::EntryKind::PtyBytes { bytes, .. } => Some(bytes.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// #1014: keys typed while the paced subshell bootstrap is still in flight (an rc file that
 /// sleeps keeps the shell from reading it) are held, then delivered to the pty in the order they
 /// were typed once the bootstrap ends -- never dropped, merged out of order or written early.
 /// Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
-    App::test((), |mut app| async move {
+    App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -14578,7 +15433,10 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
                 generation: 1,
                 block_id,
                 remaining_lines: 1,
-                held_user_bytes: Vec::new(),
+                pending_lines: VecDeque::new(),
+                marker_token: None,
+                awaiting_marker: 0,
+                line_delay: Duration::from_millis(30),
             });
             for key in [b"e".to_vec(), b"c".to_vec(), b"\r".to_vec()] {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
@@ -14601,7 +15459,7 @@ fn keys_held_behind_the_subshell_bootstrap_reach_the_pty_in_order() {
 /// Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() {
-    App::test((), |mut app| async move {
+    App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -14632,7 +15490,7 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(written, b"ec\r".to_vec(), "held keys arrive once, in order");
         assert!(
-            terminal.read(&app, |view, _| view.subshell_setup_held_bytes.is_empty()),
+            terminal.read(&app, |view, _| held_for_subshell_setup(view) == (0, 0)),
             "nothing stays held after the release"
         );
 
@@ -14646,7 +15504,11 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
             view.write_user_bytes_to_pty(vec![0x03], ctx);
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"\x03ls".to_vec(), "abort first, then the held text");
+        assert_eq!(
+            written,
+            b"\x03ls".to_vec(),
+            "abort first, then the held text"
+        );
     })
 }
 
@@ -14656,7 +15518,7 @@ fn text_typed_during_a_stalled_subshell_setup_is_held_then_delivered_in_order() 
 #[test]
 fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
     for (output, expect_written) in [("Password: ", true), ("", false)] {
-        App::test((), |mut app| async move {
+        App::test((), move |mut app| async move {
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -14682,7 +15544,7 @@ fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
             } else {
                 assert!(written.is_empty(), "silent shell: typing is held");
                 terminal.read(&app, |view, _| {
-                    assert_eq!(view.subshell_setup_held_bytes, vec![b"secret".to_vec()]);
+                    assert_eq!(held_for_subshell_setup(view), (1, 6));
                 });
             }
         })
@@ -14696,7 +15558,7 @@ fn typed_input_during_stalled_setup_passes_through_to_a_visible_prompt() {
 /// Not compiled/run when written (no builds in the fix pass).
 #[test]
 fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_completes() {
-    App::test((), |mut app| async move {
+    App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -14737,7 +15599,7 @@ fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_complete
                 }),
                 ctx,
             );
-            assert_eq!(view.subshell_setup_held_bytes.len(), 2, "still held");
+            assert_eq!(held_for_subshell_setup(view).0, 2, "still held");
         });
         assert!(
             pty_writes.borrow().is_empty(),
@@ -14754,6 +15616,232 @@ fn keys_held_through_a_stall_are_released_once_when_the_subshell_precmd_complete
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(written, b"ls\r".to_vec(), "delivered once, in order");
+    })
+}
+
+/// What the pty has been sent, flattened, for the #1353 phase 2 subshell tests.
+fn subshell_pty_writes(app: &mut App, terminal: &ViewHandle<TerminalView>) -> Rc<RefCell<Vec<u8>>> {
+    let written: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = written.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| {
+            if let Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } =
+                event
+            {
+                sink.borrow_mut().extend_from_slice(bytes);
+            }
+        });
+    });
+    written
+}
+
+/// Puts `view` in the state of a paced bootstrap that is still writing its lines, with the setup
+/// announced when `announce` (what a real `write_init_subshell_bytes_to_pty` leaves behind).
+fn start_subshell_bootstrap(view: &mut TerminalView, announce: bool) {
+    let block_id = view.model.lock().block_list().active_block().id().clone();
+    if announce {
+        view.subshell_bootstrap_announced = Some((block_id.clone(), Instant::now()));
+    }
+    view.subshell_bootstrap_in_flight = Some(SubshellBootstrapInFlight {
+        generation: 1,
+        block_id,
+        remaining_lines: 1,
+        pending_lines: VecDeque::new(),
+        marker_token: None,
+        awaiting_marker: 0,
+        line_delay: Duration::from_millis(30),
+    });
+}
+
+/// #1353 phase 2: Ctrl-C during the paced bootstrap waits for its last line, in typed order when
+/// there is no setup to skip (`a ^C b`), and goes first, releasing the setup's held keys behind it,
+/// when the setup is announced (`^C a b`). Same bytes on the legacy buffers (the kill switch).
+#[test]
+fn ctrl_c_during_the_subshell_bootstrap_waits_for_its_last_line() {
+    for (announce, expected) in [(false, b"a\x03b".to_vec()), (true, b"\x03ab".to_vec())] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let written = subshell_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                start_subshell_bootstrap(view, announce);
+                for key in [b"a".to_vec(), vec![0x03], b"b".to_vec()] {
+                    assert!(view.write_user_bytes_to_pty(key, ctx));
+                }
+                assert!(
+                    written.borrow().is_empty(),
+                    "nothing, the ^C included, lands among the bootstrap lines"
+                );
+                view.finish_subshell_bootstrap(ctx);
+            });
+            assert_eq!(*written.borrow(), expected, "announce={announce}");
+            terminal.read(&app, |view, _| {
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(view.paste_queue.pending_aborts.is_empty());
+            });
+        })
+    }
+}
+
+/// #1353 phase 2: a paste read that is still pending when the bootstrap starts, with keys typed
+/// behind it, reaches the shell after the bootstrap's last line, paste first, then the keys, once.
+#[test]
+fn paste_during_the_subshell_bootstrap_then_keys_arrive_in_order_after_it() {
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let (release, parked) = std::sync::mpsc::channel::<()>();
+        let reader: BackgroundTextReader = Box::new(move || {
+            let _ = parked.recv_timeout(Duration::from_secs(20));
+            BackgroundTextRead::Content(ClipboardContent::plain_text("PASTE".to_string()))
+        });
+        terminal.update(&mut app, |view, ctx| {
+            start_subshell_bootstrap(view, false);
+            view.start_background_paste_with_backstop(reader, None, false, None, ctx);
+            for key in [b"l".to_vec(), b"s".to_vec()] {
+                assert!(view.write_user_bytes_to_pty(key, ctx));
+            }
+        });
+        release.send(()).unwrap();
+        for _ in 0..1000 {
+            if !terminal.read(&app, |view, _| view.paste_pending()) {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        assert!(
+            written.borrow().is_empty(),
+            "the finished paste still waits for the bootstrap"
+        );
+        terminal.update(&mut app, |view, ctx| view.finish_subshell_bootstrap(ctx));
+        assert_eq!(*written.borrow(), b"PASTEls".to_vec());
+    })
+}
+
+/// #1353 phase 2: a setup that ends (abandoned, timed out, tab content gone) delivers what was
+/// typed, in order, once, and keys typed after it go straight out behind it, on both paths.
+#[test]
+fn keys_typed_after_a_subshell_setup_ends_follow_the_held_ones_exactly_once() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
+            assert!(view.write_user_bytes_to_pty(b"s".to_vec(), ctx));
+            assert!(written.borrow().is_empty());
+            assert!(
+                !view.paste_queue.queue.borrow().is_idle(),
+                "the keys are entries of the queue"
+            );
+            // The abandon / time-out path.
+            view.release_subshell_setup_held_bytes(ctx);
+        });
+        // The pty write is an event: it is observed once the update that emitted it ends.
+        assert_eq!(*written.borrow(), b"ls".to_vec());
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+        });
+        assert_eq!(*written.borrow(), b"ls\r".to_vec());
+        terminal.read(&app, |view, _| {
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert_eq!(held_for_subshell_setup(view), (0, 0));
+        });
+    })
+}
+
+/// #1222, now by construction: the setup is over (`Bootstrapped`, the announcement no longer
+/// applies) while keys are still held for the first prompt. A key typed in that gap goes out
+/// BEHIND them, never ahead.
+#[test]
+fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            assert!(view.write_user_bytes_to_pty(b"e".to_vec(), ctx));
+            assert!(written.borrow().is_empty());
+            // `Bootstrapped`: the announcement stops governing input.
+            view.subshell_bootstrap_announced = None;
+            assert!(view.write_user_bytes_to_pty(b"c".to_vec(), ctx));
+        });
+        assert_eq!(*written.borrow(), b"ec".to_vec());
+    })
+}
+
+/// #1353 phase 2 / #1577: the gates' give-up caps are safety nets that log and then HAND BACK. The
+/// setup gate's cap treats setup as over and returns the held keys to the editor as visible text
+/// (owner rule 2026-11-01: a timer may close a segment and hand text back, never write to a pty);
+/// the old expectation (the cap delivered them to the pty) encoded exactly what the rule forbids.
+/// The bootstrap gate's cap, while the paced lines are still being written, still waits: the keys
+/// are released by the last line's event, in order, never among the setup lines.
+#[test]
+fn subshell_gate_give_ups_hand_back_without_losing_or_reordering() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let written = subshell_pty_writes(&mut app, &terminal);
+        let gate_token = |view: &TerminalView, kind: input_queue::GateKind| {
+            view.paste_queue
+                .queue
+                .borrow()
+                .gates()
+                .iter()
+                .find(|gate| gate.kind == kind)
+                .map(|gate| gate.token)
+                .expect("the gate is open")
+        };
+        // The pty writes are events: they are observed once the update that emitted them ends.
+        let setup_token = terminal.update(&mut app, |view, ctx| {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+            assert!(view.write_user_bytes_to_pty(b"l".to_vec(), ctx));
+            let token = gate_token(view, input_queue::GateKind::SubshellSetup);
+            view.on_paste_queue_give_up(token, ctx);
+            assert!(view.subshell_bootstrap_announced.is_none());
+            token
+        });
+        assert!(
+            written.borrow().is_empty(),
+            "the cap wrote to the pty: {:?}",
+            written.borrow()
+        );
+        terminal.read(&app, |view, ctx| {
+            view.input.read(ctx, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "l", "handed back to the editor");
+                assert!(input.ssh_handover_enter_guard_armed());
+            });
+        });
+        // A second, late cap for the same gate does nothing.
+        terminal.update(&mut app, |view, ctx| {
+            view.on_paste_queue_give_up(setup_token, ctx)
+        });
+        assert!(written.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            view.input
+                .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), "l"));
+        });
+
+        written.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            start_subshell_bootstrap(view, false);
+            assert!(view.write_user_bytes_to_pty(b"e".to_vec(), ctx));
+            let token = gate_token(view, input_queue::GateKind::SubshellBootstrapWrite);
+            view.on_paste_queue_give_up(token, ctx);
+        });
+        assert!(
+            written.borrow().is_empty(),
+            "still waits for the bootstrap's last line"
+        );
+        terminal.update(&mut app, |view, ctx| view.finish_subshell_bootstrap(ctx));
+        assert_eq!(*written.borrow(), b"e".to_vec());
     })
 }
 
@@ -14819,7 +15907,7 @@ fn powershell_setup_holds_keys_although_the_output_looks_like_a_prompt() {
                 assert!(view.write_user_bytes_to_pty(key, ctx));
             }
             assert_eq!(
-                view.subshell_setup_held_bytes,
+                powershell_held(view),
                 vec![b"ec".to_vec(), b"ho".to_vec(), b"\r".to_vec()]
             );
         });
@@ -14849,7 +15937,7 @@ fn powershell_setup_holds_keys_and_enter_typed_after_its_first_precmd() {
             view.keydown_on_terminal("\r", ctx);
             view.typed_characters_on_terminal("ls", ctx);
             assert_eq!(
-                view.subshell_setup_held_bytes.concat(),
+                powershell_held(view).concat(),
                 b"echo 1\rls".to_vec(),
                 "every key is held, in order, the Enter included"
             );
@@ -14919,7 +16007,7 @@ fn powershell_setup_keys_are_delivered_once_in_order_at_the_prompt_after_bootstr
             (
                 view.input.as_ref(ctx).buffer_text(ctx),
                 view.powershell_setup_hold,
-                view.subshell_setup_held_bytes.clone(),
+                powershell_held(view),
             )
         });
         let mut everything = delivered.borrow().clone();
@@ -14932,6 +16020,82 @@ fn powershell_setup_keys_are_delivered_once_in_order_at_the_prompt_after_bootstr
         assert_eq!(hold, PowerShellSetupHold::Off, "the hold is over");
         assert!(held.is_empty(), "nothing stays held");
     })
+}
+
+/// #1601 (owner decision): a CLI-agent submit made during an announced PowerShell setup is held
+/// with the other keys -- nothing reaches the pty -- and is delivered exactly once, in typed order,
+/// at the prompt after `Bootstrapped` (the setup's closing event), never by a timer. Legacy and
+/// `table` mode agree (the table's O-cli-submit row used to be exempt from this hold).
+/// Not compiled/run when written (no builds in the fix pass).
+fn a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            // A key typed before the submit, the submit (text, then its Enter), a key after it.
+            assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+            view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+            view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+            assert!(view.write_user_bytes_to_pty(b"b".to_vec(), ctx));
+            assert_eq!(
+                powershell_held(view).concat(),
+                b"aTEXT\rb".to_vec(),
+                "{mode:?}: the submit is held in typed order with the keys around it"
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "{mode:?}: the submit reached the shell during the setup: {:?}",
+            String::from_utf8_lossy(&delivered.borrow())
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(
+                &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                    session_id: SessionId::from(1601),
+                    is_subshell: true,
+                }),
+                ctx,
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "{mode:?}: nothing before the prompt that follows Bootstrapped"
+        );
+        for _ in 0..2 {
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            });
+        }
+        let (editor_text, hold, held) = terminal.read(&app, |view, ctx| {
+            (
+                view.input.as_ref(ctx).buffer_text(ctx),
+                view.powershell_setup_hold,
+                powershell_held(view),
+            )
+        });
+        let mut everything = delivered.borrow().clone();
+        everything.extend_from_slice(editor_text.as_bytes());
+        assert_eq!(
+            String::from_utf8_lossy(&everything),
+            "aTEXT\rb",
+            "{mode:?}: every byte exactly once, in the order submitted"
+        );
+        assert_eq!(hold, PowerShellSetupHold::Off, "{mode:?}: the hold is over");
+        assert!(held.is_empty(), "{mode:?}: nothing stays held");
+    })
+}
+
+#[test]
+fn legacy_mode_a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once() {
+    a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(DestMode::Legacy);
+}
+
+#[test]
+fn table_mode_a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once() {
+    a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(DestMode::Table);
 }
 
 /// #1051: a Ctrl-C early in a PowerShell setup (Ctrl-C at ~0.5 s or ~2 s after the chip) is not
@@ -14958,16 +16122,13 @@ fn early_ctrl_c_in_a_powershell_setup_discards_the_line_being_typed_and_lets_set
                 view.typed_characters_on_terminal("ls", ctx);
                 view.ctrl_c(ctx);
                 assert_eq!(
-                    view.subshell_setup_held_bytes.concat(),
+                    powershell_held(view).concat(),
                     b"echo 1\r".to_vec(),
                     "only the line being typed is discarded"
                 );
                 assert_eq!(view.powershell_setup_hold, hold, "setup carries on");
                 view.typed_characters_on_terminal("pwd", ctx);
-                assert_eq!(
-                    view.subshell_setup_held_bytes.concat(),
-                    b"echo 1\rpwd".to_vec()
-                );
+                assert_eq!(powershell_held(view).concat(), b"echo 1\rpwd".to_vec());
             });
             assert!(
                 delivered.borrow().is_empty(),
@@ -14997,7 +16158,7 @@ fn ctrl_c_after_a_stalled_powershell_profile_stops_it_and_keeps_the_keys_held() 
                 view.powershell_setup_hold,
                 PowerShellSetupHold::ScriptRunning
             );
-            assert_eq!(view.subshell_setup_held_bytes.concat(), b"ls".to_vec());
+            assert_eq!(powershell_held(view).concat(), b"ls".to_vec());
         });
         assert_eq!(*delivered.borrow(), b"\x03".to_vec(), "only the ^C");
     })
@@ -15035,7 +16196,7 @@ fn ctrl_c_skips_a_powershell_setup_and_releases_the_held_keys_after_it() {
         terminal.update(&mut app, |view, ctx| {
             view.end_powershell_abort_wait(generation, ctx);
             assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
-            assert!(view.subshell_setup_held_bytes.is_empty());
+            assert!(powershell_held(view).is_empty());
         });
         assert_eq!(
             *delivered.borrow(),
@@ -15212,9 +16373,46 @@ fn input_prompt_detection_and_deferred_setup_readiness() {
         "bash-5.1$ ",
         "me@host ~ % ",
         "~/src \u{276f} ",
+        "user@fake:~$ ",
+        "root@fake:/# ",
         "banner line\n",
     ] {
         assert!(!output_tail_is_input_prompt(not_prompt), "{not_prompt:?}");
+    }
+    // #1561: only a line of a shell prompt's shape that is not credential-style is delivered to;
+    // a question, a request for a code, ssh's own text or an unknown shape keeps the discard.
+    for shell_prompt in [
+        "bash-5.1$ ",
+        "me@host ~ % ",
+        "~/src \u{276f} ",
+        "user@fake:~$ ",
+        "root@fake:/# ",
+        "banner\nuser@fake:~$ ",
+    ] {
+        assert!(
+            output_tail_is_shell_prompt(shell_prompt),
+            "{shell_prompt:?}"
+        );
+        assert!(
+            !output_tail_is_input_prompt(shell_prompt),
+            "{shell_prompt:?}"
+        );
+    }
+    for not_shell_prompt in [
+        "",
+        "\n",
+        "Password: ",
+        "Continue connecting (yes/no/[fingerprint])? ",
+        "Press ENTER to continue",
+        "Last login: Mon",
+        "Warning: Permanently added 'h' (ED25519) to the list of known hosts.\n",
+        "Verification code: ",
+        "banner line\n",
+    ] {
+        assert!(
+            !output_tail_is_shell_prompt(not_shell_prompt),
+            "{not_shell_prompt:?}"
+        );
     }
     let quiet = SUBSHELL_SETUP_DEFER_QUIET;
     assert!(
@@ -15312,7 +16510,7 @@ fn typeahead_handoff_ctrl_c_within_the_young_enter_window_reaches_the_pty() {
             {
                 let mut model = view.model.lock();
                 model.block_list_mut().active_block_mut().start();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 handoff.on_user_bytes(b"x");
                 handoff.on_user_write_flushed();
@@ -15478,7 +16676,7 @@ fn typeahead_handoff_stopping_a_conversation_drops_its_held_command() {
 /// Drives the hand-off to "request written, report outstanding".
 fn awaiting_typeahead_report(view: &TerminalView) {
     let mut model = view.model.lock();
-    let handoff = model.typeahead_handoff_mut();
+    let mut handoff = model.typeahead_handoff_mut();
     handoff.on_command_written();
     handoff.on_user_bytes(b"ec");
     handoff.on_user_write_flushed();
@@ -15534,11 +16732,10 @@ fn typeahead_handoff_never_submits_a_fragment_without_the_report() {
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ho 47");
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
-                &HandoffState::HoldAfterEnter {
-                    held: b"\r".to_vec(),
-                    released: false,
-                }
+                &HandoffState::HoldAfterEnter { released: false }
             );
+            // The Enter typed behind the deferred one waits as an entry behind its gate.
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 1);
         });
     })
 }
@@ -15556,13 +16753,9 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
 
         terminal.update(&mut app, |view, ctx| {
             hold_after_deferred_enter(view);
-            assert_eq!(
-                view.model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .on_user_bytes(b"echo 1\recho 2\r"),
-                UserBytesRoute::Held
-            );
+            // The shell lines are typed behind the deferred Enter: entries behind its gate.
+            view.write_user_bytes_to_pty(b"echo 1\recho 2\r".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
             view.handle_typeahead_report_with_handoff(ctx);
 
             assert!(!view.input.as_ref(ctx).buffer_text(ctx).contains("echo"));
@@ -15573,6 +16766,112 @@ fn typeahead_handoff_releases_held_shell_lines_to_the_pty_when_the_submit_runs_n
         });
 
         assert_eq!(*pty_writes.borrow(), vec![b"echo 1\recho 2\r".to_vec()]);
+    })
+}
+
+/// The report arrived and the submit wrote no command, but only an unfinished line was typed
+/// behind the Enter: it goes back into the editor as text (a shell line would have gone to the
+/// pty), and nothing is written.
+#[test]
+fn typeahead_handoff_returns_an_unfinished_held_line_to_the_editor_when_the_submit_runs_nothing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            hold_after_deferred_enter(view);
+            view.write_user_bytes_to_pty(b"ls -l".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
+            view.handle_typeahead_report_with_handoff(ctx);
+
+            // #1571: the test view is not ready for a command, so the Enter that ran nothing is
+            // held as a gate (a refused Enter of an unready shell); the unfinished line is the
+            // text typed after it and reaches the editor behind it -- not before, not lost, and
+            // never written to the pty -- when the hold hands back.
+            assert!(view.input.as_ref(ctx).unready_enter_gate_open());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.input
+                .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::EditorOwned
+            );
+            assert!(view.paste_queue.queue.borrow().is_idle());
+        });
+        assert!(pty_writes.borrow().is_empty());
+    })
+}
+
+/// The deferred Enter's command is written while keys wait behind its gate: they follow it as
+/// typeahead, in typed order -- an editor key and a terminal key alike -- counted as the lines
+/// they are, and the gate is gone.
+#[test]
+fn typeahead_handoff_a_command_written_behind_a_deferred_enter_takes_its_gated_keys_with_it() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            hold_after_deferred_enter(view);
+            view.open_deferred_enter_gate(ctx);
+            // An editor key, then terminal keys: arrival order is the order.
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.apply_held_paste_key(crate::editor::HeldPasteKey::Text("l".into()), ctx)
+                })
+            });
+            view.write_user_bytes_to_pty(b"s\r".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"p".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 3);
+            {
+                let mut model = view.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_report();
+                handoff.on_command_written();
+            }
+            view.drain_young_hold_ends(ctx);
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    wrote_user_bytes: true,
+                    enters_written: 2,
+                    precmds_seen: 0,
+                }
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        assert_eq!(*pty_writes.borrow(), vec![b"ls\rp".to_vec()]);
+    })
+}
+
+/// Ctrl-C cancels a deferred Enter and voids the keys behind its gate with it.
+#[test]
+fn typeahead_handoff_ctrl_c_voids_the_keys_behind_a_deferred_enters_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+
+        terminal.update(&mut app, |view, ctx| {
+            hold_after_deferred_enter(view);
+            view.write_user_bytes_to_pty(b"ls\r".to_vec(), ctx);
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 1);
+            view.ctrl_c(ctx);
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
+        });
+        assert!(pty_writes.borrow().is_empty());
     })
 }
 
@@ -15600,14 +16899,19 @@ fn typeahead_handoff_keys_the_editor_took_after_a_deferred_enter_do_not_join_its
                     .typeahead_handoff()
                     .deferred_submit_pending()
             );
-            // The next keys of the same burst reach the editor before the terminal routes them.
-            view.input
-                .update(ctx, |input, ctx| input.system_insert("ec", ctx));
-            // The rest of the burst, and its Enter, are routed to the hold.
-            view.model
-                .lock()
-                .typeahead_handoff_mut()
-                .on_user_bytes(b"ho 2\r");
+            // The event that follows the deferral opens the Enter's gate (in the app it is
+            // delivered between two user events).
+            view.open_deferred_enter_gate(ctx);
+            // The next keys of the same burst reach the editor before the terminal routes them:
+            // they are entries behind the gate, never text in the buffer.
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.apply_held_paste_key(crate::editor::HeldPasteKey::Text("ec".into()), ctx)
+                })
+            });
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "true");
+            // The rest of the burst, and its Enter, are routed to the same gate.
+            view.write_user_bytes_to_pty(b"ho 2\r".to_vec(), ctx);
             view.handle_typeahead_report_with_handoff(ctx);
 
             assert_eq!(
@@ -15637,18 +16941,24 @@ fn typeahead_handoff_a_second_editor_enter_is_held_behind_the_deferred_one() {
             view.input
                 .update(ctx, |input, ctx| input.replace_buffer_content("true", ctx));
             view.input.update(ctx, |input, ctx| input.input_enter(ctx));
-            view.input
-                .update(ctx, |input, ctx| input.system_insert("echo 2", ctx));
+            view.open_deferred_enter_gate(ctx);
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.apply_held_paste_key(
+                        crate::editor::HeldPasteKey::Text("echo 2".into()),
+                        ctx,
+                    )
+                })
+            });
             view.input.update(ctx, |input, ctx| input.input_enter(ctx));
 
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "true");
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
-                &HandoffState::HoldAfterEnter {
-                    held: b"echo 2\r".to_vec(),
-                    released: false,
-                }
+                &HandoffState::HoldAfterEnter { released: false }
             );
+            // `echo 2` and the Enter behind it wait as two entries behind the first Enter's gate.
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
         });
         assert_eq!(*executed.borrow(), 0);
         assert!(pty_writes.borrow().is_empty());
@@ -15897,17 +17207,6 @@ fn abort_keys_are_exactly_ctrl_c_and_ctrl_d() {
     assert!(!is_abort_key(b""));
 }
 
-#[test]
-fn find_bar_relayouts_after_banner_change_only_when_open() {
-    // #958: a banner appearing while the find bar is open must trigger a delayed redraw of the
-    // bar so it picks up the banner's newly saved position.
-    assert_eq!(
-        super::find_bar_banner_relayout_delay(true),
-        Some(super::FIND_BAR_BANNER_RELAYOUT_DELAY)
-    );
-    assert_eq!(super::find_bar_banner_relayout_delay(false), None);
-}
-
 /// #983: typing is dropped while an ssh bootstrap is pending, but only within bounds. A stale
 /// pending session (failed su/sudo -i) whose failure timer fired, or one that has swallowed past
 /// the ceiling, must let typed characters reach the pty again.
@@ -16119,7 +17418,11 @@ fn read_only_view_of_live_conversation_renders_its_ai_blocks() {
             assert!(!ai_view_ids.is_empty());
             let model = view.model.lock();
             let mut visible = 0;
-            for item in model.block_list().block_heights().cursor::<TotalIndex, ()>() {
+            for item in model
+                .block_list()
+                .block_heights()
+                .cursor::<TotalIndex, ()>()
+            {
                 if let crate::terminal::model::blocks::BlockHeightItem::RichContent(item) = item {
                     if ai_view_ids.contains(&item.view_id) {
                         assert!(!item.should_hide, "viewer AI block is hidden");
@@ -16204,11 +17507,13 @@ fn read_only_view_of_live_conversation_ai_blocks_are_not_hidden_by_the_ai_block_
         });
 
         viewer.update(&mut app, |view, _| {
-            view.model.lock().set_conversation_transcript_viewer_status(Some(
-                ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
-                    conversation_id,
-                ),
-            ));
+            view.model
+                .lock()
+                .set_conversation_transcript_viewer_status(Some(
+                    ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
+                        conversation_id,
+                    ),
+                ));
         });
         // `is_hidden` reads the history model, not the (lock-holding) terminal model.
         let viewer_id = viewer.id();
@@ -16229,11 +17534,13 @@ fn read_only_view_of_live_conversation_ai_blocks_are_not_hidden_by_the_ai_block_
 
         // A viewer of a different conversation does not unhide this one.
         viewer.update(&mut app, |view, _| {
-            view.model.lock().set_conversation_transcript_viewer_status(Some(
-                ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
-                    AIConversationId::new(),
-                ),
-            ));
+            view.model
+                .lock()
+                .set_conversation_transcript_viewer_status(Some(
+                    ConversationTranscriptViewerStatus::ViewingLiveConversationReadOnly(
+                        AIConversationId::new(),
+                    ),
+                ));
         });
         BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
             history.mark_terminal_view_as_read_only_live_viewer(viewer_id, AIConversationId::new());
@@ -16498,7 +17805,10 @@ fn subshell_banner_keeps_its_phosphorize_chip_after_tagging_the_agent_in_and_out
 
             view.tag_out_agent_for_user_long_running_command(ctx);
             assert!(
-                view.use_agent_footer.as_ref(ctx).warpify_mode(ctx).is_some(),
+                view.use_agent_footer
+                    .as_ref(ctx)
+                    .warpify_mode(ctx)
+                    .is_some(),
                 "tagging the agent in must not discard the subshell's warpify mode"
             );
             assert!(view.agent_shortcut_banner_visible(ctx));
@@ -16644,14 +17954,12 @@ fn ssh_keys_before_pending_state_is_set_are_dropped_whole() {
             view.typed_characters_on_terminal("echo typed-", ctx);
             view.typed_characters_on_terminal("during-connect", ctx);
             view.keydown_on_terminal("\r", ctx);
-            assert!(
-                view.ssh_setup_drop_notified,
-                "the drop notice must be raised"
-            );
+            assert!(view.ssh_typeahead_holding, "the keys are held (#1292)");
+            assert_eq!(view.ssh_held_bytes(), 26);
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
                 "",
-                "dropped text must not land in the editor either"
+                "held text must not land in the editor either"
             );
             view.model
                 .lock()
@@ -16749,6 +18057,7 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
             simulate_ssh_hook(view);
             // The event handler observes the hook while the ssh block still runs.
             view.refresh_ssh_connect_gate();
+            view.ssh_observe(ctx);
             assert!(view.ssh_connect_gate.as_ref().is_some_and(|g| g.managed));
             // The ssh block completes cleanly and the pending ssh state is cleared with it.
             let armed = view.model.lock().active_block_id().clone();
@@ -16756,7 +18065,414 @@ fn ssh_keys_after_ssh_block_ends_before_remote_session_are_dropped() {
             view.warpify_state.clear_pending_ssh_host();
             view.typed_characters_on_terminal("echo hi", ctx);
             view.keydown_on_terminal("\r", ctx);
-            assert!(view.ssh_setup_drop_notified);
+            assert!(view.ssh_typeahead_holding);
+            assert!(!view.ssh_held_is_empty());
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// A pane whose `ssh host` is connecting: the remote shell announced itself (pending session, no
+/// `Bootstrapped` yet) and "echo hi" + Enter were typed meanwhile, so they are held (#1494).
+fn ssh_pane_with_held_typeahead_for_test(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    register_local_session_for_ssh_test(view, ctx);
+    submit_command(view, "ssh host", ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("ssh host", "");
+    view.warpify_state
+        .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+    simulate_ssh_hook(view);
+    view.refresh_ssh_connect_gate();
+    // The model events (the ssh hook, InitShell) are the edges that feed the ssh phase in `table`
+    // mode; the test drives the gate directly, so it feeds what those events would.
+    view.ssh_observe(ctx);
+    view.model.lock().init_shell(InitShellValue {
+        session_id: SessionId::from(167303092612202),
+        shell: "bash".to_owned(),
+        user: "user".to_owned(),
+        hostname: "host".to_owned(),
+        ..Default::default()
+    });
+    assert!(view.refresh_ssh_connect_gate());
+    view.ssh_observe(ctx);
+    view.typed_characters_on_terminal("echo hi", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    assert!(view.ssh_typeahead_holding, "the keys are held (#1292)");
+    assert!(!view.ssh_held_is_empty());
+}
+
+/// #1494 / #1577 (owner decision): the ssh bootstrap timed out with typing held and the remote
+/// shell is alive at a non-bootstrapped prompt. A timer no longer writes anything there: no
+/// ` stty sane`, no keys. The held text is handed back (kept for the input while the ssh block
+/// runs, like any ssh hand-back), nothing reaches the pty, nothing runs, and the delivery is not
+/// marked committed. Old behaviour: the kill-switch test below. Legacy and Table.
+#[test]
+fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _delivers =
+                crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let executed = count_executed_commands(&mut app, &terminal);
+            // The pane's own `ssh host` submit is an ExecuteCommand too; only what runs after it
+            // (the held `echo hi` + Enter, a bootstrap line) counts.
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+            });
+            // Read between updates: the view's events are delivered once an update has ended.
+            let ran_during_setup = *executed.borrow();
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .interactive_latch()
+                    .force(true);
+                assert!(view.is_long_running(), "the bootstrap block is running");
+                view.on_bootstrap_failed_timer_complete((), ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                // The ssh block is still running, so the text is kept for the input (as for any
+                // ssh hand-back); it is never lost and never written.
+                let input = view.input.as_ref(ctx);
+                let kept = input.handed_back_text_for_test().map(str::to_owned);
+                let shown = input.buffer_text(ctx);
+                assert!(
+                    kept.as_deref() == Some("echo hi") || shown == "echo hi",
+                    "{mode:?}: the held text is handed back: kept={kept:?} shown={shown:?}"
+                );
+                assert!(
+                    !view
+                        .model
+                        .lock()
+                        .typeahead_handoff()
+                        .committed_delivery_pending(),
+                    "{mode:?}: nothing was delivered"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: a timer wrote to the pty: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(
+                *executed.borrow(),
+                ran_during_setup,
+                "{mode:?}: nothing ran after the pane's own `ssh host`"
+            );
+        })
+    }
+}
+
+/// #1494 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the ssh bootstrap timed out with
+/// typing held. The remote shell is alive at a
+/// non-bootstrapped prompt (its tty still raw), so the held text is delivered to it -- after a
+/// `stty sane` line, once, in order -- instead of being discarded, and nothing is written to the
+/// local shell. (Against the old behaviour nothing was delivered at all.)
+#[test]
+fn ssh_bootstrap_failure_under_the_kill_switch_delivers_held_typeahead_after_stty_sane() {
+    App::test((), |mut app| async move {
+        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            // The remote shell's InitShell replaced the finished `ssh` block with the hidden
+            // bootstrap block, and by the time the bootstrap timer fires that block holds the
+            // setup script's echo and is the foreground work of the pane. A fresh test block is
+            // empty and unlatched, which `is_long_running` reads as "no remote shell in front".
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "the text went to the remote shell, not into the local editor"
+            );
+        });
+        let written = pty_writes.borrow().concat();
+        let text = String::from_utf8_lossy(&written).into_owned();
+        let stty_at = text.find(" stty sane\r").expect("stty sane is sent first");
+        let echo_at = text.find("echo hi").expect("the held text is delivered");
+        assert!(stty_at < echo_at, "{text:?}");
+        assert_eq!(text.matches("stty sane").count(), 1, "{text:?}");
+        assert_eq!(text.matches("echo hi").count(), 1, "exactly once: {text:?}");
+        assert!(
+            text.ends_with("echo hi\r"),
+            "in order, Enter last: {text:?}"
+        );
+    })
+}
+
+/// #1566 (r18cz Linux, 1 in 9 connects): the 7 s bootstrap give-up timer expired 20 ms after the
+/// remote's bootstrap `Precmd` and 40 ms before `Bootstrapped`. The #1494 failure path then handed
+/// the held line back / `stty sane`d the tty under the bootstrap, and the line was lost or landed
+/// in the wrong place. A session that already showed its bootstrap prompt is progressing: the
+/// timer waits (once, logged), `Bootstrapped` and the first remote prompt deliver the line to the
+/// pty exactly once, and the editor stays empty. Legacy and Table.
+#[test]
+fn ssh_bootstrap_timer_racing_the_bootstrap_precmd_does_not_fail_the_session() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let remote_session = SessionId::from(167303092612202);
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                // The bootstrap script's own prompt, while the session is still pending.
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(
+                    view.ssh_typeahead_holding && !view.ssh_held_is_empty(),
+                    "{mode:?}: still held after the bootstrap precmd"
+                );
+                // The give-up timer expires in the window before `Bootstrapped`.
+                view.on_bootstrap_failed_timer_complete((), ctx);
+                assert!(
+                    view.ssh_typeahead_holding && !view.ssh_held_is_empty(),
+                    "{mode:?}: the timer must not fail a progressing session"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: no stty sane, no keys: {:?}",
+                    pty_writes.borrow()
+                );
+                // `Bootstrapped`, then the remote's first prompt.
+                view.model.lock().bootstrapped(BootstrappedValue {
+                    shell: "bash".to_owned(),
+                    ..Default::default()
+                });
+                view.handle_terminal_event(
+                    &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                        session_id: remote_session,
+                        is_subshell: false,
+                    }),
+                    ctx,
+                );
+                view.model.lock().simulate_long_running_block("sleep 5", "");
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: the line went to the pty, not the editor"
+                );
+            });
+            let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            assert_eq!(
+                text.matches("echo hi").count(),
+                1,
+                "{mode:?}: once: {text:?}"
+            );
+            assert!(!text.contains("stty sane"), "{mode:?}: {text:?}");
+        })
+    }
+}
+
+/// #1566 follow-up (r18cz Linux): a give-up timer armed for an earlier connect expired ~1 s into
+/// the next one and failed it. Connect A arms, connect B (a new pending session) starts
+/// bootstrapping with keys held, A's timer fires: it is a no-op -- nothing written, keys still
+/// held, no `stty sane` -- and B then completes normally with the keys reaching the pty once.
+/// Legacy and Table.
+#[test]
+fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let remote_session = SessionId::from(167303092612202);
+            terminal.update(&mut app, |view, ctx| {
+                // Connect A: its give-up timer is armed (the identity it carries is captured).
+                let stale_arm = BootstrapTimerArm {
+                    generation: view.bootstrap_timer_generation,
+                    session: Some(SessionId::from(167303092612201)),
+                };
+                // Connect B: a different pending session, keys held.
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                assert!(view.ssh_typeahead_holding && !view.ssh_held_is_empty());
+                // A's timer expires while B bootstraps.
+                view.on_bootstrap_timer_fired(stale_arm, ctx);
+                assert!(
+                    view.ssh_typeahead_holding && !view.ssh_held_is_empty(),
+                    "{mode:?}: a stale timer must not act on a later connect"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: no stty sane, no keys: {:?}",
+                    pty_writes.borrow()
+                );
+                // B completes normally.
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                view.model.lock().bootstrapped(BootstrappedValue {
+                    shell: "bash".to_owned(),
+                    ..Default::default()
+                });
+                view.handle_terminal_event(
+                    &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                        session_id: remote_session,
+                        is_subshell: false,
+                    }),
+                    ctx,
+                );
+                view.model.lock().simulate_long_running_block("sleep 5", "");
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+            });
+            let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            assert_eq!(
+                text.matches("echo hi").count(),
+                1,
+                "{mode:?}: once: {text:?}"
+            );
+            assert!(!text.contains("stty sane"), "{mode:?}: {text:?}");
+        })
+    }
+}
+
+/// #1566 / #1577: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes,
+/// the second expiry fails the session, and (owner decision) hands the held text back instead of
+/// writing it after `stty sane`: nothing reaches the pty. The kill-switch copy is below.
+#[test]
+fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
+    App::test((), |mut app| async move {
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        // The hand-over writes through the counted route too (`WriteHandoffUserBytesToPty`).
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            let input = view.input.as_ref(ctx);
+            assert!(
+                input.handed_back_text_for_test() == Some("echo hi")
+                    || input.buffer_text(ctx) == "echo hi",
+                "the held text is handed back"
+            );
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "no `stty sane`, no keys: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
+/// #1566 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the deferral is one grace, not an
+/// escape hatch: if `Bootstrapped` never comes, the second expiry runs the #1494 path (held text
+/// delivered after `stty sane`, once).
+#[test]
+fn ssh_bootstrap_timer_second_expiry_under_the_kill_switch_still_delivers_after_stty_sane() {
+    App::test((), |mut app| async move {
+        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        // The hand-over writes through the counted route too (`WriteHandoffUserBytesToPty`).
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            // The bootstrap block is the foreground work of the pane (as in
+            // `ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane`): since #1494/#1566
+            // the held text is delivered after `stty sane` only when a remote shell is provably in
+            // front, else handed back.
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+        let text = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+        assert_eq!(text.matches("stty sane").count(), 1, "{text:?}");
+        assert_eq!(text.matches("echo hi").count(), 1, "{text:?}");
+    })
+}
+
+/// #1494: if the shell is gone when the bootstrap timer fires, the held text goes nowhere: it is
+/// discarded (logged) and nothing is written or run locally.
+#[test]
+fn ssh_bootstrap_failure_with_a_dead_shell_discards_the_held_typeahead() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.model
+                .lock()
+                .exit(crate::terminal::model::terminal_model::ExitReason::ShellProcessExited);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
@@ -16791,6 +18507,9 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             simulate_ssh_hook(view);
             view.refresh_ssh_connect_gate();
+            // The model events (the ssh hook, InitShell) feed the edge-driven phase in `table`
+            // mode; the test calls the gate directly, so it feeds what the events would.
+            view.ssh_observe(ctx);
             // The remote shell announces itself (pending session); the gate sees it.
             view.model.lock().init_shell(InitShellValue {
                 session_id: remote_session,
@@ -16800,6 +18519,7 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
                 ..Default::default()
             });
             assert!(view.refresh_ssh_connect_gate());
+            view.ssh_observe(ctx);
             assert!(
                 view.ssh_connect_gate
                     .as_ref()
@@ -16827,55 +18547,34 @@ fn ssh_keys_between_bootstrapped_and_first_remote_prompt_are_dropped_whole() {
                 "Bootstrapped is not the remote prompt: the gate must still hold"
             );
             view.typed_characters_on_terminal("ec", ctx);
-            assert!(
-                view.ssh_setup_drop_notified,
-                "the drop notice must be raised"
-            );
+            assert!(view.ssh_typeahead_holding, "held, not dropped");
             assert_eq!(
                 view.input.as_ref(ctx).buffer_text(ctx),
                 "",
-                "dropped text must not land in the editor either"
+                "held text must not land in the editor"
             );
-            // The remote shell's first prompt: the gate hands input over...
+            view.typed_characters_on_terminal("ho TY$((20+1))-$(uname -n)", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert!(view.ssh_typeahead_holding);
+            // Fixed setup: a command runs in the foreground, so the keys that are delivered go
+            // to the pty, where the assertions below can read them.
+            view.model.lock().simulate_long_running_block("sleep 5", "");
+            // The remote shell's first prompt: the gate hands input over, and the held keys are
+            // delivered in the handling of that same event (#1348), not later.
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert!(
                 view.ssh_connect_gate.is_none(),
                 "the first remote prompt releases the gate"
             );
-            // ...but the rest of the line whose head was dropped stays dropped through its Enter.
-            // A command is running in the foreground again (fixed setup for the assertions
-            // below: the editor is hidden, so the line must wait, not be shown or written).
-            view.model.lock().simulate_long_running_block("sleep 5", "");
-            view.typed_characters_on_terminal("ho TY$((20+1))-$(uname -n)", ctx);
-            view.keydown_on_terminal("\r", ctx);
-            // #1113: the dropped line is kept, whole and unexecuted, in the editor (when it is
-            // visible); it never reaches the tty.
-            // Fixed setup: the ssh block is still the running block (it was made long running
-            // above and no real precmd ended it), so the editor is hidden and the line waits,
-            // whole, in the held state; it must reach neither the tty nor a hidden editor.
-            assert!(view.is_long_running());
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert_eq!(view.ssh_held_typing.text, "echo TY$((20+1))-$(uname -n)");
-            assert!(view.ssh_held_typing.ended);
-            view.input.update(ctx, |input, ctx| {
-                input.clear_buffer_and_reset_undo_stack(ctx)
-            });
-            view.ssh_held_typing = SshHeldTyping::default();
-            // A new line passes.
-            view.typed_characters_on_terminal("ls", ctx);
-            assert!(!view.ssh_setup_drop_notified, "ls must not be dropped");
+            assert!(view.ssh_remote_prompt_seen);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
         });
         let writes = pty_writes.borrow();
+        let delivered = String::from_utf8_lossy(&writes.concat()).into_owned();
         assert!(
-            !writes.iter().any(|w| w.as_slice() == b"ec"
-                || w.as_slice() == b"ho TY$((20+1))-$(uname -n)"
-                || w.as_slice() == b"\r"),
-            "no part of the dropped line may reach the tty: {writes:?}"
-        );
-        let editor = terminal.read(&app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
-        assert!(
-            writes.iter().any(|w| w.as_slice() == b"ls") || editor == "ls",
-            "the next line must be delivered whole (pty {writes:?}, editor {editor:?})"
+            delivered.contains("echo TY$((20+1))-$(uname -n)\r"),
+            "the line must arrive whole and in order, Enter last: {delivered:?}"
         );
     })
 }
@@ -16902,15 +18601,15 @@ fn ssh_keys_after_unmanaged_ssh_block_end_pass() {
             assert!(view.ssh_connect_gate.is_none());
             view.warpify_state.clear_pending_ssh_host();
             view.typed_characters_on_terminal("ls", ctx);
-            assert!(!view.ssh_setup_drop_notified);
+            assert!(!view.ssh_typeahead_holding);
         });
         let _ = pty_writes;
     })
 }
 
-/// #983 window 4: typeahead pasted after Enter takes the same path as typing.
+/// #983 window 4 / #1292: typeahead pasted after Enter is held like typing (the old code dropped it).
 #[test]
-fn ssh_paste_after_enter_is_dropped_whole() {
+fn ssh_paste_after_enter_is_held_whole() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -16922,9 +18621,10 @@ fn ssh_paste_after_enter_is_dropped_whole() {
             ctx.clipboard()
                 .write(ClipboardContent::plain_text("echo pasted\n".to_owned()));
             view.paste(false, ctx);
-            assert!(
-                view.ssh_setup_drop_notified,
-                "the drop notice must be raised"
+            assert!(view.ssh_typeahead_holding, "the paste is held (#1292)");
+            assert_eq!(
+                view.ssh_hold_take(),
+                vec![HeldInput::Paste("echo pasted\n".to_owned())]
             );
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
@@ -17011,32 +18711,55 @@ fn ssh_gate_completion_applies_only_to_the_armed_block() {
 fn release_ssh_gate_for_test(view: &mut TerminalView) {
     view.ssh_connect_gate = None;
     view.ssh_connect_gate_released_at = Some(chrono::Local::now());
+    // Every release in production tells the edge-driven ssh phase (`refresh_ssh_connect_gate`
+    // releasing, `discard_held_ssh_typeahead_for_prompt` delivering). Without the edge the machine
+    // keeps the window open in `table` mode (the default), its phase stays `Holding`, and the
+    // keys this release hands over are held again instead of reaching their destination.
+    view.note_ssh_gate_released(crate::terminal::input_queue::SshRelease::FirstPrompt);
 }
 
-/// #983 straddle: typing that crosses the gate release is dropped WHOLE. The head is dropped
-/// while the gate holds; the tail and its Enter must not reach the pty or the editor, and the
-/// next line passes.
+/// #1292 / #1348: typing that crosses the gate release is neither split, reordered nor run on the
+/// wrong machine. The key that arrives after the release is an event (#1348): it first hands over
+/// what was held (no remote prompt ever came, so the held text goes back to the local editor as
+/// text, unexecuted) and is then typed live behind it. An Enter in the same continuous burst must
+/// NOT run the line here: the first Enter after a hand-back is consumed (owner rule: a line meant
+/// for the remote machine never executes locally because the connect ended mid-line).
 #[test]
-fn ssh_line_typed_across_gate_release_is_dropped_whole() {
+fn ssh_line_typed_across_gate_release_is_never_run_locally() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("echo QW", ctx);
-            assert!(view.ssh_setup_drop_notified);
+            assert!(view.ssh_typeahead_holding);
+            // Held while the gate is up: nothing in the editor yet.
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
             release_ssh_gate_for_test(view);
             view.typed_characters_on_terminal("ERTY && x", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            view.keydown_on_terminal("\r", ctx);
-            // #1113: no remote prompt ever came (the gate was just released): the line is
-            // discarded with a notice, never shown, never run.
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
-            assert!(!view.ssh_drop_line_through_enter, "Enter ends the drop");
+            // The hand-over ran on this key: no remote prompt, so the line is shown unexecuted.
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY && x");
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            // The Enter of the same burst is consumed: the line stays, nothing is submitted.
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        // The editor's Enter event is delivered when the update above ends.
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY && x");
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx)
             });
@@ -17044,13 +18767,223 @@ fn ssh_line_typed_across_gate_release_is_dropped_whole() {
             view.typed_characters_on_terminal("ls", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
         });
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["ssh host".to_owned()],
+            "the line typed across the release was never run here"
+        );
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
 
-/// #983: a paste after a dropped head is dropped too (and a paste alone arms the drop-through).
+/// #1395: an ssh whose command line carries a quoted `;` (`-o ProxyCommand='sleep 3; false'`)
+/// hangs, then fails. Keys typed during the hang are held (never written to the pty, so the local
+/// shell cannot read them as typeahead after ssh dies); on failure the text returns unexecuted.
 #[test]
-fn ssh_paste_across_gate_release_is_dropped_whole() {
+fn ssh_quoted_operator_command_holds_typing_then_hands_back_unexecuted() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh -o ProxyCommand='sleep 3; false' host", ctx);
+            assert!(view.ssh_connect_gate.is_some(), "the gate must be armed");
+            view.typed_characters_on_terminal("echo X >> f", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            let id = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&id, 255);
+            // The failed connect ended without a remote shell: the hand-over (driven by the next
+            // event) returns the held text to the editor, unexecuted.
+            assert!(view.deliver_ssh_typeahead_if_ready("test", ctx));
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X >> f");
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            // The Enter of the same burst is consumed, not run.
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo X >> f");
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1395 (FS2): after a held-back Enter the user replaces the handed-back line; the next Enter
+/// belongs to the new line and is not swallowed (which merged the next typing into it).
+/// #1456: an ssh hand-back with no text arms no Enter guard, so the next line's Enter runs.
+#[test]
+fn ssh_handover_enter_guard_is_not_armed_by_an_empty_hand_back() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, _| {
+                input.arm_ssh_handover_enter_guard(String::new())
+            });
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            view.input.update(ctx, |input, _| {
+                input.arm_ssh_handover_enter_guard("echo held".into())
+            });
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+        });
+    })
+}
+
+#[test]
+fn ssh_handover_enter_guard_does_not_swallow_enter_for_a_replaced_line() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            // A registered session whose first Precmd was processed: without it the submit has
+            // nowhere to go (the shell refuses a command until its history is appendable, #1332).
+            register_local_session_for_ssh_test(view, ctx);
+            first_precmd_processed_for_test(view, ctx);
+            view.input.update(ctx, |input, _| {
+                input.arm_ssh_handover_enter_guard("echo old".into())
+            });
+            view.input.update(ctx, |input, ctx| {
+                input.replace_buffer_content("ssh other", ctx)
+            });
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        // The Enter's submit continues through events and the executor (the verdict wait, the
+        // pane queue's drain): let them run until the line is executed or waiting at its gate.
+        for _ in 0..64 {
+            let settled = terminal.read(&app, |view, ctx| {
+                executed.borrow().as_slice() == ["ssh other".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+            });
+            if settled {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+        terminal.update(&mut app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            // Not swallowed: the Enter went on to submit the new line, which is either already
+            // executed or waiting at its gate for the input-type verdict (the buffer stays until
+            // then); a swallowed Enter would have left the line alone with no gate and no run.
+            assert!(
+                executed.borrow().as_slice() == ["ssh other".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx),
+                "the new line was submitted, not swallowed: executed {:?}",
+                executed.borrow()
+            );
+        });
+    })
+}
+
+/// #1396: the exact sequence from the r18bi round. The ssh ended with `echo HELDLINE` handed
+/// back (guard armed); the user clears the line (Ctrl-U) and, later, types a new unrelated
+/// command. That Enter must run the new line, not be swallowed by the stale marker.
+#[test]
+fn ssh_handover_enter_guard_does_not_swallow_a_new_line_after_clear() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            // A registered session whose first Precmd was processed: without it the shell
+            // refuses the command (HistoryNotAppendable, #1332) and the buffer stays.
+            register_local_session_for_ssh_test(view, ctx);
+            first_precmd_processed_for_test(view, ctx);
+            view.input.update(ctx, |input, ctx| {
+                input.arm_ssh_handover_enter_guard("echo HELDLINE".into());
+                input.replace_buffer_content("", ctx);
+                input.replace_buffer_content("echo NEXT >> hb.txt", ctx);
+            });
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        // The Enter's submit continues through events and the executor: let it run until the
+        // line is executed or waits at its gate for the input-type verdict.
+        for _ in 0..64 {
+            let settled = terminal.read(&app, |view, ctx| {
+                executed.borrow().as_slice() == ["echo NEXT >> hb.txt".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+            });
+            if settled {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
+        terminal.update(&mut app, |view, ctx| {
+            assert!(!view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            assert!(
+                executed.borrow().as_slice() == ["echo NEXT >> hb.txt".to_owned()]
+                    || view.input.as_ref(ctx).enter_queue_holds_keys(ctx),
+                "the new line was submitted, not swallowed: executed {:?}",
+                executed.borrow()
+            );
+        });
+    })
+}
+
+/// #1447: outside the key path (an event / timer callback) the prompt look never waits for the
+/// pty reader either: with the model locked (a parse in progress) it answers from the last look.
+#[test]
+fn prompt_look_outside_key_path_does_not_block_on_a_busy_model() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            assert!(!view.in_key_path());
+            view.unterminated_text_at_last_look.set(true);
+            view.setup_echo_mid_line_at_last_look.set(true);
+            let busy = view.model.lock();
+            assert!(view.active_output_ends_in_unterminated_text());
+            assert!(!view.active_output_awaits_an_answer());
+            drop(busy);
+        });
+    })
+}
+
+/// Sends `action` to the input editor the way a key typed into it does.
+fn editor_key(view: &mut TerminalView, action: EditorAction, ctx: &mut ViewContext<TerminalView>) {
+    view.input.update(ctx, |input, ctx| {
+        input
+            .editor()
+            .update(ctx, |editor, ctx| editor.handle_action(&action, ctx))
+    });
+}
+
+fn editor_text(view: &mut TerminalView, text: &str, ctx: &mut ViewContext<TerminalView>) {
+    editor_key(
+        view,
+        EditorAction::UserInsert(warp_util::user_input::UserInput::new(text.to_owned())),
+        ctx,
+    );
+}
+
+/// #1292 (agent mode): once the remote shell's first prompt hands focus to the editor, keys typed
+/// before the held keys are delivered reach the editor. They are queued behind the held keys, not
+/// applied: the delivery used to insert the older keys after them (`Necho ZQCON_agent_1`).
+#[test]
+fn ssh_editor_keys_typed_before_delivery_stay_behind_the_held_keys() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17059,21 +18992,175 @@ fn ssh_paste_across_gate_release_is_dropped_whole() {
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
             submit_command(view, "ssh host", ctx);
-            view.typed_characters_on_terminal("echo QW", ctx);
+            view.typed_characters_on_terminal("echo ZQCON", ctx);
+            assert!(view.ssh_typeahead_holding);
+            // The remote shell's first prompt: the gate is released and the editor has focus.
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
             release_ssh_gate_for_test(view);
-            ctx.clipboard()
-                .write(ClipboardContent::plain_text("ERTY".to_owned()));
-            view.paste(false, ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            // Keys typed now reach the editor itself, not the view.
+            editor_text(view, "N_agent_1", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "queued, not applied"
+            );
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo ZQCONN_agent_1",
+                "held keys first, then what reached the editor meanwhile"
+            );
+            // Later keys go straight to the editor, behind everything.
+            editor_text(view, "_x", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo ZQCONN_agent_1_x"
+            );
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
 
-/// #983: visible prompt text arriving ends the drop-through, so a `yes` + Enter answer typed at
-/// a host-key prompt is delivered even though the user typed blind before the prompt existed.
+/// #1292: a Backspace typed into the editor in the gap edits the HELD text, not the editor's
+/// (which is empty), and the keys after it follow in order.
 #[test]
-fn ssh_prompt_arrival_ends_drop_through() {
+fn ssh_editor_backspace_in_the_gap_edits_the_held_text() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo abX", ctx);
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            editor_key(view, EditorAction::Backspace, ctx);
+            editor_text(view, "c", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1292 (agent mode): an Enter that reaches the editor while keys are held must not submit the
+/// part of the line the editor has (it went to the agent as a prompt of its own); it is held
+/// behind everything typed before it and runs the whole line once.
+#[test]
+fn ssh_editor_enter_during_hold_is_held_not_submitted() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_typeahead_holding);
+            editor_text(view, "ERTY", ctx);
+            editor_key(view, EditorAction::Enter, ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                executed.borrow().as_slice(),
+                ["ssh host".to_owned()],
+                "only the ssh command itself ran"
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert_eq!(
+                view.ssh_hold_take(),
+                vec![
+                    HeldInput::Typed("echo QWERTY".to_owned()),
+                    HeldInput::Key("\r".to_owned())
+                ]
+            );
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1292: keys queued by the editor are discarded with the hold when a prompt arrives (they may
+/// be a password typed blind).
+#[test]
+fn ssh_prompt_arrival_discards_editor_queued_keys() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("pa", ctx);
+            editor_text(view, "ss", ctx);
+            view.reset_ssh_typeahead();
+            assert!(view.ssh_held_is_empty());
+            assert!(ssh_queue_is_idle(view));
+        });
+    })
+}
+
+/// #1292 / #1348: a paste that arrives after the gate released hands over the held typing first
+/// (unexecuted, as text in the local editor) and is then pasted behind it: order is kept, nothing
+/// reaches the pty, and an Enter typed right behind it is consumed, not run here.
+#[test]
+fn ssh_paste_across_gate_release_is_never_run_locally() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo QW", ctx);
+            assert!(view.ssh_typeahead_holding);
+            release_ssh_gate_for_test(view);
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("ERTY".to_owned()));
+            view.paste(false, ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY");
+            editor_key(view, EditorAction::Enter, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY");
+        });
+        assert_eq!(
+            executed.borrow().as_slice(),
+            ["ssh host".to_owned()],
+            "the line typed across the release was never run here"
+        );
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #983 / #1292: visible prompt text arriving discards what was typed blind (it may be a
+/// password) and ends the hold, so a `yes` + Enter typed at a host-key prompt is delivered.
+#[test]
+fn ssh_prompt_arrival_discards_held_keys_and_answers_pass() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17088,25 +19175,859 @@ fn ssh_prompt_arrival_ends_drop_through() {
             view.warpify_state
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("blind", ctx);
-            assert!(view.ssh_drop_line_through_enter);
+            assert!(view.ssh_typeahead_holding);
             view.model
                 .lock()
                 .process_bytes("Are you sure you want to continue connecting (yes/no)? ");
             view.keydown_on_terminal("\r", ctx);
-            assert!(!view.ssh_drop_line_through_enter);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty(), "the blind text is gone");
         });
+        let writes = pty_writes.borrow();
         assert!(
-            pty_writes.borrow().iter().any(|w| w.as_slice() == b"\r"),
-            "the answer must reach ssh: {:?}",
-            pty_writes.borrow()
+            writes.iter().any(|w| w.as_slice() == b"\r"),
+            "the answer must reach ssh: {writes:?}"
+        );
+        assert!(
+            !writes.iter().any(|w| w.as_slice() == b"blind"),
+            "the blind text must never reach ssh: {writes:?}"
         );
     })
 }
 
-/// #983: a newline-terminated banner / MOTD is visible text but not a prompt: the drop-through
-/// keeps dropping (through the Enter) even though the gate itself opened on the banner.
+/// #1561: typeahead held for a NESTED ssh whose inner shell is not bootstrapped. The first thing
+/// the inner host shows is its shell's own prompt (unterminated text, no remote session), which
+/// the #1113 rule read as a password prompt: the whole held line was discarded at the first
+/// prompt. A shell prompt is not a credential prompt; plain ssh has that shell read the keys, so
+/// they are delivered to the pty, once, in order (legacy chain and table alike).
 #[test]
-fn ssh_banner_does_not_end_drop_through() {
+fn ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh fake", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.typed_characters_on_terminal("echo TOKEN >> ~/rn.txt", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                // The pty reader publishes the key facts after each parse; without this the
+                // table never saw the prompt, so the H4 row (a key stamped before the prompt is
+                // a password typed blind) could not fire, and this test passed while the app
+                // lost the keys (#1561, r18cx: `row=H4 why=StaleBeforePrompt` x16).
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: the shell prompt ended the connect window"
+                );
+                assert!(
+                    !matches!(
+                        view.build_route_facts(
+                            crate::terminal::input_queue::QueueFacts::default(),
+                            ctx
+                        )
+                        .ssh,
+                        crate::terminal::input_queue::SshPhase::PromptUp { .. }
+                    ),
+                    "{mode:?}: the phase left PromptUp"
+                );
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo TOKEN >> ~/rn.txt").count(),
+                1,
+                "{mode:?}: the typed line reaches the inner shell exactly once: {written:?}"
+            );
+        })
+    }
+}
+
+/// #1561: the control for the test above: a password prompt still discards what was typed blind,
+/// in both modes, and nothing of it reaches the pty.
+#[test]
+fn ssh_password_prompt_still_discards_the_held_keys_in_both_modes() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh fake", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.typed_characters_on_terminal("hunter2", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                view.model.lock().process_bytes("user@fake's password: ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: the blind text is gone");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert!(
+                !String::from_utf8_lossy(&written).contains("hunter2"),
+                "{mode:?}: the blind text must never reach ssh"
+            );
+        })
+    }
+}
+
+/// #1565: with the agent-view editor focused (the default mode), the keys typed while an ssh
+/// connects must be held for the remote shell like in terminal mode. The hold used to be armed
+/// only by the first terminal-routed key, and `key_target` sent a typed key to the terminal only
+/// when the hold was already active, so every key went to the editor and the connect gate
+/// was never used. Both destination modes: the held line reaches the pty exactly once, after the
+/// remote shell's prompt, and nothing is left in the editor.
+#[test]
+fn ssh_keys_typed_in_the_agent_view_editor_during_connect_are_held_and_handed_over_once() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+                submit_command(view, "ssh fake", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                assert!(
+                    view.ssh_connect_gate.is_some(),
+                    "{mode:?}: armed by the submit"
+                );
+                // The editor has focus (agent view): the keys of the connect are the pane's and
+                // are held, not inserted into the editor.
+                for c in "echo T".chars() {
+                    let outcome = pane_typed(view, &c.to_string(), true, ctx);
+                    assert_eq!(outcome, PaneKeyOutcome::Consumed, "{mode:?}");
+                }
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing reached the agent view's editor"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing written yet"
+                );
+                // The remote shell shows its first prompt.
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T").count(),
+                1,
+                "{mode:?}: the typed line reaches the remote shell exactly once: {written:?}"
+            );
+        })
+    }
+}
+
+/// #1565 control: an ssh the AGENT runs (an agent-requested command) is not the user's connect.
+/// Keys typed in the agent-view editor meanwhile are the next agent prompt: they stay in the
+/// editor, are not held, and nothing reaches the pty. Legacy and Table.
+#[test]
+fn ssh_run_by_the_agent_does_not_take_the_agent_view_editor_keys() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                let conversation_id =
+                    view.agent_view_controller().update(ctx, |controller, ctx| {
+                        controller
+                            .try_enter_agent_view(
+                                None,
+                                AgentViewEntryOrigin::Input {
+                                    was_prompt_autodetected: false,
+                                },
+                                ctx,
+                            )
+                            .expect("Should be able to enter agent view")
+                    });
+                let session_id = view
+                    .active_block_session_id()
+                    .unwrap_or_else(|| SessionId::from(9001));
+                view.handle_input_event(
+                    &InputEvent::ExecuteCommand(Box::new(ExecuteCommandEvent {
+                        command: "ssh fake".to_owned(),
+                        session_id,
+                        workflow_id: None,
+                        workflow_command: None,
+                        should_add_command_to_history: false,
+                        source: CommandExecutionSource::AI {
+                            metadata: AgentInteractionMetadata::new_hidden(
+                                AIAgentActionId::from("agent-ssh".to_owned()),
+                                conversation_id,
+                            ),
+                        },
+                    })),
+                    ctx,
+                );
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                for c in "next prompt".chars() {
+                    pane_typed(view, &c.to_string(), true, ctx);
+                }
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: not held");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "next prompt",
+                    "{mode:?}: the keys stay in the editor"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing to the pty"
+                );
+            });
+        })
+    }
+}
+
+/// #1579: in `legacy` mode (the kill switch) a connect window armed at PREEXEC (an ssh the
+/// submitted text did not show, e.g. an alias) had `user_submitted=false`, so with the agent-view
+/// editor focused the keys typed while it connected went into the editor until a terminal-routed
+/// key opened the hold: the #1565 symptom, back for this case. The window now inherits the origin
+/// of the submit that started its block: the keys are held for the remote and reach it once, after
+/// its prompt. Legacy and Table.
+#[test]
+fn ssh_window_armed_at_preexec_for_a_users_submit_holds_the_agent_view_editor_keys() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+                // The user submits a command whose text is not an ssh command (an alias): the
+                // submit arms nothing.
+                submit_command(view, "myssh", ctx);
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: the submit's text is not ssh"
+                );
+                // Its preexec: the block starts and the warpify state shows ssh running.
+                view.model.lock().simulate_long_running_block("myssh", "");
+                view.note_block_started_for_ssh();
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.model.lock().publish_key_facts();
+                view.arm_ssh_connect_gate_at_preexec(ctx);
+                assert!(
+                    view.ssh_connect_gate
+                        .as_ref()
+                        .is_some_and(|gate| gate.user_submitted),
+                    "{mode:?}: armed at preexec, and the user's (the submit's origin)"
+                );
+                for c in "echo T".chars() {
+                    let outcome = pane_typed(view, &c.to_string(), true, ctx);
+                    assert_eq!(outcome, PaneKeyOutcome::Consumed, "{mode:?}");
+                }
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held for the remote");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing reached the agent view's editor"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing written yet"
+                );
+                // The remote shell shows its first prompt.
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T").count(),
+                1,
+                "{mode:?}: the typed line reaches the remote shell exactly once: {written:?}"
+            );
+        })
+    }
+}
+
+/// #1579 control: the origin is consumed by the block it started. A block nothing submitted (the
+/// next one, started by typing into a program) does not inherit an earlier user submit.
+#[test]
+fn ssh_submit_origin_is_consumed_by_the_block_it_started() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "myssh", ctx);
+            view.note_block_started_for_ssh();
+            assert!(view.running_block_user_submitted);
+            view.note_block_started_for_ssh();
+            assert!(
+                !view.running_block_user_submitted,
+                "a block nothing submitted is not the user's"
+            );
+        });
+    })
+}
+
+/// #1579 review, both modes: a user submit whose block is IN-BAND consumes its origin there. It
+/// used to be consumed only past the in-band early return, so it leaked to the next block: a raw
+/// ssh nothing submitted (an agent's, typed into a program) armed a window marked as the user's,
+/// and the agent-view editor's keys were taken into its hold. They stay in the editor.
+#[test]
+fn ssh_origin_of_an_in_band_submit_does_not_leak_to_a_later_raw_block() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+                // The user's submit starts an in-band block.
+                submit_command(view, "ls", ctx);
+                view.handle_terminal_event(
+                    &ModelEvent::AfterBlockStarted {
+                        block_id: BlockId::from("in-band-1579".to_string()),
+                        command: "ls".to_owned(),
+                        is_for_in_band_command: true,
+                    },
+                    ctx,
+                );
+                // A later block nothing submitted runs ssh (raw, recognised at preexec).
+                view.model.lock().simulate_long_running_block("myssh", "");
+                view.note_block_started_for_ssh();
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.model.lock().publish_key_facts();
+                view.arm_ssh_connect_gate_at_preexec(ctx);
+                assert!(
+                    view.ssh_connect_gate
+                        .as_ref()
+                        .is_some_and(|gate| !gate.user_submitted),
+                    "{mode:?}: armed, and not the user's"
+                );
+                for c in "next".chars() {
+                    pane_typed(view, &c.to_string(), true, ctx);
+                }
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: not held");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "next",
+                    "{mode:?}: the keys stay in the editor"
+                );
+            });
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+        })
+    }
+}
+
+/// #1571 review, both modes: the first-Precmd wait cap is a TIMER. It used to deliver the held
+/// line (Enter included) to a session that could not take it; it now hands the keys back to the
+/// editor as text, not run, with the Enter guard, and writes nothing.
+#[test]
+fn ssh_first_precmd_wait_cap_hands_the_keys_back_and_writes_nothing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("echo hi", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                // The remote's first prompt released the gate, but its session is not registered
+                // (the shell refuses a command): the hand-over waits (#1572).
+                view.ssh_remote_prompt_seen = true;
+                release_ssh_gate_for_test(view);
+                assert!(!view.deliver_ssh_typeahead_if_ready("precmd", ctx));
+                assert!(view.ssh_typeahead_holding, "{mode:?}: still held");
+                // The registration never comes: the cap fires.
+                view.ssh_typeahead_precmd_wait_since = Instant::now()
+                    .checked_sub(SSH_TYPEAHEAD_PRECMD_WAIT_CAP + Duration::from_millis(1));
+                view.deliver_ssh_typeahead_if_ready("give_up", ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+            });
+            // The hand-back may be a deferred queue operation: let it run.
+            for _ in 0..100 {
+                let back = terminal.read(&app, |view, ctx| {
+                    view.input.as_ref(ctx).buffer_text(ctx).contains("echo hi")
+                });
+                if back {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            terminal.read(&app, |view, ctx| {
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                assert!(
+                    view.input
+                        .as_ref(ctx)
+                        .buffer_text(ctx)
+                        .starts_with("echo hi"),
+                    "{mode:?}: handed back as text"
+                );
+                assert!(
+                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
+                    "{mode:?}: the first Enter on it is held"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the timer wrote nothing: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// #1571 / #1572, agent mode, nested ssh, the readiness event delayed past the user's SECOND Enter:
+/// in a just-connected remote whose session is not registered yet (the shell refuses a command),
+/// the user types `ssh fake` + Enter, then `echo T` + Enter, before `SessionBootstrapped`. The
+/// second Enter used to be refused too and re-hold the merged buffer, which the readiness event
+/// ran as `ssh fakeecho T` (#1564). Now the first Enter is a gate: `ssh fake` runs once, alone, at
+/// the readiness event; `echo T` + Enter wait behind it and then join the nested connect's hold,
+/// reaching the inner shell exactly once, after its prompt. Legacy and Table.
+#[test]
+fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shell() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            // Entering the agent view and running a command in it associates the block with the
+            // conversation and persists that, which needs GlobalResourceHandlesProvider (the
+            // sibling agent-view tests register it the same way).
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+            });
+            // The agent view's `EnteredAgentView` event is delivered when the update above ends
+            // (effects flush only after the outermost update). Its subscriber resets the input to
+            // AI, unlocked: with the Shell lock below set in the SAME update, the event
+            // overwrote it before the Enter was processed and `ssh fake` went to the agent.
+            terminal.update(&mut app, |view, ctx| {
+                // The remote's prompt is up (Precmd in) but its session is not registered with
+                // the history yet: the shell refuses a command (#1572's window).
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(SessionId::from(9001));
+                view.input.update(ctx, |input, ctx| {
+                    input.ai_input_model().update(ctx, |ai_input, ctx| {
+                        ai_input.set_input_config(
+                            InputConfig {
+                                input_type: InputType::Shell,
+                                is_locked: true,
+                            },
+                            true, /* is_input_buffer_empty */
+                            ctx,
+                        );
+                    });
+                });
+                editor_text(view, "ssh fake", ctx);
+                editor_key(view, EditorAction::Enter, ctx);
+            });
+            // The Enter's submit may go through its verdict wait: let it settle on its gate.
+            for _ in 0..200 {
+                let held = terminal.read(&app, |view, ctx| {
+                    view.input.as_ref(ctx).unready_enter_gate_open()
+                });
+                if held {
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+            }
+            terminal.update(&mut app, |view, ctx| {
+                // Where did the `ssh fake` Enter go? (the state, since the input-order hops need
+                // RUST_LOG): the input type it was routed with, agent exchanges made, whether it
+                // ran as a command, and the unready-gate state.
+                let input = view.input.as_ref(ctx);
+                let agent_exchanges: usize = BlocklistAIHistoryModel::as_ref(ctx)
+                    .all_live_conversations_for_terminal_view(view.view_id)
+                    .map(|conversation| conversation.exchange_count())
+                    .sum();
+                let where_it_went = format!(
+                    "input_config={:?} agent_exchanges={agent_exchanges} executed={:?} \
+                     buffer={:?} held_unready_enter={} unready_gate_open={} \
+                     shell_unready_for_submit={}",
+                    input.ai_input_model().as_ref(ctx).input_config(),
+                    executed.borrow(),
+                    input.buffer_text(ctx),
+                    input.has_held_unready_enter(),
+                    input.unready_enter_gate_open(),
+                    input.shell_unready_for_submit(ctx),
+                );
+                assert!(
+                    input.has_held_unready_enter() && input.unready_enter_gate_open(),
+                    "{mode:?}: the refused Enter is held, as a gate; where the Enter went: {where_it_went}"
+                );
+                // The next line and its Enter, before the readiness event.
+                editor_text(view, "echo T", ctx);
+                editor_key(view, EditorAction::Enter, ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ssh fake",
+                    "{mode:?}: nothing merged into the held line"
+                );
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: nothing ran before the shell was ready: {:?}",
+                executed.borrow()
+            );
+            // The readiness event (`SessionBootstrapped`: the session's history is appendable).
+            terminal.update(&mut app, |view, ctx| {
+                first_precmd_processed_for_test(view, ctx);
+                view.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
+                view.retry_held_unready_enter("session_bootstrapped", ctx);
+            });
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: the held line ran once, alone"
+            );
+            // The nested ssh starts (it takes the pty): what was typed after it is released into
+            // its connect hold, in order.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.settle_enter_queue(ctx);
+            });
+            for _ in 0..200 {
+                let released = terminal.read(&app, |view, ctx| {
+                    !view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+                        && view.ssh_held_bytes() >= "echo T\r".len()
+                });
+                if released {
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+            }
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    view.ssh_typeahead_holding,
+                    "{mode:?}: held for the inner host"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing typed reached the tty before the inner prompt: {:?}",
+                    pty_writes.borrow()
+                );
+                // The inner (unmanaged) shell's prompt: the #1561 rule delivers the held line.
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T").count(),
+                1,
+                "{mode:?}: the second line reaches the inner shell exactly once: {written:?}"
+            );
+            assert!(
+                written.contains("echo T\r"),
+                "{mode:?}: in order, its Enter after it: {written:?}"
+            );
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: never `ssh fakeecho T`, nothing run locally twice"
+            );
+        })
+    }
+}
+
+/// #1571 / #1572, the real scenario behind `nested_ssh_with_late_readiness_...`: the agent view's
+/// input is left as the view sets it (AI, UNLOCKED, autodetection on: the default) and the shell is
+/// not ready yet. `ssh fake` + Enter is an unambiguous shell line: it is routed to the shell and
+/// held as the unready gate (#1571), never sent to the agent, and it runs once at readiness.
+/// Legacy and Table.
+#[test]
+fn ssh_in_the_agent_view_on_an_unready_shell_is_routed_to_the_shell_and_held_not_sent_to_the_agent()
+{
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let terminal = add_window_with_terminal(&mut app, None);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+            });
+            // The entry event is delivered when the update above ends; the input is then AI,
+            // unlocked, and this test leaves it exactly so.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(SessionId::from(9001));
+                let input = view.input.as_ref(ctx);
+                let config = input.ai_input_model().as_ref(ctx).input_config();
+                assert_eq!(
+                    config,
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false
+                    },
+                    "{mode:?}: precondition: AI, unlocked"
+                );
+                assert!(input.shell_unready_for_submit(ctx), "{mode:?}: unready");
+                editor_text(view, "ssh fake", ctx);
+            });
+            // The typed text and the Enter are separate key events, as they are for a user: the
+            // text's `Edited` event reaches the input (and requests its detection) when the update
+            // above ends. In ONE update the editor's `Enter` (emitted directly) is delivered
+            // before that `Edited` (it needs a model -> view hop), so the Enter saw a buffer no
+            // detection had been requested for and took the inherited AI type.
+            terminal.update(&mut app, |view, ctx| {
+                editor_key(view, EditorAction::Enter, ctx);
+            });
+            for _ in 0..200 {
+                let held = terminal.read(&app, |view, ctx| {
+                    view.input.as_ref(ctx).unready_enter_gate_open()
+                });
+                if held {
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+            }
+            terminal.update(&mut app, |view, ctx| {
+                let input = view.input.as_ref(ctx);
+                let agent_exchanges: usize = BlocklistAIHistoryModel::as_ref(ctx)
+                    .all_live_conversations_for_terminal_view(view.view_id)
+                    .map(|conversation| conversation.exchange_count())
+                    .sum();
+                assert!(
+                    input.has_held_unready_enter() && input.unready_enter_gate_open(),
+                    "{mode:?}: the Enter is held as a gate; input_config={:?} \
+                     agent_exchanges={agent_exchanges} executed={:?} buffer={:?}",
+                    input.ai_input_model().as_ref(ctx).input_config(),
+                    executed.borrow(),
+                    input.buffer_text(ctx),
+                );
+                assert_eq!(
+                    agent_exchanges, 0,
+                    "{mode:?}: a shell line is never sent to the agent"
+                );
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: nothing ran before the shell was ready: {:?}",
+                executed.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                first_precmd_processed_for_test(view, ctx);
+                view.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
+                view.retry_held_unready_enter("session_bootstrapped", ctx);
+            });
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: the held line ran once, alone"
+            );
+        })
+    }
+}
+
+/// #1348: no timing. Keys held when a password / host-key prompt appears are discarded; keys typed
+/// after it (even the very next instant, which the old 200 ms burst rule dropped as a "tail")
+/// go straight to the prompt, like plain ssh. Replaces `ssh_prompt_mid_burst_discards_the_tail_too`.
+#[test]
+fn ssh_keys_after_a_prompt_reach_it_with_no_burst_window() {
+    for prompt in [
+        "Password: ",
+        "Are you sure you want to continue connecting (yes/no)? ",
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+                view.typed_characters_on_terminal("blind", ctx);
+                view.model.lock().process_bytes(prompt);
+                // Immediately after the prompt: old code discarded this as the burst's tail.
+                view.typed_characters_on_terminal("yes", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_held_is_empty());
+                assert!(!view.ssh_typeahead_holding, "{prompt:?}");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            });
+            let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(
+                writes, b"yes\r",
+                "{prompt:?}: only post-prompt keys reach it"
+            );
+        })
+    }
+}
+
+/// #1292: a newline-terminated banner / MOTD is visible text but not a prompt: the keys stay
+/// held (in order) even though the gate itself opened on the banner.
+#[test]
+fn ssh_banner_does_not_end_the_hold() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17121,19 +20042,26 @@ fn ssh_banner_does_not_end_drop_through() {
             view.warpify_state
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("echo QW", ctx);
-            assert!(view.ssh_drop_line_through_enter);
+            assert!(view.ssh_typeahead_holding);
             view.model.lock().process_bytes("Welcome to Ubuntu\r\n");
             view.typed_characters_on_terminal("ERTY", ctx);
             view.keydown_on_terminal("\r", ctx);
-            assert!(!view.ssh_drop_line_through_enter, "the Enter ends it");
+            assert!(view.ssh_typeahead_holding, "a banner is not a prompt");
+            assert_eq!(
+                view.ssh_hold_take(),
+                vec![
+                    HeldInput::Typed("echo QWERTY".to_owned()),
+                    HeldInput::Key("\r".to_owned())
+                ]
+            );
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
 
-/// #983: password and host-key prompts (unterminated lines) end the drop-through.
+/// #983 / #1292: password and host-key prompts (unterminated lines) discard the held keys and end the hold.
 #[test]
-fn ssh_password_and_hostkey_prompts_end_drop_through() {
+fn ssh_password_and_hostkey_prompts_end_the_hold() {
     for prompt in [
         "winters@box's password: ",
         "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
@@ -17151,19 +20079,20 @@ fn ssh_password_and_hostkey_prompts_end_drop_through() {
                 view.warpify_state
                     .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
                 view.typed_characters_on_terminal("blind", ctx);
-                assert!(view.ssh_drop_line_through_enter);
+                assert!(view.ssh_typeahead_holding);
                 view.model.lock().process_bytes("banner\r\n");
                 view.model.lock().process_bytes(prompt);
                 view.typed_characters_on_terminal("x", ctx);
-                assert!(!view.ssh_drop_line_through_enter, "{prompt:?}");
+                assert!(!view.ssh_typeahead_holding, "{prompt:?}");
+                assert!(view.ssh_held_is_empty(), "{prompt:?}");
             });
         })
     }
 }
 
-/// #983: Ctrl-C passes and ends the drop-through; the next typing is not dropped.
+/// #983 / #1292: Ctrl-C passes at once, discards what was held, and ends the hold.
 #[test]
-fn ssh_ctrl_c_ends_drop_through() {
+fn ssh_ctrl_c_ends_the_hold() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17174,16 +20103,17 @@ fn ssh_ctrl_c_ends_drop_through() {
             view.typed_characters_on_terminal("abc", ctx);
             release_ssh_gate_for_test(view);
             view.keydown_on_terminal("\u{3}", ctx);
-            assert!(!view.ssh_drop_line_through_enter);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty(), "^C flushes the typeahead");
             view.typed_characters_on_terminal("ls", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
         });
     })
 }
 
-/// #983: the drop-through can never leak to a later command.
+/// #983 / #1292: held keys can never leak to a later command.
 #[test]
-fn ssh_drop_through_resets_on_new_command() {
+fn ssh_hold_resets_on_new_command() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17193,19 +20123,20 @@ fn ssh_drop_through_resets_on_new_command() {
             submit_command(view, "ssh host", ctx);
             view.typed_characters_on_terminal("abc", ctx);
             release_ssh_gate_for_test(view);
-            assert!(view.ssh_drop_line_through_enter);
+            assert!(view.ssh_typeahead_holding);
             submit_command(view, "ls", ctx);
-            assert!(!view.ssh_drop_line_through_enter);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
             view.typed_characters_on_terminal("pwd", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "pwd");
         });
     })
 }
 
-/// #983: a FAILING ssh (exit 255) hands the local prompt back; the tail of a line whose head was
-/// dropped while the gate was armed must still be dropped through its Enter -- never run locally.
+/// #983 / #1292: a FAILING ssh (exit 255) hands the local prompt back; the text typed meanwhile
+/// is shown unexecuted in the local editor (never run, never written to the tty).
 #[test]
-fn ssh_failing_connect_keeps_the_dropped_line_dropped_through_enter() {
+fn ssh_failing_connect_shows_the_held_text_unexecuted() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17225,24 +20156,15 @@ fn ssh_failing_connect_keeps_the_dropped_line_dropped_through_enter() {
             submit_command(view, "ssh nosuch.invalid", ctx);
             let armed = view.model.lock().active_block_id().clone();
             view.typed_characters_on_terminal("echo L", ctx);
-            assert!(view.ssh_setup_drop_notified, "the drop is announced once");
+            view.typed_characters_on_terminal("OCAL-OK-42", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert!(view.ssh_typeahead_holding);
             view.apply_block_completed_to_ssh_gate(&armed, 255);
             assert!(view.ssh_connect_gate.is_none(), "failure releases the gate");
-            assert!(
-                view.ssh_drop_line_through_enter,
-                "the failure must not end the drop-through"
-            );
-            view.typed_characters_on_terminal("OCAL-OK-42", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            view.keydown_on_terminal("\r", ctx);
-            assert!(!view.ssh_drop_line_through_enter, "the Enter ends the drop");
-            // A tail that reached the editor is vetoed at submit too.
-            view.typed_characters_on_terminal("x", ctx);
-            view.ssh_drop_line_through_enter = true;
-            submit_command(view, "x", ctx);
-            // The next line passes.
-            view.typed_characters_on_terminal("ls", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo LOCAL-OK-42");
         });
         assert_eq!(
             executed.borrow().as_slice(),
@@ -17252,12 +20174,11 @@ fn ssh_failing_connect_keeps_the_dropped_line_dropped_through_enter() {
     })
 }
 
-/// #983 (macOS, 0abe39e6f): the ssh block ENDS (cleanly, at the remote shell's first precmd)
-/// before the remote session is registered, and the input editor takes over. The tail of a line
-/// whose head was dropped must still be dropped through its Enter -- from the terminal path and
-/// from the editor's own submit -- instead of running as a command of its own.
+/// #983 (macOS, 0abe39e6f) / #1292: the ssh block ENDS cleanly before any remote session is
+/// registered (a quick `exit`); the text typed meanwhile is shown unexecuted in the editor, and
+/// the editor's own submit later runs only what the user chose to run.
 #[test]
-fn ssh_dropped_head_survives_the_ssh_block_ending_and_the_editor_taking_over() {
+fn ssh_clean_end_without_remote_shows_the_held_text_unexecuted() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17277,22 +20198,16 @@ fn ssh_dropped_head_survives_the_ssh_block_ending_and_the_editor_taking_over() {
             submit_command(view, "ssh host", ctx);
             let armed = view.model.lock().active_block_id().clone();
             view.typed_characters_on_terminal("echo E_", ctx);
-            assert!(view.ssh_drop_line_through_enter);
-            // The ssh block ends cleanly before any remote session or hook was observed.
-            view.apply_block_completed_to_ssh_gate(&armed, 0);
-            assert!(
-                view.ssh_drop_line_through_enter,
-                "a clean end of the ssh block must not end the drop-through"
-            );
-            // The remote session's own first block starts (a non-ssh command start).
             view.typed_characters_on_terminal("x > ~/tmp/E_x", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            // The editor submits the line (it has focus now): vetoed, not executed.
-            submit_command(view, "x > ~/tmp/E_x", ctx);
-            assert!(!view.ssh_drop_line_through_enter, "the Enter ends the drop");
-            // The next line passes.
-            view.typed_characters_on_terminal("ls", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            view.keydown_on_terminal("\r", ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "echo E_x > ~/tmp/E_x"
+            );
         });
         assert_eq!(executed.borrow().as_slice(), ["ssh host".to_owned()]);
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
@@ -17301,7 +20216,7 @@ fn ssh_dropped_head_survives_the_ssh_block_ending_and_the_editor_taking_over() {
 
 /// #1001 (macOS): a Ctrl-C after the ssh block ended and before the remote session is announced
 /// used to vanish silently; it is held with the notice (owner decision), and does not end a
-/// drop-through in progress.
+/// hold in progress.
 #[test]
 fn ssh_ctrl_c_after_the_ssh_block_ended_is_held_with_a_notice() {
     App::test((), |mut app| async move {
@@ -17319,7 +20234,7 @@ fn ssh_ctrl_c_after_the_ssh_block_ended_is_held_with_a_notice() {
             assert!(view.ssh_connect_gate.is_some(), "the bootstrap wait holds");
             view.keydown_on_terminal("\u{3}", ctx);
             assert!(view.ssh_interrupt_held_gate_notified, "notice shown");
-            assert!(view.ssh_drop_line_through_enter, "a held ^C ends nothing");
+            assert!(view.ssh_typeahead_holding, "a held ^C ends nothing");
             view.ctrl_c(ctx);
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
@@ -17413,11 +20328,11 @@ fn ssh_bootstrap_interrupt_route_is_none_without_pending_session() {
     })
 }
 
-/// #1113: a line typed (with its Enter) during the ssh connect is not lost: once the connect is
-/// over and the editor is back it is shown there, UNEXECUTED, and nothing reaches the pty. It
-/// used to vanish, `exit` included.
+/// #1113 / #1292: lines typed (with their Enters) during the ssh connect are not lost: with no
+/// remote shell to deliver them to, the connect over, they are shown in the editor, UNEXECUTED,
+/// and nothing reaches the pty.
 #[test]
-fn ssh_line_typed_during_connect_is_kept_in_the_editor_not_run() {
+fn ssh_lines_typed_during_connect_are_kept_in_the_editor_not_run() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17430,22 +20345,19 @@ fn ssh_line_typed_during_connect_is_kept_in_the_editor_not_run() {
             view.keydown_on_terminal("\r", ctx);
             view.typed_characters_on_terminal("ls -l", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            view.ssh_remote_prompt_seen = true;
             release_ssh_gate_for_test(view);
-            // The unfinished second line is still being dropped: the flush waits for its Enter.
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            view.keydown_on_terminal("\r", ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "exit\nls -l");
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
 }
 
-/// #1113: a complete line dropped during the connect is shown at the next event after the
-/// release, without waiting for more typing.
+/// #1292: a complete line typed during the connect is delivered to the remote shell at its first
+/// prompt, without waiting for more typing, and runs there.
 #[test]
-fn ssh_complete_line_typed_during_connect_is_shown_after_release() {
+fn ssh_complete_line_typed_during_connect_is_delivered_at_the_first_prompt() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
@@ -17461,13 +20373,446 @@ fn ssh_complete_line_typed_during_connect_is_shown_after_release() {
             let gate = view.ssh_connect_gate.as_mut().unwrap();
             gate.saw_pending = true;
             gate.bootstrap_done_at = Some(Instant::now());
+            first_precmd_processed_for_test(view, ctx);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert!(view.ssh_connect_gate.is_none());
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
-            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
+            assert!(view.ssh_remote_prompt_seen);
+            // #1348: delivery is part of the prompt event's own handling, not a later turn.
+            assert!(
+                !view.ssh_typeahead_holding,
+                "the hand-over ran inside the precmd handler"
+            );
+            assert!(view.ssh_held_is_empty());
+        });
+        // The keys arrived at the remote shell's input, as typed: through the pty or the
+        // editor, never lost and never split.
+        let writes = pty_writes.borrow();
+        let delivered = String::from_utf8_lossy(&writes.concat()).into_owned();
+        let editor = terminal.read(&app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
+        assert!(
+            delivered.contains("echo hi") || editor.contains("echo hi"),
+            "pty {delivered:?}, editor {editor:?}"
+        );
+    })
+}
+
+/// #1609 (r18e0, `ssh_connect_typing`, gap 0.0 s): `ssh fake` + Enter, then at once a line + Enter,
+/// before any preexec, any output or any prompt. The line is held (never written to the pty, never
+/// run) until the remote shell's prompt shows, then delivered exactly once, in order, with its
+/// Enter, to the remote shell. Legacy and Table.
+#[test]
+fn ssh_line_typed_at_once_after_the_ssh_enter_is_held_and_delivered_once_to_the_remote() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh fake", ctx);
+                // Immediately, key by key, before the shell's preexec or any output.
+                for key in "echo T1609".chars() {
+                    view.typed_characters_on_terminal(&key.to_string(), ctx);
+                }
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: the line is held");
+                assert_eq!(
+                    view.ssh_held_bytes(),
+                    "echo T1609\r".len(),
+                    "{mode:?}: held exactly as typed"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing reached the local pty before the prompt: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(*executed.borrow(), ["ssh fake".to_owned()]);
+            // The ssh starts (preexec), still no output: the hold goes on.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                assert!(view.ssh_typeahead_holding, "{mode:?}: still held");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: still nothing local: {:?}",
+                pty_writes.borrow()
+            );
+            // The remote (unmanaged) shell's prompt: the held line goes to it, once.
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T1609").count(),
+                1,
+                "{mode:?}: delivered exactly once: {written:?}"
+            );
+            assert!(
+                written.starts_with("echo T1609\r"),
+                "{mode:?}: in order, its Enter after it: {written:?}"
+            );
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: nothing ran in the local shell"
+            );
+        })
+    }
+}
+
+/// #1609, redone by #1614: the hand-off is no longer told that an ssh owns the pty; the block latch
+/// (`CommandBecameInteractive`, which an interactive ssh, an inner shell or a program all raise) is
+/// the event. A young Enter and the keys behind it held when it arrives are written to the pty as
+/// typeahead, in typed order, as one write; nothing is handed back and no timer is involved. Legacy
+/// and Table.
+#[test]
+fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                let block_id = view.model.lock().active_block_id().clone();
+                view.handle_terminal_event(&ModelEvent::CommandBecameInteractive { block_id }, ctx);
+                assert!(
+                    !young_gate_open(view),
+                    "{mode:?}: the hold ended on the event"
+                );
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+                assert!(view.model.lock().typeahead_handoff().command_interactive());
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing handed back to the editor"
+                );
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"\rx".to_vec()],
+                "{mode:?}: the Enter and the key behind it, one write, typed order"
+            );
+        });
+    }
+}
+
+/// #1614: a late `CommandBecameInteractive` for a block whose prompt is already back (the model
+/// thread ran ahead of the main thread) must not mark the shell's next line as a program's: the
+/// event names an older block than the one running, or a block that never started.
+#[test]
+fn a_late_interactive_event_for_a_finished_block_does_not_mark_the_shell_interactive() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            // A command runs now; the event is for the block before it.
+            young_enter_setup(view);
+            let running = view.model.lock().active_block_id().clone();
+            let older = BlockId::from("precmd-older-block-1614".to_string());
+            assert_ne!(older, running);
+            view.handle_terminal_event(
+                &ModelEvent::CommandBecameInteractive { block_id: older },
+                ctx,
+            );
+            assert!(!view.model.lock().typeahead_handoff().command_interactive());
+            // The running block's own event does mark it.
+            view.handle_terminal_event(
+                &ModelEvent::CommandBecameInteractive { block_id: running },
+                ctx,
+            );
+            assert!(view.model.lock().typeahead_handoff().command_interactive());
+        });
+    })
+}
+
+/// #1614 (review C2): the cap's hand-back asks the controller for the request decision once the
+/// hold is gone (a decision now can only commit the editor or write the request, never held keys):
+/// the decision the stale-count timer had to skip while the hold lived runs, so the pane does not
+/// stay pty-owned with the handed-back text in the editor. Nothing is written to the pty.
+#[test]
+fn a_young_hold_hand_back_asks_for_the_request_decision() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            young_enter_setup(view);
+            hold_a_young_enter(view, &pty_writes, ctx);
+            assert_eq!(*retries.borrow(), 0, "a window hold asks for nothing when it opens");
+            let token = view.paste_queue.queue.borrow().gates()[0].token;
+            view.on_paste_queue_give_up(token, ctx);
+            assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+        });
+        assert_eq!(*retries.borrow(), 1, "the hand-back asks for the decision once");
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a timer wrote to the pty: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
+/// #1614 (review R2): the shell started a command after a young Enter was held (a Preexec parsed
+/// after the hold opened, not the written command's own): the Enter and the keys behind it are
+/// that command's typeahead, written as one write on the Preexec event itself, with no give-up
+/// involved. Legacy and Table.
+#[test]
+fn a_young_hold_is_written_as_typeahead_on_the_preexec_event() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                // The written command's own Preexec was parsed before the line was typed.
+                view.model.lock().typeahead_handoff_mut().on_preexec(false);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                // The shell starts a line it already had (model thread), then the event reaches
+                // the view.
+                view.model.lock().typeahead_handoff_mut().on_preexec(true);
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Preexec), ctx);
+                assert!(
+                    !young_gate_open(view),
+                    "{mode:?}: the hold ended on the event"
+                );
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing handed back"
+                );
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"\rx".to_vec()],
+                "{mode:?}: the Enter and the key behind it, one write, typed order"
+            );
+        });
+    }
+}
+
+/// The remote session came up and its bootstrap ended: the next `Precmd` is its first prompt.
+fn remote_first_prompt_is_next_for_test(view: &mut TerminalView) {
+    let gate = view.ssh_connect_gate.as_mut().expect("gate armed");
+    gate.saw_pending = true;
+    gate.bootstrap_done_at = Some(Instant::now());
+}
+
+/// #1348 / #1345: the hand-over (reset, held keys in order, hold ended) happens inside the
+/// handling of the remote prompt's `Precmd`. A key that reaches the editor right after that event
+/// lands behind the held keys, exactly once. On the old code the keys were delivered by a later
+/// timer turn: the buffer was still empty after the event and the next key was queued in the
+/// editor's hold instead of being applied.
+#[test]
+fn ssh_key_right_after_the_precmd_event_lands_after_the_held_keys_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo ZQ", ctx);
+            assert!(view.ssh_typeahead_holding);
+            remote_first_prompt_is_next_for_test(view);
+            first_precmd_processed_for_test(view, ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                !view.ssh_typeahead_holding,
+                "hold ended in the precmd handler"
+            );
+            assert!(!view.paste_queue.queue.ssh_hold_active());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo ZQ");
+            // The very next key, queued behind the event by the loop.
+            editor_text(view, "CON", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo ZQCON");
+            editor_text(view, "_1", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo ZQCON_1");
         });
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     })
+}
+
+/// #1348: keys held by the view, a Backspace and text queued by the editor in the gap, and the
+/// precmd: one hand-over, exact order, nothing lost or doubled.
+#[test]
+fn ssh_held_and_editor_queued_keys_are_delivered_in_order_at_the_precmd_event() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo abX", ctx);
+            // Typed after the model applied the prompt and before the view handled it: the
+            // editor's hold queues them, the hand-over replays them behind the held keys.
+            editor_key(view, EditorAction::Backspace, ctx);
+            editor_text(view, "c", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            remote_first_prompt_is_next_for_test(view);
+            first_precmd_processed_for_test(view, ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
+            assert!(view.ssh_held_is_empty());
+            assert!(ssh_queue_is_idle(view));
+        });
+    })
+}
+
+/// #1348: two connects in one tab each hand over exactly once, with no state left from the first.
+#[test]
+fn ssh_repeated_connects_in_one_tab_each_hand_over_once() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            first_precmd_processed_for_test(view, ctx);
+            for line in ["echo one", "echo two"] {
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal(line, ctx);
+                assert!(view.ssh_typeahead_holding);
+                remote_first_prompt_is_next_for_test(view);
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+                assert!(!view.ssh_typeahead_holding);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx)
+                });
+            }
+        });
+    })
+}
+
+/// #1348: a host-key / password prompt is judged on the OUTPUT that shows it: the wakeup for that
+/// output discards what was held and releases the editor's hold, with no key and no timer. On the
+/// old code only a later key or the 100 ms poll noticed, and the editor kept queueing keys meant
+/// for the prompt.
+#[test]
+fn ssh_password_prompt_output_discards_the_held_keys_without_a_key() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("hunter2", ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.model.lock().process_bytes("Password: ");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.ssh_held_is_empty());
+            assert!(!view.ssh_typeahead_holding);
+            assert!(!view.paste_queue.queue.ssh_hold_active());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// #1348 safety net: no prompt ever arrives (the gate hits its ceiling). The give-up hand-over
+/// returns the typed text to the input, unexecuted, and ends the hold.
+#[test]
+fn ssh_no_prompt_ever_gives_the_text_back_to_the_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo lost", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert!(
+                view.ssh_typeahead_deadline_armed.is_some(),
+                "the one-shot safety net is armed"
+            );
+            let gate = view.ssh_connect_gate.as_mut().unwrap();
+            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            view.deliver_ssh_typeahead_if_ready("give_up", ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1348: the give-up deadline mirrors the gate's time conditions and nothing else.
+#[test]
+fn ssh_gate_give_up_deadline_mirrors_its_time_conditions() {
+    let t0 = Instant::now();
+    let mut gate = SshConnectGate::new(t0);
+    let ceiling = t0 + SSH_CONNECT_SILENCE_CEILING;
+    assert_eq!(gate.give_up_deadline(false), Some(ceiling));
+    assert_eq!(gate.give_up_deadline(true), Some(ceiling));
+    gate.block_done_at = Some(t0 + Duration::from_secs(1));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + Duration::from_secs(1) + SSH_CONNECT_POST_BLOCK_GRACE)
+    );
+    assert_eq!(
+        gate.give_up_deadline(true),
+        Some(ceiling),
+        "pending: only the ceiling"
+    );
+    gate.saw_pending = true;
+    gate.bootstrap_done_at = Some(t0 + Duration::from_secs(2));
+    assert_eq!(
+        gate.give_up_deadline(false),
+        Some(t0 + Duration::from_secs(2) + SSH_CONNECT_FIRST_PROMPT_GRACE)
+    );
 }
 
 /// #1113: text typed blind before a prompt appears (it could be a password) is discarded when
@@ -17487,10 +20832,15 @@ fn ssh_text_typed_before_a_prompt_is_not_shown_later() {
             view.warpify_state
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("hunter2", ctx);
-            assert_eq!(view.ssh_held_typing.text, "hunter2");
+            assert_eq!(
+                view.ssh_hold_take(),
+                vec![HeldInput::Typed("hunter2".to_owned())]
+            );
+            view.typed_characters_on_terminal("hunter2", ctx);
             view.model.lock().process_bytes("Password: ");
             view.keydown_on_terminal("\r", ctx);
-            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
+            assert!(view.ssh_held_is_empty());
+            assert!(!view.ssh_typeahead_holding);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
     })
@@ -17545,6 +20895,13 @@ fn ssh_ctrl_d_is_held_during_a_silent_connect() {
 #[test]
 fn ssh_ctrl_d_is_held_after_a_prompt_was_answered() {
     App::test((), |mut app| async move {
+        // Reads the legacy gate's own sticky `output_seen`, which the key path's refreshers set;
+        // in `table` mode (the default) the events own the gate and the machine holds the same
+        // fact, so this runs on the legacy path (the kill switch, still shipped). The table
+        // twin of the rule is `ssh_phase_tests` and the `table_mode_a_*` tests.
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Legacy,
+        );
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -17596,10 +20953,13 @@ fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             view.typed_characters_on_terminal("hunter2", ctx);
             view.keydown_on_terminal("\r", ctx);
-            assert_eq!(view.ssh_held_typing.text, "hunter2");
+            assert!(!view.ssh_held_is_empty());
             view.model.lock().process_bytes("Password: ");
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
+            assert!(
+                view.ssh_held_is_empty(),
+                "discarded when the prompt appeared"
+            );
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
@@ -17608,8 +20968,8 @@ fn ssh_line_with_enter_typed_before_a_prompt_is_never_shown() {
 }
 
 /// #1113: a newline-terminated banner, THEN a blind password + Enter, THEN the "Password: "
-/// prompt. The banner alone must not make the password safe: any output after the text was
-/// recorded discards it, so it is never shown, even once the gate releases.
+/// prompt. The prompt discards what was held, so it is never shown or delivered, even once the
+/// gate releases.
 #[test]
 fn ssh_blind_password_after_a_banner_is_never_shown() {
     App::test((), |mut app| async move {
@@ -17626,56 +20986,40 @@ fn ssh_blind_password_after_a_banner_is_never_shown() {
                 .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
             // Typing starts while the connect is still silent...
             view.typed_characters_on_terminal("hunter2", ctx);
-            assert_eq!(view.ssh_held_typing.text, "hunter2");
-            // ...a banner arrives (the first output), the user keeps going blind.
+            // ...a banner arrives (the first output), the user keeps going blind: still held.
             view.model.lock().process_bytes("Authorized users only\r\n");
             view.keydown_on_terminal("\r", ctx);
-            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
+            assert!(!view.ssh_held_is_empty());
+            // The prompt discards it, however it got there.
             view.model.lock().process_bytes("Password: ");
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(view.ssh_held_is_empty());
             release_ssh_gate_for_test(view);
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-            view.flush_ssh_held_typing(ctx);
+            view.deliver_ssh_typeahead_if_ready("test", ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
         });
     })
 }
 
-/// #1113: the held line follows the user's edits, so deleted characters do not come back, and
-/// a paste or an escape sequence makes the whole line be discarded rather than half-shown.
+/// #1292: the held keys keep their order and exact content, and the unexecuted fallback text
+/// follows the user's edits.
 #[test]
-fn ssh_held_typing_follows_edits_and_discards_unreproducible_lines() {
-    let mut held = SshHeldTyping::default();
+fn ssh_held_keys_keep_order_and_fallback_text_follows_edits() {
+    let mut held = crate::terminal::view::ssh_typeahead::SshTypeahead::default();
     for key in ["echo", " ", "secrex", "\u{7f}", "t"] {
-        held.key(Some(key));
+        held.push(HeldInput::from_chars(key));
     }
-    assert_eq!(held.text, "echo secret");
-    held.key(Some("\u{17}"));
-    assert_eq!(held.text, "echo ");
-    held.key(Some("\u{15}"));
-    assert_eq!(held, SshHeldTyping::default());
-    // A paste inside the line: discarded at its Enter, nothing kept.
-    held.key(Some("rm "));
-    held.key(None);
-    assert_eq!(held.key(Some("\r")), SshHeldKey::DiscardedLine);
-    assert_eq!(held, SshHeldTyping::default());
-    // An escape sequence (arrow key) is not printable text.
-    held.key(Some("ls"));
-    held.key(Some("\u{1b}[A"));
-    assert!(held.tainted);
-    assert_eq!(held.key(Some("\r")), SshHeldKey::DiscardedLine);
-    // Only the last complete line is kept.
-    held.key(Some("exit"));
-    held.key(Some("\r"));
-    held.key(Some("ls"));
-    assert_eq!(
-        (held.text.as_str(), held.superseded, held.ended),
-        ("ls", true, false)
-    );
+    assert_eq!(held.unexecuted_text(), "echo secret");
+    held.push(HeldInput::from_chars("\u{17}"));
+    assert_eq!(held.unexecuted_text(), "echo ");
+    held.push(HeldInput::from_chars("\u{15}"));
+    assert_eq!(held.unexecuted_text(), "");
 }
 
-/// #1113: held text is never concatenated with what the editor holds: with a non-empty editor,
-/// or without a remote prompt having been seen, it is discarded.
+/// #1113 / #1292: held text is never concatenated with what the editor holds. With an empty
+/// editor it is shown; with a non-empty one it used to be DISCARDED (lost keys, #1571 review): it
+/// now goes on a line of its own after that text, never glued into it, the Enter guard armed.
 #[test]
 fn ssh_held_line_is_never_glued_to_existing_editor_text() {
     App::test((), |mut app| async move {
@@ -17684,83 +21028,72 @@ fn ssh_held_line_is_never_glued_to_existing_editor_text() {
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
-            view.ssh_remote_prompt_seen = true;
+            view.ssh_remote_prompt_seen = false;
             view.input
                 .update(ctx, |input, ctx| input.replace_buffer_content("world", ctx));
-            view.ssh_held_typing.key(Some("hello "));
-            view.ssh_held_typing.key(Some("\r"));
-            view.flush_ssh_held_typing(ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "world");
-            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
-            // Empty editor + prompt seen: shown. No prompt seen: discarded.
+            view.ssh_typeahead_holding = true;
+            view.ssh_hold_push(HeldInput::from_chars("hello "), ctx);
+            view.finish_ssh_typeahead(ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "world\nhello ");
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            assert!(view.ssh_held_is_empty());
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx)
             });
-            view.ssh_held_typing.key(Some("hello"));
-            view.ssh_held_typing.key(Some("\r"));
-            view.flush_ssh_held_typing(ctx);
+            view.ssh_typeahead_holding = true;
+            view.ssh_hold_push(HeldInput::from_chars("hello"), ctx);
+            view.ssh_hold_push(HeldInput::from_chars("\r"), ctx);
+            view.finish_ssh_typeahead(ctx);
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "hello");
-            view.input.update(ctx, |input, ctx| {
-                input.clear_buffer_and_reset_undo_stack(ctx)
-            });
-            view.ssh_remote_prompt_seen = false;
-            view.ssh_held_typing.key(Some("hello"));
-            view.ssh_held_typing.key(Some("\r"));
-            view.flush_ssh_held_typing(ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
-            assert_eq!(view.ssh_held_typing, SshHeldTyping::default());
         });
     })
 }
 
-/// #1115: a line whose LETTERS fell in the gate window must never have its Enter delivered
-/// alone just after the release (an empty Enter at the remote prompt). Both routes of the Enter
-/// are covered: the terminal key path, and the editor's own submit once it has focus.
+/// #1115 / #1292: a line whose letters were held and whose Enter arrives just after the gate
+/// release is held with its letters: the Enter is never delivered alone, and nothing is run
+/// before the remote shell's prompt has delivered the whole line.
 #[test]
-fn ssh_enter_just_after_release_follows_its_dropped_letters() {
-    for editor_submit in [false, true] {
-        App::test((), |mut app| async move {
-            initialize_app_for_terminal_view(&mut app);
-            app.add_singleton_model(|_| crate::workspace::ToastStack);
-            let terminal = add_window_with_terminal(&mut app, None);
-            let pty_writes = record_pty_writes(&mut app, &terminal);
-            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-            let sink = executed.clone();
-            app.update(|ctx| {
-                ctx.subscribe_to_view(&terminal, move |_, event, _| {
-                    if let Event::ExecuteCommand(e) = event {
-                        sink.borrow_mut().push(e.command.clone());
-                    }
-                });
-            });
-            terminal.update(&mut app, |view, ctx| {
-                register_local_session_for_ssh_test(view, ctx);
-                submit_command(view, "ssh host", ctx);
-                for key in ["e", "x", "i", "t"] {
-                    view.typed_characters_on_terminal(key, ctx);
+fn ssh_enter_just_after_release_stays_with_its_held_letters() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
                 }
-                assert!(view.ssh_drop_line_through_enter);
-                // The remote's first prompt releases the gate between the letters and the Enter.
-                let gate = view.ssh_connect_gate.as_mut().unwrap();
-                gate.saw_pending = true;
-                gate.bootstrap_done_at = Some(Instant::now());
-                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
-                assert!(view.ssh_connect_gate.is_none());
-                assert!(
-                    view.ssh_drop_line_through_enter,
-                    "the release keeps the line"
-                );
-                if editor_submit {
-                    submit_command(view, "", ctx);
-                } else {
-                    view.keydown_on_terminal("\r", ctx);
-                }
-                assert!(!view.ssh_drop_line_through_enter);
             });
-            assert_eq!(executed.borrow().as_slice(), ["ssh host".to_owned()]);
-            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
         });
-    }
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            for key in ["e", "x", "i", "t"] {
+                view.typed_characters_on_terminal(key, ctx);
+            }
+            assert!(view.ssh_typeahead_holding);
+            // The remote's first prompt releases the gate between the letters and the Enter.
+            let gate = view.ssh_connect_gate.as_mut().unwrap();
+            gate.saw_pending = true;
+            gate.bootstrap_done_at = Some(Instant::now());
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(view.ssh_connect_gate.is_none());
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(
+                view.ssh_hold_take(),
+                vec![
+                    HeldInput::Typed("exit".to_owned()),
+                    HeldInput::Key("\r".to_owned())
+                ],
+                "the Enter stays with its letters"
+            );
+        });
+        assert_eq!(executed.borrow().as_slice(), ["ssh host".to_owned()]);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
 }
 
 /// #1111 regression: with NO ssh connect pending, Ctrl-D is never held -- a local shell whose
@@ -17907,6 +21240,26 @@ fn record_pty_writes(
     pty_writes
 }
 
+/// Like [`record_pty_writes`], but also records the writes the typeahead hand-off counts
+/// (`Event::WriteHandoffUserBytesToPty`): both reach the pty, and right after an ssh hand-over the
+/// counted route is the expected one.
+fn record_all_pty_writes(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<Vec<u8>>>> {
+    let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+    let writes = pty_writes.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                writes.borrow_mut().push(bytes.to_vec());
+            }
+            _ => {}
+        });
+    });
+    pty_writes
+}
+
 /// Registers the local shell session the way a bootstrapped pane has it. Typed text only goes to
 /// the pty (rather than the input editor) once a session exists, as it does for a real ssh run.
 fn register_local_session_for_ssh_test(view: &TerminalView, ctx: &mut ViewContext<TerminalView>) {
@@ -17916,6 +21269,26 @@ fn register_local_session_for_ssh_test(view: &TerminalView, ctx: &mut ViewContex
         sessions
             .register_session_for_test(SessionInfo::new_for_test().with_id(SessionId::from(9001)));
     });
+}
+
+/// What the remote shell's first Precmd leaves behind (#1332): its session is registered with the
+/// history model (the Bootstrapped hook) and the active block carries the session id (the Precmd).
+/// Until then the session refuses a command (`HistoryNotAppendable`) and held ssh keys wait.
+fn first_precmd_processed_for_test(view: &TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    let session_id = SessionId::from(9001);
+    let session = view
+        .sessions
+        .as_ref(ctx)
+        .get(session_id)
+        .expect("session registered by register_local_session_for_ssh_test");
+    History::handle(ctx).update(ctx, |history, ctx| {
+        history.init_session_with(session, async { Vec::new() }, ctx);
+    });
+    view.model
+        .lock()
+        .block_list_mut()
+        .active_block_for_test()
+        .set_session_id(session_id);
 }
 
 /// #976: while an ssh command runs with no remote session pending and a prompt (here the
@@ -17951,10 +21324,10 @@ fn ssh_prompt_before_remote_session_receives_enter_and_typed_text() {
     })
 }
 
-/// #983: text typed while ssh is still silently connecting is dropped whole (never partly
+/// #983 / #1292: text typed while ssh is still silently connecting is held whole (never partly
 /// written to the tty), and keys flow again as soon as ssh prints a prompt.
 #[test]
-fn ssh_silent_connect_drops_typed_runs_whole_then_prompt_gets_keys() {
+fn ssh_silent_connect_holds_typed_runs_whole_then_prompt_gets_keys() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         // The dropped-typing notice is a toast; the real app always has a toast stack.
@@ -18020,10 +21393,10 @@ fn ssh_gate_never_rearms_after_any_output() {
     })
 }
 
-/// #983: while ssh is truly silent a paste is dropped whole like typing; interrupt keys and
-/// control sequences still go through.
+/// #983 / #1292: while ssh is truly silent a paste and control sequences are held like typing;
+/// interrupt keys still go through.
 #[test]
-fn ssh_silent_connect_drops_paste_but_not_interrupts() {
+fn ssh_silent_connect_holds_paste_but_not_interrupts() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         // The dropped-typing notice is a toast; the real app always has a toast stack.
@@ -18046,15 +21419,23 @@ fn ssh_silent_connect_drops_paste_but_not_interrupts() {
             view.keydown_on_terminal("\u{1a}", ctx);
             view.keydown_on_terminal("\u{1c}", ctx);
             view.control_sequence_on_terminal(b"\x1b[A", ctx);
-            view.control_sequence_on_terminal(b"\x1b", ctx);
+            assert_eq!(
+                view.ssh_hold_take(),
+                vec![HeldInput::Seq("\x1b[A".to_owned())],
+                "an arrow key is held with the typing, not written into the bootstrap"
+            );
         });
         let writes = pty_writes.borrow();
-        for expected in [&b"\x1a"[..], b"\x1c", b"\x1b[A", b"\x1b"] {
+        for expected in [&b"\x1a"[..], b"\x1c"] {
             assert!(
                 writes.iter().any(|w| w.as_slice() == expected),
                 "{writes:?}"
             );
         }
+        assert!(
+            !writes.iter().any(|w| w.as_slice() == b"\x1b[A"),
+            "{writes:?}"
+        );
     })
 }
 
@@ -18162,10 +21543,11 @@ fn test_keys_typed_while_after_enter_replay_is_pending_queue_in_order() {
         let terminal = add_window_with_terminal(&mut app, None);
 
         terminal.update(&mut app, |view, ctx| {
-            view.input.update(ctx, |input, _| {
-                input.open_after_enter_replay_for_test(
+            view.input.update(ctx, |input, ctx| {
+                input.open_submitted_enter_gate_for_test(
                     vec![AfterEnterInput::Text("ec".to_string())],
                     true,
+                    ctx,
                 )
             });
             view.typed_characters_on_terminal("ho ", ctx);
@@ -18177,7 +21559,7 @@ fn test_keys_typed_while_after_enter_replay_is_pending_queue_in_order() {
             let input = view.input.as_ref(ctx);
             assert_eq!(input.buffer_text(ctx), "", "nothing may overtake the queue");
             assert_eq!(
-                input.after_enter_replay_for_test(),
+                input.enter_gate_held_for_test(ctx),
                 [
                     AfterEnterInput::Text("echo X".to_string()),
                     AfterEnterInput::Enter,
@@ -18189,7 +21571,7 @@ fn test_keys_typed_while_after_enter_replay_is_pending_queue_in_order() {
         // An interrupt cancels the pending replay.
         terminal.update(&mut app, |view, ctx| view.keydown_on_terminal("\u{3}", ctx));
         terminal.read(&app, |view, ctx| {
-            assert!(!view.input.as_ref(ctx).after_enter_replay_open());
+            assert!(!view.input.as_ref(ctx).enter_queue_holds_keys(ctx));
         });
     })
 }
@@ -18203,18 +21585,31 @@ fn test_after_enter_replay_drains_in_typed_order() {
         let terminal = add_window_with_terminal(&mut app, None);
 
         terminal.update(&mut app, |view, ctx| {
-            view.input.update(ctx, |input, _| {
-                input.open_after_enter_replay_for_test(
+            view.input.update(ctx, |input, ctx| {
+                input.open_submitted_enter_gate_for_test(
                     vec![AfterEnterInput::Text("ec".to_string())],
                     false,
+                    ctx,
                 )
             });
             view.typed_characters_on_terminal("ho X", ctx);
-            view.replay_after_deferred_enter(Instant::now(), ctx);
+            view.replay_after_deferred_enter(ctx);
         });
+        // The release is driven from the editor side, which cannot route a replayed text or Enter
+        // itself: it pokes the queue's waker and the view continues the drain on its next turn
+        // (#1353 step 3). Let the executor deliver it.
+        for _ in 0..64 {
+            let delivered = terminal.read(&app, |view, ctx| {
+                view.input.as_ref(ctx).buffer_text(ctx) == "echo X"
+            });
+            if delivered {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
         terminal.read(&app, |view, ctx| {
             let input = view.input.as_ref(ctx);
-            assert!(!input.after_enter_replay_open());
+            assert!(!input.enter_queue_holds_keys(ctx));
             assert_eq!(input.buffer_text(ctx), "echo X");
         });
     })
@@ -18255,6 +21650,12 @@ fn queue_restore_notice_says_it_was_put_back_and_why() {
         let prompt = queue_restore_notice(reason, false);
         assert!(prompt.contains("queued prompt"), "{prompt}");
         assert!(prompt.contains("put back in the input"), "{prompt}");
+        // The toast truncates behind "Show more" past roughly the failure toast's length, which
+        // hid the put-back sentence (#1324).
+        assert!(
+            prompt.chars().count() <= 88,
+            "too long for the toast: {prompt}"
+        );
     }
     assert!(queue_restore_notice(FinishReason::Error, true).contains("queued command"));
     assert_ne!(
@@ -18366,6 +21767,13 @@ fn typing_on_the_ssh_extension_choice_card_shows_a_hint_instead_of_vanishing() {
         assert!(!card.read(&app, |card, _| card.typed_before_choice()));
 
         terminal.update(&mut app, |view, ctx| {
+            // The pane's key sink notes the focus chain on every key it stamps (the table reads
+            // it from the stamp, not from the live focus); this test calls the typing entry
+            // point directly, so it notes what the sink would have.
+            view.paste_queue
+                .queue
+                .route_state()
+                .note_focus(crate::terminal::input_queue::FocusSnap::SshChoiceCard);
             view.typed_characters_on_terminal("ls", ctx)
         });
 
@@ -18437,7 +21845,10 @@ fn type_into_a_command_the_handoff_does_not_own(
         view.typed_characters_on_terminal("x", ctx);
         let model = view.model.lock();
         let handoff = model.typeahead_handoff();
-        (handoff.state().clone(), handoff.editor_text_precedes_report())
+        (
+            handoff.state().clone(),
+            handoff.editor_text_precedes_report(),
+        )
     });
     let counted = counted.borrow().clone();
     let uncounted = uncounted.borrow().clone();
@@ -18454,7 +21865,10 @@ fn typeahead_handoff_adopts_keys_typed_into_a_command_it_does_not_own() {
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let (state, literal, counted, uncounted) =
             type_into_a_command_the_handoff_does_not_own(&mut app, |_| {});
-        assert!(literal, "the editor cannot see the line the report will put in front");
+        assert!(
+            literal,
+            "the editor cannot see the line the report will put in front"
+        );
         assert_eq!(
             state,
             HandoffState::PtyOwned {
@@ -18532,7 +21946,11 @@ fn typeahead_handoff_does_not_adopt_keys_for_excluded_commands() {
         for (name, expect_literal, customize) in cases {
             let (state, literal, counted, _) =
                 type_into_a_command_the_handoff_does_not_own(&mut app, customize);
-            assert_eq!(state, HandoffState::EditorOwned, "{name}: must not be adopted");
+            assert_eq!(
+                state,
+                HandoffState::EditorOwned,
+                "{name}: must not be adopted"
+            );
             assert_eq!(literal, expect_literal, "{name}: literal insertion");
             assert!(counted.is_empty(), "{name}: no counted write: {counted:?}");
         }
@@ -18558,7 +21976,7 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
             {
                 let mut model = view.model.lock();
                 // The hand-off's request is outstanding...
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 handoff.on_command_written();
                 // Typeahead for a command that has been running a while: a line begun within
                 // `YOUNG_ENTER_WINDOW` of the command being written is young (#933), and its
@@ -18571,6 +21989,7 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
                     handoff.on_line_editor_active(true, true),
                     ActiveDecision::SendRequest
                 );
+                drop(handoff);
                 // ...and a queued command drained behind it is running.
                 model.simulate_long_running_block("sleep 0.3", "");
                 model
@@ -18588,8 +22007,12 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
             }
             view.typed_characters_on_terminal("x", ctx);
             let mut model = view.model.lock();
-            let handoff = model.typeahead_handoff_mut();
-            assert_eq!(handoff.state(), &HandoffState::AwaitingReport, "not adopted");
+            let mut handoff = model.typeahead_handoff_mut();
+            assert_eq!(
+                handoff.state(),
+                &HandoffState::AwaitingReport,
+                "not adopted"
+            );
             // The report answers the request written before the key.
             assert_eq!(handoff.on_report(), ReportDisposition::Insert);
             assert_eq!(handoff.state(), &HandoffState::EditorOwned);
@@ -18603,4 +22026,5561 @@ fn typeahead_handoff_key_behind_an_outstanding_request_keeps_the_editor_literal(
             assert!(!handoff.editor_text_precedes_report());
         });
     })
+}
+
+#[test]
+fn paste_bytes_for_pty_normalizes_newlines_like_the_regex() {
+    let regex_reference = |s: &str| LINEFEED_REGEX.replace_all(s, "\r").into_owned();
+    for input in [
+        "",
+        "plain",
+        "a\nb",
+        "a\r\nb",
+        "a\rb",
+        "a\r\rb",
+        "a\r\r\nb",
+        "\n\r\n\n",
+        "trailing\r\n",
+        "\r",
+        "é\nü\r\n日本",
+    ] {
+        assert_eq!(
+            paste_bytes_for_pty(input, false),
+            regex_reference(input).into_bytes(),
+            "plain paste of {input:?}"
+        );
+        let mut expected = BRACKETED_PASTE_PREFIX.as_bytes().to_vec();
+        expected.extend_from_slice(regex_reference(input).as_bytes());
+        expected.extend_from_slice(BRACKETED_PASTE_SUFFIX.as_bytes());
+        assert_eq!(
+            paste_bytes_for_pty(input, true),
+            expected,
+            "bracketed paste of {input:?}"
+        );
+    }
+}
+
+#[test]
+fn paste_bytes_for_pty_exact_bytes() {
+    assert_eq!(paste_bytes_for_pty("a\r\nb\nc\rd", false), b"a\rb\rc\rd");
+    assert_eq!(
+        paste_bytes_for_pty("x\ny", true),
+        b"\x1b[200~x\ry\x1b[201~".to_vec()
+    );
+}
+
+/// #1179 follow-up: a paste while the agent runs an ordinary command is steer text for the agent's
+/// input, and arrows / Page keys never reach the command's pty. Old code: `paste` and
+/// `control_sequence_on_terminal` wrote to the pty, so `pty_writes` was non-empty.
+/// Not compiled/run when written.
+#[test]
+fn paste_and_control_sequences_during_an_agent_driven_command_do_not_reach_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+
+        app.update(|ctx| {
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("pasted".to_string()));
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.paste(false, ctx);
+            view.control_sequence_on_terminal(b"\x1b[A", ctx);
+            view.page_up(ctx);
+            view.move_home(ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "no user byte may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert!(view.input().as_ref(ctx).buffer_text(ctx).contains("pasted"));
+        });
+    })
+}
+
+/// In the alt screen a wakeup only repaints the existing element tree (the grid is read at paint
+/// time), unless the tree is stale: before the first render, or once a render input such as the
+/// alt screen itself being active has changed. See `wakeup_redraw`.
+#[test]
+fn alt_screen_wakeups_repaint_without_a_re_render_until_a_render_input_changes() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        let mut updated = HashSet::new();
+        updated.insert(app.root_view_id(window_id).unwrap());
+        let invalidation = WindowInvalidation {
+            updated,
+            ..Default::default()
+        };
+        let presenter = Rc::new(RefCell::new(Presenter::new(window_id)));
+
+        let size_info = terminal.update(&mut app, |view, ctx| {
+            ansi::Handler::set_mode(
+                &mut *view.model.lock(),
+                ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                },
+            );
+            // Nothing has been rendered since the alt screen opened: the tree is stale.
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+            *view.size_info
+        });
+
+        app.update(enclose!((presenter, invalidation) move |ctx| {
+            presenter.borrow_mut().invalidate(invalidation, ctx);
+            presenter.borrow_mut().build_scene(
+                vec2f(size_info.pane_width_px, size_info.pane_height_px),
+                1.,
+                None,
+                ctx,
+            );
+        }));
+
+        terminal.update(&mut app, |view, ctx| {
+            ansi::Handler::input(view.model.lock().alt_screen_mut(), 'x');
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::PaintOnly));
+
+            // Leaving the alt screen changes what `render` builds: the next wakeup re-renders.
+            ansi::Handler::unset_mode(
+                &mut *view.model.lock(),
+                ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                },
+            );
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+        });
+    })
+}
+
+/// In the block list a wakeup lays out and paints the existing tree (layout reads block heights
+/// and paint reads the blocks live) and re-renders only when a render input changed. See
+/// `wakeup_redraw`.
+#[test]
+fn block_list_wakeups_relayout_without_a_re_render_until_a_render_input_changes() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        let mut updated = HashSet::new();
+        updated.insert(app.root_view_id(window_id).unwrap());
+        let invalidation = WindowInvalidation {
+            updated,
+            ..Default::default()
+        };
+        let presenter = Rc::new(RefCell::new(Presenter::new(window_id)));
+
+        let size_info = terminal.update(&mut app, |view, ctx| {
+            // The first output turns the empty pre-bootstrap block into a visible one, which is
+            // itself a render input (block visibility/height), so it goes in before the first
+            // render; the wakeup under test below only extends the line already there.
+            ansi::Handler::input(&mut *view.model.lock(), 'x');
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+            *view.size_info
+        });
+
+        app.update(enclose!((presenter, invalidation) move |ctx| {
+            presenter.borrow_mut().invalidate(invalidation, ctx);
+            presenter.borrow_mut().build_scene(
+                vec2f(size_info.pane_width_px, size_info.pane_height_px),
+                1.,
+                None,
+                ctx,
+            );
+        }));
+
+        terminal.update(&mut app, |view, ctx| {
+            ansi::Handler::input(&mut *view.model.lock(), 'y');
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Relayout));
+
+            // Entering the alt screen changes what `render` builds: the next wakeup re-renders.
+            ansi::Handler::set_mode(
+                &mut *view.model.lock(),
+                ansi::Mode::SwapScreen {
+                    save_cursor_and_clear_screen: true,
+                },
+            );
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert_eq!(view.last_wakeup_redraw, Some(WakeupRedraw::Full));
+        });
+    })
+}
+
+/// How many typed setup lines (each followed by a CR write) have reached the pty.
+fn setup_lines_written(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> usize {
+    writes
+        .borrow()
+        .iter()
+        .flatten()
+        .filter(|b| **b == b'\r')
+        .count()
+}
+
+/// #1354: line N+1 of a bash / zsh / fish subshell setup is written when the shell printed line
+/// N's marker, never because time passed. Before, the lines were `30 ms * (i + 1)` timers, so
+/// every line was out ~100 ms after the first whatever the shell had consumed.
+#[test]
+fn subshell_setup_lines_follow_the_shells_markers_not_the_clock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::Bash), ctx);
+            view.subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .expect("a bash setup is paced by markers")
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "only the first line");
+
+        // However long the shell takes, and however much output arrives, nothing else is written.
+        warpui::r#async::Timer::after(Duration::from_millis(300)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("some rc output\r\n");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "no marker, no line");
+
+        // A marker of another setup, or of a later line, releases nothing.
+        terminal.update(&mut app, |view, ctx| {
+            let stale = format!("\x1b]7771;{};0\x07\x1b]7771;{token};5\x07", token + 1);
+            view.model.lock().process_bytes(stale.as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1);
+
+        // The marker of line 0 releases exactly line 1.
+        terminal.update(&mut app, |view, ctx| {
+            let marker = format!("\x1b]7771;{token};0\x07");
+            view.model.lock().process_bytes(marker.as_str());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            // A second wakeup for the same marker does not write the next line too.
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 2);
+    })
+}
+
+/// #1372: a PowerShell setup is paced by markers too (printed when PSReadLine is about to read, so
+/// after its redraw): line N+1 is written on line N's marker only. The kill switch keeps timers.
+#[test]
+fn powershell_setup_lines_follow_the_read_markers_not_the_clock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("powershell", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::PowerShell), ctx);
+            view.subshell_bootstrap_in_flight
+                .as_ref()
+                .and_then(|in_flight| in_flight.marker_token)
+                .expect("a PowerShell setup is paced by markers")
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "only the first line");
+
+        // Longer than the old 300 ms per line: still nothing without a marker.
+        warpui::r#async::Timer::after(Duration::from_millis(700)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("PS C:\\> ");
+            view.handle_terminal_wakeup(Wakeup::Output, ctx);
+        });
+        assert_eq!(setup_lines_written(&pty_writes), 1, "no marker, no line");
+
+        // The marker of line 0 releases line 1, that of line 1 releases line 2 -- and the
+        // "reading again" marker is no line's marker.
+        let ready = crate::terminal::bootstrap::POWERSHELL_READY_MARKER_INDEX;
+        for (marker_index, written) in [(ready, 1), (0, 2), (1, 3)] {
+            terminal.update(&mut app, |view, ctx| {
+                let marker = format!("\x1b]7771;{token};{marker_index}\x07");
+                view.model.lock().process_bytes(marker.as_str());
+                view.handle_terminal_wakeup(Wakeup::Output, ctx);
+                view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            });
+            assert_eq!(
+                setup_lines_written(&pty_writes),
+                written,
+                "marker {marker_index}"
+            );
+        }
+    })
+}
+
+/// #1372: the keys held behind a Ctrl-C that skipped a PowerShell setup are released by the
+/// shell's "PSReadLine is about to read" marker that follows the Ctrl-C -- not after 500 ms, not by
+/// a line's own marker, and not by a marker that was already there when the Ctrl-C was written.
+#[test]
+fn powershell_abort_settle_ends_on_the_read_marker_not_the_clock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let token = terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("powershell", "");
+            view.write_init_subshell_bytes_to_pty(Some(ShellType::PowerShell), ctx);
+            view.powershell_setup_marker_token.expect("marker-paced")
+        });
+        let ready = crate::terminal::bootstrap::POWERSHELL_READY_MARKER_INDEX;
+        let send_marker = |app: &mut App, index: usize| {
+            terminal.update(app, |view, ctx| {
+                let marker = format!("\x1b]7771;{token};{index}\x07");
+                view.model.lock().process_bytes(marker.as_str());
+                view.handle_terminal_wakeup(Wakeup::Output, ctx);
+            });
+        };
+        send_marker(&mut app, 0);
+        send_marker(&mut app, 1);
+        // A "reading" marker from before the Ctrl-C does not count.
+        send_marker(&mut app, ready);
+        assert_eq!(
+            setup_lines_written(&pty_writes),
+            3,
+            "the whole setup is out"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Setup);
+            view.hold_powershell_keys(b"ls\r".to_vec(), true, ctx);
+            view.write_user_bytes_to_pty(vec![3], ctx);
+            assert!(matches!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::AfterAbort { .. }
+            ));
+        });
+        let held_written = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| {
+            writes.borrow().iter().any(|w| w.as_slice() == b"ls\r")
+        };
+        warpui::r#async::Timer::after(Duration::from_millis(900)).await;
+        send_marker(&mut app, 1);
+        assert!(
+            !held_written(&pty_writes),
+            "neither time nor a line marker ends it"
+        );
+        send_marker(&mut app, ready);
+        assert!(
+            held_written(&pty_writes),
+            "the read marker after the Ctrl-C does"
+        );
+        terminal.read(&app, |view, _| {
+            assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+        });
+    })
+}
+
+/// #1354: the bootstrap of an auto-warpified subshell goes in at the subshell's first prompt, however
+/// long that takes -- a subshell slower than the old fixed 1 s still gets it, once, after its
+/// prompt, and nothing before.
+#[test]
+fn subshell_bootstrap_waits_for_the_first_prompt_however_long_it_takes() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        // The model's startup events (the bootstrap block's `AfterBlockCompleted`) are still queued
+        // on the view's channel. That handler disarms a waiting auto-warpify (the subshell's
+        // command "is over"), so arming before it ran would lose the trigger to an event that
+        // precedes the subshell; in a real session the bootstrap finished long before. Wait for
+        // those events by EVENT, not by time: a marker sent through the same FIFO channel is
+        // dispatched after everything queued before it.
+        let dispatcher = terminal.read(&app, |view, _| view.model_events_handle.clone());
+        let (marker_tx, marker_rx) = futures::channel::oneshot::channel::<()>();
+        let marker_tx = RefCell::new(Some(marker_tx));
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&dispatcher, move |_, event, _| {
+                if matches!(event, ModelEvent::CursorBlinkingChange(_)) {
+                    if let Some(tx) = marker_tx.borrow_mut().take() {
+                        let _ = tx.send(());
+                    }
+                }
+            });
+        });
+        terminal.read(&app, |view, _| {
+            view.model
+                .lock()
+                .event_proxy
+                .send_terminal_event(crate::terminal::event::Event::CursorBlinkingChange(false));
+        });
+        marker_rx.await.expect("the marker event is dispatched");
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().simulate_long_running_block("bash", "");
+            view.arm_awaiting_subshell_prompt(
+                SubshellPromptTrigger::AutoWarpify {
+                    shell_type: ShellType::Bash,
+                },
+                ctx,
+            );
+        });
+        // Slower than the old AUTO_WARPIFY_DELAY, silent: nothing is written.
+        warpui::r#async::Timer::after(Duration::from_millis(1200)).await;
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert!(pty_writes.borrow().is_empty(), "no prompt yet");
+
+        // A banner line that ends in a newline is not a prompt.
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("loading profile\r\n");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a finished line is no prompt"
+        );
+
+        // The prompt: the bootstrap goes in.
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("bash-5.1$ ");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert!(!pty_writes.borrow().is_empty(), "bootstrap at the prompt");
+        let after_prompt = pty_writes.borrow().len();
+
+        // Exactly once: more output does not start a second one.
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().process_bytes("x");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.awaiting_subshell_prompt.is_none());
+        });
+        assert_eq!(pty_writes.borrow().len(), after_prompt);
+    })
+}
+
+/// #1354: a deferred setup (the shell showed `Password:`) is released by the output that shows the
+/// prompt gone after the answer -- an output event -- not by the next 250 ms poll.
+#[test]
+fn deferred_subshell_setup_is_released_by_the_output_after_the_answer() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", "Password: ");
+            view.trigger_subshell_bootstrap(Some(ShellType::Zsh), false, ctx);
+            assert!(view.subshell_setup_deferred.is_some());
+            view.write_user_bytes_to_pty(b"secret".to_vec(), ctx);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+        });
+        pty_writes.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            // The shell took the answer and printed its prompt; no poll runs here.
+            view.model.lock().process_bytes("\r\nme@host ~ % ");
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(
+                view.subshell_setup_deferred.is_none(),
+                "released by the output"
+            );
+        });
+        assert!(
+            !pty_writes.borrow().is_empty(),
+            "setup written after the answer"
+        );
+    })
+}
+
+/// #1354: the deferred-setup checks read only the end of the output; they used to copy all of it
+/// (under the model lock, on the UI thread) on every poll.
+#[test]
+fn deferred_subshell_setup_reads_only_the_tail_of_the_output() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            let mut output = String::new();
+            for i in 0..5000 {
+                output.push_str(&format!("line {i}\r\n"));
+            }
+            output.push_str("Password: ");
+            view.model
+                .lock()
+                .simulate_long_running_block("zsh", output.as_str());
+            let snapshot = view.active_output_snapshot();
+            assert!(
+                snapshot.lines().count() <= OUTPUT_TAIL_ROWS + 1,
+                "{} lines copied",
+                snapshot.lines().count()
+            );
+            assert!(snapshot.trim_end().ends_with("Password:"));
+            assert!(view.active_output_input_prompt_line().is_some());
+        });
+    })
+}
+
+/// #1384 P3: the ssh-warpify payload leaves the view as ONE event (the PTY controller owns the
+/// chunks and the pacing), and a ^C / ^D or a cancelled warpify emits the cut that replaced the
+/// view-side generation chain (#1354).
+#[test]
+fn line_clear_payload_is_one_event_and_ctrl_c_emits_the_cut() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let events: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let seen = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::WriteLineClearSetupToPty { payload } => {
+                    seen.borrow_mut().push(format!("setup:{}", payload.len()))
+                }
+                Event::CancelPacedSetupWrites => seen.borrow_mut().push("cancel".into()),
+                Event::WriteBytesToPty { bytes } => {
+                    seen.borrow_mut().push(format!("bytes:{}", bytes.len()))
+                }
+                _ => {}
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(vec![b'x'; 3500], ctx);
+            view.write_user_bytes_to_pty(vec![0x03], ctx);
+        });
+        let events = events.borrow();
+        assert_eq!(events[0], "setup:3500", "{events:?}");
+        assert!(events.iter().any(|e| e == "cancel"), "{events:?}");
+        assert!(
+            events.iter().position(|e| e == "cancel") < events.iter().position(|e| e == "bytes:1"),
+            "the cut goes before the ^C byte: {events:?}"
+        );
+    })
+}
+
+/// #1384 P5: entering the alt screen re-sends the window size ONCE, on the program's first
+/// output, not on a timer; later output sends no more, and leaving the alt screen cancels a
+/// re-send that has not happened yet.
+#[cfg(feature = "local_tty")]
+#[test]
+fn alt_screen_winsize_is_re_sent_once_on_first_output_and_cancelled_on_exit() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let resizes = Rc::new(RefCell::new(0usize));
+        let counter = resizes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if matches!(event, Event::Resize { .. }) {
+                    *counter.borrow_mut() += 1;
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().set_mode(ansi::Mode::SwapScreen {
+                save_cursor_and_clear_screen: true,
+            });
+            view.resize_alt_screen_redundantly(ctx);
+        });
+        assert_eq!(
+            *resizes.borrow(),
+            0,
+            "nothing is sent until the program speaks"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(*resizes.borrow(), 1, "the first output re-sends once");
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(*resizes.borrow(), 1, "later output sends nothing more");
+
+        // Exit before any output: the pending re-send is cancelled.
+        terminal.update(&mut app, |view, ctx| {
+            view.resize_alt_screen_redundantly(ctx);
+            assert!(view.alt_screen_resend_pending);
+            view.handle_terminal_event(
+                &ModelEvent::TerminalModeSwapped(crate::terminal::event::TerminalMode::BlockList),
+                ctx,
+            );
+            assert!(
+                !view.alt_screen_resend_pending,
+                "leaving the alt screen cancels it"
+            );
+        });
+        let after_exit = *resizes.borrow();
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+        });
+        assert_eq!(*resizes.borrow(), after_exit, "no re-send after the exit");
+    })
+}
+
+/// #1353 phase 3: keys the user types while a paced CLI-agent submit is still being written wait
+/// behind the whole submit (text, then its Enter) instead of landing between its pieces. The
+/// submit's own writes do not wait behind its gate.
+#[test]
+fn keys_typed_during_a_paced_cli_agent_submit_follow_the_submit_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.begin_cli_submit_gate(ctx);
+            assert!(view.cli_submit_gate_open_for_test());
+            view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+            // The user types while the submit's Enter is still to come.
+            view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
+        });
+        let before_enter: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            before_enter,
+            b"TEXT".to_vec(),
+            "the user's keys wait behind the submit"
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+            view.end_cli_submit_gate(ctx);
+            assert!(!view.cli_submit_gate_open_for_test());
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            written,
+            b"TEXT\rxy".to_vec(),
+            "the submit is whole, then the keys in typed order"
+        );
+    })
+}
+
+// ---- #1353 phase 4: the ssh connect typeahead on the one input queue ---------------------------
+//
+// Every scenario holds the keys as entries behind an `SshConnect` gate, whichever route typed them.
+
+fn ssh_gate_open(view: &TerminalView) -> bool {
+    view.paste_queue
+        .queue
+        .borrow()
+        .has_gate_kind(crate::terminal::input_queue::GateKind::SshConnect)
+}
+
+fn ssh_queue_is_idle(view: &TerminalView) -> bool {
+    view.paste_queue.queue.borrow().is_idle()
+}
+
+/// Runs `body` on a fresh view with the ssh hold on the given path.
+fn with_ssh_hold_path(
+    body: impl FnOnce(&mut TerminalView, &mut ViewContext<TerminalView>, &Rc<RefCell<Vec<Vec<u8>>>>)
+    + 'static,
+) {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            body(view, ctx, &pty_writes);
+        });
+    })
+}
+
+/// #1394: 28 keys held through the terminal route, the 29th arrives through the editor route
+/// (focus already in the editor) before the precmd hand-over: all 29 are delivered once, in
+/// typed order, and the editor's buffer is not wiped by the hand-over.
+fn ssh_key_via_editor_route_before_handover_joins_the_hold() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        let line = "echo zqTR31 >> /tmp/zq-mac.log";
+        let (head, rest) = line.split_at(28);
+        for c in head.chars() {
+            view.typed_characters_on_terminal(&c.to_string(), ctx);
+        }
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(view.ssh_held_bytes(), 28);
+        // The 29th key: focus has reached the editor, which queues it behind the held ones.
+        editor_text(view, &rest[..1], ctx);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "queued, not applied"
+        );
+        remote_first_prompt_is_next_for_test(view);
+        first_precmd_processed_for_test(view, ctx);
+        view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(ssh_queue_is_idle(view));
+        // A key typed after the hand-over follows, once.
+        editor_text(view, &rest[1..], ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_key_via_editor_route_before_handover_joins_the_hold_on_the_queue() {
+    ssh_key_via_editor_route_before_handover_joins_the_hold();
+}
+
+/// A typed key as the pane's key sink receives it, with focus on the terminal view or inside the
+/// input's editor (#1404).
+fn pane_typed(
+    view: &mut TerminalView,
+    chars: &str,
+    focus_in_editor: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) -> PaneKeyOutcome {
+    let editor_id = view.input.as_ref(ctx).editor().id();
+    let focus_chain = if focus_in_editor {
+        vec![view.view_id, view.input.id(), editor_id]
+    } else {
+        vec![view.view_id]
+    };
+    let key = PaneKey {
+        seq: 0,
+        kind: PaneKeyKind::Typed {
+            chars: chars.to_string(),
+            ime_commit: false,
+        },
+    };
+    view.on_pane_key_event(
+        &key,
+        &PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text: focus_in_editor,
+        },
+        ctx,
+    )
+}
+
+/// #1400 (and #1339): 14 keys held, then 15 more typed while focus moves between the terminal and
+/// the editor. The pane's key sink receives each key exactly once, whichever view has focus, and
+/// the ssh hold takes it. Hand-over: all 29, once, in typed order, nothing left in the editor's
+/// side queue.
+fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        let line = "echo RTtm0 >> ~/rl_tm0.1.txt";
+        let chars: Vec<String> = line.chars().map(|c| c.to_string()).collect();
+        for c in &chars[..14] {
+            view.typed_characters_on_terminal(c, ctx);
+        }
+        assert!(view.ssh_typeahead_holding);
+        remote_first_prompt_is_next_for_test(view);
+        for (i, c) in chars[14..].iter().enumerate() {
+            // Every fifth key is typed with focus already in the editor.
+            let outcome = pane_typed(view, c, i % 5 == 4, ctx);
+            assert_eq!(outcome, PaneKeyOutcome::Consumed, "key {i} is the pane's");
+        }
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "none applied early"
+        );
+        first_precmd_processed_for_test(view, ctx);
+        view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(ssh_queue_is_idle(view));
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), line);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_keys_by_every_route_before_handover_are_delivered_once_in_order_on_the_queue() {
+    ssh_keys_by_every_route_before_handover_are_delivered_once_in_order();
+}
+
+/// #1339: with focus in the input's editor and no hold, the pane's key sink gives the key to the
+/// editor and to nothing else: inserted once, not written to the pty.
+#[test]
+fn pane_key_with_editor_focus_is_inserted_once_and_not_written_to_the_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(pane_typed(view, "a", true, ctx), PaneKeyOutcome::Consumed);
+            assert_eq!(pane_typed(view, "b", true, ctx), PaneKeyOutcome::Consumed);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    });
+}
+
+/// #1397: focus on a view inside the pane that takes no text (a settled card, an AI block, the
+/// input view between two focus moves) does not lose the key: the sink delivers it through the
+/// terminal's routing, which puts it in the input when the pty does not take it.
+#[test]
+fn pane_key_with_focus_on_a_non_text_view_in_the_pane_is_delivered_not_dropped() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "x".to_owned(),
+                    ime_commit: false,
+                },
+            };
+            // Focus is on the input view itself (not its editor): a gap.
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id()],
+                leaf_takes_typed_text: false,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "x");
+        });
+    });
+}
+
+/// A text field inside the pane (the find bar, the block filter, any other editor) keeps its keys:
+/// the sink leaves the event to the elements and nothing reaches the input or the pty.
+#[test]
+fn pane_key_typed_into_a_text_field_inside_the_pane_is_not_the_sinks() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "x".to_owned(),
+                    ime_commit: false,
+                },
+            };
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.find_bar.id()],
+                leaf_takes_typed_text: true,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::NotMine
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty());
+        });
+    });
+}
+
+/// #1332 / #1394: keys typed during an ssh hold while focus sits somewhere in the pane that is
+/// neither the terminal nor the editor (the focus gap before the remote shell's first prompt) are
+/// all held, in order, none lost.
+fn ssh_keys_in_a_focus_gap_join_the_hold() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        for c in ["e", "c", "h", "o"] {
+            let key = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: c.to_owned(),
+                    ime_commit: false,
+                },
+            };
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id()],
+                leaf_takes_typed_text: false,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&key, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+        }
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(view.ssh_held_bytes(), 4, "no key lost, none doubled");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_keys_in_a_focus_gap_join_the_hold_on_the_queue() {
+    ssh_keys_in_a_focus_gap_join_the_hold();
+}
+
+/// IME: the composition is shown in the editor that will take the commit, the commit is one typed
+/// key, and the composition text never reaches the terminal's model when the editor has focus.
+#[test]
+fn pane_key_ime_composition_goes_to_the_focused_editor_and_the_commit_is_one_key() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let editor_id = view.input.as_ref(ctx).editor().id();
+            let key_ctx = PaneKeyContext {
+                focus_chain: vec![view.view_id, view.input.id(), editor_id],
+                leaf_takes_typed_text: true,
+            };
+            let set = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::SetMarkedText {
+                    marked_text: "かな".to_owned(),
+                    selected_range: 0..2,
+                },
+            };
+            assert_eq!(
+                view.on_pane_key_event(&set, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            let clear = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::ClearMarkedText,
+            };
+            assert_eq!(
+                view.on_pane_key_event(&clear, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            let commit = PaneKey {
+                seq: 0,
+                kind: PaneKeyKind::Typed {
+                    chars: "仮名".to_owned(),
+                    ime_commit: true,
+                },
+            };
+            assert_eq!(
+                view.on_pane_key_event(&commit, &key_ctx, ctx),
+                PaneKeyOutcome::Consumed
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "仮名");
+        });
+    });
+}
+
+/// #1404 / #1403: while the pty reader is inside the model's lock (parsing), the reads a user key
+/// makes -- the routing rows, the ssh and subshell bookkeeping, the agent-owned-pty rule, the
+/// interactive latch -- return from the published snapshot instead of waiting. A read that took the
+/// blocking lock would deadlock this test (one thread holds the lock), so a watchdog turns that
+/// into a failure instead of a hang.
+#[test]
+fn key_path_reads_do_not_wait_for_the_pty_reader() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().publish_key_facts();
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let watchdog_done = done.clone();
+            let watchdog = std::thread::spawn(move || {
+                for _ in 0..200 {
+                    if watchdog_done.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                eprintln!("a key-path read waited for the model's lock");
+                std::process::abort();
+            });
+            let parser_inside = view.model.lock();
+            let _scope = KeyPathScope::enter(&view.key_path_depth);
+            let _ = view.read_key_facts();
+            let _ = view.model_facts();
+            let _ = view.should_write_typed_chars_to_pty(ctx);
+            let _ = view.agent_owns_command_pty();
+            view.reprobe_interactive_latch_on_key();
+            let _ = view.is_long_running();
+            let _ = view.subshell_bootstrap_pending();
+            let _ = view.forwards_keys_during_subshell_bootstrap(false);
+            let _ = view.holds_keys_for_powershell_subshell_setup();
+            let _ = view.ssh_bootstrap_interrupt_route();
+            let _ = view.typeahead_handoff_routes_keys_to_pty();
+            drop(parser_inside);
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            watchdog.join().unwrap();
+        });
+    });
+}
+
+fn ssh_keys_during_connect_are_delivered_once_in_order() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        assert!(!ssh_gate_open(view), "nothing held yet: no gate");
+        view.typed_characters_on_terminal("echo ", ctx);
+        view.typed_characters_on_terminal("a", ctx);
+        view.typed_characters_on_terminal("b", ctx);
+        assert!(view.ssh_typeahead_holding);
+        assert!(ssh_gate_open(view), "the gate is the hold on the queue");
+        assert_eq!(view.ssh_held_bytes(), 7);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        // The one hand-over point delivers; a second one finds nothing.
+        assert!(view.deliver_ssh_typeahead_if_ready("precmd", ctx));
+        assert!(!view.deliver_ssh_typeahead_if_ready("precmd", ctx));
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "echo ab",
+            "once, in order"
+        );
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(!ssh_gate_open(view));
+        assert!(ssh_queue_is_idle(view), "nothing left queued");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_queue_keys_during_connect_are_delivered_once_in_order() {
+    ssh_keys_during_connect_are_delivered_once_in_order();
+}
+
+fn ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
+    with_ssh_hold_path(move |view, ctx, _| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("echo ab", ctx);
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        // Focus is already in the editor (agent mode): a key reaching it before the hand-over is
+        // queued behind the held ones, never applied ahead of them.
+        editor_text(view, "c", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abc");
+        editor_text(view, "d", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo abcd");
+        assert!(ssh_queue_is_idle(view));
+    });
+}
+
+#[test]
+fn ssh_queue_key_queued_in_the_prompt_turn_lands_after_the_held_keys() {
+    ssh_key_queued_in_the_prompt_turn_lands_after_the_held_keys();
+}
+
+fn ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("blind", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert!(ssh_gate_open(view));
+            view.model.lock().process_bytes("Password: ");
+            view.typed_characters_on_terminal("hunter2", ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            assert!(!ssh_gate_open(view), "the prompt event dropped the gate");
+            assert!(ssh_queue_is_idle(view));
+        });
+        // The pty write is an event: it is observed once the update that emitted it ends.
+        let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            writes, b"hunter2",
+            "only the post-prompt key reaches the prompt"
+        );
+    })
+}
+
+#[test]
+fn ssh_queue_password_prompt_discards_held_keys_and_next_key_reaches_the_pty() {
+    ssh_password_prompt_discards_held_keys_and_next_key_reaches_the_pty();
+}
+
+fn ssh_failed_connect_returns_the_text_to_the_input() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("echo hi", ctx);
+        view.keydown_on_terminal("\r", ctx);
+        assert!(view.ssh_typeahead_holding);
+        // No remote prompt ever came: the connect ended.
+        release_ssh_gate_for_test(view);
+        view.deliver_ssh_typeahead_if_ready("block_completed", ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "echo hi",
+            "shown, not run"
+        );
+        assert!(!ssh_gate_open(view));
+        assert!(ssh_queue_is_idle(view));
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+#[test]
+fn ssh_queue_failed_connect_returns_the_text_to_the_input() {
+    ssh_failed_connect_returns_the_text_to_the_input();
+}
+
+fn ssh_repeated_connects_each_get_their_own_hold() {
+    with_ssh_hold_path(move |view, ctx, _| {
+        for round in ["one", "two", "three"] {
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal(round, ctx);
+            assert!(ssh_gate_open(view), "{round}");
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("block_completed", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), round);
+            assert!(
+                ssh_queue_is_idle(view),
+                "{round}: no gate or entry carried over"
+            );
+            view.input.update(ctx, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx)
+            });
+        }
+    });
+}
+
+#[test]
+fn ssh_queue_repeated_connects_each_get_their_own_hold() {
+    ssh_repeated_connects_each_get_their_own_hold();
+}
+
+fn ssh_interrupt_discards_the_held_keys() {
+    with_ssh_hold_path(move |view, ctx, _| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("abc", ctx);
+        release_ssh_gate_for_test(view);
+        view.keydown_on_terminal("\u{3}", ctx);
+        assert!(!view.ssh_typeahead_holding);
+        assert!(view.ssh_held_is_empty());
+        assert!(!ssh_gate_open(view));
+        assert!(ssh_queue_is_idle(view));
+        view.typed_characters_on_terminal("ls", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+    });
+}
+
+#[test]
+fn ssh_queue_interrupt_discards_the_held_keys() {
+    ssh_interrupt_discards_the_held_keys();
+}
+
+fn ssh_overflow_drops_the_whole_run() {
+    with_ssh_hold_path(move |view, ctx, _| {
+        submit_command(view, "ssh host", ctx);
+        let big = "x".repeat(40 * 1024);
+        view.ssh_typeahead_holding = true;
+        view.ssh_hold_push(HeldInput::from_chars("head"), ctx);
+        view.ssh_hold_push(HeldInput::from_chars(&big), ctx);
+        let outcome = view.ssh_hold_push(HeldInput::from_chars(&big), ctx);
+        assert_eq!(outcome, SshTypeaheadPush::Overflowed);
+        assert!(
+            view.ssh_held_is_empty(),
+            "the whole run is gone, head included"
+        );
+        assert_eq!(
+            view.ssh_hold_push(HeldInput::from_chars("more"), ctx),
+            SshTypeaheadPush::Ignored
+        );
+        assert!(view.ssh_held_is_empty());
+        release_ssh_gate_for_test(view);
+        view.finish_ssh_typeahead(ctx);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "a truncated line never shows"
+        );
+        assert!(ssh_queue_is_idle(view));
+    });
+}
+
+#[test]
+fn ssh_queue_overflow_drops_the_whole_run() {
+    ssh_overflow_drops_the_whole_run();
+}
+
+/// #1405: a paste whose clipboard read is still pending when it is made during an ssh connect is
+/// an entry behind the connect gate with a `PasteReading` gate of its own. Keys typed before it
+/// come first, keys typed meanwhile queue behind it, and when the read answers and the hand-over
+/// drains, everything lands once, in typed order.
+#[test]
+fn ssh_paste_with_a_pending_read_keeps_typed_order_around_it() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("a", ctx);
+        assert!(ssh_gate_open(view));
+        // The paste: its read has not answered yet.
+        let id = view
+            .paste_queue
+            .queue
+            .next_paste_id(input_queue::PasteOwner::Pty);
+        view.paste_queue.routed_pastes.insert(id);
+        view.paste_queue.ssh_pastes.insert(id);
+        {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().offer_gated(
+                &mut host,
+                input_queue::EntryKind::Paste {
+                    paste_id: id,
+                    payload: None,
+                },
+                input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id),
+            );
+        }
+        view.typed_characters_on_terminal("b", ctx);
+        assert_eq!(
+            view.input.as_ref(ctx).buffer_text(ctx),
+            "",
+            "all of it is held"
+        );
+        // The read answers while the connect is still in flight: nothing is delivered yet.
+        view.finish_async_paste_read(
+            id,
+            false,
+            None,
+            warpui::clipboard::ReadOutcome::Content(ClipboardContent::plain_text("P".to_owned())),
+            ctx,
+        );
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        // The hand-over: a, the paste, b.
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "aPb");
+        assert!(ssh_queue_is_idle(view));
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+/// #1405: a paste still being read when a prompt appears is cancelled with the hold; its late
+/// answer is pasted nowhere.
+#[test]
+fn ssh_paste_with_a_pending_read_is_cancelled_with_the_hold() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("a", ctx);
+        let id = view
+            .paste_queue
+            .queue
+            .next_paste_id(input_queue::PasteOwner::Pty);
+        view.paste_queue.routed_pastes.insert(id);
+        view.paste_queue.ssh_pastes.insert(id);
+        {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().offer_gated(
+                &mut host,
+                input_queue::EntryKind::Paste {
+                    paste_id: id,
+                    payload: None,
+                },
+                input_queue::GateSpec::new(input_queue::GateKind::PasteReading, id),
+            );
+        }
+        view.reset_ssh_typeahead();
+        assert!(
+            ssh_queue_is_idle(view),
+            "the pending paste went with the hold"
+        );
+        view.finish_async_paste_read(
+            id,
+            false,
+            None,
+            warpui::clipboard::ReadOutcome::Content(ClipboardContent::plain_text("P".to_owned())),
+            ctx,
+        );
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+/// #1405: a middle click made during an ssh connect reads the selection off the UI thread like
+/// any paste. The keys typed while the read is out queue behind it, and when it lands and the
+/// hand-over drains, everything arrives once in typed order. (The old path read the selection on
+/// the UI thread and pushed the text into the hold directly.)
+#[test]
+fn ssh_middle_click_paste_with_a_pending_read_keeps_typed_order_around_it() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let deferral = warpui::clipboard::deferred_reads::defer();
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("a", ctx);
+            assert!(ssh_gate_open(view));
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("P".to_owned()));
+            view.hold_ssh_paste(true, ctx);
+            assert!(
+                view.paste_queue
+                    .queue
+                    .borrow()
+                    .has_gate_kind(crate::terminal::input_queue::GateKind::PasteReading),
+                "the middle click's read is pending, not answered on the UI thread"
+            );
+            view.typed_characters_on_terminal("b", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "all held");
+        });
+        deferral.release();
+        // The read lands through the event loop; wait for its gate to open (condition-driven).
+        let mut landed = false;
+        for _ in 0..10_000 {
+            landed = terminal.read(&app, |view, _| {
+                !view
+                    .paste_queue
+                    .queue
+                    .borrow()
+                    .has_gate_kind(crate::terminal::input_queue::GateKind::PasteReading)
+            });
+            if landed {
+                break;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(1)).await;
+        }
+        assert!(landed, "the middle-click read never landed");
+        terminal.update(&mut app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "still behind the connect"
+            );
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "aPb");
+            assert!(ssh_queue_is_idle(view));
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    });
+}
+
+/// The held line reaches the remote shell once: at most one `echo hi` runs, and the Enter stays
+/// behind the text it ends.
+#[test]
+fn ssh_queue_enter_runs_the_held_line_once() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo hi", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert!(ssh_gate_open(view));
+            executed.borrow_mut().clear();
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert!(ssh_queue_is_idle(view));
+        });
+        let ran = executed.borrow().clone();
+        assert!(
+            ran.iter().filter(|c| c.as_str() == "echo hi").count() <= 1,
+            "{ran:?}"
+        );
+    });
+}
+
+// ---- #1353 phase 5: the typeahead hand-off's prompt hold on the one input queue ---------------
+//
+// The keys are entries behind a `LineEditorActive` gate (the hand-off keeps no bytes).
+
+/// A ConPTY session whose running command just printed its prompt: the pty owns input, the
+/// precmd arrived and the line editor has not signalled yet, so keys are held for it (#1162).
+fn conpty_prompt_hold_setup(view: &mut TerminalView) {
+    let mut model = view.model.lock();
+    model.start_command_execution();
+    let mut handoff = model.typeahead_handoff_mut();
+    handoff.on_command_written();
+    handoff.age_last_activity_for_test();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
+    handoff.on_precmd();
+}
+
+fn prompt_gate_open(view: &TerminalView) -> bool {
+    view.paste_queue
+        .queue
+        .borrow()
+        .has_gate_kind(crate::terminal::input_queue::GateKind::LineEditorActive)
+}
+
+/// What the pty controller does on the line editor's ready signal (`SetBracketedPaste`): the
+/// keys in the view's queue are released by the view.
+fn line_editor_signal(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    let queued = view
+        .model
+        .lock()
+        .typeahead_handoff_mut()
+        .release_queued_prompt_hold_on_signal();
+    if let Some(hold_id) = queued {
+        view.on_prompt_hold_released(hold_id, ctx);
+    }
+}
+
+/// Keys typed between a prompt and its line editor are held and released, in typed order and as
+/// the separate writes they were typed in, by the editor's own signal -- on either path.
+#[test]
+fn conpty_prompt_hold_releases_on_the_signal_through_the_queue() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view);
+            for key in [&b"l"[..], b"s", b"\r", b"x"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "nothing is written ahead of the line editor"
+            );
+            assert!(prompt_gate_open(view));
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 4);
+            line_editor_signal(view, ctx);
+            assert!(!prompt_gate_open(view));
+            assert!(view.paste_queue.queue.borrow().is_idle());
+        });
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![b"l".to_vec(), b"s".to_vec(), b"\r".to_vec(), b"x".to_vec()],
+            "one write per key event, in typed order"
+        );
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            assert_eq!(model.typeahead_handoff().writes_in_flight(), 4);
+            assert!(!model.typeahead_handoff().prompt_hold_queued());
+        });
+    });
+}
+
+/// No model lock per key while the hold is open: after the key that started it, the queue takes
+/// every key without locking the terminal model (the pty reader holds that lock while it parses).
+#[test]
+fn keys_behind_a_prompt_hold_take_no_model_lock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view);
+            view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+            assert!(prompt_gate_open(view));
+            let before = crate::terminal::model_lock_trace::key_path_lock_count();
+            for key in [&b"b"[..], b"c", b"d", b"\r", b"e"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count(),
+                before,
+                "the five keys behind the hold never touched the model lock"
+            );
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 6);
+        });
+    })
+}
+
+/// No blocking model lock per key on the ordinary path (it was two to five, then one, #1403): a
+/// key that is not held and not for the agent reads the model's facts through `try_lock` (or the
+/// published copy) and leaves its bookkeeping in the inbox.
+#[test]
+fn a_user_key_to_a_running_command_takes_no_blocking_model_lock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.age_last_activity_for_test();
+            }
+            let before = crate::terminal::model_lock_trace::key_path_lock_count();
+            for key in [&b"e"[..], b"c", b"h", b"o"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count() - before,
+                0,
+                "no key waited for the model's lock"
+            );
+        });
+    })
+}
+
+/// #1403: while the pty reader is inside the model's lock (parsing), a key still reaches the pty at
+/// once: it neither blocks on the lock nor misroutes. The lock is held by another thread for up to
+/// three seconds; the keys must be through long before.
+#[test]
+fn a_user_key_does_not_wait_for_the_parser() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.age_last_activity_for_test();
+                drop(handoff);
+                model.publish_key_facts();
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            });
+            held_rx.recv().unwrap();
+            let started = Instant::now();
+            for key in [&b"e"[..], b"c", b"h", b"o", b"\r"] {
+                view.write_user_bytes_to_pty(key.to_vec(), ctx);
+            }
+            let waited = started.elapsed();
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(1),
+                "the keys waited {waited:?} for the parser"
+            );
+        });
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"echo\r".to_vec(),
+            "every key reached the pty, in typed order"
+        );
+    })
+}
+
+/// The first input and a ^C typed into a running command are left in the model's inbox, not
+/// written under its lock, and the model applies them: the block records both (#1178).
+#[test]
+fn a_key_leaves_the_first_input_and_ctrl_c_marks_for_the_model_to_apply() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("sleep 9", "");
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.age_last_activity_for_test();
+                drop(handoff);
+                assert!(
+                    model
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running()
+                );
+                model.publish_key_facts();
+            }
+            view.write_user_bytes_to_pty(b"q".to_vec(), ctx);
+            view.write_user_bytes_to_pty(vec![0x03], ctx);
+            let model = view.model.lock();
+            let block = model.block_list().active_block();
+            assert!(block.has_received_user_input());
+            assert!(block.was_interrupted_by_ctrl_c());
+        });
+    })
+}
+
+/// Fast typing into a running command, then Enter, reaches the pty in typed order on either path
+/// (the hand-off's counted writes are untouched by the queue).
+#[test]
+fn fast_typing_during_a_running_command_then_enter_is_delivered_in_order() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.start_command_execution();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_command_written();
+                handoff.age_last_activity_for_test();
+            }
+            for key in b"echo hi" {
+                view.write_user_bytes_to_pty(vec![*key], ctx);
+            }
+            view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"echo hi\r".to_vec());
+    });
+}
+
+/// A ^C typed while keys are held for the prompt voids them (#1584, the table's
+/// `VoidHeldThenSignal`): a real tty flushes its typeahead on an interrupt, so only the ^C reaches
+/// the pty -- prepending them made `ls\r` + ^C run `ls`. A lone ^D (EOF, which the tty does not
+/// flush) still goes out behind them, as one write in typed order.
+#[test]
+fn a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it() {
+    for (signal, expected) in [(0x03u8, vec![0x03u8]), (0x04u8, b"ls\x04".to_vec())] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                view.write_user_bytes_to_pty(b"l".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"s".to_vec(), ctx);
+                if signal == 0x03 {
+                    view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                }
+                assert!(pty_writes.borrow().is_empty());
+                view.write_user_bytes_to_pty(vec![signal], ctx);
+                assert!(!prompt_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![expected],
+                "signal={signal:#x}: ^C voids the held keys, ^D follows them"
+            );
+        });
+    }
+}
+
+/// The hold's give-up cap (no line-editor signal ever came): the keys go back to the editor, in
+/// order, as text (#1584: a timer never writes them to the pty), and the hold is off for the
+/// session -- the next prompt is not held for, its keys go by the live path.
+#[test]
+fn the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view);
+            view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+            let token = view.paste_queue.queue.borrow().gates()[0].token;
+            view.on_paste_queue_give_up(token, ctx);
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
+            assert!(pty_writes.borrow().is_empty(), "the timer wrote nothing");
+            // A second timer for the same gate changes nothing.
+            view.on_paste_queue_give_up(token, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ab");
+            view.model.lock().typeahead_handoff_mut().on_precmd();
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .prompt_hold_off_for_session()
+            );
+            view.write_user_bytes_to_pty(b"c".to_vec(), ctx);
+            assert!(!prompt_gate_open(view), "the next prompt is not held for");
+        });
+        assert_eq!(*pty_writes.borrow(), vec![b"c".to_vec()]);
+    })
+}
+
+/// #1584: a precmd's wait with no line-editor signal past the cap hands the keys back to the
+/// editor as shell-routed text, in order, and the timer writes nothing to the pty. Legacy and
+/// Table.
+#[test]
+fn a_prompt_hold_past_its_cap_hands_its_keys_back_to_the_editor_and_writes_nothing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                for key in b"ls -l" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert!(prompt_gate_open(view), "{mode:?}");
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ls -l",
+                    "{mode:?}: every key, in order, in the editor"
+                );
+                assert_eq!(
+                    view.model.lock().typeahead_handoff().state(),
+                    &HandoffState::EditorOwned,
+                    "{mode:?}: the editor took input over"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: zero pty writes from the timer: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// #1584: a held segment with an Enter past the cap is never run or written by the timer: it stays
+/// held (the cap is armed again), and the line editor's signal releases it once, in typed order.
+/// The signal shows the shell does signal, so the next prompt is held for again. Legacy and Table.
+#[test]
+fn a_held_segment_with_an_enter_past_the_cap_stays_held_until_the_signal() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_signalling_prompt_hold_setup(view);
+                for key in [&b"l"[..], b"s", b"\r", b"x"] {
+                    view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                }
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                // The cap fires, and fires again after its re-arm: nothing moves.
+                view.on_paste_queue_give_up(token, ctx);
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(prompt_gate_open(view), "{mode:?}: still held");
+                assert_eq!(view.paste_queue.queue.borrow().queued_len(), 4, "{mode:?}");
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing written");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // The signal releases the segment, once, in typed order.
+                line_editor_signal(view, ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                // The shell signalled after all: the next prompt is held for again.
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
+                assert!(prompt_gate_open(view), "{mode:?}: held for its line editor");
+            });
+            assert_eq!(pty_writes.borrow().concat(), b"ls\rx".to_vec(), "{mode:?}");
+        })
+    }
+}
+
+/// A ConPTY session whose shell has signalled its line editor before (a readline prompt), at the
+/// next prompt: the command's precmd arrived and the line editor has not signalled yet.
+fn conpty_signalling_prompt_hold_setup(view: &mut TerminalView) {
+    conpty_enter_window_running_command(view);
+    view.model.lock().typeahead_handoff_mut().on_precmd();
+}
+
+/// #1584 F1: ^C on a segment kept past its cap (an Enter among its keys): nothing of the held line
+/// reaches the pty, the ^C does -- the toast's "Ctrl-C discards it" is what happens. Legacy and
+/// Table.
+#[test]
+fn an_interrupt_voids_a_kept_overdue_segment_and_only_the_signal_reaches_the_pty() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_signalling_prompt_hold_setup(view);
+                for key in [&b"l"[..], b"s", b"\r"] {
+                    view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                }
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(prompt_gate_open(view), "{mode:?}: kept past the cap");
+                view.write_user_bytes_to_pty(vec![0x03], ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![vec![0x03u8]],
+                "{mode:?}: only the ^C reaches the pty; `ls` never runs"
+            );
+        })
+    }
+}
+
+/// #1584 F2: the hand-back keeps typed order across the two sides of the queue: pty `l`, `s`, an
+/// editor key `x`, pty ` -a` become `lsx -a` (not `xls -a`). Legacy and Table.
+#[test]
+fn a_hand_back_keeps_typed_order_across_editor_and_pty_entries() {
+    use crate::editor::HeldPasteKey;
+    use crate::terminal::input_queue::{DestinationMode, EditorKeyPayload, EntryKind};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                view.write_user_bytes_to_pty(b"l".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"s".to_vec(), ctx);
+                {
+                    let queue = view.paste_queue.queue.clone();
+                    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                    queue.borrow_mut().offer(
+                        &mut host,
+                        EntryKind::EditorKey(EditorKeyPayload::new(HeldPasteKey::Text("x".into()))),
+                    );
+                }
+                for key in b" -a" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert_eq!(view.paste_queue.queue.borrow().queued_len(), 6, "{mode:?}");
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "lsx -a",
+                    "{mode:?}: typed order"
+                );
+            });
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+        })
+    }
+}
+
+/// #1584 F3: keys behind a stale prompt-hold gate (the hand-off no longer knows the hold) go back
+/// to the editor as text, and the next Enter runs them as a shell command. Legacy and Table.
+#[test]
+fn a_stale_prompt_hold_gate_hands_back_shell_routed_text() {
+    use crate::terminal::input_queue::{DestinationMode, EntryKind, GateKind, GateSpec};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                {
+                    let queue = view.paste_queue.queue.clone();
+                    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                    queue
+                        .borrow_mut()
+                        .open_gate(&mut host, GateSpec::new(GateKind::LineEditorActive, 77));
+                    queue.borrow_mut().offer(
+                        &mut host,
+                        EntryKind::PtyBytes {
+                            bytes: b"ls".to_vec(),
+                            takes_over_agent_control: false,
+                        },
+                    );
+                }
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls", "{mode:?}");
+                assert!(
+                    view.input
+                        .as_ref(ctx)
+                        .shell_command_submit_pending_for_test(),
+                    "{mode:?}: the next Enter runs it as a shell command"
+                );
+            });
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+        })
+    }
+}
+
+/// #1584 Q4: a shell that has never signalled will not signal for this prompt either, so a
+/// segment with an Enter at a clean prompt is handed back (the Enter as a newline, never run)
+/// instead of being held forever; nothing is written. Legacy and Table.
+#[test]
+fn a_never_signalling_shell_hands_back_a_segment_with_an_enter() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                for key in [&b"l"[..], b"s", b"\r", b"x"] {
+                    view.write_user_bytes_to_pty(key.to_vec(), ctx);
+                }
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}: not held forever");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls\nx", "{mode:?}");
+                assert!(
+                    view.input
+                        .as_ref(ctx)
+                        .shell_command_submit_pending_for_test(),
+                    "{mode:?}"
+                );
+                assert!(
+                    view.model
+                        .lock()
+                        .typeahead_handoff()
+                        .prompt_hold_off_for_session(),
+                    "{mode:?}"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing ran or was written"
+            );
+        })
+    }
+}
+
+/// #1584: a hold started in the precmd's wait whose wait a preexec cleared (the shell started a
+/// line it already had) is not left with no wait: it becomes an enter window, the cap is not due
+/// while the command runs, and the command becoming interactive releases the keys once, in order.
+/// Legacy and Table.
+#[test]
+fn a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_signalling_prompt_hold_setup(view);
+                view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+                view.model.lock().typeahead_handoff_mut().on_preexec(false);
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(prompt_gate_open(view), "{mode:?}: the command runs");
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+                // What the view does on `CommandBecameInteractive`.
+                let held = view
+                    .model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .release_enter_window_for_program();
+                view.on_prompt_hold_released(held.expect("the latch names the hold"), ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"a".to_vec(), b"b".to_vec()],
+                "{mode:?}: once, in order"
+            );
+        })
+    }
+}
+
+/// A paste delivered from the queue that the hand-off holds for the prompt is put back under the
+/// hold's gate (not lost, not written ahead of the line editor) and comes out first when it opens.
+#[test]
+fn a_key_delivered_from_the_queue_into_a_prompt_hold_goes_back_under_its_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view);
+            // Another gate (a paste being read) holds the keys first; the hold starts when a key
+            // is delivered from the queue, which is borrowed then.
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.borrow_mut().open_gate(
+                &mut host,
+                crate::terminal::input_queue::GateSpec::new(
+                    crate::terminal::input_queue::GateKind::PasteReading,
+                    77,
+                )
+                .with_cap(None),
+            );
+            view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+            assert!(pty_writes.borrow().is_empty());
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.borrow_mut().on_gate_event(
+                &mut host,
+                crate::terminal::input_queue::GateKind::PasteReading,
+                77,
+            );
+            assert!(pty_writes.borrow().is_empty(), "held for the prompt now");
+            assert!(prompt_gate_open(view));
+            assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
+            line_editor_signal(view, ctx);
+        });
+        assert_eq!(*pty_writes.borrow(), vec![b"a".to_vec(), b"b".to_vec()]);
+    })
+}
+
+/// A ConPTY session whose command (written by the app just now) is running, with the enter window
+/// open (#1490): keys typed from here are held until the next prompt's line editor signals.
+fn conpty_enter_window_running_command(view: &mut TerminalView) {
+    let mut model = view.model.lock();
+    model.start_command_execution();
+    let mut handoff = model.typeahead_handoff_mut();
+    handoff.set_conpty_input(true);
+    handoff.set_conpty_prompt_hold(true);
+    handoff.set_conpty_prompt_hold_shell_signals(true);
+    handoff.set_conpty_enter_window_hold(true);
+    handoff.on_precmd();
+    let _ = handoff.release_queued_prompt_hold_on_signal();
+    handoff.on_command_written();
+}
+
+/// #1569 (r18cz Windows Git Bash, fast_typing 19/30): a whole line, its Enter and the start of the
+/// next line are typed while a command runs, so the enter window holds them; the command's prompt
+/// (precmd) arrives BEFORE the line editor's signal. The prompt used to hand input to the editor
+/// (the held keys are not counted, so the shell's line looked empty): the key typed next went to
+/// the editor while the held keys were written raw to the pty on the signal, and the shell's report
+/// then merged another line into the editor ("echo t91_echo t94_... >> 8hr_ft0.txt" ran).
+///
+/// Each key has exactly one delivery route: the held keys and the key typed after the precmd all
+/// reach the pty, once, in typed order, byte-exact; the editor never holds a character of them.
+/// Legacy and Table.
+#[test]
+fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                // A bootstrapped pane always has a session; without one Legacy would route the
+                // typed key to the editor (`should_write_typed_chars_to_pty`).
+                register_local_session_for_ssh_test(view, ctx);
+                conpty_enter_window_running_command(view);
+                // A line, its Enter and the start of the next line, one key event each.
+                for key in b"echo A" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                for key in b"ec" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing is written ahead of the line editor"
+                );
+                assert!(prompt_gate_open(view), "{mode:?}");
+                assert_eq!(view.paste_queue.queue.borrow().queued_len(), 9, "{mode:?}");
+
+                // The command finished: its precmd arrives while the keys are still held.
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                {
+                    let model = view.model.lock();
+                    let handoff = model.typeahead_handoff();
+                    assert!(
+                        handoff.is_pty_owned() && !handoff.editor_owns_input(),
+                        "{mode:?}: the prompt must not hand input to the editor over held keys"
+                    );
+                }
+                // A key typed after the precmd, before the signal: behind the held keys.
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: still nothing written"
+                );
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: the editor took none of it"
+                );
+                assert_eq!(view.paste_queue.queue.borrow().queued_len(), 10, "{mode:?}");
+
+                // The line editor's signal releases everything, in typed order.
+                line_editor_signal(view, ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: the editor holds none of the line the pty received"
+                );
+
+                // The line was answered by the next prompt: the keys are in the shell's line, so
+                // the editor still does not take over without the shell's report.
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                assert!(
+                    view.model.lock().typeahead_handoff().is_pty_owned(),
+                    "{mode:?}: the shell's line holds `ecx`"
+                );
+            });
+            let writes = pty_writes.borrow().clone();
+            let all: Vec<u8> = writes.concat();
+            assert_eq!(
+                all,
+                b"echo A\recx".to_vec(),
+                "{mode:?}: exactly once, byte-exact"
+            );
+            assert_eq!(
+                all.iter().filter(|b| **b == b'\r').count(),
+                1,
+                "{mode:?}: the Enter reached the pty once"
+            );
+            assert!(
+                writes.iter().all(|chunk| chunk.len() == 1),
+                "{mode:?}: one write per key event (ConPTY): {writes:?}"
+            );
+        })
+    }
+}
+
+/// #1573 (Windows Git Bash): `sleep 3` with keys typed in its first second, held by the enter
+/// window. The hold's 1.5 s cap fires while the command still runs: not a give-up -- nothing is
+/// written mid-command, the gate stays, and the hold is not switched off for the session. The cap,
+/// armed again, fires right after the command's precmd: still not due (the precmd's wait has its
+/// own cap). The line editor's signal releases every key once, in typed order, and the next prompt
+/// is held for again. Old behaviour: the cap wrote the keys raw to ConPTY mid-command and turned the
+/// prompt hold off for the rest of the session. Legacy and Table.
+#[test]
+fn a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_on() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_enter_window_running_command(view);
+                // The shell started the command (`sleep 3`).
+                view.model.lock().typeahead_handoff_mut().on_preexec(false);
+                for key in b"ec" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+                assert!(prompt_gate_open(view), "{mode:?}");
+                let token = view.paste_queue.queue.borrow().gates()[0].token;
+
+                // The cap fires 1.5 s in; the command is still running.
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(prompt_gate_open(view), "{mode:?}: still held");
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing is written mid-command"
+                );
+                assert!(
+                    !view
+                        .model
+                        .lock()
+                        .typeahead_handoff()
+                        .prompt_hold_off_for_session(),
+                    "{mode:?}"
+                );
+                // Keys typed after the cap join the hold, in typed order.
+                for key in b"ho\r" {
+                    view.write_user_bytes_to_pty(vec![*key], ctx);
+                }
+                assert_eq!(view.paste_queue.queue.borrow().queued_len(), 5, "{mode:?}");
+
+                // The command's prompt; the re-armed cap fires right after it: not due either.
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(prompt_gate_open(view), "{mode:?}");
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+
+                // The line editor's signal releases everything, once, in order.
+                line_editor_signal(view, ctx);
+                assert!(!prompt_gate_open(view), "{mode:?}");
+                assert!(view.paste_queue.queue.borrow().is_idle(), "{mode:?}");
+                assert!(
+                    !view
+                        .model
+                        .lock()
+                        .typeahead_handoff()
+                        .prompt_hold_off_for_session(),
+                    "{mode:?}"
+                );
+
+                // The next prompt: a fast line is held for its line editor again.
+                view.model.lock().typeahead_handoff_mut().on_precmd();
+                view.write_user_bytes_to_pty(b"l".to_vec(), ctx);
+                assert!(prompt_gate_open(view), "{mode:?}: the hold is still on");
+            });
+            let writes = pty_writes.borrow().clone();
+            assert_eq!(
+                writes.concat(),
+                b"echo\r".to_vec(),
+                "{mode:?}: once, in order"
+            );
+            assert!(
+                writes.iter().all(|chunk| chunk.len() == 1),
+                "{mode:?}: one write per key event (ConPTY): {writes:?}"
+            );
+        })
+    }
+}
+
+// ---- #1574: hand-off reports the hand-off cannot account for, and AI-mode inputs ---------------
+
+/// Stores `text` as the shell's report of its line, where the view reads it, as the model's report
+/// handler does (without the event: the test hands it to the view itself).
+fn store_shell_report(view: &TerminalView, text: &str) {
+    view.model
+        .lock()
+        .block_list_mut()
+        .early_output_mut()
+        .set_reported_typeahead_for_test(text);
+}
+
+/// Locks the input in AI mode (an agent conversation; autodetection will not re-decide it).
+fn lock_input_in_ai_mode(view: &TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.input.update(ctx, |input, ctx| {
+        input.ai_input_model().update(ctx, |ai_input, ctx| {
+            ai_input.set_input_config(
+                InputConfig {
+                    input_type: InputType::AI,
+                    is_locked: true,
+                },
+                true, /* is_input_buffer_empty */
+                ctx,
+            );
+        });
+    });
+}
+
+/// #1574 (#1566 agent-mode log: `handoff_insert after="4echo T93_r"` became an agent prompt): the
+/// #1494 path delivered the held text to the remote shell after `stty sane`. The text stays in that
+/// shell's line, where the toast said it went: no report is asked for (a report clears the shell's
+/// line), the pty keeps input, the editor stays empty, and the keys typed next reach the same line,
+/// so its Enter runs the whole line on the remote, once. The mark ends with that Enter, and the next
+/// line is reported as usual. Legacy and Table.
+#[test]
+fn a_line_delivered_to_the_shell_as_final_stays_in_the_shell() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                {
+                    let mut model = view.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    // The delivered text (`4echo T9`, no Enter) is in the shell's line, counted.
+                    handoff.on_command_written();
+                    // The command has run a while: the first byte of the line is not young
+                    // (#933), or `young_line` latches here and holds the Enter below whatever the
+                    // aging after the precmd does.
+                    handoff.age_last_activity_for_test();
+                    handoff.on_user_bytes(b"4echo T9");
+                    handoff.on_user_write_flushed();
+                    // What `hand_held_ssh_typeahead_to_unbootstrapped_remote` records.
+                    handoff.note_committed_delivery();
+                    handoff.on_precmd();
+                    // The user's Enter below comes after the young-Enter window (#933): inside it
+                    // the Enter is held for the prompt and the mark ends when it is released.
+                    handoff.age_last_activity_for_test();
+                    assert_eq!(
+                        handoff.on_line_editor_active(true, true),
+                        ActiveDecision::Drain,
+                        "{mode:?}: no report is asked for"
+                    );
+                    assert!(handoff.is_pty_owned(), "{mode:?}");
+                    assert!(handoff.committed_delivery_pending(), "{mode:?}");
+                }
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                assert!(
+                    view.model.lock().typeahead_handoff().is_pty_owned(),
+                    "{mode:?}: the shell keeps the line"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // The user finishes the line where it is.
+                view.write_user_bytes_to_pty(b"3".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                assert!(
+                    !view
+                        .model
+                        .lock()
+                        .typeahead_handoff()
+                        .committed_delivery_pending(),
+                    "{mode:?}: the Enter ended the mark"
+                );
+            });
+            let written = pty_writes.borrow().concat();
+            assert_eq!(
+                written,
+                b"3\r".to_vec(),
+                "{mode:?}: once, to the shell's line"
+            );
+        })
+    }
+}
+
+/// #1574: a shell report reaching an input locked in AI mode (an agent conversation) is kept: the
+/// shell already cleared it from its own line, so refusing it would lose it. It is inserted and the
+/// input is switched to shell, visibly, so it never becomes an agent prompt; an Enter deferred
+/// behind the report runs it as a shell command exactly once. Legacy and Table.
+#[test]
+fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                first_precmd_processed_for_test(view, ctx);
+                lock_input_in_ai_mode(view, ctx);
+                // A report the hand-off asked for: kept, as shell text.
+                awaiting_typeahead_report(view);
+                store_shell_report(view, "ls -la");
+                view.handle_typeahead_report_with_handoff(ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ls -la",
+                    "{mode:?}: never dropped"
+                );
+                assert_eq!(
+                    view.input.as_ref(ctx).input_type(ctx),
+                    InputType::Shell,
+                    "{mode:?}: visibly a shell line"
+                );
+                assert!(executed.borrow().is_empty(), "{mode:?}");
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx)
+                });
+
+                // With the user's Enter deferred behind the report: it runs as a shell command.
+                // The first line was written to the pty, which clears its report (pty_controller.rs,
+                // hand-off engage); this test captures the command instead of writing it, so it
+                // clears it the same way (reports accumulate per line: `store_shell_report` appends).
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .early_output_mut()
+                    .clear_typeahead_for_new_command();
+                lock_input_in_ai_mode(view, ctx);
+                hold_after_deferred_enter(view);
+                store_shell_report(view, "echo T93");
+                view.handle_typeahead_report_with_handoff(ctx);
+            });
+            assert_eq!(
+                *executed.borrow(),
+                vec!["echo T93".to_owned()],
+                "{mode:?}: the deferred Enter ran the reported line as a shell command, once"
+            );
+        })
+    }
+}
+
+/// #1574 wiring: the #1494 path (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1; held ssh
+/// typeahead delivered to an unbootstrapped remote after
+/// `stty sane`) marks the delivery as final, so the remote's report of that line is not inserted.
+#[test]
+fn the_ssh_bootstrap_failure_delivery_is_marked_final() {
+    App::test((), |mut app| async move {
+        // The delivery exists only behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1 (#1577).
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .committed_delivery_pending()
+            );
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(view.ssh_held_is_empty());
+            assert!(
+                view.model
+                    .lock()
+                    .typeahead_handoff()
+                    .committed_delivery_pending(),
+                "the delivered line is the remote's"
+            );
+        });
+    })
+}
+
+// ---- busy queue = deferred operation (#1416-#1419, #1426-#1428) -----------------------------
+
+/// #1416: editor keys that sit in a hand-off gate's segment (the queue is shared with the editor)
+/// reach the editor when the gate is released by taking its entries -- Backspace included.
+#[test]
+fn editor_keys_taken_out_of_a_prompt_hold_are_applied_backspace_included() {
+    use crate::editor::{EditorAction, HeldPasteKey};
+    use crate::terminal::input_queue::{EditorKeyPayload, EntryKind, GateKind, GateSpec};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            conpty_prompt_hold_setup(view);
+            let queue = view.paste_queue.queue.clone();
+            {
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.borrow_mut().open_gate(
+                    &mut host,
+                    GateSpec::new(GateKind::LineEditorActive, 9).with_cap(None),
+                );
+                for key in [
+                    HeldPasteKey::Text("a".into()),
+                    HeldPasteKey::Text("b".into()),
+                    HeldPasteKey::Action(EditorAction::Backspace),
+                    HeldPasteKey::Text("c".into()),
+                ] {
+                    queue
+                        .borrow_mut()
+                        .offer(&mut host, EntryKind::EditorKey(EditorKeyPayload::new(key)));
+                }
+            }
+            assert_eq!(queue.borrow().queued_len(), 4);
+            view.on_prompt_hold_released(9, ctx);
+            assert!(queue.borrow().is_idle());
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "ac");
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "editor keys never reach the pty"
+        );
+    })
+}
+
+/// #1417: the give-up cap of a prompt hold fires while the queue is busy: it is not consumed for
+/// nothing; the keys are handed back (to the editor, #1584) by the next operation.
+#[test]
+fn a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys() {
+    for hold_a_guard in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                conpty_prompt_hold_setup(view);
+                view.write_user_bytes_to_pty(b"a".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"b".to_vec(), ctx);
+                let queue = view.paste_queue.queue.clone();
+                let token = queue.borrow().gates()[0].token;
+                {
+                    // Busy: a drain holds the queue (guard), or a reader holds a peek.
+                    let _guard = hold_a_guard.then(|| queue.lock());
+                    let _peek = (!hold_a_guard).then(|| queue.peek());
+                    view.on_paste_queue_give_up(token, ctx);
+                }
+                assert!(queue.has_deferred(), "the cap is recorded, not consumed");
+                view.flush_deferred_queue_ops(ctx);
+                assert!(!queue.has_deferred());
+                assert!(queue.borrow().is_idle(), "guard={hold_a_guard}: given up");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "guard={hold_a_guard}: the timer writes nothing (#1584)"
+            );
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ab",
+                    "guard={hold_a_guard}: handed back in typed order"
+                );
+            });
+        });
+    }
+}
+
+/// #1418 / #1426: a key the hand-off holds, or a PowerShell setup key, that finds the queue busy
+/// outside a delivery is recorded and held behind its gate in order -- never written as typed,
+/// never dropped.
+#[test]
+fn a_held_key_that_finds_the_queue_busy_goes_behind_its_gate_when_it_is_free() {
+    use crate::terminal::input_queue::{GateKind, GateSpec};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let _peek = queue.peek();
+                view.hold_prompt_keys_in_queue(
+                    5,
+                    std::time::Duration::from_secs(60),
+                    b"x".to_vec(),
+                    true,
+                    ctx,
+                );
+            }
+            assert!(queue.has_deferred());
+            assert!(queue.borrow().is_idle(), "nothing applied while busy");
+            view.flush_deferred_queue_ops(ctx);
+            assert!(prompt_gate_open(view));
+            assert_eq!(queue.borrow().queued_len(), 1);
+            // PowerShell: a gate is open, a reader holds a peek, a key arrives.
+            {
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.borrow_mut().open_gate(
+                    &mut host,
+                    GateSpec::new(GateKind::PowershellSetup, 0).with_cap(None),
+                );
+            }
+            {
+                let _peek = queue.peek();
+                view.hold_powershell_keys(b"y".to_vec(), true, ctx);
+            }
+            view.flush_deferred_queue_ops(ctx);
+            assert_eq!(queue.borrow().queued_len(), 2, "the PowerShell key is held");
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "nothing was written as typed"
+        );
+    })
+}
+
+/// #1419: the CLI-agent submit gate begin/end under a busy queue are recorded in order; a key typed
+/// between them waits and is released by the end. The close is not lost to the 20 s leak net.
+#[test]
+fn the_cli_submit_gate_survives_a_busy_queue() {
+    use crate::terminal::input_queue::GateKind;
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let _guard = queue.lock();
+                view.begin_cli_submit_gate(ctx);
+            }
+            assert!(view.cli_submit_gate_open_for_test());
+            assert!(queue.has_deferred());
+            // A key typed now applies the mailbox first (the gate opens), then waits behind it.
+            view.write_user_bytes_to_pty(b"k".to_vec(), ctx);
+            assert!(queue.borrow().has_gate_kind(GateKind::CliSubmit));
+            assert_eq!(queue.borrow().queued_len(), 1);
+            {
+                let _guard = queue.lock();
+                view.end_cli_submit_gate(ctx);
+            }
+            view.flush_deferred_queue_ops(ctx);
+            assert!(!queue.borrow().has_gate_kind(GateKind::CliSubmit));
+            assert!(
+                queue.borrow().is_idle(),
+                "the key behind the submit was released"
+            );
+        });
+    })
+}
+
+/// #1428: a wake for a stopped drain that finds the queue busy is not lost.
+#[test]
+fn a_pane_drain_wake_that_finds_the_queue_busy_is_kept() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let _guard = queue.lock();
+                view.on_pane_queue_needs_drain(ctx);
+            }
+            assert!(queue.has_deferred());
+            view.flush_deferred_queue_ops(ctx);
+            assert!(!queue.has_deferred());
+        });
+    })
+}
+
+/// #1446: the PowerShell take that RETURNS the held bytes finds the queue busy: the take and its
+/// continuation are one deferred operation; the held keys are neither lost nor reordered.
+#[test]
+fn a_powershell_take_under_a_busy_queue_runs_when_the_queue_is_free() {
+    use crate::terminal::input_queue::{GateKind, GateSpec, PowershellKeysThen};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let queue = view.paste_queue.queue.clone();
+            {
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.borrow_mut().open_gate(
+                    &mut host,
+                    GateSpec::new(GateKind::PowershellSetup, 0).with_cap(None),
+                );
+            }
+            view.hold_powershell_keys(b"a\rb".to_vec(), true, ctx);
+            assert_eq!(queue.borrow().queued_len(), 1);
+            {
+                // Ctrl-C at the prompt discards the line being typed ("b"), keeps "a\r".
+                let _peek = queue.peek();
+                view.take_powershell_held_then(PowershellKeysThen::CancelHeldLine, ctx);
+            }
+            assert!(
+                queue.has_deferred(),
+                "the take is recorded, not returned empty"
+            );
+            assert_eq!(
+                queue.borrow().queued_len(),
+                1,
+                "nothing was taken while busy"
+            );
+            view.flush_deferred_queue_ops(ctx);
+            assert!(!queue.has_deferred());
+            assert!(queue.borrow().has_gate_kind(GateKind::PowershellSetup));
+            assert_eq!(
+                queue.borrow().queued_len(),
+                1,
+                "\"a\\r\" is held again, in order"
+            );
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    })
+}
+
+/// #1446: the keys held behind a deferred Enter's HandoffReport gate are taken and released in
+/// typed order even when the take finds the queue busy.
+#[test]
+fn a_deferred_enter_gate_take_under_a_busy_queue_releases_the_keys_in_order() {
+    use crate::terminal::input_queue::{GateKeysThen, GateKind};
+    for hold_a_guard in [true, false] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let queue = view.paste_queue.queue.clone();
+                view.hold_deferred_key_in_queue(7, b"ls".to_vec(), true, ctx);
+                view.hold_deferred_key_in_queue(7, b"\r".to_vec(), true, ctx);
+                assert!(queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                {
+                    let _guard = hold_a_guard.then(|| queue.lock());
+                    let _peek = (!hold_a_guard).then(|| queue.peek());
+                    view.take_deferred_gate_keys_then(7, GateKeysThen::Release, ctx);
+                }
+                assert!(queue.has_deferred(), "guard={hold_a_guard}: recorded");
+                assert!(queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                view.flush_deferred_queue_ops(ctx);
+                assert!(!queue.borrow().has_gate(GateKind::HandoffReport, 7));
+                assert!(queue.borrow().is_idle());
+            });
+            let written: Vec<u8> = pty_writes.borrow().concat();
+            assert_eq!(written, b"ls\r".to_vec(), "guard={hold_a_guard}");
+        });
+    }
+}
+
+/// #1446: dropping the ssh gate under a busy queue detaches the view's state at once and drops
+/// the queue's gate (and what it held) when the queue is free; the gate is not left set.
+#[test]
+fn an_ssh_gate_drop_under_a_busy_queue_is_not_lost() {
+    use crate::terminal::input_queue::GateKind;
+    for hand_back in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("ls", ctx);
+                assert!(view.ssh_typeahead_holding);
+                let queue = view.paste_queue.queue.clone();
+                assert!(queue.borrow().has_gate_kind(GateKind::SshConnect));
+                {
+                    // Busy the way a delivery makes it: the queue is locked (draining), so
+                    // neither a peek nor a lock is available to the hold.
+                    let _busy = queue.try_lock().expect("the queue is free");
+                    if hand_back {
+                        view.ssh_hold_hand_back_unexecuted_text(ctx);
+                    } else {
+                        view.ssh_hold_clear();
+                    }
+                }
+                assert!(view.ssh_iq.gate.is_none(), "the hold reads as over at once");
+                assert!(queue.has_deferred(), "the drop is recorded");
+                assert!(queue.borrow().has_gate_kind(GateKind::SshConnect));
+                view.flush_deferred_queue_ops(ctx);
+                assert!(!queue.has_deferred());
+                assert!(
+                    !queue.borrow().has_gate_kind(GateKind::SshConnect),
+                    "hand_back={hand_back}: the gate is dropped"
+                );
+                assert!(queue.borrow().is_idle());
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "never delivered: {:?}",
+                pty_writes.borrow()
+            );
+        });
+    }
+}
+
+// ---- #1353 phase 5b: a young Enter's hold on the one input queue -------------------------------
+//
+// The Enter and the keys behind it are entries behind a `PromptSeen` gate (the hand-off keeps no
+// bytes and the view no window timer).
+
+/// A command that was written just now with a line typed into it: an Enter typed now is held,
+/// because the shell may already be back at a prompt the app has not noticed (#933).
+fn young_enter_setup(view: &mut TerminalView) {
+    let mut model = view.model.lock();
+    model.block_list_mut().active_block_mut().start();
+    let mut handoff = model.typeahead_handoff_mut();
+    handoff.on_command_written();
+    handoff.on_user_bytes(b"frob");
+    handoff.on_user_write_flushed();
+}
+
+fn young_gate_open(view: &TerminalView) -> bool {
+    view.paste_queue
+        .queue
+        .borrow()
+        .has_gate_kind(crate::terminal::input_queue::GateKind::PromptSeen)
+}
+
+/// Types the held Enter and a key behind it and checks they are held, not written.
+fn hold_a_young_enter(
+    view: &mut TerminalView,
+    pty_writes: &Rc<RefCell<Vec<Vec<u8>>>>,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+    view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+    assert!(
+        pty_writes.borrow().is_empty(),
+        "nothing is written ahead of the prompt"
+    );
+    assert!(view.model.lock().typeahead_handoff().has_young_hold());
+    assert!(young_gate_open(view));
+    assert_eq!(view.paste_queue.queue.borrow().queued_len(), 2);
+    assert!(
+        view.model.lock().typeahead_handoff().young_hold_queued(),
+        "the hand-off keeps no bytes"
+    );
+}
+
+/// No prompt came: the give-up (the gate's cap) HANDS the held Enter and the key behind it back
+/// to the editor as text, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer may
+/// close a segment and hand text back, never write to a pty. This test asserted the old
+/// typeahead write; the event-driven ends still write, see the tests below.)
+#[test]
+fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            young_enter_setup(view);
+            hold_a_young_enter(view, &pty_writes, ctx);
+            let token = view.paste_queue.queue.borrow().gates()[0].token;
+            view.on_paste_queue_give_up(token, ctx);
+            // A second timer for the same gate changes nothing.
+            view.on_paste_queue_give_up(token, ctx);
+            assert!(!young_gate_open(view));
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "\nx",
+                "the Enter (a newline) and the key, in typed order, once"
+            );
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a timer wrote to the pty: {:?}",
+            pty_writes.borrow()
+        );
+    });
+}
+
+/// ^C voids the held Enter and the keys behind it (the tty flushes its typeahead): only the ^C is
+/// written. A lone ^D keeps the typeahead, so the held keys go out in front of it as one write.
+#[test]
+fn a_signal_ends_a_young_hold_the_way_the_tty_would() {
+    for (signal, expected) in [
+        (0x03u8, vec![vec![0x03u8]]),
+        (0x04u8, vec![b"\rx\x04".to_vec()]),
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                view.write_user_bytes_to_pty(vec![signal], ctx);
+                assert!(!young_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+            });
+            assert_eq!(*pty_writes.borrow(), expected, "signal={signal:#x}");
+        });
+    }
+}
+
+/// The editor's command is written while the Enter is held: the keys follow it, counted as the
+/// lines they are -- the same state on both paths.
+#[test]
+fn a_command_written_behind_a_young_hold_takes_its_keys_with_it() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            young_enter_setup(view);
+            hold_a_young_enter(view, &pty_writes, ctx);
+            // What the pty controller does (`write_command`): the hold's keys are announced,
+            // and the view takes them.
+            view.model
+                .lock()
+                .typeahead_handoff_mut()
+                .on_command_written();
+            view.drain_young_hold_ends(ctx);
+            assert!(!young_gate_open(view));
+            assert!(view.paste_queue.queue.borrow().is_idle());
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::PtyOwned {
+                    wrote_user_bytes: true,
+                    enters_written: 3,
+                    precmds_seen: 0,
+                }
+            );
+        });
+        let expected: Vec<Vec<u8>> = vec![b"\rx".to_vec()];
+        assert_eq!(*pty_writes.borrow(), expected);
+    });
+}
+
+/// The report arrives: the Enter is run in the editor and the key typed after it stays held
+/// behind it (#933), in the queue under the deferred Enter's gate.
+#[test]
+fn the_report_of_a_young_hold_leaves_the_keys_behind_the_enter_held() {
+    App::test((), move |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            young_enter_setup(view);
+            hold_a_young_enter(view, &pty_writes, ctx);
+            {
+                let mut model = view.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.on_precmd();
+                assert_eq!(
+                    handoff.on_line_editor_active(true, true),
+                    ActiveDecision::SendRequest
+                );
+                handoff.on_report();
+            }
+            view.drain_young_hold_ends(ctx);
+            // The hold's gate became the deferred Enter's gate in place; the Enter that runs
+            // in the editor left it, the key typed behind it is its only entry.
+            assert!(!young_gate_open(view));
+            {
+                let held = view.paste_queue.queue.borrow();
+                assert!(held.has_gate_kind(crate::terminal::input_queue::GateKind::HandoffReport));
+                assert_eq!(held.queued_len(), 1);
+            }
+            assert_eq!(
+                view.model.lock().typeahead_handoff().state(),
+                &HandoffState::HoldAfterEnter { released: true }
+            );
+        });
+        assert!(pty_writes.borrow().is_empty());
+    });
+}
+
+/// A hold that ended (here: an uncounted command took the line) is dropped with its keys, and a
+/// key typed after that is not swallowed by the gate -- whether or not the end was applied yet.
+#[test]
+fn a_key_after_a_young_hold_ended_is_not_swallowed() {
+    for drained_first in [false, true] {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                view.model
+                    .lock()
+                    .typeahead_handoff_mut()
+                    .on_uncounted_command_written();
+                if drained_first {
+                    view.drain_young_hold_ends(ctx);
+                    assert!(!young_gate_open(view));
+                }
+                view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
+                assert!(!young_gate_open(view));
+                assert!(view.paste_queue.queue.borrow().is_idle());
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"y".to_vec()],
+                "drained_first={drained_first}: the held Enter and key are void"
+            );
+        });
+    }
+}
+
+/// #1399: the bootstrap-write gate holds typed keys until the last setup line is written. Each
+/// marked line may wait the whole marker give-up before the timed fallback writes the rest, so the
+/// gate's net must outlast that; the old 2 s per line released keys into the middle of the
+/// fallback's writes (the script interleaved with the typed bytes).
+#[test]
+fn bootstrap_gate_cap_outlasts_every_line_waiting_out_the_marker_give_up() {
+    for lines in 1..40usize {
+        assert!(
+            subshell_bootstrap_gate_cap(lines) > SUBSHELL_SETUP_MARKER_GIVE_UP * lines as u32,
+            "{lines} lines"
+        );
+    }
+}
+
+/// Opens a `PromptSeen` gate (key 77) on the pane queue and offers `text` behind it, the way keys
+/// typed behind an Enter that waits are held; `release_test_gate` is the event that closes it.
+fn hold_text_behind_test_gate(
+    view: &mut TerminalView,
+    text: &str,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let queue = view.paste_queue.queue.clone();
+    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+    let mut guard = queue.lock();
+    guard.open_gate(
+        &mut host,
+        input_queue::GateSpec::new(input_queue::GateKind::PromptSeen, 77).with_cap(None),
+    );
+    guard.offer(&mut host, input_queue::EntryKind::Text(text.to_owned()));
+}
+
+fn release_test_gate(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    let queue = view.paste_queue.queue.clone();
+    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+    queue
+        .lock()
+        .on_gate_event(&mut host, input_queue::GateKind::PromptSeen, 77);
+}
+
+/// The text of every entry the pane queue still holds (typed text and ssh-held inputs).
+fn queued_texts(view: &TerminalView) -> Vec<String> {
+    view.paste_queue
+        .queue
+        .peek()
+        .entries()
+        .filter_map(|entry| match &entry.kind {
+            input_queue::EntryKind::Text(text) => Some(text.clone()),
+            input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// #1415: text typed behind an Enter that waited, released AFTER the Enter's command opened an ssh
+/// connect, must join the connect hold. The probe runs inside the drain that delivers it, where
+/// the queue cannot take a new entry: it used to log "a key was not held" and drop the text.
+#[test]
+fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        // `ls` waits behind the Enter's gate; the Enter's command is `ssh host`.
+        hold_text_behind_test_gate(view, "ls", ctx);
+        submit_command(view, "ssh host", ctx);
+        assert!(!ssh_gate_open(view));
+        release_test_gate(view, ctx);
+        assert!(
+            view.ssh_typeahead_holding,
+            "the replayed text is held (#1292)"
+        );
+        assert!(ssh_gate_open(view), "behind an SshConnect gate");
+        assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
+        assert_eq!(view.ssh_held_count(), 1);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        // The remote shell's first prompt delivers it, once.
+        view.ssh_remote_prompt_seen = true;
+        first_precmd_processed_for_test(view, ctx);
+        release_ssh_gate_for_test(view);
+        view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+        assert!(ssh_queue_is_idle(view));
+    });
+}
+
+/// #1421: `ssh other` + Enter typed during a connect, then `rm -rf x` + Enter. At the hand-over
+/// the first Enter submits the nested ssh; the text after it must be judged only once that
+/// command's connect gate is armed (the submit's event runs after the delivery returns), so it is
+/// held for the second connect and never reaches the first host (or the local shell).
+#[test]
+fn ssh_handover_holds_the_text_after_a_nested_ssh_for_the_second_connect() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = executed.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::ExecuteCommand(e) = event {
+                    sink.borrow_mut().push(e.command.clone());
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("ssh other", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.typed_characters_on_terminal("rm -rf x", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            assert_eq!(view.ssh_held_count(), 4);
+            // The first remote prompt: the hand-over.
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+        });
+        // The Enter's submit and the drain's continuation run on later turns.
+        for _ in 0..64 {
+            futures_lite::future::yield_now().await;
+        }
+        terminal.read(&app, |view, _| {
+            let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+            assert!(
+                !writes.contains("rm -rf x"),
+                "the text after the nested ssh must not be written: {writes:?}"
+            );
+            assert!(
+                !executed.borrow().iter().any(|c| c.contains("rm -rf x")),
+                "nor run: {:?}",
+                executed.borrow()
+            );
+            assert!(
+                queued_texts(view).iter().any(|t| t.contains("rm -rf x")),
+                "it is held for the second connect, not lost: {:?}",
+                queued_texts(view)
+            );
+        });
+    })
+}
+
+/// #1437: a clipboard read the platform answered inline joins the pane queue like a background
+/// one: with something held ahead of it (an Enter's gate, a pending read) it waits its turn
+/// instead of being inserted at once.
+#[test]
+fn an_inline_clipboard_read_waits_behind_what_the_queue_holds() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().open_gate(
+                    &mut host,
+                    input_queue::GateSpec::new(input_queue::GateKind::PromptSeen, 77)
+                        .with_cap(None),
+                );
+            }
+            view.insert_read_into_input(
+                warpui::clipboard::ReadOutcome::Content(ClipboardContent::plain_text(
+                    "P".to_owned(),
+                )),
+                ctx,
+            );
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "queued behind the gate, not inserted past it"
+            );
+            release_test_gate(view, ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "P");
+        });
+    })
+}
+
+/// #1453: the editor's paste (Cmd-V on a platform that reads the clipboard inline, macOS) is an
+/// entry of the pane queue like the terminal-side one: behind a held gate it waits, and an Enter
+/// typed right after it is queued BEHIND it, so the order is paste then Enter, never the Enter
+/// first (an empty submit) with the paste inserted after.
+#[test]
+fn an_inline_editor_paste_then_an_immediate_enter_are_queued_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().open_gate(
+                    &mut host,
+                    input_queue::GateSpec::new(input_queue::GateKind::PromptSeen, 77)
+                        .with_cap(None),
+                );
+            }
+            view.input.update(ctx, |input, ctx| {
+                input.offer_answered_paste(ClipboardContent::plain_text("P".to_owned()), ctx)
+            });
+            // The Enter the focused editor receives (the terminal's own key path does not take
+            // an Enter when no command runs): it must join the queue behind the paste.
+            editor_key(view, EditorAction::Enter, ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "the paste waits behind the gate, it is not inserted past it"
+            );
+            let queue = view.paste_queue.queue.peek();
+            let kinds: Vec<_> = queue.entries().map(|e| e.kind.clone()).collect();
+            assert!(
+                matches!(kinds.first(), Some(input_queue::EntryKind::Paste { .. })),
+                "the paste is the first held entry, ahead of the Enter"
+            );
+            assert!(
+                kinds.len() >= 2,
+                "the Enter is held behind the paste, not consumed"
+            );
+        });
+    })
+}
+
+/// #1440: with the pty reader inside the model's lock (parsing), the helpers a key calls decide
+/// from the published facts or leave their work for after the parse, and none of them waits. The
+/// lock is held by another thread for up to three seconds; every call must be through long before.
+#[test]
+fn key_path_helpers_do_not_wait_for_the_parser() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let expected_box;
+            {
+                // A running full-screen program turned application cursor keys on (a prompt's
+                // mode lands in the header grid, which the key facts do not read); published
+                // before the parse begins.
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("vim", "");
+                ansi::Handler::set_mode(&mut *model, ansi::Mode::CursorKeys);
+                model.publish_key_facts();
+                expected_box = view.is_input_box_visible(&model, ctx);
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            });
+            held_rx.recv().unwrap();
+
+            let started = Instant::now();
+            let sequence;
+            let box_visible;
+            {
+                let _key_path = KeyPathScope::enter(&view.key_path_depth);
+                // Scroll updates a key wants are kept, in order, identical neighbours coalesced.
+                view.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterTypedCharacters,
+                    ctx,
+                );
+                view.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterTypedCharacters,
+                    ctx,
+                );
+                view.update_scroll_position_locking(
+                    ScrollPositionUpdate::AfterKeydownOnTerminal,
+                    ctx,
+                );
+                assert_eq!(view.deferred_scroll_updates.len(), 2);
+                let _ = view.active_output_ends_in_unterminated_text();
+                let _ = view.active_output_awaits_an_answer();
+                view.schedule_ssh_typeahead_give_up(ctx);
+                sequence = view.build_cursor_key_sequence(&[EscCodes::ARROW_UP]);
+                let facts = view.read_key_snapshot().input_box;
+                box_visible = view.is_input_box_visible_with(&facts, ctx);
+            }
+            let waited = started.elapsed();
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(1),
+                "the key path waited {waited:?} for the parser"
+            );
+            assert_eq!(
+                sequence,
+                b"\x1bOA".to_vec(),
+                "application cursor mode came from the published snapshot"
+            );
+            assert_eq!(
+                box_visible, expected_box,
+                "the input box answer came from the published snapshot"
+            );
+
+            // The parse is over: the wakeup applies what the keys left, and nothing is left.
+            view.flush_deferred_scroll_updates(ctx);
+            assert!(view.deferred_scroll_updates.is_empty());
+        });
+    })
+}
+
+/// #1440: the input box answer from the snapshot is the answer from the model, for the states the
+/// key path asks about.
+#[test]
+fn input_box_visibility_from_the_snapshot_matches_the_model() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let model_handle = view.model.clone();
+            let mut model = model_handle.lock();
+            let from_model = view.is_input_box_visible(&model, ctx);
+            model.publish_key_facts();
+            let facts = KeyModelSnapshot::from_model(&model).input_box;
+            assert_eq!(view.is_input_box_visible_with(&facts, ctx), from_model);
+            model.start_command_execution();
+            model.publish_key_facts();
+            let from_model = view.is_input_box_visible(&model, ctx);
+            let facts = KeyModelSnapshot::from_model(&model).input_box;
+            assert_eq!(view.is_input_box_visible_with(&facts, ctx), from_model);
+        });
+    })
+}
+
+// ---- input doors that bypassed the pane queue / the hand-over gates (opendoors round) ----------
+// Not compiled/run when written (no builds in the fix pass).
+
+/// Every `Event` a view emits towards the pty, in order, by kind: what each door test asserts on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PtyDoorEvent {
+    Bytes(Vec<u8>),
+    Agent(Vec<u8>),
+    LineClearSetup(Vec<u8>),
+    CtrlD,
+}
+
+fn record_pty_door_events(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+) -> Rc<RefCell<Vec<PtyDoorEvent>>> {
+    let seen: Rc<RefCell<Vec<PtyDoorEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let sink = seen.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(terminal, move |_, event, _| match event {
+            Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                sink.borrow_mut().push(PtyDoorEvent::Bytes(bytes.to_vec()))
+            }
+            Event::WriteAgentInputToPty { bytes, .. } => {
+                sink.borrow_mut().push(PtyDoorEvent::Agent(bytes.to_vec()))
+            }
+            Event::WriteLineClearSetupToPty { payload } => sink
+                .borrow_mut()
+                .push(PtyDoorEvent::LineClearSetup(payload.clone())),
+            Event::CtrlD => sink.borrow_mut().push(PtyDoorEvent::CtrlD),
+            _ => {}
+        });
+    });
+    seen
+}
+
+/// #1429: the AWS login command is a COMMAND. Written raw (line clear + text + CR) it ran in
+/// whatever owned the pty; as a command it waits (pending) while a program runs.
+#[test]
+fn aws_login_is_a_command_that_waits_for_the_running_program() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.run_aws_login_command(ctx);
+            assert!(
+                view.input.as_ref(ctx).has_pending_command(),
+                "the login command is held as the pending command while a program runs"
+            );
+            // #1450: requested, not started: a 'command not found' from the running program
+            // must not be taken for the login's.
+            assert!(!view.is_pending_aws_login);
+            assert!(view.aws_login_requested.is_some());
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "nothing is written raw to the pty: {:?}",
+            seen.borrow()
+        );
+    })
+}
+
+/// #1449: the hidden local-child harness pane runs its command as a command: while the pane's
+/// shell cannot take one yet it is the pending command, and nothing is written raw to the pty.
+#[test]
+fn local_child_harness_command_waits_as_a_pending_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.start_local_child_harness_process("claude --harness", ctx);
+            assert!(view.input.as_ref(ctx).has_pending_command());
+            assert_eq!(
+                view.input.as_ref(ctx).pending_command_text_for_test(),
+                Some("claude --harness")
+            );
+        });
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+    })
+}
+
+/// #1430: input synced from another pane does not reach a pane whose hand-over gate is open (here
+/// a PowerShell subshell setup): it would land in the bootstrap. Without a gate it is written
+/// through the pane's write path and is not reported back to the other panes as typed.
+#[test]
+fn synced_input_is_held_not_written_into_an_open_hand_over_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        // The view's events reach the recorder when the update returns: each step is its own
+        // update and the event assertions read after it.
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("claude", "");
+            // Control: no gate, the synced bytes are written and the echo guard is consumed.
+            view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
+            assert_eq!(
+                view.synced_in_flight, 0,
+                "synced bytes are not reported back as typed (that would echo between panes)"
+            );
+        });
+        assert_eq!(
+            *seen.borrow(),
+            vec![PtyDoorEvent::Bytes(b"ab".to_vec())],
+            "synced input reaches a pane running a command"
+        );
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.write_to_pty_for_syncing_long_running_commands(b"cd".to_vec(), ctx);
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "nothing synced is written while a PowerShell setup is open: {:?}",
+            seen.borrow()
+        );
+        terminal.update(&mut app, |view, _| {
+            assert_eq!(
+                powershell_held(view),
+                vec![b"cd".to_vec()],
+                "it is held in order behind the setup's gate, not dropped"
+            );
+        });
+    })
+}
+
+/// #1431: the agent's pty writes are refused while a subshell / PowerShell setup is in progress
+/// (they would land in the bootstrap); outside of one they go out as before.
+#[test]
+fn agent_pty_writes_are_refused_during_a_subshell_setup() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        // The view's events reach the recorder when the update returns, so each step is its own
+        // update and the assertions read after it.
+        terminal.update(&mut app, |view, ctx| {
+            view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert_eq!(*seen.borrow(), vec![PtyDoorEvent::Agent(b"y\n".to_vec())]);
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "refused while the setup owns the pty: {:?}",
+            seen.borrow()
+        );
+    })
+}
+
+/// #1432: the editor's Ctrl-D goes through the pane queue (behind the keys it holds, inside the
+/// subshell / PowerShell setup rules) instead of straight to the controller.
+#[test]
+fn editor_ctrl_d_goes_through_the_queue_while_a_setup_is_open() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.handle_input_event(&InputEvent::CtrlD, ctx);
+        });
+        assert!(
+            !seen.borrow().contains(&PtyDoorEvent::CtrlD),
+            "no direct controller EOT: {:?}",
+            seen.borrow()
+        );
+        assert!(
+            seen.borrow().contains(&PtyDoorEvent::Bytes(vec![0x04])),
+            "the EOT is written as a queued user byte: {:?}",
+            seen.borrow()
+        );
+    })
+}
+
+/// #1433: text for a CLI agent goes through the queue, so it is held behind an open setup gate
+/// instead of overtaking it.
+#[test]
+fn text_for_a_cli_agent_is_held_by_an_open_gate() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _hoa = FeatureFlag::HoaCodeReview.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.set_session(
+                    view.view_id,
+                    CLIAgentSession {
+                        agent: CLIAgent::Claude,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        should_auto_toggle_input: false,
+                        listener: None,
+                        remote_host: None,
+                        plugin_version: None,
+                        draft_text: None,
+                        custom_command_prefix: None,
+                        received_rich_notification: false,
+                    },
+                    ctx,
+                );
+            });
+            announce_powershell_setup(view);
+            let routing = view.try_send_text_to_cli_agent_or_rich_input("hello".to_owned(), ctx);
+            assert!(routing.is_some());
+            assert_eq!(
+                powershell_held(view),
+                vec![b"hello".to_vec()],
+                "held behind the setup gate, in order"
+            );
+        });
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+    })
+}
+
+/// #1436: the ssh-warpify payload writers all use the paced SetupChunked job.
+#[test]
+fn ssh_warpify_install_payload_is_one_paced_setup_write() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.install_tmux_and_warpify(
+                ctx,
+                &TmuxInstallMethod {
+                    script: "echo install".to_owned(),
+                    should_use_package_manager: false,
+                },
+            );
+        });
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(
+            matches!(&seen[0], PtyDoorEvent::LineClearSetup(payload) if payload.starts_with(b"echo install")),
+            "{seen:?}"
+        );
+    })
+}
+
+/// #1434 / #1435: a programmatic insert (here the pending command a producer sets) while an
+/// Enter waits for its verdict is deferred, not applied: applying it voided the Enter or had it
+/// replayed to the pty as typeahead.
+#[test]
+fn programmatic_insert_waits_for_a_waiting_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.open_waiting_enter_gate_for_test(ctx);
+                assert!(input.enter_queue_holds_keys(ctx));
+                assert!(input.system_insert("echo hi", ctx));
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "the insert did not touch the buffer the Enter is about"
+                );
+                // The Enter's gate closes: the deferred insert is applied.
+                input.release_enter_gate(ctx);
+                assert_eq!(input.buffer_text(ctx), "echo hi");
+            });
+        });
+    })
+}
+
+/// #1435: the pending command runs as it was requested, never as a mix with what was typed into
+/// the buffer it was shown in.
+#[test]
+fn pending_command_text_is_remembered_apart_from_the_buffer() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.set_pending_command("echo requested", ctx);
+            view.input.update(ctx, |input, ctx| {
+                assert_eq!(
+                    input.pending_command_text_for_test(),
+                    Some("echo requested")
+                );
+                // The user types into it while it waits.
+                input.system_insert(" && rm x", ctx);
+                assert_ne!(input.buffer_text(ctx), "echo requested");
+                assert_eq!(
+                    input.pending_command_text_for_test(),
+                    Some("echo requested"),
+                    "what runs is what was requested"
+                );
+            });
+        });
+    })
+}
+
+/// #1434: an accepted history entry (buffer replace + submit) and the misroute-recovery resubmits
+/// wait for a waiting Enter instead of replacing its line.
+#[test]
+fn programmatic_submits_wait_for_a_waiting_enter() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.input.update(ctx, |input, ctx| {
+                input.open_waiting_enter_gate_for_test(ctx);
+                input.accept_history_text_and_submit("ls -la", ctx);
+                input.resubmit_locked_to_shell("pwd", ctx);
+                input.send_text_to_agent("explain", ctx);
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "none of them touched the buffer the waiting Enter is about"
+                );
+            });
+        });
+    })
+}
+
+// ---- RouteFacts (#1424, steps 1 and 2: facts only, nothing decides on them yet) ----------------
+
+/// Building the facts never waits for the pty reader and never takes the key path's model lock,
+/// whatever triggered the decision: inside a key, outside any key (a give-up cap, the ssh
+/// hand-over, a mailbox flush), and with the model busy. The test thread holds the model's lock
+/// (the parser inside); a build that locked it would hang (the harness timeout fails it), and
+/// the key-path lock counter must not move.
+#[test]
+fn route_facts_build_takes_no_blocking_model_lock_in_or_out_of_a_key() {
+    use crate::terminal::input_queue::QueueFacts;
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().publish_key_facts();
+            let before = crate::terminal::model_lock_trace::key_path_lock_count();
+            let parser_inside = view.model.lock();
+
+            // Outside any key.
+            assert!(!view.in_key_path());
+            let outside = view.build_route_facts(QueueFacts::default(), ctx);
+
+            // Inside a key.
+            let inside = {
+                let _scope = KeyPathScope::enter(&view.key_path_depth);
+                assert!(view.in_key_path());
+                view.build_route_facts(QueueFacts::default(), ctx)
+            };
+            // The model was busy both times: the published copy answered, and said so.
+            assert!(!outside.agent_in_control_exact && !inside.agent_in_control_exact);
+            assert_eq!(outside.facts_gen, inside.facts_gen);
+            assert!(outside.model_consistent, "nothing was publishing");
+            drop(parser_inside);
+
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count(),
+                before,
+                "fact-building took the key path's blocking model lock"
+            );
+            // Free again: the exact state answers.
+            assert!(
+                view.build_route_facts(QueueFacts::default(), ctx)
+                    .agent_in_control_exact
+            );
+        });
+    });
+}
+
+/// The pane's stamp reads the gen the two published cells agree on, with no model lock: it moves
+/// when the model publishes and not when a reader refreshes the cells from the exact state.
+#[test]
+fn the_panes_stamp_follows_the_models_publication_gen() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _ctx| {
+            view.model.lock().publish_key_facts();
+            let published = view.model.lock().facts_gen();
+            assert!(published > 0);
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published);
+
+            // A refresh from the exact state stores the gen it read: the stamp does not move.
+            let _ = view.model_facts_nonblocking();
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published);
+
+            view.model.lock().publish_key_facts();
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published + 1);
+
+            // While the parser is inside the model the stamp is still readable (no lock).
+            let parser_inside = view.model.lock();
+            assert_eq!(view.paste_queue.queue.stamp_now().facts_gen, published + 1);
+            drop(parser_inside);
+        });
+    });
+}
+
+/// The phases are derived read-only from the legacy fields, and building does not touch them.
+#[test]
+fn route_facts_derive_the_phases_from_the_legacy_fields_without_changing_them() {
+    use crate::terminal::input_queue::{PsPhase, QueueFacts, SshPhase, SubshellPhase};
+    App::test((), |mut app| async move {
+        // Legacy-field derivation is the shadow/legacy behaviour; table (the default since 2026-11-02) takes the
+        // ssh phase from the edge-driven machine (step 7), so force shadow here.
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Shadow,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let idle = view.build_route_facts(QueueFacts::default(), ctx);
+            assert_eq!(idle.ssh, SshPhase::Idle);
+            assert_eq!(idle.subshell, SubshellPhase::Idle);
+            assert_eq!(idle.ps, PsPhase::Off);
+            assert!(!idle.ssh_hold_exists);
+
+            view.ssh_typeahead_holding = true;
+            view.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation: 1 };
+            let queue = QueueFacts {
+                gates: crate::terminal::input_queue::GateMask::of(&[
+                    crate::terminal::input_queue::GateKind::SubshellBootstrapWrite,
+                    crate::terminal::input_queue::GateKind::SshConnect,
+                ]),
+                queued: true,
+                queued_only_pty: true,
+            };
+            let busy = view.build_route_facts(queue, ctx);
+            assert_eq!(busy.ssh, SshPhase::Holding);
+            assert!(busy.ssh_hold_exists && busy.queue_has_ssh_gate);
+            assert_eq!(busy.ps, PsPhase::LineRunning);
+            assert!(busy.ps.holds_keys());
+            assert_eq!(busy.subshell, SubshellPhase::BootstrapWriting);
+            assert!(busy.agent_write_gate_closed);
+            // The fields the facts were derived from are what they were.
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(
+                view.powershell_setup_hold,
+                PowerShellSetupHold::LineRunning { generation: 1 }
+            );
+            // The phases are published to the pane for the producers that cannot build facts.
+            let state = view.paste_queue.queue.route_state();
+            assert_eq!(state.ssh(), SshPhase::Holding);
+            assert_eq!(state.ps(), PsPhase::LineRunning);
+        });
+    });
+}
+
+// ---- the shadow comparison (#1424, step 3) ------------------------------------------------------
+
+/// Shadow mode changes no destination: typed text at an idle prompt lands in the editor exactly as
+/// in legacy, and the table, asked next to the legacy chain with the facts of the same moment,
+/// agrees, so nothing is logged.
+#[test]
+fn shadow_mode_changes_no_destination_and_logs_nothing_when_they_agree() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    use crate::terminal::input_queue::shadow;
+    App::test((), |mut app| async move {
+        let _mode = set_destination_mode_for_test(DestinationMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let _ = shadow::take_recorded();
+            view.typed_characters_on_terminal("ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            assert_eq!(shadow::take_recorded(), Vec::<String>::new());
+        });
+    });
+}
+
+/// A legacy leaf that differs from the table's plan is reported through the view's hooks, with the
+/// row, both classes and the facts, and no content.
+#[test]
+fn shadow_reports_a_legacy_table_disagreement_through_the_views_hooks() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    use crate::terminal::input_queue::shadow::{self, DestClass};
+    App::test((), |mut app| async move {
+        let _mode = set_destination_mode_for_test(DestinationMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let _ = shadow::take_recorded();
+            // At an idle prompt the table puts typed text in the editor (D7). Pretend legacy wrote
+            // it to the pty.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            assert!(pending.is_some(), "the comparison runs in shadow mode");
+            shadow::note_leaf(DestClass::Pty);
+            view.shadow_end(pending);
+            let lines = shadow::take_recorded();
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(
+                lines[0].starts_with("row=D7 legacy=pty table=editor flags="),
+                "{}",
+                lines[0]
+            );
+            // Agreement logs nothing.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            shadow::note_leaf(DestClass::Editor);
+            view.shadow_end(pending);
+            assert!(shadow::take_recorded().is_empty());
+            // A leaf nobody noted compares nothing.
+            let pending = view.shadow_begin(Class::Typed, ctx);
+            view.shadow_end(pending);
+            assert!(shadow::take_recorded().is_empty());
+        });
+    });
+}
+
+/// Without `shadow` mode and a listener, the hooks do not even build the facts.
+#[test]
+fn the_shadow_hooks_cost_nothing_unless_wanted() {
+    use crate::terminal::input_queue::facts::{DestinationMode, set_destination_mode_for_test};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+                let _mode = set_destination_mode_for_test(mode);
+                assert!(
+                    view.shadow_begin(Class::Typed, ctx).is_none(),
+                    "{mode:?}: no comparison"
+                );
+            }
+            // The default mode (table since 2026-11-02) never runs the comparison either.
+            assert!(view.shadow_begin(Class::Typed, ctx).is_none());
+        });
+    });
+}
+
+// ---- delivery through the table (#1424, step 4: the #1415 fix) ----------------------------------
+//
+// These run with `PHOSPHOR_QUEUE_DESTINATION=table` forced on the test thread
+// (`set_destination_mode_for_test`, never `std::env::set_var`). The legacy-chain counter
+// (`dest_table::legacy_chain_deliveries`) is what tells the table from the chain: a delivery that
+// still re-ran `typed_characters_on_terminal` / `route_after_enter_input` / `deliver_ssh_held`
+// adds to it.
+
+/// Text typed behind an Enter that waited is delivered by the legacy chain in `legacy` and by the
+/// table in `table`; where it lands is the same.
+fn replayed_text_is_delivered_by(
+    mode: crate::terminal::input_queue::DestinationMode,
+    chain_is_used: bool,
+) {
+    App::test((), move |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let before = dest_table::legacy_chain_deliveries();
+            hold_text_behind_test_gate(view, "ls", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            release_test_gate(view, ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "ls",
+                "{mode:?}: at an idle prompt the replayed text is the editor's"
+            );
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            assert_eq!(
+                dest_table::legacy_chain_deliveries() > before,
+                chain_is_used,
+                "{mode:?}: the legacy chain is called exactly when the mode is not table"
+            );
+        });
+    });
+}
+
+#[test]
+fn legacy_mode_delivers_replayed_text_through_the_chain() {
+    replayed_text_is_delivered_by(crate::terminal::input_queue::DestinationMode::Legacy, true);
+}
+
+#[test]
+fn shadow_mode_delivers_replayed_text_through_the_chain() {
+    replayed_text_is_delivered_by(crate::terminal::input_queue::DestinationMode::Shadow, true);
+}
+
+#[test]
+fn table_mode_delivers_replayed_text_without_the_legacy_chain() {
+    replayed_text_is_delivered_by(crate::terminal::input_queue::DestinationMode::Table, false);
+}
+
+/// The mixed-mode ssh case (#1415): the ssh command was recognised at PREEXEC only (the warpify
+/// state names the host, the block is running) and no submit event armed the connect gate. The
+/// text typed behind its Enter reaches the delivery while the gate is still unarmed; the table's
+/// delivery runs the legacy lazy arming first (`refresh_ssh_connect_gate`), so the text is held for
+/// the connect, never written locally, and the chain is not re-run to find that out.
+#[test]
+fn table_mode_text_replayed_after_an_ssh_recognised_at_preexec_only_is_held_not_run_locally() {
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let before = dest_table::legacy_chain_deliveries();
+            // `ls` waits behind the Enter's gate.
+            hold_text_behind_test_gate(view, "ls", ctx);
+            // The Enter's command is `ssh host`, seen at preexec only: no `note_command_submitted`.
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            assert!(
+                view.ssh_connect_gate.is_none(),
+                "nothing armed the gate yet"
+            );
+            assert!(!ssh_gate_open(view));
+            release_test_gate(view, ctx);
+            assert!(
+                view.ssh_connect_gate.is_some(),
+                "the delivery armed the gate lazily from the preexec state"
+            );
+            assert!(
+                view.ssh_typeahead_holding,
+                "the replayed text is held (#1292)"
+            );
+            assert!(ssh_gate_open(view), "behind an SshConnect gate (#1415)");
+            assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
+            assert_eq!(view.ssh_held_count(), 1);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "never written locally: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(
+                dest_table::legacy_chain_deliveries(),
+                before,
+                "decided by the table, not by re-running the legacy chain"
+            );
+        });
+    });
+}
+
+/// #1415 in table mode, end to end: text replayed into a new ssh connect is held, the remote
+/// shell's first prompt delivers it once, in order, and neither the replay nor the hand-over calls
+/// the legacy chain. The whole run takes no key-path model lock.
+#[test]
+fn table_mode_text_replayed_into_a_new_ssh_connect_is_held_then_delivered_once() {
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let chain_before = dest_table::legacy_chain_deliveries();
+            let locks_before = crate::terminal::model_lock_trace::key_path_lock_count();
+            hold_text_behind_test_gate(view, "ls", ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(!ssh_gate_open(view));
+            release_test_gate(view, ctx);
+            assert!(
+                view.ssh_typeahead_holding,
+                "the replayed text is held (#1292)"
+            );
+            assert!(ssh_gate_open(view), "behind an SshConnect gate");
+            assert_eq!(queued_texts(view), vec!["ls".to_owned()]);
+            assert_eq!(view.ssh_held_count(), 1);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            // The remote shell's first prompt delivers it, once.
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+            assert!(ssh_queue_is_idle(view));
+            assert_eq!(
+                dest_table::legacy_chain_deliveries(),
+                chain_before,
+                "neither the replay nor the hand-over ran the legacy chain"
+            );
+            assert_eq!(
+                crate::terminal::model_lock_trace::key_path_lock_count(),
+                locks_before,
+                "table-mode delivery took the key path's blocking model lock"
+            );
+        });
+    });
+}
+
+/// A signal typed during the ssh setup window is held with the keys (`HELD_SIGNAL`, OD-5) and, at
+/// the hand-over to the remote shell, delivered to the pty ONCE, through the leaf, after the keys
+/// typed before it.
+#[test]
+fn table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover() {
+    use crate::terminal::input_queue::{EntryKind, HELD_SIGNAL};
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo hi", ctx);
+            assert!(ssh_gate_open(view));
+            {
+                // The signal joins the held segment, behind the text, in typed order.
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().offer(
+                    &mut host,
+                    EntryKind::Held {
+                        class: HELD_SIGNAL,
+                        text: "\u{3}".to_owned(),
+                    },
+                );
+            }
+            assert_eq!(view.ssh_held_count(), 2);
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "held, not written: {:?}",
+                pty_writes.borrow()
+            );
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert!(ssh_queue_is_idle(view));
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
+        });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+            1,
+            "the held ^C reached the pty exactly once: {writes:?}"
+        );
+    });
+}
+
+/// A held signal is never run locally: when the connect ends without a remote shell the held
+/// segment is handed back as text and the signal is discarded, not delivered and not shown.
+#[test]
+fn a_held_signal_is_discarded_when_the_connect_ends_without_a_remote_shell() {
+    use crate::terminal::input_queue::{EntryKind, HELD_SIGNAL};
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo hi", ctx);
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().offer(
+                    &mut host,
+                    EntryKind::Held {
+                        class: HELD_SIGNAL,
+                        text: "\u{3}".to_owned(),
+                    },
+                );
+            }
+            assert_eq!(view.ssh_held_count(), 2);
+            // The connect ended and no remote prompt was ever seen.
+            view.ssh_remote_prompt_seen = false;
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert!(ssh_queue_is_idle(view));
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "nothing reached the local shell: {:?}",
+                pty_writes.borrow()
+            );
+            assert!(
+                !view.input.as_ref(ctx).buffer_text(ctx).contains('\u{3}'),
+                "the signal is not handed back as text"
+            );
+        });
+    });
+}
+
+/// The H4 drop is executed (OD-7): a delivered input the table drops as stamped before the ssh
+/// prompt is neither written nor inserted.
+#[test]
+fn table_mode_executes_the_h4_drop_for_a_key_stamped_before_the_prompt() {
+    use crate::terminal::input_queue::QueueFacts;
+    use crate::terminal::input_queue::table::{DropWhy, Effects, OnRefused, Outcome, Plan, Row};
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let facts = view.build_route_facts(QueueFacts::default(), ctx);
+            let plan = Plan {
+                outcome: Outcome::Drop(DropWhy::StaleBeforePrompt),
+                effects: Effects::NONE,
+                on_refused: OnRefused::NotApplicable,
+                row: Row::H4,
+            };
+            for input in [
+                dest_table::Replayed::Typed("hunter2"),
+                dest_table::Replayed::Key("\r"),
+                dest_table::Replayed::Seq("\u{1b}[A"),
+                dest_table::Replayed::Paste("hunter2"),
+            ] {
+                view.execute_table_plan(input, &plan, &facts, ctx);
+            }
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    });
+}
+
+/// Lock order: facts for a table decision never wait for the typeahead hand-off's lock (the
+/// model's parse takes it while holding the model lock, so a delivery that waited for it while
+/// holding anything the parse needs could deadlock). With the hand-off write-locked the build
+/// returns at once and says the hand-off value is the last known one.
+#[test]
+fn table_mode_facts_never_wait_on_the_handoff_lock() {
+    use crate::terminal::input_queue::QueueFacts;
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            crate::terminal::input_queue::DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let held_by_the_parser = view.handoff.write();
+            let facts = view.build_route_facts(QueueFacts::default(), ctx);
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                assert!(
+                    !facts.handoff_known,
+                    "the busy hand-off is reported as unknown, not waited for"
+                );
+            }
+            drop(held_by_the_parser);
+            let free = view.build_route_facts(QueueFacts::default(), ctx);
+            assert!(free.handoff_known);
+        });
+    });
+}
+
+// ---- arrival of terminal keys through the table (#1424, steps 5 and 6) ---------------------------
+//
+// These force the destination mode per thread (`set_destination_mode_for_test`, never
+// `std::env::set_var`). `dest_table::table_arrivals()` tells a live input the table decided from
+// one the legacy chain decided. Most of them run one scenario in `legacy` and in `table` and
+// compare what reached the pty and the editor: the same destinations, decided by the table. The
+// deliberate changes of the owner's decisions (OD-1, OD-5, B14) have tests of their own.
+
+type DestMode = crate::terminal::input_queue::DestinationMode;
+
+fn force_dest_mode(mode: DestMode) -> crate::terminal::input_queue::facts::DestinationModeGuard {
+    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode)
+}
+
+/// What a scenario left behind: every write to the pty, the input editor's text, and the bytes the
+/// PowerShell setup's gate still holds.
+type ArrivalOutcome = (Vec<Vec<u8>>, String, Vec<Vec<u8>>);
+
+type Scenario = fn(&mut TerminalView, &mut ViewContext<TerminalView>);
+
+/// Runs `scenario` on a fresh pane that has a session, with the destination mode forced.
+fn run_arrival_scenario(mode: DestMode, scenario: Scenario) -> ArrivalOutcome {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            scenario(view, ctx);
+        });
+        let buffer = terminal.read(&app, |view, ctx| view.input().as_ref(ctx).buffer_text(ctx));
+        let held = terminal.read(&app, |view, _| powershell_held(view));
+        let writes = pty_writes.borrow().clone();
+        (writes, buffer, held)
+    })
+}
+
+/// Runs `scenario` in `shadow` mode and returns the disagreement lines it reported.
+fn run_shadow_scenario(scenario: Scenario) -> Vec<String> {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let _ = crate::terminal::input_queue::shadow::take_recorded();
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            scenario(view, ctx);
+        });
+        crate::terminal::input_queue::shadow::take_recorded()
+    })
+}
+
+fn scenario_running_command_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.model
+        .lock()
+        .simulate_long_running_block("sleep 100", "");
+    view.typed_characters_on_terminal("ls", ctx);
+    view.keydown_on_terminal("\u{7f}", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.keydown_on_terminal("\u{3}", ctx);
+}
+
+/// Between an Enter and the shell's preexec the block has started and no command runs yet: the
+/// pty takes typed text (B11 a) but not a control key or a control sequence.
+fn scenario_block_started_not_yet_long_running(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.model
+        .lock()
+        .block_list_mut()
+        .active_block_mut()
+        .start();
+    view.typed_characters_on_terminal("x", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+}
+
+fn scenario_idle_prompt_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.typed_characters_on_terminal("ls", ctx);
+    // Nothing runs: a Backspace and an arrow key have no pty (D10), the editor has its own.
+    view.keydown_on_terminal("\u{7f}", ctx);
+    view.control_sequence_on_terminal(b"\x1b[A", ctx);
+    view.typed_characters_on_terminal("x", ctx);
+}
+
+fn scenario_ssh_connect_and_interrupt(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    submit_command(view, "ssh host", ctx);
+    view.typed_characters_on_terminal("abc", ctx);
+    view.keydown_on_terminal("\r", ctx);
+    view.control_sequence_on_terminal(b"\x1b[D", ctx);
+    release_ssh_gate_for_test(view);
+    // The interrupt passes and ends the hold; the text after it is live again.
+    view.keydown_on_terminal("\u{3}", ctx);
+    view.typed_characters_on_terminal("ls", ctx);
+}
+
+fn scenario_powershell_setup_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    announce_powershell_setup(view);
+    view.typed_characters_on_terminal("q", ctx);
+    view.keydown_on_terminal("\r", ctx);
+}
+
+fn scenario_written_by_other_origins(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.model.lock().simulate_long_running_block("claude", "");
+    view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
+    view.write_viewer_bytes_to_pty(b"v".to_vec(), ctx);
+    view.write_cli_submit_bytes(b"c".to_vec(), ctx);
+}
+
+fn scenario_agent_writes(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+    announce_powershell_setup(view);
+    view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+}
+
+/// The navigation keys of the key bindings, in a running command and at an idle prompt.
+fn scenario_navigation_keys(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.terminal_up(ctx);
+    view.page_up(ctx);
+    view.move_home(ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("sleep 100", "");
+    view.terminal_up(ctx);
+    view.terminal_down(ctx);
+    view.page_up(ctx);
+    view.page_down(ctx);
+    view.move_home(ctx);
+    view.move_end(ctx);
+}
+
+fn scenario_text_behind_a_cli_submit_gate(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    view.begin_cli_submit_gate(ctx);
+    view.typed_characters_on_terminal("x", ctx);
+    view.end_cli_submit_gate(ctx);
+}
+
+/// What the table decided for live keys reaches the same places legacy sent them: the idle path
+/// of a running command (text, Backspace, an arrow, Enter, ^C), an idle prompt, an ssh connect with
+/// its interrupt, a PowerShell setup's hold.
+#[test]
+fn table_mode_arrivals_reach_the_same_destinations_as_legacy() {
+    let scenarios: [(&str, Scenario); 5] = [
+        ("running command", scenario_running_command_keys),
+        (
+            "block started, not yet long running",
+            scenario_block_started_not_yet_long_running,
+        ),
+        ("idle prompt", scenario_idle_prompt_keys),
+        (
+            "ssh connect and interrupt",
+            scenario_ssh_connect_and_interrupt,
+        ),
+        ("powershell setup", scenario_powershell_setup_keys),
+    ];
+    for (name, scenario) in scenarios {
+        let legacy = run_arrival_scenario(DestMode::Legacy, scenario);
+        let table = run_arrival_scenario(DestMode::Table, scenario);
+        assert_eq!(
+            table, legacy,
+            "{name}: table-mode arrivals differ from legacy"
+        );
+    }
+    // The running command's keys did reach the pty, so the comparison is not of two empty runs.
+    let (writes, _, _) = run_arrival_scenario(DestMode::Table, scenario_running_command_keys);
+    assert!(
+        writes.iter().any(|write| write.as_slice() == b"ls"),
+        "{writes:?}"
+    );
+}
+
+/// Without a table decision there is nothing to compare: a live key in `table` mode IS decided by
+/// the table (and not by the legacy chain), in `legacy` and `shadow` mode it is not.
+#[test]
+fn only_table_mode_decides_live_keys_with_the_table() {
+    for (mode, decides) in [
+        (DestMode::Legacy, false),
+        (DestMode::Shadow, false),
+        (DestMode::Table, true),
+    ] {
+        App::test((), move |mut app| async move {
+            let _mode = force_dest_mode(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let before = dest_table::table_arrivals();
+                view.typed_characters_on_terminal("ls", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                view.control_sequence_on_terminal(b"\x1b[A", ctx);
+                assert_eq!(
+                    dest_table::table_arrivals() - before,
+                    if decides { 3 } else { 0 },
+                    "{mode:?}"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls", "{mode:?}");
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+            });
+        });
+    }
+}
+
+/// #1179 in all three modes: text typed while the agent drives its command is steer text for the
+/// input, never bytes for the command's pty (D2).
+fn typing_during_an_agent_driven_command_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("a", ctx);
+            view.typed_characters_on_terminal("bc", ctx);
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "{mode:?}: no user byte may reach the command's pty"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "abc", "{mode:?}");
+        });
+    })
+}
+
+#[test]
+fn legacy_mode_typing_during_an_agent_driven_command_goes_to_the_input() {
+    typing_during_an_agent_driven_command_in(DestMode::Legacy);
+}
+
+#[test]
+fn shadow_mode_typing_during_an_agent_driven_command_goes_to_the_input() {
+    typing_during_an_agent_driven_command_in(DestMode::Shadow);
+}
+
+#[test]
+fn table_mode_typing_during_an_agent_driven_command_goes_to_the_input() {
+    typing_during_an_agent_driven_command_in(DestMode::Table);
+}
+
+/// Owner decision 2 (OD-2, rows D2c/D10): a LIVE terminal Enter while the agent owns the pty is
+/// dropped (logged), reaching neither the command nor the agent's input. Legacy ends the same way
+/// (the keydown path's control-key predicate excludes the agent-owned pty), so both modes agree.
+fn live_enter_while_the_agent_owns_the_pty_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.agent_owns_command_pty());
+            view.keydown_on_terminal("\r", ctx);
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "{mode:?}: no Enter reaches the agent-driven command"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input().as_ref(ctx).buffer_text(ctx),
+                "",
+                "{mode:?}: nor does it submit or edit the agent's input"
+            );
+        });
+    })
+}
+
+#[test]
+fn legacy_mode_live_enter_while_the_agent_owns_the_pty_is_dropped() {
+    live_enter_while_the_agent_owns_the_pty_in(DestMode::Legacy);
+}
+
+#[test]
+fn table_mode_live_enter_while_the_agent_owns_the_pty_is_dropped() {
+    live_enter_while_the_agent_owns_the_pty_in(DestMode::Table);
+}
+
+/// #1179: once the user takes the command over, typed text reaches the pty again, once.
+#[test]
+fn table_mode_typing_after_the_user_takes_over_an_agent_command_reaches_the_pty_once() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_user_control_with_stop_reason();
+            assert!(!view.agent_owns_command_pty());
+            view.typed_characters_on_terminal("abc", ctx);
+        });
+        assert_eq!(*pty_writes.borrow(), vec![b"abc".to_vec()]);
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "");
+        });
+    })
+}
+
+/// OD-4 (row D7, B12): text typed when the pty does not take it goes to the editor even with the
+/// input box hidden; it is never dropped for that.
+#[test]
+fn table_mode_text_the_pty_does_not_take_is_kept_in_the_editor_even_when_the_box_is_hidden() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().set_shared_session_status(
+                crate::terminal::shared_session::SharedSessionStatus::ViewPending,
+            );
+            {
+                let model = view.model.lock();
+                assert!(
+                    !view.is_input_box_visible(&model, ctx),
+                    "precondition: input hidden"
+                );
+            }
+            view.typed_characters_on_terminal("x", ctx);
+        });
+        assert!(pty_writes.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input().as_ref(ctx).buffer_text(ctx), "x");
+        });
+    })
+}
+
+/// Owner decision 1 (OD-1): ^Z jumps the queue like ^C. Behind a paste still being read it cancels
+/// the paste and goes to the pty at once, in `table` mode; in `legacy` mode it is an ordinary key
+/// and waits behind the paste, as it always did.
+fn ctrl_z_behind_a_paste_being_read_in(mode: DestMode, jumps: bool) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            {
+                let queue = view.paste_queue.queue.clone();
+                let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                queue.lock().offer_gated(
+                    &mut host,
+                    input_queue::EntryKind::Paste {
+                        paste_id: 5,
+                        payload: None,
+                    },
+                    input_queue::GateSpec::new(input_queue::GateKind::PasteReading, 5)
+                        .with_cap(None),
+                );
+            }
+            assert!(
+                view.paste_pending(),
+                "precondition: the paste is being read"
+            );
+            view.keydown_on_terminal("\u{1a}", ctx);
+            assert_eq!(
+                view.paste_pending(),
+                !jumps,
+                "{mode:?}: ^Z {} the paste",
+                if jumps { "cancels" } else { "waits behind" }
+            );
+        });
+        let expected: Vec<Vec<u8>> = if jumps { vec![vec![0x1a]] } else { Vec::new() };
+        assert_eq!(*pty_writes.borrow(), expected, "{mode:?}");
+    })
+}
+
+#[test]
+fn table_mode_ctrl_z_cancels_a_paste_being_read_and_reaches_the_pty_once() {
+    ctrl_z_behind_a_paste_being_read_in(DestMode::Table, true);
+}
+
+#[test]
+fn legacy_mode_ctrl_z_waits_behind_a_paste_being_read() {
+    ctrl_z_behind_a_paste_being_read_in(DestMode::Legacy, false);
+}
+
+/// A guard test for OD-1: in `table` mode ^Z is a signal entry of the queue, never pty bytes.
+#[test]
+fn queue_signal_classification_follows_the_mode() {
+    for (mode, ctrl_z_is_a_signal) in [
+        (DestMode::Legacy, false),
+        (DestMode::Shadow, false),
+        (DestMode::Table, true),
+    ] {
+        let _mode = force_dest_mode(mode);
+        assert_eq!(
+            paste_queue::queue_signal_of(&[0x1a]).is_some(),
+            ctrl_z_is_a_signal,
+            "{mode:?}"
+        );
+        assert_eq!(
+            paste_queue::queue_signal_of(&[0x1c]).is_some(),
+            ctrl_z_is_a_signal,
+            "{mode:?}"
+        );
+        assert!(paste_queue::queue_signal_of(&[0x03]).is_some(), "{mode:?}");
+        assert!(paste_queue::queue_signal_of(&[0x04]).is_some(), "{mode:?}");
+        assert!(paste_queue::queue_signal_of(b"x").is_none(), "{mode:?}");
+        assert_eq!(is_queue_signal_key(&[0x1a]), ctrl_z_is_a_signal, "{mode:?}");
+    }
+}
+
+/// Owner decision 5 (OD-5, row P1a): a Ctrl-C in the ssh setup window is HELD with the keys typed
+/// before it (the toast says so, and now it is true) and reaches the remote shell once at the
+/// hand-over, after them. Legacy dropped it. Nothing is written locally meanwhile.
+#[test]
+fn table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_shell_once() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.typed_characters_on_terminal("abc", ctx);
+            view.ssh_connect_gate.as_mut().unwrap().managed = true;
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            assert!(view.ssh_connect_gate.is_some(), "the bootstrap wait holds");
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(view.ssh_interrupt_held_gate_notified, "the notice is shown");
+            assert!(view.ssh_typeahead_holding, "a held ^C ends nothing");
+            assert_eq!(
+                view.ssh_held_count(),
+                2,
+                "the text and the ^C, in typed order"
+            );
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "held, not written: {:?}",
+                pty_writes.borrow()
+            );
+            // The remote shell's first prompt: the hand-over.
+            view.ssh_remote_prompt_seen = true;
+            first_precmd_processed_for_test(view, ctx);
+            release_ssh_gate_for_test(view);
+            view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+            assert!(ssh_queue_is_idle(view));
+        });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+            1,
+            "the held ^C reached the pty exactly once: {writes:?}"
+        );
+    })
+}
+
+/// The same moment in `legacy` mode: the ^C is dropped (the toast says "held"), only the text is
+/// held. This is the deliberate difference OD-5 makes.
+#[test]
+fn legacy_mode_a_ctrl_c_in_the_ssh_setup_window_is_dropped_with_the_notice() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Legacy);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            let armed = view.model.lock().active_block_id().clone();
+            view.typed_characters_on_terminal("abc", ctx);
+            view.ssh_connect_gate.as_mut().unwrap().managed = true;
+            view.apply_block_completed_to_ssh_gate(&armed, 0);
+            view.keydown_on_terminal("\u{3}", ctx);
+            assert!(view.ssh_interrupt_held_gate_notified, "the notice is shown");
+            assert_eq!(view.ssh_held_count(), 1, "only the text is held");
+        });
+    })
+}
+
+/// H8, strict FIFO (B14): text for the editor typed while a gate holds the pane's input waits
+/// behind it as a destination-neutral entry, and is routed with the facts of the moment the gate
+/// opens. Legacy put it straight into the editor.
+#[test]
+fn table_mode_text_typed_behind_a_gate_waits_as_a_neutral_entry_and_is_routed_when_it_opens() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.begin_cli_submit_gate(ctx);
+            view.typed_characters_on_terminal("x", ctx);
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "held behind the submit's gate"
+            );
+            assert_eq!(queued_texts(view), vec!["x".to_owned()]);
+            view.end_cli_submit_gate(ctx);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "x");
+            assert!(ssh_queue_is_idle(view));
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    })
+}
+
+#[test]
+fn legacy_mode_text_typed_behind_a_gate_goes_straight_into_the_editor() {
+    let (writes, buffer, _) =
+        run_arrival_scenario(DestMode::Legacy, scenario_text_behind_a_cli_submit_gate);
+    assert!(writes.is_empty());
+    assert_eq!(buffer, "x");
+}
+
+/// A control key behind a gate waits as a held key and reaches the pty at the gate's event, once.
+#[test]
+fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            view.begin_cli_submit_gate(ctx);
+            view.keydown_on_terminal("\u{7f}", ctx);
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            assert_eq!(view.paste_queue.queue.peek().queued_len(), 1);
+            view.end_cli_submit_gate(ctx);
+            assert!(ssh_queue_is_idle(view));
+        });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        assert_eq!(*pty_writes.borrow(), vec![vec![0x7f]]);
+    })
+}
+
+/// Shadow mode keeps legacy behaviour and, over the arrival scenarios, reports no disagreement
+/// except the tagged ones (`expected=..`): the equivalence of the table and the legacy chain over
+/// the real view code.
+#[test]
+fn shadow_mode_reports_no_untagged_disagreement_over_the_arrival_scenarios() {
+    let scenarios: [(&str, Scenario); 9] = [
+        ("running command", scenario_running_command_keys),
+        (
+            "block started, not yet long running",
+            scenario_block_started_not_yet_long_running,
+        ),
+        ("idle prompt", scenario_idle_prompt_keys),
+        (
+            "ssh connect and interrupt",
+            scenario_ssh_connect_and_interrupt,
+        ),
+        ("powershell setup", scenario_powershell_setup_keys),
+        ("other origins", scenario_written_by_other_origins),
+        ("agent writes", scenario_agent_writes),
+        ("navigation keys", scenario_navigation_keys),
+        ("text behind a gate", scenario_text_behind_a_cli_submit_gate),
+    ];
+    for (name, scenario) in scenarios {
+        let lines = run_shadow_scenario(scenario);
+        let untagged: Vec<&String> = lines
+            .iter()
+            .filter(|line| !line.contains(" expected="))
+            .collect();
+        assert!(
+            untagged.is_empty(),
+            "{name}: the table and the legacy chain disagree: {untagged:?}"
+        );
+    }
+    // The gate scenario is the tagged B14 difference, so the comparison did run.
+    let lines = run_shadow_scenario(scenario_text_behind_a_cli_submit_gate);
+    assert!(
+        lines.iter().any(|line| line.ends_with(" expected=B14")),
+        "{lines:?}"
+    );
+}
+
+/// The same equivalence for the agent-driven command (D2).
+#[test]
+fn shadow_mode_agrees_on_typing_during_an_agent_driven_command() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (_pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        let _ = crate::terminal::input_queue::shadow::take_recorded();
+        terminal.update(&mut app, |view, ctx| {
+            view.typed_characters_on_terminal("a", ctx);
+            view.keydown_on_terminal("\r", ctx);
+            view.control_sequence_on_terminal(b"\x1b[A", ctx);
+        });
+        let lines = crate::terminal::input_queue::shadow::take_recorded();
+        let untagged: Vec<&String> = lines
+            .iter()
+            .filter(|line| !line.contains(" expected="))
+            .collect();
+        assert!(untagged.is_empty(), "{untagged:?}");
+    })
+}
+
+/// #1528: shadow mode's consumer over SEQUENCES, not single scenarios: the arrival scenarios that
+/// need no ssh or PowerShell setup run back to back on ONE pane, in two orders (state left by one
+/// scenario is the start of the next, as in a real session), and the shadow counter
+/// (`shadow::take_untagged`) must stay at zero for every step. The scenarios are the ones the
+/// per-scenario test above runs, so a disagreement here is a state-carry-over difference between
+/// the legacy chain and the table, not a new key.
+#[test]
+fn shadow_mode_reports_zero_untagged_disagreements_over_chained_key_sequences() {
+    let forward: [(&str, Scenario); 7] = [
+        ("idle prompt", scenario_idle_prompt_keys),
+        ("running command", scenario_running_command_keys),
+        ("navigation keys", scenario_navigation_keys),
+        ("other origins", scenario_written_by_other_origins),
+        ("agent writes", scenario_agent_writes),
+        ("text behind a gate", scenario_text_behind_a_cli_submit_gate),
+        (
+            "block started, not yet long running",
+            scenario_block_started_not_yet_long_running,
+        ),
+    ];
+    let mut backward = forward;
+    backward.reverse();
+    for (order, sequence) in [("forward", forward), ("backward", backward)] {
+        App::test((), move |mut app| async move {
+            let _mode = force_dest_mode(DestMode::Shadow);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let _ = crate::terminal::input_queue::shadow::take_recorded();
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                for (name, scenario) in sequence {
+                    scenario(view, ctx);
+                    let untagged = crate::terminal::input_queue::shadow::take_untagged();
+                    assert!(
+                        untagged.is_empty(),
+                        "{order}: after `{name}` the table and the legacy chain disagree: {untagged:?}"
+                    );
+                }
+            });
+        })
+    }
+}
+
+/// The origin rows: the synced origin refuses bytes for a pane with no running command (O-synced);
+/// a pane running one takes them. Wired at the writer, in `table` mode.
+#[test]
+fn table_mode_the_synced_origin_row_refuses_a_pane_with_no_running_command() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let idle = view.begin_origin_row(Class::Raw, input_queue::Origin::Synced, ctx);
+            assert!(idle.refused(), "no command runs");
+            view.end_origin_row(idle, false);
+            view.model.lock().simulate_long_running_block("claude", "");
+            let running = view.begin_origin_row(Class::Raw, input_queue::Origin::Synced, ctx);
+            assert!(!running.refused(), "a command runs");
+            view.end_origin_row(running, true);
+            // The viewer and the CLI submit are never refused at their origin row.
+            let viewer = view.begin_origin_row(Class::Raw, input_queue::Origin::Viewer, ctx);
+            assert!(!viewer.refused());
+            view.end_origin_row(viewer, true);
+            let submit = view.begin_origin_row(Class::Raw, input_queue::Origin::CliSubmit, ctx);
+            assert!(!submit.refused());
+            view.end_origin_row(submit, true);
+        });
+    })
+}
+
+/// Synced input in `table` mode is judged as synced input: held behind an open PowerShell setup,
+/// written to a pane running a command, the echo guard consumed (the same as legacy).
+#[test]
+fn table_mode_synced_input_is_written_or_held_as_legacy_does() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("claude", "");
+            view.write_to_pty_for_syncing_long_running_commands(b"ab".to_vec(), ctx);
+            assert_eq!(view.synced_in_flight, 0, "the echo guard is consumed");
+        });
+        assert_eq!(
+            *seen.borrow(),
+            vec![PtyDoorEvent::Bytes(b"ab".to_vec())],
+            "synced input reaches a pane running a command"
+        );
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.write_to_pty_for_syncing_long_running_commands(b"cd".to_vec(), ctx);
+        });
+        assert!(seen.borrow().is_empty(), "{:?}", seen.borrow());
+        terminal.update(&mut app, |view, _| {
+            assert_eq!(powershell_held(view), vec![b"cd".to_vec()]);
+        });
+    })
+}
+
+/// The paced CLI-agent submit in `table` mode: its own writes do not wait behind its gate, the
+/// keys typed meanwhile follow it in order (the origin row O-cli-submit is exempt from the holds).
+#[test]
+fn table_mode_keys_typed_during_a_paced_cli_agent_submit_follow_the_submit_in_order() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.begin_cli_submit_gate(ctx);
+            view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"x".to_vec(), ctx);
+            view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
+        });
+        let before_enter: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(before_enter, b"TEXT".to_vec());
+        terminal.update(&mut app, |view, ctx| {
+            view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+            view.end_cli_submit_gate(ctx);
+        });
+        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(written, b"TEXT\rxy".to_vec());
+    })
+}
+
+// ---- #1601b: the CLI-agent submit against the gates a key waits behind ---------------------------
+//
+// The table models the submit exactly as the legacy writer treats its bytes: a PACED submit (its own
+// `CliSubmit` gate is open) goes straight to the stage after the paste stage; an UNPACED one is
+// offered to the queue and waits behind the subshell setup, the Enter verdict, a paste being read
+// (any gate but an ssh-only set). Each combination runs in `legacy` and `table` mode (same bytes,
+// same order: the table only plans) and in `shadow` mode (zero untagged disagreements).
+
+#[derive(Clone, Copy, Debug)]
+enum SubmitGate {
+    EnterVerdict,
+    SubshellSetup,
+    PasteReading,
+}
+
+/// Opens `gate` and types one key (`k`), which the open gate holds. For the subshell setup the
+/// setup is announced and that first key is what opens the setup gate (`prepare_subshell_gates`).
+fn open_submit_gate(
+    view: &mut TerminalView,
+    gate: SubmitGate,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let generic = match gate {
+        SubmitGate::EnterVerdict => Some((input_queue::GateKind::EnterVerdict, 78)),
+        SubmitGate::PasteReading => Some((input_queue::GateKind::PasteReading, 77)),
+        SubmitGate::SubshellSetup => None,
+    };
+    match generic {
+        Some((kind, key)) => {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().open_gate(
+                &mut host,
+                input_queue::GateSpec::new(kind, key).with_cap(None),
+            );
+        }
+        None => {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+        }
+    }
+    assert!(view.write_user_bytes_to_pty(b"k".to_vec(), ctx));
+}
+
+/// The event that ends the gate `open_submit_gate` opened: what it held is delivered, in order.
+fn close_submit_gate(
+    view: &mut TerminalView,
+    gate: SubmitGate,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let generic = match gate {
+        SubmitGate::EnterVerdict => Some((input_queue::GateKind::EnterVerdict, 78)),
+        SubmitGate::PasteReading => Some((input_queue::GateKind::PasteReading, 77)),
+        SubmitGate::SubshellSetup => None,
+    };
+    match generic {
+        Some((kind, key)) => {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().on_gate_event(&mut host, kind, key);
+        }
+        None => {
+            view.release_subshell_setup_held_bytes(ctx);
+            view.subshell_bootstrap_announced = None;
+        }
+    }
+}
+
+/// The pieces of a CLI-agent submit: the text, then the Enter; paced, they own a `CliSubmit` gate.
+fn write_cli_submit_pieces(
+    view: &mut TerminalView,
+    paced: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    if paced {
+        view.begin_cli_submit_gate(ctx);
+    }
+    view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+    view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+    if paced {
+        view.end_cli_submit_gate(ctx);
+    }
+}
+
+fn scenario_cli_submit_behind_a_gate(
+    view: &mut TerminalView,
+    gate: SubmitGate,
+    paced: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    open_submit_gate(view, gate, ctx);
+    write_cli_submit_pieces(view, paced, ctx);
+    close_submit_gate(view, gate, ctx);
+}
+
+macro_rules! cli_submit_gate_scenario {
+    ($name:ident, $gate:expr, $paced:expr) => {
+        fn $name(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+            scenario_cli_submit_behind_a_gate(view, $gate, $paced, ctx);
+        }
+    };
+}
+
+cli_submit_gate_scenario!(
+    scenario_cli_unpaced_enter_verdict,
+    SubmitGate::EnterVerdict,
+    false
+);
+cli_submit_gate_scenario!(
+    scenario_cli_paced_enter_verdict,
+    SubmitGate::EnterVerdict,
+    true
+);
+cli_submit_gate_scenario!(
+    scenario_cli_unpaced_subshell_setup,
+    SubmitGate::SubshellSetup,
+    false
+);
+cli_submit_gate_scenario!(
+    scenario_cli_paced_subshell_setup,
+    SubmitGate::SubshellSetup,
+    true
+);
+cli_submit_gate_scenario!(
+    scenario_cli_unpaced_paste_reading,
+    SubmitGate::PasteReading,
+    false
+);
+cli_submit_gate_scenario!(
+    scenario_cli_paced_paste_reading,
+    SubmitGate::PasteReading,
+    true
+);
+
+const CLI_SUBMIT_GATE_SCENARIOS: [(&str, Scenario); 6] = [
+    ("unpaced, Enter verdict", scenario_cli_unpaced_enter_verdict),
+    ("paced, Enter verdict", scenario_cli_paced_enter_verdict),
+    (
+        "unpaced, subshell setup",
+        scenario_cli_unpaced_subshell_setup,
+    ),
+    ("paced, subshell setup", scenario_cli_paced_subshell_setup),
+    ("unpaced, paste reading", scenario_cli_unpaced_paste_reading),
+    ("paced, paste reading", scenario_cli_paced_paste_reading),
+];
+
+/// The bytes that reached the pty while a gate was open and a CLI-agent submit was written, and the
+/// bytes that followed when the gate's event ended it, in `mode`.
+fn cli_submit_gate_bytes(
+    mode: DestMode,
+    gate: SubmitGate,
+    paced: bool,
+) -> (Vec<u8>, Vec<u8>, bool) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            open_submit_gate(view, gate, ctx);
+            write_cli_submit_pieces(view, paced, ctx);
+        });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let during: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        terminal.update(&mut app, |view, ctx| close_submit_gate(view, gate, ctx));
+        let all: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        let idle = terminal.read(&app, |view, _| ssh_queue_is_idle(view));
+        (during.clone(), all[during.len()..].to_vec(), idle)
+    })
+}
+
+/// An UNPACED submit waits behind the gate with the key typed before it and is delivered in typed
+/// order when the gate ends; a PACED one is written at once, ahead of that key. Same in `legacy`
+/// and `table` mode: the table only plans, the legacy writer moves the bytes.
+#[test]
+fn a_cli_submit_behind_a_gate_is_held_unpaced_and_written_at_once_paced_in_both_modes() {
+    for gate in [
+        SubmitGate::EnterVerdict,
+        SubmitGate::SubshellSetup,
+        SubmitGate::PasteReading,
+    ] {
+        for mode in [DestMode::Legacy, DestMode::Table] {
+            let (during, after, idle) = cli_submit_gate_bytes(mode, gate, false);
+            assert!(
+                during.is_empty(),
+                "{gate:?} {mode:?} unpaced: nothing is written while the gate is open: {during:?}"
+            );
+            assert_eq!(
+                after,
+                b"kTEXT\r".to_vec(),
+                "{gate:?} {mode:?} unpaced: typed order"
+            );
+            assert!(idle, "{gate:?} {mode:?} unpaced: nothing stays queued");
+            let (during, after, idle) = cli_submit_gate_bytes(mode, gate, true);
+            assert_eq!(
+                during,
+                b"TEXT\r".to_vec(),
+                "{gate:?} {mode:?} paced: written at once"
+            );
+            assert_eq!(
+                after,
+                b"k".to_vec(),
+                "{gate:?} {mode:?} paced: the held key follows"
+            );
+            assert!(idle, "{gate:?} {mode:?} paced: nothing stays queued");
+        }
+    }
+}
+
+/// The shadow comparison over each combination (and chained on one pane, in two orders): the table
+/// and the legacy writer agree on where every piece of the submit goes.
+#[test]
+fn shadow_mode_reports_zero_untagged_disagreements_for_a_cli_submit_behind_a_gate() {
+    for (name, scenario) in CLI_SUBMIT_GATE_SCENARIOS {
+        let lines = run_shadow_scenario(scenario);
+        let untagged = crate::terminal::input_queue::shadow::untagged(&lines);
+        assert!(
+            untagged.is_empty(),
+            "{name}: the table and the legacy writer disagree: {untagged:?}"
+        );
+    }
+    let forward = CLI_SUBMIT_GATE_SCENARIOS;
+    let mut backward = forward;
+    backward.reverse();
+    for (order, sequence) in [("forward", forward), ("backward", backward)] {
+        App::test((), move |mut app| async move {
+            let _mode = force_dest_mode(DestMode::Shadow);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let _ = crate::terminal::input_queue::shadow::take_recorded();
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                for (name, scenario) in sequence {
+                    scenario(view, ctx);
+                    let untagged = crate::terminal::input_queue::shadow::take_untagged();
+                    assert!(
+                        untagged.is_empty(),
+                        "{order}: after `{name}` the table and the legacy writer disagree: {untagged:?}"
+                    );
+                }
+            });
+        })
+    }
+}
+
+/// Paste routing (step 6): the table's destination rows say what the legacy `paste_routing` says,
+/// at an idle prompt and in a running command.
+#[test]
+fn table_mode_paste_routing_agrees_with_the_legacy_routing() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let owns = view.agent_owns_command_pty();
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "idle prompt");
+            register_local_session_for_ssh_test(view, ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 100", "");
+            let owns = view.agent_owns_command_pty();
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "running command");
+            assert!(!legacy.0, "a paste goes to the running command's pty");
+        });
+    })
+}
+
+/// ... and while the agent drives the command: the paste is steer text for the agent's input.
+#[test]
+fn table_mode_paste_routing_sends_a_paste_to_the_agents_input_while_it_drives_the_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let (_pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            let owns = view.agent_owns_command_pty();
+            assert!(owns);
+            let legacy = view.paste_routing(owns, ctx);
+            assert_eq!(view.paste_routing_via_table(ctx), legacy, "agent-driven");
+            assert!(legacy.0, "a paste is steer text for the agent's input");
+        });
+    })
+}
+
+/// A key that had to wait in the deferred mailbox (the queue was busy) keeps the stamp it got when
+/// it was typed: it is applied later with the classification it had then (H4's premise).
+#[test]
+fn table_mode_a_key_that_waited_in_the_mailbox_keeps_the_stamp_it_had_when_typed() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().publish_key_facts();
+            let typed_at = view.paste_queue.queue.stamp_now();
+            view.begin_cli_submit_gate(ctx);
+            let queue = view.paste_queue.queue.clone();
+            {
+                // Some operation holds the queue: the key can only wait in the mailbox.
+                let _busy = queue.peek();
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(queue.has_deferred(), "the key waits in the mailbox");
+            }
+            // The world moves on before the mailbox is applied.
+            view.model.lock().publish_key_facts();
+            assert!(view.paste_queue.queue.stamp_now().facts_gen > typed_at.facts_gen);
+            view.flush_deferred_queue_ops(ctx);
+            let stamps: Vec<_> = queue.peek().entries().map(|entry| entry.stamp).collect();
+            assert_eq!(stamps.len(), 1, "the key was applied: {stamps:?}");
+            assert_eq!(stamps[0].facts_gen, typed_at.facts_gen);
+        });
+    })
+}
+
+/// The agent origin (row D13) in `table` mode: its write is refused while a setup owns the pty
+/// (here a PowerShell setup) and goes out otherwise, once. The legacy gate is the same rule.
+#[test]
+fn table_mode_the_agents_write_is_refused_during_a_setup_and_goes_out_otherwise() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let seen = record_pty_door_events(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert_eq!(*seen.borrow(), vec![PtyDoorEvent::Agent(b"y\n".to_vec())]);
+        seen.borrow_mut().clear();
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        assert!(
+            seen.borrow().is_empty(),
+            "refused while the setup owns the pty: {:?}",
+            seen.borrow()
+        );
+    })
+}
+
+// ---- the edge-driven ssh phase (#1424, step 7) ---------------------------------------------------
+//
+// The mode is forced on the test thread. The give-up counter (`ssh_give_ups`) is what tells an
+// event-driven hand-over from one a safety net made: every timer-made release adds to it.
+
+/// `shadow`: the machine and the legacy derivation give the same phase through a silent connect
+/// and a password prompt, so `kh_ssh_phase_disagree` stays quiet.
+#[test]
+fn shadow_mode_the_ssh_phase_machine_agrees_with_the_derivation_through_a_connect() {
+    use crate::terminal::input_queue::{QueueFacts, SshPhase};
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let before = ssh_edges::ssh_phase_disagreements();
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Idle
+            );
+            // The Enter on ssh opens the window; nothing is printed yet.
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.ssh_phase.armed());
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Holding
+            );
+            // A password prompt: unterminated text before any remote session.
+            view.model.lock().process_bytes("Password: ");
+            view.model.lock().publish_key_facts();
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            let prompt = view.build_route_facts(QueueFacts::default(), ctx).ssh;
+            assert!(matches!(prompt, SshPhase::PromptUp { .. }), "{prompt:?}");
+            assert_eq!(
+                ssh_edges::ssh_phase_disagreements(),
+                before,
+                "the machine and the derivation agreed at every step"
+            );
+        });
+    });
+}
+
+/// `table`: the facts carry the machine's phase. With the legacy fields tampered to say "no
+/// window", a key typed during the connect is still held, because the Enter's edge opened it.
+#[test]
+fn table_mode_decides_on_the_machines_phase_not_the_legacy_fields() {
+    use crate::terminal::input_queue::{QueueFacts, SshPhase};
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.ssh_connect_gate = None;
+            assert_eq!(
+                view.build_route_facts(QueueFacts::default(), ctx).ssh,
+                SshPhase::Holding
+            );
+            view.typed_characters_on_terminal("ls", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert_eq!(view.ssh_held_count(), 1);
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+/// #1348 in `table` mode: the remote shell's first prompt EVENT hands the held keys over inside its
+/// own handler. No timer ran and no give-up was logged; the machine saw the window end by the
+/// event (`FirstPrompt`) and the hold end.
+#[test]
+fn table_mode_the_remote_prompt_event_hands_over_with_no_timer_and_no_give_up() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo hi", ctx);
+            assert!(view.ssh_typeahead_holding);
+            assert!(view.ssh_phase.holding());
+            remote_first_prompt_is_next_for_test(view);
+            first_precmd_processed_for_test(view, ctx);
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                !view.ssh_typeahead_holding,
+                "the hand-over ran inside the precmd handler"
+            );
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
+            assert_eq!(
+                view.ssh_give_ups, 0,
+                "released by the event, not a safety net"
+            );
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::FirstPrompt)
+            );
+            assert!(!view.ssh_phase.armed() && !view.ssh_phase.holding());
+        });
+    });
+}
+
+/// The safety net: no prompt ever comes. The give-up releases the window, hands the text back
+/// unexecuted, and is LOGGED (counted).
+#[test]
+fn table_mode_a_gate_past_its_ceiling_is_released_by_a_logged_give_up() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("echo lost", ctx);
+            let gate = view.ssh_connect_gate.as_mut().unwrap();
+            gate.armed_at = Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            view.ssh_give_up_fired(ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo lost");
+            assert_eq!(view.ssh_give_ups, 1);
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::GiveUpCeiling)
+            );
+        });
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
+/// The same give-up with nothing held: in `table` mode the key path no longer releases a stale
+/// window, so the timer does, and logs it.
+#[test]
+fn table_mode_the_give_up_ends_a_window_nothing_is_held_behind() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(view.ssh_phase.armed());
+            view.ssh_connect_gate.as_mut().unwrap().armed_at =
+                Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+            view.ssh_give_up_fired(ctx);
+            assert!(view.ssh_connect_gate.is_none());
+            assert!(!view.ssh_phase.armed());
+            assert_eq!(view.ssh_give_ups, 1);
+        });
+    });
+}
+
+/// A password prompt: the OUTPUT event discards what was held, and the next key reaches the prompt,
+/// with no timing involved (#1348, owner rule 2026-11-01).
+#[test]
+fn table_mode_a_password_prompt_discards_the_held_keys_and_the_next_key_reaches_it() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Table);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh host", "");
+            view.warpify_state
+                .set_pending_ssh_host("ssh host".to_owned(), Some("host".to_owned()));
+            view.typed_characters_on_terminal("blind", ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.model.lock().process_bytes("Password: ");
+            view.model.lock().publish_key_facts();
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(view.ssh_held_is_empty(), "the output event discarded them");
+            assert!(!view.ssh_typeahead_holding);
+            view.typed_characters_on_terminal("hunter2", ctx);
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+        let writes: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        assert_eq!(
+            writes, b"hunter2",
+            "only the post-prompt key reaches the prompt"
+        );
+    });
+}
+
+/// A non-ssh command starting ends a stale window by event.
+#[test]
+fn a_non_ssh_command_starting_releases_the_window_by_event() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Shadow);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(view.ssh_phase.armed());
+            view.ssh_connect_gate = None;
+            view.ssh_on_other_command_started(ctx);
+            assert!(!view.ssh_phase.armed());
+            assert_eq!(
+                view.ssh_phase.last_release(),
+                Some(crate::terminal::input_queue::SshRelease::OtherCommand)
+            );
+            assert_eq!(view.ssh_give_ups, 0);
+        });
+    });
+}
+
+/// `legacy` is the kill switch: the machine is not fed at all.
+#[test]
+fn legacy_mode_does_not_feed_the_ssh_phase_machine() {
+    App::test((), |mut app| async move {
+        let _mode = force_dest_mode(DestMode::Legacy);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ssh host", ctx);
+            assert!(view.ssh_connect_gate.is_some());
+            assert!(!view.ssh_phase.armed());
+        });
+    });
+}
+
+// Group 1 (hand-over / yield / gate fixes). Declared here, not at the tail of `view.rs`, so the
+// module sees this file's private test helpers through `use super::*`.
+#[path = "view/group1_handover_tests.rs"]
+mod group1_handover_tests;
+
+// Group 3 (editor paste behind an Enter gate, committed delivery). Declared here for the same
+// reason as group 1.
+#[path = "view/group3_paste_tests.rs"]
+mod group3_paste_tests;
+
+// Group 4 (setup writes vs delivered keys, focus-gap control keys). Declared here for the same
+// reason as group 1.
+#[path = "view/group4_prompt_tests.rs"]
+mod group4_prompt_tests;
+
+// #1411 (control keys translated in the pane key sink, no model lock).
+#[path = "view/group_1411_tests.rs"]
+mod group_1411_tests;
+
+// Group 2 (timers that decided delivery or ran a command, #1577 / #1588). Declared here for the
+// same reason as group 1.
+#[path = "view/group2_timer_tests.rs"]
+mod group2_timer_tests;
+
+// Review follow-ups F6 / F10. Declared here for the same reason as group 1.
+#[path = "view/followup_tests.rs"]
+mod followup_tests;
+
+/// #1342: only a `git checkout <typo>` failure needs the branch list; everything else skips the
+/// `git branch` spawn.
+#[test]
+fn corrections_fetch_branches_only_for_a_checkout_pathspec_error() {
+    let err = "error: pathspec 'feat-xzy' did not match any file(s) known to git";
+    assert!(command_corrections_may_need_git_branches(
+        "git checkout feat-xzy",
+        err
+    ));
+    assert!(command_corrections_may_need_git_branches(
+        "git \"checkout\" feat-xzy",
+        &err.to_uppercase()
+    ));
+    assert!(!command_corrections_may_need_git_branches("echo hi", ""));
+    assert!(!command_corrections_may_need_git_branches(
+        "git status",
+        "clean"
+    ));
+    assert!(!command_corrections_may_need_git_branches(
+        "git checkout main",
+        "Switched to branch 'main'"
+    ));
 }

@@ -171,6 +171,13 @@ $PDB_PATH = "$CARGO_TARGET_OUTPUT_DIR\$WARP_BIN.pdb"
 # cargo's OUT_DIR; it no longer reads CARGO_FULL_PROFILE (#1044). The
 # installer takes those files from app\assets\windows\<arch> directly.
 
+# The Tracy `profiling` feature is for the manual build-*-profiling CI jobs only (#1169).
+# Never ship it: refuse here rather than discover it in a release.
+if (",$FEATURES," -like "*,profiling,*") {
+    Write-Error "the 'profiling' cargo feature must never be part of a bundle (FEATURES=$FEATURES)"
+    exit 1
+}
+
 # If we only want to check that compilation will succeed, perform the checks
 # then exit.  We use this script to invoke `cargo check` to ensure that we are
 # using the same feature flags and profile that we would be using in production.

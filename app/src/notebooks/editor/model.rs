@@ -1716,14 +1716,6 @@ impl NotebooksEditorModel {
         had_command_selection
     }
 
-    /// Returns true if any of the subviews store on any of the NotebookCommand models are focused
-    /// (such as the dropdown view for picking different block types)
-    pub fn any_notebook_command_submodel_focused(&self, ctx: &AppContext) -> bool {
-        self.child_models
-            .models::<NotebookCommand>(ctx)
-            .any(|command| command.is_dropdown_focused(ctx))
-    }
-
     /// The currently-selected command blocks and their starting offsets.
     fn selected_commands<'a>(
         &'a self,

@@ -1,0 +1,7 @@
+zmodload zsh/datetime
+PROMPT="%~ %# "
+_PP=$HOME/phosphor-profile/r18bi/lat/ctl/log
+preexec(){ print -r -- "start $EPOCHREALTIME $1" >> $_PP }
+precmd(){ print -r -- "end $EPOCHREALTIME $?" >> $_PP }
+HISTFILE=$HOME/phosphor-profile/r18bi/lat/zdot/.zsh_history
+SAVEHIST=5000; HISTSIZE=5000

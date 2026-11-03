@@ -67,7 +67,7 @@ use warp_util::file::FileLoadError;
 use warp_util::file_type::is_buffer_binary;
 use warpui::{
     AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
-    r#async::{Spawnable, SpawnableOutput},
+    r#async::{Spawnable, SpawnableOutput, SpawnedFutureHandle},
 };
 
 #[cfg(feature = "local_fs")]
@@ -85,7 +85,7 @@ use crate::{
         agent::{
             AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
             AIAgentActionType, CancellationReason, FileContext, FileLocations, ReadFilesFailedFile,
-            ServerOutputId, conversation::AIConversationId,
+            RequestFileEditsResult, ServerOutputId, conversation::AIConversationId,
         },
         ambient_agents::AmbientAgentTaskId,
     },
@@ -303,9 +303,34 @@ struct AsyncExecutingAction {
     /// The conversation this action belongs to so cancellation and follow-up scheduling remain
     /// scoped even when several conversations have async actions in flight.
     conversation_id: AIConversationId,
+    /// The spawned execution, aborted when the action is cancelled so a Stop really stops the
+    /// work (a grep over a large tree, an MCP call, a remote read over the shared ssh
+    /// connection, #1241) instead of only discarding its result. `None` in tests that register
+    /// an action without spawning it.
+    execution: Option<SpawnedFutureHandle>,
+    /// Set when a Stop arrived while this file-edit action was saving. The writes are spawned by
+    /// `FileModel` and cannot be recalled, so the action is not reported Cancelled while they
+    /// may still land (#1277): it keeps running until its real result arrives, or until
+    /// [`FILE_EDIT_CANCEL_GRACE`] passes. Holds the reason of the Stop.
+    cancel_pending: Option<Option<CancellationReason>>,
 }
 
+/// Result text for a file-edit action that was stopped mid-save and never reported an outcome.
+pub(super) const FILE_EDIT_STOPPED_MID_SAVE: &str = "The user stopped the agent while these edits were being saved, and the save did not report back. The files may or may not have been written; read them again before editing them.";
+
+/// How long a Stop waits for an in-flight file-edit save to report its real outcome before the
+/// action is ended with an explicit "outcome unknown" result.
+const FILE_EDIT_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl AsyncExecutingAction {
+    fn is_file_edit_save_in_flight(&self) -> bool {
+        // `execution` is set once `execute` has run, i.e. once the save was dispatched.
+        matches!(
+            self.action.action,
+            AIAgentActionType::RequestFileEdits { .. }
+        ) && self.execution.is_some()
+    }
+
     fn is_shell_command_action(&self) -> bool {
         matches!(
             self.action.action,
@@ -790,31 +815,37 @@ impl BlocklistAIActionExecutor {
                 execute_future,
                 on_complete,
             } => {
-                self.async_executing_actions.insert(
-                    action_id.clone(),
-                    AsyncExecutingAction {
-                        action: action_clone,
-                        conversation_id,
-                    },
-                );
                 ctx.emit(BlocklistAIActionExecutorEvent::ExecutingAction {
                     action_id: action_id.clone(),
                 });
-                ctx.spawn(execute_future, move |me, result, ctx| {
-                    let Some(running) = me.async_executing_actions.remove(&action_id) else {
+                let completing_action_id = action_id.clone();
+                let execution = ctx.spawn(execute_future, move |me, result, ctx| {
+                    let Some(running) = me.async_executing_actions.remove(&completing_action_id)
+                    else {
                         return;
                     };
                     let result = on_complete(result, ctx);
                     ctx.emit(BlocklistAIActionExecutorEvent::FinishedAction {
                         result: Arc::new(AIAgentActionResult {
-                            id: action_id,
+                            id: completing_action_id,
                             task_id: running.action.task_id,
                             result,
                         }),
                         conversation_id: running.conversation_id,
-                        cancellation_reason: None,
+                        cancellation_reason: running.cancel_pending.flatten(),
                     });
                 });
+                // Registered after the spawn so the handle can be kept; the future cannot have
+                // completed in between, since it only runs once this update returns.
+                self.async_executing_actions.insert(
+                    action_id,
+                    AsyncExecutingAction {
+                        action: action_clone,
+                        conversation_id,
+                        execution: Some(execution),
+                        cancel_pending: None,
+                    },
+                );
                 TryExecuteResult::ExecutedAsync
             }
             AnyActionExecution::Sync(action_result) => {
@@ -856,12 +887,15 @@ impl BlocklistAIActionExecutor {
         &mut self,
         action: AIAgentAction,
         conversation_id: AIConversationId,
+        execution: Option<SpawnedFutureHandle>,
     ) {
         self.async_executing_actions.insert(
             action.id.clone(),
             AsyncExecutingAction {
                 action,
                 conversation_id,
+                execution,
+                cancel_pending: None,
             },
         );
     }
@@ -876,11 +910,39 @@ impl BlocklistAIActionExecutor {
         if self.is_shared_session_viewer() {
             return;
         }
+        if let Some(running) = self.async_executing_actions.get_mut(action_id) {
+            if running.is_file_edit_save_in_flight() {
+                // The write may already be landing and cannot be recalled, so reporting
+                // Cancelled could be a lie. Wait (bounded) for the real outcome instead.
+                if running.cancel_pending.is_none() {
+                    running.cancel_pending = Some(reason);
+                    let action_id = action_id.clone();
+                    ctx.spawn(
+                        async {
+                            let _ = warpui::r#async::Timer::after(FILE_EDIT_CANCEL_GRACE).await;
+                        },
+                        move |me, _, ctx| me.end_unfinished_file_edit(&action_id, ctx),
+                    );
+                }
+                return;
+            }
+        }
         if let Some(running) = self.async_executing_actions.remove(action_id) {
             if running.is_shell_command_action() {
+                // Not aborted: the command keeps running in the shell whatever happens to this
+                // future, and the executor's own cancel (an interrupt for a manual stop, the
+                // sender cleanup) is what stopping it means. The future ends on its own once
+                // its senders are dropped.
                 self.shell_command_executor.update(ctx, |executor, ctx| {
                     executor.cancel_execution(&running.action.id, reason, ctx);
                 });
+            } else if let Some(execution) = &running.execution {
+                // Stop the work, not just its result: a cancelled read, search, MCP call or
+                // remote request would otherwise run to completion and be thrown away on
+                // arrival. Over ssh that is remote work streaming back over the shared
+                // connection (#1241). The completion callback never runs for an aborted future,
+                // and the cancelled result below is the action's one result.
+                execution.abort();
             }
             ctx.emit(BlocklistAIActionExecutorEvent::FinishedAction {
                 result: Arc::new(AIAgentActionResult {
@@ -892,6 +954,35 @@ impl BlocklistAIActionExecutor {
                 cancellation_reason: reason,
             });
         }
+    }
+
+    /// Ends a file-edit action whose save did not report back within [`FILE_EDIT_CANCEL_GRACE`]
+    /// of a Stop, with a result that says the outcome is unknown instead of claiming Cancelled.
+    fn end_unfinished_file_edit(
+        &mut self,
+        action_id: &AIAgentActionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(running) = self.async_executing_actions.remove(action_id) else {
+            // The real result arrived in time.
+            return;
+        };
+        if let Some(execution) = &running.execution {
+            execution.abort();
+        }
+        ctx.emit(BlocklistAIActionExecutorEvent::FinishedAction {
+            result: Arc::new(AIAgentActionResult {
+                id: running.action.id.clone(),
+                task_id: running.action.task_id,
+                result: AIAgentActionResultType::RequestFileEdits(
+                    RequestFileEditsResult::DiffApplicationFailed {
+                        error: FILE_EDIT_STOPPED_MID_SAVE.to_owned(),
+                    },
+                ),
+            }),
+            conversation_id: running.conversation_id,
+            cancellation_reason: running.cancel_pending.flatten(),
+        });
     }
 
     /// Drops executor-held per-action state now that the action has reached a
@@ -1052,6 +1143,83 @@ pub fn describe_failed_files(failed_files: &[ReadFilesFailedFile]) -> String {
         .join(", ")
 }
 
+/// Total content budget of one agent `read_files` call. Without a cap a large batch only
+/// stopped at the 64 MB protocol limit (and then a 120 s timeout); with it, files past the
+/// budget come back as explicit per-file failures (#1278).
+pub const AGENT_READ_FILES_BATCH_BYTES: usize = 4_000_000;
+
+/// Most files one agent `read_files` call reads; the rest are reported, not dropped (#1278).
+pub const AGENT_READ_FILES_MAX_FILES: usize = 100;
+
+/// Splits an agent `read_files` batch at [`AGENT_READ_FILES_MAX_FILES`]. The second value is
+/// a failed-file entry saying how many files were not read, `None` when everything fits.
+pub fn cap_read_batch(
+    mut locations: Vec<FileLocations>,
+    max_files: usize,
+) -> (Vec<FileLocations>, Option<ReadFilesFailedFile>) {
+    if locations.len() <= max_files {
+        return (locations, None);
+    }
+    let skipped = locations.split_off(max_files);
+    let note = ReadFilesFailedFile {
+        path: format!("({} more files)", skipped.len()),
+        message: format!(
+            "{} more files not read: one read_files call reads at most {max_files} files. \
+             Request these in a separate call: {}.",
+            skipped.len(),
+            skipped
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    (locations, Some(note))
+}
+
+/// Turns a remote server's file contexts into agent file contexts plus per-file failures. An
+/// entry that carries no content used to vanish from both lists, so the model never learned
+/// the file was not read (#1278).
+pub fn convert_remote_file_contexts(
+    file_contexts: Vec<remote_server::proto::FileContextProto>,
+) -> (Vec<FileContext>, Vec<ReadFilesFailedFile>) {
+    let mut files = Vec::new();
+    let mut failed = Vec::new();
+    for fc in file_contexts {
+        let Some(content) = fc.content else {
+            failed.push(ReadFilesFailedFile {
+                path: fc.file_name,
+                message: "The remote host returned no content for this file; it was not read."
+                    .to_string(),
+            });
+            continue;
+        };
+        let content = match content {
+            remote_server::proto::file_context_proto::Content::TextContent(text) => {
+                AnyFileContent::StringContent(text)
+            }
+            remote_server::proto::file_context_proto::Content::BinaryContent(bytes) => {
+                AnyFileContent::BinaryContent(bytes)
+            }
+        };
+        let line_range = match (fc.line_range_start, fc.line_range_end) {
+            (Some(start), Some(end)) => Some(start as usize..end as usize),
+            _ => None,
+        };
+        let last_modified = fc
+            .last_modified_epoch_millis
+            .map(|ms| std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+        files.push(FileContext {
+            file_name: fc.file_name,
+            content,
+            line_range,
+            last_modified,
+            line_count: fc.line_count as usize,
+        });
+    }
+    (files, failed)
+}
+
 /// Reads the content of the given files at the given `FileLocations`.
 ///
 /// If any files cannot be read, they are included in the `failed_files` field of the
@@ -1092,6 +1260,18 @@ pub async fn read_local_file_context(
                 &current_working_directory,
             ));
 
+            // The batch budget is spent: say so for this file instead of reading it with a
+            // zero-byte allowance and returning an empty or silently cut entry (#1278).
+            if batch_bytes_remaining == Some(0) {
+                result.failed_files.push(ReadFilesFailedFile {
+                    path: absolute_file_path.to_string_lossy().to_string(),
+                    message: "Not read: this call's total size limit was reached. Request \
+                              this file in a separate read_files call."
+                        .to_string(),
+                });
+                continue;
+            }
+
             let metadata = match async_fs::metadata(&absolute_file_path).await {
                 Ok(m) => m,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1101,7 +1281,15 @@ pub async fn read_local_file_context(
                     });
                     continue;
                 }
-                Err(e) => return Err(anyhow::anyhow!(e)),
+                // One unreadable path (permission denied, a directory, ...) is that file's
+                // failure, not the batch's: the files already read still go to the model.
+                Err(e) => {
+                    result.failed_files.push(ReadFilesFailedFile {
+                        path: absolute_file_path.to_string_lossy().to_string(),
+                        message: format!("Could not read file: {e}"),
+                    });
+                    continue;
+                }
             };
             let last_modified = metadata.modified().ok();
             let file_size = metadata.len() as usize;
@@ -1122,20 +1310,45 @@ pub async fn read_local_file_context(
             // `TextFileReadResult::NotText` if the text reader trips on invalid
             // UTF-8.
             if !should_read_as_binary(&absolute_file_path).await {
-                match FileModel::read_text_file(
+                let text_read = match FileModel::read_text_file(
                     &absolute_file_path,
                     effective_max,
                     &file.lines,
                     last_modified,
                 )
-                .await?
+                .await
                 {
+                    Ok(text_read) => text_read,
+                    Err(e) => {
+                        result.failed_files.push(ReadFilesFailedFile {
+                            path: path_str,
+                            message: format!("Could not read file: {e}"),
+                        });
+                        continue;
+                    }
+                };
+                match text_read {
                     TextFileReadResult::Segments {
                         segments,
                         bytes_read,
                     } => {
                         if let Some(remaining) = &mut batch_bytes_remaining {
                             *remaining = remaining.saturating_sub(bytes_read);
+                        }
+                        // A first line longer than the allowance is cut to an empty segment
+                        // that spends nothing; handing that on would tell the model the file
+                        // is empty (#1326), so report it as not read instead.
+                        let (segments, cut_lines) = split_off_size_cut_segments(segments);
+                        if !cut_lines.is_empty() {
+                            result.failed_files.push(ReadFilesFailedFile {
+                                path: path_str.clone(),
+                                message: format!(
+                                    "Not read: size limit. Line {} is longer than the {} \
+                                     bytes allowed for this read, so no content was returned (the file is NOT empty). Request it with a \
+                                     narrower line range or in a separate read_files call.",
+                                    cut_lines[0], effective_max
+                                ),
+                            });
                         }
                         result
                             .file_contexts
@@ -1155,14 +1368,24 @@ pub async fn read_local_file_context(
             }
 
             // Binary path (either detected as binary, or text reading failed).
-            match read_binary_file_context(
+            let binary_read = match read_binary_file_context(
                 &absolute_file_path,
                 effective_max,
                 file_size,
                 last_modified,
             )
-            .await?
+            .await
             {
+                Ok(binary_read) => binary_read,
+                Err(e) => {
+                    result.failed_files.push(ReadFilesFailedFile {
+                        path: path_str,
+                        message: format!("Could not read file: {e}"),
+                    });
+                    continue;
+                }
+            };
+            match binary_read {
                 BinaryFileReadResult::Context {
                     file_context,
                     bytes_read,
@@ -1198,6 +1421,27 @@ pub async fn read_local_file_context(
 
         Ok(result)
     }
+}
+
+/// Separates segments that the byte budget cut down to nothing from real ones.
+///
+/// A truncated segment with no buffered line comes back as empty content with an empty
+/// `start..start` line range (an untruncated empty file has no range, and a range past EOF
+/// keeps its requested non-empty span). Returns the remaining segments and the start line of
+/// each cut one.
+#[cfg(feature = "local_fs")]
+fn split_off_size_cut_segments(
+    segments: Vec<warp_files::TextFileSegment>,
+) -> (Vec<warp_files::TextFileSegment>, Vec<usize>) {
+    let mut kept = Vec::with_capacity(segments.len());
+    let mut cut = Vec::new();
+    for seg in segments {
+        match &seg.line_range {
+            Some(r) if seg.content.is_empty() && r.start == r.end => cut.push(r.start),
+            _ => kept.push(seg),
+        }
+    }
+    (kept, cut)
 }
 
 /// Returns `true` if the file at `path` should be read via the binary code
@@ -1336,7 +1580,9 @@ async fn read_binary_file_context(
 fn build_is_file_path_command(path: &str, shell_type: ShellType) -> String {
     let escaped_path = shell_quote_arg(path, shell_type);
     if shell_type == ShellType::PowerShell {
-        format!("if (Microsoft.PowerShell.Management\\Test-Path -PathType Leaf {escaped_path}) {{ exit 0 }} else {{ exit 1 }}")
+        format!(
+            "if (Microsoft.PowerShell.Management\\Test-Path -PathType Leaf {escaped_path}) {{ exit 0 }} else {{ exit 1 }}"
+        )
     } else {
         format!("test -f {escaped_path}")
     }
@@ -1361,8 +1607,58 @@ async fn is_file_path(path: &str, session: &Session) -> bool {
         .unwrap_or(false)
 }
 
+/// How long a "is this directory in a git repository?" answer is reused.
+///
+/// An agent turn typically fires several grep/glob calls against the same repo within a
+/// second or two; each uncached probe is a full command round trip (a whole ssh RTT on a
+/// remote session). Kept short so `git init` / deleting `.git` is noticed almost at once.
+const GIT_REPO_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Hard bound on cached probes so a long agent run over many directories cannot grow it.
+const GIT_REPO_PROBE_CACHE_MAX: usize = 256;
+
+type GitRepoProbeCache =
+    std::collections::HashMap<(warp_core::SessionId, String), (std::time::Instant, bool)>;
+
+static GIT_REPO_PROBE_CACHE: std::sync::LazyLock<parking_lot::Mutex<GitRepoProbeCache>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn cached_git_repo_probe(
+    cache: &GitRepoProbeCache,
+    key: &(warp_core::SessionId, String),
+    now: std::time::Instant,
+) -> Option<bool> {
+    let (at, value) = cache.get(key)?;
+    (now.saturating_duration_since(*at) < GIT_REPO_PROBE_TTL).then_some(*value)
+}
+
+fn store_git_repo_probe(
+    cache: &mut GitRepoProbeCache,
+    key: (warp_core::SessionId, String),
+    value: bool,
+    now: std::time::Instant,
+) {
+    if cache.len() >= GIT_REPO_PROBE_CACHE_MAX {
+        cache.retain(|_, (at, _)| now.saturating_duration_since(*at) < GIT_REPO_PROBE_TTL);
+        if cache.len() >= GIT_REPO_PROBE_CACHE_MAX {
+            cache.clear();
+        }
+    }
+    cache.insert(key, (now, value));
+}
+
 /// Returns true if git is installed and the given path is in a git repository.
+///
+/// Successful answers are cached per (session, path) for [`GIT_REPO_PROBE_TTL`]; errors are
+/// never cached.
 async fn is_git_repository(absolute_path: &str, session: &Session) -> anyhow::Result<bool> {
+    let key = (session.id(), absolute_path.to_owned());
+    if let Some(hit) = cached_git_repo_probe(
+        &GIT_REPO_PROBE_CACHE.lock(),
+        &key,
+        std::time::Instant::now(),
+    ) {
+        return Ok(hit);
+    }
     let git_command = build_is_git_repository_command(
         absolute_path,
         session.shell().shell_type().executor_syntax(),
@@ -1375,7 +1671,14 @@ async fn is_git_repository(absolute_path: &str, session: &Session) -> anyhow::Re
             ExecuteCommandOptions::default(),
         )
         .await?;
-    Ok(command_output.success())
+    let result = command_output.success();
+    store_git_repo_probe(
+        &mut GIT_REPO_PROBE_CACHE.lock(),
+        key,
+        result,
+        std::time::Instant::now(),
+    );
+    Ok(result)
 }
 
 fn get_server_output_id(
@@ -1396,6 +1699,66 @@ async fn read_file_as_binary(file_path: &std::path::Path) -> Result<Vec<u8>, Fil
     }
 
     async_fs::read(file_path).await.map_err(FileLoadError::from)
+}
+
+/// Expands a leading `~` in a model-supplied path against the home of the host the session's
+/// shell runs on. A local session is returned unchanged (the ordinary local expansion happens
+/// later); a remote one must not expand against the LOCAL home (#1278). A remote session whose
+/// home is unknown is also returned unchanged.
+pub(super) fn expand_session_tilde(
+    active_session: &ActiveSession,
+    path: &str,
+    ctx: &AppContext,
+) -> String {
+    if !is_remote_session(active_session, ctx) {
+        return path.to_owned();
+    }
+    crate::ai::paths::expand_tilde_against(
+        path,
+        remote_session_home(active_session, ctx).as_deref(),
+    )
+}
+
+fn is_remote_session(active_session: &ActiveSession, ctx: &AppContext) -> bool {
+    matches!(
+        active_session.session_type(ctx),
+        Some(crate::terminal::model::session::SessionType::WarpifiedRemote { .. })
+    )
+}
+
+/// The path rules for the session's host: its reported OS when remote and known, else local.
+pub(super) fn session_path_host(
+    active_session: &ActiveSession,
+    ctx: &AppContext,
+) -> crate::ai::paths::PathHost {
+    if !is_remote_session(active_session, ctx) {
+        return crate::ai::paths::PathHost::Local;
+    }
+    crate::ai::paths::PathHost::for_remote(
+        active_session
+            .session(ctx)
+            .and_then(|session| session.host_info().os_category)
+            .as_deref(),
+    )
+}
+
+fn remote_session_home(active_session: &ActiveSession, ctx: &AppContext) -> Option<String> {
+    active_session
+        .session(ctx)
+        .and_then(|session| session.home_dir().map(str::to_owned))
+}
+
+/// Whether `path` starts with a `~` that [`expand_session_tilde`] cannot resolve: a remote
+/// session whose home is unknown. The permission check would then judge the LOCAL home's
+/// path while the action runs on the remote host, so callers must not auto-run (#1288).
+pub(super) fn session_tilde_unresolved(
+    active_session: &ActiveSession,
+    path: &str,
+    ctx: &AppContext,
+) -> bool {
+    crate::ai::paths::path_needs_home(path)
+        && is_remote_session(active_session, ctx)
+        && remote_session_home(active_session, ctx).is_none_or(|home| home.is_empty())
 }
 
 #[cfg(all(test, feature = "local_fs"))]
@@ -1507,15 +1870,15 @@ mod initiator_tests {
         let AIAgentActionType::RequestFileEdits { file_edits, .. } = protected_move() else {
             unreachable!()
         };
-        let cwd = Some("/project".to_owned());
-        assert!(file_edits_touch_protected_path(&file_edits, &None, &cwd));
+        let session = crate::ai::blocklist::SessionContext::new_local_with_cwd_for_test("/project");
+        assert!(file_edits_touch_protected_path(&file_edits, &session));
 
         let ordinary = [FileEdit::Edit(ParsedDiff::V4AEdit {
             file: Some("src/a.rs".to_owned()),
             move_to: Some("src/b.rs".to_owned()),
             hunks: Vec::new(),
         })];
-        assert!(!file_edits_touch_protected_path(&ordinary, &None, &cwd));
+        assert!(!file_edits_touch_protected_path(&ordinary, &session));
     }
 
     /// A user accept dequeues one specific action rather than draining the queue, so it keeps
@@ -1524,5 +1887,49 @@ mod initiator_tests {
     fn a_user_accept_serialises() {
         assert!(ActionInitiator::User.is_out_of_band());
         assert!(!ActionInitiator::Agent.is_out_of_band());
+    }
+}
+
+#[cfg(test)]
+mod git_repo_probe_cache_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn key(dir: &str) -> (warp_core::SessionId, String) {
+        (warp_core::SessionId::default(), dir.to_owned())
+    }
+
+    #[test]
+    fn hit_within_ttl_miss_after() {
+        let mut cache = GitRepoProbeCache::new();
+        let t0 = Instant::now();
+        store_git_repo_probe(&mut cache, key("/r"), true, t0);
+        assert_eq!(
+            cached_git_repo_probe(&cache, &key("/r"), t0 + Duration::from_secs(1)),
+            Some(true)
+        );
+        assert_eq!(
+            cached_git_repo_probe(&cache, &key("/r"), t0 + GIT_REPO_PROBE_TTL),
+            None
+        );
+        assert_eq!(cached_git_repo_probe(&cache, &key("/other"), t0), None);
+    }
+
+    #[test]
+    fn negative_results_are_cached_too() {
+        let mut cache = GitRepoProbeCache::new();
+        let t0 = Instant::now();
+        store_git_repo_probe(&mut cache, key("/n"), false, t0);
+        assert_eq!(cached_git_repo_probe(&cache, &key("/n"), t0), Some(false));
+    }
+
+    #[test]
+    fn cache_is_bounded() {
+        let mut cache = GitRepoProbeCache::new();
+        let t0 = Instant::now();
+        for i in 0..(GIT_REPO_PROBE_CACHE_MAX * 3) {
+            store_git_repo_probe(&mut cache, key(&format!("/d{i}")), true, t0);
+        }
+        assert!(cache.len() <= GIT_REPO_PROBE_CACHE_MAX);
     }
 }

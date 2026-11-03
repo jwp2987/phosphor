@@ -1,0 +1,103 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "<div align=\"center\">",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "  <b>centered</b>",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "</div>",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "<details>",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "<summary>Click</summary>",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Hidden ",
+                    styles: PlainText,
+                },
+                FormattedTextFragment {
+                    text: "content",
+                    styles: Bold,
+                },
+                FormattedTextFragment {
+                    text: ".",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "</details>",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Inline <kbd>Ctrl</kbd>+<kbd>C</kbd> and <br> break.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "<script>alert(1)</script>",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "<img src=\"https://example.com/x.png\" width=\"100\">",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

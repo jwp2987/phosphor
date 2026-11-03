@@ -78,11 +78,10 @@ impl LocalControlMode {
 ///
 /// Missing, unreadable, or malformed values return `None`, allowing the
 /// setting to fail closed to its default value.
-fn read_local_control_mode_from_secure_storage(ctx: &AppContext) -> Option<LocalControlMode> {
-    let value = match ctx
-        .secure_storage()
-        .read_value(LOCAL_CONTROL_MODE_STORAGE_KEY)
-    {
+fn read_local_control_mode_from_secure_storage(
+    storage: &dyn secure_storage::SecureStorage,
+) -> Option<LocalControlMode> {
+    let value = match storage.read_value(LOCAL_CONTROL_MODE_STORAGE_KEY) {
         Ok(value) => value,
         Err(secure_storage::Error::NotFound) => return None,
         Err(err) => {
@@ -106,12 +105,9 @@ fn read_local_control_mode_from_secure_storage(ctx: &AppContext) -> Option<Local
 /// Returns whether a write occurred.
 fn write_local_control_mode_to_secure_storage(
     new_value: &LocalControlMode,
-    ctx: &AppContext,
+    storage: &dyn secure_storage::SecureStorage,
 ) -> Result<bool> {
-    let stored_value_matches = match ctx
-        .secure_storage()
-        .read_value(LOCAL_CONTROL_MODE_STORAGE_KEY)
-    {
+    let stored_value_matches = match storage.read_value(LOCAL_CONTROL_MODE_STORAGE_KEY) {
         Ok(stored) => serde_json::from_str::<LocalControlMode>(&stored)
             .is_ok_and(|stored| stored == *new_value),
         Err(secure_storage::Error::NotFound) => false,
@@ -128,18 +124,17 @@ fn write_local_control_mode_to_secure_storage(
     // Uses the owner-only-fallback write path since this setting gates a
     // local-automation surface and should not be readable by other users on
     // platforms that fall back to a file-backed store.
-    ctx.secure_storage()
+    storage
         .write_value_with_owner_only_fallback(LOCAL_CONTROL_MODE_STORAGE_KEY, &serialized)
         .context("Failed to write local control mode to secure storage")?;
     Ok(true)
 }
 
 /// Removes [`LocalControlMode`] from secure storage.
-fn clear_local_control_mode_from_secure_storage(ctx: &AppContext) -> Result<()> {
-    match ctx
-        .secure_storage()
-        .remove_value(LOCAL_CONTROL_MODE_STORAGE_KEY)
-    {
+fn clear_local_control_mode_from_secure_storage(
+    storage: &dyn secure_storage::SecureStorage,
+) -> Result<()> {
+    match storage.remove_value(LOCAL_CONTROL_MODE_STORAGE_KEY) {
         Ok(()) | Err(secure_storage::Error::NotFound) => Ok(()),
         Err(err) => Err(anyhow::anyhow!(err))
             .context("Failed to clear local control mode from secure storage"),
@@ -154,9 +149,31 @@ define_settings_group!(LocalControlSettings, settings: [
 pub struct LocalControlModeSetting {
     inner: LocalControlMode,
     is_explicitly_set: bool,
+    /// The stored value is being read off the UI thread (#1309) and has not landed yet. Until it
+    /// does, `inner` is `Disabled` (fail closed: the stored value may be a deliberate "off" on a
+    /// channel whose default is "on"). Cleared when the read lands, or when the user changes the
+    /// setting first (their choice wins over a stale read).
+    awaiting_load: bool,
 }
 
 impl LocalControlModeSetting {
+    /// Adopts the value read from secure storage, unless the user changed the setting meanwhile.
+    fn finish_async_load(
+        &mut self,
+        stored: Option<LocalControlMode>,
+        ctx: &mut ModelContext<LocalControlSettings>,
+    ) {
+        if !self.awaiting_load {
+            return;
+        }
+        self.awaiting_load = false;
+        let explicitly_set = stored.is_some();
+        let value = stored.unwrap_or_else(Self::default_value);
+        if let Err(err) = self.load_value(value, explicitly_set, ctx) {
+            report_error!(err);
+        }
+    }
+
     fn emit_changed(
         ctx: &mut ModelContext<LocalControlSettings>,
         change_event_reason: settings::ChangeEventReason,
@@ -164,6 +181,38 @@ impl LocalControlModeSetting {
         ctx.emit(LocalControlSettingsChangedEvent::LocalControlModeSetting {
             change_event_reason,
         });
+    }
+}
+
+/// Outcome of a write queued on the secure-storage worker: `Ok(changed_in_storage)`.
+pub(crate) type PendingModeWrite = secure_storage::background::BackgroundResult<Result<bool>>;
+
+impl LocalControlModeSetting {
+    /// [`Setting::set_value`], but when the write is queued off-thread the caller gets its
+    /// eventual outcome, so a UI can surface a failure (the in-memory value is already updated).
+    /// `None` means the write already completed synchronously (an `Err` is returned directly).
+    pub(crate) fn set_value_tracked(
+        &mut self,
+        new_value: LocalControlMode,
+        ctx: &mut ModelContext<LocalControlSettings>,
+    ) -> Result<Option<PendingModeWrite>> {
+        // The compare-and-write runs on the secure-storage worker, ordered after the startup read
+        // and any earlier write.
+        self.awaiting_load = false;
+        let to_store = new_value;
+        let (changed_in_storage, pending) = match secure_storage::background::run_or_inline(
+            move |storage| write_local_control_mode_to_secure_storage(&to_store, storage),
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => (!self.is_explicitly_set, Some(result)),
+            Err(result) => (result?, None),
+        };
+        if self.value() != &new_value || changed_in_storage {
+            self.inner = self.validate(new_value);
+            self.is_explicitly_set = true;
+            Self::emit_changed(ctx, settings::ChangeEventReason::LocalChange);
+        }
+        Ok(pending)
     }
 }
 
@@ -176,10 +225,12 @@ impl Setting for LocalControlModeSetting {
             Some(value) => Self {
                 inner: value,
                 is_explicitly_set: true,
+                awaiting_load: false,
             },
             None => Self {
                 inner: Self::default_value(),
                 is_explicitly_set: false,
+                awaiting_load: false,
             },
         }
     }
@@ -209,7 +260,14 @@ impl Setting for LocalControlModeSetting {
     }
 
     fn clear_value(&mut self, ctx: &mut ModelContext<Self::Group>) -> Result<()> {
-        clear_local_control_mode_from_secure_storage(ctx)?;
+        self.awaiting_load = false;
+        match secure_storage::background::run_or_inline(
+            clear_local_control_mode_from_secure_storage,
+            ctx.secure_storage(),
+        ) {
+            Ok(result) => report_background_failure(result, ctx),
+            Err(result) => result?,
+        }
         self.inner = self.validate(Self::default_value());
         self.is_explicitly_set = false;
         Self::emit_changed(ctx, settings::ChangeEventReason::Clear);
@@ -244,11 +302,8 @@ impl Setting for LocalControlModeSetting {
         new_value: Self::Value,
         ctx: &mut ModelContext<Self::Group>,
     ) -> Result<()> {
-        let changed_in_storage = write_local_control_mode_to_secure_storage(&new_value, ctx)?;
-        if self.value() != &new_value || changed_in_storage {
-            self.inner = self.validate(new_value);
-            self.is_explicitly_set = true;
-            Self::emit_changed(ctx, settings::ChangeEventReason::LocalChange);
+        if let Some(pending) = self.set_value_tracked(new_value, ctx)? {
+            report_background_failure(pending, ctx);
         }
         Ok(())
     }
@@ -258,7 +313,17 @@ impl Setting for LocalControlModeSetting {
     }
 
     fn new_from_storage(ctx: &mut AppContext) -> Self {
-        Self::new(read_local_control_mode_from_secure_storage(ctx))
+        if secure_storage::background::is_available() {
+            // Read off the UI thread; `begin_async_load` starts it once the group is registered.
+            return Self {
+                inner: LocalControlMode::Disabled,
+                is_explicitly_set: false,
+                awaiting_load: true,
+            };
+        }
+        Self::new(read_local_control_mode_from_secure_storage(
+            ctx.secure_storage(),
+        ))
     }
 
     fn is_supported_on_current_platform(&self) -> bool {
@@ -276,6 +341,45 @@ impl std::ops::Deref for LocalControlModeSetting {
     fn deref(&self) -> &Self::Target {
         self.value()
     }
+}
+
+/// Surfaces the outcome of a write that ran on the secure-storage worker.
+fn report_background_failure<T: Send + 'static>(
+    result: secure_storage::background::BackgroundResult<Result<T>>,
+    ctx: &mut ModelContext<LocalControlSettings>,
+) {
+    ctx.spawn(result.wait(), |_, outcome, _| {
+        if let Some(Err(err)) = outcome {
+            report_error!(err);
+        }
+    });
+}
+
+/// Starts the off-thread read of the stored mode, if `new_from_storage` deferred it (#1309).
+/// Call right after `LocalControlSettings::register`.
+pub(crate) fn begin_async_load(ctx: &mut AppContext) {
+    use warpui::SingletonEntity as _;
+    if !LocalControlSettings::as_ref(ctx)
+        .local_control_mode
+        .awaiting_load
+    {
+        return;
+    }
+    LocalControlSettings::handle(ctx).update(ctx, |group, mctx| {
+        match secure_storage::background::run_or_inline(
+            read_local_control_mode_from_secure_storage,
+            mctx.secure_storage(),
+        ) {
+            Ok(result) => {
+                mctx.spawn(result.wait(), |settings, stored, ctx| {
+                    if let Some(stored) = stored {
+                        settings.local_control_mode.finish_async_load(stored, ctx);
+                    }
+                });
+            }
+            Err(stored) => group.local_control_mode.finish_async_load(stored, mctx),
+        }
+    });
 }
 
 impl LocalControlSettings {

@@ -23,6 +23,7 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip < 9 SUID bits on ZipArchive::extract. Only zip 7.2 via candle-core 0.9 (input_classifier, onnx_candle) remains; our own crates are on zip 9. candle only opens npz/pth weight archives with ZipArchive::by_name and never calls extract; the model is bundled in-repo. candle 0.11 still pins zip 8. Drop when candle moves to zip >= 9." },
     { id = "RUSTSEC-2026-0368", reason = "zip < 9 symlink targets outside the destination on ZipArchive::extract. Same as RUSTSEC-2026-0367: only candle-core's zip 7.2, which never calls extract." },
     { id = "RUSTSEC-2026-0369", reason = "zip < 9 permissions applied through symlinks on extract. Same as RUSTSEC-2026-0367: only candle-core's zip 7.2, which never calls extract." },
+    { id = "RUSTSEC-2026-0429", reason = "zip < 9 process abort on extract of a symlink entry with a large declared size (#1480). Same as RUSTSEC-2026-0367: only candle-core's zip 7.2, which never calls extract." },
 
     # ---- unmaintained ----------------------------------------------------
     { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained, but considered to be complete." },

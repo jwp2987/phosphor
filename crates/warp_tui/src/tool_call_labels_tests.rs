@@ -201,6 +201,7 @@ fn label_prefers_executed_command_over_streamed_command() {
             exit_code: ExitCode::from(0),
             start_ts: None,
             completed_ts: None,
+            interrupted: false,
         },
     ));
     assert_eq!(

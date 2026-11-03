@@ -560,7 +560,10 @@ fn malformed_fetch_args_error_is_recognizable_as_invalid_arguments() {
     assert_eq!(v["_byop_intercepted"], true);
     assert_eq!(v["error"], "invalid_arguments");
     assert_eq!(v["tool"], "webfetch");
-    assert!(v.get("status").is_none(), "must not also carry the old status:error shape");
+    assert!(
+        v.get("status").is_none(),
+        "must not also carry the old status:error shape"
+    );
     assert!(
         v["detail"].as_str().unwrap().contains("url"),
         "detail should surface the underlying parse error, got {v:?}"
@@ -578,7 +581,10 @@ fn malformed_search_args_error_is_recognizable_as_invalid_arguments() {
     assert_eq!(v["_byop_intercepted"], true);
     assert_eq!(v["error"], "invalid_arguments");
     assert_eq!(v["tool"], "websearch");
-    assert!(v.get("status").is_none(), "must not also carry the old status:error shape");
+    assert!(
+        v.get("status").is_none(),
+        "must not also carry the old status:error shape"
+    );
     assert!(
         v["detail"].as_str().unwrap().contains("query"),
         "detail should surface the underlying parse error, got {v:?}"
@@ -598,4 +604,29 @@ fn non_parse_error_keeps_status_error_shape() {
     assert_eq!(v["_byop_intercepted"], true);
     assert_eq!(v["status"], "error");
     assert!(v.get("error").is_none());
+}
+
+/// #1278: the base64 `data:` URL of a fetched image must not be inlined into the text tool
+/// result; old code put up to the full 40k cap of unusable base64 into the model's context.
+#[test]
+fn fetch_output_does_not_inline_image_base64() {
+    let out = FetchOutput {
+        url: "https://x/i.png".into(),
+        status: 200,
+        content_type: "image/png".into(),
+        format: "markdown".into(),
+        output: "Image fetched successfully".into(),
+        attachments: vec![FetchAttachment {
+            mime: "image/png".into(),
+            url: format!("data:image/png;base64,{}", "A".repeat(100_000)),
+        }],
+    };
+    let v = fetch_output_to_json(&out);
+    let rendered = v.to_string();
+    assert!(
+        rendered.len() < 1_000,
+        "base64 leaked: {} bytes",
+        rendered.len()
+    );
+    assert!(rendered.contains("image/png"));
 }

@@ -1,0 +1,10 @@
+{
+ "failing_lines": [
+  "FAIL test-results/2026-11-03_build_r18e4_3021881600/unit/bench.json: local endpoint value (lit...)",
+  "FAIL test-results/2026-11-03_build_r18e4_3021881600/unit/fuzz-smoke.json: local endpoint value (lit...)",
+  "ERROR: Job failed: exit status 1"
+ ],
+ "job": "guards",
+ "status": "failed",
+ "duration": 92.185527
+}

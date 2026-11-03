@@ -4,7 +4,7 @@ use crate::code::opened_files::OpenedFilesModel;
 use crate::search::ai_context_menu::mixer::AIContextMenuSearchableAction;
 use crate::search::async_snapshot_data_source::AsyncSnapshotDataSource;
 use crate::search::data_source::{Query, QueryResult};
-use crate::search::files::model::FileSearchModel;
+use crate::search::files::model::{git_changed_files_async, FileSearchModel};
 use crate::search::files::search_item::FileSearchResult;
 use crate::search::mixer::{BoxFuture, DataSourceRunErrorWrapper};
 use crate::workspace::ActiveSession;
@@ -20,6 +20,31 @@ use warpui::{AppContext, SingletonEntity};
 
 const MAX_RESULTS: usize = 200;
 
+/// A snapshot whose git-changed set is still to be fetched off the main thread.
+pub(crate) struct PendingFileSnapshot {
+    pub(crate) snapshot: FileSnapshot,
+    pub(crate) git_root: Option<PathBuf>,
+}
+
+/// Resolves the pending git status (async, off the UI thread), then matches.
+pub(crate) fn resolve_git_then_match(
+    pending: PendingFileSnapshot,
+) -> BoxFuture<
+    'static,
+    Result<Vec<QueryResult<AIContextMenuSearchableAction>>, DataSourceRunErrorWrapper>,
+> {
+    Box::pin(async move {
+        let PendingFileSnapshot {
+            mut snapshot,
+            git_root,
+        } = pending;
+        if git_root.is_some() {
+            snapshot.git_changed_files = git_changed_files_async(git_root).await;
+        }
+        fuzzy_match_files(snapshot).await
+    })
+}
+
 pub(crate) struct FileSnapshot {
     pub(crate) contents: Arc<Vec<FileSearchResult>>,
     pub(crate) git_changed_files: HashSet<String>,
@@ -34,40 +59,48 @@ pub(crate) struct FileSnapshot {
 /// For empty queries, snapshots repo contents with git-change status to prioritize modified files,
 /// and for non-empty queries snapshots repo contents only for faster fuzzy matching.
 pub fn file_data_source_for_current_repo(
-) -> AsyncSnapshotDataSource<FileSnapshot, AIContextMenuSearchableAction> {
+) -> AsyncSnapshotDataSource<PendingFileSnapshot, AIContextMenuSearchableAction> {
     AsyncSnapshotDataSource::new(
         |query: &Query, app: &AppContext| {
             if FileSearchModel::should_skip_overly_broad_query(&query.text) {
-                return FileSnapshot {
-                    contents: Arc::new(Vec::new()),
-                    git_changed_files: HashSet::new(),
-                    query_text: query.text.clone(),
-                    last_opened: HashMap::new(),
+                return PendingFileSnapshot {
+                    snapshot: FileSnapshot {
+                        contents: Arc::new(Vec::new()),
+                        git_changed_files: HashSet::new(),
+                        query_text: query.text.clone(),
+                        last_opened: HashMap::new(),
+                    },
+                    git_root: None,
                 };
             }
 
             let file_search_model = FileSearchModel::as_ref(app);
             let last_opened = snapshot_last_opened(app);
             if query.text.is_empty() {
-                let (contents, git_changed_files) =
-                    file_search_model.get_repo_contents_with_git_status(app);
-                FileSnapshot {
-                    contents,
-                    git_changed_files,
-                    query_text: query.text.clone(),
-                    last_opened,
+                let (contents, git_root) = file_search_model.get_repo_contents_with_git_root(app);
+                PendingFileSnapshot {
+                    snapshot: FileSnapshot {
+                        contents,
+                        git_changed_files: HashSet::new(),
+                        query_text: query.text.clone(),
+                        last_opened,
+                    },
+                    git_root,
                 }
             } else {
                 let contents = file_search_model.get_repo_contents(&query.text, app);
-                FileSnapshot {
-                    contents,
-                    git_changed_files: HashSet::new(),
-                    query_text: query.text.clone(),
-                    last_opened,
+                PendingFileSnapshot {
+                    snapshot: FileSnapshot {
+                        contents,
+                        git_changed_files: HashSet::new(),
+                        query_text: query.text.clone(),
+                        last_opened,
+                    },
+                    git_root: None,
                 }
             }
         },
-        fuzzy_match_files,
+        resolve_git_then_match,
     )
 }
 

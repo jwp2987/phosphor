@@ -278,7 +278,7 @@ fn text_element_with_reversed_endpoint_glyph_indices(text: &str) -> FormattedTex
         .map(|(visual_index, _)| Glyph {
             id: Default::default(),
             position_along_baseline: vec2f(visual_index as f32 * TEST_GLYPH_ADVANCE, 0.0),
-            index: char_count - 1 - visual_index,
+            index: (char_count - 1 - visual_index) as u32,
             width: TEST_GLYPH_ADVANCE,
         })
         .collect();
@@ -331,8 +331,8 @@ fn smart_select_returns_none_when_line_glyph_indices_are_reversed() {
         _ => panic!("expected a text frame"),
     };
     assert!(
-        line.first_glyph().expect("first glyph").index
-            > line.last_glyph().expect("last glyph").index
+        line.first_glyph().expect("first glyph").char_index()
+            > line.last_glyph().expect("last glyph").char_index()
     );
 
     assert!(

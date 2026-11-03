@@ -44,8 +44,6 @@ mod dynamic_libraries;
 mod env_vars;
 mod experiments;
 mod external_secrets;
-#[cfg(target_family = "wasm")]
-mod font_fallback;
 mod global_resource_handles;
 mod gpu_state;
 pub mod i18n;
@@ -65,8 +63,6 @@ mod notifications;
 mod palette;
 mod persistence;
 mod platform;
-#[cfg(feature = "plugin_host")]
-mod plugin;
 mod prefix;
 #[cfg(target_os = "macos")]
 mod preview_config_migration;
@@ -104,10 +100,8 @@ mod vim_registers;
 mod voice;
 mod voltron;
 mod warp_managed_paths_watcher;
-#[cfg(target_family = "wasm")]
-mod wasm_nux_dialog;
+mod window_close_policy;
 mod window_settings;
-mod word_block_editor;
 mod workspaces;
 
 // PLEASE DO NOT ADD MORE PUBLIC MODULES!
@@ -122,7 +116,6 @@ mod workspaces;
 // in the warp::integration_testing::assertions module (or a sub-module).  These
 // functions will allow us to keep types internal to this crate and expose a
 // simpler API for integration tests to consume.
-pub mod ai_assistant;
 pub mod appearance;
 pub mod channel;
 pub mod editor;
@@ -140,6 +133,14 @@ pub mod settings;
 pub mod settings_view;
 pub mod tab_configs;
 pub mod terminal;
+
+/// Dev-only re-exports for the benches and fuzz targets (feature `dev-support`; not API).
+#[cfg(feature = "dev-support")]
+#[doc(hidden)]
+pub mod dev_support {
+    pub use crate::terminal::input_queue::tests::ops::{Op, run_ops};
+    pub use crate::terminal::input_queue::*;
+}
 // Facade re-exporting app-crate + workspace types to the warp_tui front-end.
 // Feature-gated; Zap-adapted subset (cloud re-exports removed). See
 // specs/warp-oss-sync/SCOPE.md.
@@ -156,11 +157,9 @@ pub mod tui;
 #[cfg(feature = "tui")]
 pub use crate::tui::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase, log_out_tui};
 pub mod themes;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
 use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::FileMCPWatcher;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::tui_api_keys::TuiApiKeyRefresher as _;
 use crate::uri::link_policy::is_openable_url_scheme;
 use crate::uri::web_intent_parser::maybe_rewrite_web_url_to_intent;
@@ -203,7 +202,7 @@ use watcher::HomeDirectoryWatcher;
 use settings_view::pane_manager::SettingsPaneManager;
 use terminal::general_settings::GeneralSettings;
 use terminal::keys_settings::KeysSettings;
-#[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+#[cfg(feature = "local_tty")]
 use terminal::local_shell::LocalShellState;
 pub use util::bindings::cmd_or_ctrl_shift;
 pub mod workflows;
@@ -216,8 +215,6 @@ use ::settings::{Setting, ToggleableSetting};
 pub(crate) use settings_write_failure::report_settings_write_error;
 pub use warp_core::errors::{report_error, report_if_error};
 
-#[cfg(feature = "plugin_host")]
-pub use plugin::{PLUGIN_HOST_FLAG, run_plugin_host};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 use warpui::platform::app::ApproveTerminateResult;
@@ -254,7 +251,6 @@ use crate::notebooks::manager::NotebookManager;
 use crate::palette::PaletteMode;
 use crate::persistence::PersistenceWriter;
 use crate::projects::ProjectManagementModel;
-use crate::server::experiments::ServerExperiments;
 use crate::session_management::{RunningSessionSummary, SessionNavigationData};
 use crate::settings::manager::SettingsManager;
 use crate::settings::{AccessibilitySettings, ScrollSettings, SelectionSettings};
@@ -302,7 +298,6 @@ use self::features::FeatureFlag;
 use crate::app_state::AppState;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::drive::ObjectTypeAndId;
-use crate::experiments::ImprovedPaletteSearch;
 pub use crate::global_resource_handles::{GlobalResourceHandles, GlobalResourceHandlesProvider};
 use crate::notification::NotificationContext;
 use crate::root_view::{
@@ -347,7 +342,6 @@ use warpui::{AppContext, OpenUrlDecision, SingletonEntity, WindowId};
 #[folder = "assets"]
 #[include = "bundled/**"] // Should be kept in sync with BUNDLED_ASSETS_DIR.
 #[include = "async/**"] // Should be kept in sync with ASYNC_ASSETS_DIR.
-#[cfg_attr(target_family = "wasm", exclude = "async/**")]
 // Excludes take precedence.
 // Standalone CLI builds (the `oz` tarball) are headless and never render the
 // onboarding/theme imagery in `async/`, so we exclude those bytes from the
@@ -512,7 +506,6 @@ impl LaunchMode {
     ///   `FeatureFlag::RemoteCodebaseIndexing` check in a second place, where
     ///   the two could drift.
     /// * The `Tui` arm keeps the pin's `false` and the pin's reason verbatim.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn supports_indexing(&self) -> bool {
         match self {
             LaunchMode::CommandLine { command, .. } => {
@@ -707,6 +700,15 @@ fn apply_scroll_multiplier(event: &mut Event, app: &AppContext) {
 
 /// Runs the app. If a subcommand was requested, it'll be run instead of the main application.
 pub fn run() -> Result<()> {
+    // Starts the Tracy client when built with `--features profiling`; a no-op otherwise (#1169).
+    warpui::profiling::init();
+    // 1 ms timers instead of the 15.6 ms tick: every debounce, throttle and async wait in the app
+    // would otherwise fire up to a tick late (#1260). `PHOSPHOR_TIMER_RESOLUTION=0` keeps the
+    // default, to compare.
+    #[cfg(windows)]
+    if !std::env::var("PHOSPHOR_TIMER_RESOLUTION").is_ok_and(|value| value == "0") {
+        warp_util::windows::request_high_resolution_timer();
+    }
     // First, while the process is still single-threaded; every worker re-exec (terminal server,
     // plugin host, ...) of this binary also enters here.
     #[cfg(all(
@@ -747,6 +749,13 @@ pub fn run() -> Result<()> {
 
     // Ensure feature flags are initialized before parsing command-line arguments.
     init_feature_flags();
+
+    // Mermaid diagrams render in a child process of this binary (`mermaid-render`), so a stack
+    // overflow in the renderer fails one diagram instead of aborting the app (#1557). If the
+    // executable path is unavailable, rendering stays in-process.
+    if let Ok(exe) = std::env::current_exe() {
+        warp_editor::content::mermaid_diagram::use_subprocess_renderer(exe);
+    }
 
     // The bundled Warp Control wrapper injects the hidden `--warpctrl` flag, which
     // selects a separate argument parser and never falls through to the normal
@@ -798,7 +807,6 @@ pub fn run() -> Result<()> {
             warp_cli::Command::DumpDebugInfo => {
                 return debug_dump::run();
             }
-            #[cfg(not(target_family = "wasm"))]
             warp_cli::Command::DumpSettingsSchema {
                 channel,
                 output_path,
@@ -852,8 +860,6 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
             crate::terminal::local_tty::server::run_terminal_server(args);
             Ok(())
         }
-        #[cfg(feature = "plugin_host")]
-        warp_cli::WorkerCommand::PluginHost { .. } => crate::run_plugin_host(),
         #[cfg(feature = "local_tty")]
         warp_cli::WorkerCommand::MinidumpServer { socket_name } => {
             cfg_if::cfg_if! {
@@ -865,17 +871,17 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
                 }
             }
         }
-        #[cfg(not(target_family = "wasm"))]
         warp_cli::WorkerCommand::RemoteServerProxy(args) => {
             init_common(&LaunchMode::RemoteServerProxy, None)?;
             crate::remote_server::run_proxy(args.identity_key.clone())
         }
-        #[cfg(not(target_family = "wasm"))]
         warp_cli::WorkerCommand::RemoteServerDaemon(args) => {
             init_common(&LaunchMode::RemoteServerDaemon, None)?;
             crate::remote_server::run_daemon(args.identity_key.clone())
         }
-        #[cfg(not(target_family = "wasm"))]
+        warp_cli::WorkerCommand::MermaidRender => {
+            warp_editor::content::mermaid_diagram::run_render_worker()
+        }
         warp_cli::WorkerCommand::RipgrepSearch {
             parent,
             ignore_case,
@@ -893,11 +899,7 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
             .map_err(|err| anyhow!(err.to_string()))?;
             Ok(())
         }
-        #[cfg(not(any(
-            feature = "local_tty",
-            feature = "plugin_host",
-            not(target_family = "wasm")
-        )))]
+        #[cfg(not(any(feature = "local_tty", not(target_family = "wasm"))))]
         worker => {
             // On wasm, specifically, we should fail spectacularly if we get here.
             #[cfg(target_family = "wasm")]
@@ -915,6 +917,9 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
 /// `warp_tui`.
 #[cfg(feature = "tui")]
 pub fn run_tui(api_key: Option<String>, mount: TuiMountFn) -> Result<()> {
+    if let Ok(exe) = std::env::current_exe() {
+        warp_editor::content::mermaid_diagram::use_subprocess_renderer(exe);
+    }
     run_internal(LaunchMode::Tui { mount, api_key })
 }
 
@@ -973,6 +978,9 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
                 warp_logging::init(warp_logging::LogConfig {
                     frontend: launch_mode.log_frontend(),
                     log_destination,
+                    max_file_size_bytes: warp_logging::default_max_file_size_bytes(
+                        launch_mode.log_frontend(),
+                    ),
                     ..Default::default()
                 })?;
             }
@@ -980,6 +988,9 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
             warp_logging::init(warp_logging::LogConfig {
                 frontend: launch_mode.log_frontend(),
                 log_destination,
+                max_file_size_bytes: warp_logging::default_max_file_size_bytes(
+                    launch_mode.log_frontend(),
+                ),
                 ..Default::default()
             })?;
         }
@@ -1006,7 +1017,6 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
     // Configure rustls to use its default crypto provider.  This MUST be called
     // before making any network requests that use TLS, otherwise rustls will
     // panic.
-    #[cfg(not(target_family = "wasm"))]
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("must be able to initialize crypto provider for TLS support");
@@ -1047,14 +1057,6 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
 
     // For wasm builds we have this special case to parse out the intent
     // from the url that is used to visite the app on web.
-    #[cfg(target_family = "wasm")]
-    {
-        use uri::web_intent_parser;
-        if let Some(intent) = web_intent_parser::parse_web_intent_from_current_url() {
-            launch_mode.add_url(intent);
-        }
-        web_intent_parser::set_context_flags_from_current_url();
-    }
 
     // Collect run_internal() errors that occur before app initialization; log them once local crash reporting has been initialized.
     #[cfg_attr(
@@ -1259,7 +1261,6 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     );
 
     app_builder.run(move |ctx| {
-        #[cfg(not(target_family = "wasm"))]
         // Rotate the log files in the background.
         ctx.background_executor()
             .spawn(warp_logging::rotate_log_files())
@@ -1294,10 +1295,6 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
         #[cfg(enable_crash_recovery)]
         ctx.add_singleton_model(move |_ctx| crash_recovery);
 
-        #[cfg(feature = "plugin_host")]
-        ctx.add_singleton_model(move |ctx| {
-            plugin::PluginHost::new(ctx).expect("Could not instantiate PluginHost")
-        });
         let app_state = initialize_app(
             &launch_mode,
             timer,
@@ -1306,9 +1303,9 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
             pre_init_errors,
         );
 
-        if ImprovedPaletteSearch::improved_search_enabled(ctx) {
-            FeatureFlag::UseTantivySearch.set_enabled(true);
-        }
+        // The improved-search experiment was allocated 100% to its treatment, so Tantivy search
+        // is unconditionally on.
+        FeatureFlag::UseTantivySearch.set_enabled(true);
 
         // The TUI front-end reuses the full `initialize_app` bootstrap above (so
         // Appearance, settings, MCP, etc. exist), then mounts the TUI (via
@@ -1460,7 +1457,6 @@ fn initialize_app(
         restored_user_profiles,
         time_of_next_force_object_refresh,
         object_actions,
-        experiments,
         ai_queries,
         nld_prompts,
         persisted_workspaces,
@@ -1483,7 +1479,6 @@ fn initialize_app(
                 sqlite_data.user_profiles,
                 sqlite_data.time_of_next_force_object_refresh,
                 sqlite_data.object_actions,
-                sqlite_data.experiments,
                 sqlite_data.ai_queries,
                 sqlite_data.nld_prompts,
                 sqlite_data.codebase_indices,
@@ -1520,14 +1515,8 @@ fn initialize_app(
                 Default::default(),
                 Default::default(),
                 Default::default(),
-                Default::default(),
             )
         });
-
-    // Initialize a global model to track server-side experiment state.
-    // This depends on the [`GlobalResourceHandlesProvider`] and so it must
-    // be initialized after it.
-    ctx.add_singleton_model(|ctx| ServerExperiments::new_from_cache(experiments, ctx));
 
     ctx.add_singleton_model(AIRequestUsageModel::new);
 
@@ -1535,7 +1524,6 @@ fn initialize_app(
 
     // Initialize ApiKeyManager after UserWorkspaces so it can subscribe to workspace/settings changes
     ctx.add_singleton_model(|ctx| {
-        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut manager = ::ai::api_keys::ApiKeyManager::new(ctx);
         // Reload keys when another process writes them (see
         // `ai::tui_api_keys`). Safe here because `WarpManagedPathsWatcher` is
@@ -1543,9 +1531,7 @@ fn initialize_app(
         // this is not gated on `LaunchMode::Tui`: the GUI and TUI share one
         // app id and therefore one keyring namespace, so a GUI process goes
         // stale on a TUI-side write exactly as a TUI process does.
-        #[cfg(not(target_family = "wasm"))]
         manager.subscribe_to_tui_api_key_changes(ctx);
-        #[cfg(not(target_family = "wasm"))]
         manager.subscribe_to_settings_changes(ctx);
         manager
     });
@@ -1553,16 +1539,18 @@ fn initialize_app(
     // The API key for custom Agent Providers is stored in secure storage via its own
     // singleton, decoupled from ApiKeyManager (which forwards BYOK to warp-server).
     ctx.add_singleton_model(|ctx| {
-        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut secrets = crate::ai::agent_providers::AgentProviderSecrets::new(ctx);
         // This -- not `ApiKeyManager` -- is the store both of this fork's key
         // editors write (GUI Settings > AI, and the TUI's `/api-keys` picker),
         // and they share one keyring namespace, so it needs the same
         // cross-process reload as `ApiKeyManager` above.
-        #[cfg(not(target_family = "wasm"))]
         secrets.subscribe_to_tui_api_key_changes(ctx);
         secrets
     });
+
+    // #1311: resolve the passwd record off the UI thread so new tabs hit the cache.
+    #[cfg(all(unix, feature = "local_tty"))]
+    crate::terminal::local_tty::prewarm_current_user();
 
     // Issue #72: the global HTTP proxy's Basic Auth password goes through the OS keychain.
     // Reapply immediately after registering, so the empty-string placeholder global slot
@@ -1621,8 +1609,6 @@ fn initialize_app(
             .detach();
     }
 
-    experiments::init(ctx);
-
     // Initialize timestamp for session id and last active event
     App::record_last_active_timestamp();
 
@@ -1631,10 +1617,7 @@ fn initialize_app(
     ctx.add_singleton_model(|_| ExecutionProfileEditorManager::default());
     ctx.add_singleton_model(|_| pricing::PricingInfoModel::new());
     ctx.add_singleton_model(|_| {
-        ManagedSecretManager::new(
-            Arc::new(local_managed_secrets::DisabledManagedSecretsClient),
-            auth_state.clone(),
-        )
+        ManagedSecretManager::new(Arc::new(local_managed_secrets::DisabledManagedSecretsClient))
     });
 
     #[cfg(target_os = "macos")]
@@ -1670,7 +1653,6 @@ fn initialize_app(
     // Without this registration the daemon leg is inert on the client: nothing
     // consumes `CodebaseIndexStatusesSnapshot` and nothing ever asks a daemon
     // to index.
-    #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(remote_server::codebase_index_model::RemoteCodebaseIndexModel::new);
     // Zap Wave 6-1: the `remote_server::wire_auth_token_rotation(ctx)` call was physically
     // removed along with the server API token rotation event and the
@@ -1785,6 +1767,7 @@ fn initialize_app(
                 // startup timing table to stderr. Doesn't affect telemetry logic; for
                 // developer use only.
                 timer.print_trace_to_stderr_if_enabled();
+                log::info!("{}", timer.startup_summary());
                 timer.compute_stats()
             });
             let event = TelemetryEvent::AppStartup(AppStartupInfo {
@@ -1828,11 +1811,11 @@ fn initialize_app(
             IntervalTimer::handle(ctx).update(ctx, |timer, _| {
                 timer.mark_interval_end("FIRST_FRAME_DRAWN");
                 timer.print_trace_to_stderr_if_enabled();
+                log::info!("{}", timer.startup_summary());
             });
         });
     }
 
-    #[cfg(not(target_family = "wasm"))]
     {
         ctx.add_singleton_model(DirectoryWatcher::new);
         // Register the skill provider directories as force-included paths so
@@ -1931,7 +1914,6 @@ fn initialize_app(
     ai::init(ctx);
     app_services::init(ctx);
     // // TODO: Temporarily disabling keybindings for WASM builds. Will be implemented in future WASM support.
-    #[cfg(not(target_family = "wasm"))]
     code::editor::find::view::init(ctx);
     workspace::init(ctx);
     pane_group::init(ctx);
@@ -1960,7 +1942,6 @@ fn initialize_app(
     ai::blocklist::init(ctx);
     ai::blocklist::block::status_bar::init(ctx);
     drive::index::init(ctx);
-    ai_assistant::panel::init(ctx);
     // Zap Wave 7-2: `settings_view::update_environment_form::init` was physically removed
     // along with the cloud ambient agent's main subsystem.
     env_vars::env_var_collection_block::init(ctx);
@@ -2073,8 +2054,12 @@ fn initialize_app(
         // column, the ask-user-question speedbump setting) supersede items 1/3/4 of #256, not
         // its item 2, and all three are closed. Nothing superseded this read; it was simply
         // unported.
-        ctx.add_singleton_model(move |_| {
+        let history_model = ctx.add_singleton_model(move |_| {
             BlocklistAIHistoryModel::new(ai_queries, nld_prompts, conversations)
+        });
+        // #1363: orchestration children are read off the UI thread and inserted as they land.
+        history_model.update(ctx, |model, ctx| {
+            model.hydrate_pending_orchestration_children(ctx)
         });
     }
     // Seed the orchestration pin set from persisted conversation data. Each
@@ -2177,7 +2162,7 @@ fn initialize_app(
     // RemoteAgentContext reconciles connected SSH hosts' `RemoteAgentContextSnapshot`
     // pushes into SkillManager's per-host bundled/home-skill catalogs (#487). Registered
     // after both SkillManager and RemoteServerManager, which it subscribes to and updates.
-    #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+    #[cfg(feature = "local_fs")]
     ctx.add_singleton_model(crate::ai::remote_agent_context::RemoteAgentContext::new);
 
     // ObjectStoreViewModel subscribes to UpdateManager so that it can be notified when objects are
@@ -2204,7 +2189,7 @@ fn initialize_app(
     // cloud_objects RTC WebSocket. After 2b-1, `start_listener` was already a no-op, so
     // this pass physically removed the entire file along with the singleton registration.
 
-    #[cfg(all(not(target_family = "wasm"), feature = "local_tty"))]
+    #[cfg(feature = "local_tty")]
     {
         ctx.add_singleton_model(LocalShellState::new);
         ctx.add_singleton_model(system::SystemInfo::new);
@@ -2385,14 +2370,12 @@ fn initialize_app(
         aliases.connect(ctx);
     });
 
-    // When running natively, add the http server singleton to the application.
-    #[cfg(not(target_family = "wasm"))]
+    // The local HTTP server only hosts the heap-profiling endpoint, so it is only started in
+    // builds that have one. (It used to also serve an unauthenticated `/install_detection`
+    // route with `*.warp.dev` CORS for the web NUX; that was removed.)
+    #[cfg(all(not(target_family = "wasm"), feature = "jemalloc_pprof"))]
     ctx.add_singleton_model(move |ctx| {
-        let routers = vec![
-            app_installation_detection::make_router(),
-            profiling::make_router(),
-        ];
-        http_server::HttpServer::new(routers, ctx)
+        http_server::HttpServer::new(vec![profiling::make_router()], ctx)
     });
 
     #[cfg(feature = "local_fs")]
@@ -2423,6 +2406,8 @@ trait WillTerminateSteps {
     fn begin_server_shutdown(&mut self);
     /// Send unsaved notebook changes to the persistence writer.
     fn flush_notebooks(&mut self);
+    /// Take the app snapshot a debounced save still owes, and queue it for the writer (#1363).
+    fn flush_app_snapshot(&mut self);
     /// Drain and stop the SQLite writer thread (an unbounded join).
     fn terminate_persistence_writer(&mut self);
     /// Tear down the terminal server and pty event loops.
@@ -2442,6 +2427,8 @@ trait WillTerminateSteps {
 /// - Server shutdowns start first, so they progress while the persistence writer
 ///   drains (an unbounded join), instead of queueing behind it and eating the
 ///   SIGTERM deadline.
+/// - The pending app snapshot is queued before the writer is terminated, so the drain
+///   writes it.
 /// - The terminal server is torn down after the writer, so the shells' exits are not
 ///   persisted as sessions that ended.
 /// - The bounded wait for the servers comes after the terminal server and app-services
@@ -2450,13 +2437,25 @@ trait WillTerminateSteps {
 /// - App services are torn down before the autoupdate relaunch, so the new process
 ///   doesn't find this one.
 fn run_will_terminate_steps(steps: &mut impl WillTerminateSteps) {
+    use warpui::platform::shutdown_progress::set_step;
+    // `set_step` lets the quit watchdog's give-up log name the step still running.
+    set_step("begin_server_shutdown");
     steps.begin_server_shutdown();
+    set_step("flush_notebooks");
     steps.flush_notebooks();
+    set_step("flush_app_snapshot");
+    steps.flush_app_snapshot();
+    set_step("terminate_persistence_writer");
     steps.terminate_persistence_writer();
+    set_step("tear_down_terminal_server");
     steps.tear_down_terminal_server();
+    set_step("tear_down_app_services");
     steps.tear_down_app_services();
+    set_step("finish_server_shutdown");
     steps.finish_server_shutdown();
+    set_step("relaunch_for_autoupdate");
     steps.relaunch_for_autoupdate();
+    set_step("tear_down_diagnostics");
     steps.tear_down_diagnostics();
 }
 
@@ -2479,10 +2478,30 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
         });
     }
 
+    fn flush_app_snapshot(&mut self) {
+        crate::workspace::flush_pending_app_snapshot(self.ctx);
+    }
+
     fn terminate_persistence_writer(&mut self) {
+        // Settings changes are written by a background thread (#1155); make sure the last
+        // one is on disk before the process goes away.
+        if self
+            .ctx
+            .has_singleton_model::<::settings::PublicPreferences>()
+        {
+            ::settings::PublicPreferences::as_ref(self.ctx).flush_pending_writes();
+        }
+        // The private (JSON) preferences are written off-thread too (#1203).
+        if self
+            .ctx
+            .has_singleton_model::<::settings::PrivatePreferences>()
+        {
+            ::settings::PrivatePreferences::as_ref(self.ctx).flush_pending_writes();
+        }
         // Unbounded on purpose: this drains queued writes and checkpoints the WAL, and
-        // abandoning it loses the last app state. The SIGTERM path's 5s watchdog still
-        // bounds it there.
+        // abandoning it loses the last app state. It waits on the writer thread's own
+        // completion (the join), not a timer. The SIGTERM path's 5s watchdog is only a
+        // logged give-up for a wedged writer; it names this step when it fires.
         PersistenceWriter::handle(self.ctx).update(self.ctx, |writer, _ctx| {
             writer.terminate();
         });
@@ -2553,7 +2572,6 @@ impl WillTerminateSteps for AppWillTerminate<'_> {
 struct AppExitServerShutdown {
     deadline: instant::Instant,
     lsp: Option<lsp::LspAppExitShutdown>,
-    #[cfg(not(target_family = "wasm"))]
     mcp: Option<crate::ai::mcp::app_exit::McpAppExitShutdown>,
 }
 
@@ -2564,7 +2582,6 @@ fn begin_servers_shutdown_for_app_exit(ctx: &mut AppContext) -> AppExitServerShu
     let deadline = instant::Instant::now() + APP_EXIT_SHUTDOWN_GRACE;
     AppExitServerShutdown {
         deadline,
-        #[cfg(not(target_family = "wasm"))]
         mcp: begin_mcp_servers_shutdown_for_app_exit(ctx),
         lsp: begin_language_servers_shutdown_for_app_exit(ctx),
     }
@@ -2581,7 +2598,6 @@ impl AppExitServerShutdown {
                     .saturating_duration_since(instant::Instant::now()),
             );
         }
-        #[cfg(not(target_family = "wasm"))]
         if let Some(mcp) = self.mcp {
             let outcome = mcp.finish(self.deadline);
             log::info!("MCP servers at app exit: {outcome:?}");
@@ -2622,7 +2638,6 @@ fn begin_language_servers_shutdown_for_app_exit(
 /// Returns `None`, doing nothing, when `TemplatableMCPServerManager` was never registered
 /// (the remote-server daemon shares these callbacks; so do test apps that skip it), since
 /// `handle` panics on an unregistered singleton. The pin stops no MCP server on exit.
-#[cfg(not(target_family = "wasm"))]
 fn begin_mcp_servers_shutdown_for_app_exit(
     ctx: &mut AppContext,
 ) -> Option<crate::ai::mcp::app_exit::McpAppExitShutdown> {
@@ -2701,16 +2716,21 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             // Ctrl+Shift+Q, menu Quit, SIGTERM/SIGHUP, the headless/TUI/agent-SDK loop
             // exit) converges on this hook. See `run_will_terminate_steps` for why the
             // steps run in this order.
+            // A give-up for a step that never finishes (#1410). Every quit path, not only the
+            // signal ones that already have a 5 s watchdog, can now end the process.
+            warpui::platform::shutdown_progress::arm_quit_give_up();
             run_will_terminate_steps(&mut AppWillTerminate { ctx, servers: None });
         })),
         on_should_close_window: Some(Box::new(move |window_id, ctx| {
             let general_settings = GeneralSettings::as_ref(ctx);
             // On Linux or Windows, if we're about to close the final window, we should quit the app instead.
-            // On Mac, we do this conditionally based on a user setting.
-            let quit_on_last_window_closed =
-                cfg!(any(target_os = "linux", target_os = "freebsd", windows))
-                    || *general_settings.quit_on_last_window_closed;
-            if ctx.window_ids().count() == 1 && quit_on_last_window_closed {
+            // On Mac, we do this conditionally based on a user setting (default on, #1154).
+            if window_close_policy::should_quit_app(
+                window_close_policy::PLATFORM_ALWAYS_QUITS,
+                *general_settings.quit_on_last_window_closed,
+                ctx.window_ids().count(),
+                window_close_policy::CloseReason::Requested,
+            ) {
                 log::info!("No windows left, terminating app");
                 ctx.terminate_app(TerminationMode::Cancellable, None);
                 return ApproveTerminateResult::Cancel;
@@ -2878,6 +2898,21 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
                 });
             }
             ctx.dispatch_global_action("workspace:save_app", &());
+
+            // Backstop (#1154): a window that closed without `on_should_close_window`
+            // deciding to quit (e.g. the unsaved-changes dialog's force-close) must not
+            // leave the app running with no window.
+            if !is_integration_test
+                && window_close_policy::should_quit_app(
+                    window_close_policy::PLATFORM_ALWAYS_QUITS,
+                    *GeneralSettings::as_ref(ctx).quit_on_last_window_closed,
+                    ctx.window_ids().count(),
+                    window_close_policy::CloseReason::AlreadyClosed,
+                )
+            {
+                log::info!("Last window closed without a quit decision, terminating app");
+                ctx.terminate_app(TerminationMode::ForceTerminate, None);
+            }
         })),
         on_window_moved: Some(Box::new(move |ctx| {
             // During startup, winit fires several move/resize events in a row; save_app is meaningless at this stage and slows down startup.
@@ -3033,8 +3068,6 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
     });
 
     // For now, we only specify application-level fallback fonts on web.
-    #[cfg(target_family = "wasm")]
-    ctx.set_fallback_font_fn(font_fallback::fallback_font_fn);
 
     match &launch_mode {
         LaunchMode::App { .. } | LaunchMode::Test { .. } => {
@@ -3072,7 +3105,6 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
                 maybe_register_app_as_login_item(ctx);
             }
         }
-        #[cfg_attr(target_family = "wasm", allow(unused_variables))]
         LaunchMode::CommandLine {
             command,
             global_options,
@@ -3176,6 +3208,14 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // inserted here rather than gated by a Cargo feature so that it can be switched off at
     // runtime, without a rebuild, with `ZAP_DISABLED_FEATURES=typeahead_handoff` (below).
     flags.insert(FeatureFlag::TypeaheadHandoff);
+
+    // Finished blocks are compacted into flat storage (#1152). `GridHandler::finish` is the
+    // only reader: without the flag a finished grid keeps up to a screen of 24-byte cells,
+    // blanks included, per block (~240 KB at 50x200 for a screenful of output). Upstream
+    // received this flag from server-delivered flags, which this fork dropped, so it was
+    // silently dark. Default ON on every channel; the runtime opt-out is
+    // `ZAP_DISABLED_FEATURES=maximize_flat_storage`.
+    flags.insert(FeatureFlag::MaximizeFlatStorage);
 
     let extra_flags: &[FeatureFlag] = &[
         #[cfg(feature = "autoupdate")]
@@ -3437,8 +3477,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::ContextWindowUsageV2,
         #[cfg(feature = "global_search")]
         FeatureFlag::GlobalSearch,
-        #[cfg(feature = "embedded_code_review_comments")]
-        FeatureFlag::EmbeddedCodeReviewComments,
         #[cfg(feature = "file_and_diff_set_comments")]
         FeatureFlag::FileAndDiffSetComments,
         #[cfg(feature = "revert_to_checkpoints")]
@@ -3607,8 +3645,10 @@ fn apply_feature_env_overrides(
 }
 
 /// Default-on flags that `ZAP_DISABLED_FEATURES` can switch back off, by name.
-const DISABLEABLE_FEATURES: &[(&str, FeatureFlag)] =
-    &[("typeahead_handoff", FeatureFlag::TypeaheadHandoff)];
+const DISABLEABLE_FEATURES: &[(&str, FeatureFlag)] = &[
+    ("typeahead_handoff", FeatureFlag::TypeaheadHandoff),
+    ("maximize_flat_storage", FeatureFlag::MaximizeFlatStorage),
+];
 
 /// The flags a `ZAP_DISABLED_FEATURES` value disables: comma- or whitespace-separated names from
 /// `DISABLEABLE_FEATURES`, with `-` accepted for `_`. Unknown names disable nothing and are
@@ -3710,9 +3750,8 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     // The six flags below gate live, shipped code but sat in `DOGFOOD_FLAGS` with
     // no reader: upstream's channel binaries pass that list to
     // `with_additional_features`, and this fork's equivalents
-    // (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compile --
-    // `autobins = false`, one declared `[[bin]]`, and they import a crate absent
-    // from the workspace. `bin/phosphor_oss.rs` adds `DEBUG_FLAGS` alone. So the
+    // (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compiled and have been
+    // removed. `bin/phosphor_oss.rs` adds `DEBUG_FLAGS` alone. So the
     // code was unreachable in every binary this repo actually builds, including
     // the entire `warpctrl` local-control surface and its bundled skill.
     //

@@ -732,7 +732,6 @@ fn test_is_unambiguous_shell_command_leaves_prose_and_ambiguous_input_to_the_cla
             "cat the log file",
             "kill the server running on port 8080",
             "git is failing to push",
-            "cargo build",
             "make it work",
             "time how long the build takes",
             "~/.bashrc has a syntax error",
@@ -983,13 +982,134 @@ fn test_reads_as_prose_misses_command_headed_prose_without_a_veto_word() {
 }
 
 #[test]
-fn test_reads_as_prose_skips_buffers_over_the_size_cap() {
-    // Over `MAX_PREFILTER_BYTES` the buffer is not scanned at all, even when it is plainly prose.
+fn test_reads_as_prose_has_no_size_cap() {
+    // #1604: the former 4096-byte cap left plain prose unread; a long buffer reads as its short
+    // form does.
     let sentence = "find the bug in main.rs ";
-    let long = sentence.repeat(MAX_PREFILTER_BYTES / sentence.len() + 1);
-    assert!(long.trim().len() > MAX_PREFILTER_BYTES);
+    let long = sentence.repeat(4096 / sentence.len() + 1);
+    assert!(long.trim().len() > 4096);
     assert!(reads_as_prose(sentence));
-    assert!(!reads_as_prose(&long));
+    assert!(reads_as_prose(&long));
+    let command = "ls -la /tmp ";
+    let long_command = command.repeat(4096 / command.len() + 1);
+    assert!(!reads_as_prose(command));
+    assert!(!reads_as_prose(&long_command));
+}
+
+/// #1604: the model classifiers are shown a bounded opening of the text; the rules see all of it.
+#[test]
+fn test_truncate_for_model_cuts_at_a_char_boundary_and_drops_tokens_past_the_cut() {
+    let short = ParsedTokensSnapshot {
+        buffer_text: "echo hi".to_owned(),
+        parsed_tokens: Vec::new(),
+    };
+    assert!(matches!(
+        truncate_for_model(&short),
+        std::borrow::Cow::Borrowed(_)
+    ));
+    // Two-byte chars straddling the cap: the cut lands on a boundary at or below it.
+    let text = "é".repeat(MAX_MODEL_INPUT_BYTES);
+    let snapshot = ParsedTokensSnapshot {
+        buffer_text: text.clone(),
+        parsed_tokens: Vec::new(),
+    };
+    let cut = truncate_for_model(&snapshot).into_owned();
+    assert!(cut.buffer_text.len() <= MAX_MODEL_INPUT_BYTES);
+    assert!(cut.buffer_text.len() >= MAX_MODEL_INPUT_BYTES - 1);
+    assert!(text.starts_with(&cut.buffer_text));
+    // Tokens: those ending past the cut are dropped.
+    let words = "word ".repeat(1000);
+    let parsed = futures::executor::block_on(mock_parsed_input_token(words.clone()));
+    assert!(parsed.buffer_text.len() > MAX_MODEL_INPUT_BYTES);
+    let cut = truncate_for_model(&parsed).into_owned();
+    assert_eq!(cut.buffer_text.len(), MAX_MODEL_INPUT_BYTES);
+    assert!(!cut.parsed_tokens.is_empty());
+    assert!(cut
+        .parsed_tokens
+        .iter()
+        .all(|token| token.token.span.end() <= MAX_MODEL_INPUT_BYTES));
+    assert!(cut.parsed_tokens.len() < parsed.parsed_tokens.len());
+}
+
+/// #1604: the routing rules are linear in the text. `route` and the Enter-time predicates are
+/// timed on 128 KiB and 1.28 MB (10x) of a shell line, a multi-line script and prose; each large
+/// run must cost at most `LINEAR_RATIO_CAP` times its small run (a quadratic step would cost
+/// ~100x) and finish under an absolute bound loose enough for a debug build under nextest's 60 s
+/// kill. The release-build numbers at 1 MB and 10 MB, with their own limits, are the `routing/*`
+/// criterion benches (`app/benches/routing_bench.rs`).
+#[test]
+fn test_routing_rules_are_linear_in_the_text() {
+    use crate::util::routing::{
+        self, RoutingContext, ShellFamily, Surface, Typeahead as RoutingTypeahead,
+    };
+    use std::time::{Duration, Instant};
+
+    const LINEAR_RATIO_CAP: f64 = 30.0;
+    const SMALL: usize = 128 * 1024;
+    const LARGE: usize = 10 * SMALL;
+
+    fn context(surface: Surface) -> RoutingContext {
+        RoutingContext {
+            surface,
+            shell: ShellFamily::Posix,
+            head_known_to_shell: None,
+            commands_fully_loaded: false,
+            command_data_current: false,
+            is_agent_follow_up: false,
+            ran_before_exactly: false,
+            denylisted: false,
+            typeahead: RoutingTypeahead::None,
+        }
+    }
+    fn text_of(kind: &str, bytes: usize) -> String {
+        let unit = match kind {
+            // A shell line with no operator, so every word is examined (no early return).
+            "line" => "cp ./src/main.rs ./backup/main_v2.rs ",
+            "script" => "for f in src/*.rs; do grep -n TODO $f | sort > /tmp/out.txt; done\n",
+            _ => "please explain why the build failed on my machine and how to fix it ",
+        };
+        let mut text = unit.repeat(bytes / unit.len() + 1);
+        text.truncate(bytes);
+        // Cut back to a char boundary.
+        while !text.is_char_boundary(text.len()) {
+            text.pop();
+        }
+        text
+    }
+    fn time_all(text: &str) -> Duration {
+        let snapshot = ParsedTokensSnapshot {
+            buffer_text: text.to_owned(),
+            parsed_tokens: Vec::new(),
+        };
+        let started = Instant::now();
+        let plain = routing::route(&snapshot, &context(Surface::PlainTerminal));
+        let conversation = routing::route(&snapshot, &context(Surface::AgentConversation));
+        let predicates = [
+            is_unambiguous_shell_command(&snapshot),
+            reads_as_prose(text),
+            has_no_prose_evidence(text),
+            reads_as_request_to_agent(text),
+            lacks_command_evidence_in_agent_conversation(&snapshot),
+            has_clear_shell_structure_for_unknown_head(text),
+        ];
+        std::hint::black_box((plain, conversation, predicates));
+        started.elapsed()
+    }
+
+    for kind in ["line", "script", "prose"] {
+        let small = time_all(&text_of(kind, SMALL));
+        let large = time_all(&text_of(kind, LARGE));
+        let ratio = large.as_secs_f64() / small.max(Duration::from_millis(5)).as_secs_f64();
+        assert!(
+            ratio <= LINEAR_RATIO_CAP,
+            "{kind}: 1.28 MB took {large:?}, 128 KiB took {small:?} ({ratio:.1}x): a rule is \
+             super-linear"
+        );
+        assert!(
+            large <= Duration::from_secs(15),
+            "{kind}: routing 1.28 MB took {large:?} (debug-build bound 15 s)"
+        );
+    }
 }
 
 #[test]
@@ -1268,4 +1388,182 @@ fn test_965_collision_words_read_as_prose_only_as_a_sentence() {
     ] {
         assert!(!reads_as_request_to_agent(text), "{text:?}");
     }
+}
+
+/// #1183 (Mac verification): a make completion spec can describe the words after `make` as
+/// subcommands or options (its targets). That is no evidence for words that are not routine
+/// targets, so `make commit port` still lacks command evidence. Fails on the old order, where
+/// the completion-description check returned "has evidence" before the make-target check.
+#[test]
+fn test_make_with_described_non_targets_lacks_evidence_in_agent_conversation() {
+    futures::executor::block_on(async move {
+        let mut token = mock_parsed_input_token("make commit port".to_string()).await;
+        clear_all_token_descriptions(&mut token);
+        for index in 0..token.parsed_tokens.len() {
+            let suggestion_type = if index == 0 {
+                SuggestionType::Command(TopLevelCommandCaseSensitivity::CaseSensitive)
+            } else {
+                SuggestionType::Subcommand
+            };
+            token.parsed_tokens[index].token_description = Some(Description {
+                token: token.parsed_tokens[index].token.clone(),
+                description_text: Some("described".to_string()),
+                suggestion_type,
+            });
+        }
+        assert!(lacks_command_evidence_in_agent_conversation(&token));
+
+        // Routine targets stay evidence.
+        let mut token = mock_parsed_input_token("make test".to_string()).await;
+        clear_all_token_descriptions(&mut token);
+        assert!(!lacks_command_evidence_in_agent_conversation(&token));
+    });
+}
+
+/// #1203: a known CLI whose first argument is one of its own subcommands is unambiguous even when
+/// that subcommand is an English word, so `git status` and `systemctl status nginx` settle to
+/// Shell at the keystroke or at Enter instead of waiting for the classifier. Any OTHER prose word
+/// in the body, a prose veto, or a head without a subcommand table leaves the line to the
+/// classifier exactly as before; the prose corpus must not move.
+#[test]
+fn test_is_unambiguous_shell_command_rule3_known_subcommand_is_the_only_prose_word() {
+    futures::executor::block_on(async move {
+        for buffer in [
+            "git status",
+            "git status --short",
+            "systemctl status nginx",
+            "systemctl restart nginx.service",
+            "docker ps",
+            "git log --oneline",
+            "git commit -m 'fix the login bug'",
+            "cargo build --release",
+            // Moved here from the prose corpus: since #1203 a known CLI's own subcommand alone
+            // is unambiguous, with or without flags.
+            "cargo build",
+        ] {
+            assert!(
+                is_unambiguous_shell_command_for(buffer).await,
+                "{buffer:?} is a known CLI with its own subcommand"
+            );
+        }
+        for buffer in [
+            // Another prose word besides the subcommand: the classifier decides, as before.
+            "git log --since yesterday",
+            "npm install everything",
+            // The prose vetoes still apply.
+            "git status please?",
+            "git commit the fix",
+            "git add this that it",
+            "docker run the image",
+            // No subcommand table, or not a subcommand.
+            "find large files",
+            "make commit port",
+            "git can memory my to",
+            "systemctl please restart nginx",
+        ] {
+            assert!(
+                !is_unambiguous_shell_command_for(buffer).await,
+                "{buffer:?} must stay with the classifier"
+            );
+        }
+        for buffer in PROSE_WITH_COMMAND_HEADS {
+            assert!(
+                !is_unambiguous_shell_command_for(buffer).await,
+                "prose corpus line {buffer:?} must not become unambiguous"
+            );
+        }
+    });
+}
+
+/// #1203: a history entry for one bare word that reads as English (a typo, `where` in the wrong
+/// shell, `bar`) must not pull it into the shell; a bare command word is a command.
+#[test]
+fn test_lone_word_belongs_to_agent() {
+    for word in [
+        "help", "where", "what", "say", "bar", "show", "make", "Help ",
+    ] {
+        assert!(lone_word_belongs_to_agent(word), "{word:?} is the agent's");
+    }
+    for word in [
+        "ls",
+        "git",
+        "systemctl",
+        "pwd",
+        "htop",
+        "cargo",
+        "nvim",
+        "ls -la",
+    ] {
+        assert!(
+            !lone_word_belongs_to_agent(word),
+            "{word:?} is a command (or not one word)"
+        );
+    }
+}
+
+// #1560: clear shell structure around a head the session does not know.
+#[test]
+fn clear_shell_structure_for_unknown_head_table() {
+    // (line, expected)
+    let table: &[(&str, bool)] = &[
+        // Strong signals, no English.
+        ("print -r -- $EPOCHREALTIME > lat_0", true),
+        ("foo --bar | grep x", true),
+        ("notacmd $HOME/x", true),
+        ("xyz > out.txt", true),
+        ("xyz >out.txt", true),
+        ("xyz 2>/dev/null", true),
+        ("xyz 2>&1", true),
+        ("xyz &> all.log", true),
+        ("xyz < in.txt", true),
+        ("xyz ${DIR}", true),
+        ("xyz $(date)", true),
+        ("xyz \"$DIR\"", true),
+        ("xyz | wc -l", true),
+        ("xyz | ./filter", true),
+        ("xyz | foo --bar", true),
+        ("FOO=1 xyz > run_1", true),
+        // Two weak signals.
+        ("xyz -r --force", true),
+        ("xyz -- -x", true),
+        ("xyz -a -b", true),
+        // One weak signal is a request as often as a command.
+        ("use --verbose", false),
+        ("xyz -r", false),
+        ("xyz --", false),
+        // Prose that contains the characters.
+        ("what is 5 > 3", false),
+        ("what's 5 > 3", false),
+        ("compare A | B", false),
+        ("tabs | spaces", false),
+        ("cats | dogs", false),
+        ("x > y", false),
+        ("xyz > 3", false),
+        ("xyz > B", false),
+        ("xyz > bar", false),
+        ("xyz >= 3", false),
+        ("a -> b", false),
+        ("click <b>bold</b>", false),
+        ("can you show me how to use --verbose?", false),
+        ("explain $PATH to me", false),
+        ("tell me what $HOME means", false),
+        ("list $HOME contents", false),
+        ("xyz $HOME, then retry", false),
+        ("it costs $5 > $3", false),
+        ("解释 $PATH", false),
+        ("please $HOME > out.txt", false),
+        // No structure at all, or not a line with a head and arguments.
+        ("xyz", false),
+        ("xyz abc_def", false),
+        ("", false),
+        ("$HOME", false),
+        ("'xyz' > out.txt", false),
+    ];
+    let mut failures = Vec::new();
+    for (line, expected) in table {
+        if has_clear_shell_structure_for_unknown_head(line) != *expected {
+            failures.push(format!("{line:?}: expected {expected}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

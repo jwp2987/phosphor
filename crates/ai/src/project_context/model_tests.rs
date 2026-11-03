@@ -1270,3 +1270,174 @@ fn test_merge_rediscovery_keeps_latest() {
     assert_eq!(delta.discovered_rules.len(), 1);
     assert!(delta.deleted_rules.is_empty());
 }
+
+// #1193: an over-limit repo is remembered once and not re-indexed per prompt.
+#[test]
+fn test_over_limit_repo_is_marked_once_and_other_errors_are_not() {
+    let mut model = ProjectContextModel::default();
+    let root = PathBuf::from("/repo/huge");
+    let over: anyhow::Error = repo_metadata::entry::BuildTreeError::ExceededMaxFileLimit.into();
+
+    assert!(model.record_index_failure(root.clone(), &over));
+    assert!(model.over_limit_roots.contains(&root));
+    // A repeat is not "new" (so it is not logged again).
+    assert!(!model.record_index_failure(root.clone(), &over));
+
+    let other_root = PathBuf::from("/repo/other");
+    let other = anyhow::anyhow!("permission denied");
+    assert!(!model.record_index_failure(other_root.clone(), &other));
+    assert!(!model.over_limit_roots.contains(&other_root));
+}
+
+/// #1364: a `cd` starts an async fast-path scan; the rules are cached when it lands, so the
+/// request path finds them without walking the disk and without a time budget.
+#[cfg(feature = "local_fs")]
+#[test]
+fn prewarm_fast_path_fills_the_cache_asynchronously() {
+    warpui::App::test((), |mut app| async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "prewarmed rules").unwrap();
+
+        let model = app.add_model(|_| ProjectContextModel::default());
+        model.update(&mut app, |model, ctx| {
+            model.prewarm_fast_path(&cwd, ctx);
+            // Nothing is scanned on the calling thread.
+            assert!(model.fast_path_cache.borrow().is_empty());
+            assert!(model.fast_path_in_flight.contains(&cwd));
+        });
+
+        finish_fast_path_scans(&model, &mut app).await;
+
+        model.read(&app, |model, _| {
+            assert!(model.fast_path_in_flight.is_empty());
+            let cached = model.fast_path_cache.borrow();
+            let entry = cached.get(&cwd).expect("scan result was cached");
+            assert_eq!(entry.rules.len(), 1);
+            assert_eq!(entry.rules[0].content, "prewarmed rules");
+            drop(cached);
+        });
+        // The entry is stamped with the mtimes of every directory the scan walked, including the
+        // shared temp dir; a concurrently running test creating a temp dir there makes the stamp
+        // stale and the lookup correctly reports Pending (a rescan) instead of serving it
+        // (#1412, same race as request_before_prewarm_waits_for_the_scan_instead_of_scanning;
+        // r18e0 hit it here). The rules are never lost: found now, or a rescan is due.
+        let again = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        match again {
+            RulesWait::Ready(Some(found)) => {
+                assert_eq!(found.active_rules[0].content, "prewarmed rules")
+            }
+            RulesWait::Pending(_) => {}
+            RulesWait::Ready(None) => panic!("the prewarmed rules were lost"),
+        }
+    });
+}
+
+/// #1364: a request built before the prewarm lands does not scan on the calling thread: the
+/// lookup leaves the project rules out, and the send's wait resolves with them (global rules
+/// layered) once the background scan lands.
+#[cfg(feature = "local_fs")]
+#[test]
+fn request_before_prewarm_waits_for_the_scan_instead_of_scanning() {
+    warpui::App::test((), |mut app| async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        std::fs::write(cwd.join("AGENTS.md"), "late rules").unwrap();
+
+        let model = app.add_model(|_| ProjectContextModel::default());
+        // The request is built with no cache and no scan landed: no rules, and no scan done.
+        model.read(&app, |model, _| {
+            assert!(model.find_rules_with_fast_path(&cwd).is_none());
+            assert!(
+                model.fast_path_cache.borrow().is_empty(),
+                "no synchronous scan filled the cache"
+            );
+        });
+
+        // The send registers for the scan; nothing is resolved yet.
+        let wait = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        let mut receiver = match wait {
+            RulesWait::Pending(receiver) => receiver,
+            RulesWait::Ready(_) => panic!("the scan cannot have landed yet"),
+        };
+        assert!(receiver.try_recv().unwrap().is_none());
+        model.read(&app, |model, _| {
+            assert!(model.fast_path_cache.borrow().is_empty());
+        });
+
+        finish_fast_path_scans(&model, &mut app).await;
+
+        let rules = receiver
+            .await
+            .expect("the waiter is resolved when the scan lands")
+            .expect("rules were found");
+        assert_eq!(rules.active_rules.len(), 1);
+        assert_eq!(rules.active_rules[0].content, "late rules");
+        // The scan's entry is cached with the rules.
+        model.read(&app, |model, _| {
+            let cache = model.fast_path_cache.borrow();
+            let entry = cache.get(&cwd).expect("the landed scan is cached");
+            assert_eq!(entry.rules.len(), 1);
+        });
+        // A later request finds them cached, never "no rules". The entry is stamped with the
+        // mtimes of every directory the scan walked, including ancestors such as the shared temp
+        // dir; when a concurrently running test creates a temp dir there the stamp is stale and
+        // the lookup correctly rescans (Pending) instead of serving it.
+        let again = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        match again {
+            RulesWait::Ready(Some(_)) | RulesWait::Pending(_) => {}
+            RulesWait::Ready(None) => panic!("a later request lost the rules"),
+        }
+    });
+}
+
+/// #1364: a scan that finds nothing still resolves the waiters (no hang); global-only result.
+#[cfg(feature = "local_fs")]
+#[test]
+fn request_wait_resolves_when_the_directory_has_no_rules() {
+    warpui::App::test((), |mut app| async move {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        let model = app.add_model(|_| ProjectContextModel::default());
+        let wait = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        let receiver = match wait {
+            RulesWait::Pending(receiver) => receiver,
+            RulesWait::Ready(_) => panic!("the scan cannot have landed yet"),
+        };
+        finish_fast_path_scans(&model, &mut app).await;
+        let resolved = receiver.await.expect("resolved, not dropped");
+        assert!(resolved.is_none());
+    });
+}
+
+/// #1364: the fast-path scan is complete, not truncated by a wall-clock budget: every level up
+/// to `MAX_WALK_DEPTH` is visited regardless of how long the stats take.
+#[cfg(feature = "local_fs")]
+#[test]
+fn fast_path_scan_is_not_time_truncated() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    std::fs::write(root.join("AGENTS.md"), "top").unwrap();
+    let mut deep = root.clone();
+    for level in 0..(MAX_WALK_DEPTH - 1) {
+        deep = deep.join(format!("d{level}"));
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    let entry = scan_fast_path_isolated(&deep);
+    assert_eq!(entry.rules.len(), 1);
+    assert_eq!(entry.rules[0].content, "top");
+}
+
+/// Awaits every fast-path scan the model has spawned (by future id, an event, not a timer).
+#[cfg(feature = "local_fs")]
+async fn finish_fast_path_scans(
+    model: &warpui::ModelHandle<ProjectContextModel>,
+    app: &mut warpui::App,
+) {
+    let ids = model.read(&*app, |model, _| model.fast_path_spawned.clone());
+    for id in ids {
+        model
+            .update(app, |_, ctx| ctx.await_spawned_future(id))
+            .await;
+    }
+}

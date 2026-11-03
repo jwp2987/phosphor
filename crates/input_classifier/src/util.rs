@@ -6,6 +6,8 @@ use natural_language_detection::{
 };
 use warp_completer::ParsedTokensSnapshot;
 
+pub mod routing;
+
 /// The percentage of input tokens that can be described by our completion engine before
 /// we consider the input as a shell command. This could be tuned.
 const DETECT_AS_COMMAND_THRESHOLD: f32 = 0.5;
@@ -383,10 +385,6 @@ pub fn is_unknown_single_word_in_agent_conversation(
 /// `buffer_text` for operators and their neighbors, and that cut the head word off an operator
 /// glued to it (`yes|head`, `ls>out.txt`).
 const SHELL_WORD_TERMINATORS: [char; 8] = ['|', '&', ';', '<', '>', '(', ')', '`'];
-
-/// Longest buffer [`is_unambiguous_shell_command`] will look at: it runs synchronously on every
-/// keystroke, and anything longer is a paste the classifier can take its time over.
-const MAX_PREFILTER_BYTES: usize = 4096;
 
 lazy_static! {
     /// Closed-class English function words (#808). One of these anywhere in the buffer, outside
@@ -922,8 +920,7 @@ fn is_prose_word(word: &ShellWord) -> bool {
 /// The buffer is trimmed; leading `NAME=value` assignments are skipped to find the *head*, the
 /// effective first word, which is cut at any operator glued to it (`yes|head`).
 ///
-/// **Vetoes** (always `false`): an empty buffer, or one over [`MAX_PREFILTER_BYTES`] (a paste,
-/// not a typed line — and this runs synchronously per keystroke); a trailing `?`; quoting bash
+/// **Vetoes** (always `false`): an empty buffer; a trailing `?`; quoting bash
 /// would reject, an apostrophe inside a word (`find Josh's PR`) or a typographic quote
 /// (`don’t`), see [`has_shell_safe_quoting`]; the #696 prose shape of a later word ending in `:`
 /// before the first operator ("run exactly this:", [`buffer_has_prose_colon_shape`]); a quoted
@@ -954,7 +951,6 @@ fn is_prose_word(word: &ShellWord) -> bool {
 pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     let text = input.buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.ends_with('?')
         || !has_shell_safe_quoting(text)
         || buffer_has_prose_colon_shape(text)
@@ -1049,7 +1045,22 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     if remaining.is_empty() && !is_explicit_path && !has_assignment_prefix {
         return false;
     }
-    !remaining.iter().any(is_prose_word)
+    if !remaining.iter().any(is_prose_word) {
+        return true;
+    }
+    // Rule 3 (#1203): a known CLI whose first argument is one of its own subcommands is a command
+    // line even when that subcommand is an English word (`git status`, `systemctl status nginx`,
+    // `docker ps`): the word is the CLI's, not the user's. Only the subcommand may read as prose;
+    // any other prose word in the body (`git log --since yesterday`, `npm install everything`)
+    // leaves the line to the classifier, as before. The prose vetoes above (a function word, the
+    // article, sentence punctuation, a trailing `?`) have already said no by this point.
+    is_known_command
+        && known_subcommands(head).is_some_and(|subcommands| {
+            remaining
+                .first()
+                .is_some_and(|first| !first.quoted && subcommands.contains(&first.text.as_str()))
+        })
+        && !remaining.iter().skip(1).any(is_prose_word)
 }
 
 /// Fork-original (#832): true iff `buffer_text` carries one of the prose vetoes that
@@ -1083,12 +1094,11 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
 /// `install docker`, `free up disk space`) does not read as prose here, so a failed entry for it
 /// can still route it to Shell from history.
 ///
-/// A buffer over [`MAX_PREFILTER_BYTES`] returns `false` without being scanned: this runs
-/// synchronously on the UI thread per keystroke, and a paste that size is not going to sit within
-/// the history matcher's 0.9 similarity of a remembered command line anyway.
+/// There is no length cap (#1604): every pass is linear in the text, and the caller decides which
+/// thread runs it (the app routes text over `MAX_SYNC_ROUTING_BYTES` off the UI thread).
 pub fn reads_as_prose(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
-    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES {
+    if text.is_empty() {
         return false;
     }
     if text.ends_with('?') || !has_shell_safe_quoting(text) || buffer_has_prose_colon_shape(text) {
@@ -1402,7 +1412,6 @@ fn is_flag_or_path_word(word: &ShellWord) -> bool {
 pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.contains(['\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`'])
         || text.contains("$(")
         || !has_shell_safe_quoting(text)
@@ -1561,6 +1570,22 @@ fn collision_head_reads_as_sentence(head: &str, remaining: &[ShellWord]) -> bool
 const COLLISION_SENTENCE_WORDS: [&str; 8] =
     ["a", "does", "do", "did", "has", "have", "will", "about"];
 
+/// #1203: whether `word`, a line of one bare word, is one the classifier would send to the agent
+/// rather than run, so a history entry for it (a typo'd `bar`, a `where` typed into the wrong
+/// shell) must not pull it into the shell: a one-off natural-language word, a request opener or
+/// an ambiguous lone head (#1183), or any ordinary English word that is not a known shell command.
+pub fn lone_word_belongs_to_agent(word: &str) -> bool {
+    let word = word.trim().to_lowercase();
+    if word.is_empty() || word.contains(char::is_whitespace) {
+        return false;
+    }
+    let word = word.as_str();
+    is_one_off_natural_language_word(word)
+        || REQUEST_OPENER_HEADS.contains(&word)
+        || AMBIGUOUS_LONE_HEADS.contains(&word)
+        || (is_ordinary_english_word(word) && !is_known_shell_command_word(word))
+}
+
 /// [`reads_as_command_headed_prose`] with the one-off shell keyword exemption applied: a buffer
 /// headed by `echo`, `sudo`... (after any `VAR=x` prefixes) carries English arguments as a matter
 /// of course and is never prose. The one predicate the safety gate and the Enter-time settle
@@ -1592,11 +1617,11 @@ pub fn effective_head_word(buffer_text: &str) -> Option<String> {
 /// path), so an unknown head, or session data that cannot say (`None`/stale: no descriptions),
 /// is never "known". For a wrapper line (`nohup grep ...`, `timeout 5 git ...`) the completer
 /// only describes the wrapper, so the wrapped command counts when it takes free text or is not an
-/// ordinary English word (`grep`, `git`, `ollama`, but not `can`/`fix`). Multi-line and oversized
-/// buffers are never decided here.
+/// ordinary English word (`grep`, `git`, `ollama`, but not `can`/`fix`). Multi-line buffers are
+/// never decided here; length is no veto (#1604).
 pub fn known_command_head(input: &ParsedTokensSnapshot) -> bool {
     let text = input.buffer_text.trim();
-    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES || text.contains(['\n', '\r']) {
+    if text.is_empty() || text.contains(['\n', '\r']) {
         return false;
     }
     let mut tokens = input.parsed_tokens.iter();
@@ -1656,7 +1681,6 @@ const STRONG_PROSE_WORDS: [&str; 16] = [
 pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.contains([
             '\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`', '$',
         ])
@@ -1720,11 +1744,10 @@ pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
 /// and so does a well-formed command made of English words (`echo hello world`) -- the pre-filter
 /// and the classifier decide those as they would any buffer.
 ///
-/// A buffer over [`MAX_PREFILTER_BYTES`] returns `false` without being scanned.
+/// No length cap (#1604): linear in the text; see [`reads_as_prose`].
 pub fn has_no_prose_evidence(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.ends_with('?')
         || !has_shell_safe_quoting(text)
         || buffer_has_prose_colon_shape(text)
@@ -1736,6 +1759,1038 @@ pub fn has_no_prose_evidence(buffer_text: &str) -> bool {
         || (0..words.len()).any(|index| is_prose_article(&words, index))
         || words.iter().any(ends_in_sentence_punctuation)
         || words.iter().any(is_prose_word))
+}
+
+/// Byte offset of a trailing shell comment in `text` (#1185): a `#` that follows whitespace and
+/// sits outside single quotes, double quotes, backticks and backslash escapes. A `#` at the very
+/// start is not a trailing comment (the whole line is the comment; `#` is a one-off shell keyword),
+/// nor is one glued to a word (`$#`, `${#x}`, `a#b`).
+fn trailing_comment_start(text: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut previous_is_space = false;
+    for (index, c) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            previous_is_space = false;
+            continue;
+        }
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                }
+            }
+            Some(q) => {
+                if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\\' => escaped = true,
+                '\'' | '"' | '`' => quote = Some(c),
+                '#' if previous_is_space => return Some(index),
+                _ => {}
+            },
+        }
+        previous_is_space = quote.is_none() && c.is_whitespace();
+    }
+    None
+}
+
+/// #1185: the snapshot with a trailing ` # comment` removed, for classification only. A comment's
+/// words are not the command's (`rec    # for its own body ...` is the command `rec`, but the
+/// classifier read the comment as prose and sent it to the agent). Borrowed unchanged when there
+/// is no trailing comment or nothing but the comment would be left; callers keep matching
+/// pending-detection state against the original `buffer_text`.
+pub fn strip_trailing_comment(
+    input: &ParsedTokensSnapshot,
+) -> std::borrow::Cow<'_, ParsedTokensSnapshot> {
+    let Some(start) = trailing_comment_start(&input.buffer_text) else {
+        return std::borrow::Cow::Borrowed(input);
+    };
+    let kept = input.buffer_text[..start].trim_end();
+    if kept.trim().is_empty() {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let end = kept.len();
+    std::borrow::Cow::Owned(ParsedTokensSnapshot {
+        buffer_text: kept.to_owned(),
+        parsed_tokens: input
+            .parsed_tokens
+            .iter()
+            .filter(|token| token.token.span.end() <= end)
+            .cloned()
+            .collect(),
+    })
+}
+
+/// The most of a buffer a *model* classifier (ONNX, fastText, the heuristic) is shown (#1604).
+/// The rules read the whole text and are linear in it; a model's verdict on a 10 MB paste is the
+/// verdict on its opening (the BERT tokenizer keeps 128 tokens of what it is given), and
+/// tokenizing the whole paste was the one classifier step whose cost nothing else bounded. Cut at
+/// a char boundary, tokens past the cut dropped.
+pub const MAX_MODEL_INPUT_BYTES: usize = 4096;
+
+/// `input` cut to [`MAX_MODEL_INPUT_BYTES`] for a model classifier (#1604); borrowed unchanged
+/// when it already fits. The rules that run before and after the model see the full text.
+pub fn truncate_for_model(
+    input: &ParsedTokensSnapshot,
+) -> std::borrow::Cow<'_, ParsedTokensSnapshot> {
+    if input.buffer_text.len() <= MAX_MODEL_INPUT_BYTES {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let mut end = MAX_MODEL_INPUT_BYTES;
+    while !input.buffer_text.is_char_boundary(end) {
+        end -= 1;
+    }
+    std::borrow::Cow::Owned(ParsedTokensSnapshot {
+        buffer_text: input.buffer_text[..end].to_owned(),
+        parsed_tokens: input
+            .parsed_tokens
+            .iter()
+            .filter(|token| token.token.span.end() <= end)
+            .cloned()
+            .collect(),
+    })
+}
+
+/// #1184: true iff the first word of `text` is a slash command spelling rather than a path to
+/// run: it starts with `/` and has no further `/` or `.` (`/mod`, `/model gpt`, `/`). `/usr/bin/ls`,
+/// `/bin/sh.` and `/./x` are paths.
+pub fn starts_with_slash_command_not_path(text: &str) -> bool {
+    text.split_whitespace()
+        .next()
+        .is_some_and(|head| head.starts_with('/') && !head[1..].contains(['/', '.']))
+}
+
+/// Subcommands of the CLIs whose first argument must be one of them (#1183). Used when no
+/// completion spec describes the argument (spec not loaded, remote session, stale data): a head
+/// listed here with a first argument that is not a subcommand (`git can memory my to`) is not a
+/// command line. Deliberately generous; a miss only sends an agent-conversation line to the agent.
+fn known_subcommands(head: &str) -> Option<&'static [&'static str]> {
+    const GIT: &[&str] = &[
+        "status",
+        "add",
+        "commit",
+        "push",
+        "pull",
+        "fetch",
+        "checkout",
+        "branch",
+        "merge",
+        "rebase",
+        "log",
+        "diff",
+        "show",
+        "stash",
+        "reset",
+        "clone",
+        "init",
+        "remote",
+        "tag",
+        "switch",
+        "restore",
+        "cherry-pick",
+        "bisect",
+        "blame",
+        "clean",
+        "config",
+        "describe",
+        "grep",
+        "mv",
+        "rm",
+        "revert",
+        "submodule",
+        "worktree",
+        "reflog",
+        "apply",
+        "am",
+        "archive",
+        "gc",
+        "notes",
+        "shortlog",
+        "ls-files",
+        "rev-parse",
+        "fsck",
+        "prune",
+        "lfs",
+        "maintenance",
+    ];
+    const SYSTEMCTL: &[&str] = &[
+        "status",
+        "start",
+        "stop",
+        "restart",
+        "reload",
+        "enable",
+        "disable",
+        "is-active",
+        "is-enabled",
+        "is-failed",
+        "list-units",
+        "list-unit-files",
+        "list-timers",
+        "daemon-reload",
+        "mask",
+        "unmask",
+        "cat",
+        "show",
+        "edit",
+        "reboot",
+        "poweroff",
+        "suspend",
+        "kill",
+        "try-restart",
+        "reload-or-restart",
+        "isolate",
+        "get-default",
+        "set-default",
+    ];
+    const DOCKER: &[&str] = &[
+        "ps",
+        "images",
+        "run",
+        "exec",
+        "build",
+        "pull",
+        "push",
+        "logs",
+        "stop",
+        "start",
+        "restart",
+        "rm",
+        "rmi",
+        "compose",
+        "network",
+        "volume",
+        "inspect",
+        "stats",
+        "top",
+        "tag",
+        "login",
+        "logout",
+        "cp",
+        "system",
+        "container",
+        "image",
+        "info",
+        "version",
+        "kill",
+        "pause",
+        "unpause",
+        "attach",
+        "commit",
+        "save",
+        "load",
+        "search",
+        "events",
+        "buildx",
+        "context",
+    ];
+    const CARGO: &[&str] = &[
+        "build",
+        "run",
+        "test",
+        "check",
+        "clippy",
+        "fmt",
+        "doc",
+        "bench",
+        "clean",
+        "new",
+        "init",
+        "add",
+        "remove",
+        "update",
+        "install",
+        "uninstall",
+        "publish",
+        "fetch",
+        "tree",
+        "nextest",
+        "metadata",
+        "search",
+        "package",
+        "vendor",
+        "bloat",
+        "audit",
+        "deny",
+        "watch",
+        "fix",
+    ];
+    const NODE_PM: &[&str] = &[
+        "install",
+        "i",
+        "run",
+        "test",
+        "start",
+        "build",
+        "init",
+        "publish",
+        "update",
+        "uninstall",
+        "ci",
+        "audit",
+        "list",
+        "ls",
+        "outdated",
+        "exec",
+        "dev",
+        "add",
+        "remove",
+        "create",
+        "version",
+        "login",
+        "cache",
+        "link",
+        "pack",
+        "prune",
+        "rebuild",
+        "dlx",
+        "upgrade",
+        "why",
+        "info",
+        "config",
+        "x",
+        "t",
+        "lint",
+    ];
+    const KUBECTL: &[&str] = &[
+        "get",
+        "describe",
+        "apply",
+        "delete",
+        "logs",
+        "exec",
+        "create",
+        "edit",
+        "config",
+        "rollout",
+        "scale",
+        "port-forward",
+        "top",
+        "cp",
+        "label",
+        "annotate",
+        "patch",
+        "expose",
+        "run",
+        "cordon",
+        "uncordon",
+        "drain",
+        "taint",
+        "auth",
+        "api-resources",
+        "explain",
+        "diff",
+        "replace",
+        "wait",
+        "cluster-info",
+        "version",
+        "attach",
+        "set",
+        "events",
+    ];
+    const BREW: &[&str] = &[
+        "install",
+        "uninstall",
+        "list",
+        "update",
+        "upgrade",
+        "search",
+        "info",
+        "cleanup",
+        "doctor",
+        "services",
+        "tap",
+        "untap",
+        "outdated",
+        "deps",
+        "leaves",
+        "link",
+        "unlink",
+        "pin",
+        "unpin",
+        "reinstall",
+        "autoremove",
+        "fetch",
+        "home",
+        "bundle",
+        "cask",
+    ];
+    const APT: &[&str] = &[
+        "install",
+        "update",
+        "upgrade",
+        "remove",
+        "purge",
+        "search",
+        "show",
+        "list",
+        "autoremove",
+        "full-upgrade",
+        "dist-upgrade",
+        "clean",
+        "autoclean",
+        "policy",
+        "depends",
+        "download",
+        "source",
+        "build-dep",
+        "edit-sources",
+        "satisfy",
+        "reinstall",
+    ];
+    const PIP: &[&str] = &[
+        "install",
+        "uninstall",
+        "list",
+        "freeze",
+        "show",
+        "search",
+        "download",
+        "check",
+        "config",
+        "cache",
+        "wheel",
+        "hash",
+        "inspect",
+        "index",
+    ];
+    const GO: &[&str] = &[
+        "build", "run", "test", "mod", "get", "fmt", "vet", "install", "generate", "clean", "env",
+        "version", "list", "work", "doc", "tool", "bug", "fix", "clean",
+    ];
+    const GH: &[&str] = &[
+        "pr",
+        "issue",
+        "repo",
+        "run",
+        "auth",
+        "workflow",
+        "release",
+        "api",
+        "gist",
+        "browse",
+        "status",
+        "config",
+        "alias",
+        "extension",
+        "search",
+        "secret",
+        "variable",
+        "codespace",
+        "cache",
+        "label",
+        "ruleset",
+        "project",
+    ];
+    const OTHER_CLIS: &[&str] = &[
+        "list",
+        "ls",
+        "install",
+        "remove",
+        "status",
+        "up",
+        "down",
+        "plan",
+        "apply",
+        "destroy",
+        "init",
+        "validate",
+        "version",
+        "search",
+        "update",
+        "upgrade",
+        "uninstall",
+        "run",
+        "enable",
+        "disable",
+        "halt",
+        "ssh",
+        "provision",
+        "reload",
+        "se",
+        "in",
+        "info",
+        "refresh",
+        "show",
+        "fmt",
+        "get",
+        "repo",
+        "rollback",
+        "history",
+        "template",
+        "lint",
+        "package",
+        "pull",
+        "push",
+    ];
+    Some(match head {
+        "helm" | "snap" | "flatpak" | "vagrant" | "terraform" | "tofu" => OTHER_CLIS,
+        "git" => GIT,
+        "systemctl" | "loginctl" | "machinectl" => SYSTEMCTL,
+        "docker" | "podman" | "nerdctl" => DOCKER,
+        "cargo" => CARGO,
+        "npm" | "pnpm" | "yarn" | "bun" | "npx" => NODE_PM,
+        "kubectl" | "oc" => KUBECTL,
+        "brew" => BREW,
+        "apt" | "apt-get" | "apt-cache" | "dnf" | "yum" | "zypper" | "pacman" => APT,
+        "pip" | "pip3" | "pipx" | "uv" | "poetry" => PIP,
+        "go" => GO,
+        "gh" => GH,
+        _ => return None,
+    })
+}
+
+/// Targets that are routine for `make`/`just`/`ninja` in any repository.
+const COMMON_MAKE_TARGETS: &[&str] = &[
+    "all",
+    "build",
+    "check",
+    "ci",
+    "clean",
+    "debug",
+    "default",
+    "deploy",
+    "dev",
+    "dist",
+    "doc",
+    "docs",
+    "fmt",
+    "format",
+    "help",
+    "install",
+    "lint",
+    "package",
+    "precheck",
+    "release",
+    "run",
+    "serve",
+    "setup",
+    "test",
+    "tests",
+    "uninstall",
+    "bootstrap",
+    "distclean",
+];
+
+/// Commands whose arguments are free words by design: file, user, process or job names, or text
+/// (`ls the`, `cat notes`, `touch the`, `write alice`, `kill firefox`). Beyond
+/// [`FREE_TEXT_ARG_HEADS`] and the one-off shell keywords. A head here never needs an argument
+/// shaped like a flag or a path to count as a command inside an agent conversation (#1183).
+const FREE_WORD_ARG_HEADS: &[&str] = &[
+    "ls",
+    "ll",
+    "la",
+    "cat",
+    "touch",
+    "rm",
+    "cp",
+    "mv",
+    "mkdir",
+    "rmdir",
+    "stat",
+    "file",
+    "head",
+    "tail",
+    "wc",
+    "sort",
+    "uniq",
+    "less",
+    "more",
+    "cd",
+    "pushd",
+    "popd",
+    "which",
+    "type",
+    "diff",
+    "cmp",
+    "ln",
+    "chmod",
+    "chown",
+    "chgrp",
+    "du",
+    "df",
+    "tree",
+    "open",
+    "code",
+    "vim",
+    "vi",
+    "nvim",
+    "nano",
+    "emacs",
+    "bat",
+    "kill",
+    "pkill",
+    "pgrep",
+    "killall",
+    "write",
+    "wall",
+    "id",
+    "who",
+    "w",
+    "finger",
+    "readlink",
+    "realpath",
+    "basename",
+    "dirname",
+    "source",
+    "export",
+    "unset",
+    "alias",
+    "unalias",
+    "history",
+    "jobs",
+    "read",
+    "test",
+    "printf",
+    "cut",
+    "tr",
+    "tee",
+    "xargs",
+    "watch",
+    "sleep",
+    "dd",
+    "tar",
+    "zip",
+    "unzip",
+    "gzip",
+    "gunzip",
+    "cmd",
+    "command",
+    "builtin",
+    "exec",
+    "eval",
+    "set",
+    "declare",
+    "local",
+    "readonly",
+    "typeset",
+    "hash",
+    "fg",
+    "bg",
+    "disown",
+    "wait",
+    "complete",
+    "bind",
+    "ulimit",
+    "umask",
+    "date",
+    "mkfifo",
+    "mktemp",
+    "nl",
+    "rev",
+    "fold",
+    "fmt",
+    "paste",
+    "join",
+    "comm",
+    "od",
+    "xxd",
+    "hexdump",
+    "strings",
+    "md5sum",
+    "sha256sum",
+    "cksum",
+    "base64",
+    "shuf",
+    "split",
+    "csplit",
+    "column",
+    "stty",
+    "tput",
+    "mount",
+    "umount",
+    "passwd",
+    "su",
+    "chsh",
+    "sudo",
+    "doas",
+    "ping",
+    "traceroute",
+    "host",
+    "whois",
+    "telnet",
+    "ftp",
+    "ssh",
+    "scp",
+    "rsync",
+];
+
+/// Heads that are plain English as a lone word: with nothing after them there is no argument to
+/// prove a command, so a lone one is ambiguous (#1185: `help` is a bash builtin AND an everyday
+/// request). [`REQUEST_OPENER_HEADS`] plus verbs that open requests.
+const AMBIGUOUS_LONE_HEADS: &[&str] = &[
+    "help", "list", "run", "install", "delete", "update", "remove", "add", "find", "check",
+    "start", "stop", "fix", "build", "test", "make", "do",
+];
+
+/// #1183: inside an agent conversation a line goes to the shell only on positive evidence that
+/// it is a plausible command; a head word match alone is not enough. Returns `true` when this
+/// line has none, so the caller routes it to the agent (the safe default: a wrong guess here
+/// either executes prose in the user's real working directory (`make commit port` ran `make`) or
+/// costs one click on "Run as shell command instead").
+///
+/// Positive evidence, any of: shell structure (`| & ; < > $` or a backtick); a leading
+/// `NAME=value`; an argument shaped like data rather than English (a flag, a path, `key=value`,
+/// a glob, a quoted string, a word with an interior `.`, `:`, `@`...); a later token the
+/// completion spec describes as a subcommand or option; a head that takes free words by design
+/// ([`FREE_WORD_ARG_HEADS`], [`FREE_TEXT_ARG_HEADS`], one-off keywords); a first argument that is
+/// a known subcommand of a subcommand CLI ([`known_subcommands`]; `git can` is not, `git status`
+/// and `systemctl status nginx` are); for `make`, only routine targets; for a compound
+/// command, an `in`, `do` or `then` word; a bare head that is a known command, an explicit path
+/// or not an English word; and for any other head, not being an ordinary English word
+/// (`kubectl`, `terraform plan`). An ordinary English head with only English-word arguments and
+/// none of the above (`make commit port`, `last about build script`) has none.
+///
+/// Multi-line buffers are not decided here (`false`), length is no veto (#1604), and a trailing
+/// comment is ignored. Callers apply this only in an active agent view; in plain terminal mode the
+/// classifier verdict stands.
+pub fn lacks_command_evidence_in_agent_conversation(input: &ParsedTokensSnapshot) -> bool {
+    let input = strip_trailing_comment(input);
+    let text = input.buffer_text.trim();
+    if text.is_empty() || text.contains(['\n', '\r']) {
+        return false;
+    }
+    // Shell structure is evidence of its own, and a line with an open quote is left to the
+    // classifier (bash would park it at `PS2`, nothing runs).
+    if text.contains(['|', '&', ';', '<', '>', '$', '`']) || !has_shell_safe_quoting(text) {
+        return false;
+    }
+    let words = split_shell_words(text);
+    let first_index = words
+        .iter()
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    if first_index > 0 {
+        return false;
+    }
+    let Some(head_index) = effective_head_index(&words, first_index) else {
+        // Only a wrapper and its options so far (`sudo -n`, `nice`): a command line in progress.
+        return false;
+    };
+    let head_word = &words[head_index];
+    // #1184: `/mod` is a slash command spelling, never a path to run; `/usr/bin/ls` is a path.
+    if starts_with_slash_command_not_path(&head_word.text) {
+        return true;
+    }
+    if head_word.quoted || is_explicit_path_token(&head_word.text) {
+        return false;
+    }
+    let head = word_basename(head_word).to_lowercase();
+    let head = head.as_str();
+    let args = &words[head_index + 1..];
+
+    if COMPOUND_COMMAND_HEADS.contains(&head) {
+        return !args
+            .iter()
+            .any(|word| !word.quoted && matches!(word.text.as_str(), "in" | "do" | "then"));
+    }
+    if is_one_off_shell_command_keyword(head) {
+        return false;
+    }
+    let english = is_ordinary_english_word(head);
+    if args.is_empty() {
+        if is_known_shell_command_word(head) {
+            return false;
+        }
+        if english {
+            // Installed or not, a lone English word is ambiguous unless the session described it
+            // as a command and it is not an everyday request opener (`write`, `date`; not `help`).
+            let described = input
+                .parsed_tokens
+                .iter()
+                .find(|token| {
+                    token.token_index == 0
+                        && token.token.as_str().eq_ignore_ascii_case(&head_word.text)
+                })
+                .is_some_and(|token| token.token_description.is_some());
+            return !described
+                || REQUEST_OPENER_HEADS.contains(&head)
+                || AMBIGUOUS_LONE_HEADS.contains(&head);
+        }
+        return false;
+    }
+    if args.iter().any(is_data_shaped_word) {
+        return false;
+    }
+    // Before the completion-spec check: a make spec describes whatever words follow as targets or
+    // options (#1183: `make commit port`), which is no evidence that they are real ones.
+    if matches!(head, "make" | "gmake" | "just" | "ninja") {
+        return !args
+            .iter()
+            .all(|word| COMMON_MAKE_TARGETS.contains(&word.text.as_str()));
+    }
+    if input.parsed_tokens.iter().any(|token| {
+        token.token_index >= 1
+            && token.token_description.as_ref().is_some_and(|d| {
+                matches!(
+                    d.suggestion_type,
+                    warp_completer::completer::SuggestionType::Subcommand
+                        | warp_completer::completer::SuggestionType::Option(..)
+                )
+            })
+    }) {
+        return false;
+    }
+    if let Some(subcommands) = known_subcommands(head) {
+        return !subcommands.contains(&args[0].text.as_str());
+    }
+    if FREE_WORD_ARG_HEADS.contains(&head) || FREE_TEXT_ARG_HEADS.contains(&head) {
+        return false;
+    }
+    english
+}
+
+/// An argument that is shell data rather than an English word: quoted, a flag, a path, `k=v`, a
+/// glob or brace, `host:port`, `a@b`, or a word with an interior dot (`main.rs`).
+fn is_data_shaped_word(word: &ShellWord) -> bool {
+    if word.quoted
+        || word.text.starts_with(['-', '.', '~'])
+        || word
+            .text
+            .contains(['/', '=', '*', '[', ']', '{', '}', '@', '\\', '%', '+', '#'])
+    {
+        return true;
+    }
+    let bare = strip_sentence_punctuation(&word.text);
+    bare.contains(['.', ':']) && !bare.is_empty()
+}
+
+/// What kind of shell structure one word carries ([`shell_structure_signals`]).
+#[derive(Default)]
+struct StructureSignals {
+    /// An unquoted (or double-quoted) `$NAME`, `${...}` or `$(...)`.
+    variable: bool,
+    /// A redirect with a plausible file target (`> out.txt`, `>> log_1`, `2>&1`, `&> all`, `< in.txt`).
+    redirect: bool,
+    /// A pipe whose right side is a command (a known command word, a path, or a word that takes a
+    /// flag), not just another word (`compare A | B` is not one).
+    pipe: bool,
+    /// A lone `--`, and each short or long flag after the head (`-r`, `-rf`, `--long`, `--k=v`).
+    weak: usize,
+}
+
+fn is_flag_word(text: &str) -> bool {
+    if let Some(long) = text.strip_prefix("--") {
+        let name = long.split('=').next().unwrap_or("");
+        return name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    }
+    text.strip_prefix('-').is_some_and(|short| {
+        (1..=6).contains(&short.len())
+            && short.starts_with(|c: char| c.is_ascii_alphabetic())
+            && short.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+fn has_variable_expansion(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(1)).any(|i| {
+        bytes[i] == b'$'
+            && (bytes[i + 1].is_ascii_alphabetic() || matches!(bytes[i + 1], b'_' | b'{' | b'('))
+    })
+}
+
+/// A word a redirect could plausibly write to or read from: a path, a `name.ext`, or a bare
+/// name of two or more characters that is neither English nor a number (`lat_0`; not `3`, `B`,
+/// `bar`, `three`).
+fn is_plausible_redirect_target(word: &ShellWord) -> bool {
+    let text = word.text.as_str();
+    if word.quoted
+        || text.is_empty()
+        || !text
+            .starts_with(|c: char| c.is_ascii_alphabetic() || matches!(c, '_' | '.' | '~' | '/'))
+        || !text.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '_' | '.' | '/' | '~' | '-' | '+' | '%' | '@' | ':' | '=')
+        })
+        || text.ends_with(['.', ',', ':'])
+    {
+        return false;
+    }
+    is_redirect_target(text)
+        || (text.len() >= 2
+            && !is_prose_word(word)
+            && !is_function_word(word)
+            && !is_ordinary_english_word(text))
+}
+
+/// Counts the shell-structure signals among `words[first_index..]` (the head itself only
+/// contributes operators glued to it: `foo|grep x`).
+fn shell_structure_signals(words: &[ShellWord], first_index: usize) -> StructureSignals {
+    let mut signals = StructureSignals::default();
+    for index in first_index..words.len() {
+        let word = &words[index];
+        let is_head = index == first_index;
+        let text = word.text.as_str();
+        if word.quoted {
+            // `foo "$X"`: prose does not double-quote a variable.
+            if !is_head && text.starts_with('"') && has_variable_expansion(text) {
+                signals.variable = true;
+            }
+            continue;
+        }
+        if !is_head {
+            if text == "--" {
+                signals.weak += 1;
+            } else if is_flag_word(text) {
+                signals.weak += 1;
+            }
+            if has_variable_expansion(text) {
+                signals.variable = true;
+            }
+        }
+        // Redirects: `[N|&]>`, `>>`, `<`, optionally glued to the target; `>&N` duplicates.
+        if let Some(op) = text.find(['>', '<']) {
+            let prefix = &text[..op];
+            if prefix.chars().all(|c| c.is_ascii_digit()) || prefix == "&" {
+                let rest = text[op..].trim_start_matches(['>', '<']);
+                if let Some(fd) = rest.strip_prefix('&') {
+                    if !prefix.is_empty()
+                        && !fd.is_empty()
+                        && fd.chars().all(|c| c.is_ascii_digit() || c == '-')
+                    {
+                        signals.redirect = true;
+                    }
+                } else if !rest.is_empty() {
+                    let glued = ShellWord {
+                        text: rest.to_string(),
+                        quoted: false,
+                    };
+                    if is_plausible_redirect_target(&glued) {
+                        signals.redirect = true;
+                    }
+                } else if words
+                    .get(index + 1)
+                    .is_some_and(is_plausible_redirect_target)
+                {
+                    signals.redirect = true;
+                }
+            }
+        }
+        // Pipes: `|` alone, or glued to either side.
+        if let Some(bar) = text.find('|') {
+            let after = text[bar..].trim_start_matches('|');
+            let left_present = index > first_index || bar > 0;
+            let (right, following) = if after.is_empty() {
+                (words.get(index + 1), words.get(index + 2))
+            } else {
+                (None, words.get(index + 1))
+            };
+            let right_text = right.map_or(after, |word| word.text.as_str());
+            let right_quoted = right.is_some_and(|word| word.quoted);
+            if left_present
+                && !right_quoted
+                && right_text.len() >= 2
+                && right_text
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '~' | '-'))
+                && (is_known_shell_command_word(right_text)
+                    || is_explicit_path_token(right_text)
+                    || following.is_some_and(|word| !word.quoted && is_flag_word(&word.text)))
+            {
+                signals.pipe = true;
+            }
+        }
+    }
+    signals
+}
+
+/// Owner decision on #1560: a line with CLEAR shell structure runs in the shell even when its
+/// first word is no command the session knows; the shell then prints `command not found` where
+/// the user sees it, instead of an agent run starting for a line that is plainly shell syntax
+/// (`print -r -- $EPOCHREALTIME > lat_0`, a zsh builtin typed into bash). The caller applies this
+/// only when the head is NOT known (not installed, not a curated command word, not a path).
+///
+/// True iff all of these hold (precision over recall: a `true` runs the line):
+///
+/// - **Vetoes** (any one makes it `false`): a trailing `?`; quoting bash would reject (an
+///   apostrophe in a word: `what's 5 > 3`); the #696 prose colon shape; a non-ASCII character in
+///   an unquoted word (CJK and other non-English prose, which `nld_in_terminal_enabled` exists
+///   to send to the agent); the head is a question word, request opener, one-off natural-language
+///   word, ambiguous lone head, function word or `please`; any prose function word, article or
+///   sentence comma/period among the arguments ([`has_prose_veto_word`]: `what is 5 > 3`,
+///   `explain $PATH to me`); or an English word among the arguments of the head's own command
+///   (everything before the first operator: `list $HOME contents`).
+/// - **Signals** (unquoted unless noted): `$NAME` / `${..}` / `$(..)` (also inside double
+///   quotes); a redirect (`>`, `>>`, `<`, `2>`, `&>`, `2>&1`) whose target is a path, a
+///   `name.ext` or a bare non-English, non-numeric name of two or more characters (`> lat_0`,
+///   not `> 3`, `> B`, `> bar`); a pipe whose right side is a command (a known command word, a
+///   path, or a word followed by a flag: `| grep x`, not `A | B`); a lone `--`; and flags (`-r`,
+///   `-rf`, `--long`, `--k=v`).
+/// - **Strength:** one of variable, redirect or pipe is enough (each is unambiguous once the
+///   vetoes passed); `--` and flags are weak and need two between them (`foo -r --bar`,
+///   `foo -- -x`), because `use --verbose` is a plausible request.
+pub fn has_clear_shell_structure_for_unknown_head(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty()
+        || text.ends_with('?')
+        || !has_shell_safe_quoting(text)
+        || buffer_has_prose_colon_shape(text)
+    {
+        return false;
+    }
+    let words = split_shell_words(text);
+    let first_index = words
+        .iter()
+        .take_while(|word| !word.quoted && is_env_assignment_token(&word.text))
+        .count();
+    let Some(first) = words.get(first_index) else {
+        return false;
+    };
+    if first.quoted || (words.len() < 2 && first_index == 0) {
+        return false;
+    }
+    if words
+        .iter()
+        .any(|word| !word.quoted && !word.text.is_ascii())
+    {
+        return false;
+    }
+    let head = first
+        .text
+        .split(|c: char| SHELL_WORD_TERMINATORS.contains(&c))
+        .next()
+        .unwrap_or("");
+    let head_lower = head.to_lowercase();
+    if head.is_empty()
+        || !head.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        || !head
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+' | ':'))
+        || QUESTION_HEADS.contains(&head_lower.as_str())
+        || REQUEST_OPENER_HEADS.contains(&head_lower.as_str())
+        || AMBIGUOUS_LONE_HEADS.contains(&head_lower.as_str())
+        || is_one_off_natural_language_word(&head_lower)
+        || head_lower == "please"
+        || is_function_word(&ShellWord {
+            text: head.to_string(),
+            quoted: false,
+        })
+    {
+        return false;
+    }
+    let remaining = &words[first_index + 1..];
+    if has_prose_veto_word(head, remaining) {
+        return false;
+    }
+    // English among the head's own arguments (up to the first operator).
+    if remaining
+        .iter()
+        .take_while(|word| word.quoted || !word.text.contains(['|', '>', '<', '&', ';']))
+        .any(|word| !word.text.starts_with('-') && !word.text.contains('$') && is_prose_word(word))
+    {
+        return false;
+    }
+    let signals = shell_structure_signals(&words, first_index);
+    signals.variable || signals.redirect || signals.pipe || signals.weak >= 2
 }
 
 #[cfg(test)]

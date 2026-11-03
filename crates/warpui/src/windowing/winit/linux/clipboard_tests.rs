@@ -205,3 +205,222 @@ mod clipboard_tests {
         });
     }
 }
+
+/// The retry/timeout classification behind #1173: a slow `ContentNotAvailable` is retried and,
+/// if it persists, reported; a fast one (empty clipboard) is neither.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod read_retry_tests {
+    use std::time::Duration;
+
+    use super::super::{TEXT_READ_ATTEMPTS, TEXT_READ_TIMEOUT_FLOOR, read_text_with_retry};
+
+    const SLOW: Duration = Duration::from_millis(10);
+
+    #[test]
+    fn slow_failure_is_retried_then_reported() {
+        let mut reads = 0;
+        let mut pauses = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                (Err(arboard::Error::ContentNotAvailable), SLOW)
+            },
+            || pauses += 1,
+        );
+        assert!(result.is_err());
+        assert!(timed_out, "persistent slow failure must be reported");
+        assert_eq!(reads, TEXT_READ_ATTEMPTS);
+        assert_eq!(pauses, TEXT_READ_ATTEMPTS - 1);
+    }
+
+    #[test]
+    fn slow_failure_then_success_returns_text_without_failure() {
+        let mut reads = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                if reads < 3 {
+                    (Err(arboard::Error::ContentNotAvailable), SLOW)
+                } else {
+                    (Ok("pasted".to_string()), SLOW)
+                }
+            },
+            || {},
+        );
+        assert_eq!(result.unwrap(), "pasted");
+        assert!(!timed_out);
+        assert_eq!(reads, 3);
+    }
+
+    #[test]
+    fn fast_failure_is_an_empty_clipboard_not_retried() {
+        let mut reads = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                (
+                    Err(arboard::Error::ContentNotAvailable),
+                    TEXT_READ_TIMEOUT_FLOOR / 2,
+                )
+            },
+            || panic!("must not pause for an empty clipboard"),
+        );
+        assert!(result.is_err());
+        assert!(!timed_out);
+        assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn other_errors_are_not_retried() {
+        let mut reads = 0;
+        let (result, timed_out) = read_text_with_retry(
+            || {
+                reads += 1;
+                (Err(arboard::Error::ClipboardNotSupported), SLOW)
+            },
+            || panic!("must not pause"),
+        );
+        assert!(result.is_err());
+        assert!(!timed_out);
+        assert_eq!(reads, 1);
+    }
+}
+
+mod bounded_wait_tests {
+    use super::super::{flush_for_exit, read_timed_out};
+    use std::time::Duration;
+
+    #[test]
+    fn spent_budget_with_no_text_is_a_timeout() {
+        let budget = Duration::from_secs(2);
+        // The retries after the first slow failure return instantly and look like "empty".
+        assert!(read_timed_out(false, budget, budget, false));
+        assert!(read_timed_out(true, Duration::ZERO, budget, true));
+        assert!(!read_timed_out(
+            false,
+            Duration::from_millis(5),
+            budget,
+            false
+        ));
+        assert!(!read_timed_out(false, budget, budget, true));
+    }
+
+    #[test]
+    fn exit_handoff_runs_even_when_a_write_never_finishes() {
+        let mut ran = false;
+        // The bounded wait gave up (returned false): the handoff still runs.
+        let did = flush_for_exit(|| false, || ran = true);
+        assert!(did && ran);
+    }
+
+    #[test]
+    fn exit_handoff_runs_after_the_wait_reports_the_copy_landed() {
+        let mut ran = false;
+        flush_for_exit(|| true, || ran = true);
+        assert!(ran);
+    }
+
+    #[test]
+    fn exit_wait_is_woken_by_the_writer_finishing_not_polled() {
+        use crate::clipboard::{ClipboardContent, ClipboardTarget, PendingWrites};
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let pending = Arc::new(PendingWrites::new());
+        pending.add(
+            1,
+            ClipboardTarget::Clipboard,
+            Arc::new(ClipboardContent::plain_text("x".into())),
+        );
+        let finisher = {
+            let pending = pending.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                pending.finish(1);
+            })
+        };
+        let start = Instant::now();
+        // A generous budget: returning well before it proves the notify woke the waiter.
+        assert!(pending.wait_until_idle(ClipboardTarget::Clipboard, Duration::from_secs(10)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        finisher.join().unwrap();
+    }
+
+    #[test]
+    fn exit_wait_gives_up_at_its_budget_when_a_copy_never_finishes() {
+        use crate::clipboard::{ClipboardContent, ClipboardTarget, PendingWrites};
+        use std::sync::Arc;
+
+        let pending = PendingWrites::new();
+        pending.add(
+            1,
+            ClipboardTarget::Clipboard,
+            Arc::new(ClipboardContent::plain_text("x".into())),
+        );
+        assert!(!pending.wait_until_idle(ClipboardTarget::Clipboard, Duration::from_millis(20)));
+        // A different target is not blocked by it.
+        assert!(pending.wait_until_idle(ClipboardTarget::Primary, Duration::from_millis(20)));
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod targets_query_tests {
+    use super::super::has_content_from_formats;
+
+    /// #1306: an image-only clipboard is "non-empty" from its target list alone, so the availability query
+    /// answers without reading or decoding the image. Old code had no such path (it decoded).
+    #[test]
+    fn image_only_targets_have_content_without_a_read() {
+        let formats = Ok(arboard::ClipboardFormats::from_target_names([
+            "TARGETS",
+            "image/png",
+        ]));
+        assert_eq!(has_content_from_formats(&formats), Some(true));
+    }
+
+    #[test]
+    fn no_known_targets_means_empty_without_a_read() {
+        let formats = Ok(arboard::ClipboardFormats::from_target_names([
+            "TARGETS",
+            "SAVE_TARGETS",
+        ]));
+        assert_eq!(has_content_from_formats(&formats), Some(false));
+    }
+
+    /// A failed query must not be read as "empty": availability is then unknown (the Paste entry stays
+    /// enabled) and nothing is read on the calling thread (#1405).
+    #[test]
+    fn failed_query_defers_to_the_read_fallback() {
+        let formats = Err(arboard::Error::ContentNotAvailable);
+        assert_eq!(has_content_from_formats(&formats), None);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod read_budget_tests {
+    use super::super::{READ_BUDGET_ACTIVE, ReadBudget};
+    use std::time::Duration;
+
+    fn active() -> bool {
+        READ_BUDGET_ACTIVE.with(|active| active.get())
+    }
+
+    /// Every synchronous read takes a budget (#1380); a nested one (the fallback probe calling
+    /// `read()`) must not replace or clear the outer one, and the cap is released afterwards.
+    #[test]
+    fn nested_budget_defers_to_the_outer_and_releases_on_drop() {
+        assert!(!active());
+        let outer = ReadBudget::start(Duration::from_secs(2));
+        assert!(outer.owns && active());
+        {
+            let inner = ReadBudget::start(Duration::from_secs(60));
+            assert!(!inner.owns, "an inner budget never loosens the outer one");
+        }
+        assert!(
+            active(),
+            "dropping the inner budget leaves the outer cap in place"
+        );
+        drop(outer);
+        assert!(!active());
+    }
+}

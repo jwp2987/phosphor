@@ -175,3 +175,14 @@ fn repository_info_survives_branch_change() {
         });
     });
 }
+
+#[test]
+fn periodic_refresh_runs_only_while_the_app_is_active() {
+    assert_eq!(
+        periodic_refresh_plan(true),
+        (true, Some(GITHUB_INFO_PERIODIC_REFRESH))
+    );
+    // No active window: skip the gh calls and arm no timer; the poll restarts when a window
+    // becomes active, so the refresh lands as the app is brought back to the foreground.
+    assert_eq!(periodic_refresh_plan(false), (false, None));
+}

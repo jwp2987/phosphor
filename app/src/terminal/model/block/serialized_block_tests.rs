@@ -98,3 +98,63 @@ fn serialized_ai_metadata_preserves_explicit_visible_block() {
 
     assert!(!agent_metadata.should_hide_block());
 }
+
+#[test]
+fn without_output_keeps_metadata_and_drops_only_the_output() {
+    let mut block = SerializedBlock::new_for_test(b"echo hi".to_vec(), b"a lot of output".to_vec());
+    block.pwd = Some("/tmp".to_owned());
+    let lite = block.without_output();
+    assert!(lite.stylized_output.is_empty());
+    assert_eq!(lite.stylized_command, block.stylized_command);
+    assert_eq!(lite.pwd, block.pwd);
+    assert_eq!(lite.exit_code, block.exit_code);
+    assert_eq!(lite.start_ts, block.start_ts);
+    assert_eq!(lite.id, block.id);
+    // The original is untouched.
+    assert_eq!(block.stylized_output, b"a lot of output");
+}
+
+#[test]
+fn deferred_bytes_fill_in_the_metadata_only_block_once_and_repeatably() {
+    let mut block = SerializedBlock::new_for_test(Vec::new(), Vec::new());
+    block.pwd = Some("/tmp".to_owned());
+    let deferred = DeferredBlockContent::from_bytes(b"echo hi".to_vec(), b"the output".to_vec());
+    for _ in 0..2 {
+        // A retried save materializes again and must see the same bytes.
+        let full = deferred.materialize(&block);
+        assert_eq!(full.stylized_command, b"echo hi");
+        assert_eq!(full.stylized_output, b"the output");
+        assert_eq!(full.pwd, block.pwd);
+        assert_eq!(full.id, block.id);
+        assert_eq!(full.exit_code, block.exit_code);
+    }
+    // The metadata-only block is untouched.
+    assert!(block.stylized_command.is_empty() && block.stylized_output.is_empty());
+}
+
+/// #1262: the deferred capture holds a bounded copy. Up to the serialized bound the grids are
+/// copied and converted later; past it the conversion runs at capture, exactly as the
+/// synchronous serializer does, so the saved bytes are identical either way and the model lock
+/// never pays for a copy of a huge grid.
+#[test]
+fn deferred_capture_matches_the_synchronous_serializer_and_bounds_the_copy() {
+    use crate::terminal::model::block::MAX_SERIALIZED_STYLIZED_OUTPUT_LINES;
+    use crate::terminal::model::test_utils::TestBlockBuilder;
+    use crate::test_util::mock_blockgrid;
+
+    for rows in [12usize, MAX_SERIALIZED_STYLIZED_OUTPUT_LINES + 1] {
+        let output: Vec<String> = (0..rows).map(|i| format!("line {i}")).collect();
+        let mut block = TestBlockBuilder::new().build();
+        block.set_output_grid(mock_blockgrid(&output.join("\n")));
+        let synchronous = SerializedBlock::from(&block);
+        let deferred = DeferredBlockContent::capture(&block);
+        assert_eq!(
+            deferred.holds_bytes(),
+            rows > MAX_SERIALIZED_STYLIZED_OUTPUT_LINES,
+            "a grid over the bound is converted at capture, a smaller one copied"
+        );
+        let materialized = deferred.materialize(&SerializedBlock::from_block_metadata_only(&block));
+        assert_eq!(materialized.stylized_output, synchronous.stylized_output);
+        assert_eq!(materialized.stylized_command, synchronous.stylized_command);
+    }
+}

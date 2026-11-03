@@ -110,6 +110,60 @@ impl JobObject {
     }
 }
 
+/// A Job Object holding a single spawned process (and anything it spawns afterwards) that
+/// kills all of them when it is dropped. This is the Windows stand-in for SIGKILLing a unix
+/// process group: Windows has no process groups, so a cancelled generator's descendants
+/// would otherwise outlive the command that spawned them.
+///
+/// Unlike [`JobObject`], the handle is NOT leaked; it is owned by the caller. Call
+/// [`KillOnCloseJob::disarm`] when the command finished normally so that deliberately
+/// detached descendants (e.g. a git fsmonitor daemon) are left alone, as on unix.
+///
+/// Children are spawned with `CREATE_BREAKAWAY_FROM_JOB` (see `async.rs`), so they are not
+/// in any job when we assign them here; a process that is already in another job is the
+/// only case in which assignment fails, and the caller treats that as best-effort.
+pub struct KillOnCloseJob {
+    job: win32job::Job,
+}
+
+impl std::fmt::Debug for KillOnCloseJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KillOnCloseJob").finish_non_exhaustive()
+    }
+}
+
+// SAFETY: the wrapped value is a Job Object HANDLE. Win32 kernel handles may be used and
+// closed from any thread; `win32job::Job` only lacks the auto traits because it stores a
+// raw `HANDLE`.
+unsafe impl Send for KillOnCloseJob {}
+unsafe impl Sync for KillOnCloseJob {}
+
+impl KillOnCloseJob {
+    /// Creates a kill-on-close job and assigns the process with the given raw handle to it.
+    pub fn with_process(process: isize) -> Result<Self, JobObjectError> {
+        let job = win32job::Job::create()?;
+        let mut info = job.query_extended_limit_info()?;
+        info.limit_kill_on_job_close();
+        // As `create_internal`: a descendant that asks for CREATE_BREAKAWAY_FROM_JOB (some
+        // installers and daemons do) fails with access denied inside a job without it.
+        info.limit_breakaway_ok();
+        job.set_extended_limit_info(&info)?;
+        job.assign_process(process)?;
+        Ok(Self { job })
+    }
+
+    /// Clears the kill-on-close limit and closes the job without killing anything.
+    pub fn disarm(self) {
+        let info = win32job::ExtendedLimitInfo::new();
+        if let Err(e) = self.job.set_extended_limit_info(&info) {
+            // Dropping now would kill the (finished) command's remaining descendants.
+            // Leaking one handle in this rare failure beats killing a deliberate daemon.
+            log::warn!("Failed to disarm job object: {e}");
+            std::mem::forget(self);
+        }
+    }
+}
+
 pub fn init() {
     if let Err(e) = JobObject::new()
         .kill_children_on_close()
@@ -143,3 +197,7 @@ impl CommandExt for crate::r#async::Command {
         self
     }
 }
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;

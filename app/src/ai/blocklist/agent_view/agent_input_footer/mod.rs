@@ -60,9 +60,7 @@ use toolbar_item::AgentToolbarItemKind;
 
 use std::sync::Arc;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::terminal::local_shell::LocalShellState;
-#[cfg(not(target_family = "wasm"))]
 use crate::terminal::ShellLaunchData;
 #[cfg(feature = "voice_input")]
 use crate::voice::transcriber::TranscribeError;
@@ -72,13 +70,9 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
 use settings::Setting;
 use settings::ToggleableSetting;
-#[cfg(not(target_family = "wasm"))]
 use std::env;
-#[cfg(not(target_family = "wasm"))]
 use std::path::PathBuf;
-#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
-#[cfg(not(target_family = "wasm"))]
 use tokio::fs;
 #[cfg(feature = "voice_input")]
 use voice_input::{StartListeningError, VoiceSessionResult};
@@ -104,7 +98,6 @@ use warpui::{
     ViewHandle,
 };
 
-#[cfg(not(target_family = "wasm"))]
 use warpui::r#async::Timer;
 
 // Zap Wave 7-3:`EnvironmentSelector` / `EnvironmentSelectorEvent` re-export was removed
@@ -112,16 +105,12 @@ use warpui::r#async::Timer;
 pub(crate) use self::reasoning_depth_selector::{
     ReasoningDepthSelector, ReasoningDepthSelectorEvent,
 };
-#[cfg(not(target_family = "wasm"))]
 use crate::server::telemetry::PluginChipTelemetryAction;
-#[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::{
     compare_versions, plugin_manager_for, plugin_manager_for_with_shell, CliAgentPluginManager,
     PluginInstallError, PluginModalKind,
 };
-#[cfg(not(target_family = "wasm"))]
 use crate::view_components::ToastLink;
-#[cfg(not(target_family = "wasm"))]
 use crate::workspace::WorkspaceAction;
 
 // Zap Wave 7-3: removed the hosted-mode footer gap constant with the old footer.
@@ -140,10 +129,14 @@ enum CLIVoiceInputState {
 
 /// How long to wait after session creation before showing the install chip.
 /// Gives the plugin time to connect and send its `SessionStart` event.
-#[cfg(not(target_family = "wasm"))]
+///
+/// #1381 (APP-A2): kept on purpose, as a give-up. The signal that makes the chip unnecessary (the
+/// plugin connecting) is an event and cancels it (`plugin_chip_ready` is cleared and the
+/// timer's callback re-checks the listener). The signal that makes it appropriate is the
+/// ABSENCE of a plugin, and an absent plugin sends nothing, so there is no event to wait for;
+/// the elapsed time is the only evidence available. The chip is cosmetic and never gates input.
 const PLUGIN_CHIP_DEBOUNCE: Duration = Duration::from_secs(3);
 
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PluginChipKind {
     Install,
@@ -489,7 +482,6 @@ impl AgentInputFooter {
 
                 // When a session starts, update the install chip label and
                 // start a debounce timer for non-auto-install agents.
-                #[cfg(not(target_family = "wasm"))]
                 if let CLIAgentSessionsModelEvent::Started { .. } = event {
                     if let Some(agent) = me.cli_agent(ctx) {
                         let label = format!("Enable {} notifications", agent.display_name());
@@ -506,7 +498,15 @@ impl AgentInputFooter {
                                             .is_some_and(|s| {
                                                 s.listener.is_some() && s.supports_rich_status()
                                             });
-                                        if !suppress {
+                                        // A timer left over from a session that has since ended
+                                        // must not arm the chip for the next one.
+                                        let session_alive = CLIAgentSessionsModel::as_ref(ctx)
+                                            .session(me.terminal_view_id)
+                                            .is_some();
+                                        if !suppress && session_alive {
+                                            log::debug!(
+                                                "No plugin connected within {PLUGIN_CHIP_DEBOUNCE:?}; showing the install chip"
+                                            );
                                             me.plugin_chip_ready = true;
                                             ctx.notify();
                                         }
@@ -662,8 +662,10 @@ impl AgentInputFooter {
                     }
                     BlocklistAIHistoryEvent::UpdatedTodoList { .. }
                     | BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
-                    | BlocklistAIHistoryEvent::AppendedExchange { .. }
-                    | BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. } => {
+                    // `UpdatedStreamingExchange` is deliberately absent: context usage is
+                    // only written at stream end (arrives via the status event), and this
+                    // arm would re-render the footer and selector per delta (#1137).
+                    | BlocklistAIHistoryEvent::AppendedExchange { .. } => {
                         me.update_context_window_button(ctx);
                         me.model_selector.update(ctx, |_, ctx| ctx.notify());
                         ctx.notify();
@@ -677,13 +679,8 @@ impl AgentInputFooter {
             me.update_display_chips(&model, ctx);
         });
 
-        let v2_model_selector = if false {
-            Some(ctx.add_typed_action_view(|ctx| {
-                ModelSelector::new(menu_positioning_provider.clone(), terminal_view_id, ctx)
-            }))
-        } else {
-            None
-        };
+        // The V2 (ambient-agent) model selector is never constructed.
+        let v2_model_selector = None;
 
         let mut me = Self {
             terminal_view_id,
@@ -828,7 +825,6 @@ impl AgentInputFooter {
             let _ = (app, self.plugin_operation_in_progress);
             None
         }
-        #[cfg(not(target_family = "wasm"))]
         {
             if self.plugin_operation_in_progress {
                 return None;
@@ -918,7 +914,6 @@ impl AgentInputFooter {
             return true;
         }
 
-        #[cfg(not(target_family = "wasm"))]
         if let Some(manager) = plugin_manager_for(session.agent) {
             if !manager.can_auto_install() {
                 return true;
@@ -935,7 +930,6 @@ impl AgentInputFooter {
         //
         // `ShellLaunchData` is only available on native builds; wasm builds
         // can't produce a `DockerSandbox` variant either way.
-        #[cfg(not(target_family = "wasm"))]
         {
             let shell_data = {
                 let model = self.terminal_model.lock();
@@ -950,7 +944,6 @@ impl AgentInputFooter {
 
     /// Records that the auto plugin operation could not start, shows an error toast,
     /// and re-renders so the chip switches to manual-instructions mode.
-    #[cfg(not(target_family = "wasm"))]
     fn record_plugin_auto_failure_and_notify(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(agent) = self.cli_agent(ctx) {
             let remote_host = CLIAgentSessionsModel::as_ref(ctx)
@@ -977,7 +970,6 @@ impl AgentInputFooter {
 
     /// Shared handler for both install and update plugin operations.
     /// `progress_toast` is shown while the operation runs; `success_toast` on success.
-    #[cfg(not(target_family = "wasm"))]
     fn handle_plugin_operation<F, Fut>(
         &mut self,
         progress_toast: String,
@@ -1132,7 +1124,6 @@ impl AgentInputFooter {
         true
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn handle_install_plugin(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let success_msg = self
             .cli_agent(ctx)
@@ -1150,7 +1141,6 @@ impl AgentInputFooter {
         )
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn handle_update_plugin(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let success_msg = self
             .cli_agent(ctx)
@@ -2125,7 +2115,6 @@ impl TypedActionView for AgentInputFooter {
                 }
             }
             AgentInputFooterAction::InstallPlugin => {
-                #[cfg(not(target_family = "wasm"))]
                 {
                     if let Some(agent) = self.cli_agent(ctx) {
                         send_telemetry_from_ctx!(
@@ -2142,7 +2131,6 @@ impl TypedActionView for AgentInputFooter {
                 }
             }
             AgentInputFooterAction::UpdatePlugin => {
-                #[cfg(not(target_family = "wasm"))]
                 {
                     if let Some(agent) = self.cli_agent(ctx) {
                         send_telemetry_from_ctx!(
@@ -2159,7 +2147,6 @@ impl TypedActionView for AgentInputFooter {
                 }
             }
             AgentInputFooterAction::OpenPluginInstallInstructionsPane => {
-                #[cfg(not(target_family = "wasm"))]
                 if let Some(agent) = self.cli_agent(ctx) {
                     send_telemetry_from_ctx!(
                         TelemetryEvent::CLIAgentPluginChipClicked {
@@ -2175,7 +2162,6 @@ impl TypedActionView for AgentInputFooter {
                 }
             }
             AgentInputFooterAction::OpenPluginUpdateInstructionsPane => {
-                #[cfg(not(target_family = "wasm"))]
                 if let Some(agent) = self.cli_agent(ctx) {
                     send_telemetry_from_ctx!(
                         TelemetryEvent::CLIAgentPluginChipClicked {
@@ -2211,7 +2197,6 @@ impl TypedActionView for AgentInputFooter {
                     let chip_key =
                         plugin_chip_key(session.agent.command_prefix(), &session.remote_host);
                     if is_update {
-                        #[cfg(not(target_family = "wasm"))]
                         if let Some(manager) = plugin_manager_for(session.agent) {
                             let version = manager.minimum_plugin_version().to_owned();
                             AISettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -2227,7 +2212,6 @@ impl TypedActionView for AgentInputFooter {
                 ctx.notify();
             }
             AgentInputFooterAction::OpenCodingAgentSettings => {
-                #[cfg(not(target_family = "wasm"))]
                 ctx.dispatch_typed_action_deferred(WorkspaceAction::ScrollToSettingsWidget {
                     page: SettingsSection::ThirdPartyCLIAgents,
                     widget_id: crate::settings_view::cli_agent_settings_widget_id(),
@@ -2276,7 +2260,6 @@ pub enum AgentInputFooterEvent {
     // Zap Wave 7-3: `OpenEnvironmentManagementPane` event was removed with hosted-mode UI.
     // Physically deleted.
     PluginInstalled(CLIAgent),
-    #[cfg(not(target_family = "wasm"))]
     OpenPluginInstructionsPane(CLIAgent, PluginModalKind),
 }
 
@@ -2324,14 +2307,7 @@ impl ActionButtonTheme for AgentInputButtonTheme {
     }
 
     fn font_properties(&self) -> Option<warpui::fonts::Properties> {
-        if false {
-            Some(warpui::fonts::Properties {
-                weight: warpui::fonts::Weight::Semibold,
-                ..Default::default()
-            })
-        } else {
-            None
-        }
+        None
     }
 }
 
@@ -2408,7 +2384,6 @@ impl ActionButtonTheme for InstallPluginButtonTheme {
 
 /// Writes the detailed plugin installation log to a temp file.
 /// Returns the log file path on success, or `None` if writing failed.
-#[cfg(not(target_family = "wasm"))]
 async fn write_install_log(agent: CLIAgent, err: &PluginInstallError) -> Option<PathBuf> {
     let log_path = env::temp_dir().join("warp-plugin-install.log");
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");

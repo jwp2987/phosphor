@@ -1,0 +1,66 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        CodeBlock(
+            CodeBlockText {
+                lang: "rust",
+                code: "fn main() {\n    println!(\"hello\");\n}\n",
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "python",
+                code: "print(\"tilde fence\")\n",
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "warp-runnable-command",
+                code: "no language\n",
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "bash {title=\"x\"}",
+                code: "echo info string\n",
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "md",
+                code: "```nested\ninner\n```\n",
+            },
+        ),
+        LineBreak,
+        CodeBlock(
+            CodeBlockText {
+                lang: "mermaid",
+                code: "graph TD\nA[Start] --> B[Finish]\n",
+            },
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "```unterminated",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "this fence never closes",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

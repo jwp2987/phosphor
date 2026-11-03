@@ -48,8 +48,6 @@ const COPY_SVG_PATH: &str = "bundled/svg/copy.svg";
 const INFO_SVG_PATH: &str = "bundled/svg/info.svg";
 pub const CHECK_SVG_PATH: &str = "bundled/svg/check-thick.svg";
 const PLUS_SVG_PATH: &str = "bundled/svg/add.svg";
-const LEFT_CHEVRON_PATH: &str = "bundled/svg/chevron-left.svg";
-const HELP_SVG_PATH: &str = "bundled/svg/help-circle.svg";
 const ENTER_SVG_PATH: &str = "bundled/svg/enter.svg";
 const RETRY_SVG_PATH: &str = "bundled/svg/retry.svg";
 const LOCAL_ONLY_SVG_PATH: &str = "bundled/svg/cloud-off.svg";
@@ -424,14 +422,6 @@ impl UiBuilder {
 
     pub fn progress_bar(&self, progress: f32) -> ProgressBar {
         ProgressBar::new(progress, self.default_progress_bar_styles())
-    }
-
-    pub fn custom_progress_bar(
-        &self,
-        progress: f32,
-        custom_styles: UiComponentStyles,
-    ) -> ProgressBar {
-        ProgressBar::new(progress, custom_styles)
     }
 
     pub fn tool_tip(&self, label: String) -> Tooltip {
@@ -944,20 +934,6 @@ impl UiBuilder {
         )
     }
 
-    pub fn left_chevron_button(&self, size: f32, mouse_state: MouseStateHandle) -> Button {
-        self.animated_button(
-            mouse_state,
-            LEFT_CHEVRON_PATH,
-            AnimatedButtonOptions {
-                size,
-                padding: Some(3.),
-                color: None,
-                with_accent_animations: false,
-                circular: false,
-            },
-        )
-    }
-
     pub fn plus_button(&self, size: f32, mouse_state: MouseStateHandle) -> Button {
         self.animated_button(
             mouse_state,
@@ -1025,22 +1001,6 @@ impl UiBuilder {
             tooltip_contents,
             mouse_state_handle,
             None,
-        )
-    }
-
-    pub fn help_icon_with_tooltip(
-        &self,
-        help_icon_size: f32,
-        tooltip_contents: impl Into<String>,
-        mouse_state_handle: MouseStateHandle,
-        tooltip_styles: Option<UiComponentStyles>,
-    ) -> Hoverable {
-        self.icon_with_tooltip(
-            help_icon_size,
-            HELP_SVG_PATH,
-            tooltip_contents,
-            mouse_state_handle,
-            tooltip_styles,
         )
     }
 

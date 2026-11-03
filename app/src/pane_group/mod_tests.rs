@@ -2244,6 +2244,66 @@ fn test_undo_close_keeps_a_file_pane_watching_its_file() {
     });
 }
 
+/// #1340: a file (markdown) pane hidden for undo-close drops its rendered document and file
+/// watcher for the grace period, and undo-close re-reads the file. Fails on the old code, which
+/// kept the document and the watcher while hidden.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_hidden_file_pane_releases_its_content_and_restores_on_undo() {
+    use warp_files::FileModel;
+
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        app.add_singleton_model(FileModel::new);
+        let workspace = crate::workspace::view::tests::mock_workspace(&mut app);
+        let pane_group = workspace
+            .read(&app, |workspace, _| workspace.tab_views().next().cloned())
+            .expect("mock_workspace has an initial tab");
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("notes.md");
+        std::fs::write(&path, "# before").expect("write file");
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane = FilePane::new(Some(path.clone()), None, None, ctx);
+            panes.add_pane_with_direction(Direction::Right, pane, true, ctx);
+        });
+
+        let (file_pane_id, file_view) = pane_group.read(&app, |panes, ctx| {
+            panes
+                .panes_of::<FilePane>()
+                .map(|pane| (pane.id(), pane.file_view(ctx)))
+                .next()
+                .expect("the file pane should exist")
+        });
+        file_view.update(&mut app, |view, _| view.mark_loaded_for_test());
+
+        file_view.update(&mut app, BackingView::close);
+        app.read(|ctx| {
+            let view = file_view.as_ref(ctx);
+            assert!(view.is_released_for_undo_close());
+            assert!(
+                view.file_id_for_test().is_none(),
+                "a hidden pane must not keep its file watcher"
+            );
+        });
+
+        pane_group.update(&mut app, |panes, ctx| {
+            assert!(panes.restore_closed_pane(file_pane_id, ctx));
+        });
+        app.read(|ctx| {
+            let view = file_view.as_ref(ctx);
+            assert!(!view.is_released_for_undo_close());
+            assert!(
+                view.file_id_for_test().is_some(),
+                "undo-close must re-read and watch the file"
+            );
+        });
+    });
+}
+
 /// Regression test for the missing `View::child_view_ids` overrides.
 ///
 /// `AppContext::transfer_view_tree_to_window` (used by cross-window tab drag

@@ -82,8 +82,11 @@ end
 
 
 # warp_hex_encode_string hex-encodes the given string with `od`.
+# Phosphor (#1170): `od` prints the bytes as space-separated lines, so the spaces and the line
+# breaks are dropped with `string` (in-process) rather than a forked `tr -d ' \n'`; this runs three
+# times per command.
 function warp_hex_encode_string 
-  builtin printf '%s' "$argv" | od -An -v -tx1 | command tr -d ' \n'
+  builtin printf '%s' (string replace -a ' ' '' -- (builtin printf '%s' "$argv" | od -An -v -tx1))
 end
 
 # A list of PIDs for running in-band command(s). This is used to kill running
@@ -207,10 +210,71 @@ function __phosphor_ap_fish_restore --on-event fish_prompt
     end
 end
 
+# Phosphor (#1170): sets __warp_git_branch and __warp_git_head the way `git symbolic-ref --short
+# HEAD`, then `git rev-parse --short HEAD`, would, but without forking when the answer is in
+# .git/HEAD. Those two git processes ran on every prompt (about 4 ms in a repo, 2 in a plain
+# directory). Returns 1, leaving the answer to git exactly as before, for anything it cannot
+# answer with certainty: GIT_* variables that change discovery, a .git file (worktree, submodule),
+# a bare repo or the .git directory itself, a repo owned by someone else (git refuses it), reftable
+# (HEAD is `refs/heads/.invalid`), a detached HEAD (needs an abbreviated hash), and a branch whose
+# short name git would qualify because a tag of the same name exists (a packed one is checked with
+# git once per directory and branch). The walk up uses `..` instead of trimming $PWD, so a
+# symlinked directory is followed the way git (which uses the physical path) follows it.
+function __warp_git_head_fast
+    for v in GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_NAMESPACE GIT_COMMON_DIR
+        set -q $v; and return 1
+    end
+    set -l p .
+    set -l gd
+    set -l n 0
+    while test $n -lt 64
+        set n (math $n + 1)
+        if test -d $p/.git
+            set gd $p/.git
+            break
+        end
+        if test -e $p/.git; or begin; test -f $p/HEAD; and test -d $p/refs; end
+            return 1
+        end
+        if test $p/.. -ef $p
+            # Reached / without finding a repo: git would print nothing for both.
+            set -g __warp_git_branch ""
+            set -g __warp_git_head ""
+            return 0
+        end
+        set p $p/..
+    end
+    test -n "$gd"; and test -O $gd; and test -O $p; and test -d $gd/objects; and test -d $gd/refs; and test -r $gd/HEAD; or return 1
+    read -l line < $gd/HEAD; or return 1
+    switch "$line"
+        case 'ref: refs/heads/.invalid'
+            return 1
+        case 'ref: refs/heads/*'
+            set line (string replace 'ref: refs/heads/' '' -- "$line")
+        case '*'
+            return 1
+    end
+    test -n "$line"; or return 1
+    if test -e "$gd/$line"; or test -e "$gd/refs/$line"; or test -e "$gd/refs/tags/$line"
+        return 1
+    end
+    if test -e $gd/packed-refs; and test "$__warp_git_checked" != "$PWD|$line"
+        # A packed tag of the same name cannot be seen without reading the whole file, so ask
+        # git once per directory and branch instead of on every prompt.
+        set -l short (warp_git symbolic-ref --short HEAD 2> /dev/null)
+        test "$short" = "$line"; or return 1
+        set -g __warp_git_checked "$PWD|$line"
+    end
+    set -g __warp_git_branch "$line"
+    set -g __warp_git_head "$line"
+end
+
 # Run before a command is executed.
 function warp_preexec --on-event fish_preexec
     set -l command (warp_escape_json "$argv")
-    warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$command\", \"session_id\": $WARP_SESSION_ID}}"
+    # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
+    set -g __warp_seq (math "$__warp_seq + 1")
+    warp_send_json_message "{\"hook\": \"Preexec\", \"value\": {\"command\": \"$command\", \"session_id\": $WARP_SESSION_ID, \"seq\": $__warp_seq}}"
     warp_maybe_send_reset_grid_osc
 
     # If this preexec is called for user command, kill ongoing generator command jobs.
@@ -246,6 +310,19 @@ function warp_git
     GIT_OPTIONAL_LOCKS=0 command git $argv
 end
 
+# Phosphor (#1390, #1391): LineEditorReading marker, printed as the LAST bytes of the prompt so it
+# reaches the terminal in the same paint that precedes fish's first read. fish captures prompt
+# output itself and passes OSC through without counting its width (as it does for 133;A/B). It is
+# part of the prompt, so a repaint that re-runs the prompt repeats it with the same seq (the app
+# treats it as idempotent). fish has no PS2: an incomplete command line just gets a newline inside
+# the same editor, so there is no ContinuationPrompt on fish. fish's `read` builtin does not run
+# fish_prompt, so a builtin read never sends this. No fork: printf is a builtin.
+function __warp_lr_print
+    test -n "$WARP_SESSION_ID"; or return 0
+    test "$PHOSPHOR_LINE_EDITOR_MARKERS" = 0; and return 0
+    builtin printf '\e]9278;f;{"hook": "LineEditorReading", "value": {"session_id": %s, "seq": %s}}\a' $WARP_SESSION_ID $__warp_seq
+end
+
 # Wrap fish prompt function output with OSC prompt marker sequences,
 # so that we can direct the prompt bytes to the appropriate grids.
 function warp_update_prompt_vars
@@ -261,7 +338,7 @@ function warp_update_prompt_vars
 
   # If not honoring PS1, set both prompts to be empty
   if test "$WARP_HONOR_PS1" = "0"
-    function fish_prompt; builtin echo -n ""; end
+    function fish_prompt; __warp_lr_print; end
     function fish_right_prompt; builtin echo -n ""; end
   # If honoring PS1, add prefix/suffix to both prompts
   else
@@ -283,6 +360,7 @@ function warp_update_prompt_vars
       builtin echo -n (builtin printf '\x07')
       warp_original_fish_prompt
       end_prompt
+      __warp_lr_print
     end
 
     # Check if warp_original_fish_right_prompt was backed up before redefining fish_right_prompt
@@ -323,6 +401,7 @@ function warp_change_prompt_modes_to_warp_prompt
 end
 
 set block_id 0
+set -g __warp_seq 0
 # Run before the prompt is displayed. We also need to trigger this on "fish_posterror", as
 # submitting a command containing a syntax error will not trigger "fish_preexec" or "fish_prompt".
 function warp_precmd --on-event fish_prompt --on-event fish_posterror
@@ -343,6 +422,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     # report the same ID. The Precmd carries this completion metadata so the client can classify it
     # and, if the CommandFinished was missed, recover the completion.
     set -l next_block_id "precmd-$WARP_SESSION_ID-$block_id"
+    set -g __warp_seq (math "$__warp_seq + 1")
     warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": $WARP_SESSION_ID}}"
     warp_maybe_send_reset_grid_osc
 
@@ -350,19 +430,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
 
     if ! test -z $_WARP_GENERATOR_COMMAND
         set -e _WARP_GENERATOR_COMMAND
-        set -l escaped_json "{\"hook\": \"Precmd\", \"value\": {
-        \"exit_code\": $exit_code,
-        \"next_block_id\": \"$next_block_id\",
-        \"pwd\": \"\",
-        \"ps1\": \"\",
-        \"git_head\": \"\",
-        \"git_branch\": \"\",
-        \"virtual_env\": \"\",
-        \"conda_env\": \"\",
-        \"node_version\": \"\",
-        \"session_id\": $WARP_SESSION_ID,
-        \"is_after_in_band_command\": true
-        }}"
+        set -l escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"\",\"ps1\": \"\",\"git_head\": \"\",\"git_branch\": \"\",\"virtual_env\": \"\",\"conda_env\": \"\",\"node_version\": \"\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq,\"is_after_in_band_command\": true}}"
         warp_send_json_message $escaped_json
         return 0
     end
@@ -479,12 +547,17 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
       set -l git_branch ""
       set -l git_head ""
       if command -q git
-          set git_branch (warp_git symbolic-ref --short HEAD 2> /dev/null)
-          if test -z "$git_branch"
-              # Fallback to the git commit hash if we aren't on a named branch.
-              set git_head (warp_git rev-parse --short HEAD 2> /dev/null)
+          if __warp_git_head_fast
+              set git_branch "$__warp_git_branch"
+              set git_head "$__warp_git_head"
           else
-              set git_head "$git_branch"
+              set git_branch (warp_git symbolic-ref --short HEAD 2> /dev/null)
+              if test -z "$git_branch"
+                  # Fallback to the git commit hash if we aren't on a named branch.
+                  set git_head (warp_git rev-parse --short HEAD 2> /dev/null)
+              else
+                  set git_head "$git_branch"
+              end
           end
       end
       set escaped_git_head (warp_escape_json "$git_head")
@@ -499,43 +572,24 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     # bytes via a hex string (in a JSON payload) to Warp.
     # Note that we are CALLING the `warp_original_fish_prompt` function on the next line and assigning the
     # outputted string to the local variable `raw_prompt_for_preview`.
-    set -l raw_prompt_for_preview (warp_original_fish_prompt)
-    # We encode the prompt as a hex string to pass it to Warp.
-    set escaped_prompt (warp_escape_prompt "$raw_prompt_for_preview")
+    #
+    # Phosphor (#1170): when the user's prompt is honored the Precmd below carries an empty `ps1`
+    # and fish itself draws the prompt right after this hook, so the preview would run the user's
+    # fish_prompt (git status, nvm, ... in many themes) a second time per prompt only to throw the
+    # text away. It is computed only when it is sent.
+    if test "$WARP_HONOR_PS1" != "1"
+        set -l raw_prompt_for_preview (warp_original_fish_prompt)
+        # We encode the prompt as a hex string to pass it to Warp.
+        set escaped_prompt (warp_escape_prompt "$raw_prompt_for_preview")
+    end
 
     set -l escaped_json
     if test "$WARP_HONOR_PS1" = "1"
       # Don't send lprompt or rprompt in this case - we'll use prompt markers for both directly!
-      set escaped_json "{\"hook\": \"Precmd\", \"value\": {
-      \"exit_code\": $exit_code,
-      \"next_block_id\": \"$next_block_id\",
-      \"pwd\": \"$escaped_pwd\",
-      \"ignore_prompt_markers\": false,
-      \"ps1\": \"\",
-      \"rprompt\": \"\",
-      \"git_head\": \"$escaped_git_head\",
-      \"git_branch\": \"$escaped_git_branch\",
-      \"virtual_env\": \"$escaped_virtual_env\",
-      \"conda_env\": \"$escaped_conda_env\",
-      \"node_version\": \"$escaped_node_version\",
-      \"session_id\": $WARP_SESSION_ID
-      }}"
+      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": false,\"ps1\": \"\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
     else
       # We send an lprompt to use for prompt preview purposes only (we still use prompt markers for active prompts).
-      set escaped_json "{\"hook\": \"Precmd\", \"value\": {
-      \"exit_code\": $exit_code,
-      \"next_block_id\": \"$next_block_id\",
-      \"pwd\": \"$escaped_pwd\",
-      \"ignore_prompt_markers\": true,
-      \"ps1\": \"$escaped_prompt\",
-      \"rprompt\": \"\",
-      \"git_head\": \"$escaped_git_head\",
-      \"git_branch\": \"$escaped_git_branch\",
-      \"virtual_env\": \"$escaped_virtual_env\",
-      \"conda_env\": \"$escaped_conda_env\",
-      \"node_version\": \"$escaped_node_version\",
-      \"session_id\": $WARP_SESSION_ID
-      }}"
+      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": true,\"ps1\": \"$escaped_prompt\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
     end
     warp_send_json_message $escaped_json
 end
@@ -545,7 +599,14 @@ function warp_escape_prompt
     # the prompt as a hex string so that it can be interpreted on the Warp side
     # Note: before converting the prompt to a hex string, we remove any multi-line newlines and
     # replace them with a single space (to avoid prompts that span multiple empty lines)
-    builtin echo "$argv" | command tr '\n\n' ' ' | command od -An -v -tx1 | command tr -d ' \n'
+    #
+    # Phosphor (#1170): the encoding costs 4 processes and the prompt is the same on most prompts,
+    # so the last result is kept. It depends on nothing but the argument, so reusing it is exact.
+    if not set -q __warp_escape_prompt_in; or test "$argv" != "$__warp_escape_prompt_in"
+        set -g __warp_escape_prompt_out (builtin echo "$argv" | command tr '\n\n' ' ' | command od -An -v -tx1 | command tr -d ' \n' | string collect)
+        set -g __warp_escape_prompt_in "$argv"
+    end
+    builtin printf '%s' "$__warp_escape_prompt_out"
 end
 
 # sed commands that escape every C0 control character (and DEL) that has no short JSON escape as
@@ -586,6 +647,14 @@ function warp_escape_json
     # byte as U+FFFD (see `handle_decoded_data` in app/src/terminal/model/ansi/mod.rs).
     #
     # We also use 'command sed' to ensure that we aren't accidentally executing a function named 'sed'
+    #
+    # Phosphor (#1170): a value made only of characters that need no escaping (letters, digits,
+    # space and . _ / @ + : , = % ~ ( ) -) is printed as is, with no sed/tr fork. Preexec and Precmd
+    # escape five values per command, and each used to cost two processes.
+    if test (count $argv) -eq 1; and not string match -qr '[^[:alnum:] ._/@+:,=%~()-]' -- $argv[1]
+        builtin printf '%s' $argv[1]
+        return
+    end
     string join \n $argv | LC_ALL=C command sed -E 's/(["\\\\])/\\\\\\1/g; s/'\b'/\\\\b/g; s/'\t'/\\\\t/g; s/'\f'/\\\\f/g; s/'\r'/\\\\r/g;'"$WARP_ESCAPE_JSON_CTRL_SED"' $!s/$/\\\\n/' | LC_ALL=C command tr -d '\n'
 end
 
@@ -752,8 +821,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
     end
 
     function warp_ssh_helper
-        set -l init_shell_zsh (warp_init_shell "zsh")
-        set -l init_shell_bash (warp_init_shell "bash")
+        # #1172: the two InitShell hook encodings computed here were never read (forks before every ssh).
         # Mint the remote session's ID *here*, on the local (already
         # registered) side, from /dev/urandom -- 64 bits, unguessable. It is
         # handed to the remote shell as $WARP_SESSION_ID and reported to the
@@ -773,7 +841,10 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # command, aborting with "Cannot execute command-line and remote
         # command." Warpification is structurally impossible there, so fall back
         # to plain SSH. `ssh -G` prints `remotecommand none` when unset.
-        set -l user_remote_command (command ssh -G $argv 2>/dev/null | command sed -n 's/^remotecommand //p')
+        # #1172: ONE `ssh -G` per invocation (it was four, ~7 ms each). Every probe below -- RemoteCommand,
+        # ControlPath, IPQoS, ServerAlive*, the probe-cache key -- reads this one capture.
+        set -l warp_ssh_g (command ssh -G $argv 2>/dev/null)
+        set -l user_remote_command (printf '%s\n' $warp_ssh_g | command sed -n 's/^remotecommand //p')
         if test -n "$user_remote_command"; and test "$user_remote_command" != "none"
             command ssh $argv
             return
@@ -797,7 +868,7 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         set -l control_master_mode "yes"
         set -l external_control_master "false"
         if test "$WARP_SSH_REUSE_CONTROL_MASTER" = "1"
-            set -l user_control_path (command ssh -G $argv 2>/dev/null | command sed -n 's/^controlpath //p')
+            set -l user_control_path (printf '%s\n' $warp_ssh_g | command sed -n 's/^controlpath //p')
             # Skip when no ControlPath is configured, and reject resolved
             # paths containing characters we cannot safely embed in the SSH
             # hook JSON below (e.g. an unexpanded % token, quotes, or
@@ -821,9 +892,25 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
         # OpenSSH's current default (`af21 cs1`): a user-configured IPQoS is never overridden,
         # and an older OpenSSH is left alone.
         set -l warp_ipqos_args
-        set -l warp_ipqos_default (command ssh -G $argv 2>/dev/null | command sed -n 's/^ipqos //p')
+        set -l warp_ipqos_default (printf '%s\n' $warp_ssh_g | command sed -n 's/^ipqos //p')
         if test "$warp_ipqos_default" = "af21 cs1"
             set warp_ipqos_args -o "IPQoS=af21 af21"
+        end
+        # #1171: ssh's default ServerAliveInterval is 0, so a silently dead link (laptop sleep, wifi
+        # handover) is never noticed while idle and takes ~15 min to notice with unacked data. Add
+        # 30 s x 6 (180 s tolerance: a 2-minute sleep survives) ONLY when the SAME `ssh -G` output
+        # reports interval 0, so any user config or command-line -o always wins. Opt out with the
+        # warpify.ssh.keepalive setting (WARP_SSH_KEEPALIVE=0).
+        if test "$WARP_SSH_KEEPALIVE" != "0"; and string match -q -- 'serveraliveinterval 0' $warp_ssh_g
+            set -a warp_ipqos_args -o ServerAliveInterval=30 -o ServerAliveCountMax=6
+        end
+        # #1243: OpenSSH >= 9.5 sends keystrokes on a 20 ms tick (ObscureKeystrokeTiming). Turn it
+        # off ONLY when the warpify.ssh.obscure_keystroke_timing setting says so
+        # (WARP_SSH_OBSCURE_KEYSTROKE_TIMING=0) AND the same `ssh -G` output reports the default
+        # `yes`: a user's own ssh config or command-line -o always wins, and an older OpenSSH
+        # without the option is left alone.
+        if test "$WARP_SSH_OBSCURE_KEYSTROKE_TIMING" = "0"; and string match -q -- 'obscurekeystroketiming yes' $warp_ssh_g
+            set -a warp_ipqos_args -o ObscureKeystrokeTiming=no
         end
 
         # #1035: decide AFTER connecting, with ONE authentication. The bootstrap below is a POSIX
@@ -863,11 +950,20 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             command ssh $warp_ipqos_args -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f $argv
             set -l warp_master_rc $status
             if test $warp_master_rc -ne 0
-                # The connection failed (ssh already printed why) or was interrupted.
-                return $warp_master_rc
+                # #1551: the master (-N, authenticate-only) failed, so no remote command ever ran and a
+                # plain ssh cannot double-execute. A Ctrl-C (rc > 128, not ssh's own 255) is respected.
+                if test $warp_master_rc -gt 128; and test $warp_master_rc -ne 255
+                    return $warp_master_rc
+                end
+                command ssh $argv
+                return
             end
-            # Own it only if a master really answers there: a file at the path is not proof.
-            if warp_ssh_mux_command check "$control_path"
+            # Own it only if a master really answers there. #1172: the socket we just waited for IS the proof: the
+            # path was verified empty above, so a socket there can only be this master's, and `-f` returns only
+            # after it listens. That saves the `-O check` helper (five processes) on the critical path.
+            # WARP_SSH_VERIFY_MASTER=1 restores the answer-from-the-master check.
+            set -l warp_socket_now (string replace -r '^~' -- "$HOME" "$control_path")
+            if begin; test -S "$warp_socket_now"; and not test -L "$warp_socket_now"; and begin; test "$WARP_SSH_VERIFY_MASTER" != "1"; or warp_ssh_mux_command check "$control_path"; end; end
                 set warp_owns_master 1
                 set control_master_mode no
             end
@@ -875,7 +971,8 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
             # managed session below; the idle background master expires via ControlPersist.
         end
         if test $warp_owns_master -eq 1; or test "$external_control_master" = "true"
-            if warp_ssh_remote_is_non_posix "$control_path" $argv
+            set -g __warp_ssh_g $warp_ssh_g
+            if warp_ssh_remote_is_non_posix_cached "$control_path" $argv
                 command ssh -o ControlMaster=no -o ControlPath="$control_path" -t $argv
                 set -l warp_plain_rc $status
                 if test $warp_owns_master -eq 1
@@ -898,7 +995,9 @@ export TERM_PROGRAM='WarpTerminal'
 test -n '$WARP_CLIENT_VERSION' && export WARP_CLIENT_VERSION='$WARP_CLIENT_VERSION'
 # Only forward the protocol version if it was set locally (i.e. the HOANotifications feature flag is on).
 test -n '$WARP_CLI_AGENT_PROTOCOL_VERSION' && export WARP_CLI_AGENT_PROTOCOL_VERSION='$WARP_CLI_AGENT_PROTOCOL_VERSION'
-hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"'}}" "${SHELL##*/}" | command od -An -v -tx1 | command tr -d " \n")'"
+warp_rb=false
+if test "'"${SHELL##*/}" = "bash"'" && printf x | command -p head -c 1 >/dev/null 2>&1; then warp_rb=true; fi
+hook="'$(printf "{\"hook\": \"SSH\", \"value\": {\"socket_path\": \"'$control_path'\", \"remote_shell\": \"%s\", \"session_id\": '"$WARP_SESSION_ID"', \"remote_session_id\": '"$remote_session_id"', \"external_control_master\": '"$external_control_master"', \"raw_bootstrap\": %s}}" "${SHELL##*/}" "$warp_rb" | command od -An -v -tx1 | command tr -d " \n")'"
 printf '$DCS_START$DCS_JSON_MARKER%s$DCS_END' "'$hook'"
 
 if test "'"${SHELL##*/}" != "bash" -a "${SHELL##*/}" != "zsh"'"; then
@@ -935,8 +1034,8 @@ bash)
       HISTIGNORE=" *"
       WARP_SESSION_ID='$remote_session_id'
       WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
-      _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || uname -n)
-      _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)
+      _hostname=${HOSTNAME:-$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || uname -n)}
+      _user=${USER:-$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)}
       _ju=${_user//\\\\/\\\\\\\\}; _ju=${_ju//\\"/\\\\\\"}; _jh=${_hostname//\\\\/\\\\\\\\}; _jh=${_jh//\\"/\\\\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\\\$_o"; printf -v _h "\\\\\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
       _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
       WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
@@ -996,10 +1095,90 @@ esac
         kill $probe_pid 2>/dev/null
         set -l out (command cat $probe_out 2>/dev/null | string collect)
         command rm -f $probe_out
+        # #1136: record a DEFINITIVE answer for warp_ssh_remote_is_non_posix_cached; anything else
+        # leaves the verdict empty (inconclusive, never cached).
+        set -g warp_ssh_probe_verdict ""
         if string match -q -r -i -- 'Hashtable|cmd\.exe-\$PSVersionTable' "$out"
+            set -g warp_ssh_probe_verdict nonposix
             return 0
         end
+        if test "$out" = 'warp-probe-%COMSPEC%-'
+            set -g warp_ssh_probe_verdict posix
+        end
         return 1
+    end
+
+    # #1136: the probe above costs a channel on the master plus a remote shell start on every
+    # connect. Its answer for a host only changes if the machine behind the name is replaced, so a
+    # DEFINITIVE answer is remembered for ten minutes (from when it was measured), keyed by what
+    # `ssh -G` resolves the destination to (user, hostname, port). Only the exact POSIX reply or
+    # a cmd.exe/PowerShell reply is remembered; a timeout, a failure or any other output is
+    # inconclusive, is never cached and is probed again next time. Same arguments and return
+    # values as warp_ssh_remote_is_non_posix.
+    function warp_ssh_remote_is_non_posix_cached
+        set -l control_path $argv[1]
+        set -e argv[1]
+        # #1172: reuse the wrapper's single `ssh -G` capture (handed over in the global
+        # __warp_ssh_g, read once and erased) when there is one; a direct caller without it asks ssh.
+        set -l key_g
+        if set -q __warp_ssh_g
+            set key_g $__warp_ssh_g
+            set -e __warp_ssh_g
+        end
+        if test (count $key_g) -eq 0
+            set key_g (command ssh -G $argv 2>/dev/null)
+        end
+        set -l key (printf '%s\n' $key_g | command awk '$1=="user"||$1=="hostname"||$1=="port"{printf "%s ", $0}' | string collect)
+        if test -z "$key"
+            warp_ssh_remote_is_non_posix "$control_path" $argv
+            return
+        end
+        # #1172: as in bash, share the cache between tabs and restarts through a private file next to
+        # the pane sockets (key and lifetime rules unchanged; only the memory is shared).
+        set -l probe_file ""
+        if test -n "$SSH_SOCKET_DIR"
+            set probe_file (string replace -r '^~' -- "$HOME" "$SSH_SOCKET_DIR")/phosphor-ssh-probe-cache
+            if test (count $warp_ssh_probe_cache) -eq 0; and test -r "$probe_file"
+                set -g warp_ssh_probe_cache (string match -r -- '.+' <$probe_file 2>/dev/null)
+            end
+        end
+        set -l now (command date +%s)
+        # WARP_SSH_PROBE_TTL (seconds) overrides the 10-minute lifetime; 0 turns the cache off.
+        set -l ttl 600
+        if string match -q -r '^[0-9]+$' -- "$WARP_SSH_PROBE_TTL"
+            set ttl $WARP_SSH_PROBE_TTL
+        end
+        set -l kept
+        set -l verdict ""
+        for entry in $warp_ssh_probe_cache
+            set -l parts (string split -r -m 2 '|' -- $entry)
+            test (count $parts) -eq 3; or continue
+            string match -q -r '^[0-9]+$' -- $parts[3]; or continue
+            if test $now -ge $parts[3]; and test (math $now - $parts[3]) -lt $ttl
+                set -a kept $entry
+                if test "$parts[1]" = "$key"
+                    set verdict $parts[2]
+                end
+            end
+        end
+        set -g warp_ssh_probe_cache $kept
+        switch "$verdict"
+            case nonposix
+                return 0
+            case posix
+                return 1
+        end
+        warp_ssh_remote_is_non_posix "$control_path" $argv
+        set -l probe_rc $status
+        if test -n "$warp_ssh_probe_verdict"
+            set -ga warp_ssh_probe_cache "$key|$warp_ssh_probe_verdict|$now"
+            if test -n "$probe_file"
+                # Best effort and private (the file names hosts); a failed write only costs a probe.
+                # umask in a child: fish's own umask builtin would change the user's shell.
+                printf '%s\n' $warp_ssh_probe_cache | command sh -c 'umask 077; exec cat >"$1"' sh "$probe_file" 2>/dev/null
+            end
+        end
+        return $probe_rc
     end
 
     # Ends the Phosphor-owned master at $argv[1].

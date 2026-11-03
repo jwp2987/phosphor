@@ -1,0 +1,658 @@
+{
+ "meta": {
+  "platform": "macos",
+  "backend": "mac",
+  "app_display": "wayland",
+  "seed": "1",
+  "commit": "e01e2afa",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-02T09:25:40-0600",
+ "summary": {
+  "pass": 14,
+  "fail": 14,
+  "skip": 0
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 3.9,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": false,
+    "ocr_terminal_hint": true
+   },
+   "shots": [
+    "shots/terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.1,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 18.78,
+     "p95": 21.01,
+     "max": 21.31
+    }
+   },
+   "shots": [
+    "shots/terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 38.3,
+   "detail": [
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "Terminal.app (.command via open)"
+    }
+   },
+   "shots": [
+    "shots/terminal_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 72.8,
+   "detail": [
+    "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), injector posted 30 Enters",
+    "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), injector posted 30 Enters"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "Terminal.app (.command via open)",
+     "runs": {
+      "0.0": {
+       "ref": "Terminal.app (.command via open)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30
+      },
+      "0.25": {
+       "ref": "Terminal.app (.command via open)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 134.1,
+   "detail": [
+    "ft0: file has 29/30 lines, exact match False first diff: exp='t99_wdg90hqrl4' got='t99_wdg90hqrl4 t100_nfyh2s65zh' [first bad line 14: injector call #136 posted its ENTER at 08:59:56.019] -- the reference kept every Enter in the same session (30/30 lines): an APP-side lost Enter (#1482)",
+    "ft0: shell received 29 commands, not the typed ones (first mismatch: 'echo t99_wdg90hqrl4 >> r_ft0.txtecho t100_nfyh2s65zh >> r_ft0.txt')",
+    "ft25: file has 28/30 lines, exact match False first diff: exp='t117_4vxskjy2zh' got='t117_4vxskjy2zh t118_rsa8aiy9g3' [first bad line 2: injector call #154 posted its ENTER at 09:00:48.924] -- the reference kept every Enter in the same session (30/30 lines): an APP-side lost Enter (#1482)",
+    "ft25: shell received 28 commands, not the typed ones (first mismatch: 'echo t117_4vxskjy2zh >> r_ft25.txtecho t118_rsa8aiy9g3 >> r_ft25.txt')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 7.4,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 32.6,
+   "detail": [
+    "Tab+Enter: completed file has 1/12 expected lines",
+    "Tab+Enter ran the UNCOMPLETED line, stray files: ['zzcompl_alpha_u']"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 275.0,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+    "Ctrl-C: 223.75 ms over the harness floor exceeds the 20 ms budget",
+    "Ctrl-D in cat: file ['helloecho done1 >> cd.txt']",
+    "nested bash not entered (SHLVL lines []): Ctrl-D NOT sent (it would exit the pane's own shell and quit the app)",
+    "Ctrl-C: n=25 < 30 samples (smoke/scaled run): numbers are indicative only"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 25,
+     "p50": 234.79,
+     "p95": 243.72,
+     "max": 245.35
+    },
+    "harness_floor_ms": 11.041,
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 25,
+       "p50": 234.79,
+       "p95": 243.72,
+       "max": 245.35
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "absolute",
+      "floor_ms": 11.041374877095222,
+      "notes": [
+       "n=25 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 223.75,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 23.8,
+   "detail": [
+    "ssh_connect_typing (gap 0.0 s): T163_c71lmo never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+    "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+   ],
+   "metrics": {
+    "trials": 1
+   },
+   "shots": [
+    "shots/terminal_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 122.0,
+   "detail": [
+    "only 18/30 Enter timings captured",
+    "Enter to command start: Phosphor overhead 11.34 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "Enter to command start: n=18 < 30 samples (smoke/scaled run): numbers are indicative only"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 18,
+     "p50": 201.42,
+     "p95": 218.61,
+     "max": 218.61
+    },
+    "harness_floor_ms": 11.041,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 190.08,
+     "p95": 195.03,
+     "max": 197.07
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 18,
+       "p50": 201.42,
+       "p95": 218.61,
+       "max": 218.61
+      },
+      "reference": {
+       "n": 30,
+       "p50": 190.08,
+       "p95": 195.03,
+       "max": 197.07
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 11.041374877095222,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+       "n=18 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 11.34,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 23.6,
+   "detail": [
+    "only 0 key->frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 6876 input_order keydown lines (6875 with ctrl=false) and 384 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 31.1,
+   "detail": [],
+   "metrics": {
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 34.0,
+     "p95": 46.11,
+     "max": 103.86
+    }
+   },
+   "shots": [
+    "shots/terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 57.2,
+   "detail": [
+    "fish: pasted lines + instant Enter: expected ['t176_olnzdp92cv', 't177_u0hbl6flno', 't178_ltgduje2jo', 't179_cswdf2molh'], got ['t176_olnzdp92cv', 't177_u0hbl6flno', 't178_ltgduje2jo']",
+    "fish: after exit the pane's bash ran the next command: expected ['t184_tvx03xwu'], got []",
+    "fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/terminal_shell_fish_FAIL.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 108.7,
+   "detail": [
+    "nu: 12 typed lines: expected ['t185_z46bxitkti', 't186_k3jikfqpwu', 't187_r4te1j9w2g', 't188_uel48ccmwx', 't189_6xvhlycrnd', 't190_tuzpxdosam', 't191_iox6rjkoet', 't192_264l6wm1er', 't193_ojinbk5xld', 't194_fpnf2mvkbn', 't195_49cdx59wi5', 't196_6utuf4v0eq'], got ['t185_z46bxitktit186_k3jikfqpwut187_r4te1j9w2gt188_uel48ccmwxt191_iox6rjkoett192_264l6wm1ert193_ojinbk5xldt194_fpnf2mvkbnt195_49cdx59wi5t196_6utuf4v0eq']",
+    "nu: pasted lines + instant Enter: expected ['t197_ubluouqqt5', 't198_0asksdh11n', 't199_rw5sqlujwg', 't200_zw7mz2j4pc'], got ['t197_ubluouqqt5t198_0asksdh11nt199_rw5sqlujwgt200_zw7mz2j4pc']",
+    "nu: nested nu, exit to the outer nu, next line: expected ['t201_pfec7644', 't202_u7k5zay9', 't203_92kxdxw2'], got ['t201_pfec7644t202_u7k5zay9']",
+    "nu: after exit the pane's bash ran the next command: expected ['t205_i2cxvl54'], got []"
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 0
+   },
+   "shots": [
+    "shots/terminal_shell_nu_FAIL.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.3,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 1.53
+   },
+   "shots": [
+    "shots/terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 3.9,
+   "detail": [],
+   "metrics": {
+    "ocr_agent_markers": true,
+    "ocr_terminal_hint": false,
+    "ocr_model_chip_gpt_oss": true
+   },
+   "shots": [
+    "shots/agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "cadence",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.1,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 18.57,
+     "p95": 21.73,
+     "max": 24.96
+    }
+   },
+   "shots": [
+    "shots/agent_cadence.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 63.1,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 7.4,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 22.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots/agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 271.4,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+    "Ctrl-C: 225.40 ms over the harness floor exceeds the 20 ms budget",
+    "`cat > cd.txt` never started (its Enter was lost?): Ctrl-D NOT sent (it would hit the top-level shell)",
+    "nested bash not entered (SHLVL lines []): Ctrl-D NOT sent (it would exit the pane's own shell and quit the app)",
+    "Ctrl-C: n=28 < 30 samples (smoke/scaled run): numbers are indicative only"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 28,
+     "p50": 236.36,
+     "p95": 246.22,
+     "max": 251.47
+    },
+    "harness_floor_ms": 10.956,
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 28,
+       "p50": 236.36,
+       "p95": 246.22,
+       "max": 251.47
+      },
+      "reference": null,
+      "reference_name": null,
+      "budget_ms": 20.0,
+      "budget_kind": "absolute",
+      "floor_ms": 10.956458980217576,
+      "notes": [
+       "n=28 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 225.4,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 23.7,
+   "detail": [
+    "ssh_connect_typing (gap 0.0 s): T79_1ereql never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+    "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+   ],
+   "metrics": {
+    "trials": 1
+   },
+   "shots": [
+    "shots/agent_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_enter",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 115.4,
+   "detail": [
+    "only 22/30 Enter timings captured",
+    "Enter to command start: Phosphor overhead 8.73 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+    "Enter to command start: n=22 < 30 samples (smoke/scaled run): numbers are indicative only"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 22,
+     "p50": 197.21,
+     "p95": 205.87,
+     "max": 206.6
+    },
+    "harness_floor_ms": 10.956,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 188.48,
+     "p95": 194.06,
+     "max": 195.94
+    },
+    "reference": "Terminal.app (.command via open)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 22,
+       "p50": 197.21,
+       "p95": 205.87,
+       "max": 206.6
+      },
+      "reference": {
+       "n": 30,
+       "p50": 188.48,
+       "p95": 194.06,
+       "max": 195.94
+      },
+      "reference_name": "Terminal.app (.command via open)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 10.956458980217576,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+       "n=22 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 8.73,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots/agent_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 23.8,
+   "detail": [
+    "only 0 key->frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 6296 input_order keydown lines (6296 with ctrl=false) and 319 input_order frame lines (0 keydown = logging off / wrong path / keys never reached the app; many keydown with ctrl=true = a stuck Control modifier)"
+   ],
+   "metrics": {
+    "key_to_frame_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    }
+   },
+   "shots": [
+    "shots/agent_latency_key_log_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_paint",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 30.5,
+   "detail": [],
+   "metrics": {
+    "key_to_paint_ms": {
+     "n": 30,
+     "p50": 34.03,
+     "p95": 43.9,
+     "max": 116.0
+    }
+   },
+   "shots": [
+    "shots/agent_latency_paint.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 44.5,
+   "detail": [
+    "fish: after exit the pane's bash ran the next command: expected ['t100_q08s58nv'], got []",
+    "fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots/agent_shell_fish_FAIL.png"
+   ]
+  },
+  {
+   "name": "shell_nu",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 108.4,
+   "detail": [
+    "nu: 12 typed lines: expected ['t101_5gawrd82tg', 't102_6rrp0jiqm0', 't103_86j0rr4tr5', 't104_5x4pvll28j', 't105_6u7inu54vh', 't106_iqof8dlhom', 't107_1uabtoforv', 't108_7ybhvwihqj', 't109_wefgtupr7d', 't110_bfizxpgvra', 't111_hwirzf7408', 't112_tot9id6hlp'], got ['t101_5gawrd82tgt102_6rrp0jiqm0t103_86j0rr4tr5t104_5x4pvll28jt105_6u7inu54vht106_iqof8dlhomt107_1uabtoforvt108_7ybhvwihqjt109_wefgtupr7dt110_bfizxpgvrat111_hwirzf7408t112_tot9id6hlp']",
+    "nu: pasted lines + instant Enter: expected ['t113_1r8bq8r7q4', 't114_izgxe8x896', 't115_bt2ijejn4v', 't116_xskjy2zhjr'], got ['t113_1r8bq8r7q4t114_izgxe8x896t115_bt2ijejn4v']",
+    "nu: nested nu, exit to the outer nu, next line: expected ['t117_sa8aiy9g', 't118_3b11rx0z', 't119_3dg4cach'], got ['t117_sa8aiy9gt118_3b11rx0zt119_3dg4cach']",
+    "nu: after exit the pane's bash ran the next command: expected ['t121_ppg9wkhc'], got []"
+   ],
+   "metrics": {
+    "app_log_nu_bootstrap_lines": 0
+   },
+   "shots": [
+    "shots/agent_shell_nu_FAIL.png"
+   ]
+  },
+  {
+   "name": "md_viewer",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 6.4,
+   "detail": [],
+   "metrics": {
+    "md_small_text_visible_s": 1.53
+   },
+   "shots": [
+    "shots/agent_md_viewer.png"
+   ]
+  }
+ ]
+}

@@ -54,3 +54,30 @@ fn test_memory_usage_stats_construction() {
     assert_eq!(stats.inactive_24h_stats.num_blocks, 1);
     assert_eq!(stats.inactive_24h_stats.num_lines, 0);
 }
+
+#[test]
+fn all_processes_refresh_kind_does_not_sample_cpu_or_memory() {
+    let all = SystemInfo::all_processes_refresh_kind();
+    assert!(!all.cpu(), "full-table sweep must not sample CPU");
+    assert!(!all.memory(), "full-table sweep must not sample memory");
+
+    // The single-PID self-poll still samples both.
+    let own = SystemInfo::refresh_kind();
+    assert!(own.cpu());
+    assert!(own.memory());
+}
+
+/// No consumer, no timer: without `heap_usage_tracking` the 5 s self-rescheduling refresh
+/// must not be started (it would wake the process forever for no subscriber).
+#[test]
+fn refresh_timer_only_scheduled_when_a_consumer_exists() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(SystemInfo::new);
+        app.read(|ctx| {
+            assert_eq!(
+                handle.as_ref(ctx).refresh_scheduled(),
+                cfg!(feature = "heap_usage_tracking")
+            );
+        });
+    });
+}

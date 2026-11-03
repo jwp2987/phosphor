@@ -317,3 +317,340 @@ fn reloading_picks_up_another_processs_write() {
         });
     });
 }
+
+// ── off-thread load and ordered writes (#1309) ─────────────────
+
+mod background {
+    use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
+
+    use super::*;
+
+    /// A `Send` store whose handles share one map and record which thread each op ran on.
+    #[derive(Clone, Default)]
+    struct SharedStore {
+        data: Arc<Mutex<HashMap<String, String>>>,
+        ops: Arc<Mutex<Vec<(&'static str, ThreadId)>>>,
+    }
+
+    struct Handle(SharedStore);
+
+    impl SecureStorage for Handle {
+        fn write_value(&self, key: &str, value: &str) -> Result<(), Error> {
+            self.0
+                .ops
+                .lock()
+                .unwrap()
+                .push(("write", std::thread::current().id()));
+            self.0
+                .data
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), value.to_owned());
+            Ok(())
+        }
+        fn read_value(&self, key: &str) -> Result<String, Error> {
+            // Slow, like a keyring that has to be unlocked.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.0
+                .ops
+                .lock()
+                .unwrap()
+                .push(("read", std::thread::current().id()));
+            self.0
+                .data
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or(Error::NotFound)
+        }
+        fn remove_value(&self, _key: &str) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    fn install(app: &mut App, store: &SharedStore) {
+        // The model keeps a handle on the app's own singleton to fall back on when no worker
+        // exists; it is looked up eagerly even when the worker is used. Sharing the store means
+        // an inline run would still show up in `ops` on the calling thread.
+        let fallback = store.clone();
+        app.update(move |ctx| {
+            ctx.add_singleton_model(move |_| -> secure_storage::Model {
+                Box::new(Handle(fallback))
+            });
+        });
+        let store = store.clone();
+        secure_storage::background::set_factory_for_test(Some(Arc::new(move || {
+            Box::new(Handle(store.clone())) as secure_storage::Model
+        })));
+    }
+
+    async fn wait_until(mut done: impl FnMut() -> bool) {
+        for _ in 0..400 {
+            if done() {
+                return;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("condition not reached");
+    }
+
+    #[test]
+    fn construction_does_not_read_the_keychain_on_the_calling_thread() {
+        App::test((), |mut app| async move {
+            let store = SharedStore::default();
+            store.data.lock().unwrap().insert(
+                SECURE_STORAGE_KEY.to_owned(),
+                r#"{"p":"sk-stored"}"#.to_owned(),
+            );
+            install(&mut app, &store);
+
+            let started = std::time::Instant::now();
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+            // The 50 ms read must not have run inline.
+            assert!(started.elapsed() < std::time::Duration::from_millis(40));
+            secrets.read(&app, |s, _| {
+                assert!(!s.is_loaded());
+                assert_eq!(s.get("p"), None);
+            });
+
+            // A consumer that asked too early gets the value once it has loaded.
+            wait_until(|| secrets.read(&app, |s, _| s.is_loaded())).await;
+            secrets.read(&app, |s, _| assert_eq!(s.get("p"), Some("sk-stored")));
+            let main = std::thread::current().id();
+            assert!(store.ops.lock().unwrap().iter().all(|(_, t)| *t != main));
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    #[test]
+    fn an_edit_made_before_the_load_lands_merges_with_the_stored_keys_and_is_not_lost() {
+        App::test((), |mut app| async move {
+            let store = SharedStore::default();
+            store.data.lock().unwrap().insert(
+                SECURE_STORAGE_KEY.to_owned(),
+                r#"{"old":"sk-old"}"#.to_owned(),
+            );
+            install(&mut app, &store);
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+            secrets.update(&mut app, |s, ctx| s.set("new", "sk-new".to_owned(), ctx));
+            // Not persisted yet: that would have overwritten "old" with a partial map.
+            assert!(
+                store
+                    .ops
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(op, _)| *op != "write")
+            );
+
+            wait_until(|| {
+                store
+                    .ops
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(op, _)| *op == "write")
+            })
+            .await;
+            secrets.read(&app, |s, _| {
+                assert_eq!(s.get("old"), Some("sk-old"));
+                assert_eq!(s.get("new"), Some("sk-new"));
+            });
+            let persisted: HashMap<String, String> =
+                serde_json::from_str(&store.data.lock().unwrap()[SECURE_STORAGE_KEY]).unwrap();
+            assert_eq!(persisted.len(), 2);
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    #[test]
+    fn writes_land_in_the_order_they_were_made() {
+        App::test((), |mut app| async move {
+            let store = SharedStore::default();
+            install(&mut app, &store);
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+            wait_until(|| secrets.read(&app, |s, _| s.is_loaded())).await;
+            secrets.update(&mut app, |s, ctx| {
+                s.set("p", "one".to_owned(), ctx);
+                s.set("p", "two".to_owned(), ctx);
+                s.set("p", "three".to_owned(), ctx);
+            });
+            wait_until(|| {
+                store
+                    .ops
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(o, _)| *o == "write")
+                    .count()
+                    == 3
+            })
+            .await;
+            let persisted: HashMap<String, String> =
+                serde_json::from_str(&store.data.lock().unwrap()[SECURE_STORAGE_KEY]).unwrap();
+            assert_eq!(persisted["p"], "three");
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    // ── the request path waits for the load instead of sending an empty key (#1368) ──
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mode {
+        Serve,
+        Fail,
+        Hang,
+    }
+
+    /// A keyring that can be told to serve, to error, or to never answer.
+    #[derive(Clone)]
+    struct Flaky {
+        mode: Arc<Mutex<Mode>>,
+        release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        writes: Arc<Mutex<usize>>,
+    }
+
+    impl Flaky {
+        fn new(mode: Mode) -> Self {
+            Self {
+                mode: Arc::new(Mutex::new(mode)),
+                release: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+                writes: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    struct FlakyHandle(Flaky);
+
+    impl SecureStorage for FlakyHandle {
+        fn write_value(&self, _key: &str, _value: &str) -> Result<(), Error> {
+            *self.0.writes.lock().unwrap() += 1;
+            Ok(())
+        }
+        fn read_value(&self, _key: &str) -> Result<String, Error> {
+            let mode = *self.0.mode.lock().unwrap();
+            match mode {
+                Mode::Fail => Err(Error::Unknown(anyhow::anyhow!("keyring is locked"))),
+                Mode::Hang => {
+                    let (lock, cv) = &*self.0.release;
+                    let mut released = lock.lock().unwrap();
+                    while !*released {
+                        released = cv.wait(released).unwrap();
+                    }
+                    Err(Error::NotFound)
+                }
+                Mode::Serve => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    Ok(r#"{"p":"sk-real"}"#.to_owned())
+                }
+            }
+        }
+        fn remove_value(&self, _key: &str) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    fn install_flaky(app: &mut App, flaky: &Flaky) {
+        let fallback = flaky.clone();
+        app.update(move |ctx| {
+            ctx.add_singleton_model(move |_| -> secure_storage::Model {
+                Box::new(FlakyHandle(fallback))
+            });
+        });
+        let flaky = flaky.clone();
+        secure_storage::background::set_factory_for_test(Some(Arc::new(move || {
+            Box::new(FlakyHandle(flaky.clone())) as secure_storage::Model
+        })));
+    }
+
+    #[test]
+    fn a_request_asking_before_the_load_lands_waits_and_gets_the_real_key() {
+        App::test((), |mut app| async move {
+            let flaky = Flaky::new(Mode::Serve);
+            install_flaky(&mut app, &flaky);
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+
+            let rx = secrets
+                .update(&mut app, |s, ctx| s.wait_for_load(ctx))
+                .expect("not loaded yet, so the request must wait");
+            let keys = rx.await.unwrap().expect("the load succeeded");
+            assert_eq!(keys.get("p").map(String::as_str), Some("sk-real"));
+            // Once loaded nothing waits any more.
+            assert!(
+                secrets
+                    .update(&mut app, |s, ctx| s.wait_for_load(ctx))
+                    .is_none()
+            );
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    #[test]
+    fn a_failed_keyring_read_fails_the_waiting_request_and_never_persists_a_partial_map() {
+        App::test((), |mut app| async move {
+            let flaky = Flaky::new(Mode::Fail);
+            install_flaky(&mut app, &flaky);
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+
+            let rx = secrets
+                .update(&mut app, |s, ctx| s.wait_for_load(ctx))
+                .expect("not loaded");
+            assert!(
+                rx.await.unwrap().is_none(),
+                "a failed read is reported, not an empty map"
+            );
+            secrets.read(&app, |s, _| assert!(!s.is_loaded()));
+
+            // An edit made now must not overwrite the stored keys with a partial set.
+            secrets.update(&mut app, |s, ctx| s.set("q", "sk-q".to_owned(), ctx));
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(100)).await;
+            assert_eq!(*flaky.writes.lock().unwrap(), 0);
+
+            // The next request starts a fresh read; the keyring is back, and the parked edit is
+            // applied on top of what it returns.
+            *flaky.mode.lock().unwrap() = Mode::Serve;
+            let rx = secrets
+                .update(&mut app, |s, ctx| s.wait_for_load(ctx))
+                .expect("still not loaded");
+            let keys = rx.await.unwrap().expect("the retry succeeded");
+            assert_eq!(keys.get("p").map(String::as_str), Some("sk-real"));
+            assert_eq!(keys.get("q").map(String::as_str), Some("sk-q"));
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+
+    #[test]
+    fn a_keyring_that_never_answers_is_given_up_on_and_does_not_block_later_reads() {
+        App::test((), |mut app| async move {
+            let flaky = Flaky::new(Mode::Hang);
+            secure_storage::background::set_give_up_for_test(Some(
+                std::time::Duration::from_millis(150),
+            ));
+            install_flaky(&mut app, &flaky);
+            let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+
+            let rx = secrets
+                .update(&mut app, |s, ctx| s.wait_for_load(ctx))
+                .expect("not loaded");
+            assert!(
+                rx.await.unwrap().is_none(),
+                "the stuck read is abandoned and reported as failed"
+            );
+
+            // A fresh worker serves the retry although the first thread is still stuck.
+            *flaky.mode.lock().unwrap() = Mode::Serve;
+            let rx = secrets
+                .update(&mut app, |s, ctx| s.wait_for_load(ctx))
+                .expect("not loaded");
+            let keys = rx.await.unwrap().expect("served by the fresh worker");
+            assert_eq!(keys.get("p").map(String::as_str), Some("sk-real"));
+
+            *flaky.release.0.lock().unwrap() = true;
+            flaky.release.1.notify_all();
+            secure_storage::background::set_give_up_for_test(None);
+            secure_storage::background::set_factory_for_test(None);
+        });
+    }
+}

@@ -9,7 +9,6 @@ use std::pin::Pin;
 use crate::ai::agent_sdk::driver::harness::{harness_kind, HarnessKind};
 use crate::ai::agent_sdk::driver::{AgentDriverOptions, AgentRunPrompt, Task};
 use crate::ai::agent_sdk::mcp_config::build_mcp_servers_from_specs;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::refresh_aws_credentials;
 use crate::ai::llms::LLMId;
 use crate::auth::OwnerType;
@@ -24,7 +23,6 @@ use warp_cli::{
     CliCommand, GlobalOptions,
 };
 use warp_core::features::FeatureFlag;
-#[cfg(not(target_family = "wasm"))]
 use warp_logging::log_file_path;
 use warpui::ModelSpawner;
 use warpui::{platform::TerminationMode, AppContext, SingletonEntity};
@@ -60,7 +58,6 @@ mod profiles;
 mod provider;
 #[cfg(test)]
 mod test_support;
-mod text_layout;
 
 /// Prints a non-blocking warning to stderr when the CLI is invoked with a team-scoped API key.
 fn maybe_warn_team_api_key(ctx: &AppContext) {
@@ -357,7 +354,6 @@ impl AgentDriverRunner {
 
             let bedrock_task_id = driver_options.task_id.map(|id| id.to_string());
 
-            #[cfg(not(target_family = "wasm"))]
             if let Some(role_arn) = bedrock_inference_role {
                 // Set the OIDC strategy on the UI thread and kick off the refresh; the
                 // returned future resolves when credentials are committed to the model.
@@ -647,7 +643,6 @@ fn report_fatal_error(err: anyhow::Error, ctx: &mut AppContext) {
     // for a human reading stderr.
     json_document::record_failed(&message);
 
-    #[cfg(not(target_family = "wasm"))]
     {
         if let Ok(path) = log_file_path() {
             let _ = write!(

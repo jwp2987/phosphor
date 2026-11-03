@@ -944,3 +944,74 @@ fn read_head_branch_sync_reads_branch_detached_and_worktree_head() {
 
     assert_eq!(read(&tmp.path().join("nowhere")), None);
 }
+
+#[test]
+fn parse_branch_list_trims_and_skips_blank() {
+    let got = super::parse_branch_list("main\n  feature/x \n\n");
+    assert_eq!(got.len(), 2);
+    assert!(got.contains("main") && got.contains("feature/x"));
+}
+
+#[test]
+fn stale_branch_refresh_result_is_dropped() {
+    let repo = Path::new("/nonexistent/stale-branch-refresh-test");
+    assert!(super::cached_local_branches(repo).is_none());
+    let old = super::begin_branch_refresh(repo);
+    let new = super::begin_branch_refresh(repo);
+    // The cache read on the UI thread never runs git and is empty until a refresh lands.
+    assert!(super::cached_local_branches(repo).is_none());
+    assert!(!super::finish_branch_refresh(
+        repo,
+        old,
+        ["old".to_string()].into()
+    ));
+    assert!(super::cached_local_branches(repo).is_none());
+    assert!(super::finish_branch_refresh(
+        repo,
+        new,
+        ["new".to_string()].into()
+    ));
+    assert!(super::cached_local_branches(repo).unwrap().contains("new"));
+}
+
+/// #1371: a name generated against a cold cache is visible to the next call (it is reserved until
+/// a listing contains it). Fails on the old code, which had no reservation.
+#[test]
+fn reserved_worktree_name_is_visible_to_next_call_and_released_by_listing() {
+    let repo = Path::new("/nonexistent/reserved-branch-name-test");
+    assert!(super::cached_local_branches(repo).is_none());
+    super::reserve_branch_name(repo, "taken-name");
+    assert!(super::cached_local_branches(repo)
+        .unwrap()
+        .contains("taken-name"));
+    let generation = super::begin_branch_refresh(repo);
+    assert!(super::finish_branch_refresh(
+        repo,
+        generation,
+        ["taken-name".to_string(), "main".to_string()].into()
+    ));
+    let got = super::cached_local_branches(repo).unwrap();
+    assert!(got.contains("taken-name") && got.contains("main"));
+}
+
+#[test]
+fn refs_epoch_advances_on_note() {
+    let before = super::refs_epoch();
+    super::note_refs_changed();
+    assert!(super::refs_epoch() > before);
+}
+
+#[test]
+fn repo_branch_cache_stays_bounded() {
+    let mut cache = super::BranchCache::default();
+    for i in 0..(super::MAX_CACHED_REPOS + 20) {
+        let repo = std::path::PathBuf::from(format!("/repos/r{i}"));
+        super::evict_branch_cache_if_full(&mut cache, &repo);
+        cache.branches.insert(repo, Default::default());
+    }
+    assert_eq!(cache.branches.len(), super::MAX_CACHED_REPOS);
+    // A repo already cached is updated in place, never evicting another.
+    let existing = cache.branches.keys().next().unwrap().clone();
+    super::evict_branch_cache_if_full(&mut cache, &existing);
+    assert_eq!(cache.branches.len(), super::MAX_CACHED_REPOS);
+}

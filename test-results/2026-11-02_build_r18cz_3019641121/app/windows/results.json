@@ -1,0 +1,1028 @@
+{
+ "meta": {
+  "platform": "windows",
+  "backend": "windows",
+  "app_display": "windows",
+  "seed": "1",
+  "commit": "7f0be20b",
+  "owner_settings": "sha256 a0613b641a27"
+ },
+ "generated": "2026-11-02T15:04:05-0800",
+ "summary": {
+  "pass": 26,
+  "fail": 29,
+  "skip": 5,
+  "noref": 0
+ },
+ "cases": [
+  {
+   "name": "mode_proof",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 1.1,
+   "detail": [
+    "no OCR engine: screenshot only (shots/terminal_proof_prekey.png), mode not machine-verified"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 6.0,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 16.01,
+     "p95": 19.87,
+     "max": 28.28
+    }
+   },
+   "shots": [
+    "shots\\terminal_cadence.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 96.7,
+   "detail": [
+    "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+    "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (powershell.exe)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": null
+      },
+      "0.25": {
+       "ref": "conhost (powershell.exe)",
+       "n": 30,
+       "bad": 1,
+       "posted": 30,
+       "lines": 29,
+       "exact_bad": null
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 52.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 5.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 18.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 1087.6,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 0.503
+   },
+   "shots": [
+    "shots\\terminal_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 26.5,
+   "detail": [
+    "ssh_connect_typing (gap 0.0 s): T145_n3bsgx never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 14:20:59 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:20:59 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:20:59 session shell None pty | 14:20:59 conpty shell pid 10564 | 14:21:00 conpty first output after 0.61 s: 68 bytes | 14:21:01 conpty output ended: 195 bytes sent to the client in total; fakesshd.stderr:   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2043, in run |     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054)",
+    "remote shell received 1/2 typed-ahead commands exactly (missing 1)",
+    "remote rec.log lacks the exact typed command for some trials"
+   ],
+   "metrics": {
+    "trials": 2
+   },
+   "shots": [
+    "shots\\terminal_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_connect_typing",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_not_local_after_ssh_connect_typing.png"
+   ],
+   "detail": [
+    "after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 25.8,
+   "detail": [
+    "ssh_enter_then_immediate_command: T152_nz8vpg never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 14:22:05 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:22:05 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:22:05 session shell None pty | 14:22:05 conpty shell pid 8248 | 14:22:05 conpty first output after 0.36 s: 68 bytes | 14:22:07 conpty output ended: 205 bytes sent to the client in total; fakesshd.stderr:     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054)",
+    "remote shell received 1/2 immediately-typed commands exactly: ['T150_0r0zr5']"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_ssh_enter_then_immediate_command_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_enter_then_immediate_command",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_not_local_after_ssh_enter_then_immediate_command.png"
+   ],
+   "detail": [
+    "after ssh_enter_then_immediate_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 33.0,
+   "detail": [
+    "the line typed behind a nested ssh ran exactly once remotely: []",
+    "ssh_nested_typeahead (inner): T157_w4d94b never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 14:23:10 connect from ('127.0.0.1', 49467) | 14:23:10 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:23:10 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:23:10 session shell None pty | 14:23:10 conpty shell pid 13152 | 14:23:11 conpty first output after 0.50 s: 68 bytes; fakesshd.stderr:   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054)"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_nested_typeahead",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_not_local_after_ssh_nested_typeahead.png"
+   ],
+   "detail": [
+    "after ssh_nested_typeahead the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "latency_enter",
+   "mode": "terminal",
+   "status": "fail",
+   "seconds": 122.2,
+   "detail": [
+    "Enter to command start: Phosphor overhead 87.52 ms over conhost (powershell.exe) exceeds the 2 ms budget",
+    "app share of Enter->start: enter_begin -> pty_write median 1.29 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+    "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+   ],
+   "metrics": {
+    "enter_to_start_ms": {
+     "n": 30,
+     "p50": 94.73,
+     "p95": 106.8,
+     "max": 108.58
+    },
+    "app_enter_to_pty_write_ms": 1.29,
+    "harness_floor_ms": 0.503,
+    "reference_enter_to_start_ms": {
+     "n": 30,
+     "p50": 7.21,
+     "p95": 11.95,
+     "max": 19.72
+    },
+    "reference": "conhost (powershell.exe)",
+    "lat": {
+     "enter_to_start": {
+      "phosphor": {
+       "n": 30,
+       "p50": 94.73,
+       "p95": 106.8,
+       "max": 108.58
+      },
+      "reference": {
+       "n": 30,
+       "p50": 7.21,
+       "p95": 11.95,
+       "max": 19.72
+      },
+      "reference_name": "conhost (powershell.exe)",
+      "budget_ms": 2.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.5033000488765538,
+      "notes": [
+       "reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+      ],
+      "overhead_ms": 87.52,
+      "budget_verdict": "fail",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "fail"
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal_latency_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "latency_key_log",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: types into a running `cat > /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "latency_paint",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_latency_paint.png"
+   ]
+  },
+  {
+   "name": "shell_fish",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "shell_nu",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0,
+   "detail": [
+    "not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"
+   ],
+   "metrics": {},
+   "shots": []
+  },
+  {
+   "name": "md_viewer",
+   "mode": "terminal",
+   "status": "skip",
+   "seconds": 0.5,
+   "detail": [
+    "no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal_md_viewer.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 1.0,
+   "detail": [
+    "no OCR engine: screenshot only (shots/terminal@gitbash_proof_prekey.png), mode not machine-verified"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "cadence",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 6.1,
+   "detail": [],
+   "metrics": {
+    "gap_ms": {
+     "n": 59,
+     "p50": 15.98,
+     "p95": 21.24,
+     "max": 21.78
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_cadence.png"
+   ]
+  },
+  {
+   "name": "key_loss_control",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 33.5,
+   "detail": [
+    "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+    "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0"
+   ],
+   "metrics": {
+    "key_loss": {
+     "variants": [
+      {
+       "target": "phosphor",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      },
+      {
+       "target": "reference",
+       "inject": "perline",
+       "n": 12,
+       "lost_first": 0,
+       "other_bad": 0,
+       "missing": 0
+      }
+     ],
+     "reference": "conhost (bash)"
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_key_loss_control.png"
+   ]
+  },
+  {
+   "name": "enter_loss_control",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 56.4,
+   "detail": [
+    "reference conhost (bash) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+    "reference conhost (bash) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters"
+   ],
+   "metrics": {
+    "enter_control": {
+     "reference": "conhost (bash)",
+     "runs": {
+      "0.0": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      },
+      "0.25": {
+       "ref": "conhost (bash)",
+       "n": 30,
+       "bad": 0,
+       "posted": 30,
+       "lines": 30,
+       "exact_bad": 0
+      }
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_enter_loss_control.png"
+   ]
+  },
+  {
+   "name": "fast_typing",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 118.7,
+   "detail": [
+    "ft0: file has 19/30 lines, exact match False first diff: exp='t91_8ht6u89s70' got='t92_t2ti62i9kq' [first bad line 4: injector call #660 posted its ENTER at 14:28:31.044] -- the reference kept every line exactly in the same session (30/30 lines): Phosphor-side (#1482)",
+    "ft0: shell received 29 commands, not the typed ones (first mismatch: 't6u89s70 >> r_ft0.txt') -- differs (32 typed, 21 received characters): typed 'echo t91_8ht6u89s70 >> r_ft0.txt', shell received 't6u89s70 >> r_ft0.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write; reference conhost (bash) with the same injection: 0/30 lines missing, all received exactly",
+    "ft25: file has 27/30 lines, exact match False first diff: exp='t118_rsa8aiy9g3' got='t119_11rx0z3dg4 t120_achi76w9rw' [first bad line 1: injector call #687 posted its ENTER at 14:29:24.584] -- the reference kept every line exactly in the same session (30/30 lines): Phosphor-side (#1482)",
+    "ft25: shell received 30 commands, not the typed ones (first mismatch: 'txt') -- differs (34 typed, 3 received characters): typed 'echo t118_rsa8aiy9g3 >> r_ft25.txt', shell received 'txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write; reference conhost (bash) with the same injection: 0/30 lines missing, all received exactly"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 16.8,
+   "detail": [
+    "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_needed_ctrl_c_after_paste_instant_enter",
+   "mode": "terminal@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "the first marker command after paste_instant_enter had no effect; it worked after Ctrl-C x3 (candidate APP finding: input focus/Enter routing after a long-running command, see docs/testing.md Windows triage)"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 24.9,
+   "detail": [
+    "Tab+Enter: completed file has 6/12 expected lines"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\terminal@gitbash_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 233.8,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 11/33 sample lines reached the shell NOT exactly as typed; e.g. characters REORDERED (a character moved: 't' came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt', shell received 'txrbash -c \\'tap \"date +%s.%N >> cc.t; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write; reference: 0/33 (the reference kept every line: the corruption is Phosphor-side, the same character loss/move as fast_typing)",
+    "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 79.65 ms includes the input-tool spawn (harness floor 0.1894999877549708 ms)",
+    "Ctrl-C: n=19 < 30 samples (smoke/scaled run): numbers are indicative only",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 19,
+     "p50": 79.65,
+     "p95": 104.74,
+     "max": 104.74
+    },
+    "harness_floor_ms": 0.189,
+    "reference_ctrl_c_ms": {
+     "n": 30,
+     "p50": 72.37,
+     "p95": 110.92,
+     "max": 114.34
+    },
+    "reference": "conhost (bash)",
+    "lat": {
+     "ctrl_c": {
+      "phosphor": {
+       "n": 19,
+       "p50": 79.65,
+       "p95": 104.74,
+       "max": 104.74
+      },
+      "reference": {
+       "n": 30,
+       "p50": 72.37,
+       "p95": 110.92,
+       "max": 114.34
+      },
+      "reference_name": "conhost (bash)",
+      "budget_ms": 20.0,
+      "budget_kind": "overhead",
+      "floor_ms": 0.1894999877549708,
+      "notes": [
+       "same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 79.65 ms includes the input-tool spawn (harness floor 0.1894999877549708 ms)",
+       "n=19 < 30 samples (smoke/scaled run): numbers are indicative only"
+      ],
+      "overhead_ms": 7.28,
+      "budget_verdict": "pass",
+      "prev": null,
+      "baseline": {
+       "status": "pending"
+      },
+      "prev_verdict": "none",
+      "baseline_verdict": "pending",
+      "verdict": "pass"
+     }
+    },
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 33,
+      "bad": 11,
+      "examples": [
+       "characters REORDERED (a character moved: 't' came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt', shell received 'txrbash -c \\'tap \"date +%s.%N >> cc.t; exit\" INT; sleep 30\\'; echo AFTER1 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write",
+       "characters REORDERED (a character moved: '>' came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER3 >> cc.txt', shell received '> ccbash -c \\'trap \"date +%s.%N >.txt; exit\" INT; sleep 30\\'; echo AFTER3 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write"
+      ]
+     },
+     "reference": {
+      "n": 33,
+      "got": 33,
+      "bad": 0,
+      "examples": []
+     }
+    }
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 34.2,
+   "detail": [
+    "ssh_connect_typing (gap 0.0 s): T172_8qqtac never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 14:35:19 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:35:19 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:35:19 session shell None pty | 14:35:19 conpty shell pid 11624 | 14:35:20 conpty first output after 0.54 s: 68 bytes | 14:35:21 conpty output ended: 204 bytes sent to the client in total; fakesshd.stderr: Traceback (most recent call last): |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2043, in run |     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)",
+    "remote shell received 1/2 typed-ahead commands exactly (missing 1)",
+    "remote rec.log lacks the exact typed command for some trials"
+   ],
+   "metrics": {
+    "trials": 2
+   },
+   "shots": [
+    "shots\\terminal@gitbash_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_connect_typing",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal@gitbash_not_local_after_ssh_connect_typing.png"
+   ],
+   "detail": [
+    "after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "terminal@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "keys not delivered: vk: marker not in the file; unicode: marker not in the file; foreground=phosphor-oss.exe(pid 18208) app-pid=18208 SendInput-failures=0"
+   ],
+   "metrics": {},
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal@gitbash_keys_not_delivered.png"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0.2,
+   "detail": [
+    "no OCR engine: screenshot only (shots/agent_proof_prekey.png), mode not machine-verified"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 21.8,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_fast_typing.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 5.3,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_paste_instant_enter.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 18.2,
+   "detail": [],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_tab_enter.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 1087.4,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 0,
+     "p50": null,
+     "p95": null,
+     "max": null
+    },
+    "harness_floor_ms": 0.184
+   },
+   "shots": [
+    "shots\\agent_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 26.4,
+   "detail": [
+    "ssh_connect_typing (gap 0.0 s): T54_zku2i5 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 14:55:51 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:55:51 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:55:51 session shell None pty | 14:55:51 conpty shell pid 14628 | 14:55:52 conpty first output after 0.52 s: 68 bytes | 14:55:53 conpty output ended: 193 bytes sent to the client in total; fakesshd.stderr:   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2043, in run |     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine | Socket exception: An existing connection was forcibly closed by the remote host (10054)",
+    "remote shell received 1/2 typed-ahead commands exactly (missing 1)",
+    "remote rec.log lacks the exact typed command for some trials"
+   ],
+   "metrics": {
+    "trials": 2
+   },
+   "shots": [
+    "shots\\agent_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_connect_typing",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent_not_local_after_ssh_connect_typing.png"
+   ],
+   "detail": [
+    "after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 25.8,
+   "detail": [
+    "ssh_enter_then_immediate_command: T61_xt16w7 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 14:56:57 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:56:57 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 14:56:57 session shell None pty | 14:56:57 conpty shell pid 9324 | 14:56:57 conpty first output after 0.39 s: 68 bytes | 14:56:59 conpty output ended: 193 bytes sent to the client in total; fakesshd.stderr:     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054)",
+    "remote shell received 1/2 immediately-typed commands exactly: ['T59_hnynsg']"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_ssh_enter_then_immediate_command_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_enter_then_immediate_command",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent_not_local_after_ssh_enter_then_immediate_command.png"
+   ],
+   "detail": [
+    "after ssh_enter_then_immediate_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 26.1,
+   "detail": [
+    "ssh_nested_typeahead (outer): before `exit`, a fresh probe ran in no shell, not the remote one: `exit` NOT typed; stopping"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent_ssh_nested_typeahead_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_nested_typeahead",
+   "mode": "agent",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent_not_local_after_ssh_nested_typeahead.png"
+   ],
+   "detail": [
+    "after ssh_nested_typeahead the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "mode_proof",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0.2,
+   "detail": [
+    "no OCR engine: screenshot only (shots/agent@gitbash_proof_prekey.png), mode not machine-verified"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_mode_proof.png"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "marker typed and received via SendInput vk"
+   ],
+   "metrics": {
+    "method": "vk"
+   },
+   "shots": []
+  },
+  {
+   "name": "fast_typing",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 54.3,
+   "detail": [
+    "ft0: file has 5/30 lines, exact match False first diff: exp='t5_lshv616mts' got='t6_6zc4pz0lx9' [first bad line 3: injector call #1233 posted its ENTER at 14:59:15.040]",
+    "ft0: shell received 7 commands, not the typed ones (first mismatch: \"echo t1_ieqh524yng >> 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run/home/<user>/proof_agent_gitbash.txt'\") -- differs (31 typed, 122 received characters): typed 'echo t2_5by1a2rogu >> r_ft0.txt', shell received \"echo t1_ieqh524yng >> 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run\"; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_fast_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "paste_instant_enter",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 12.0,
+   "detail": [
+    "pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_paste_instant_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "tab_enter",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 25.0,
+   "detail": [
+    "Tab+Enter: completed file has 2/12 expected lines"
+   ],
+   "metrics": {},
+   "shots": [
+    "shots\\agent@gitbash_tab_enter_FAIL.png"
+   ]
+  },
+  {
+   "name": "ctrl_c_d",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 121.6,
+   "detail": [
+    "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 19/33 sample lines reached the shell NOT exactly as typed; e.g. differs (81 typed, 79 received characters): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt', shell received 'bash-c \\'trap \"date +%s.%N>> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write",
+    "fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode",
+    "Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran"
+   ],
+   "metrics": {
+    "ctrl_c_ms": {
+     "n": 18,
+     "p50": 77.76,
+     "p95": 102.57,
+     "max": 102.57
+    },
+    "harness_floor_ms": 0.121,
+    "ctrl_c_line_integrity": {
+     "phosphor": {
+      "n": 33,
+      "got": 32,
+      "bad": 19,
+      "examples": [
+       "differs (81 typed, 79 received characters): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt', shell received 'bash-c \\'trap \"date +%s.%N>> cc.txt; exit\" INT; sleep 30\\'; echo AFTER2 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write",
+       "characters REORDERED (a character moved: 't' came before 'b'): typed 'bash -c \\'trap \"date +%s.%N >> cc.txt; exit\" INT; sleep 30\\'; echo AFTER4 >> cc.txt', shell received 't; bash -c \\'trap \"date +%s.%N >> cc.txexit\" INT; sleep 30\\'; echo AFTER4 >> cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write"
+      ]
+     },
+     "reference": null
+    }
+   },
+   "shots": [
+    "shots\\agent@gitbash_ctrl_c_d_FAIL.png"
+   ]
+  },
+  {
+   "name": "ssh_connect_typing",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 34.0,
+   "detail": [
+    "ssh_connect_typing (gap 0.0 s): T56_y9am72 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 15:02:51 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 15:02:51 auth publickey user=Winters key=ssh-ed25519 50ad08175c65b0f258bcb096e2d1509e -> ok | 15:02:51 session shell None pty | 15:02:51 conpty shell pid 10612 | 15:02:52 conpty first output after 0.54 s: 68 bytes | 15:02:53 conpty output ended: 193 bytes sent to the client in total; fakesshd.stderr: Traceback (most recent call last): |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2043, in run |     self._check_banner() |   File \"C:\\Users\\Winters\\AppData\\Local\\phosphor-ci\\python312\\Lib\\site-packages\\paramiko\\transport.py\", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10053] An established connection was aborted by the software in your host machine; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\\Program Files\\Git\\usr\\bin\\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)",
+    "remote shell received 1/2 typed-ahead commands exactly (missing 1)",
+    "remote rec.log lacks the exact typed command for some trials"
+   ],
+   "metrics": {
+    "trials": 2
+   },
+   "shots": [
+    "shots\\agent@gitbash_ssh_connect_typing_FAIL.png"
+   ]
+  },
+  {
+   "name": "pane_not_local_after_ssh_connect_typing",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent@gitbash_not_local_after_ssh_connect_typing.png"
+   ],
+   "detail": [
+    "after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+   ]
+  },
+  {
+   "name": "key_delivery",
+   "mode": "agent@gitbash",
+   "status": "fail",
+   "seconds": 0,
+   "detail": [
+    "keys not delivered: vk: marker not in the file; unicode: marker not in the file; foreground=phosphor-oss.exe(pid 14596) app-pid=14596 SendInput-failures=0"
+   ],
+   "metrics": {},
+   "shots": [
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\agent@gitbash_keys_not_delivered.png"
+   ]
+  },
+  {
+   "name": "restore",
+   "mode": "-",
+   "status": "pass",
+   "seconds": 0,
+   "detail": [
+    "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+   ],
+   "metrics": {},
+   "shots": []
+  }
+ ]
+}

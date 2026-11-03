@@ -1,0 +1,8 @@
+{
+ "failing_lines": [
+  "ERROR: Job failed: exit status 1"
+ ],
+ "job": "advisories",
+ "status": "failed",
+ "duration": 12.798314
+}

@@ -116,9 +116,57 @@ use crate::ai::skills::SkillDescriptor;
 /// just no carrier to bring it here. So we remember the last non-empty context per
 /// conversation, and fall back to it when input is empty, keeping message[0] byte-for-byte
 /// stable.
+///
+/// Keyed by conversation (#1077): a single process-wide slot let a concurrent conversation in
+/// another pane overwrite this one's context between its write and its next tool-result
+/// request. Most-recently-written last; bounded by [`MAX_CONVERSATION_SYSTEM_CTXS`] (oldest
+/// evicted) and cleared by [`forget_conversation_context`] when a conversation is removed.
 static CONVERSATION_SYSTEM_CTX: std::sync::Mutex<
-    Option<(crate::ai::agent::conversation::AIConversationId, Vec<AIAgentContext>)>,
-> = std::sync::Mutex::new(None);
+    Vec<(
+        crate::ai::agent::conversation::AIConversationId,
+        Vec<AIAgentContext>,
+    )>,
+> = std::sync::Mutex::new(Vec::new());
+
+/// Upper bound on remembered conversations, so conversations that end without being removed
+/// cannot grow the cache without limit.
+const MAX_CONVERSATION_SYSTEM_CTXS: usize = 64;
+
+fn store_conversation_context(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+    ctx: &[AIAgentContext],
+) {
+    let mut cache = CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    cache.retain(|(id, _)| *id != conversation_id);
+    if cache.len() >= MAX_CONVERSATION_SYSTEM_CTXS {
+        cache.remove(0);
+    }
+    cache.push((conversation_id, ctx.to_vec()));
+}
+
+fn lookup_conversation_context(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> Option<Vec<AIAgentContext>> {
+    CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .find(|(id, _)| *id == conversation_id)
+        .map(|(_, ctx)| ctx.clone())
+}
+
+/// Drops the context remembered for `conversation_id`; called when the conversation is
+/// removed from memory.
+pub(crate) fn forget_conversation_context(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) {
+    CONVERSATION_SYSTEM_CTX
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|(id, _)| *id != conversation_id);
+}
 
 /// Records `ctx` as the context to use for `conversation_id`'s next request that carries
 /// no input context of its own (a BYOP tool-result round trip: the result is committed to
@@ -132,9 +180,7 @@ pub(crate) fn remember_conversation_context(
     if ctx.is_empty() {
         return;
     }
-    *CONVERSATION_SYSTEM_CTX
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = Some((conversation_id, ctx.to_vec()));
+    store_conversation_context(conversation_id, ctx);
 }
 
 /// The head/tail cut a summarization request was actually built with.
@@ -224,6 +270,19 @@ pub(crate) fn note_summary_stream_dropped_tool_calls(
         .insert(conversation_id);
 }
 
+/// Whether `conversation_id`'s summarize stream dropped a tool call, without consuming the
+/// answer (the commit consumes it); the controller asks before the commit to decide on a
+/// retry (#1079).
+pub(crate) fn summary_stream_dropped_tool_calls(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> bool {
+    SUMMARY_STREAM_DROPPED_TOOL_CALLS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .is_some_and(|set| set.contains(&conversation_id))
+}
+
 /// Whether `conversation_id`'s summarize stream dropped a tool call; consumes the answer.
 pub(crate) fn take_summary_stream_dropped_tool_calls(
     conversation_id: crate::ai::agent::conversation::AIConversationId,
@@ -286,12 +345,8 @@ fn turn_listed_skills(params: &RequestParams) -> Vec<SkillDescriptor> {
     let Some(id) = params.byop_conversation_id else {
         return Vec::new();
     };
-    CONVERSATION_SYSTEM_CTX
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_ref()
-        .filter(|(cached_id, _)| *cached_id == id)
-        .map(|(_, ctx)| collect(ctx))
+    lookup_conversation_context(id)
+        .map(|ctx| collect(&ctx))
         .unwrap_or_default()
 }
 
@@ -1046,6 +1101,23 @@ fn redacted_tool_kind_for_tool_call(tool_call: &api::message::ToolCall) -> Redac
 /// persisted history is left untouched — so a historical conversation already poisoned by a
 /// huge result gets "detoxified" at this layer and can keep being used.
 const MAX_TOOL_RESPONSE_CHARS: usize = 40_000;
+
+/// Like [`cap_tool_response_content`], but a grep result (local or remote -- both arrive as
+/// `tool_call_result::Result::Grep`) is exempt (#1278, owner: "there shouldn't be a cap on
+/// grep"). The slice cut grep JSON mid-record, so the model saw a broken list. The full
+/// result is sent; no new limit is added here. If it is larger than the provider's context
+/// window the provider rejects the request with its own error rather than this layer
+/// silently dropping matches. (Upstream of here the remote protocol still bounds a single
+/// RunCommand response at ~64 MB; nothing in this layer does.)
+fn cap_tool_result_for(
+    inner: Option<&api::message::tool_call_result::Result>,
+    content: String,
+) -> String {
+    if matches!(inner, Some(api::message::tool_call_result::Result::Grep(_))) {
+        return content;
+    }
+    cap_tool_response_content(content)
+}
 
 fn cap_tool_response_content(content: String) -> String {
     // Byte count >= char count, so short-circuit first on the cheap byte length.
@@ -2115,6 +2187,28 @@ fn build_chat_request_for_model(
     attachment_caps: attachment_caps::AttachmentCaps,
     model_limit: byop_compaction::overflow::ModelLimit,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
+    let mut req = build_chat_request_unredacted(
+        params,
+        force_echo_reasoning,
+        api_type,
+        attachment_caps,
+        model_limit,
+    )?;
+    // #1469: the one choke point for the agent chat/summarize/title stream. Everything that
+    // reaches the wire (and the diagnostic logs below) is built from this value.
+    if params.should_redact_secrets || super::outbound_redaction::is_enabled() {
+        super::outbound_redaction::redact_chat_request(&mut req);
+    }
+    Ok(req)
+}
+
+fn build_chat_request_unredacted(
+    params: &RequestParams,
+    force_echo_reasoning: bool,
+    api_type: AgentProviderApiType,
+    attachment_caps: attachment_caps::AttachmentCaps,
+    model_limit: byop_compaction::overflow::ModelLimit,
+) -> Result<ChatRequest, ConvertToAPITypeError> {
     // When input has a non-empty context: use it directly, and remember it as a fallback
     // for later no-input requests in this conversation.
     // #892 / #905 (cwd and git branch staleness): a user query carries a fresh context
@@ -2129,19 +2223,12 @@ fn build_chat_request_for_model(
     // values and breaking the prompt cache.
     let input_ctx = latest_input_context(&params.input);
     let fallback_ctx: Option<Vec<AIAgentContext>> = if input_ctx.is_empty() {
-        params.byop_conversation_id.and_then(|id| {
-            CONVERSATION_SYSTEM_CTX
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .filter(|(cached_id, _)| *cached_id == id)
-                .map(|(_, ctx)| ctx.clone())
-        })
+        params
+            .byop_conversation_id
+            .and_then(lookup_conversation_context)
     } else {
         if let Some(id) = params.byop_conversation_id {
-            *CONVERSATION_SYSTEM_CTX
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = Some((id, input_ctx.to_vec()));
+            store_conversation_context(id, input_ctx);
         }
         None
     };
@@ -2575,7 +2662,7 @@ fn build_chat_request_for_model(
                 }
                 let (name, args_json) = serialize_outgoing_tool_call(
                     tc,
-                    params.mcp_context.as_ref(),
+                    params.mcp_context.as_deref(),
                     &msg.server_message_data,
                 );
                 let assistant_message_id = buf
@@ -2632,7 +2719,7 @@ fn build_chat_request_for_model(
                 };
                 messages.push(ChatMessage::from(ToolResponse::new(
                     tcr.tool_call_id.clone(),
-                    cap_tool_response_content(content),
+                    cap_tool_result_for(tcr.result.as_ref(), content),
                 )));
             }
             _ => {
@@ -2779,7 +2866,7 @@ fn build_chat_request_for_model(
                 });
                 messages.push(ChatMessage::from(ToolResponse::new(
                     tool_call_id,
-                    cap_tool_response_content(content),
+                    cap_tool_result_for(msg_side.as_ref(), content),
                 )));
             }
             AIAgentInput::InvokeSkill {
@@ -3587,6 +3674,28 @@ fn diag_request_with_redacted_binaries(chat_req: &ChatRequest) -> std::borrow::C
     std::borrow::Cow::Owned(redacted)
 }
 
+/// The `diag_body_json` document: model plus the redacted `ChatRequest`. Only built under
+/// `BYOP_DIAG_CONTENT_ENV`.
+fn build_diag_body_json(model_id: &str, chat_req: &ChatRequest) -> String {
+    let diag_request = diag_request_with_redacted_binaries(chat_req);
+    serde_json::to_string(&json!({
+        "model": model_id,
+        "chat_request": diag_request.as_ref(),
+    }))
+    .unwrap_or_default()
+}
+
+/// Cheap stand-in for the serialised request length: the sum of content sizes, with no
+/// serialisation. Used where only an order-of-magnitude "how big" is logged.
+fn approx_request_content_bytes(chat_req: &ChatRequest) -> usize {
+    chat_req.system.as_deref().map(str::len).unwrap_or(0)
+        + chat_req
+            .messages
+            .iter()
+            .map(|m| m.content.size())
+            .sum::<usize>()
+}
+
 fn binary_for_log(binary: &Binary) -> String {
     let name = binary
         .name
@@ -3783,12 +3892,19 @@ fn log_chat_request_details(
 
     if let Some(tools) = &chat_req.tools {
         for (idx, tool) in tools.iter().enumerate() {
-            let schema_len = tool
-                .schema
-                .as_ref()
-                .and_then(|schema| serde_json::to_string(schema).ok())
-                .map(|schema| schema.len())
-                .unwrap_or(0);
+            // Serialising a schema just to log its length is a per-request cost on the send
+            // path (every tool, every turn), so the length is only computed under the opt-in
+            // diagnostics switch; otherwise the line says whether a schema is present.
+            let schema_len: String = if byop_diag_content_enabled() {
+                tool.schema
+                    .as_ref()
+                    .and_then(|schema| serde_json::to_string(schema).ok())
+                    .map(|schema| schema.len())
+                    .unwrap_or(0)
+                    .to_string()
+            } else {
+                format!("present={}", tool.schema.is_some())
+            };
             log::info!(
                 "[byop-diag] request tool[{idx}]: name={} desc_len={} schema_len={} \
                  strict={:?} cache_control={:?}",
@@ -4684,8 +4800,8 @@ fn accepts_tool_choice_none(
 /// The drop is noted for the conversation ([`take_summary_stream_dropped_tool_calls`]): the
 /// commit then accepts the stream's text only if it is a complete summary
 /// (`byop_compaction::prompt::is_complete_summary`); anything else — narration before the
-/// call, a half-written summary — is not committed and the task resumes uncompacted
-/// (retrying the summary is #1079).
+/// call, a half-written summary — is not committed; the controller then re-asks once with an
+/// explicit "no tools" instruction (#1079) before the task resumes uncompacted.
 fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<ToolCall> {
     if !calls.is_empty() && is_summarize_request(params) {
         log::warn!(
@@ -4698,6 +4814,36 @@ fn tool_calls_to_dispatch(params: &RequestParams, calls: Vec<ToolCall>) -> Vec<T
         return Vec::new();
     }
     calls
+}
+
+/// Gives every call in one reply a distinct `call_id`, in order. Providers that omit ids make
+/// genai assign `call_{index}`, and a provider can repeat an id outright; accumulating by id
+/// would overwrite the first call with the second and the model would never get its result
+/// (#1278). A repeat becomes `{id}#2`, `{id}#3`, ... (re-checked, so it cannot collide with an
+/// id the reply already used). The first use of an id is left untouched.
+fn unique_call_ids(calls: impl IntoIterator<Item = ToolCall>) -> Vec<ToolCall> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut unique = Vec::new();
+    for mut call in calls {
+        if !seen.insert(call.call_id.clone()) {
+            let base = call.call_id.clone();
+            let mut n = 2usize;
+            let renamed = loop {
+                let candidate = format!("{base}#{n}");
+                if !seen.contains(&candidate) {
+                    break candidate;
+                }
+                n += 1;
+            };
+            log::warn!(
+                "[byop] duplicate tool call id {base:?} in one reply; renamed to {renamed:?}"
+            );
+            seen.insert(renamed.clone());
+            call.call_id = renamed;
+        }
+        unique.push(call);
+    }
+    unique
 }
 
 /// Test-only: runs [`tool_calls_to_dispatch`] on run_shell_command calls with `call_ids`, as
@@ -6527,12 +6673,7 @@ fn wire_skills_env(params: &RequestParams) -> (Vec<String>, Vec<(String, String)
     let ctx: &[AIAgentContext] = if !input_ctx.is_empty() {
         input_ctx
     } else if let Some(id) = params.byop_conversation_id {
-        fallback = CONVERSATION_SYSTEM_CTX
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            .filter(|(cid, _)| *cid == id)
-            .map(|(_, c)| c.clone());
+        fallback = lookup_conversation_context(id);
         fallback.as_deref().unwrap_or(&[])
     } else {
         &[]
@@ -6761,14 +6902,24 @@ pub async fn generate_byop_output(
     // offsets — but writing it to the log is opt-in; see `BYOP_DIAG_CONTENT_ENV`. (It used to
     // have a second reader, the on-error column window, which indexed it with an offset into
     // the provider's *response*; that is gone, see the stream-error branch.)
-    let diag_request = diag_request_with_redacted_binaries(&chat_req);
-    let diag_body_json = serde_json::to_string(&json!({
-        "model": &model_id,
-        "chat_request": diag_request.as_ref(),
-    }))
-    .unwrap_or_default();
-    log::info!("[byop] diag_body_approx_len={}", diag_body_json.len());
-    if byop_diag_content_enabled() {
+    //
+    // R1 (#1156): this is built only when `BYOP_DIAG_CONTENT_ENV` is set. It used to be built
+    // and byte-scanned on every request, in front of the first byte of the HTTP request, only
+    // to log a length. The length that remains is a cheap sum of content sizes.
+    let diag_body_json: Option<String> = if byop_diag_content_enabled() {
+        Some(build_diag_body_json(&model_id, &chat_req))
+    } else {
+        None
+    };
+    let diag_body_approx_len = diag_body_json
+        .as_ref()
+        .map(String::len)
+        .unwrap_or_else(|| approx_request_content_bytes(&chat_req));
+    log::info!("[byop] diag_body_approx_len={diag_body_approx_len}");
+    if let Some(diag_body_json) = diag_body_json
+        .as_deref()
+        .filter(|_| byop_diag_content_enabled())
+    {
         log::info!("[byop-diag] full_request_json={diag_body_json}");
     } else {
         // The non-content summary that stays on by default. Everything the unconditional dump
@@ -6776,9 +6927,9 @@ pub async fn generate_byop_output(
         // "how big was it?" — is already covered by `log_chat_request_details` above plus this
         // line; the raw text itself needs the opt-in.
         log::info!(
-            "[byop-diag] full_request_json suppressed: bytes={} messages={} tools={} \
+            "[byop-diag] full_request_json suppressed: bytes~={} messages={} tools={} \
              (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
-            diag_body_json.len(),
+            diag_body_approx_len,
             chat_req.messages.len(),
             chat_req.tools.as_ref().map(|t| t.len()).unwrap_or(0)
         );
@@ -6830,13 +6981,16 @@ pub async fn generate_byop_output(
             log::warn!("[byop] {label} contains raw control chars (offset, byte): {ctrl_hits:?}");
         }
     }
-    scan_suspicious_backslash("full_request_json", &diag_body_json);
-    if let Some(sys) = chat_req.system.as_deref() {
-        scan_suspicious_backslash("system", sys);
-    }
-    for (idx, m) in chat_req.messages.iter().enumerate() {
-        if let Some(t) = m.content.first_text() {
-            scan_suspicious_backslash(&format!("msg[{idx}]"), t);
+    // Diagnostic-only, O(history) per pass: runs under the same opt-in as the dump it scans.
+    if let Some(diag_body_json) = diag_body_json.as_deref() {
+        scan_suspicious_backslash("full_request_json", diag_body_json);
+        if let Some(sys) = chat_req.system.as_deref() {
+            scan_suspicious_backslash("system", sys);
+        }
+        for (idx, m) in chat_req.messages.iter().enumerate() {
+            if let Some(t) = m.content.first_text() {
+                scan_suspicious_backslash(&format!("msg[{idx}]"), t);
+            }
         }
     }
 
@@ -7269,13 +7423,15 @@ pub async fn generate_byop_output(
                     evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
                     // Same payload as the per-turn dump, so it carries the same content and the
                     // same opt-in.
-                    if byop_diag_content_enabled() {
+                    if let Some(diag_body_json) =
+                        diag_body_json.as_deref().filter(|_| byop_diag_content_enabled())
+                    {
                         log::error!("[byop-diag] full_request_json_on_error={diag_body_json}");
                     } else {
                         log::error!(
-                            "[byop-diag] full_request_json_on_error suppressed: bytes={} \
+                            "[byop-diag] full_request_json_on_error suppressed: bytes~={} \
                              (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
-                            diag_body_json.len()
+                            diag_body_approx_len
                         );
                     }
                     // There is deliberately no ±200-character context window here any more.
@@ -7304,9 +7460,9 @@ pub async fn generate_byop_output(
                         log::error!(
                             "[byop] response decode position: line={line:?} column={column} \
                              (an offset into the provider's response chunk, NOT into the \
-                             request; request_bytes={} for scale). The chunk text itself is \
+                             request; request_bytes~={} for scale). The chunk text itself is \
                              not available at this layer — see the comment at this call site.",
-                            diag_body_json.len()
+                            diag_body_approx_len
                         );
                     }
                     yield Err(Arc::new(byop_stream_error_to_api_error(
@@ -7491,7 +7647,7 @@ pub async fn generate_byop_output(
                             if elapsed_ok {
                                 if let Ok(parsed) = parse_turn_tool_call(
                                     &call,
-                                    mcp_context.as_ref(),
+                                    mcp_context.as_deref(),
                                     &tool_names_for_extract,
                                     &listed_skills,
                                     &skill_path_origin,
@@ -7515,7 +7671,7 @@ pub async fn generate_byop_output(
                             }
                         } else { match parse_turn_tool_call(
                             &call,
-                            mcp_context.as_ref(),
+                            mcp_context.as_deref(),
                             &tool_names_for_extract,
                             &listed_skills,
                             &skill_path_origin,
@@ -7569,11 +7725,11 @@ pub async fn generate_byop_output(
                             }
                         }
                         let mut captured_order: Vec<String> = Vec::new();
-                        for call in content.tool_calls() {
+                        for call in unique_call_ids(content.tool_calls().into_iter().cloned()) {
                             if !captured_order.contains(&call.call_id) {
                                 captured_order.push(call.call_id.clone());
                             }
-                            tool_bufs.insert(call.call_id.clone(), call.clone());
+                            tool_bufs.insert(call.call_id.clone(), call);
                         }
                         if !captured_order.is_empty() {
                             for call_id in &tool_order {
@@ -8103,6 +8259,8 @@ pub async fn generate_byop_output(
                     &args_str,
                     params.codebase_context_enabled,
                     &params.codebase_symbols,
+                    tools::codebase_runtime::codebase_unavailable_reason(&params.session_context),
+                    params.codebase_index_note,
                 );
 
                 let result_content = serde_json::to_string(&result_json)
@@ -8140,6 +8298,7 @@ pub async fn generate_byop_output(
                     params.codebase_context_enabled,
                     params.relevant_files.as_deref(),
                     params.codebase_retrieval.as_ref(),
+                    tools::codebase_runtime::codebase_unavailable_reason(&params.session_context),
                 )
                 .await;
 
@@ -8166,7 +8325,7 @@ pub async fn generate_byop_output(
 
             match parse_turn_tool_call(
                 &call,
-                mcp_context.as_ref(),
+                mcp_context.as_deref(),
                 &tool_names_for_extract,
                 &listed_skills,
                 &skill_path_origin,
@@ -8318,13 +8477,26 @@ pub async fn generate_byop_output(
                     };
                     let error_content = serde_json::to_string(&error_payload)
                         .unwrap_or_else(|_| r#"{"error":"invalid_arguments"}"#.to_owned());
-                    final_messages.push(make_tool_call_carrier_message(
+                    let mut carrier = make_tool_call_carrier_message(
                         &current_task_id,
                         &request_id,
                         &call.call_id,
                         &call.fn_name,
                         &args_str,
-                    ));
+                    );
+                    // An earlier chunk may already have shown a typed placeholder card for this
+                    // call id. The final parse failed, so turn THAT card into the failed carrier
+                    // instead of leaving a live-looking card beside a second, error one (#1278).
+                    if let Some(placeholder_id) = tool_msg_ids.get(&call.call_id).cloned() {
+                        carrier.id = placeholder_id;
+                        yield Ok(make_update_message_event(
+                            &current_task_id,
+                            carrier,
+                            vec!["tool_call".to_owned(), "server_message_data".to_owned()],
+                        ));
+                    } else {
+                        final_messages.push(carrier);
+                    }
                     final_messages.push(make_tool_call_result_message(
                         &current_task_id,
                         &request_id,
@@ -8511,7 +8683,12 @@ pub async fn generate_byop_output(
     };
 
     // Dropping the stream on cancellation also drops the in-flight HTTP request.
-    Ok(Box::pin(stream.take_until(cancellation_rx)))
+    // Merge bursts of text/reasoning chunks so the main thread does at most ~30 streaming
+    // updates a second regardless of the provider's chunk rate (#1204).
+    Ok(super::append_coalesce::coalesce_append_events(
+        stream.take_until(cancellation_rx),
+        super::append_coalesce::APPEND_COALESCE_WINDOW,
+    ))
 }
 
 /// Sends a short, non-tool request with an independent BYOP config, having the model
@@ -8543,6 +8720,8 @@ pub(crate) async fn generate_title_via_byop(
         api_type: tg.api_type,
         reasoning_effort: tg.reasoning_effort,
         extra_headers: tg.extra_headers.clone(),
+        // The key was re-read when the title request was taken (see `take_pending_title_generation`).
+        pending_key: None,
     };
     // Static template with only the `{{ language }}` placeholder substituted (no
     // minijinja — not worth a template engine for a single variable). A profile
@@ -8850,6 +9029,8 @@ fn dispatch_byop_codebase_tool(
     args_str: &str,
     codebase_context_enabled: bool,
     symbols: &[tools::codebase_runtime::CodebaseSymbol],
+    unavailable: Option<&'static str>,
+    index_note: Option<&'static str>,
 ) -> Value {
     use tools::codebase_runtime;
     if !codebase_context_enabled {
@@ -8858,9 +9039,17 @@ fn dispatch_byop_codebase_tool(
             "codebase_context_enabled is disabled for this profile"
         ));
     }
+    // An explicit "unavailable" (remote session, cwd not known yet), not an empty snapshot
+    // that would read as "no index / empty repository" (#1276).
+    if let Some(reason) = unavailable {
+        return codebase_runtime::error_to_json(&anyhow::anyhow!("{reason}"));
+    }
     match serde_json::from_str::<codebase_runtime::SearchCodebaseArgs>(args_str) {
         Ok(args) => {
-            let out = codebase_runtime::run_search_codebase(args, symbols);
+            let mut out = codebase_runtime::run_search_codebase(args, symbols);
+            // Says why the index is empty or incomplete, so `no_index` / `no_matches` is not
+            // read as "the repository has no such symbol" (#1276).
+            out.note = index_note.map(str::to_owned);
             codebase_runtime::search_output_to_json(&out)
         }
         Err(e) => codebase_runtime::error_to_json(&anyhow::anyhow!("invalid_arguments: {e}")),
@@ -8883,6 +9072,7 @@ async fn dispatch_byop_get_relevant_files_tool(
     codebase_context_enabled: bool,
     snapshot: Option<&tools::get_relevant_files_runtime::RelevantFilesSnapshot>,
     retrieval: Option<&crate::ai::codebase_retrieval::CodebaseRetrievalHandle>,
+    unavailable: Option<&'static str>,
 ) -> Value {
     use tools::get_relevant_files_runtime;
     // Two independent mechanisms answer this tool, on two independent settings: the
@@ -8914,6 +9104,11 @@ async fn dispatch_byop_get_relevant_files_tool(
     // no longer the end of the road: the embedding index may still answer. Both being
     // absent yields a graceful `no_context`, not an error.
     let snapshot = snapshot.filter(|_| codebase_context_enabled);
+    // No local snapshot and no embedding index, because the session is remote or its cwd is
+    // unknown: say so instead of answering `no_context` (#1276).
+    if let (Some(reason), None, None) = (unavailable, snapshot, retrieval) {
+        return get_relevant_files_runtime::error_to_json(&anyhow::anyhow!("{reason}"));
+    }
     let out =
         get_relevant_files_runtime::run_get_relevant_files_merged(args, snapshot, retrieval).await;
     get_relevant_files_runtime::output_to_json(&out)
@@ -8963,7 +9158,12 @@ async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enab
         },
     };
     if tool_name == tools::webfetch::TOOL_NAME {
-        match serde_json::from_str::<web_runtime::FetchArgs>(args_str) {
+        // Coerced against the schema on a strict-parse failure, like every registry tool
+        // (#1278): a stringified `timeout` is not worth a retry round trip.
+        match tools::coerce::parse_with_coerce::<web_runtime::FetchArgs>(
+            args_str,
+            tools::webfetch::WEBFETCH.parameters,
+        ) {
             Ok(args) => match web_runtime::run_webfetch(&client, args).await {
                 Ok(out) => web_runtime::fetch_output_to_json(&out),
                 Err(e) => {
@@ -8978,7 +9178,10 @@ async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enab
         }
     } else {
         // websearch
-        match serde_json::from_str::<web_runtime::SearchToolArgs>(args_str) {
+        match tools::coerce::parse_with_coerce::<web_runtime::SearchToolArgs>(
+            args_str,
+            tools::websearch::WEBSEARCH.parameters,
+        ) {
             Ok(args) => {
                 let api_key = std::env::var("EXA_API_KEY").ok();
                 match web_runtime::run_websearch(&client, args, api_key.as_deref(), None).await {
@@ -14699,7 +14902,7 @@ mod plan_mode_round_trip_tests {
     fn cli_subagent_turn_offers_only_cli_agent_tools() {
         let mut params = tool_result_round_trip(false);
         params.web_search_enabled = true;
-        params.mcp_context = Some(mcp_context_with_one_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_one_tool()));
         let mcp_names = mcp_tool_names(&params);
         assert!(!mcp_names.is_empty(), "fixture precondition: one MCP tool");
         for name in ["apply_file_diffs", tools::webfetch::TOOL_NAME]
@@ -14734,7 +14937,7 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn cli_subagent_turn_refuses_other_tools_at_dispatch() {
         let mut params = tool_result_round_trip(false);
-        params.mcp_context = Some(mcp_context_with_one_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_one_tool()));
         let mcp_names = mcp_tool_names(&params);
         params.lrc_command_id = Some("block-1".to_owned());
         params.lrc_is_cli_subagent_turn = true;
@@ -14777,7 +14980,7 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn monitoring_agent_lrc_turn_keeps_its_tools_except_run_shell_command() {
         let mut params = tool_result_round_trip(false);
-        params.mcp_context = Some(mcp_context_with_one_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_one_tool()));
         let mcp_names = mcp_tool_names(&params);
         params.lrc_command_id = Some("block-1".to_owned());
         assert!(!params.lrc_is_cli_subagent_turn);
@@ -15132,6 +15335,41 @@ mod plan_mode_round_trip_tests {
         );
     }
 
+    /// #1077: two conversations each keep their own remembered context, and forgetting one
+    /// leaves the other. The old single slot returned `None` for the first after the second wrote.
+    #[test]
+    fn remembered_context_is_per_conversation_and_forgettable() {
+        let a = crate::ai::agent::conversation::AIConversationId::new();
+        let b = crate::ai::agent::conversation::AIConversationId::new();
+        remember_conversation_context(a, &listed_skill_context());
+        remember_conversation_context(b, &[AIAgentContext::Skills { skills: vec![] }]);
+        let a_ctx = lookup_conversation_context(a).expect("a keeps its context");
+        assert!(matches!(&a_ctx[0], AIAgentContext::Skills { skills } if skills.len() == 1));
+        let b_ctx = lookup_conversation_context(b).expect("b has its own context");
+        assert!(matches!(&b_ctx[0], AIAgentContext::Skills { skills } if skills.is_empty()));
+        forget_conversation_context(a);
+        assert!(lookup_conversation_context(a).is_none());
+        assert!(lookup_conversation_context(b).is_some());
+        forget_conversation_context(b);
+    }
+
+    /// The cache is bounded: the oldest entry is evicted past the cap.
+    #[test]
+    fn remembered_context_cache_is_bounded() {
+        let first = crate::ai::agent::conversation::AIConversationId::new();
+        remember_conversation_context(first, &listed_skill_context());
+        let others: Vec<_> = (0..MAX_CONVERSATION_SYSTEM_CTXS)
+            .map(|_| crate::ai::agent::conversation::AIConversationId::new())
+            .collect();
+        for id in &others {
+            remember_conversation_context(*id, &listed_skill_context());
+        }
+        assert!(lookup_conversation_context(first).is_none());
+        for id in others {
+            forget_conversation_context(id);
+        }
+    }
+
     /// The remembered context is what a real tool-result turn reads (the controller remembers
     /// the result's context before the request is built), and it offers `read_skill`.
     #[test]
@@ -15204,7 +15442,7 @@ mod plan_mode_round_trip_tests {
         out.push(("plan mode", p));
 
         let mut p = all_tools_on();
-        p.mcp_context = Some(mcp_context_with_lookup_tool());
+        p.mcp_context = Some(std::sync::Arc::new(mcp_context_with_lookup_tool()));
         out.push(("MCP server, no resources", p));
 
         // Everything off at once: the defaults of `RequestParams::new_for_test`.
@@ -15297,7 +15535,7 @@ mod plan_mode_round_trip_tests {
     #[test]
     fn mcp_tools_are_gated_by_the_offered_names() {
         let mut params = all_tools_on();
-        params.mcp_context = Some(mcp_context_with_lookup_tool());
+        params.mcp_context = Some(std::sync::Arc::new(mcp_context_with_lookup_tool()));
         let offered = available_tool_names(&params);
         let mcp_name = tools::mcp::build_mcp_tool_defs(
             params.mcp_context.as_ref().expect("mcp context set above"),
@@ -17542,5 +17780,271 @@ mod summarize_turn_tool_gate_tests {
             tool_calls_to_dispatch(&params(vec![resume()]), vec![call("a"), call("b")]);
         let ids: Vec<&str> = dispatched.iter().map(|c| c.call_id.as_str()).collect();
         assert_eq!(ids, ["a", "b"]);
+    }
+}
+
+/// #1156: per-request overhead. The request body must not change when the history is shared
+/// instead of copied, and the diagnostics-only work must stay behind the opt-in.
+#[cfg(test)]
+mod request_overhead_tests {
+    use super::*;
+
+    fn long_history_params() -> RequestParams {
+        let mut messages = Vec::new();
+        for turn in 0..300 {
+            messages.push(make_user_query_message(
+                "task-1",
+                &format!("req-{turn}"),
+                format!("question {turn} with a literal \\u00e9 and a tab\there"),
+                &[],
+            ));
+            messages.push(make_agent_output_message(
+                "task-1",
+                &format!("req-{turn}"),
+                format!("answer {turn}: {}", "x".repeat(400)),
+            ));
+        }
+        let task = api::Task {
+            id: "task-1".to_owned(),
+            messages,
+            dependencies: None,
+            description: String::new(),
+            summary: String::new(),
+            server_data: String::new(),
+        };
+        RequestParams::new_for_test(vec![], vec![task])
+    }
+
+    fn body_of(params: &RequestParams) -> String {
+        let request = build_chat_request_for_test(params).expect("long history builds");
+        serde_json::to_string(&request).expect("request serialises")
+    }
+
+    /// Cloning the params (as `ResponseStream::new` and the preflight rebuild do) shares the
+    /// task list, and the request built from the clone is byte-identical to the one built
+    /// from the original and from an independently deep-copied history.
+    #[test]
+    fn request_body_is_identical_for_shared_and_deep_copied_history() {
+        let original = long_history_params();
+        let shared = original.clone();
+        assert!(
+            Arc::ptr_eq(&original.tasks, &shared.tasks),
+            "cloning RequestParams must share the task list, not copy it"
+        );
+        let deep = RequestParams::new_for_test(vec![], original.tasks.as_ref().clone());
+        let body = body_of(&original);
+        assert!(body.len() > 100_000, "fixture should be a long conversation");
+        assert_eq!(body, body_of(&shared));
+        assert_eq!(body, body_of(&deep));
+    }
+
+    #[test]
+    fn diag_body_json_carries_model_and_request_and_approx_len_needs_no_serialisation() {
+        let params = long_history_params();
+        let request = build_chat_request_for_test(&params).expect("builds");
+        let diag = build_diag_body_json("test-model", &request);
+        let parsed: serde_json::Value = serde_json::from_str(&diag).expect("valid json");
+        assert_eq!(parsed["model"], "test-model");
+        assert!(parsed["chat_request"]["messages"].is_array());
+
+        let approx = approx_request_content_bytes(&request);
+        let text_bytes: usize = request
+            .messages
+            .iter()
+            .map(|m| m.content.size())
+            .sum::<usize>()
+            + request.system.as_deref().map(str::len).unwrap_or(0);
+        assert_eq!(approx, text_bytes);
+        assert!(approx > 100_000);
+    }
+
+    /// The env switch is read once per process, so it cannot be flipped inside a test; instead
+    /// pin the structure: the dump builder and the byte scans each sit behind the content
+    /// switch in the send path.
+    #[test]
+    fn diag_dump_and_scans_are_gated_on_the_content_switch() {
+        let source = include_str!("chat_stream.rs");
+        let send_path_start = source
+            .find("let diag_body_json: Option<String>")
+            .expect("send path moved; repoint this test");
+        let window = &source[send_path_start..];
+        let build_at = window
+            .find("build_diag_body_json(&model_id")
+            .expect("builder call");
+        assert!(
+            window[..build_at].contains("if byop_diag_content_enabled()"),
+            "diag body must only be built under the content switch"
+        );
+        let scan_at = window
+            .find("scan_suspicious_backslash(\"full_request_json\"")
+            .expect("scan call");
+        assert!(
+            window[..scan_at].contains("if let Some(diag_body_json) = diag_body_json.as_deref()"),
+            "the full-request scan must only run when the dump was built"
+        );
+        assert!(
+            !window[..scan_at].contains("let diag_body_json = serde_json::to_string"),
+            "the unconditional dump is back"
+        );
+    }
+}
+
+#[cfg(test)]
+mod duplicate_call_id_tests {
+    use super::*;
+
+    fn call(id: &str, command: &str) -> ToolCall {
+        ToolCall {
+            call_id: id.to_owned(),
+            fn_name: "run_shell_command".to_owned(),
+            fn_arguments: serde_json::json!({ "command": command }),
+            thought_signatures: None,
+        }
+    }
+
+    /// Old code keyed a `HashMap` by call id, so the second call replaced the first.
+    #[test]
+    fn two_calls_with_one_id_both_survive_with_distinct_ids() {
+        let out = unique_call_ids([call("call_0", "ls"), call("call_0", "pwd")]);
+        let ids: Vec<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["call_0", "call_0#2"]);
+        assert_eq!(out[0].fn_arguments["command"], "ls");
+        assert_eq!(out[1].fn_arguments["command"], "pwd");
+    }
+
+    #[test]
+    fn distinct_ids_are_untouched_and_order_is_kept() {
+        let out = unique_call_ids([call("b", "1"), call("a", "2")]);
+        let ids: Vec<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, ["b", "a"]);
+    }
+
+    #[test]
+    fn a_renamed_id_does_not_collide_with_an_id_the_reply_already_used() {
+        let out = unique_call_ids([call("x", "1"), call("x#2", "2"), call("x", "3")]);
+        let ids: HashSet<&str> = out.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids.len(), 3);
+    }
+}
+
+/// #1469: the agent chat/summarize stream redacts the whole request at its one builder.
+#[cfg(test)]
+mod outbound_redaction_chat_tests {
+    use super::*;
+    use crate::ai::agent_providers::outbound_redaction_tests::{Armed, SECRET};
+
+    fn params_with_secret_in_every_kind() -> RequestParams {
+        let history = vec![
+            make_user_query_message("task-1", "req-0", format!("earlier I pasted {SECRET}"), &[]),
+            make_tool_call_carrier_message(
+                "task-1",
+                "req-0",
+                "call-1",
+                "run_shell_command",
+                &format!("{{\"command\":\"echo {SECRET}\"}}"),
+            ),
+            make_tool_call_result_message(
+                "task-1",
+                "req-0",
+                "call-1".to_owned(),
+                format!("{{\"output\":\"{SECRET}\"}}"),
+            ),
+            make_agent_output_message("task-1", "req-0", format!("compacted summary {SECRET}")),
+        ];
+        let input = AIAgentInput::UserQuery {
+            query: format!("now use {SECRET}"),
+            context: Arc::<[AIAgentContext]>::from([AIAgentContext::SelectedText(format!(
+                "selected {SECRET}"
+            ))]),
+            static_query_type: None,
+            referenced_attachments: HashMap::new(),
+            user_query_mode: UserQueryMode::default(),
+            running_command: None,
+            intended_agent: None,
+        };
+        RequestParams::new_for_test(
+            vec![input],
+            vec![api::Task {
+                id: "task-1".to_owned(),
+                messages: history,
+                dependencies: None,
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            }],
+        )
+    }
+
+    fn wire(params: &RequestParams) -> String {
+        let req = build_chat_request_for_test(params).expect("request builds");
+        serde_json::to_string(&req).expect("serializes")
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_secret_in_any_content_kind_is_redacted_when_the_request_says_so() {
+        let _armed = Armed::on();
+        crate::ai::agent_providers::outbound_redaction::set_enabled(false);
+        let mut params = params_with_secret_in_every_kind();
+        let unredacted = wire(&params);
+        assert!(
+            unredacted.matches(SECRET).count() >= 5,
+            "fixture must carry the secret in query, selected text, call args, result and \
+             history: {unredacted}"
+        );
+        params.should_redact_secrets = true;
+        let redacted = wire(&params);
+        assert!(!redacted.contains(SECRET), "secret reached the wire: {redacted}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_global_switch_alone_also_redacts_the_chat_request() {
+        let _armed = Armed::on();
+        let params = params_with_secret_in_every_kind();
+        assert!(!wire(&params).contains(SECRET));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn nothing_is_touched_when_redaction_is_off() {
+        let _armed = Armed::off();
+        let params = params_with_secret_in_every_kind();
+        assert!(wire(&params).matches(SECRET).count() >= 5);
+    }
+
+    /// A summarize (compaction) request goes through the same builder.
+    #[test]
+    #[serial_test::serial]
+    fn a_summarize_request_is_redacted_too() {
+        let _armed = Armed::on();
+        let mut params = params_with_secret_in_every_kind();
+        params.input = vec![AIAgentInput::SummarizeConversation {
+            prompt: Some(format!("summarize, keep {SECRET}")),
+            overflow: false,
+        }];
+        assert!(!wire(&params).contains(SECRET));
+    }
+}
+
+#[cfg(test)]
+mod grep_uncapped_tests {
+    use super::*;
+
+    /// #1278: a grep result above the generic 40,000-char slice reaches the model whole;
+    /// any other tool's result of the same size is still sliced.
+    #[test]
+    fn grep_result_over_the_generic_cap_is_not_sliced() {
+        let big = "x".repeat(MAX_TOOL_RESPONSE_CHARS * 3);
+        let grep = api::message::tool_call_result::Result::Grep(api::GrepResult { result: None });
+        let out = cap_tool_result_for(Some(&grep), big.clone());
+        assert_eq!(out, big);
+
+        let other =
+            api::message::tool_call_result::Result::RequestComputerUseResult(Default::default());
+        let out = cap_tool_result_for(Some(&other), big.clone());
+        assert!(out.contains("tool output truncated"));
+        assert!(out.len() < big.len());
+        assert!(cap_tool_result_for(None, big.clone()).contains("tool output truncated"));
     }
 }

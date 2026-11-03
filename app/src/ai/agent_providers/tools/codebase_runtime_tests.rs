@@ -169,3 +169,144 @@ fn codebase_symbol_serde_round_trip() {
         serde_json::from_str(r#"{"name":"bar","file_path":"y.rs","line_number":1}"#).unwrap();
     assert_eq!(no_prefix.type_prefix, None);
 }
+
+/// #1276: the codebase tools index the directory of the conversation's own session
+/// (`SessionContext`), not whichever window/pane is active. Two conversations with different
+/// cwds resolve to their own directory.
+#[test]
+fn local_cwd_for_session_uses_the_conversations_own_cwd() {
+    use crate::ai::blocklist::SessionContext;
+
+    let a = SessionContext::new_local_with_cwd_for_test("/work/repo-x/src");
+    let b = SessionContext::new_local_with_cwd_for_test("/work/repo-y");
+    assert_eq!(
+        local_cwd_for_session(&a),
+        Some(std::path::PathBuf::from("/work/repo-x/src"))
+    );
+    assert_eq!(
+        local_cwd_for_session(&b),
+        Some(std::path::PathBuf::from("/work/repo-y"))
+    );
+}
+
+/// #1276: a remote session's cwd is a path on another host. Even when the same path exists
+/// locally it must never be looked up in the local repository index.
+#[test]
+fn local_cwd_for_session_is_none_for_remote_sessions() {
+    use crate::ai::blocklist::SessionContext;
+
+    let remote =
+        SessionContext::new_warpified_remote_for_test(true).with_cwd_for_test("/work/repo-x");
+    assert_eq!(local_cwd_for_session(&remote), None);
+    let legacy = SessionContext::new_legacy_ssh_for_test().with_cwd_for_test("/work/repo-x");
+    assert_eq!(local_cwd_for_session(&legacy), None);
+    // Unknown cwd: nothing to index (no fallback to the active window).
+    assert_eq!(local_cwd_for_session(&SessionContext::new_for_test()), None);
+}
+
+/// #1276: a remote session, or one whose cwd is not known yet, gets an explicit
+/// "unavailable" reason rather than an empty snapshot that reads as an empty repository.
+#[test]
+fn codebase_unavailable_reason_names_remote_and_unknown_cwd() {
+    use crate::ai::blocklist::SessionContext;
+
+    let remote =
+        SessionContext::new_warpified_remote_for_test(true).with_cwd_for_test("/work/repo-x");
+    assert_eq!(
+        codebase_unavailable_reason(&remote),
+        Some("codebase index unavailable for remote sessions")
+    );
+    let local = SessionContext::new_local_with_cwd_for_test("/w");
+    assert!(codebase_unavailable_reason(&local).is_none());
+    let no_cwd = SessionContext::new_for_test();
+    assert!(
+        codebase_unavailable_reason(&no_cwd)
+            .unwrap()
+            .contains("working directory is not known")
+    );
+}
+
+/// #1276: the symbol list is rebuilt only when the outline version changes.
+#[test]
+fn symbol_cache_rebuilds_only_on_version_or_repo_change() {
+    use std::cell::Cell;
+    use std::path::Path;
+
+    let cache = SymbolCache::new();
+    let builds = Cell::new(0);
+    let build = |name: &'static str| {
+        let builds = &builds;
+        move || {
+            builds.set(builds.get() + 1);
+            vec![sym(name, None, "a.rs", 1)]
+        }
+    };
+    let repo = Path::new("/repo");
+
+    let first = cache.get_or_build(repo, 1, build("old"));
+    let again = cache.get_or_build(repo, 1, build("unused"));
+    assert_eq!(builds.get(), 1, "no mutation: served from cache");
+    assert!(std::sync::Arc::ptr_eq(&first, &again));
+
+    let after = cache.get_or_build(repo, 2, build("new"));
+    assert_eq!(builds.get(), 2, "version bump: rebuilt");
+    assert_eq!(after[0].name, "new");
+
+    let other = cache.get_or_build(Path::new("/other"), 2, build("other"));
+    assert_eq!(builds.get(), 3, "different repo: rebuilt");
+    assert_eq!(other[0].name, "other");
+}
+
+/// #1276: every index state that leaves the snapshot empty or incomplete has a note that says
+/// why; a complete index has none.
+#[test]
+fn codebase_index_state_notes_explain_empty_or_partial_results() {
+    assert!(
+        CodebaseIndexState::Disabled
+            .note()
+            .unwrap()
+            .contains("outline_codebase_symbols_for_at_context_menu")
+    );
+    assert!(
+        CodebaseIndexState::NoRepository
+            .note()
+            .unwrap()
+            .contains("no git repository")
+    );
+    assert!(
+        CodebaseIndexState::Building
+            .note()
+            .unwrap()
+            .contains("still being built")
+    );
+    assert!(
+        CodebaseIndexState::Failed
+            .note()
+            .unwrap()
+            .contains("failed")
+    );
+    assert!(
+        CodebaseIndexState::Partial
+            .note()
+            .unwrap()
+            .contains("partial")
+    );
+    assert_eq!(CodebaseIndexState::Complete.note(), None);
+}
+
+/// #1276: the note is serialized only when present.
+#[test]
+fn search_output_note_is_serialized_only_when_present() {
+    let mut out = run_search_codebase(
+        SearchCodebaseArgs {
+            query: "anything".to_owned(),
+            max_results: None,
+        },
+        &[],
+    );
+    assert_eq!(out.status, "no_index");
+    assert!(search_output_to_json(&out).get("note").is_none());
+    out.note = CodebaseIndexState::Building.note().map(str::to_owned);
+    let json = search_output_to_json(&out);
+    assert!(json["note"].as_str().unwrap().contains("still being built"));
+}

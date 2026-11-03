@@ -264,6 +264,7 @@ impl NetworkPageView {
 
     /// Pushes the current password into the password editor (managed separately by ProxyCredentials).
     fn sync_password_from_credentials(me: &mut Self, ctx: &mut ViewContext<Self>) {
+        ProxyCredentials::handle(ctx).update(ctx, |creds, ctx| creds.ensure_loaded(ctx));
         let pw = ProxyCredentials::as_ref(ctx).password().to_string();
         me.password_editor.update(ctx, |editor, ctx| {
             editor.set_buffer_text(&pw, ctx);

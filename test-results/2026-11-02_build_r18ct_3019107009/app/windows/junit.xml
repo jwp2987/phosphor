@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="69" failures="30" skipped="10">
+<testcase classname="terminal" name="mode_proof" time="1.10">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.10">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="96.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="52.70">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.30">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="18.60">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="518.10">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median -2273.19 ms includes the input-tool spawn (harness floor 0.2787999692372978 ms)
+Ctrl-C: n=8 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="terminal" name="pane_wedged_after_ctrl_c_d" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ctrl_c_d, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ctrl_c_d, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="21.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T146_igh1pn never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:18:25">ssh_connect_typing (gap 0.0 s): T146_igh1pn never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:18:25 connection closed: authenticated=False channels=1 | 11:31:44 connect from ('127.0.0.1', 64691) | 11:31:44 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:31:44 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:31:44 session shell None pty | 11:31:44 conpty shell pid 3580; fakesshd.stderr:     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | bash: cannot set terminal process group (-1): Inappropriate ioctl for device | bash: no job control in this shell | ~$ exit
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="terminal" name="pane_wedged_after_ssh_connect_typing" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ssh_connect_typing, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ssh_connect_typing, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="21.80">
+<failure message="ssh_enter_then_immediate_command: T151_c5nz8v never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:32:">ssh_enter_then_immediate_command: T151_c5nz8v never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:32:58 connection closed: authenticated=False channels=1 | 11:33:20 connect from ('127.0.0.1', 64700) | 11:33:20 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:33:20 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:33:20 session shell None pty | 11:33:20 conpty shell pid 1164; fakesshd.stderr: bash: no job control in this shell | ~$ exit | Socket exception: An existing connection was forcibly closed by the remote host (10054) | bash: cannot set terminal process group (-1): Inappropriate ioctl for device | bash: no job control in this shell | ~$ exit
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="terminal" name="pane_wedged_after_ssh_enter_then_immediate_command" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ssh_enter_then_immediate_command, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ssh_enter_then_immediate_command, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="33.00">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T156_zrw4d9 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:34:33 connection closed: authenticated=False channels=1 | 11:34:54 connect from ('127.0.0.1', 64707) | 11:34:54 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:34:54 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:34:54 session shell None pty | 11:34:54 conpty shell pid 16748; fakesshd.stderr: bash: no job control in this shell | ~$ exit | Socket exception: An existing connection was forcibly closed by the remote host (10054) | bash: cannot set terminal process group (-1): Inappropriate ioctl for device | bash: no job control in this shell | ~$ exit</failure>
+</testcase>
+<testcase classname="terminal" name="pane_wedged_after_ssh_nested_typeahead" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ssh_nested_typeahead, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ssh_nested_typeahead, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="121.70">
+<failure message="Enter to command start: Phosphor overhead 82.39 ms over conhost (powershell.exe) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 82.39 ms over conhost (powershell.exe) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.28 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="0.00">
+<skipped message="not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="0.00">
+<skipped message="not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="cadence" time="6.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_loss_control" time="33.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="56.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="fast_typing" time="83.80">
+<failure message="ft25: file has 29/30 lines, exact match False first diff: exp='t134_xvjqqqwyr3' got='t135_jiqome8m81' [first bad line 17: injector call #753 posted its ENTER at 11:41:13.514] -- the reference kept eve">ft25: file has 29/30 lines, exact match False first diff: exp='t134_xvjqqqwyr3' got='t135_jiqome8m81' [first bad line 17: injector call #753 posted its ENTER at 11:41:13.514] -- the reference kept every line exactly in the same session (30/30 lines): Phosphor-side (#1482)
+ft25: shell received 30 commands, not the typed ones (first mismatch: '34echo t1_xvjqqqwyr3 &gt;&gt; r_ft25.txt') -- characters REORDERED (a character moved: '3' came before 'e'): typed 'echo t134_xvjqqqwyr3 &gt;&gt; r_ft25.txt', shell received '34echo t1_xvjqqqwyr3 &gt;&gt; r_ft25.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write; reference conhost (bash) with the same injection: 0/30 lines missing, all received exactly</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="paste_instant_enter" time="17.00">
+<failure message="pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')">pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_enter" time="14.70">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_d" time="174.90">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 6/33 sample lines reached the shell NOT exactly as typed; e.g. one character LOST: typed 'bash -c \'trap &quot;date +%s.%N &gt;&gt; cc.txt">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 6/33 sample lines reached the shell NOT exactly as typed; e.g. one character LOST: typed 'bash -c \'trap "date +%s.%N &gt;&gt; cc.txt; exit" INT; sleep 30\'; echo AFTER1 &gt;&gt; cc.txt', shell received 'bash-c \'trap "date +%s.%N &gt;&gt; cc.txt; exit" INT; sleep 30\'; echo AFTER1 &gt;&gt; cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write; reference: 0/33 (the reference kept every line: the corruption is Phosphor-side, the same character loss/move as fast_typing)
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 80.27 ms includes the input-tool spawn (harness floor 0.24620001204311848 ms)
+Ctrl-C: n=24 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing" time="22.00">
+<failure message="ssh_connect_typing (gap 0.0 s): T168_emlmt1 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:38:46">ssh_connect_typing (gap 0.0 s): T168_emlmt1 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:38:46 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:38:49 connection closed: authenticated=False channels=0 | 11:45:32 connect from ('127.0.0.1', 65036) | 11:45:32 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:45:32 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:45:32 connection closed: authenticated=False channels=0; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_enter_then_immediate_command" time="21.90">
+<failure message="ssh_enter_then_immediate_command: T170_ve0m65 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:45:">ssh_enter_then_immediate_command: T170_ve0m65 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:45:32 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:45:32 connection closed: authenticated=False channels=0 | 11:45:56 connect from ('127.0.0.1', 65039) | 11:45:56 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:45:56 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:45:56 connection closed: authenticated=False channels=0; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead" time="33.00">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T172_tz8qqt never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:45:56 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:45:56 connection closed: authenticated=False channels=0 | 11:46:19 connect from ('127.0.0.1', 65042) | 11:46:19 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:46:19 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:46:20 connection closed: authenticated=False channels=0; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter" time="70.90">
+<failure message="Enter to command start: Phosphor overhead 25.01 ms over conhost (bash) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 25.01 ms over conhost (bash) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.88 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines
+Enter to command start: n=29 &lt; 30 samples (smoke/scaled run): numbers are indicative only</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_log" time="11.80">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_fish" time="0.50">
+<skipped message="package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_nu" time="0.50">
+<skipped message="package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="21.50">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="5.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="18.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="340.30">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times
+fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="agent" name="pane_wedged_after_ctrl_c_d" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ctrl_c_d, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ctrl_c_d, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="22.00">
+<failure message="ssh_connect_typing (gap 0.0 s): T55_srpy9a never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:48:21 ">ssh_connect_typing (gap 0.0 s): T55_srpy9a never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:48:21 connection closed: authenticated=False channels=1 | 11:56:26 connect from ('127.0.0.1', 65239) | 11:56:26 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:56:26 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:56:26 session shell None pty | 11:56:26 conpty shell pid 10252; fakesshd.stderr:     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | bash: cannot set terminal process group (-1): Inappropriate ioctl for device | bash: no job control in this shell | ~$ exit
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="agent" name="pane_wedged_after_ssh_connect_typing" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ssh_connect_typing, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ssh_connect_typing, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="21.90">
+<failure message="ssh_enter_then_immediate_command: T60_e6xt16 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:57:3">ssh_enter_then_immediate_command: T60_e6xt16 never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:57:39 connection closed: authenticated=False channels=1 | 11:58:01 connect from ('127.0.0.1', 65248) | 11:58:01 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:58:01 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:58:01 session shell None pty | 11:58:01 conpty shell pid 15884; fakesshd.stderr: bash: no job control in this shell | ~$ exit | Socket exception: An existing connection was forcibly closed by the remote host (10054) | bash: cannot set terminal process group (-1): Inappropriate ioctl for device | bash: no job control in this shell | ~$ exit
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="agent" name="pane_wedged_after_ssh_enter_then_immediate_command" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ssh_enter_then_immediate_command, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ssh_enter_then_immediate_command, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="33.00">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T65_1zve5p never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 11:59:14 connection closed: authenticated=False channels=1 | 11:59:36 connect from ('127.0.0.1', 65255) | 11:59:36 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:59:36 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 11:59:36 session shell None pty | 11:59:36 conpty shell pid 1404; fakesshd.stderr: bash: no job control in this shell | ~$ exit | Socket exception: An existing connection was forcibly closed by the remote host (10054) | bash: cannot set terminal process group (-1): Inappropriate ioctl for device | bash: no job control in this shell | ~$ exit</failure>
+</testcase>
+<testcase classname="agent" name="pane_wedged_after_ssh_nested_typeahead" time="0.00">
+<failure message="the powershell pane did not run a marker command (no effect file) after ssh_nested_typeahead, twice: the app is relaunched so the remaining cases measure something">the powershell pane did not run a marker command (no effect file) after ssh_nested_typeahead, twice: the app is relaunched so the remaining cases measure something</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="0.90">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="fast_typing" time="53.90">
+<failure message="ft0: file has 28/30 lines, exact match False first diff: exp='t11_5w0wa88v3b' got='t12_l9lf9qcefb' [first bad line 9: injector call #1509 posted its ENTER at 12:01:33.917]">ft0: file has 28/30 lines, exact match False first diff: exp='t11_5w0wa88v3b' got='t12_l9lf9qcefb' [first bad line 9: injector call #1509 posted its ENTER at 12:01:33.917]
+ft0: shell received 31 commands, not the typed ones (first mismatch: "echo t1_ieqh524yng &gt;&gt; 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run/home/<user>/proof_agent_gitbash.txt'") -- differs (31 typed, 122 received characters): typed 'echo t2_5by1a2rogu &gt;&gt; r_ft0.txt', shell received "echo t1_ieqh524yng &gt;&gt; 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run"; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="paste_instant_enter" time="11.70">
+<failure message="pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')">pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="tab_enter" time="14.70">
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_d" time="82.00">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 6/33 sample lines reached the shell NOT exactly as typed; e.g. characters REORDERED (a character moved: &quot;'&quot; came before 'b'): t">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 6/33 sample lines reached the shell NOT exactly as typed; e.g. characters REORDERED (a character moved: "'" came before 'b'): typed 'bash -c \'trap "date +%s.%N &gt;&gt; cc.txt; exit" INT; sleep 30\'; echo AFTER8 &gt;&gt; cc.txt', shell received '\'bash -c trap "date +%s.%N &gt;&gt; cc.txt; exit" INT; sleep 30\'; echo AFTER8 &gt;&gt; cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write
+fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing" time="21.90">
+<failure message="ssh_connect_typing (gap 0.0 s): T53_fif2py never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:01:15 ">ssh_connect_typing (gap 0.0 s): T53_fif2py never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:01:15 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:01:18 connection closed: authenticated=False channels=0 | 12:04:14 connect from ('127.0.0.1', 65432) | 12:04:14 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:04:14 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:04:14 connection closed: authenticated=False channels=0; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)
+remote shell received 0/1 typed-ahead commands exactly (missing 1)</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_enter_then_immediate_command" time="21.90">
+<failure message="ssh_enter_then_immediate_command: T55_h180hs never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:04:1">ssh_enter_then_immediate_command: T55_h180hs never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:04:14 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:04:14 connection closed: authenticated=False channels=0 | 12:04:38 connect from ('127.0.0.1', 65435) | 12:04:38 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:04:38 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:04:38 connection closed: authenticated=False channels=0; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)
+remote shell received 0/1 immediately-typed commands exactly: []</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead" time="33.00">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T57_bbpqnl never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 12:04:38 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:04:38 connection closed: authenticated=False channels=0 | 12:05:01 connect from ('127.0.0.1', 65438) | 12:05:01 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:05:01 auth publickey user=Winters key=ssh-ed25519 a184340aa5ea87714eee8f8b7afdb690 -&gt; ok | 12:05:01 connection closed: authenticated=False channels=0; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)</failure>
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>

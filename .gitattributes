@@ -59,3 +59,5 @@ app/src/ssh_manager/** merge=openwarp-ours
 app/src/pane_group/pane/ssh_server_pane.rs merge=openwarp-ours
 crates/persistence/migrations/2026-05-04-120000_add_ssh_manager_tables/** merge=openwarp-ours
 crates/persistence/migrations/2026-05-04-130000_add_ssh_nodes_is_collapsed/** merge=openwarp-ours
+
+# test-results/ archive (script/ci/collect_results.py): failing-case screenshots are binary.

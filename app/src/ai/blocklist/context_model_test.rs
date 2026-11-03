@@ -985,3 +985,72 @@ fn context_marks_live_sha_as_detached() {
         })
     );
 }
+
+#[test]
+fn read_attachments_preserves_order_and_reports_unreadable_files() {
+    use super::{attachments_need_disk_read, context_and_files_from_read, read_attachments};
+    use crate::ai::agent::AIAgentContext;
+
+    let dir = std::env::temp_dir().join(format!("phosphor-read-att-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("good.txt");
+    std::fs::write(&good, "hello").unwrap();
+    let missing = dir.join("missing.txt");
+    let file = |name: &str, path: &std::path::Path| {
+        PendingAttachment::File(PendingFile {
+            file_name: name.to_owned(),
+            file_path: path.to_owned(),
+            mime_type: "text/plain".to_owned(),
+        })
+    };
+    let attachments = vec![
+        file("good.txt", &good),
+        file("missing.txt", &missing),
+        file("good2.txt", &good),
+    ];
+    assert!(attachments_need_disk_read(&attachments));
+
+    let (context, files, failed) = context_and_files_from_read(read_attachments(attachments));
+    // Files keep their submit order, including the unreadable one; only the readable ones
+    // produce content, and the unreadable one is reported.
+    assert_eq!(
+        files
+            .iter()
+            .map(|f| f.file_name.as_str())
+            .collect::<Vec<_>>(),
+        ["good.txt", "missing.txt", "good2.txt"]
+    );
+    assert_eq!(
+        context
+            .iter()
+            .filter(|c| matches!(c, AIAgentContext::File(_)))
+            .count(),
+        2
+    );
+    assert_eq!(failed, ["missing.txt"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cancelled_attachment_read_skips_remaining_files() {
+    use super::read_attachments_cancellable;
+    let dir = std::env::temp_dir().join(format!("phosphor-read-cancel-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("good.txt");
+    std::fs::write(&good, "hello").unwrap();
+    let attachment = || {
+        PendingAttachment::File(PendingFile {
+            file_name: "good.txt".to_owned(),
+            file_path: good.clone(),
+            mime_type: "text/plain".to_owned(),
+        })
+    };
+    let live = std::sync::atomic::AtomicBool::new(false);
+    let read = read_attachments_cancellable(vec![attachment()], &live);
+    assert!(read[0].file_context.is_some());
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let read = read_attachments_cancellable(vec![attachment(), attachment()], &cancelled);
+    assert_eq!(read.len(), 2);
+    assert!(read.iter().all(|r| r.file_context.is_none()));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -30,7 +30,6 @@ use crate::{
     terminal::resizable_data::{ModalType, ResizableData},
 };
 use crate::{code_review::diff_state::DiffStateModel, terminal::view::TerminalView};
-use dunce::canonicalize;
 use itertools::Itertools;
 use std::{
     path::{Path, PathBuf},
@@ -1286,7 +1285,8 @@ impl RightPanelView {
         ctx: &AppContext,
     ) -> ReviewTerminalStatus {
         tv.read(ctx, |t, ctx| {
-            let active_session_path = t.active_session_path_if_local(ctx);
+            // Render path: memoized canonical cwd, no per-frame stat/canonicalize.
+            let active_session_path = t.canonical_cwd_for_display(ctx);
             let current_repo_path = t.current_repo_path().cloned();
             let active_cli_agent = t.active_cli_agent(ctx).map(|agent| format!("{agent:?}"));
             let model = t.model.lock();
@@ -1296,12 +1296,8 @@ impl RightPanelView {
 
             match repo_path {
                 Some(repo_path) => match active_session_path.as_ref() {
-                    // Canonicalize the CWD, note that repo_path has already been canonicalized.
-                    Some(cwd)
-                        if canonicalize(cwd)
-                            .as_deref()
-                            .unwrap_or(cwd)
-                            .starts_with(repo_path) => {}
+                    // The CWD is already canonicalized (memoized), as is repo_path.
+                    Some(cwd) if cwd.starts_with(repo_path) => {}
                     Some(_) => unavailable_reasons
                         .push(ReviewTerminalUnavailableReason::SessionOutsideSelectedRepo),
                     None => unavailable_reasons

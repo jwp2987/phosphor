@@ -57,6 +57,17 @@ impl OffsetMap {
         }])
     }
 
+    /// Whether this is exactly [`Self::direct`]`(length)`: one run covering `0..length` with
+    /// identical content and frame offsets.
+    pub fn is_direct(&self, length: usize) -> bool {
+        matches!(
+            self.runs.as_slice(),
+            [run] if run.content_start == CharOffset::zero()
+                && run.frame_start == FrameOffset::zero()
+                && run.length == length
+        )
+    }
+
     pub fn new(mut runs: Vec<SelectableTextRun>) -> Self {
         runs.sort_unstable_by_key(|r| r.frame_start);
         if cfg!(debug_assertions) {

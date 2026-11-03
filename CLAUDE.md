@@ -27,6 +27,22 @@ Two CI guards enforce what the compiler cannot: `script/check_cloud_boundary`
 tests against gutted no-op stubs). Read their header comments before changing
 them — earlier versions were wrong in instructive ways.
 
+## Subagents: pick the type by what the task may change
+
+Every subagent runs on **Sonnet** (`model: "sonnet"`) unless the owner approves
+another model for a specific task. Choose the agent type by whether the task
+should be able to edit anything:
+
+| type | use it for | why |
+|---|---|---|
+| `Explore` | LOCATING things: searches across many files, "where is X / every place that does Y", log and CI-trace digging | read-only and fast, but it reads excerpts, not whole files, so it finds code; it does not review it |
+| `Plan` | reviews and audits that must read code in full (correctness, races, "can a key be lost"), design passes before a rebuild or a second patch on the same path | read-only, reads whole files; produces findings or the plan the owner approves before code is written |
+| `general-purpose` | fixes, harness and CI changes, tests, anything that writes or commits | the only type that should edit; give it its own worktree and branch |
+
+Writing agents never run `cargo` on the laptop (builds and tests run on the box
+through CI). Any change to tests, harnesses, CI jobs or test machines updates
+`docs/testing.md` in the same merge.
+
 <!--
 This project is Phosphor — a BYOP terminal, forked from Warp via Zap/OpenWarp
 and evolving independently. See specs/phosphor-rebrand/SCOPE.md for the layered
@@ -51,19 +67,6 @@ What is actually true now:
     \x1bP>|Zap(...) DCS reply, Software\Zap registry paths, and the
     paths.rs "Zap" => "zap" legacy arm. Those stay. Display copy does not —
     script/check_brand_strings enforces that boundary.
-
-DEV-ENVIRONMENT NOTE — command-signatures stub (address later):
-  This working copy may contain a local, gitignored stub at
-  `crates/command-signatures-v2/js/build/.placeholder.json` (a `{}` file). It
-  lets the app build WITHOUT Node/yarn: `command-signatures-v2`'s build.rs only
-  panics when `js/build/` is missing, so when the stub makes that dir exist it
-  instead prints "Proceeding with stale command signatures!" and continues.
-  Consequence: smart per-command argument completions are EMPTY; everything else
-  (terminal, BYOP/Vertex, themes) works. It is local-only (gitignored) and does
-  NOT ship — anyone cloning still needs Node to build.
-  To get a REAL build: install Node 18.14.1+, run `corepack enable`, then
-  `rm -rf crates/command-signatures-v2/js/build` so the next build runs
-  `yarn build` for real.
 
 Fork-specific design decisions and direction (English):
   docs/DESIGN-PHOSPHOR-FORK.md

@@ -868,9 +868,7 @@ macro_rules! generate_settings_event_fn {
                     });
                     // Register callbacks for updating individual settings model by storage key
                     let settings_group_update_clone = settings_group.clone();
-                    let settings_group_reset_clone = settings_group.clone();
                     let settings_group_load_clone = settings_group.clone();
-                    let settings_group_is_syncable_clone = settings_group.clone();
                     let serialized_default_value =
                         serde_json::to_string(&$setting::default_value())
                             .expect("default should serialize");
@@ -882,7 +880,6 @@ macro_rules! generate_settings_event_fn {
                     };
                     manager.register_setting(
                         $setting::storage_key(),
-                        $setting::sync_to_cloud(),
                         $setting::supported_platforms(),
                         serialized_default_value,
                         file_serialized_default_value,
@@ -914,22 +911,6 @@ macro_rules! generate_settings_event_fn {
                                 }
                             })
                         },
-                        move |ctx| {
-                            settings_group_reset_clone.update(ctx, |settings_group, ctx| {
-                                if settings_group
-                                    .$var
-                                    .is_setting_syncable_on_current_platform(true)
-                                {
-                                    log::debug!(
-                                        "Clearing cloud synced setting from local storage: {}",
-                                        $setting::storage_key()
-                                    );
-                                    settings_group.$var.clear_value(ctx)
-                                } else {
-                                    Ok(())
-                                }
-                            })
-                        },
                         move |value, explicitly_set, ctx| {
                             use $crate::_settings_value::SettingsValue as _;
                             let value = serde_json::from_str::<serde_json::Value>(&value)
@@ -947,24 +928,6 @@ macro_rules! generate_settings_event_fn {
                             settings_group_load_clone.update(ctx, |settings_group, ctx| {
                                 settings_group.$var.load_value(value, explicitly_set, ctx)
                             })
-                        },
-                        |left, right| {
-                            use $crate::_settings_value::SettingsValue as _;
-                            let parse =
-                                |s: &str| -> anyhow::Result<<$setting as $crate::Setting>::Value> {
-                                    let json_val = serde_json::from_str::<serde_json::Value>(s)?;
-                                    <$setting as $crate::Setting>::Value::from_file_value(&json_val)
-                                        .or_else(|| serde_json::from_str(s).ok())
-                                        .ok_or_else(|| {
-                                            anyhow!(
-                                                "Failed to parse value for {}",
-                                                $setting::storage_key()
-                                            )
-                                        })
-                                };
-                            let left_setting = $setting::new(Some(parse(left)?));
-                            let right_setting = $setting::new(Some(parse(right)?));
-                            Ok(left_setting.value() == right_setting.value())
                         },
                         |value| {
                             use $crate::_settings_value::SettingsValue as _;
@@ -993,12 +956,6 @@ macro_rules! generate_settings_event_fn {
                                     $setting::storage_key()
                                 ))
                             }
-                        },
-                        move |ctx| {
-                            settings_group_is_syncable_clone
-                                .as_ref(ctx)
-                                .$var
-                                .current_value_is_syncable()
                         },
                     );
                 });

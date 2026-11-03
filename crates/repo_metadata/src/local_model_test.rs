@@ -50,6 +50,8 @@ mod tests {
                 #[cfg(feature = "local_fs")]
                 symlink_targets: Default::default(),
                 #[cfg(feature = "local_fs")]
+                symlink_scan_epoch: Default::default(),
+                #[cfg(feature = "local_fs")]
                 repo_watches: Default::default(),
                 auto_indexed: Default::default(),
             }
@@ -1240,6 +1242,24 @@ Thumbs.db
         }
     }
 
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn symlink_epoch_map_is_cleaned_and_stale_scans_never_match_again() {
+        let mut model = LocalRepoMetadataModel::new_for_test();
+        let repo = StandardizedPath::try_from_local(&std::env::temp_dir()).unwrap();
+        let first = model.next_symlink_epoch(&repo);
+        assert!(model.symlink_epoch_is_current(&repo, first));
+        // Repo removed: the slot is gone and the in-flight scan is stale.
+        model.forget_symlink_epoch(&repo);
+        assert!(model.symlink_scan_epoch.is_empty());
+        assert!(!model.symlink_epoch_is_current(&repo, first));
+        // Re-added: a new epoch that the old scan's epoch cannot equal.
+        let second = model.next_symlink_epoch(&repo);
+        assert_ne!(first, second);
+        assert!(!model.symlink_epoch_is_current(&repo, first));
+        assert!(model.symlink_epoch_is_current(&repo, second));
+    }
+
     #[test]
     fn test_canonicalized_path_functionality() {
         use warp_util::standardized_path::StandardizedPath;
@@ -2079,6 +2099,40 @@ Thumbs.db
                 });
             },
         );
+    }
+
+    #[cfg(all(unix, feature = "local_fs"))]
+    #[test]
+    fn scheduled_symlink_refresh_does_not_scan_inline_and_drops_stale_results() {
+        VirtualFS::test("scheduled_symlink_refresh_stale", |dirs, mut vfs| {
+            vfs.mkdir("repo/.agents/skills").mkdir("outside/shared");
+            let repo = dirs.tests().join("repo");
+            let target = dirs.tests().join("outside/shared");
+            std::os::unix::fs::symlink(&target, repo.join(".agents/skills/first")).unwrap();
+
+            App::test((), |mut app| async move {
+                let repo_path = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model.set_emit_incremental_updates(true);
+                    model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+                    model.repositories.insert(
+                        repo_path.clone(),
+                        IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                    );
+                    model.schedule_symlink_refresh(&repo_path, ctx);
+                    // The UI-thread entry point returned without scanning.
+                    assert!(model.symlink_targets.is_empty());
+                    // Invalidate the in-flight scan (as a repo clear/removal does).
+                    model.clear_symlink_targets_for_repo(&repo_path, ctx);
+                });
+                // Let the background scan complete; its result must be dropped.
+                warpui::r#async::Timer::after(Duration::from_millis(300)).await;
+                model_handle.read(&app, |model, _ctx| {
+                    assert!(model.symlink_targets.is_empty());
+                });
+            });
+        });
     }
 
     #[cfg(all(unix, feature = "local_fs"))]

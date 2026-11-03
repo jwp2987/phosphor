@@ -6,7 +6,6 @@ use crate::search::mixer::{DataSourceRunErrorWrapper, SyncDataSource};
 use fuzzy_match::FuzzyMatchResult;
 use warpui::{AppContext, Entity, SingletonEntity};
 
-#[cfg(not(target_family = "wasm"))]
 use crate::workspace::ActiveSession;
 
 const MAX_RESULTS: usize = 50;
@@ -47,7 +46,6 @@ impl SyncDataSource for SkillsDataSource {
         // host-aware resolution existed here. Hiding the menu entirely in that state
         // would permanently empty it for every legacy SSH tab.
         let skills = {
-            #[cfg(not(target_family = "wasm"))]
             {
                 // With no active window there is no tab to read a host from; fall back to
                 // the same no-working-directory lookup (local + bundled skills) every other
@@ -59,10 +57,6 @@ impl SyncDataSource for SkillsDataSource {
             }
             // wasm has no `ActiveSession`/window concept; preserve the previous
             // behavior of resolving skills with no known working directory.
-            #[cfg(target_family = "wasm")]
-            {
-                SkillManager::as_ref(app).get_skills_for_working_directory(None, app)
-            }
         };
 
         let mut results: Vec<QueryResult<Self::Action>> = if query_text.is_empty() {
@@ -116,6 +110,5 @@ impl Entity for SkillsDataSource {
 }
 
 #[cfg(test)]
-#[cfg(not(target_family = "wasm"))]
 #[path = "data_source_tests.rs"]
 mod tests;

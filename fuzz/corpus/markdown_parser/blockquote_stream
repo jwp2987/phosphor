@@ -1,0 +1,16 @@
+> single quote
+
+> multi
+> line
+> quote
+
+> outer
+> > inner
+> > > innermost
+
+> - list in quote
+> - second
+>
+> ```rust
+> let x = 1;
+> ```

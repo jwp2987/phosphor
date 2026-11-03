@@ -95,6 +95,11 @@ pub fn build_prompt(previous_summary: Option<&str>, context: &[String]) -> Strin
     parts.join("\n\n")
 }
 
+/// The custom instruction a summary is re-asked with after the model answered it with a tool
+/// call (#1079). Goes through `SummarizeConversation { prompt }` like a user's `/compact` text.
+pub const SUMMARY_RETRY_INSTRUCTION: &str = "Respond with the summary only, in the template above. \
+Do not call any tools and do not describe what you would do next: the summary is the whole answer.";
+
 /// Synthesizes a user "Continue..." synthetic message on the `replay=false` +
 /// `auto=true` path — matches `compaction.ts:533-537` byte-for-byte.
 ///

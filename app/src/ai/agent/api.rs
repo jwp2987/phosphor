@@ -1,6 +1,5 @@
 pub(crate) mod convert_conversation;
 mod convert_from;
-mod convert_to;
 
 pub use ai::agent::convert::ConvertToAPITypeError;
 use ai::api_keys::ApiKeyManager;
@@ -114,7 +113,9 @@ pub struct RequestParams {
     pub conversation_token: Option<ServerConversationToken>,
     pub forked_from_conversation_token: Option<ServerConversationToken>,
     pub ambient_agent_task_id: Option<AmbientAgentTaskId>,
-    pub tasks: Vec<warp_multi_agent_api::Task>,
+    /// Shared, immutable snapshot of the active tasks: cloning `RequestParams` or
+    /// `ConversationData` is a refcount bump, not a copy of the whole history (#1156).
+    pub tasks: Arc<Vec<warp_multi_agent_api::Task>>,
     pub existing_suggestions: Option<Suggestions>,
     pub metadata: Option<RequestMetadata>,
     pub session_context: SessionContext,
@@ -139,7 +140,9 @@ pub struct RequestParams {
     pub user_rules: Vec<(Option<String>, String)>,
     pub warp_drive_context_enabled: bool,
     pub context_window_limit: Option<u32>,
-    pub mcp_context: Option<MCPContext>,
+    /// Shared, not deep-cloned per request: the tool/resource lists can be large and the request
+    /// path hands the context to several stages (#1156).
+    pub mcp_context: Option<Arc<MCPContext>>,
     pub planning_enabled: bool,
     /// Zap BYOP: whether this request runs under `/plan` (read-only Plan Mode).
     ///
@@ -155,7 +158,7 @@ pub struct RequestParams {
     /// `/plan` turn that made one `read_files` call had full shell access on its next
     /// round-trip.
     pub plan_mode: bool,
-    should_redact_secrets: bool,
+    pub should_redact_secrets: bool,
 
     /// User-provided API keys for AI providers (BYO API Key).
     pub api_keys: Option<warp_multi_agent_api::request::settings::ApiKeys>,
@@ -174,6 +177,10 @@ pub struct RequestParams {
     pub codebase_symbols: std::sync::Arc<
         Vec<crate::ai::agent_providers::tools::codebase_runtime::CodebaseSymbol>,
     >,
+    /// Why `codebase_symbols` is empty or incomplete (index disabled, still building, failed,
+    /// partial), resolved in `new()` with the snapshot; `search_codebase` passes it on to the
+    /// model (#1276). `None` when the index is complete or the tool is off.
+    pub codebase_index_note: Option<&'static str>,
     /// Zap BYOP-only: request-scoped snapshot powering the local `get_relevant_files`
     /// tool (candidate file+symbol list + the query-independent one-shot context).
     /// Materialized in `new()` (where `AppContext` is available) only when
@@ -276,7 +283,6 @@ pub(crate) fn collect_user_rules(
 
 pub type Event = Result<warp_multi_agent_api::ResponseEvent, Arc<AIApiError>>;
 
-#[cfg(not(target_family = "wasm"))]
 pub type ResponseStream = Pin<Box<dyn Stream<Item = Event> + Send + 'static>>;
 
 // The WASM version of this type has no bound on `Send`, which is an unnecessary bound when
@@ -288,7 +294,7 @@ pub type ResponseStream = Pin<Box<dyn Stream<Item = Event>>>;
 #[derive(Debug, Clone)]
 pub struct ConversationData {
     pub id: AIConversationId,
-    pub tasks: Vec<warp_multi_agent_api::Task>,
+    pub tasks: Arc<Vec<warp_multi_agent_api::Task>>,
     pub server_conversation_token: Option<ServerConversationToken>,
     pub forked_from_conversation_token: Option<ServerConversationToken>,
     pub ambient_agent_task_id: Option<AmbientAgentTaskId>,
@@ -378,7 +384,7 @@ impl RequestParams {
             forked_from_conversation_token: None,
             ambient_agent_task_id: None,
             byop_target_task_id: tasks.first().map(|task| task.id.clone()),
-            tasks,
+            tasks: Arc::new(tasks),
             existing_suggestions: None,
             metadata: None,
             session_context: SessionContext::new_for_test(),
@@ -402,6 +408,7 @@ impl RequestParams {
             web_search_enabled: false,
             codebase_context_enabled: false,
             codebase_symbols: std::sync::Arc::new(Vec::new()),
+            codebase_index_note: None,
             relevant_files: None,
             codebase_retrieval: None,
             computer_use_enabled: false,
@@ -486,11 +493,11 @@ impl RequestParams {
                 None
             } else {
                 #[allow(deprecated)]
-                Some(MCPContext {
+                Some(Arc::new(MCPContext {
                     resources: vec![],
                     tools: vec![],
                     servers,
-                })
+                }))
             }
         } else {
             // Flat lists of resources and tools
@@ -502,11 +509,11 @@ impl RequestParams {
             let tools = templatable_mcp_manager.tools().cloned().collect::<Vec<_>>();
 
             #[allow(deprecated)]
-            (!resources.is_empty() || !tools.is_empty()).then_some(MCPContext {
+            (!resources.is_empty() || !tools.is_empty()).then_some(Arc::new(MCPContext {
                 resources,
                 tools,
                 servers: vec![],
-            })
+            }))
         };
 
         let should_redact_secrets = get_secret_obfuscation_mode(app).should_redact_secret();
@@ -540,11 +547,25 @@ impl RequestParams {
         // out of the tools array entirely.
         let codebase_context_enabled = BlocklistAIPermissions::as_ref(app)
             .get_codebase_context_enabled(app, terminal_view_id);
-        let codebase_symbols = std::sync::Arc::new(if codebase_context_enabled {
-            crate::ai::agent_providers::tools::codebase_runtime::collect_codebase_symbols(app)
+        let codebase_symbols = if codebase_context_enabled {
+            crate::ai::agent_providers::tools::codebase_runtime::collect_codebase_symbols(
+                app,
+                &session_context,
+            )
         } else {
-            Vec::new()
-        });
+            std::sync::Arc::new(Vec::new())
+        };
+        // Resolved after the snapshot: collecting it is what asks for a missing outline, so a
+        // first request reads "still being built", not "no repository".
+        let codebase_index_note = if codebase_context_enabled {
+            crate::ai::agent_providers::tools::codebase_runtime::codebase_index_state(
+                app,
+                &session_context,
+            )
+            .note()
+        } else {
+            None
+        };
         // Shares the same codebase-context gate as `search_codebase`; additionally needs a
         // BYOP active-AI one-shot config and a ready outline (else `None` and the tool is
         // filtered out / rejected).
@@ -552,6 +573,7 @@ impl RequestParams {
             crate::ai::agent_providers::tools::get_relevant_files_runtime::collect_relevant_files_snapshot(
                 app,
                 terminal_view_id,
+                &session_context,
             )
             .map(std::sync::Arc::new)
         } else {
@@ -652,6 +674,7 @@ impl RequestParams {
             web_search_enabled,
             codebase_context_enabled,
             codebase_symbols,
+            codebase_index_note,
             relevant_files,
             codebase_retrieval,
             computer_use_enabled,

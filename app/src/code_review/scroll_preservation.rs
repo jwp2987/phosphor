@@ -1,10 +1,8 @@
 use warp_core::features::FeatureFlag;
 use warpui::{elements::ScrollOffset, units::Pixels, ViewContext, ViewHandle};
 
-#[cfg(not(target_family = "wasm"))]
 use warpui::{AppContext, WeakViewHandle};
 
-#[cfg(not(target_family = "wasm"))]
 use super::FILE_HEADER_HEIGHT;
 use super::{CodeReviewView, CodeReviewViewState};
 use crate::code::editor::model::StableEditorLine;
@@ -13,7 +11,6 @@ use crate::code::local_code_editor::LocalCodeEditorView;
 /// Context for preserving scroll position across file diff content changes.
 /// The scroll position can be in different regions of the file diff item.
 #[derive(Clone, Debug)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(super) enum RelocatableScrollContext {
     /// Scroll position is in the file header region.
     /// Stores the pixel offset from the top of the header.
@@ -34,7 +31,6 @@ impl CodeReviewView {
     /// Computes the adjusted item-relative scroll offset for a file diff item
     /// based on the captured scroll context. Called by the `ListState`
     /// adjustment closure when an item's height changes during layout.
-    #[cfg(not(target_family = "wasm"))]
     pub(super) fn adjust_scroll_offset(
         view_handle: &WeakViewHandle<Self>,
         index: usize,
@@ -104,7 +100,6 @@ impl CodeReviewView {
     /// Computes the scroll preservation context for the given index and editor.
     /// Returns `Some(context)` only if the index is the currently scrolled item.
     /// Detects whether scroll is in header, editor content, or footer region.
-    #[cfg(not(target_family = "wasm"))]
     pub(super) fn compute_scroll_context_for_index(
         &self,
         index: usize,
@@ -154,17 +149,6 @@ impl CodeReviewView {
             stable_line,
             intra_line_offset,
         })
-    }
-
-    /// Wasm stub - scroll preservation not supported
-    #[cfg(target_family = "wasm")]
-    pub(super) fn compute_scroll_context_for_index(
-        &self,
-        _index: usize,
-        _editor: &ViewHandle<LocalCodeEditorView>,
-        _ctx: &mut ViewContext<Self>,
-    ) -> Option<RelocatableScrollContext> {
-        None
     }
 
     /// Called when scrolling settles (via debounced scroll events).

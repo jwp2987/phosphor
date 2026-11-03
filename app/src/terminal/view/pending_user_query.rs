@@ -3,7 +3,7 @@ use warpui::{SingletonEntity, ViewContext};
 
 use crate::{
     ai::{
-        agent::{conversation::AIConversationId, CancellationReason},
+        agent::{CancellationReason, conversation::AIConversationId},
         blocklist::block::{FinishReason, PendingUserQueryBlock, PendingUserQueryBlockEvent},
     },
     auth::AuthStateProvider,
@@ -71,19 +71,6 @@ impl TerminalView {
             ctx,
         );
         self.pending_user_query_view_id = Some(view_id);
-    }
-
-    /// Inserts a pending user query block for a local ambient agent run, until the
-    /// harness CLI starts. This block only shows the user prompt and queued state;
-    /// it doesn't provide a local queue-callback button.
-    pub(in crate::terminal::view) fn insert_ambient_agent_queued_user_query_block(
-        &mut self,
-        prompt: String,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.insert_pending_user_query_block(
-            prompt, /* show_close_button */ false, /* show_send_now_button */ false, ctx,
-        );
     }
 
     /// Removes the pending user query block, if one exists. No-op if none is present.

@@ -15,7 +15,10 @@ use {
         repository::{RepositorySubscriber, SubscriberId},
         Repository, RepositoryUpdate, RepositoryWatchMode,
     },
-    std::{collections::HashMap, time::Duration},
+    std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    },
     warp_util::local_or_remote_path::LocalOrRemotePath,
     warpui::{r#async::SpawnedFutureHandle, ModelHandle, WeakModelHandle},
 };
@@ -41,7 +44,7 @@ use crate::context_chips::display_chip::GitBranchTrackingStatus;
 /// gate is equivalent to the pin's split one and avoids an enum with zero
 /// live variants on wasm.
 #[cfg(feature = "local_fs")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GitStatusMetadata {
     pub current_branch_name: String,
     pub main_branch_name: String,
@@ -268,6 +271,17 @@ impl GitRepoStatusModel {
         }
     }
 
+    /// Refresh after a block completed with `command`; the local backend may skip or coalesce it
+    /// (see [`LocalGitRepoStatusModel::refresh_metadata_after_command`]). Remote asks as usual.
+    pub fn refresh_metadata_after_command(&self, command: &str, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => {
+                m.update(ctx, |m, ctx| m.refresh_metadata_after_command(command, ctx))
+            }
+            Self::Remote(m) => m.update(ctx, |m, ctx| m.request_snapshot(ctx)),
+        }
+    }
+
     /// Force a metadata refresh (branch names, diff stats). For the remote
     /// backend this asks the daemon to push a fresh snapshot.
     pub fn refresh_metadata(&self, ctx: &mut ModelContext<Self>) {
@@ -293,7 +307,150 @@ pub struct LocalGitRepoStatusModel {
     repository: ModelHandle<Repository>,
     subscriber_id: Option<SubscriberId>,
     metadata: Option<GitStatusMetadata>,
+    /// Whether `MetadataChanged` has fired at least once. The first event is
+    /// always delivered (consumers such as `deferred_code_review_open` wait
+    /// for it, even when the first load fails); later ones only on change.
+    has_emitted_metadata: bool,
     computing_metadata_abort_handle: Option<SpawnedFutureHandle>,
+    /// The main branch the last full detection found, and when. `detect_main_branch` is up to
+    /// six git processes and its answer only moves when refs do, so refreshes inside
+    /// [`MAIN_BRANCH_CACHE_TTL`] reuse it (#1334). A HEAD/ref/remote-ref update clears it.
+    main_branch_cache: Option<(String, Instant)>,
+    /// Decides whether a command-completion refresh can be skipped or coalesced (#1334 follow-up).
+    refresh_gate: RefreshGate,
+}
+
+/// How long a detected main branch is reused by metadata refreshes (#1334).
+#[cfg(feature = "local_fs")]
+const MAIN_BRANCH_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// The cached main branch when it is still within [`MAIN_BRANCH_CACHE_TTL`] at `now`.
+#[cfg(feature = "local_fs")]
+pub(super) fn fresh_cached_main_branch(
+    cache: &Option<(String, Instant)>,
+    now: Instant,
+) -> Option<String> {
+    let (name, detected_at) = cache.as_ref()?;
+    (now.saturating_duration_since(*detected_at) < MAIN_BRANCH_CACHE_TTL).then(|| name.clone())
+}
+
+/// What a command-completion refresh request should do.
+#[cfg(feature = "local_fs")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RefreshDecision {
+    /// Nothing could have changed (an empty Enter with a quiet watcher); no git processes.
+    Skip,
+    /// Request a refresh; [`RefreshGate::request_refresh`] coalesces it with one in flight.
+    Refresh,
+}
+
+/// Kill switch: `PHOSPHOR_GIT_REFRESH_ALWAYS=1` restores a refresh after every block.
+#[cfg(feature = "local_fs")]
+fn refresh_always_env() -> bool {
+    std::env::var_os("PHOSPHOR_GIT_REFRESH_ALWAYS").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Whether the command names a VCS tool, i.e. could change git state in a way that must not wait
+/// for (or depend on) the file watcher. Plain file edits and build output are the watcher's job.
+#[cfg(all(test, feature = "local_fs"))]
+pub(super) fn command_may_change_git_state(command: &str) -> bool {
+    const VCS: &[&str] = &[
+        "git", "gh", "gt", "hub", "jj", "hg", "sl", "svn", "stg", "lazygit", "pijul",
+    ];
+    command
+        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .any(|tok| {
+            let tok = tok.trim_end_matches(".exe");
+            VCS.contains(&tok) || tok.starts_with("git-")
+        })
+}
+
+/// Pure bookkeeping behind metadata refreshes, kept free of the app context so it can be unit-tested.
+///
+/// A refresh is never skipped because of watcher timing: the watcher flushes its events after a
+/// fixed window, so "the watcher has not reported anything" does not mean "nothing changed".
+/// Requests instead coalesce: at most one refresh is in flight and one more is remembered as
+/// pending, which re-runs as soon as the in-flight one finishes, so the result always reflects
+/// the latest request (no timer involved).
+#[cfg(feature = "local_fs")]
+#[derive(Debug, Default)]
+pub(super) struct RefreshGate {
+    /// The watcher reported a relevant change since the last refresh started.
+    dirty: bool,
+    in_flight: bool,
+    rerun_pending: bool,
+    /// Identifies the refresh whose result may be applied (#1381, APP-R12). Each started refresh
+    /// takes a new one and anything that sets the metadata some other way retires the one in
+    /// flight, so a queued completion callback of an older refresh can never overwrite a newer
+    /// result. Same pattern as the ctrl-c window token in `cli_agent_sessions`.
+    token: u64,
+}
+
+#[cfg(feature = "local_fs")]
+impl RefreshGate {
+    pub(super) fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Ask for a refresh. Returns true when the caller must start one now; false when one is
+    /// already in flight, in which case it re-runs once that one finishes
+    /// ([`Self::refresh_finished`]).
+    pub(super) fn request_refresh(&mut self) -> bool {
+        if self.in_flight {
+            self.rerun_pending = true;
+            return false;
+        }
+        self.in_flight = true;
+        self.dirty = false;
+        true
+    }
+
+    /// Starts a new result token for the refresh [`Self::request_refresh`] just allowed.
+    pub(super) fn issue_token(&mut self) -> u64 {
+        self.token += 1;
+        self.token
+    }
+
+    /// Whether the result carrying `token` is still the one to apply.
+    pub(super) fn is_current(&self, token: u64) -> bool {
+        self.token == token
+    }
+
+    /// The metadata was set by other means: a result still in flight is older than it.
+    pub(super) fn retire_in_flight(&mut self) {
+        self.token += 1;
+    }
+
+    /// The in-flight refresh completed (successfully or not). Returns true when a request arrived
+    /// meanwhile and the caller must start another refresh (via [`Self::request_refresh`]).
+    pub(super) fn refresh_finished(&mut self) -> bool {
+        self.in_flight = false;
+        std::mem::take(&mut self.rerun_pending)
+    }
+
+    /// `trusted` is true when metadata exists and the repo watcher is live; without it we cannot
+    /// know nothing changed. Only a command that never ran (empty Enter) with a quiet watcher is
+    /// skipped; everything else refreshes (coalesced), whatever the watcher has delivered so far.
+    pub(super) fn decide(&self, command: &str, trusted: bool, always: bool) -> RefreshDecision {
+        if trusted && !always && !self.dirty && command.trim().is_empty() {
+            RefreshDecision::Skip
+        } else {
+            RefreshDecision::Refresh
+        }
+    }
+}
+
+/// Whether a freshly loaded/pushed snapshot warrants a `MetadataChanged`
+/// event. Re-emitting identical metadata invalidates every subscribed terminal
+/// view (a full-window layout) and, on the remote daemon, pushes a redundant
+/// message over the shared ssh connection.
+#[cfg(feature = "local_fs")]
+pub(super) fn should_emit_metadata_changed(
+    old: &Option<GitStatusMetadata>,
+    new: &Option<GitStatusMetadata>,
+    has_emitted_before: bool,
+) -> bool {
+    !has_emitted_before || old != new
 }
 
 #[cfg(feature = "local_fs")]
@@ -315,7 +472,10 @@ impl LocalGitRepoStatusModel {
             repository: repository_model.clone(),
             subscriber_id: None,
             metadata: None,
+            has_emitted_metadata: false,
             computing_metadata_abort_handle: None,
+            main_branch_cache: None,
+            refresh_gate: RefreshGate::default(),
         };
 
         // Kick off initial metadata computation.
@@ -353,6 +513,16 @@ impl LocalGitRepoStatusModel {
             ctx.spawn_stream_local(
                 repository_update_rx,
                 move |me, update: RepositoryUpdate, ctx| {
+                    if update.commit_updated || update.remote_ref_updated {
+                        me.main_branch_cache = None;
+                    }
+                    if update.commit_updated {
+                        // HEAD / a local branch ref moved: cached branch lists are stale.
+                        crate::util::git::note_refs_changed();
+                    }
+                    if Self::is_head_change(&update) || Self::should_refresh_metadata(&update) {
+                        me.refresh_gate.mark_dirty();
+                    }
                     if Self::is_head_change(&update) {
                         // A HEAD / branch-ref change must not wait out the 5s
                         // throttle: `git switch a; git switch b` in quick succession
@@ -367,7 +537,9 @@ impl LocalGitRepoStatusModel {
             );
         }
 
-        // Throttled metadata refresh (at most once every 5 seconds).
+        // Throttled metadata refresh for plain file-change events (at most once every 5 seconds).
+        // This is pacing for build-output churn, not correctness: command completions and HEAD
+        // changes refresh through the coalescing gate immediately.
         ctx.spawn_stream_local(
             throttle(Duration::from_secs(5), throttled_rx),
             |me, _, ctx| {
@@ -395,16 +567,44 @@ impl LocalGitRepoStatusModel {
     /// events that may have changed git state (block completed, agent file
     /// edits, etc.).
     pub fn refresh_metadata(&mut self, ctx: &mut ModelContext<Self>) {
-        if let Some(handle) = self.computing_metadata_abort_handle.take() {
-            handle.abort();
+        // Coalesce instead of aborting/skipping: a request during a refresh re-runs after it.
+        if !self.refresh_gate.request_refresh() {
+            return;
         }
         let repo_path_buf = self.repo_path.clone();
+        let cached_main_branch = fresh_cached_main_branch(&self.main_branch_cache, Instant::now());
+        let reused_main_branch = cached_main_branch.is_some();
+        let token = self.refresh_gate.issue_token();
         self.computing_metadata_abort_handle = Some(ctx.spawn(
-            async move { Self::load_metadata(repo_path_buf).await },
-            |me, result, ctx| {
-                me.handle_metadata_result(result, ctx);
+            async move { Self::load_metadata(repo_path_buf, cached_main_branch).await },
+            move |me, result, ctx| {
+                if me.refresh_gate.is_current(token) {
+                    if let (false, Ok(metadata)) = (reused_main_branch, &result) {
+                        me.main_branch_cache =
+                            Some((metadata.main_branch_name.clone(), Instant::now()));
+                    }
+                    me.handle_metadata_result(result, ctx);
+                }
+                if me.refresh_gate.refresh_finished() {
+                    me.refresh_metadata(ctx);
+                }
             },
         ));
+    }
+
+    /// Refresh after a block completed with `command`. Only an empty Enter with a quiet watcher
+    /// reuses the last result; every other completion refreshes, coalesced with any refresh
+    /// already in flight, so the chip reflects the latest edit even when the block finished
+    /// before the file watcher flushed its event.
+    pub fn refresh_metadata_after_command(&mut self, command: &str, ctx: &mut ModelContext<Self>) {
+        let trusted = self.metadata.is_some() && self.subscriber_id.is_some();
+        match self
+            .refresh_gate
+            .decide(command, trusted, refresh_always_env())
+        {
+            RefreshDecision::Skip => {}
+            RefreshDecision::Refresh => self.refresh_metadata(ctx),
+        }
     }
 
     // ── internal helpers ────────────────────────────────────────────────
@@ -414,14 +614,20 @@ impl LocalGitRepoStatusModel {
         result: anyhow::Result<GitStatusMetadata>,
         ctx: &mut ModelContext<Self>,
     ) {
-        match result {
-            Ok(metadata) => self.metadata = Some(metadata),
+        let new_metadata = match result {
+            Ok(metadata) => Some(metadata),
             Err(e) => {
                 log::warn!("LocalGitRepoStatusModel: metadata load failed: {e}");
-                self.metadata = None;
+                None
             }
+        };
+        let should_emit =
+            should_emit_metadata_changed(&self.metadata, &new_metadata, self.has_emitted_metadata);
+        self.metadata = new_metadata;
+        if should_emit {
+            self.has_emitted_metadata = true;
+            ctx.emit(GitRepoStatusEvent::MetadataChanged);
         }
-        ctx.emit(GitRepoStatusEvent::MetadataChanged);
     }
 
     /// Whether the update moved HEAD or a local branch ref (`commit_updated`).
@@ -456,22 +662,30 @@ impl LocalGitRepoStatusModel {
     /// This reuses logic extracted from `LocalDiffStateModel::load_metadata_for_repo`
     /// but only computes the HEAD (uncommitted) stats since that's all the git
     /// chip needs.
-    async fn load_metadata(repo_path: PathBuf) -> anyhow::Result<GitStatusMetadata> {
-        // Detect main branch.
-        let main_branch_name = detect_main_branch(&repo_path).await?;
+    async fn load_metadata(
+        repo_path: PathBuf,
+        cached_main_branch: Option<String>,
+    ) -> anyhow::Result<GitStatusMetadata> {
+        // Detect main branch (or reuse the recent detection).
+        let main_branch_name = match cached_main_branch {
+            Some(name) => name,
+            None => detect_main_branch(&repo_path).await?,
+        };
         // Detect current branch (using the display variant so detached HEAD
         // shows the short SHA instead of the literal "HEAD").
         let current_branch_name = detect_current_branch_display(&repo_path).await?;
         // Diff stats against HEAD.
+        // Chip-specific stats: tracked insertions/deletions like `git diff --shortstat
+        // HEAD`, untracked files counted as files only (#1134).
         let stats_against_head =
-            super::diff_state::LocalDiffStateModel::diff_metadata_against_head(&repo_path).await?;
+            super::diff_state::LocalDiffStateModel::chip_stats_against_head(&repo_path).await?;
         let branch_tracking_status =
             Self::branch_tracking_status(&repo_path, &current_branch_name).await;
 
         Ok(GitStatusMetadata {
             current_branch_name,
             main_branch_name,
-            stats_against_head: stats_against_head.aggregate_stats,
+            stats_against_head,
             branch_tracking_status,
         })
     }
@@ -554,7 +768,10 @@ impl LocalGitRepoStatusModel {
             repository,
             subscriber_id: None,
             metadata,
+            has_emitted_metadata: false,
             computing_metadata_abort_handle: None,
+            main_branch_cache: None,
+            refresh_gate: RefreshGate::default(),
         }
     }
 
@@ -563,7 +780,9 @@ impl LocalGitRepoStatusModel {
         metadata: Option<GitStatusMetadata>,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.refresh_gate.retire_in_flight();
         self.metadata = metadata;
+        self.has_emitted_metadata = true;
         ctx.emit(GitRepoStatusEvent::MetadataChanged);
     }
 }

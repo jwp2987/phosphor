@@ -1055,10 +1055,6 @@ impl<C: SearchSchemaConfig> FullTextSearchSchema<C> {
         self.weighted_search_fields.insert(field_name, weight);
     }
 
-    #[allow(unused)]
-    pub fn add_id_field(&mut self, field_name: String, field_type: FullTextSearchFieldTypes) {
-        self.id_fields.insert(field_name, field_type);
-    }
 }
 
 pub trait SearchDocumentEntry: FullTextSearchMatchValues {
@@ -1297,6 +1293,15 @@ const SEARCH_ASYNC_MAX_BATCH_SIZE: usize = 100;
 /// index writer (waiting for any remaining operations to complete).
 const SEARCH_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// When a cycle that starts at `now` should give up waiting and join the index writer, or `None`
+/// to wait for an event indefinitely. `already_idle` means the previous cycle ended on the idle
+/// timeout with nothing pending: the writer threads are already joined, so another timeout would
+/// wake this task every `SEARCH_IDLE_TIMEOUT` forever for no work. The next event restarts the
+/// normal cycle.
+fn idle_deadline(already_idle: bool, now: Instant) -> Option<Instant> {
+    (!already_idle).then(|| now + SEARCH_IDLE_TIMEOUT)
+}
+
 /// Splits a drained batch of events around the currently pending rebuild (if any) into one or
 /// more chunks, each to be committed as its own unit, in true request order.
 ///
@@ -1358,6 +1363,7 @@ async fn process_searcher_events(
     writer_handle: SearcherWriterHandle,
 ) {
     let mut running = true;
+    let mut already_idle = false;
     while running {
         let mut batch = vec![];
         let mut flushes = vec![];
@@ -1371,7 +1377,10 @@ async fn process_searcher_events(
         let wake_rx = producer_state.wake_rx.clone();
         if producer_state.lock_quiet().pending_rebuild.is_none() {
             let mut timer = Timer::never().fuse();
-            let mut idle_timer = Timer::at(Instant::now() + SEARCH_IDLE_TIMEOUT).fuse();
+            let mut idle_timer = match idle_deadline(already_idle, Instant::now()) {
+                Some(deadline) => Timer::at(deadline).fuse(),
+                None => Timer::never().fuse(),
+            };
             loop {
                 futures::select! {
                     item = rx.recv().fuse() => {
@@ -1450,7 +1459,9 @@ async fn process_searcher_events(
             }
         }
 
-        if batch.is_empty() && rebuild.is_none() {
+        let nothing_pending = batch.is_empty() && rebuild.is_none();
+        already_idle = hit_idle_timeout && nothing_pending;
+        if nothing_pending {
             // If we hit the idle timeout, and there is truly nothing pending, join with the
             // index writer threads and terminate them.
             if hit_idle_timeout {

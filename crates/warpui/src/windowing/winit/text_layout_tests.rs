@@ -786,7 +786,7 @@ fn test_softwrap_caret_positions_are_contiguous() -> Result<()> {
     let all_caret_starts: Vec<usize> = frame
         .lines()
         .iter()
-        .flat_map(|line| line.caret_positions.iter().map(|c| c.start_offset))
+        .flat_map(|line| line.caret_positions.iter().map(|c| c.start()))
         .collect();
 
     // The caret positions should be monotonically non-decreasing across all lines.
@@ -878,7 +878,7 @@ fn test_softwrap_caret_positions_multi_paragraph() -> Result<()> {
     let all_caret_starts: Vec<usize> = frame
         .lines()
         .iter()
-        .flat_map(|line| line.caret_positions.iter().map(|c| c.start_offset))
+        .flat_map(|line| line.caret_positions.iter().map(|c| c.start()))
         .collect();
 
     for window in all_caret_starts.windows(2) {
@@ -1046,7 +1046,7 @@ fn test_capped_word_line_positions_reach_true_text_end() {
     }
     let last = lines.last().unwrap();
     assert_eq!(last.end_index(), n, "End on the last row");
-    assert_eq!(last.last_glyph().unwrap().index + 1, n, "Down/clamp column");
+    assert_eq!(last.last_glyph().unwrap().char_index() + 1, n, "Down/clamp column");
     assert_eq!(last.caret_index_for_x_unbounded(last.width + 50.), n, "click past the end");
     let home = last.first_index();
     assert!(home > 0 && home < cosmic_text::MAX_SHAPED_WORD_BYTES, "Home {home}");
@@ -1061,7 +1061,7 @@ fn test_capped_word_followed_by_words_keeps_true_offsets() {
     let frame = frame_wrapped(&text, 400.);
     let last = frame.lines().last().unwrap();
     assert_eq!(last.end_index(), total);
-    assert_eq!(last.last_glyph().unwrap().index + 1, total);
+    assert_eq!(last.last_glyph().unwrap().char_index() + 1, total);
     assert_eq!(last.caret_index_for_x_unbounded(last.width + 50.), total);
 }
 
@@ -1114,7 +1114,7 @@ fn test_layout_line_of_huge_word_is_bounded_and_ends_at_text_end() {
     // Painting walks only `runs[*].glyphs` and `caret_positions`, so both bound the paint cost.
     assert!(line.caret_positions.len() <= cap + 1);
     assert_eq!(line.end_index(), n);
-    assert_eq!(line.last_glyph().unwrap().index + 1, n);
+    assert_eq!(line.last_glyph().unwrap().char_index() + 1, n);
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "layout_line of a 3 MB word took {elapsed:?}"
@@ -1141,4 +1141,62 @@ fn test_long_words_in_mixed_styles_keep_all_glyphs() {
     let text = format!("{};", "c".repeat(2 * N));
     let count = glyph_count_with_spans(&text, &[(N, false), (N, true), (1, false)]);
     assert_eq!(count, 2 * N + 1, "word crossing a style boundary");
+}
+
+/// A line with one style run per token must not keep capacity for the rest of the line in each
+/// run (or push-growth slack in the caret list). Before the fix every run's glyph Vec kept the
+/// whole line's capacity, so retained memory grew with `runs * glyphs`.
+#[test]
+fn test_layout_text_retains_no_excess_capacity() {
+    use pathfinder_color::ColorU;
+
+    let (font_db, roboto) = init_fonts();
+    let text = "let alpha = beta + gamma;";
+    let line_style = LineStyle {
+        font_size: FONT_SIZE,
+        line_height_ratio: DEFAULT_UI_LINE_HEIGHT_RATIO,
+        baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+        fixed_width_tab_size: None,
+    };
+    // Alternate two syntax colors every 3 chars so the line has many runs.
+    let colors = [ColorU::new(255, 0, 0, 255), ColorU::new(0, 255, 0, 255)];
+    let char_count = text.chars().count();
+    let style_runs: Vec<_> = (0..char_count)
+        .step_by(3)
+        .enumerate()
+        .map(|(i, start)| {
+            (
+                start..(start + 3).min(char_count),
+                StyleAndFont::new(
+                    roboto,
+                    Properties::default(),
+                    TextStyle::new().with_syntax_color(colors[i % 2]),
+                ),
+            )
+        })
+        .collect();
+
+    let frame = font_db.text_layout_system().layout_text(
+        text,
+        line_style,
+        &style_runs,
+        f32::MAX,
+        FRAME_HEIGHT,
+        Default::default(),
+        None,
+    );
+
+    for line in frame.lines() {
+        assert!(line.runs.len() > 3, "expected several runs");
+        for run in &line.runs {
+            assert_eq!(
+                run.glyphs.capacity(),
+                run.glyphs.len(),
+                "a run's glyph Vec must be exactly sized"
+            );
+        }
+        assert_eq!(line.runs.capacity(), line.runs.len());
+        let glyph_count: usize = line.runs.iter().map(|r| r.glyphs.len()).sum();
+        assert!(line.caret_positions.capacity() <= glyph_count + 1);
+    }
 }

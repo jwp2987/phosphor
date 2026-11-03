@@ -1,12 +1,19 @@
+use pathfinder_color::ColorU;
 use settings::Setting as _;
+use string_offset::ByteOffset;
+use warp_core::features::FeatureFlag;
 use warpui::{text_layout::TextStyle, App, SingletonEntity as _};
 
 use crate::{
     appearance::Appearance,
+    editor::TextRun,
     settings::InputSettings,
     terminal::{
         input::{
-            decorations::{InputBackgroundJobOptions, MAX_BACKGROUND_JOB_BUFFER_CHARS},
+            decorations::{
+                text_exceeds_background_job_token_cap, DecorationSet, InputBackgroundJobOptions,
+                MAX_BACKGROUND_JOB_BUFFER_CHARS, MAX_BACKGROUND_JOB_BUFFER_TOKENS,
+            },
             tests::{
                 add_window_with_bootstrapped_terminal, initialize_app,
                 simulate_directory_for_completion,
@@ -157,9 +164,11 @@ fn test_oversized_buffer_skips_background_jobs() {
             assert!(!input.decorations_cleared_for_oversized_buffer);
 
             // An oversized one is not.
-            assert_eq!(MAX_BACKGROUND_JOB_BUFFER_CHARS, 150_000);
-            // Boundary (#1009): 149_999 and exactly 150_000 chars are parsed, 150_001 is not.
-            for (len, parsed) in [(149_999, true), (150_000, true), (150_001, false)] {
+            assert_eq!(MAX_BACKGROUND_JOB_BUFFER_CHARS, 4096);
+            // Boundary (#1009, #1174): one char under and exactly at the cap are parsed, one
+            // over is not.
+            let cap = MAX_BACKGROUND_JOB_BUFFER_CHARS;
+            for (len, parsed) in [(cap - 1, true), (cap, true), (cap + 1, false)] {
                 let text = format!("echo {}", "x".repeat(len - 5));
                 input.clear_buffer_and_reset_undo_stack(ctx);
                 input.user_insert(&text, ctx);
@@ -202,6 +211,143 @@ fn test_oversized_buffer_skips_background_jobs() {
             input.run_input_background_jobs(decorate, ctx);
             assert!(input.decorations_future_handle.is_some());
             assert!(!input.decorations_cleared_for_oversized_buffer);
+        });
+    });
+}
+
+/// #1604: a buffer over the parse cap keeps its detection request pending and gets a verdict
+/// without a parse: the routing rules run on the text in a background job started from the edit
+/// path (the buffer is under `MAX_EAGER_ROUTING_BYTES`), and the verdict settles the request. It
+/// used to be abandoned here, so the Enter ran the text on the inherited type.
+#[test]
+fn test_oversized_buffer_keeps_detection_pending_and_is_classified_in_the_background() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::settings::AISettings;
+    use input_classifier::InputType;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+
+        let line = format!("echo {}; echo END", "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS));
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(400)).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(&line, ctx);
+            assert!(input.buffer_exceeds_background_job_cap(ctx));
+            let text = input.buffer_text(ctx);
+            input
+                .ai_input_model()
+                .update(ctx, |model, _| model.note_detection_requested(text));
+            input.run_input_background_jobs(
+                InputBackgroundJobOptions::default().with_ai_input_detection(),
+                ctx,
+            );
+            assert!(
+                input.decorations_future_handle.is_none(),
+                "no completer parse for an over-cap buffer"
+            );
+            assert!(
+                input.detection_pending_for_buffer(ctx),
+                "the request is not abandoned for size"
+            );
+            assert!(
+                input.ai_input_model().as_ref(ctx).detection_job_in_flight(),
+                "the routing job runs in the background"
+            );
+        });
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell,
+                "the over-cap `echo ...; echo END` line is a shell command"
+            );
+            assert!(!input.detection_pending_for_buffer(ctx));
+        });
+    });
+}
+
+/// #1604 (review): the parse-less detection job is only for buffers the completer parse never
+/// runs on. For a short buffer whose parse has not landed (a young line's Enter, an Enter that
+/// beat the debounce) it starts nothing and leaves the request pending for the parse's verdict:
+/// a parse-less job would race the parse and settle the request without one.
+#[test]
+fn test_short_buffer_gets_no_parse_less_detection_job() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::settings::AISettings;
+    use input_classifier::InputType;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(400)).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo hi; echo there", ctx);
+            assert!(!input.buffer_exceeds_background_job_cap(ctx));
+            let text = input.buffer_text(ctx);
+            input.ai_input_model().update(ctx, |model, _| {
+                model.abort_in_progress_detection();
+                model.note_detection_requested(text);
+            });
+            for at_enter in [false, true] {
+                input.start_detection_for_unparsed_buffer(at_enter, ctx);
+                assert!(
+                    !input.ai_input_model().as_ref(ctx).detection_job_in_flight(),
+                    "no parse-less job for a buffer under the parse cap (at_enter={at_enter})"
+                );
+                assert!(
+                    input.detection_pending_for_buffer(ctx),
+                    "the request waits for the parse's verdict (at_enter={at_enter})"
+                );
+            }
         });
     });
 }
@@ -266,5 +412,230 @@ fn test_superseded_decoration_job_is_cancelled() {
             assert!(input.decorations_cancel.is_none());
             assert!(input.decorations_future_handle.is_none());
         });
+    });
+}
+
+/// #1174: the completer parse is ~quadratic in the token count, so a buffer of many short words
+/// is over the cap even when it is under the char cap.
+#[test]
+fn test_token_cap_counts_words_not_chars() {
+    let words = |n: usize| vec!["a"; n].join(" ");
+    assert!(!text_exceeds_background_job_token_cap(&words(
+        MAX_BACKGROUND_JOB_BUFFER_TOKENS
+    )));
+    assert!(text_exceeds_background_job_token_cap(&words(
+        MAX_BACKGROUND_JOB_BUFFER_TOKENS + 1
+    )));
+    // A single enormous word is one token; the char cap handles it.
+    assert!(!text_exceeds_background_job_token_cap(&"x".repeat(100_000)));
+    // Under the char cap, so only the token cap can reject it.
+    assert!(words(MAX_BACKGROUND_JOB_BUFFER_TOKENS + 1).len() <= MAX_BACKGROUND_JOB_BUFFER_CHARS);
+}
+
+fn range(start: usize, end: usize) -> std::ops::Range<ByteOffset> {
+    ByteOffset::from(start)..ByteOffset::from(end)
+}
+
+fn run(text: &str, start: usize, style: TextStyle) -> TextRun {
+    TextRun::new(text.to_string(), style, range(start, start + text.len()))
+}
+
+fn syntax_style(color: ColorU) -> TextStyle {
+    TextStyle {
+        syntax_color: Some(color),
+        ..Default::default()
+    }
+}
+
+const GREEN: ColorU = ColorU {
+    r: 0,
+    g: 255,
+    b: 0,
+    a: 255,
+};
+const RED: ColorU = ColorU {
+    r: 255,
+    g: 0,
+    b: 0,
+    a: 255,
+};
+
+/// #1133: a parse whose decorations already sit in the buffer must compare equal to the
+/// buffer's own style runs, so `apply_decorations` leaves the editor alone.
+#[test]
+fn test_decoration_set_equals_buffer_runs_when_unchanged() {
+    // "echo hi": `echo` is a highlighted command, the rest is plain.
+    let desired = DecorationSet::new(vec![(range(0, 4), GREEN)], vec![]);
+    let current = DecorationSet::from_text_runs(
+        vec![
+            run("echo", 0, syntax_style(GREEN)),
+            run(" hi", 4, TextStyle::default()),
+        ]
+        .into_iter(),
+    );
+    assert_eq!(desired, current);
+}
+
+/// Styles other than syntax color / error underline are not decorations; a run differing
+/// only in them must not force a re-apply.
+#[test]
+fn test_decoration_set_ignores_non_decoration_styles() {
+    let slash_prefix = TextStyle {
+        foreground_color: Some(RED),
+        ..Default::default()
+    };
+    let current = DecorationSet::from_text_runs(vec![run("/cmd", 0, slash_prefix)].into_iter());
+    assert_eq!(current, DecorationSet::default());
+}
+
+/// Anything that changes what would be drawn must compare unequal: a changed range (the
+/// token grew), a changed color (theme switch), a missing or extra error underline.
+#[test]
+fn test_decoration_set_detects_every_visible_difference() {
+    let applied = DecorationSet::from_text_runs(
+        vec![
+            run("ech", 0, syntax_style(GREEN)),
+            run("o", 3, TextStyle::default()),
+        ]
+        .into_iter(),
+    );
+    // Token grew by one character.
+    assert_ne!(
+        applied,
+        DecorationSet::new(vec![(range(0, 4), GREEN)], vec![])
+    );
+    // Same range, new theme color.
+    assert_ne!(
+        applied,
+        DecorationSet::new(vec![(range(0, 3), RED)], vec![])
+    );
+    // Same syntax but now also underlined as an error.
+    assert_ne!(
+        applied,
+        DecorationSet::new(vec![(range(0, 3), GREEN)], vec![(range(0, 3), RED)])
+    );
+    // Decoration disabled (e.g. syntax highlighting turned off) while the buffer still has it.
+    assert_ne!(applied, DecorationSet::default());
+}
+
+/// Stale-result guard: the comparison is against the styles the buffer has *now*, so after an
+/// edit drops styles (undo, a clear) the recomputed set differs and is re-applied rather than
+/// skipped.
+#[test]
+fn test_decoration_set_compares_against_current_buffer_not_history() {
+    let desired = DecorationSet::new(vec![(range(0, 4), GREEN)], vec![]);
+    let cleared =
+        DecorationSet::from_text_runs(vec![run("echo ", 0, TextStyle::default())].into_iter());
+    assert_ne!(desired, cleared);
+}
+
+/// The buffer reports adjacent same-styled fragments as one run and the parse reports one
+/// range per token; touching same-color ranges and empty ranges normalize identically.
+#[test]
+fn test_decoration_set_normalizes_touching_and_empty_ranges() {
+    let a = DecorationSet::new(
+        vec![
+            (range(0, 2), GREEN),
+            (range(2, 5), GREEN),
+            (range(7, 7), RED),
+        ],
+        vec![],
+    );
+    let b = DecorationSet::new(vec![(range(0, 5), GREEN)], vec![]);
+    assert_eq!(a, b);
+}
+
+/// #1298: clearing decorations from a buffer that carries none must not touch the editor. Every
+/// style edit makes the editor relayout, reset its cursor blink and request a frame even when it
+/// changes nothing, and an AI-mode buffer was cleared on every keystroke, so each key drew a
+/// second frame ~10 ms later that looked exactly like the first.
+#[test]
+fn test_clearing_an_undecorated_buffer_does_not_update_styles() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let editor = input.read(&app, |input, _| input.editor.clone());
+        let updates = |app: &App| editor.read(app, |editor, _| editor.styles_updated_count());
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("how do i list files", ctx);
+        });
+
+        // Nothing to clear: no style edit.
+        let before = updates(&app);
+        input.update(&mut app, |input, ctx| {
+            assert!(!input.buffer_has_decorations(ctx));
+            input.clear_decorations(ctx);
+        });
+        assert_eq!(
+            updates(&app),
+            before,
+            "clearing a buffer without decorations must not report a style update"
+        );
+
+        // With a decoration present, the clear still runs and removes it.
+        editor.update(&mut app, |editor, ctx| {
+            editor.update_buffer_styles(
+                vec![string_offset::CharOffset::from(0)..string_offset::CharOffset::from(3)],
+                crate::editor::TextStyleOperation::default().set_syntax_color(GREEN),
+                ctx,
+            )
+        });
+        let decorated = updates(&app);
+        assert_eq!(decorated, before + 1);
+        input.update(&mut app, |input, ctx| {
+            assert!(input.buffer_has_decorations(ctx));
+            input.clear_decorations(ctx);
+            assert!(!input.buffer_has_decorations(ctx));
+        });
+        assert_eq!(updates(&app), decorated + 1);
+    });
+}
+
+/// #1298: in AI mode the background job clears decorations before anything else; for an
+/// undecorated prompt that must be free (no style update, so no second frame per key).
+#[test]
+fn test_ai_mode_background_job_does_not_restyle_an_undecorated_prompt() {
+    use crate::ai::blocklist::{InputConfig, InputType};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let editor = input.read(&app, |input, _| input.editor.clone());
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("how do i list files", ctx);
+        });
+
+        let before = editor.read(&app, |editor, _| editor.styles_updated_count());
+        input.update(&mut app, |input, ctx| {
+            input.run_input_background_jobs(
+                InputBackgroundJobOptions::default().with_command_decoration(),
+                ctx,
+            );
+        });
+        let after = editor.read(&app, |editor, _| editor.styles_updated_count());
+        assert_eq!(
+            after, before,
+            "an AI-mode keystroke job must not restyle a buffer that has no decorations"
+        );
     });
 }

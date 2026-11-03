@@ -124,13 +124,6 @@ impl AuthToken {
         }
     }
 
-    /// Returns a reference to the token used in the Authorization header.
-    pub fn as_bearer_token(&self) -> Option<&str> {
-        match self {
-            AuthToken::ApiKey(key) => Some(key),
-            AuthToken::NoAuth => None,
-        }
-    }
 }
 
 // ---------- User metadata ----------
@@ -273,7 +266,6 @@ impl AuthState {
     /// Initializes AuthState. The `api_key` parameter is faithfully kept (the
     /// BYOP entry point may still pass one in), but every other external-account
     /// check path is a no-op.
-    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     pub fn initialize(_ctx: &AppContext, api_key: Option<String>) -> Self {
         let state = Self::new();
         if let Some(api_key_value) = api_key {
@@ -330,17 +322,6 @@ impl AuthState {
 
     pub fn is_onboarded(&self) -> Option<bool> {
         self.user.read().as_ref().map(|user| user.is_onboarded)
-    }
-
-    pub fn user_email_domain(&self) -> Option<String> {
-        self.user.read().as_ref().map(|user| {
-            user.metadata
-                .email
-                .split('@')
-                .nth(1)
-                .unwrap_or("")
-                .to_string()
-        })
     }
 
     pub fn is_user_anonymous(&self) -> Option<bool> {
@@ -401,30 +382,8 @@ impl AuthState {
         Uuid::nil().to_string()
     }
 
-    /// Returns whether reauthentication is needed. Always `false` under Zap.
-    pub fn needs_reauth(&self) -> bool {
-        false
-    }
-
-    /// Returns whether the current user's anonymous renotification block has
-    /// expired. Zap users aren't treated as anonymous users, so this function
-    /// returns `false` (the sign-up prompt is never shown).
-    pub fn anonymous_user_renotification_block_expired(
-        &self,
-        _last_time_opt: Option<String>,
-    ) -> bool {
-        false
-    }
-
     pub fn is_on_work_domain(&self) -> Option<bool> {
         Some(false)
-    }
-
-    pub fn is_api_key_authenticated(&self) -> bool {
-        matches!(
-            self.credentials.read().as_ref(),
-            Some(Credentials::ApiKey { .. })
-        )
     }
 
     pub fn api_key(&self) -> Option<String> {
@@ -436,10 +395,6 @@ impl AuthState {
 
     pub fn principal_type(&self) -> Option<PrincipalType> {
         Some(PrincipalType::User)
-    }
-
-    pub fn is_service_account(&self) -> bool {
-        false
     }
 
     pub fn api_key_owner_type(&self) -> Option<OwnerType> {
@@ -456,12 +411,6 @@ impl AuthState {
     pub fn reset_local_defaults(&self) {
         *self.user.write() = Some(User::test());
         *self.credentials.write() = Some(Credentials::Test);
-    }
-}
-
-impl warp_managed_secrets::ActorProvider for AuthState {
-    fn actor_uid(&self) -> Option<String> {
-        self.user_id().map(|uid| uid.as_string())
     }
 }
 
@@ -486,6 +435,7 @@ impl AuthStateProvider {
     /// Zap no longer has a real logged-out state; this function returns a
     /// provider equivalent to `new_for_test` ("logged-in test user") so old
     /// test code keeps compiling.
+    #[cfg(test)]
     pub fn new_logged_out_for_test() -> Self {
         Self::new_for_test()
     }
@@ -560,9 +510,6 @@ impl AuthView {
         self.variant
     }
 
-    /// The original native login UI skipped the "enter passcode" step straight
-    /// into the following "open in browser" step. Zap: no-op.
-    pub fn skip_to_browser_open_step(&mut self, _ctx: &mut ViewContext<Self>) {}
 }
 
 impl Entity for AuthView {
@@ -764,13 +711,6 @@ impl AuthManager {
         Self::new(ctx)
     }
 
-    /// Refreshes the current user state.
-    ///
-    /// Historically this would refresh a cloud token; after Zap's localization,
-    /// the auth state has already completed local initialization at startup, so
-    /// no external-account request is sent anymore.
-    pub fn refresh_user(&self, _ctx: &mut ModelContext<Self>) {}
-
     /// Actively logs out.
     ///
     /// Zap no longer enters a "logged out in the cloud" state; this simply
@@ -807,14 +747,6 @@ impl AuthManager {
     /// An anonymous user hit the Drive object limit reminder. Localized: no-op.
     pub fn anonymous_user_hit_drive_object_limit(&mut self, _ctx: &mut ModelContext<Self>) {}
 
-    /// Starts the anonymous-user-to-full-user browser login flow. Localized: no-op.
-    pub fn initiate_anonymous_user_linking(
-        &mut self,
-        _entrypoint: crate::server::telemetry::AnonymousUserSignupEntrypoint,
-        _ctx: &mut ModelContext<Self>,
-    ) {
-    }
-
     /// Sets the local onboarded flag once the user finishes onboarding.
     pub fn set_user_onboarded(&mut self, ctx: &mut ModelContext<Self>) {
         self.auth_state.set_is_onboarded(true);
@@ -829,26 +761,6 @@ impl AuthManager {
     // There are no callers left after the physical UI removal, but the
     // enum/trait may still be consumed reflectively, so the stub is kept.
 
-    pub fn sign_up_url(&self) -> String {
-        String::new()
-    }
-
-    pub fn sign_in_url(&self) -> String {
-        String::new()
-    }
-
-    pub fn upgrade_url(&self) -> String {
-        String::new()
-    }
-
-    pub fn login_options_url(&self) -> String {
-        String::new()
-    }
-
-    pub fn link_sso_url(&self) -> String {
-        String::new()
-    }
-
     /// Opens a URL in the browser, optionally attaching an anonymous token.
     /// Localized: no-op.
     pub fn open_url_maybe_with_anonymous_token(
@@ -858,8 +770,6 @@ impl AuthManager {
     ) {
     }
 
-    /// Copies the anonymous user's login link to the clipboard. Localized: no-op.
-    pub fn copy_anonymous_user_linking_url_to_clipboard(&mut self, _ctx: &mut ModelContext<Self>) {}
 }
 
 impl Entity for AuthManager {

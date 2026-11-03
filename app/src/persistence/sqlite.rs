@@ -45,7 +45,7 @@ use super::block_list::{
 };
 use super::model::{
     self, ActiveMCPServer, CurrentUserInformation, MCPEnvironmentVariables, NewActiveMCPServer,
-    NewApp, NewCommand, NewFolder, NewNotebook, NewServerExperiment, NewTab, NewTabGroup, NewTeam,
+    NewApp, NewCommand, NewFolder, NewNotebook, NewTab, NewTabGroup, NewTeam,
     NewWindow, NewWorkspace, NewWorkspaceMetadata, NewWorkspaceTeam, ObjectMetadata,
     ObjectPermissions, Project, Tab, TabGroup, Window,
     WorkspaceMetadata as WorkspaceMetadataModel,
@@ -99,11 +99,9 @@ use crate::persistence::model::{
     NewGenericStringObject, NewObjectStoreRefresh, NewPersistedObjectAction, NewTeamSettings,
     ProjectRules, UserProfile, CODE_REVIEW_PANE_KIND, GET_STARTED_PANE_KIND,
 };
-use crate::server::experiments::ServerExperiment;
 use crate::server::ids::{ClientId, HashableId, ServerId, SyncId, ToServerId};
 use crate::server::telemetry::TelemetryEvent;
 use crate::server_time::ServerTimestamp;
-use crate::settings::cloud_preferences::{PreferenceObject, PreferenceObjectModel};
 use crate::settings_view::SettingsSection;
 use crate::suggestions::ignored_suggestions_model::SuggestionType;
 use crate::tab::SelectedTabColor;
@@ -170,6 +168,10 @@ fn lock_retry_interval(attempts: u32) -> std::time::Duration {
 #[derive(Default)]
 struct RetryQueue {
     events: std::collections::VecDeque<ModelEvent>,
+    /// The event that ran last is applied inside a transaction that is still open
+    /// because its `COMMIT` was blocked by a lock (#1297). It is committed before
+    /// anything else runs, so it is neither lost nor applied twice.
+    commit_pending: bool,
 }
 
 impl RetryQueue {
@@ -185,15 +187,16 @@ impl RetryQueue {
     }
 
     fn is_empty(&self) -> bool {
-        self.events.is_empty()
+        self.events.is_empty() && !self.commit_pending
     }
 
     fn len(&self) -> usize {
-        self.events.len()
+        self.events.len() + usize::from(self.commit_pending)
     }
 
     fn clear(&mut self) {
         self.events.clear();
+        self.commit_pending = false;
     }
 }
 
@@ -216,14 +219,16 @@ fn in_open_transaction(conn: &mut SqliteConnection) -> bool {
 
 /// Leaves `conn` in autocommit mode, returning whether it was not.
 ///
-/// diesel's `transaction()` returns early when `COMMIT` fails (a lock held by
-/// another process makes it `SQLITE_BUSY`) without a rollback: SQLite keeps the
-/// transaction open, and diesel keeps counting depth 1. Every later
-/// `transaction()` is then a `SAVEPOINT` inside it, which is released but
+/// diesel's `transaction()` used to return early when `COMMIT` failed (a lock held by
+/// another process makes it `SQLITE_BUSY`) without a rollback: SQLite kept the
+/// transaction open, and diesel kept counting depth 1. Every later
+/// `transaction()` was then a `SAVEPOINT` inside it, which is released but
 /// never committed: the writer logs success while nothing reaches the file
-/// until the connection closes (#971). The lingering transaction is the intended
-/// write, so it is committed again through diesel (keeping its depth in step);
-/// only if that keeps failing is it rolled back.
+/// until the connection closes (#971). diesel 2.3.14 rolls the failed `COMMIT`
+/// back itself (#1286), but a transaction can still be left open by a raw
+/// `COMMIT` that was blocked. The lingering transaction is the intended
+/// write, so it is committed again ([`commit_open_transaction`], which keeps
+/// diesel's depth in step); only if that keeps failing is it rolled back.
 fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
     use diesel::connection::{AnsiTransactionManager, TransactionManager};
 
@@ -234,14 +239,10 @@ fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
         "The SQLite writer was left inside an open transaction (a COMMIT was blocked by a \
          lock); committing it now"
     );
-    for _ in 0..8 {
-        match AnsiTransactionManager::commit_transaction(conn) {
-            Ok(()) if !in_open_transaction(conn) => return true,
-            Ok(()) => {}
-            // diesel believes nothing is open, SQLite disagrees: nothing to commit through.
-            Err(Error::NotInTransaction) => break,
-            Err(err) => log::warn!("Retrying the blocked COMMIT failed: {err}"),
-        }
+    match commit_open_transaction(conn) {
+        CommitOutcome::Committed => return true,
+        CommitOutcome::Blocked => log::warn!("Retrying the blocked COMMIT failed: still locked"),
+        CommitOutcome::Failed(err) => log::warn!("Retrying the blocked COMMIT failed: {err}"),
     }
     for _ in 0..8 {
         if !in_open_transaction(conn) {
@@ -259,6 +260,66 @@ fn settle_stray_transaction(conn: &mut SqliteConnection) -> bool {
         }
     }
     true
+}
+
+/// `COMMIT` attempts made back to back (each already waits out the connection's busy timeout)
+/// before a blocked commit is handed to the writer's retry timer (#1297).
+const COMMIT_ATTEMPTS: u32 = 3;
+/// Pause before the second `COMMIT` attempt; doubles for the third.
+const COMMIT_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
+
+enum CommitOutcome {
+    Committed,
+    /// Still blocked by a lock; the transaction is left open, its writes intact.
+    Blocked,
+    /// A real (non-lock) error; the transaction has been rolled back.
+    Failed(Error),
+}
+
+/// Commits the open top-level transaction, retrying while a lock blocks it (#1297).
+///
+/// diesel 2.3.14 rolls back a top-level transaction whose `COMMIT` fails
+/// (`AnsiTransactionManager::commit_transaction`), and the event inside it has
+/// already been consumed, so a lock at `COMMIT` would lose the write. The `COMMIT` is
+/// therefore sent directly: SQLite keeps the transaction open when it is refused with
+/// `SQLITE_BUSY`, and it can be sent again. Runs on the writer thread only.
+fn commit_open_transaction(conn: &mut SqliteConnection) -> CommitOutcome {
+    use diesel::connection::{AnsiTransactionManager, TransactionManager};
+
+    for attempt in 0..COMMIT_ATTEMPTS {
+        match conn.batch_execute("COMMIT;") {
+            Ok(()) => {
+                // diesel still counts the transaction it did not see end; committing
+                // again fails ("no transaction is active") and resets that count.
+                let _ = AnsiTransactionManager::commit_transaction(conn);
+                return CommitOutcome::Committed;
+            }
+            Err(err)
+                if super::database_notice::is_lock_error(&err.to_string().to_lowercase())
+                    && in_open_transaction(conn) =>
+            {
+                if attempt + 1 < COMMIT_ATTEMPTS {
+                    std::thread::sleep(COMMIT_RETRY_PAUSE * (1 << attempt));
+                }
+            }
+            Err(err) => {
+                rollback_open_transaction(conn);
+                return CommitOutcome::Failed(err);
+            }
+        }
+    }
+    CommitOutcome::Blocked
+}
+
+/// Rolls back the open top-level transaction, if there is one.
+fn rollback_open_transaction(conn: &mut SqliteConnection) {
+    use diesel::connection::{AnsiTransactionManager, TransactionManager};
+
+    if AnsiTransactionManager::rollback_transaction(conn).is_err() && in_open_transaction(conn) {
+        if let Err(err) = conn.batch_execute("ROLLBACK;") {
+            log::error!("Could not roll back a failed write: {err}");
+        }
+    }
 }
 
 /// Whether another connection currently blocks writes to the database (waits
@@ -314,6 +375,17 @@ fn drain_retry_queue(
     conn: &mut SqliteConnection,
     database_path: &Path,
 ) -> DrainOutcome {
+    // The write whose COMMIT was blocked goes first (#1297).
+    if queue.commit_pending {
+        match commit_open_transaction(conn) {
+            CommitOutcome::Committed => queue.commit_pending = false,
+            CommitOutcome::Blocked => return DrainOutcome::Locked,
+            CommitOutcome::Failed(err) => {
+                queue.commit_pending = false;
+                report_db_error("Model", err.into(), database_path);
+            }
+        }
+    }
     while !queue.is_empty() {
         if write_lock_blocked(conn) {
             return DrainOutcome::Locked;
@@ -321,9 +393,19 @@ fn drain_retry_queue(
         let Some(event) = queue.events.pop_front() else {
             break;
         };
-        if let Err(err) = handle_model_event(event, conn) {
+        match handle_model_event(event, conn) {
+            EventOutcome::Finished(Ok(())) => {}
             // Not a retryable lock (the probe just succeeded): report and move on.
-            report_db_error("Model", err, database_path);
+            EventOutcome::Finished(Err(err)) => report_db_error("Model", err, database_path),
+            // Lost the lock again after the probe: nothing ran, keep its place.
+            EventOutcome::NotStarted(event) => {
+                queue.events.push_front(event);
+                return DrainOutcome::Locked;
+            }
+            EventOutcome::CommitBlocked => {
+                queue.commit_pending = true;
+                return DrainOutcome::Locked;
+            }
         }
     }
     DrainOutcome::Done
@@ -516,6 +598,86 @@ type DeleteCloudObjectFn =
 ///   result, and by the background thread to store the result.
 static PREWARMED_DB: OnceLock<Mutex<PrewarmState>> = OnceLock::new();
 
+/// What the prewarm thread hands to `initialize`: the migrated connection and, when it could be
+/// produced, the startup read done ahead of time (see [`speculative_startup_read`]).
+struct PrewarmedDb {
+    conn: SqliteConnection,
+    speculative: Option<SpeculativeRead>,
+}
+
+/// A startup read made on the prewarm thread, before the user id and feature flags are known.
+struct SpeculativeRead {
+    data: super::SendablePersistedData,
+    skipped_tabs: usize,
+}
+
+thread_local! {
+    /// Set while the prewarm thread reads the database ahead of time: the user id and feature
+    /// flags are not known yet, so anything that depends on them must be left for the main thread.
+    static SPECULATIVE_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set when a speculative read reached code that depends on the user id or on `SharedWithMe`.
+    /// The result is then discarded and the main thread reads again.
+    static SPECULATIVE_READ_TAINTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `PHOSPHOR_DB_PREWARM_READ=0` turns the read-ahead off: `initialize` reads on the main thread.
+fn prewarm_read_enabled() -> bool {
+    std::env::var("PHOSPHOR_DB_PREWARM_READ").map_or(true, |value| value.trim() != "0")
+}
+
+/// Reads the startup data on the prewarm thread, overlapping the window/GPU initialization on the
+/// main thread. The read only depends on the user id (cloud object permissions), on
+/// `SharedWithMe` (guest decoding in the same place) and on `NldPromptHistoryMatch`, which only
+/// decides whether an in-memory derivation is kept. The first two are checked, not guessed: if a
+/// read touches them, or `cloud_objects` is non-empty, or the read fails, this returns `None` and
+/// `initialize` reads on the main thread as before. The NLD derivation is always built here and
+/// dropped by [`SpeculativeRead::into_persisted_data`] when the flag turns out to be off.
+fn speculative_startup_read(conn: &mut SqliteConnection) -> Option<SpeculativeRead> {
+    if !prewarm_read_enabled() {
+        return None;
+    }
+    let start = Instant::now();
+    SPECULATIVE_READ.with(|flag| flag.set(true));
+    SPECULATIVE_READ_TAINTED.with(|flag| flag.set(false));
+    let skipped_tabs = std::cell::Cell::new(0);
+    let result = read_sqlite_data_counting(conn, None, &skipped_tabs);
+    SPECULATIVE_READ.with(|flag| flag.set(false));
+    let tainted = SPECULATIVE_READ_TAINTED.with(|flag| flag.get());
+    // Left to the main thread (which also owns the damaged-database handling) when the read
+    // failed, touched the user id / SharedWithMe, or produced cloud objects.
+    let data = match result {
+        Ok(data) if !tainted => super::SendablePersistedData::from_persisted(data)?,
+        _ => return None,
+    };
+    log::info!(
+        "SQLite startup read ahead of time on the prewarm thread: {} ms",
+        start.elapsed().as_millis()
+    );
+    Some(SpeculativeRead {
+        data,
+        skipped_tabs: skipped_tabs.get(),
+    })
+}
+
+impl SpeculativeRead {
+    /// The data a main-thread read would have returned, given the now-known flag. `None` when a
+    /// user is signed in (their id is not what the prewarm thread assumed).
+    fn into_persisted_data(
+        self,
+        user_id: &Option<UserUid>,
+        nld_prompt_history_enabled: bool,
+    ) -> Option<(PersistedData, usize)> {
+        if user_id.is_some() {
+            return None;
+        }
+        let mut data = self.data;
+        if !nld_prompt_history_enabled {
+            data.clear_nld_prompts();
+        }
+        Some((data.into_persisted(), self.skipped_tabs))
+    }
+}
+
 /// The prewarm state machine. `Pending` -> (`Done` | `Joining`). `Joining`
 /// means the main thread has taken the handle but the background thread
 /// hasn't written Done yet — the background thread should still be able to
@@ -526,7 +688,7 @@ enum PrewarmState {
     /// hasn't written the result yet. The background thread will transition
     /// this state to Done.
     Joining,
-    Done(Result<SqliteConnection>),
+    Done(Result<PrewarmedDb>),
     Taken,
 }
 
@@ -550,7 +712,10 @@ pub fn prewarm_db_in_background() {
                 unsafe {
                     init_logging();
                 }
-                let result = init_db();
+                let result = init_db().map(|mut conn| {
+                    let speculative = speculative_startup_read(&mut conn);
+                    PrewarmedDb { conn, speculative }
+                });
                 let elapsed_ms = start.elapsed().as_millis();
                 log::info!(
                     "SQLite prewarm completed in {elapsed_ms} ms (success={})",
@@ -587,7 +752,7 @@ pub fn prewarm_db_in_background() {
 /// If background prewarming has been started, take the result (may need to
 /// wait for the background thread to join). Returns `None` to mean prewarming
 /// was never kicked off, in which case the caller takes the synchronous path.
-fn take_prewarmed_db() -> Option<Result<SqliteConnection>> {
+fn take_prewarmed_db() -> Option<Result<PrewarmedDb>> {
     let cell = PREWARMED_DB.get()?;
     let take_start = Instant::now();
 
@@ -664,13 +829,22 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
     let database_path = database_file_path();
 
     // Prefer taking the background prewarm result; fall back to synchronous init_db() (the original behavior) if unavailable.
-    let init_result = match take_prewarmed_db() {
-        Some(result) => result,
+    let (init_result, speculative) = match take_prewarmed_db() {
+        Some(Ok(prewarmed)) => (Ok(prewarmed.conn), prewarmed.speculative),
+        // #1600: a failed prewarm is recoverable on its own. Prewarm and the synchronous path run
+        // the identical `init_db()`, so retry once on this thread before giving up; a migration
+        // reported as failing that had in fact been applied finds nothing pending and succeeds.
+        // Without it one failed init is terminal: no `WriterHandles`, so every later write fails
+        // with "sqlite sender is unavailable" and BYOP preflight takes agent requests down with it.
+        Some(Err(err)) => {
+            log::warn!("SQLite prewarm failed ({err:#}); retrying initialization synchronously");
+            (init_db(), None)
+        }
         None => {
             unsafe {
                 init_logging();
             }
-            init_db()
+            (init_db(), None)
         }
     };
 
@@ -678,7 +852,17 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
         Ok(mut conn) => {
             let user_uid = AuthStateProvider::as_ref(ctx).get().user_id();
             let skipped_tabs = std::cell::Cell::new(0);
-            let mut read_result = read_sqlite_data_counting(&mut conn, user_uid, &skipped_tabs);
+            let ahead_of_time = speculative.and_then(|speculative| {
+                speculative
+                    .into_persisted_data(&user_uid, FeatureFlag::NldPromptHistoryMatch.is_enabled())
+            });
+            let mut read_result = match ahead_of_time {
+                Some((data, skipped)) => {
+                    skipped_tabs.set(skipped);
+                    Ok(data)
+                }
+                None => read_sqlite_data_counting(&mut conn, user_uid, &skipped_tabs),
+            };
             // A database that opens and migrates but cannot be read (a dropped
             // table, damaged pages) would otherwise fail every write too (#860).
             if let Err(err) = &read_result {
@@ -764,6 +948,14 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
                 &underlying_error_message(&err),
             );
             report_db_error("initialization", err, &database_path);
+            // #1600: state the consequence; the app otherwise looks healthy while every persisted
+            // write, and so every agent request, fails for the rest of the session.
+            log::error!(
+                "SQLite is unavailable for this session: no writer thread was started, so \
+                 persistence is disabled and agent requests will fail in BYOP preflight with \
+                 \"sqlite sender is unavailable\". Restart {} to retry.",
+                crate::ChannelState::display_name()
+            );
             (None, None)
         }
     }
@@ -855,8 +1047,55 @@ fn establish_connection_with_deadline(
     };
     wal_result.context("Failed to enable WAL")?;
     conn.batch_execute("PRAGMA busy_timeout = 1000;")?;
+    if !read_only {
+        apply_wal_durability_pragmas(&mut conn);
+    }
 
     Ok(conn)
+}
+
+#[derive(diesel::QueryableByName)]
+struct JournalModeRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    journal_mode: String,
+}
+
+/// Relaxes the writer connection's fsync policy and caps WAL growth. Only does
+/// anything when the database really is in WAL mode; in any other journal mode
+/// `synchronous=NORMAL` is NOT crash-safe, so it is skipped there.
+///
+/// Durability trade-off: SQLite's default `synchronous=FULL` fsyncs the WAL on
+/// every commit (about 0.5 ms median, p95 2 ms on NVMe, far more on slow or
+/// encrypted disks), and the writer commits once per event. With `NORMAL` in
+/// WAL mode a commit is written to the OS but not fsynced; the WAL is synced
+/// at checkpoints. That is safe against an application crash or SIGKILL (the
+/// written frames live in the OS page cache and survive process death). Only an
+/// OS crash or power loss can drop the last few commits, and it can never
+/// corrupt the database: WAL frames carry checksums, so a torn tail is simply
+/// discarded on recovery. Everything stored here (history, blocks, layout,
+/// conversations) tolerates losing the final moments, and the clean-quit path
+/// still ends in `wal_checkpoint(TRUNCATE)`, which syncs the database file.
+///
+/// `journal_size_limit` makes the WAL file shrink back to 8 MB after a
+/// checkpoint instead of staying at the size of its largest spike (one block
+/// write can be several MB).
+fn apply_wal_durability_pragmas(conn: &mut SqliteConnection) {
+    let in_wal_mode = diesel::sql_query("PRAGMA journal_mode")
+        .get_result::<JournalModeRow>(conn)
+        .map(|row| row.journal_mode.eq_ignore_ascii_case("wal"))
+        .unwrap_or(false);
+    if !in_wal_mode {
+        log::warn!("SQLite is not in WAL mode; leaving synchronous at its default");
+        return;
+    }
+    if let Err(err) = conn.batch_execute(
+        r#"
+        PRAGMA synchronous=NORMAL;
+        PRAGMA journal_size_limit=8388608;
+    "#,
+    ) {
+        log::warn!("Failed to relax SQLite synchronous mode: {err:#}");
+    }
 }
 
 /// Opens a standalone read-write SQLite database that holds only the
@@ -917,6 +1156,33 @@ pub fn establish_codebase_index_connection(database_url: &str) -> Result<SqliteC
     Ok(conn)
 }
 
+/// The log level for a message SQLite reports through its log hook.
+///
+/// `err_code` is an extended error code (https://www.sqlite.org/rescode.html#primary_result_codes_versus_extended_result_codes).
+/// In general, the least-significant byte of an extended error code is the primary error
+/// code it belongs to. Each primary error code can also be used where an extended error
+/// code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
+fn sqlite_log_level(err_code: i32) -> log::Level {
+    let primary_error_code = err_code & 0xFF;
+    match (primary_error_code, err_code) {
+        // This usually means that a schema change invalidated a prepared statement.
+        (sqlite3::SQLITE_SCHEMA, _) => log::Level::Debug,
+        // The WAL was replayed on open because the previous process did not shut down
+        // cleanly (killed, crashed, power loss). Recovery is routine and keeps the data
+        // (#1155), so it is informational.
+        (_, sqlite3::SQLITE_NOTICE_RECOVER_WAL) => log::Level::Info,
+        // These are used with sqlite3_log, in extensions.
+        (sqlite3::SQLITE_NOTICE | sqlite3::SQLITE_WARNING, _) => log::Level::Warn,
+        // According to the docs, this error means that the database file was moved (or deleted),
+        // so SQLite can't safely modify it and the rollback journal:
+        //     https://www.sqlite.org/rescode.html#readonly_dbmoved
+        // This is mostly outside of Zap's control (e.g. the user or some system program is
+        // moving around files in the user data directory), so downgrade to a warning.
+        (_, sqlite3::SQLITE_READONLY_DBMOVED) => log::Level::Warn,
+        _ => log::Level::Error,
+    }
+}
+
 /// Set up SQLite [error logging](https://www.sqlite.org/errlog.html)
 ///
 /// ## Safety
@@ -933,24 +1199,21 @@ unsafe fn init_logging() { unsafe {
         // code it belongs to. Each primary error code can also be used where an extended error
         // code is expected (for example, `SQLITE_SCHEMA` has no extended error codes).
         let primary_error_code = err_code & 0xFF;
-        let level = match (primary_error_code, err_code) {
-            // This usually means that a schema change invalidated a prepared statement.
-            (sqlite3::SQLITE_SCHEMA, _) => log::Level::Debug,
-            // These are used with sqlite3_log, in extensions.
-            (sqlite3::SQLITE_NOTICE | sqlite3::SQLITE_WARNING, _) => log::Level::Warn,
-            // According to the docs, this error means that the database file was moved (or deleted),
-            // so SQLite can't safely modify it and the rollback journal:
-            //     https://www.sqlite.org/rescode.html#readonly_dbmoved
-            // This is mostly outside of Zap's control (e.g. the user or some system program is
-            // moving around files in the user data directory), so downgrade to a warning.
-            (_, sqlite3::SQLITE_READONLY_DBMOVED) => log::Level::Warn,
-            _ => log::Level::Error,
-        };
+        let level = sqlite_log_level(err_code);
 
         // Safety: the message pointer came from the SQLite library, which promises that it's a
         // valid C string pointer.
         let msg = unsafe { CStr::from_ptr(msg) };
         let err_message = String::from_utf8_lossy(msg.to_bytes());
+        // The writer ends diesel's transaction count with a `COMMIT` SQLite has to refuse
+        // after a raw one succeeded (`commit_open_transaction`, #1297); that is routine.
+        let level = if primary_error_code == sqlite3::SQLITE_ERROR
+            && err_message.contains("no transaction is active")
+        {
+            log::Level::Debug
+        } else {
+            level
+        };
         // The local logging path shouldn't panic, but still guard against
         // unwinding across the FFI boundary.
         // Damage makes every statement fail the same way; log each code once
@@ -1943,6 +2206,18 @@ fn reconstruct_database(path: &Path) -> Result<SqliteConnection> {
     setup_database(path)
 }
 
+/// Startup GC: deletes `blocks` rows of panes that are not in the saved session and
+/// started more than `ORPHAN_BLOCK_MIN_AGE` ago. Failure is logged and ignored; it is
+/// housekeeping and must never keep the writer from starting.
+fn gc_orphaned_blocks(conn: &mut SqliteConnection) {
+    let cutoff = (Utc::now() - super::block_list::ORPHAN_BLOCK_MIN_AGE).naive_utc();
+    match super::block_list::delete_orphaned_blocks(conn, cutoff) {
+        Ok(0) => {}
+        Ok(deleted) => log::info!("Removed {deleted} orphaned terminal blocks older than 7 days"),
+        Err(err) => log::warn!("Failed to remove orphaned terminal blocks: {err:#}"),
+    }
+}
+
 fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<WriterHandles> {
     let (tx, rx) = std::sync::mpsc::sync_channel(CHANNEL_SIZE);
     // `None` while paused: the connection is closed before the file is removed.
@@ -1973,6 +2248,11 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
             let mut retry_deadline: Option<std::time::Instant> = None;
             // #971: non-snapshot events blocked by a lock, replayed in order.
             let mut retry_queue = RetryQueue::default();
+            // Reclaim blocks of long-gone panes once per launch (#1155). Done here, on the
+            // writer thread, so the main thread never waits on it.
+            if let Some(conn) = current_conn.as_mut() {
+                gc_orphaned_blocks(conn);
+            }
             loop {
                 // Whether this iteration is a retry of the pending snapshot.
                 let mut timed_out = false;
@@ -2310,7 +2590,32 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                             _ => None,
                                         };
                                         let started = std::time::Instant::now();
-                                        let result = handle_model_event(event, conn);
+                                        let outcome = handle_model_event(event, conn);
+                                        // #1297: the write won the lock probe and then lost
+                                        // it again. Either it never started (the event is
+                                        // handed back) or its COMMIT is blocked and the
+                                        // transaction is held open; both are retried in order.
+                                        let result = match outcome {
+                                            EventOutcome::Finished(result) => result,
+                                            EventOutcome::NotStarted(event) => {
+                                                retry_queue.push(event);
+                                                deferred = true;
+                                                Err(anyhow::anyhow!("database is locked"))
+                                            }
+                                            EventOutcome::CommitBlocked => {
+                                                retry_queue.commit_pending = true;
+                                                deferred = true;
+                                                Err(anyhow::anyhow!(
+                                                    "database is locked (COMMIT is blocked)"
+                                                ))
+                                            }
+                                        };
+                                        if deferred {
+                                            retry_deadline.get_or_insert_with(|| {
+                                                std::time::Instant::now()
+                                                    + lock_retry_interval(snapshot_retries)
+                                            });
+                                        }
                                         if let Some(conversation_id) = conversation_write {
                                             log::debug!(
                                                 "Conversation {conversation_id} write finished \
@@ -2324,10 +2629,10 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                                 }
                             };
                             // A blocked snapshot is kept in `pending_snapshot` and a
-                            // blocked event in `retry_queue`; both are retried. An
-                            // event that fails on a lock *during* execution (it won
-                            // the probe, then lost a race) is lost, so it is
-                            // reported as a failure at once.
+                            // blocked event (or blocked COMMIT) in `retry_queue`; both
+                            // are retried. An event that fails on a lock *during*
+                            // execution can no longer happen: it is either handed back
+                            // unstarted or its transaction is kept open (#1297).
                             let lock_blocked = deferred
                                 || (is_snapshot
                                     && result.as_ref().err().is_some_and(|err| {
@@ -2421,11 +2726,93 @@ fn retire_abandoned_connection(conn: SqliteConnection, db_path: &Path) -> bool {
 /// * [`ModelEvent::PauseAndRemoveDatabase`]
 /// * [`ModelEvent::ReconstructAndResume`]
 /// * [`ModelEvent::Terminate`]
-fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> anyhow::Result<()> {
-    let result = handle_model_event_unsettled(event, connection);
+///
+/// The event runs inside one `BEGIN IMMEDIATE` transaction that is committed by
+/// [`commit_open_transaction`], so a lock cannot cost it its write (#1297): taking the
+/// write lock up front means a refusal happens before the event is consumed (it is
+/// handed back as [`EventOutcome::NotStarted`]), and a `COMMIT` that stays blocked leaves
+/// the finished transaction open ([`EventOutcome::CommitBlocked`]) for the caller to commit
+/// later. A failing event is rolled back as a whole.
+fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> EventOutcome {
+    use diesel::connection::AnsiTransactionManager;
+
+    let slow_start = instant::Instant::now();
+    let kind = model_event_kind(&event);
+    let mut begin = AnsiTransactionManager::begin_transaction_sql(connection, "BEGIN IMMEDIATE;");
+    if begin.is_err() && !matches!(&begin, Err(err) if is_lock_error_of(err)) {
+        // A transaction an earlier write left open is ended first.
+        settle_stray_transaction(connection);
+        begin = AnsiTransactionManager::begin_transaction_sql(connection, "BEGIN IMMEDIATE;");
+    }
+    if let Err(err) = begin {
+        return if is_lock_error_of(&err) {
+            EventOutcome::NotStarted(event)
+        } else {
+            EventOutcome::Finished(Err(
+                anyhow::Error::new(err).context("error starting a write")
+            ))
+        };
+    }
+    let mut result = handle_model_event_unsettled(event, connection);
+    if result.is_ok() {
+        match commit_open_transaction(connection) {
+            CommitOutcome::Committed => {}
+            // Left open on purpose: settling it here would end it.
+            CommitOutcome::Blocked => return EventOutcome::CommitBlocked,
+            CommitOutcome::Failed(err) => {
+                result = Err(anyhow::Error::new(err).context("error committing a write"));
+            }
+        }
+    } else {
+        rollback_open_transaction(connection);
+    }
     // Whatever the outcome, the next write must start from autocommit (#971).
     settle_stray_transaction(connection);
-    result
+    SLOW_DB_WRITE.finish(slow_start, || {
+        format!("event={kind}, ok={}", result.is_ok())
+    });
+    EventOutcome::Finished(result)
+}
+
+fn is_lock_error_of(err: &Error) -> bool {
+    super::database_notice::is_lock_error(&err.to_string().to_lowercase())
+}
+
+enum EventOutcome {
+    /// The event ran to completion (committed, or rolled back on error).
+    Finished(anyhow::Result<()>),
+    /// The write lock was refused before anything ran; the event is handed back.
+    NotStarted(ModelEvent),
+    /// The event ran but its `COMMIT` is blocked; the transaction is still open.
+    CommitBlocked,
+}
+
+/// A database write that holds the single writer this long delays every write behind it (#1146).
+const DB_WRITE_SLOW: std::time::Duration = std::time::Duration::from_millis(100);
+static SLOW_DB_WRITE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "sqlite write",
+    DB_WRITE_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
+/// A payload-free name for the slow-write log; `Debug` would dump the whole event.
+fn model_event_kind(event: &ModelEvent) -> &'static str {
+    match event {
+        ModelEvent::SaveBlock(_) => "SaveBlock",
+        ModelEvent::DeleteBlocks(_) => "DeleteBlocks",
+        ModelEvent::Snapshot(_) => "Snapshot",
+        ModelEvent::UpsertWorkflows(_) => "UpsertWorkflows",
+        ModelEvent::UpsertNotebooks(_) => "UpsertNotebooks",
+        ModelEvent::UpsertFolders(_) => "UpsertFolders",
+        ModelEvent::UpsertGenericStringObject { .. }
+        | ModelEvent::UpsertGenericStringObjects(_) => "UpsertGenericStringObject",
+        ModelEvent::UpdateMultiAgentConversation { .. } => "UpdateMultiAgentConversation",
+        ModelEvent::UpsertCodebaseIndexMetadata { .. }
+        | ModelEvent::UpsertCodebaseIndexNodes { .. }
+        | ModelEvent::UpsertCodebaseIndexEmbeddings { .. }
+        | ModelEvent::UpsertCodebaseIndexNodeSummaries { .. } => "UpsertCodebaseIndex",
+        _ => "other",
+    }
 }
 
 fn handle_model_event_unsettled(
@@ -2438,11 +2825,26 @@ fn handle_model_event_unsettled(
         | ModelEvent::Terminate => {
             panic!("Unhandled control-flow event {event:?}");
         }
+        // Reached here, in order, after every event queued before it was handled (or parked
+        // behind the same lock in the retry queue, which drains in order).
+        ModelEvent::WriteBarrier(barrier) => {
+            barrier.reached();
+            Ok(())
+        }
         ModelEvent::SaveBlock(BlockCompleted {
             pane_id,
             block,
+            deferred_content,
             is_local,
-        }) => save_block(connection, pane_id, &block, is_local).context("error saving block"),
+        }) => {
+            // The command and output are turned into bytes here, on the writer thread, rather
+            // than on the UI thread when the block finished.
+            let block = match &deferred_content {
+                Some(content) => Arc::new(content.materialize(&block)),
+                None => block,
+            };
+            save_block(connection, pane_id, &block, is_local).context("error saving block")
+        }
         ModelEvent::DeleteBlocks(pane_id) => {
             // Delete the blocks even if the setting is off so users can still remove
             // panes and have their data deleted locally.
@@ -2538,10 +2940,16 @@ fn handle_model_event_unsettled(
             update_object_metadata(connection, id, metadata).context("error updating metadata")
         }
         ModelEvent::InsertCommand { metadata } => {
-            insert_command(connection, metadata).context("error inserting command")
+            let result = insert_command(connection, metadata).context("error inserting command");
+            // After the commit, so a reader that missed the row sees the epoch move.
+            super::commands::note_commands_written();
+            result
         }
         ModelEvent::UpdateFinishedCommand { metadata } => {
-            update_finished_command(connection, metadata).context("error updating finished command")
+            let result = update_finished_command(connection, metadata)
+                .context("error updating finished command");
+            super::commands::note_commands_written();
+            result
         }
         ModelEvent::UpsertUserProfiles { profiles } => {
             upsert_user_profiles(connection, profiles).context("error updating user profiles")
@@ -2561,9 +2969,6 @@ fn handle_model_event_unsettled(
         } => {
             sync_object_actions(connection, objects_to_sync).context("error syncing object actions")
         }
-        ModelEvent::SaveExperiments { experiments } => {
-            save_experiments(connection, experiments).context("error saving experiments")
-        }
         ModelEvent::UpsertAIQuery { query } => {
             upsert_ai_query(connection, query).context("error upserting AI query")
         }
@@ -2579,7 +2984,7 @@ fn handle_model_event_unsettled(
         } => upsert_agent_conversation_with_retention(
             connection,
             &conversation_id,
-            &updated_tasks,
+            updated_tasks.iter().map(|task| &**task),
             conversation_data,
             task_retention,
         )
@@ -5306,19 +5711,9 @@ fn read_sqlite_data_counting(
                             .try_into()
                             .ok()?;
                         object_id.and_then(|server_id| match json_object_type {
-                            JsonObjectType::Preference => {
-                                let model = PreferenceObjectModel::deserialize_owned(&object.data);
-                                model.ok().map(|model| {
-                                    let boxed: Box<dyn StoredObject> =
-                                        Box::new(PreferenceObject::new(
-                                            server_id,
-                                            model,
-                                            to_cloud_object_metadata(metadata),
-                                            cloud_object_permissions,
-                                        ));
-                                    boxed
-                                })
-                            }
+                            // Cloud-synced preference objects no longer exist in this fork; rows
+                            // written by older builds are ignored.
+                            JsonObjectType::Preference => None,
                             JsonObjectType::EnvVarCollection => {
                                 let model =
                                     EnvVarCollectionObjectModel::deserialize_owned(&object.data);
@@ -5527,16 +5922,6 @@ fn read_sqlite_data_counting(
     .filter_map(|action| action.try_into().ok())
         .collect();
 
-    let server_experiments = collect_rows(
-        schema::server_experiments::dsl::server_experiments
-            .load_iter::<model::ServerExperiment, DefaultLoadingMode>(conn)?,
-    )?
-    .into_iter()
-    .filter_map(|server_experiment| {
-            ServerExperiment::from_string(server_experiment.experiment).ok()
-        })
-        .collect();
-
     let restored_blocks = get_all_restored_blocks(conn)?;
 
     // Load active MCP servers from database
@@ -5567,7 +5952,9 @@ fn read_sqlite_data_counting(
     let recent_ai_queries = read_recent_ai_queries(conn)?;
     // Gated because the scan is 20x wider than the up-arrow one and nothing reads the result
     // with the flag off; `NldPromptHistoryMatch` is off by default here and at the pin.
-    let nld_prompts = if FeatureFlag::NldPromptHistoryMatch.is_enabled() {
+    let nld_prompts = if SPECULATIVE_READ.with(|flag| flag.get())
+        || FeatureFlag::NldPromptHistoryMatch.is_enabled()
+    {
         process_ai_queries_for_nld_history_match(&recent_ai_queries)
     } else {
         Vec::new()
@@ -5600,7 +5987,6 @@ fn read_sqlite_data_counting(
         user_profiles,
         time_of_next_force_object_refresh,
         object_actions,
-        experiments: server_experiments,
         ai_queries,
         nld_prompts,
         codebase_indices,
@@ -5671,6 +6057,11 @@ fn to_cloud_object_permissions(
     permissions: &ObjectPermissions,
     default_user_id: Option<UserUid>,
 ) -> Option<StoredObjectPermissions> {
+    if SPECULATIVE_READ.with(|flag| flag.get()) {
+        // Depends on the user id and the SharedWithMe flag, neither known yet: taint the read.
+        SPECULATIVE_READ_TAINTED.with(|flag| flag.set(true));
+        return None;
+    }
     let owner = owner_for_permissions(permissions, default_user_id)?;
     let permissions_last_updated_ts = permissions
         .permissions_last_updated_at
@@ -5855,27 +6246,6 @@ fn upsert_user_profiles(
                 .values(new_user_profile)
                 .execute(conn)?;
         }
-        Ok(())
-    })
-}
-
-fn save_experiments(
-    conn: &mut SqliteConnection,
-    experiments: Vec<ServerExperiment>,
-) -> Result<(), Error> {
-    conn.transaction::<(), Error, _>(|conn| {
-        diesel::delete(schema::server_experiments::dsl::server_experiments).execute(conn)?;
-
-        let new_experiments = experiments
-            .into_iter()
-            .map(|experiment| NewServerExperiment {
-                experiment: experiment.to_string(),
-            })
-            .collect_vec();
-
-        diesel::insert_into(schema::server_experiments::dsl::server_experiments)
-            .values(new_experiments)
-            .execute(conn)?;
         Ok(())
     })
 }

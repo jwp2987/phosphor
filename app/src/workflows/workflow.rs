@@ -106,6 +106,7 @@ impl Workflow {
         }
     }
 
+    #[cfg(test)]
     pub fn author_name(&self) -> Option<&String> {
         match self {
             Self::Command { author, .. } => author.as_ref(),

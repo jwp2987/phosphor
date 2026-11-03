@@ -517,3 +517,193 @@ fn test_feature_flag_arg_is_valid_with_no_whitespace_before_arg() {
         assert!(is_valid);
     });
 }
+
+/// #1130: a generator arg on a warpified remote session fails open instead of running the
+/// generator (a remote command) for every candidate on every keystroke.
+#[test]
+fn test_generator_arg_is_valid_on_a_warpified_remote_session() {
+    App::test((), |app| async move {
+        let _flag = FeatureFlag::ValidateAutosuggestions.override_enabled(true);
+        let ctx = session_context_of_type(
+            BootstrapSessionType::WarpifiedRemote,
+            TypedPathBuf::from(REMOTE_CWD),
+            &app,
+        );
+        let arg = ParsedExpression::new(
+            Expression::ValidatableArgument(vec![ArgType::Generator("units".into())]),
+            ParsedToken::new("nginx".to_string()),
+        )
+        .spanned((15, 20));
+        assert!(is_arg_valid("systemctl status nginx", &arg, &ctx, None).await);
+    });
+}
+
+/// Generated history (oldest first) with a handful of `rare ...` commands buried under many
+/// that do not match, so a `rare` prefix has to walk far back to find them.
+fn history_with_buried_matches(filler: usize) -> Vec<Arc<HistoryEntry>> {
+    let mut entries = vec![
+        HistoryEntry::with_pwd_and_exit_code("rare one", "/repo", 0),
+        HistoryEntry::with_pwd_and_exit_code("rare two", "/elsewhere", 0),
+        HistoryEntry::with_pwd_and_exit_code("rare one", "/elsewhere", 0),
+    ];
+    entries.extend((0..filler).map(|i| {
+        HistoryEntry::with_pwd_and_exit_code(format!("filler {i}"), "/repo".to_owned(), 0)
+    }));
+    entries.into_iter().map(Arc::new).collect()
+}
+
+/// The UI-thread scan gives up (returning `None`, to be finished off-thread) exactly when the
+/// walk needs more entries than the budget, and whenever it does finish its answer is the
+/// unbudgeted one.
+#[test]
+fn budgeted_autosuggestion_scan_defers_long_walks_and_agrees_otherwise() {
+    let history = history_with_buried_matches(500);
+    let excluded = HashSet::new();
+    let unbudgeted = find_potential_autosuggestions_from_history(
+        history.iter(),
+        "rare",
+        Some("/repo"),
+        &excluded,
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    );
+    assert_eq!(
+        commands(unbudgeted.clone()),
+        vec!["rare one", "rare one", "rare two"],
+        "same-dir first, then the rest, each deduped to its newest"
+    );
+
+    // The matches sit 500+ entries back: a small budget must defer ...
+    for budget in [1, 10, 499, 500] {
+        assert!(
+            scan_history_for_autosuggestions(
+                history.iter(),
+                "rare",
+                Some("/repo"),
+                &excluded,
+                MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+                Some(budget),
+            )
+            .is_none(),
+            "budget {budget}"
+        );
+    }
+    // ... and one that covers the whole history finishes with the identical list.
+    for budget in [503, 504, 10_000] {
+        let within_budget = scan_history_for_autosuggestions(
+            history.iter(),
+            "rare",
+            Some("/repo"),
+            &excluded,
+            MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+            Some(budget),
+        )
+        .expect("the budget covers the history");
+        assert_eq!(commands(within_budget), commands(unbudgeted.clone()));
+    }
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn similar_history_context_cache_reuses_result_per_block_until_a_write() {
+    use std::cell::Cell;
+
+    let cache = SimilarHistoryContextCache::default();
+    let calls = Cell::new(0);
+    let epoch = Cell::new(10u64);
+    let compute = || {
+        calls.set(calls.get() + 1);
+        Vec::new()
+    };
+    let pwd = Some("/repo".to_owned());
+    let exit_ok = ExitCode::from(0);
+
+    // Every keystroke after the same block: one query, however long it takes.
+    for _ in 0..5 {
+        cache.get_or_compute_at(|| epoch.get(), "ls", &pwd, exit_ok, None, compute);
+    }
+    assert_eq!(calls.get(), 1);
+
+    // A different block (command, pwd or exit code) re-queries ...
+    cache.get_or_compute_at(|| epoch.get(), "pwd", &pwd, exit_ok, None, compute);
+    assert_eq!(calls.get(), 2);
+    cache.get_or_compute_at(|| epoch.get(), "pwd", &None, exit_ok, None, compute);
+    assert_eq!(calls.get(), 3);
+    cache.get_or_compute_at(
+        || epoch.get(),
+        "pwd",
+        &None,
+        ExitCode::from(1),
+        None,
+        compute,
+    );
+    assert_eq!(calls.get(), 4);
+
+    // ... and so does the same block once the writer has committed (the finished-state update
+    // landing after the first keystroke). The old 5 s TTL served the stale answer here.
+    epoch.set(11);
+    cache.get_or_compute_at(
+        || epoch.get(),
+        "pwd",
+        &None,
+        ExitCode::from(1),
+        None,
+        compute,
+    );
+    assert_eq!(calls.get(), 5);
+    cache.get_or_compute_at(
+        || epoch.get(),
+        "pwd",
+        &None,
+        ExitCode::from(1),
+        None,
+        compute,
+    );
+    assert_eq!(calls.get(), 5);
+}
+
+/// #1284: once the bare prefix has been run (one missed accept is enough), it is the newest
+/// entry that starts with the buffer. It must not shadow the longer commands: its empty suffix
+/// switched the history ghost off for the rest of the session.
+#[test]
+fn test_autosuggestion_from_history_skips_the_entry_equal_to_the_buffer() {
+    let history_entries = [
+        HistoryEntry::command_only("echo seedghost_alpha1"),
+        HistoryEntry::command_only("echo seedghost_alpha3"),
+        // Run bare after a missed accept; every later cycle appends another.
+        HistoryEntry::command_only("echo seedghost_alp"),
+        HistoryEntry::command_only("echo seedghost_alp"),
+    ]
+    .map(Arc::new);
+
+    let found = find_potential_autosuggestions_from_history(
+        history_entries.iter(),
+        "echo seedghost_alp",
+        None,
+        &HashSet::new(),
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    );
+    assert_eq!(
+        commands(found),
+        vec!["echo seedghost_alpha3", "echo seedghost_alpha1"]
+    );
+
+    // Only the bare prefix in history: nothing to suggest.
+    let only_bare = find_potential_autosuggestions_from_history(
+        history_entries[2..].iter(),
+        "echo seedghost_alp",
+        None,
+        &HashSet::new(),
+        MAX_HISTORY_AUTOSUGGESTION_CANDIDATES,
+    );
+    assert!(only_bare.is_empty());
+}
+
+/// #1381: a generator validation that gave up is not a validation. The old code returned `true`
+/// after 150 ms, so a slow generator vouched for any suggestion.
+#[cfg(feature = "local_fs")]
+#[test]
+fn a_generator_validation_that_gave_up_does_not_validate_the_arg() {
+    assert!(!generator_validation_gave_up("main", "git checkout main"));
+    // The give-up is a hang net, well above any generator that answers.
+    assert!(ARG_GENERATOR_VALIDATION_TIMEOUT >= Duration::from_secs(20));
+}

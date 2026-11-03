@@ -311,3 +311,43 @@ pub fn test_non_moving_kitty_image_keeps_finished_grid_visible() {
     assert!(block_grid.grid_handler().has_visible_images());
     assert!(!block_grid.should_show_as_empty_when_finished());
 }
+
+fn grid_with_numbered_rows(rows: usize) -> BlockGrid {
+    let size = SizeInfo::new_without_font_metrics(10, 20);
+    let mut block_grid = BlockGrid::new(
+        size,
+        10_000, /* max_scroll_limit */
+        ChannelEventListener::new_for_test(),
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::default(),
+    );
+    for n in 0..rows {
+        for c in n.to_string().chars() {
+            block_grid.input(c);
+        }
+        block_grid.linefeed();
+        block_grid.carriage_return();
+    }
+    block_grid.finish();
+    block_grid
+}
+
+/// #1190: the bounded head read is an exact row-prefix of the full read, and reports truncation.
+#[test]
+fn head_contents_is_a_prefix_of_the_full_contents() {
+    let grid = grid_with_numbered_rows(5000);
+    let full = grid.contents_to_string_with_secrets_unobfuscated(false, None);
+    let (head, truncated) = grid.head_contents_with_secrets_unobfuscated(2000);
+    assert!(truncated);
+    assert!(head.len() >= 2000 && head.len() < full.len());
+    assert!(full.starts_with(&head));
+}
+
+#[test]
+fn head_contents_returns_everything_for_small_grids() {
+    let grid = grid_with_numbered_rows(10);
+    let full = grid.contents_to_string_with_secrets_unobfuscated(false, None);
+    let (head, truncated) = grid.head_contents_with_secrets_unobfuscated(256 * 1024);
+    assert!(!truncated);
+    assert_eq!(head, full);
+}

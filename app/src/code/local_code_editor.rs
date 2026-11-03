@@ -101,7 +101,7 @@ use crate::{
     code::{
         footer::{CodeFooterView, CodeFooterViewEvent},
         global_buffer_model::{BufferState, GlobalBufferModel},
-        SaveOutcome, ShowFindReferencesCardProvider,
+        SaveOutcome,
     },
     settings::AISettings,
     terminal::TerminalView,
@@ -114,6 +114,9 @@ use warp_core::ui::icons::Icon;
 
 use crate::debounce::debounce;
 use crate::menu::{Event, Menu, MenuItem, MenuItemFields};
+
+/// Buffers at least this many characters long are "large": closing one trims the heap (#1407).
+const LARGE_BUFFER_CHARS: usize = 1_000_000;
 
 const DROP_SHADOW_COLOR: ColorU = ColorU {
     r: 0,
@@ -646,6 +649,21 @@ impl LocalCodeEditorView {
         self.default_directory = directory;
     }
 
+    /// Whether the buffer is big enough (over [`LARGE_BUFFER_CHARS`]) that releasing the editor
+    /// frees a lot of heap, so the allocator should be asked to give it back to the OS.
+    pub fn is_large_buffer(&self, ctx: &AppContext) -> bool {
+        let editor = self.editor.as_ref(ctx);
+        let buffer = editor.model.as_ref(ctx).buffer().as_ref(ctx);
+        buffer.len().as_usize() >= LARGE_BUFFER_CHARS
+    }
+
+    /// Closes this editor for good: drops its laid-out paragraphs and syntax data immediately and
+    /// stops it reacting to its shared buffer (#1407). The caller removes the view afterwards.
+    pub fn release_memory(&mut self, ctx: &mut ViewContext<Self>) {
+        self.editor
+            .update(ctx, |editor, ctx| editor.release_memory(ctx));
+    }
+
     pub fn reset_with_state(&mut self, state: InitialBufferState, ctx: &mut ViewContext<Self>) {
         self.base_content_version = Some(state.version);
         self.editor
@@ -814,20 +832,6 @@ impl LocalCodeEditorView {
         self
     }
 
-    /// Adds the TabConfig footer to the editor view if the file is a tab config TOML.
-    /// Since LSP was removed, normal source files no longer render a footer.
-    /// Sets the find references card provider on the underlying editor.
-    pub(crate) fn with_find_references_provider(
-        self,
-        provider: impl ShowFindReferencesCardProvider,
-        ctx: &mut ViewContext<Self>,
-    ) -> Self {
-        self.editor.update(ctx, |editor, _ctx| {
-            editor.set_show_find_references_provider(provider);
-        });
-        self
-    }
-
     /// Adds the LSP status footer to the editor view.
     pub(crate) fn add_footer(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(path) = self.file_path() {
@@ -861,10 +865,6 @@ impl LocalCodeEditorView {
                         let _ = server.manual_start(ctx);
                     });
                 }
-                CodeFooterViewEvent::RestartAllServers { .. }
-                | CodeFooterViewEvent::StopAllServers { .. }
-                | CodeFooterViewEvent::StartAllServers { .. }
-                | CodeFooterViewEvent::ManageServers => {}
             });
 
             // Subscribe to PersistedWorkspace events for LSP installation completion
@@ -1329,7 +1329,6 @@ impl LocalCodeEditorView {
         });
         // Don't notify here - the card should only show on cmd-click
     }
-
 
     /// Helper function to compute card positioning for overlays at a given offset.
     /// Positions the card above the offset if there's space, otherwise below.
@@ -2586,14 +2585,4 @@ pub fn render_unsaved_circle_with_tooltip(
         }
     })
     .finish()
-}
-
-/// Provider for determining find references card visibility based on scroll state.
-#[derive(Debug)]
-pub struct ShowFindReferencesCard {
-    pub editor_window_id: WindowId,
-    /// Optional: position ID of parent scrollable container (e.g., code review list).
-    /// If None, card is in standalone LocalCodeEditorView - visibility is determined
-    /// by whether the anchor gutter element is rendered (cached position exists).
-    pub parent_scrollable_position_id: Option<String>,
 }

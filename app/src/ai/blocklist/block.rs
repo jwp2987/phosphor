@@ -15,9 +15,6 @@ pub mod view_impl;
 
 pub use pending_user_query_block::{PendingUserQueryBlock, PendingUserQueryBlockEvent};
 
-#[cfg(feature = "agent_mode_debug")]
-use self::code_diff_view::FileDiff;
-use crate::ai::agent::redaction::redact_secrets;
 use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::PassiveSuggestionTrigger;
@@ -33,7 +30,6 @@ use crate::ai::blocklist::inline_action::suggested_unit_tests::SuggestedUnitTest
 use crate::ai::blocklist::BlocklistAIContextEvent;
 use crate::ai::blocklist::BlocklistAIContextModel;
 use crate::ai::blocklist::SuggestionDismissButtonTheme;
-#[cfg(not(target_family = "wasm"))]
 use repo_metadata::repositories::DetectedRepositories;
 
 #[cfg(feature = "local_fs")]
@@ -104,7 +100,6 @@ use crate::view_components::action_button::ButtonSize;
 use crate::view_components::action_button::KeystrokeSource;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::Appearance;
-use crate::LLMPreferences;
 use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
 use pathfinder_geometry::vector::vec2f;
@@ -205,7 +200,6 @@ use crate::code_review::comments::{
     CommentId, CommentOrigin,
 };
 use crate::code_review::CodeReviewTelemetryEvent;
-use crate::PrivacySettings;
 use crate::{
     ai::agent::{AIAgentInput, ServerOutputId},
     send_telemetry_from_ctx,
@@ -221,7 +215,6 @@ use super::{
     inline_action::code_diff_view::{CodeDiffState, CodeDiffView, CodeDiffViewEvent},
     inline_action::requested_command_attribution::is_command_copied_from_document,
     permissions::is_agent_mode_autonomy_allowed,
-    telemetry_banner::should_collect_ai_ugc_telemetry,
     BlocklistAIActionModel, BlocklistAIController, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, BlocklistAIPermissions,
 };
@@ -234,6 +227,10 @@ const DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT: &str = "PendingAIRequestedEdits"
 
 const AUTO_EXPAND_REQUESTED_COMMAND_DELAY: std::time::Duration =
     std::time::Duration::from_millis(3000);
+
+/// How often a block in a hidden tab re-renders for streamed output; see
+/// [`AIBlock::notify_output_updated`].
+const HIDDEN_OUTPUT_RENDER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 pub const RICH_CONTENT_SECRET_FIRST_CHAR_POSITION_ID: &str =
     "ai_block:rich_content_secret_first_char_position";
@@ -453,6 +450,39 @@ pub struct DirectoryContext {
 #[derive(Debug)]
 pub(crate) struct RequestedEdit {
     view: ViewHandle<CodeDiffView>,
+}
+
+/// The hint shown on a pending approval card after an Enter on an empty prompt focused it, so the
+/// user knows a second Enter accepts (#1290). It records which action the Enter focused and the
+/// verb for that card; it shows only while that action is still the pending one, and the AI block
+/// clears it when focus leaves the card. Keys are unchanged: this only describes the card's own
+/// Enter binding.
+#[derive(Debug, Default)]
+pub(crate) struct EmptyEnterHint {
+    focused: Option<(AIAgentActionId, &'static str)>,
+}
+
+impl EmptyEnterHint {
+    pub(crate) fn show(&mut self, action_id: AIAgentActionId, verb: &'static str) {
+        self.focused = Some((action_id, verb));
+    }
+
+    /// Turns the hint off; returns whether it was on (so the caller knows to repaint).
+    pub(crate) fn clear(&mut self) -> bool {
+        self.focused.take().is_some()
+    }
+
+    /// The hint for the card of `action_id`, or `None` unless the Enter focused this card and it
+    /// is still the pending action (an approved, rejected or superseded card shows nothing).
+    pub(crate) fn text_for(
+        &self,
+        action_id: &AIAgentActionId,
+        pending_action_id: Option<&AIAgentActionId>,
+    ) -> Option<String> {
+        let (focused_id, verb) = self.focused.as_ref()?;
+        (focused_id == action_id && pending_action_id == Some(action_id))
+            .then(|| format!("Press Enter again to {verb}"))
+    }
 }
 
 impl RequestedEdit {
@@ -933,6 +963,9 @@ pub struct AIBlock {
 
     /// Map from a requested MCP tool call action ID to its view handle and status.
     requested_mcp_tools: HashMap<AIAgentActionId, RequestedCommand>,
+    /// "Press Enter again to ..." hint under the pending approval card, shown after an Enter on an
+    /// empty prompt moved focus to it (#1290).
+    empty_enter_hint: EmptyEnterHint,
 
     /// Map from a requested edit action ID to its view handle and status.
     /// Uses IndexMap to preserve insertion order for correct revert ordering.
@@ -962,6 +995,10 @@ pub struct AIBlock {
 
     time_to_first_token: OnceCell<Duration>,
     time_to_last_token: Option<Duration>,
+
+    /// Whether a re-render for streamed output is already scheduled while this block's tab is
+    /// hidden; see [`Self::notify_output_updated`].
+    hidden_output_render_pending: bool,
 
     /// The number of blocks that were attached as context to this AI block's query.
     num_attached_context_blocks: usize,
@@ -1420,6 +1457,7 @@ impl AIBlock {
             state_handles: Default::default(),
             time_to_first_token: OnceCell::new(),
             time_to_last_token: None,
+            hidden_output_render_pending: false,
             num_attached_context_blocks,
             has_attached_context_selected_text,
             finish_reason: None,
@@ -1430,6 +1468,7 @@ impl AIBlock {
             code_editor_views: Default::default(),
             requested_commands: Default::default(),
             requested_mcp_tools: Default::default(),
+            empty_enter_hint: Default::default(),
             requested_edits: Default::default(),
             todo_list_states: Default::default(),
             comment_states,
@@ -1772,10 +1811,6 @@ impl AIBlock {
         ctx.notify();
     }
 
-    pub fn contains_actions(&self) -> bool {
-        !self.requested_action_ids.is_empty()
-    }
-
     pub fn contains_action(&self, action_id: &AIAgentActionId) -> bool {
         self.requested_action_ids.contains(action_id)
     }
@@ -1892,7 +1927,28 @@ impl AIBlock {
             }
         }
         ctx.emit(AIBlockEvent::AIOutputUpdated);
-        ctx.notify();
+        self.notify_output_updated(ctx);
+    }
+
+    /// Re-renders this block for new output. A block whose tab is hidden is re-rendered at most
+    /// once per [`HIDDEN_OUTPUT_RENDER_INTERVAL`] rather than once per streamed delta: nothing
+    /// shows it until its tab does, and a hidden view's notify is re-rendered eagerly all the same
+    /// (`Presenter::render_unmounted_updates`, #805), which for a streaming block is a markdown
+    /// relayout per delta on the main thread (#1282). The tab, when shown, lays out the element
+    /// from the last of these renders, at most that interval behind.
+    fn notify_output_updated(&mut self, ctx: &mut ViewContext<Self>) {
+        if ctx.is_view_reachable(ctx.window_id(), ctx.view_id()) {
+            ctx.notify();
+            return;
+        }
+        if self.hidden_output_render_pending {
+            return;
+        }
+        self.hidden_output_render_pending = true;
+        ctx.spawn(Timer::after(HIDDEN_OUTPUT_RENDER_INTERVAL), |me, _, ctx| {
+            me.hidden_output_render_pending = false;
+            ctx.notify();
+        });
     }
 
     fn handle_updated_output(&mut self, output: &AIAgentOutput, ctx: &mut ViewContext<Self>) {
@@ -3727,16 +3783,6 @@ impl AIBlock {
         }
     }
 
-    fn calculate_renderable_action_index(
-        &self,
-        target_action_id: &AIAgentActionId,
-        app: &AppContext,
-    ) -> Option<usize> {
-        let output = self.model.status(app).output_to_render()?;
-        let output = output.get();
-        output.calculate_action_index(target_action_id)
-    }
-
     fn handle_web_search_messages(
         &mut self,
         messages: &[AIAgentOutputMessage],
@@ -3936,21 +3982,12 @@ impl AIBlock {
         });
 
         let identifiers = view.as_ref(ctx).identifiers().clone();
-        let query = view.as_ref(ctx).query().unwrap_or_default();
 
-        let should_collect_ugc =
-            should_collect_ai_ugc_telemetry(ctx, PrivacySettings::as_ref(ctx).is_telemetry_enabled);
-        let redacted_query = if should_collect_ugc {
-            let mut redacted_query = query.clone();
-            redact_secrets(&mut redacted_query);
-            Some(redacted_query)
-        } else {
-            None
-        };
+        // The query text is never attached to telemetry (no UGC collection).
         send_telemetry_from_ctx!(
             TelemetryEvent::UnitTestSuggestionAccepted {
                 identifiers,
-                query: redacted_query,
+                query: None,
                 interaction_source,
             },
             ctx
@@ -4223,13 +4260,6 @@ impl AIBlock {
         Some(rich_content_link)
     }
 
-    /// `true` if the AI output in the block finished streaming.
-    /// Note that this is different from `is_finished` since user could still have pending
-    /// actions to execute.
-    pub fn is_ai_output_complete(&self, app: &AppContext) -> bool {
-        self.model.status(app).is_complete()
-    }
-
     /// Returns `true` if the block contains any actions that are blocked on user confirmation.
     pub fn is_blocked_on_user_confirmation(&self, app: &AppContext) -> bool {
         self.requested_action_ids
@@ -4277,6 +4307,20 @@ impl AIBlock {
             .map(|view| view.id())
             .filter(|id| Some(*id) != pending)
             .collect()
+    }
+
+    /// Whether `view_id` is one of [`Self::settled_action_card_view_ids`], without allocating.
+    /// The id comparison runs first so the common miss costs one comparison per card.
+    pub fn is_settled_action_card(&self, view_id: EntityId, app: &AppContext) -> bool {
+        self.requested_commands
+            .values()
+            .chain(self.requested_mcp_tools.values())
+            .map(|card| &card.view)
+            .filter(|view| view.id() == view_id)
+            .any(|view| {
+                !view.as_ref(app).is_editing()
+                    && Some(view_id) != self.pending_command_card_view_id(app)
+            })
     }
 
     /// Returns the server output ID for this AI block, if available.
@@ -4599,6 +4643,37 @@ impl AIBlock {
         } else {
             // Else, delegate focus back to the terminal view.
             ctx.emit(AIBlockEvent::FocusTerminal);
+        }
+    }
+
+    /// Focuses the pending approval card for an Enter on an empty prompt and, when that card is a
+    /// command, MCP tool or file edit, shows the "Press Enter again" hint on it (#1290).
+    pub fn focus_pending_action_for_empty_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.focus_subview_if_necessary(ctx) {
+            return;
+        }
+        // Set after the focus change so the blur of whatever held focus cannot clear it.
+        let Some(action) = self.action_model.as_ref(ctx).get_pending_action(ctx) else {
+            return;
+        };
+        let id = action.id.clone();
+        let verb = if self.requested_edits.contains_key(&id) {
+            "apply"
+        } else if self.requested_mcp_tools.contains_key(&id) {
+            "approve"
+        } else if self.requested_commands.contains_key(&id) {
+            "run"
+        } else {
+            return;
+        };
+        self.empty_enter_hint.show(id, verb);
+        ctx.notify();
+    }
+
+    /// Turns the empty-Enter hint off (focus left the card); repaints only if it was showing.
+    pub fn clear_empty_enter_hint(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.empty_enter_hint.clear() {
+            ctx.notify();
         }
     }
 
@@ -5214,35 +5289,8 @@ impl AIBlock {
             .find(|view| !view.as_ref(app).is_hidden())
     }
 
-    /// Inspects the state of the AI output stream and determines if we are currently at a point where
-    /// we should render the floating AI control panel. This is purely a UX decision.
-    pub fn should_show_ai_control_panel(&self, app: &AppContext) -> bool {
-        // Returns true if we're not blocked on user input at this moment.
-        // A stream of regular text output is not blocking. Generating a command is not blocking. Generating a code
-        // diff is not blocking. In those cases, we return true. Waiting for a user to accept a requested command
-        // is blocking. So is waiting for them to accept a file read. In those cases, we return false since the action
-        // takes responsiblity for showing a cancel option.
-        self.model
-            .status(app)
-            .output_to_render()
-            .is_none_or(|output| {
-                output.get().actions().last().is_none_or(|action| {
-                    let is_streaming = self.model.status(app).is_streaming();
-                    let status = self.action_model.as_ref(app).get_action_status(&action.id);
-                    is_streaming || status.is_some_and(|status| status.is_running())
-                })
-            })
-    }
-
     pub fn saved_position_id(&self) -> String {
         get_rich_content_position_id(&self.view_id)
-    }
-
-    pub fn get_pending_action_type(&self, app: &AppContext) -> Option<AIAgentActionType> {
-        self.action_model
-            .as_ref(app)
-            .get_pending_action(app)
-            .map(|action| action.action.clone())
     }
 
     pub fn status(&self, app: &AppContext) -> AIBlockOutputStatus {
@@ -5259,42 +5307,6 @@ impl AIBlock {
                     .is_some_and(|status| status.is_running())
                     && requested_command.view.as_ref(app).is_header_expanded()
             })
-    }
-
-    pub fn output_model_display_name(&self, app: &AppContext) -> String {
-        let Some(base_model_id) = self.model.base_model(app) else {
-            log::warn!("No base model found for output model display name");
-            return String::default();
-        };
-
-        // Get the model name from the input metadata.
-        let mut model_name = LLMPreferences::as_ref(app)
-            .get_llm_info(base_model_id)
-            .map(|info| info.display_name.clone())
-            .unwrap_or_default();
-
-        // If the input model is "auto", always display that, otherwise use the actual output model if available.
-        if model_name != "auto" {
-            let model_id = self.model.model_id(app);
-            if let Some(model_id) = model_id {
-                if let Some(output_model_name) = LLMPreferences::as_ref(app)
-                    .get_llm_info(&model_id)
-                    .map(|info| info.display_name.clone())
-                {
-                    model_name = output_model_name;
-                }
-            }
-        }
-        model_name
-    }
-
-    #[cfg(feature = "agent_mode_debug")]
-    pub fn set_diffs(&self, diffs: Vec<FileDiff>, ctx: &mut ViewContext<Self>) {
-        if let Some(edit) = self.requested_edits.values().next() {
-            edit.view.update(ctx, |view, ctx| {
-                view.set_candidate_diffs(diffs, ctx);
-            });
-        }
     }
 
     /// Gets the prompt text for copying
@@ -5652,7 +5664,6 @@ impl AIBlock {
         canonical_cwd: Option<&Path>,
         ctx: &mut ViewContext<Self>,
     ) {
-        #[cfg(not(target_family = "wasm"))]
         let repo_path = self
             .current_working_directory
             .as_ref()

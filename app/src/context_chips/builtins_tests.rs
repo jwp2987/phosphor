@@ -166,3 +166,131 @@ fn test_shell_specific_chip_commands_fall_back_to_bash_for_nu() {
     let git = super::shell_git_branch();
     assert!(git.command().for_shell(ShellType::Nu).is_some());
 }
+
+#[test]
+fn direct_powershell_invocation_recognises_the_per_prompt_chip_commands() {
+    use super::{DirectInvocation, DirectPlan};
+    use crate::terminal::shell::ShellType;
+
+    let pwsh = |generator: crate::context_chips::context_chip::ShellCommandGenerator| {
+        generator
+            .command()
+            .for_shell(ShellType::PowerShell)
+            .expect("the chip supports PowerShell")
+            .to_owned()
+    };
+    let git = |args: &'static [&'static str]| DirectInvocation {
+        program: "git",
+        args,
+        env: &[("GIT_OPTIONAL_LOCKS", "0")],
+    };
+
+    // The chips' own PowerShell text maps to the programs they wrap (#1230).
+    assert_eq!(
+        super::direct_powershell_invocation(&pwsh(super::shell_git_line_changes())),
+        Some(DirectPlan::Single(git(&[
+            "-c",
+            "diff.autoRefreshIndex=false",
+            "diff",
+            "--shortstat",
+            "HEAD"
+        ])))
+    );
+    assert_eq!(
+        super::direct_powershell_invocation(&pwsh(super::kubernetes_current_context())),
+        Some(DirectPlan::Single(DirectInvocation {
+            program: "kubectl",
+            args: &["config", "current-context"],
+            env: &[],
+        }))
+    );
+    assert_eq!(
+        super::direct_powershell_invocation(&pwsh(super::shell_git_branch())),
+        Some(DirectPlan::FirstSuccess(
+            git(&["symbolic-ref", "--short", "HEAD"]),
+            git(&["rev-parse", "--short", "HEAD"]),
+        ))
+    );
+    assert_eq!(
+        super::direct_powershell_invocation(&pwsh(super::shell_other_git_branches())),
+        Some(DirectPlan::JoinedWithRecordSeparator(
+            git(&[
+                "--no-optional-locks",
+                "branch",
+                "--no-color",
+                "--sort=-committerdate"
+            ]),
+            git(&["--no-optional-locks", "worktree", "list", "--porcelain"]),
+        ))
+    );
+}
+
+#[test]
+fn direct_powershell_invocation_covers_the_command_correction_branch_list() {
+    use super::{DirectInvocation, DirectPlan};
+
+    // `Session::git_branches_for_command_corrections` runs this text at every prompt; before
+    // #1334 it was not recognised, so Windows started `powershell.exe -EncodedCommand` for it.
+    assert_eq!(
+        super::direct_powershell_invocation("git --no-optional-locks branch --no-color"),
+        Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "branch", "--no-color"],
+            env: &[("GIT_OPTIONAL_LOCKS", "0")],
+        }))
+    );
+    assert_eq!(
+        super::GIT_BRANCHES_FOR_CORRECTIONS_COMMAND,
+        "git --no-optional-locks branch --no-color"
+    );
+    // #1342: the completer's one alias listing runs without PowerShell too.
+    assert_eq!(
+        super::direct_powershell_invocation(super::GIT_ALIAS_LISTING_COMMAND),
+        Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "config", "--get-regexp", "^alias."],
+            env: &[("GIT_OPTIONAL_LOCKS", "0")],
+        }))
+    );
+}
+
+#[test]
+fn the_powershell_diff_stat_chip_text_is_unchanged() {
+    use crate::terminal::shell::ShellType;
+
+    // The direct-run recogniser compares against this text, so it must not drift from what
+    // `safe_git_powershell` always produced for the chip.
+    let generator = super::shell_git_line_changes();
+    let command = generator
+        .command()
+        .for_shell(ShellType::PowerShell)
+        .expect("PowerShell supported");
+    assert_eq!(
+        command,
+        super::safe_git_powershell("git -c diff.autoRefreshIndex=false diff --shortstat HEAD")
+    );
+}
+
+#[test]
+fn direct_powershell_invocation_leaves_every_other_command_to_the_shell() {
+    for command in [
+        "git status",
+        "kubectl config current-context; rm -rf x",
+        "kubectl config get-contexts",
+        // Anything that only looks like the chip command: wrapper missing, extra statements.
+        "git -c diff.autoRefreshIndex=false diff --shortstat HEAD",
+        "",
+    ] {
+        assert!(
+            super::direct_powershell_invocation(command).is_none(),
+            "{command:?} must still run in PowerShell"
+        );
+    }
+    // The branch-status chip has logic around the git calls and stays in PowerShell.
+    let status = super::shell_git_branch_status();
+    let text = status
+        .command()
+        .for_shell(crate::terminal::shell::ShellType::PowerShell)
+        .unwrap();
+    assert!(super::direct_powershell_invocation(text).is_none());
+}

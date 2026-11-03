@@ -113,6 +113,9 @@ impl PaneContent for FilePane {
         let pane_id = self.id();
         let file_view = self.file_view(ctx);
 
+        // Undo-close of a pane whose content was dropped while hidden: read the file again.
+        file_view.update(ctx, |view, ctx| view.restore_released_content(ctx));
+
         ctx.subscribe_to_view(
             &self.file_view(ctx),
             move |pane_group, _, event, ctx| match event {
@@ -171,6 +174,12 @@ impl PaneContent for FilePane {
         #[cfg(feature = "local_fs")]
         if matches!(detach_type, DetachType::Closed) {
             file_view.update(ctx, |view, ctx| view.release_file_model(ctx));
+        }
+        // Hidden for the undo-close grace period: the rendered document is the heavy part, and a
+        // read-only local file can be re-read on restore (#1340).
+        #[cfg(feature = "local_fs")]
+        if matches!(detach_type, DetachType::HiddenForClose) {
+            file_view.update(ctx, |view, ctx| view.release_for_undo_close(ctx));
         }
         #[cfg(not(feature = "local_fs"))]
         let _ = detach_type;

@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     ops::Deref,
+    sync::Arc,
 };
 
 use ai::skills::SkillPathOrigin;
@@ -125,7 +126,7 @@ pub(super) struct SubagentParams {
 
 #[derive(Debug, Clone)]
 struct ServerTask {
-    source: api::Task,
+    source: Arc<api::Task>,
     subagent_params: Option<SubagentParams>,
 }
 
@@ -254,7 +255,7 @@ impl Task {
         Self {
             id: TaskId(task_id_str),
             data: TaskImpl::Server(ServerTask {
-                source: api_task,
+                source: Arc::new(api_task),
                 subagent_params: Some(SubagentParams {
                     call: subagent_call,
                     tool_call_id,
@@ -281,7 +282,7 @@ impl Task {
                 }
                 self.id = TaskId::new(task.id.clone());
                 self.data = TaskImpl::Server(ServerTask {
-                    source: task,
+                    source: Arc::new(task),
                     subagent_params: None,
                 })
             }
@@ -303,7 +304,7 @@ impl Task {
 
                 self.id = TaskId::new(task.id.clone());
                 self.data = TaskImpl::Server(ServerTask {
-                    source: task,
+                    source: Arc::new(task),
                     subagent_params: Some(SubagentParams {
                         call: subagent_call,
                         tool_call_id: subagent_tool_call_id,
@@ -341,7 +342,7 @@ impl Task {
         Self {
             id: TaskId(task.id.clone()),
             data: TaskImpl::Server(ServerTask {
-                source: task,
+                source: Arc::new(task),
                 subagent_params: None,
             }),
             exchanges: restored_exchanges,
@@ -401,7 +402,7 @@ impl Task {
             exchanges: vec![new_exchange],
             streaming_text: HashMap::new(),
             data: TaskImpl::Server(ServerTask {
-                source: subtask,
+                source: Arc::new(subtask),
                 subagent_params: subagent_call_and_id
                     .map(|(call, tool_call_id)| SubagentParams { call, tool_call_id }),
             }),
@@ -435,7 +436,7 @@ impl Task {
             exchanges: restored_exchanges,
             streaming_text: HashMap::new(),
             data: TaskImpl::Server(ServerTask {
-                source: subtask,
+                source: Arc::new(subtask),
                 subagent_params: subagent_call_and_id
                     .map(|(call, tool_call_id)| SubagentParams { call, tool_call_id }),
             }),
@@ -461,7 +462,7 @@ impl Task {
             exchanges: vec![],
             streaming_text: HashMap::new(),
             data: TaskImpl::Server(ServerTask {
-                source: subtask,
+                source: Arc::new(subtask),
                 subagent_params: subagent_call_and_id
                     .map(|(call, tool_call_id)| SubagentParams { call, tool_call_id }),
             }),
@@ -647,6 +648,15 @@ impl Task {
         self.try_get_source().ok()
     }
 
+    /// The task's source shared by reference count, for persistence snapshots: cloning it is
+    /// O(1) instead of a deep copy of every message (#1137).
+    pub fn shared_source(&self) -> Option<Arc<api::Task>> {
+        match &self.data {
+            TaskImpl::Server(ServerTask { source, .. }) => Some(Arc::clone(source)),
+            _ => None,
+        }
+    }
+
     pub fn messages(&self) -> impl Iterator<Item = &api::Message> {
         self.source()
             .into_iter()
@@ -714,7 +724,8 @@ impl Task {
         let TaskImpl::Server(ServerTask { source, .. }) = &mut self.data else {
             return Err(UpdateTaskError::TaskNotInitialized);
         };
-        Ok(source)
+        // Copy-on-write: a persistence snapshot may still share this task (#1137).
+        Ok(Arc::make_mut(source))
     }
 
     pub(super) fn add_messages(

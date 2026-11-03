@@ -321,12 +321,27 @@ pub trait Handler {
     /// rather than hanging on orphaned multiplexed channels.
     fn exit_shell(&mut self, _data: ExitShellValue) {}
 
+    /// The shell's line editor is about to read a line (bash readline, zle, fish, reedline,
+    /// PSReadLine; #1390). Sent by the bootstrap, never by older ones.
+    fn line_editor_reading(&mut self, _data: LineEditorMarkerValue) {}
+
+    /// The shell is about to read a continuation line (bash PS2, zsh PS2; #1391).
+    fn continuation_prompt(&mut self, _data: LineEditorMarkerValue) {}
+
+    /// The PowerShell insert chord could not read its command pipe (#1581); the app retypes.
+    fn command_file_failed(&mut self, _data: CommandFileFailedValue) {}
+
     /// Callback for the terminal to when user executes `clear` command.
     fn clear(&mut self, _data: ClearValue) {}
 
     /// Callback for the terminal when the shell reports the current line editor
     /// input buffer (the reporting is itself triggered by Zap).
     fn input_buffer(&mut self, _data: InputBufferValue) {}
+
+    /// Callback for the setup-line marker OSC (`ESC ] 7771 ; <session id> ; <line index> BEL`) that
+    /// the typed subshell setup lines print once the shell has executed them: line `index` of the
+    /// setup identified by `token` was consumed.
+    fn setup_line_consumed(&mut self, _token: u64, _index: usize) {}
 
     /// Callback emitted during the initialization process for subshells with where the shell type
     /// is initiall not known.

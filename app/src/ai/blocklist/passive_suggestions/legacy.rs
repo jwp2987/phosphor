@@ -1,11 +1,8 @@
-#[cfg(not(target_family = "wasm"))]
 use command::r#async::Command;
-#[cfg(not(target_family = "wasm"))]
 use std::process::Stdio;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use super::static_prompt_suggestions::static_suggested_query;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::agent::PassiveSuggestionTrigger;
 use crate::ai::agent::{AIAgentExchangeId, CancellationReason};
 use crate::ai::blocklist::controller::{
@@ -16,9 +13,9 @@ use crate::ai::blocklist::{
 };
 use crate::ai::paths::host_native_absolute_path;
 use crate::ai::predict::generate_am_query_suggestions::{
-    GenerateAMQuerySuggestionsRequest, GenerateAMQuerySuggestionsResponse, Suggestion,
+    GenerateAMQuerySuggestionsResponse, Suggestion,
 };
-use crate::ai_assistant::execution_context::WarpAiExecutionContext;
+use crate::ai::execution_context::WarpAiExecutionContext;
 use crate::network::NetworkStatus;
 use crate::server::telemetry::PromptSuggestionFallbackReason;
 use crate::settings::AISettings;
@@ -239,7 +236,7 @@ impl PassiveSuggestionsModel {
         ctx: &mut ModelContext<Self>,
     ) {
         let block_id = block_completed
-            .serialized_block
+            .serialized_block_without_output
             .get_with(|compute| {
                 let model = self.terminal_model.lock();
                 compute(model.block_list())
@@ -323,9 +320,8 @@ impl PassiveSuggestionsModel {
             let (_, _) = (block_completed, ctx);
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
-            let serialized_block = block_completed.serialized_block.get_with(|compute| {
+            let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
                 let model = self.terminal_model.lock();
                 compute(model.block_list())
             });
@@ -608,7 +604,7 @@ fn should_generate_unit_test_suggestion(
         && command.starts_with("git")
         && command.contains("commit")
         && block_completed
-            .serialized_block
+            .serialized_block_without_output
             .get_with(|compute| {
                 let model = terminal_model.lock();
                 compute(model.block_list())
@@ -630,7 +626,7 @@ fn fetch_static_prompt_suggestion(
     terminal_model: &FairMutex<TerminalModel>,
 ) -> Option<AgentModePromptSuggestion> {
     let was_successful = block
-        .serialized_block
+        .serialized_block_without_output
         .get_with(|compute| {
             let model = terminal_model.lock();
             compute(model.block_list())
@@ -647,48 +643,6 @@ fn fetch_static_prompt_suggestion(
     static_suggested_query(command).map(AgentModePromptSuggestion::Success)
 }
 
-#[allow(dead_code)]
-fn build_prompt_suggestions_request(
-    block: &UserBlockCompleted,
-    execution_context: WarpAiExecutionContext,
-    terminal_model: &FairMutex<TerminalModel>,
-) -> Option<GenerateAMQuerySuggestionsRequest> {
-    let serialized_block = block.serialized_block.get_with(|compute| {
-        let model = terminal_model.lock();
-        compute(model.block_list())
-    });
-    let exit_code = serialized_block.exit_code;
-    let working_dir = serialized_block.pwd.as_ref();
-    let (processed_input, processed_output) = {
-        let model = terminal_model.lock();
-        let terminal_width = model.block_list().size().columns();
-        let Some(current_block) = model.block_list().block_with_id(&serialized_block.id) else {
-            log::error!(
-                "Failed to fetch prompt suggestions, could not find block with ID: {:?}",
-                serialized_block.id
-            );
-            return None;
-        };
-        current_block.get_block_content_summary(
-            terminal_width,
-            NUM_TOP_BLOCK_LINES,
-            NUM_BOTTOM_BLOCK_LINES,
-        )
-    };
-
-    let json_message = json!({
-        "command": processed_input,
-        "output": processed_output,
-        "exit_code": exit_code,
-        "pwd": working_dir,
-    });
-    Some(GenerateAMQuerySuggestionsRequest {
-        context_messages: vec![json_message.to_string()],
-        system_context: execution_context.to_json_string(),
-        exit_code: exit_code.value(),
-    })
-}
-
 /// Builds the BYOP path's prompt_suggestions request: extracts block info + system
 /// context, delegating to `active_ai::prompt_suggestions::dispatch` to render the
 /// prompt and resolve the BYOP config.
@@ -703,7 +657,7 @@ fn build_prompt_suggestions_byop_request(
 ) -> Option<crate::ai::agent_providers::active_ai::RenderedRequest> {
     use crate::ai::agent_providers::active_ai::{prompt_suggestions, BlockSnippet};
 
-    let serialized_block = block.serialized_block.get_with(|compute| {
+    let serialized_block = block.serialized_block_without_output.get_with(|compute| {
         let model = terminal_model.lock();
         compute(model.block_list())
     });

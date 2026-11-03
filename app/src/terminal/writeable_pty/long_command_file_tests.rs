@@ -2,36 +2,56 @@ use super::*;
 
 #[test]
 fn short_commands_are_typed() {
-    assert!(!needs_file(&"a".repeat(MAX_TYPED_BYTES)));
-    assert!(needs_file(&"a".repeat(MAX_TYPED_BYTES + 1)));
+    assert!(!needs_launcher(&"a".repeat(MAX_TYPED_BYTES)));
+    assert!(needs_launcher(&"a".repeat(MAX_TYPED_BYTES + 1)));
 }
 
 #[test]
-fn launcher_line_doubles_every_quote_powershell_accepts() {
-    assert_eq!(
-        launcher_line(r"C:\a b\x.ps1"),
-        r". (Warp-Run-LongCommand 'C:\a b\x.ps1')"
-    );
-    assert_eq!(
-        launcher_line("C:\\it's\\\u{2019}x.ps1"),
-        ". (Warp-Run-LongCommand 'C:\\it''s\\\u{2019}\u{2019}x.ps1')"
-    );
+fn the_launcher_line_carries_no_command_text_and_no_path() {
+    assert_eq!(LAUNCHER_LINE, ". (Warp-Run-LongCommand)");
+    assert!(!LAUNCHER_LINE.contains('\n') && !LAUNCHER_LINE.contains('\r'));
+    assert!(!LAUNCHER_LINE.contains('\'') && !LAUNCHER_LINE.contains('\\'));
+    // The bootstrap's history filter and the function name must stay in step with it.
+    let bootstrap = include_str!("../../../assets/bundled/bootstrap/pwsh.ps1");
+    assert!(bootstrap.contains("function global:Warp-Run-LongCommand"));
+    assert!(bootstrap.contains("$trimmed -eq '. (Warp-Run-LongCommand)'"));
 }
 
 #[test]
-fn a_long_command_becomes_a_short_line_and_a_file_with_the_full_text() {
-    for len in [8_000, 100_000, 1_000_000] {
-        let command = format!("echo '{}'", "a".repeat(len));
-        let (path, line) = write_command_file(&command).expect("temp file");
-        assert!(line.len() < 512, "launcher is {} bytes", line.len());
-        assert!(!line.contains('\n') && !line.contains('\r'));
-        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
-        assert!(name.starts_with(FILE_PREFIX) && name.ends_with(".ps1"));
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF]);
-        assert_eq!(&bytes[3..], command.as_bytes());
-        let kept = path.to_path_buf();
-        drop(path);
-        assert!(!kept.exists(), "the file is removed when dropped");
-    }
+fn the_bootstrap_never_touches_the_disk_for_a_long_command() {
+    let bootstrap = include_str!("../../../assets/bundled/bootstrap/pwsh.ps1");
+    let start = bootstrap
+        .find("function global:Warp-Run-LongCommand")
+        .unwrap();
+    let end = bootstrap[start..].find("New-Module").unwrap();
+    let function = &bootstrap[start..start + end];
+    assert!(!function.contains("System.IO.File"));
+    assert!(!function.contains("StreamReader"));
+    assert!(function.contains("NamedPipeClientStream"));
+}
+
+#[test]
+fn only_plain_single_line_commands_are_inserted_via_the_pipe() {
+    assert!(can_insert_via_pipe("Get-ChildItem -Recurse"));
+    assert!(can_insert_via_pipe("echo \u{e9}"));
+    assert!(!can_insert_via_pipe(""));
+    assert!(!can_insert_via_pipe("a\nb"));
+    assert!(!can_insert_via_pipe("a\r\nb"));
+    assert!(!can_insert_via_pipe("a\tb"));
+    assert!(!can_insert_via_pipe("a\x1bb"));
+    assert!(can_insert_via_pipe(&"a".repeat(MAX_TYPED_BYTES)));
+    assert!(!can_insert_via_pipe(&"a".repeat(MAX_TYPED_BYTES + 1)));
+}
+
+#[test]
+fn the_kill_switch_is_off_only_for_zero_under_either_name() {
+    assert!(fast_insert_enabled_for(None, None));
+    assert!(fast_insert_enabled_for(Some("1"), None));
+    assert!(fast_insert_enabled_for(Some(""), Some("")));
+    assert!(!fast_insert_enabled_for(Some("0"), None));
+    assert!(!fast_insert_enabled_for(Some(" 0 "), None));
+    // The old name keeps working, and either one is enough to turn it off.
+    assert!(!fast_insert_enabled_for(None, Some("0")));
+    assert!(!fast_insert_enabled_for(Some("1"), Some("0")));
+    assert!(!fast_insert_enabled_for(Some("0"), Some("1")));
 }

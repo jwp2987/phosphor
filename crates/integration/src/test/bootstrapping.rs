@@ -120,7 +120,7 @@ pub fn test_paste_and_type_characters_before_bootstrap() -> Builder {
                 .add_assertion(|app, _| {
                     app.update(|app| {
                         async_assert_eq!(
-                            app.clipboard().read().plain_text,
+                            warpui::clipboard::read_full_blocking(app.clipboard()).plain_text,
                             String::from("this is the pasted text"),
                             "Clipboard should be populated",
                         )

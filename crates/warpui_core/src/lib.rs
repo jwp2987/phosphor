@@ -19,15 +19,19 @@ pub mod input_order;
 pub mod integration;
 pub mod keymap;
 pub mod modals;
+pub mod multi_click;
 pub mod notification;
+pub mod pane_key;
 pub mod platform;
 pub mod prelude;
 pub mod presenter;
+pub mod profiling;
 mod report_error;
 pub mod rendering;
 #[cfg(feature = "tui")]
 pub mod runtime;
 pub mod scene;
+pub mod sync_shim;
 #[cfg(test)]
 mod test;
 pub mod text;
@@ -51,7 +55,7 @@ pub use pathfinder_geometry as geometry;
 pub use presenter::{
     AfterLayoutContext, EventContext, LayoutContext, PaintContext, Presenter, SizeConstraint,
 };
-pub use scene::{ClipBounds, Scene};
+pub use scene::{ClipBounds, LayerInsertionPoint, Scene};
 pub use zoom::ZoomFactor;
 
 use pathfinder_color::ColorU;

@@ -1,0 +1,90 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        TaskList(
+            FormattedTaskList {
+                complete: false,
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "open task",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        TaskList(
+            FormattedTaskList {
+                complete: true,
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "done task",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        TaskList(
+            FormattedTaskList {
+                complete: true,
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "done upper",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        TaskList(
+            FormattedTaskList {
+                complete: false,
+                indent_level: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "nested open",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        TaskList(
+            FormattedTaskList {
+                complete: true,
+                indent_level: 1,
+                text: [
+                    FormattedTextFragment {
+                        text: "nested done",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "not a task",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+        UnorderedList(
+            FormattedIndentTextInline {
+                indent_level: 0,
+                text: [
+                    FormattedTextFragment {
+                        text: "[] missing space",
+                        styles: PlainText,
+                    },
+                ],
+            },
+        ),
+    ],
+}

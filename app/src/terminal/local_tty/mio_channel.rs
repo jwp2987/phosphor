@@ -1,10 +1,14 @@
 pub use std::sync::mpsc::SendError;
 use std::{
     io,
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
 };
 
-use mio::{event, Token, Waker};
+use mio::{Token, Waker, event};
 
 /// Create a [`Sender`] and [`Receiver`] pair, for sending messages into a
 /// [`mio`]-managed event loop.
@@ -16,12 +20,15 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
         needs_wake_on_register: false,
     }));
 
+    let pending = Arc::new(AtomicUsize::new(0));
+
     (
         Sender {
             state: state.clone(),
             tx,
+            pending: pending.clone(),
         },
-        Receiver { state, rx },
+        Receiver { state, rx, pending },
     )
 }
 
@@ -33,12 +40,26 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 pub struct Receiver<T> {
     state: Arc<Mutex<State>>,
     rx: mpsc::Receiver<T>,
+    /// Messages sent and not yet received (see [`Receiver::has_pending`]).
+    pending: Arc<AtomicUsize>,
 }
 
 impl<T> Receiver<T> {
     /// Try to receive a value. It works just like [`mpsc::Receiver::try_recv`].
     pub fn try_recv(&self) -> Result<T, mpsc::TryRecvError> {
-        self.rx.try_recv()
+        let received = self.rx.try_recv();
+        if received.is_ok() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+        }
+        received
+    }
+
+    /// Whether a message has been sent that [`Receiver::try_recv`] has not yet returned. Lets a
+    /// loop that is busy elsewhere notice, with one atomic load, that something is waiting for it
+    /// (`mpsc::Receiver` has no non-consuming peek). May report `true` for an instant before the
+    /// message is visible to `try_recv`, never `false` while one is queued.
+    pub fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) > 0
     }
 }
 
@@ -83,6 +104,7 @@ impl<T> event::Source for Receiver<T> {
 pub struct Sender<T> {
     state: Arc<Mutex<State>>,
     tx: mpsc::Sender<T>,
+    pending: Arc<AtomicUsize>,
 }
 
 impl<T> Sender<T> {
@@ -94,7 +116,12 @@ impl<T> Sender<T> {
     /// Note that I/O errors from waking up the [`mio::poll::Poll`] are
     /// swallowed.
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
-        self.tx.send(t)?;
+        // Counted before the send so `Receiver::has_pending` never misses a queued message.
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        if let Err(err) = self.tx.send(t) {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+            return Err(err);
+        }
 
         let mut state = self.state.lock().unwrap();
         if let Some(waker) = &mut state.waker {
@@ -112,6 +139,7 @@ impl<T> Clone for Sender<T> {
         Self {
             state: self.state.clone(),
             tx: self.tx.clone(),
+            pending: self.pending.clone(),
         }
     }
 }
@@ -125,3 +153,7 @@ struct State {
     /// with a [`mio::Registry`].
     needs_wake_on_register: bool,
 }
+
+#[cfg(test)]
+#[path = "mio_channel_tests.rs"]
+mod tests;

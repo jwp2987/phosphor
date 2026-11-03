@@ -1,8 +1,11 @@
 pub mod quad;
 pub mod uniforms;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
+use std::time::Duration;
+
+use instant::Instant;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -69,6 +72,9 @@ pub struct Resources {
     pub supported_backends: Vec<wgpu::Backend>,
     uniforms: uniforms::Uniforms,
     quad: quad::Resources,
+    /// How long the most recent [`Self::get_surface_texture`] call took, success or not. Read by
+    /// the event loop for slow-frame diagnostics.
+    last_acquire_wait: Cell<Duration>,
 }
 
 impl Resources {
@@ -111,6 +117,15 @@ impl Resources {
                 adapter_info.name,
             );
 
+            log::info!(
+                "{}",
+                surface_config_summary(
+                    &adapter_info,
+                    &surface_config,
+                    &surface.get_capabilities(&adapter).present_modes,
+                )
+            );
+
             on_gpu_device_selected(device_info_from_adapter_info(adapter_info));
 
             let uniforms = uniforms::Uniforms::new(&device);
@@ -134,8 +149,14 @@ impl Resources {
                 supported_backends: supported_backends.into_iter().collect(),
                 uniforms,
                 quad,
+                last_acquire_wait: Cell::new(Duration::ZERO),
             })
         })
+    }
+
+    /// How long the most recent surface texture acquire took.
+    pub fn last_acquire_wait(&self) -> Duration {
+        self.last_acquire_wait.get()
     }
 
     pub fn uniform_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -158,11 +179,7 @@ impl Resources {
             let mut surface_config = self.surface_config.borrow_mut();
             surface_config.width = size.x() as u32;
             surface_config.height = size.y() as u32;
-            block_on(configure_surface(
-                &self.surface,
-                &self.device,
-                &surface_config,
-            ))
+            configure_surface_bounded(&self.surface, &self.device, &surface_config)
         } else {
             Ok(())
         }
@@ -177,23 +194,35 @@ impl Resources {
             ..
         } = self;
 
-        let error = match get_surface_texture(surface) {
+        let acquire_start = Instant::now();
+        let result = get_surface_texture(surface);
+        self.last_acquire_wait.set(acquire_start.elapsed());
+        let error = match result {
             Ok(texture) => return Ok(texture),
             Err(error) => error,
         };
 
-        log::warn!("Encountered error while getting the next swap chain texture: {error:#}");
+        // Timeouts and occlusion are routine and can repeat while a window is hidden; the event
+        // loop retries them and logs a rate-limited summary, so don't warn on every one.
+        if matches!(
+            error,
+            GetSurfaceTextureError::Timeout | GetSurfaceTextureError::Occluded
+        ) {
+            log::debug!("Could not get the next swap chain texture: {error:#}");
+        } else {
+            log::warn!("Encountered error while getting the next swap chain texture: {error:#}");
+        }
         match error {
             GetSurfaceTextureError::Timeout
             | GetSurfaceTextureError::Validation
             | GetSurfaceTextureError::Occluded
             | GetSurfaceTextureError::ConfigurationError(_) => {
                 // Skip this frame and hope it resolves itself by the next one.
-                log::info!("Skipping rendering the current frame...");
+                log::debug!("Skipping rendering the current frame...");
                 Err(error)
             }
             GetSurfaceTextureError::Lost | GetSurfaceTextureError::Outdated => {
-                block_on(configure_surface(surface, device, &surface_config.borrow()))
+                configure_surface_bounded(surface, device, &surface_config.borrow())
                     .map_err(GetSurfaceTextureError::ConfigurationError)?;
 
                 match get_surface_texture(surface) {
@@ -244,7 +273,6 @@ fn device_info_from_adapter_info(adapter_info: wgpu::AdapterInfo) -> GPUDeviceIn
 /// This is inspired by the implementation of `request_adapter` in `wgpu_core`:
 /// https://github.com/gfx-rs/wgpu/blob/badb3c88ea29acb159d333e2f60b1cc305bbd512/wgpu-core/src/instance.rs#L857
 #[allow(clippy::too_many_arguments)]
-#[cfg_attr(target_family = "wasm", allow(unused_variables))]
 async fn select_adapter(
     instance: &wgpu::Instance,
     surface: &wgpu::Surface<'static>,
@@ -261,27 +289,7 @@ async fn select_adapter(
     SurfaceConfiguration,
     HashSet<wgpu::Backend>,
 )> {
-    cfg_if::cfg_if! {
-        if #[cfg(target_family = "wasm")] {
-            let power_preference = match gpu_power_preference {
-                GPUPowerPreference::LowPower => wgpu::PowerPreference::LowPower,
-                GPUPowerPreference::HighPerformance => wgpu::PowerPreference::HighPerformance,
-            };
-            let request_adapter_options = wgpu::RequestAdapterOptions {
-                power_preference,
-                force_fallback_adapter: false,
-                compatible_surface: Some(surface),
-            };
-
-            let adapter = instance.request_adapter(&request_adapter_options).await.ok()?;
-            let adapters = [adapter].into_iter();
-        } else {
-            let adapters = instance
-                .enumerate_adapters(backends)
-                .await
-                .into_iter();
-            }
-    }
+    let adapters = instance.enumerate_adapters(backends).await.into_iter();
 
     log::info!("Enabled wgpu backends: {backends:?}");
 
@@ -888,6 +896,13 @@ fn create_surface_config(
     // cause visual tearing on present, but we're ok with paying that cost to
     // improve responsiveness.
     config.present_mode = PresentMode::AutoNoVsync;
+    // Diagnostic override for latency experiments (jwp2987/phosphor#1279); unset keeps the above.
+    if let Some(mode) = present_mode_override(
+        std::env::var("PHOSPHOR_PRESENT_MODE").ok().as_deref(),
+        &caps.present_modes,
+    ) {
+        config.present_mode = mode;
+    }
 
     // Explicitly request a non-opaque alpha compositing mode, if available.
     // Without this, transparent surfaces don't work on native Wayland.
@@ -908,7 +923,90 @@ fn create_surface_config(
         config.alpha_mode = CompositeAlphaMode::Auto;
     }
 
+    if let Some(latency) = desired_frame_latency(adapter.get_info().backend) {
+        config.desired_maximum_frame_latency = latency;
+    }
+    if let Some(latency) =
+        frame_latency_override(std::env::var("PHOSPHOR_FRAME_LATENCY").ok().as_deref())
+    {
+        config.desired_maximum_frame_latency = latency;
+    }
+
     Some(config)
+}
+
+/// The present mode wgpu-core resolves `AutoNoVsync` to: the first of Immediate, Mailbox, Fifo
+/// that the surface supports. wgpu does not report the resolved mode, so we derive it the same
+/// way to make it visible in the log.
+fn resolve_auto_no_vsync(supported: &[PresentMode]) -> PresentMode {
+    [
+        PresentMode::Immediate,
+        PresentMode::Mailbox,
+        PresentMode::Fifo,
+    ]
+    .into_iter()
+    .find(|mode| supported.contains(mode))
+    .unwrap_or(PresentMode::Fifo)
+}
+
+/// `PHOSPHOR_PRESENT_MODE` (immediate, mailbox, fifo, auto_vsync, auto_no_vsync): a present mode to
+/// use instead of `AutoNoVsync`. A mode the surface does not support is ignored, as is an unknown
+/// value, so a typo can never leave the window without a surface.
+fn present_mode_override(value: Option<&str>, supported: &[PresentMode]) -> Option<PresentMode> {
+    let mode = match value?.trim().to_ascii_lowercase().as_str() {
+        "immediate" => PresentMode::Immediate,
+        "mailbox" => PresentMode::Mailbox,
+        "fifo" => PresentMode::Fifo,
+        "auto_vsync" => return Some(PresentMode::AutoVsync),
+        "auto_no_vsync" => return Some(PresentMode::AutoNoVsync),
+        _ => return None,
+    };
+    supported.contains(&mode).then_some(mode)
+}
+
+/// `PHOSPHOR_FRAME_LATENCY` (1..=3): `desired_maximum_frame_latency` to use instead of the
+/// per-backend default.
+fn frame_latency_override(value: Option<&str>) -> Option<u32> {
+    value?.trim().parse().ok().filter(|n| (1..=3).contains(n))
+}
+
+/// One INFO line describing how a surface was configured, for diagnosing input latency reports.
+fn surface_config_summary(
+    adapter_info: &wgpu::AdapterInfo,
+    config: &SurfaceConfiguration,
+    supported_present_modes: &[PresentMode],
+) -> String {
+    let present_mode = match config.present_mode {
+        PresentMode::AutoNoVsync => format!(
+            "{:?} (via AutoNoVsync, supported: {supported_present_modes:?})",
+            resolve_auto_no_vsync(supported_present_modes)
+        ),
+        mode => format!("{mode:?}"),
+    };
+    format!(
+        "Surface configured: backend={:?} adapter=\"{}\" present_mode={present_mode} \
+         frame_latency={} alpha_mode={:?} software_renderer={}",
+        adapter_info.backend,
+        adapter_info.name,
+        config.desired_maximum_frame_latency,
+        config.alpha_mode,
+        adapter_info.device_type == DeviceType::Cpu,
+    )
+}
+
+/// The `desired_maximum_frame_latency` to override wgpu's default of 2 with, if any.
+///
+/// DX12 flip-model swapchains block `get_current_texture` on a frame-latency waitable object
+/// until fewer than this many frames are queued, so with 2 a typed key can sit behind a queued
+/// frame (up to one extra refresh) while the main thread is blocked and not handling input.
+/// 1 is what Windows Terminal uses. Vulkan, GL and Metal keep wgpu's default: on Vulkan the
+/// value sets the image count (a Fifo-only compositor with 2 images serialises CPU and GPU), and
+/// GL ignores it.
+fn desired_frame_latency(backend: Backend) -> Option<u32> {
+    match backend {
+        Backend::Dx12 => Some(1),
+        _ => None,
+    }
 }
 
 #[derive(Error, Debug)]
@@ -970,6 +1068,62 @@ async fn configure_surface(
             config: surface_config.clone(),
         }),
         None => Ok(()),
+    }
+}
+
+/// Upper bound on how long the UI thread waits for the validation error scope of a surface
+/// reconfigure to resolve. The configure call itself has already been issued by then; the wait only
+/// collects a validation error, so on timeout we report success and let the next acquire surface
+/// any real problem (it returns `Lost`/`Outdated`/`Validation`).
+const CONFIGURE_SURFACE_WAIT: Duration = Duration::from_millis(100);
+
+fn configure_surface_bounded(
+    surface: &Surface<'_>,
+    device: &Device,
+    surface_config: &SurfaceConfiguration,
+) -> Result<(), SurfaceConfigureError> {
+    match block_on_bounded(
+        configure_surface(surface, device, surface_config),
+        CONFIGURE_SURFACE_WAIT,
+    ) {
+        Some(result) => result,
+        None => {
+            log::warn!(
+                "Timed out after {CONFIGURE_SURFACE_WAIT:?} waiting for surface reconfigure validation"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Drives `future` on the calling thread for at most `timeout`. Returns `None` if it did not
+/// complete in time (the future is dropped).
+fn block_on_bounded<T>(
+    future: impl std::future::Future<Output = T>,
+    timeout: Duration,
+) -> Option<T> {
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct ThreadWaker(std::thread::Thread);
+    impl Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return Some(value);
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        std::thread::park_timeout(deadline - now);
     }
 }
 

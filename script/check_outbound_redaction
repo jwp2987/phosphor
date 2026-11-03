@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Guard: every request that carries user content to a configured model provider goes through the
+# outbound-redaction choke point (#1469).
+#
+# With secret redaction on, agent_providers/outbound_redaction.rs scrubs the request just before it
+# is serialized. That only holds if no new wire path skips it. The wire senders are therefore
+# confined to the files below, each of which calls the redactor (checked here too); a new
+# `exec_chat` / `exec_chat_stream` / embeddings `.post(` / Exa `.post(` anywhere else fails.
+# To add a path: route it through outbound_redaction, then add the file here and to the table in
+# the outbound_redaction.rs module docs.
+#
+# Exit 0: clean. Exit 1: prints each problem.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+# file -> must mention this redaction entry point
+SENDERS=$(cat <<'LIST'
+app/src/ai/agent_providers/chat_stream.rs	outbound_redaction::redact_chat_request
+app/src/ai/agent_providers/oneshot.rs	outbound_redaction::redact_chat_request
+app/src/ai/agent_providers/embeddings.rs	outbound_redaction::redact_texts
+app/src/ai/agent_providers/tools/web_runtime.rs	outbound_redaction::redact_json_strings
+LIST
+)
+
+status=0
+allowed=$(printf '%s\n' "$SENDERS" | cut -f1)
+
+# 1. Wire calls outside the allowed files (tests, mocks and the genai fork are exempt).
+hits=$(grep -rnE '\.exec_chat(_stream)?\(' app/src crates --include=*.rs 2>/dev/null \
+    | grep -vE '(_tests?\.rs|/tests?/|/tests\.rs|integration_testing/)' \
+    | grep -vE ':[0-9]+:\s*//' )
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    f=${line%%:*}
+    if ! printf '%s\n' "$allowed" | grep -qx "$f"; then
+        echo "check_outbound_redaction: wire call outside the redaction choke point: $line"
+        status=1
+    fi
+done <<< "$hits"
+
+# 2. Raw HTTP posts inside agent_providers outside the allowed files (embeddings, exa, ...).
+posts=$(grep -rnE '\.post\(' app/src/ai/agent_providers --include=*.rs \
+    | grep -vE '(_tests?\.rs|/tests?/|/tests\.rs)' | grep -vE ':[0-9]+:\s*//' )
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    f=${line%%:*}
+    # chat_stream.rs/openai_compatible.rs posts are model-list / test-fixture probes (no user content).
+    case "$f" in
+        app/src/ai/agent_providers/chat_stream.rs|app/src/ai/agent_providers/openai_compatible.rs) continue ;;
+    esac
+    if ! printf '%s\n' "$allowed" | grep -qx "$f"; then
+        echo "check_outbound_redaction: HTTP post outside the redaction choke point: $line"
+        status=1
+    fi
+done <<< "$posts"
+
+# 3. Each allowed file still calls its redaction entry point.
+while IFS=$'\t' read -r f needle; do
+    [ -z "$f" ] && continue
+    grep -qF "$needle" "$f" || { echo "check_outbound_redaction: $f no longer calls $needle"; status=1; }
+done <<< "$SENDERS"
+
+[ $status -eq 0 ] && echo "check_outbound_redaction: ok"
+exit $status

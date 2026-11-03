@@ -29,7 +29,7 @@ fn a_one_line_write_to_an_interactive_shell_clears_the_pending_line() {
             pty_write_for_target_command(Some(command), &input, AIAgentPtyWriteMode::Raw);
         assert_eq!(mode, AIAgentPtyWriteMode::Line, "{command}");
         assert_eq!(
-            mode.decorate_bytes(bytes.to_vec(), false),
+            mode.decorate_bytes(bytes.to_vec(), true),
             b"\x01\x0becho unmanaged-ok\r",
             "{command}"
         );
@@ -877,6 +877,7 @@ fn pager_closed_note_is_appended_to_finished_output_only() {
         exit_code: 0.into(),
         start_ts: None,
         completed_ts: None,
+        interrupted: false,
     };
     let ActionResult::CommandFinished { output, .. } = with_pager_closed_note(finished) else {
         panic!("a finished command stays finished");
@@ -922,4 +923,194 @@ fn unwraps_nushell_in_band_generator_calls() {
     assert!(!command_starts_non_terminating_session(
         " warp_run_generator_command 42 r#'git status'#"
     ));
+}
+
+// #1129: a line over the tty line-mode limit is silently cut short on the way to `cat`; the
+// agent has to be told, since the bytes cannot be delivered exactly.
+#[test]
+fn a_line_over_the_line_mode_limit_gets_a_note() {
+    let mut input = b"short\n".to_vec();
+    input.extend(std::iter::repeat_n(b'a', MAX_LINE_MODE_LINE_BYTES + 1));
+    input.push(b'\n');
+    let note = long_line_write_note(&input).expect("a 1024-byte line must be flagged");
+    assert!(note.contains("1024"), "{note}");
+    assert!(note.contains("truncates"), "{note}");
+}
+
+#[test]
+fn lines_within_the_limit_get_no_note() {
+    // Many lines and a lot of data, none long: byte-exact through any tty.
+    let mut input = Vec::new();
+    for _ in 0..5000 {
+        input.extend(std::iter::repeat_n(b'a', MAX_LINE_MODE_LINE_BYTES));
+        input.extend_from_slice(b"\r\n");
+    }
+    assert_eq!(longest_line_bytes(&input), MAX_LINE_MODE_LINE_BYTES);
+    assert_eq!(long_line_write_note(&input), None);
+    assert_eq!(long_line_write_note(b""), None);
+}
+
+#[test]
+fn the_note_is_appended_to_a_snapshot() {
+    let snapshot = AIAgentActionResultType::WriteToLongRunningShellCommand(
+        WriteToLongRunningShellCommandResult::Snapshot {
+            block_id: "b".to_owned().into(),
+            grid_contents: "screen".to_owned(),
+            cursor: String::new(),
+            is_alt_screen_active: false,
+            is_preempted: false,
+        },
+    );
+    match with_long_line_note(snapshot, "NOTE: x") {
+        AIAgentActionResultType::WriteToLongRunningShellCommand(
+            WriteToLongRunningShellCommandResult::Snapshot { grid_contents, .. },
+        ) => assert_eq!(grid_contents, "screen\nNOTE: x"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A write to a command that had already exited gets the same `CommandFinished` as a write that
+/// landed just before the exit; the note is what tells the model its input went nowhere. Fails
+/// on the old code, which returned the bare output.
+#[test]
+fn a_write_to_a_finished_command_says_the_input_was_not_delivered() {
+    let noted = with_input_not_delivered_note("done\n".to_owned());
+    assert!(noted.starts_with("done\n["), "{noted}");
+    assert!(
+        noted.contains("already exited before this input was written"),
+        "{noted}"
+    );
+    let noted_without_newline = with_input_not_delivered_note("done".to_owned());
+    assert!(
+        noted_without_newline.starts_with("done\n["),
+        "{noted_without_newline}"
+    );
+    assert!(with_input_not_delivered_note(String::new()).starts_with('['));
+}
+
+/// #1278: cancelling a write / read / transfer action drops its senders, so its detached future
+/// resolves `Cancelled` at once instead of living to its timeout. Before, the senders stayed in
+/// the maps until the future finished on its own.
+#[test]
+fn cancelling_a_block_action_resolves_its_future_as_cancelled() {
+    App::test((), |mut app| async move {
+        let action_id = AIAgentActionId::from("write-to-lrc".to_owned());
+        let (executor, terminal_model, _interrupts) =
+            executor_with_unpreexeced_agent_command(&mut app, &action_id);
+        let block_id = terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .id()
+            .clone();
+        let selector = BlockSelector::Id(block_id);
+
+        // What the WriteToLongRunningShellCommand branch does.
+        let future = executor.update(&mut app, |executor, _| {
+            executor
+                .block_action_selectors
+                .insert(action_id.clone(), (selector.clone(), false));
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::Duration(Duration::from_secs(30)),
+            )
+        });
+
+        executor.update(&mut app, |executor, ctx| {
+            executor.cancel_execution(
+                &action_id,
+                Some(CancellationReason::FollowUpSubmitted {
+                    is_for_same_conversation: true,
+                }),
+                ctx,
+            );
+            assert!(executor.block_action_selectors.is_empty());
+            assert!(!executor.block_finished_senders.contains_key(&selector));
+        });
+
+        let result = future.await;
+        assert!(
+            matches!(result, ActionResult::Cancelled),
+            "a cancelled action's future must end as Cancelled, not wait out its 30 s delay"
+        );
+    });
+}
+
+/// #1365: a snapshot-capable model's waited command is watched for a stall through output
+/// wake-ups, not a polling tick. The watcher exists only for that delay kind, a burst of
+/// output coalesces into one signal, a finished future's watcher is pruned, and cancelling
+/// drops it so the future ends as `Cancelled`.
+#[test]
+fn stall_detection_is_driven_by_output_wakeups() {
+    App::test((), |mut app| async move {
+        let action_id = AIAgentActionId::from("waited".to_owned());
+        let (executor, terminal_model, _interrupts) =
+            executor_with_unpreexeced_agent_command(&mut app, &action_id);
+        let block_id = terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .id()
+            .clone();
+        let selector = BlockSelector::Id(block_id);
+
+        // Other delay kinds never register a watcher.
+        let plain = executor.update(&mut app, |executor, _| {
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::Duration(Duration::from_secs(30)),
+            )
+        });
+        executor.update(&mut app, |executor, _| {
+            assert!(!executor.has_output_watchers());
+        });
+        drop(plain);
+
+        let future = executor.update(&mut app, |executor, _| {
+            executor
+                .block_action_selectors
+                .insert(action_id.clone(), (selector.clone(), false));
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::OnCompletionOrStall {
+                    timeout: Duration::from_secs(30),
+                },
+            )
+        });
+        executor.update(&mut app, |executor, _| {
+            assert!(executor.has_output_watchers());
+            // A burst of output does not queue up or drop the watcher.
+            for _ in 0..100 {
+                executor.note_output();
+            }
+            assert!(executor.has_output_watchers());
+        });
+
+        executor.update(&mut app, |executor, ctx| {
+            executor.cancel_execution(
+                &action_id,
+                Some(CancellationReason::FollowUpSubmitted {
+                    is_for_same_conversation: true,
+                }),
+                ctx,
+            );
+            assert!(!executor.has_output_watchers());
+        });
+        assert!(matches!(future.await, ActionResult::Cancelled));
+
+        // A future dropped without finishing leaves a closed watcher; the next wake-up prunes it.
+        let abandoned = executor.update(&mut app, |executor, _| {
+            executor.action_result_future(
+                selector.clone(),
+                ActionResultDelay::OnCompletionOrStall {
+                    timeout: Duration::from_secs(30),
+                },
+            )
+        });
+        drop(abandoned);
+        executor.update(&mut app, |executor, _| {
+            executor.note_output();
+            assert!(!executor.has_output_watchers());
+        });
+    });
 }

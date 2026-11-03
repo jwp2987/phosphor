@@ -7,9 +7,9 @@ use futures::channel::oneshot;
 use futures_util::StreamExt;
 use settings::Setting as _;
 use uuid::Uuid;
-use warp_multi_agent_api::response_event;
 use warpui::{Entity, ModelContext};
 
+use super::project_rules_wait;
 use crate::{
     ai::agent::{
         api::{self, ConvertToAPITypeError},
@@ -92,15 +92,33 @@ pub(crate) fn set_retry_wait(
 
 /// Conversations that already have a countdown pulse chain running, so a retry and a resume
 /// that overlap share one chain instead of each starting their own.
+///
+/// The value is the chain's generation. A chain keeps going only while the registry still holds
+/// its own generation, so ending the wait ([`clear_retry_wait`]) releases the conversation even
+/// if the chain's next tick never runs (a spawn on a dropped model is cancelled): the entry can
+/// no longer stay behind and stop every later chain from starting (#1381, APP-R8).
 static PULSING_RETRY_WAITS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashSet<AIConversationId>>,
+    std::sync::Mutex<std::collections::HashMap<AIConversationId, u64>>,
 > = std::sync::LazyLock::new(Default::default);
+
+static NEXT_PULSE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Returns whether there was a wait to clear.
 pub(crate) fn clear_retry_wait(conversation_id: AIConversationId) -> bool {
-    RETRY_WAITS
+    let cleared = RETRY_WAITS
         .lock()
-        .is_ok_and(|mut waits| waits.remove(&conversation_id).is_some())
+        .is_ok_and(|mut waits| waits.remove(&conversation_id).is_some());
+    if cleared && let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
+        pulsing.remove(&conversation_id);
+    }
+    cleared
+}
+
+#[cfg(test)]
+fn retry_wait_pulse_running(conversation_id: AIConversationId) -> bool {
+    PULSING_RETRY_WAITS
+        .lock()
+        .is_ok_and(|pulsing| pulsing.contains_key(&conversation_id))
 }
 
 /// The wait `conversation_id` is in the middle of, with the time left (rounded up to whole
@@ -138,28 +156,47 @@ pub(crate) fn start_retry_wait_pulse(
     conversation_id: AIConversationId,
     ctx: &mut ModelContext<BlocklistAIHistoryModel>,
 ) {
-    let started = PULSING_RETRY_WAITS
-        .lock()
-        .is_ok_and(|mut pulsing| pulsing.insert(conversation_id));
-    if started {
-        retry_wait_pulse_tick(conversation_id, ctx);
+    let generation = PULSING_RETRY_WAITS.lock().ok().and_then(|mut pulsing| {
+        match pulsing.entry(conversation_id) {
+            std::collections::hash_map::Entry::Occupied(_) => None,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                let generation =
+                    NEXT_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                slot.insert(generation);
+                Some(generation)
+            }
+        }
+    });
+    if let Some(generation) = generation {
+        retry_wait_pulse_tick(conversation_id, generation, ctx);
     }
 }
 
 fn retry_wait_pulse_tick(
     conversation_id: AIConversationId,
+    generation: u64,
     ctx: &mut ModelContext<BlocklistAIHistoryModel>,
 ) {
+    // The wait was cleared (and maybe a newer chain started): this chain is done.
+    let owns_chain = PULSING_RETRY_WAITS
+        .lock()
+        .is_ok_and(|pulsing| pulsing.get(&conversation_id) == Some(&generation));
+    if !owns_chain {
+        return;
+    }
     // Wake the views observing the history model so they recompute the label.
     ctx.notify();
     if current_retry_wait(conversation_id).is_some() {
+        // Time itself is the requirement: the label counts down once a second.
         let _ = ctx.spawn(
             async move {
                 warpui::r#async::Timer::after(Duration::from_secs(1)).await;
             },
-            move |_, _, ctx| retry_wait_pulse_tick(conversation_id, ctx),
+            move |_, _, ctx| retry_wait_pulse_tick(conversation_id, generation, ctx),
         );
-    } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock() {
+    } else if let Ok(mut pulsing) = PULSING_RETRY_WAITS.lock()
+        && pulsing.get(&conversation_id) == Some(&generation)
+    {
         pulsing.remove(&conversation_id);
     }
 }
@@ -349,12 +386,20 @@ fn recovery_action(
 /// conversation, then handed to the spawn closure in one shot (ctx can't cross an
 /// await boundary).
 pub(super) struct PendingTitleGeneration {
+    /// Set when the title provider may send an API key: refreshed from the (by then loaded)
+    /// secrets in [`ResponseStream::take_pending_title_generation`].
+    key_provider_id: Option<String>,
     pub(super) input: crate::ai::agent_providers::chat_stream::TitleGenInput,
     pub(super) user_query: String,
     pub(super) task_id: String,
 }
 
 struct ByopDispatch {
+    /// The provider's id: its key is looked up under this in `AgentProviderSecrets`.
+    provider_id: String,
+    /// The secure-storage load had not landed when this was built and the provider may send a
+    /// key, so `api_key` is not trustworthy yet: the request waits for the load (#1368).
+    waits_for_keys: bool,
     base_url: String,
     api_key: String,
     model_id: String,
@@ -410,6 +455,11 @@ struct ByopDispatch {
 
 /// BYOP config dedicated to title generation (may share the same provider as the main base model, or may not).
 pub(crate) struct TitleGenParams {
+    /// The title provider's id: its key is re-read from `AgentProviderSecrets` when the title
+    /// request is actually started (the load may have landed since this was built).
+    pub provider_id: String,
+    /// Whether that provider can carry a key at all (see `provider_may_send_api_key`).
+    pub may_send_key: bool,
     pub base_url: String,
     pub api_key: String,
     pub model_id: String,
@@ -497,6 +547,10 @@ fn byop_dispatch_info(
                 let t_effort =
                     llm_prefs.get_reasoning_effort(None, t_provider.api_type, &t_model_id);
                 TitleGenParams {
+                    provider_id: t_provider.id.clone(),
+                    may_send_key: crate::ai::agent_providers::provider_may_send_api_key(
+                        &t_provider,
+                    ),
                     base_url: t_provider.resolved_base_url(),
                     api_key: t_api_key,
                     model_id: t_model_id,
@@ -551,7 +605,10 @@ fn byop_dispatch_info(
                 ),
             },
         );
+    let waits_for_keys = crate::ai::agent_providers::must_wait_for_keys(ctx, &provider);
     Some(ByopDispatch {
+        provider_id: provider.id.clone(),
+        waits_for_keys,
         base_url: provider.resolved_base_url(),
         api_key,
         model_id,
@@ -571,6 +628,15 @@ fn byop_dispatch_info(
     })
 }
 
+fn title_gen_may_send_key(byop: &ByopDispatch) -> Option<String> {
+    // The title provider is a different one only when the user picked an independent title
+    // model; the request's own provider decided `waits_for_keys`, so recompute for the title.
+    let title_gen = byop.title_gen.as_ref()?;
+    title_gen
+        .may_send_key
+        .then(|| title_gen.provider_id.clone())
+}
+
 fn pending_title_generation_from_byop(
     params: &api::RequestParams,
     byop: &ByopDispatch,
@@ -585,6 +651,7 @@ fn pending_title_generation_from_byop(
     })?;
 
     Some(PendingTitleGeneration {
+        key_provider_id: title_gen_may_send_key(byop),
         input: crate::ai::agent_providers::chat_stream::TitleGenInput {
             base_url: title_gen.base_url.clone(),
             api_key: title_gen.api_key.clone(),
@@ -606,13 +673,6 @@ pub struct ResponseStreamId(String);
 impl ResponseStreamId {
     pub fn new_local() -> Self {
         Self(Uuid::new_v4().to_string())
-    }
-
-    pub fn for_shared_session(init_event: &response_event::StreamInit) -> Self {
-        // Make the stream ID unique per viewing by appending a local UUID
-        // This prevents collisions when replaying the same conversation multiple times
-        // (either on close-and-reopen or when viewing the same shared session from multiple terminals)
-        Self(format!("{}-{}", init_event.request_id, Uuid::new_v4()))
     }
 
     #[cfg(test)]
@@ -715,7 +775,7 @@ impl ResponseStream {
     }
 
     pub fn new(
-        params: api::RequestParams,
+        mut params: api::RequestParams,
         ai_identifiers: AIIdentifiers,
         recovery: RecoveryBudget,
         ctx: &mut ModelContext<Self>,
@@ -724,19 +784,62 @@ impl ResponseStream {
         let start_time = Local::now();
 
         let request_id = Uuid::new_v4();
-        let params_clone = params.clone();
+        // Project rules the context build left out because the background scan had not landed
+        // are added here if they are known now, else the send awaits the scan (#1364).
+        let rules_wait = project_rules_wait::begin(&mut params, ctx);
+        let mut params_clone = params.clone();
         // BYOP path: if the selected base model is an LLMId coded for a
         // user-defined provider, then before spawning, (provider, api_key,
         // model_id, root_task_id) are taken out of ctx and it goes through custom
         // chat completions. Otherwise it goes through warp's own multi-agent
         // endpoint (the original path).
         let byop_dispatch = byop_dispatch_info(&params, &ai_identifiers, ctx);
+        let key_wait = register_key_wait(byop_dispatch.as_ref(), ctx);
         let pending_title_generation = byop_dispatch
             .as_ref()
             .and_then(|byop| pending_title_generation_from_byop(&params, byop));
         let _ = ctx.spawn(
             async move {
-                if let Some(byop) = byop_dispatch {
+                if let Some(mut byop) = byop_dispatch {
+                    let mut cancellation_rx = cancellation_rx;
+                    if let Some(rules_wait) = rules_wait {
+                        match project_rules_wait::wait_for_project_rules(
+                            rules_wait,
+                            &mut cancellation_rx,
+                        )
+                        .await
+                        {
+                            project_rules_wait::RulesWaitOutcome::Ready(rules) => {
+                                project_rules_wait::apply_project_rules(&mut params_clone, rules);
+                            }
+                            project_rules_wait::RulesWaitOutcome::GaveUp => {}
+                            project_rules_wait::RulesWaitOutcome::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                        }
+                    }
+                    if let Some(key_wait) = key_wait {
+                        match wait_for_loaded_keys(
+                            key_wait,
+                            &mut cancellation_rx,
+                            &byop.provider_id,
+                            &mut byop.api_key,
+                        )
+                        .await
+                        {
+                            KeyWait::Ready => {}
+                            KeyWait::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                            KeyWait::Failed => {
+                                return byop_keyring_error_response_stream(cancellation_rx).await;
+                            }
+                        }
+                    }
                     crate::ai::agent_providers::chat_stream::generate_byop_output(
                         crate::ai::agent_providers::chat_stream::ByopOutputInput {
                             params: params_clone,
@@ -769,7 +872,7 @@ impl ResponseStream {
         );
         Self {
             id: ResponseStreamId(Uuid::new_v4().to_string()),
-            params: params.clone(),
+            params,
             start_time,
             time_to_latest_event: TimeDelta::seconds(0),
             cancellation_tx: Some(cancellation_tx),
@@ -785,8 +888,22 @@ impl ResponseStream {
         }
     }
 
-    pub(super) fn take_pending_title_generation(&mut self) -> Option<PendingTitleGeneration> {
-        self.pending_title_generation.take()
+    pub(super) fn take_pending_title_generation(
+        &mut self,
+        ctx: &warpui::AppContext,
+    ) -> Option<PendingTitleGeneration> {
+        let mut pending = self.pending_title_generation.take()?;
+        // The title request was built before the keyring read may have landed; by the time the
+        // main response finished it has (the main request itself waited for it), so take the
+        // key from there instead of the possibly-empty one captured at build time.
+        if let Some(provider_id) = pending.key_provider_id.as_deref() {
+            if let Some(key) =
+                crate::ai::agent_providers::AgentProviderSecrets::as_ref(ctx).get(provider_id)
+            {
+                pending.input.api_key = key.to_owned();
+            }
+        }
+        Some(pending)
     }
 
     pub fn id(&self) -> &ResponseStreamId {
@@ -903,8 +1020,10 @@ impl ResponseStream {
 
         let request_id = Uuid::new_v4();
         self.current_request_id = Some(request_id);
-        let params = self.params.clone();
+        let rules_wait = project_rules_wait::begin(&mut self.params, ctx);
+        let mut params = self.params.clone();
         let byop_dispatch = byop_dispatch_info(&params, &self.ai_identifiers, ctx);
+        let key_wait = register_key_wait(byop_dispatch.as_ref(), ctx);
         // Exponential backoff: 0.5s / 1s / 2s. Previously there was no interval at
         // all, so retrying the same payload three times in a row within seconds was
         // pure waste for deterministic failures (like exceeding a request limit),
@@ -933,7 +1052,46 @@ impl ResponseStream {
                         return Ok(Box::pin(futures::stream::empty()) as api::ResponseStream);
                     }
                 }
-                if let Some(byop) = byop_dispatch {
+                if let Some(mut byop) = byop_dispatch {
+                    let mut cancellation_rx = cancellation_rx;
+                    if let Some(rules_wait) = rules_wait {
+                        match project_rules_wait::wait_for_project_rules(
+                            rules_wait,
+                            &mut cancellation_rx,
+                        )
+                        .await
+                        {
+                            project_rules_wait::RulesWaitOutcome::Ready(rules) => {
+                                project_rules_wait::apply_project_rules(&mut params, rules);
+                            }
+                            project_rules_wait::RulesWaitOutcome::GaveUp => {}
+                            project_rules_wait::RulesWaitOutcome::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                        }
+                    }
+                    if let Some(key_wait) = key_wait {
+                        match wait_for_loaded_keys(
+                            key_wait,
+                            &mut cancellation_rx,
+                            &byop.provider_id,
+                            &mut byop.api_key,
+                        )
+                        .await
+                        {
+                            KeyWait::Ready => {}
+                            KeyWait::Cancelled => {
+                                return Ok(
+                                    Box::pin(futures::stream::empty()) as api::ResponseStream
+                                );
+                            }
+                            KeyWait::Failed => {
+                                return byop_keyring_error_response_stream(cancellation_rx).await;
+                            }
+                        }
+                    }
                     crate::ai::agent_providers::chat_stream::generate_byop_output(
                         crate::ai::agent_providers::chat_stream::ByopOutputInput {
                             params,
@@ -1253,6 +1411,67 @@ pub enum ResponseStreamEvent {
 
 impl Entity for ResponseStream {
     type Event = ResponseStreamEvent;
+}
+
+/// How a request held for the keyring read ended.
+enum KeyWait {
+    /// The keys landed; `ByopDispatch::api_key` now holds the real one.
+    Ready,
+    Cancelled,
+    /// The keyring could not be read (error, or the secure-storage worker gave up on a call
+    /// that never returned): no request is sent.
+    Failed,
+}
+
+type KeyLoad = oneshot::Receiver<Option<std::collections::HashMap<String, String>>>;
+
+/// If this request must not go out before the first keyring read lands (#1368), registers for
+/// that event. Driven by the load's own completion, not a timer; the only timer on the path is
+/// the secure-storage worker's logged give-up for a call that never returns.
+fn register_key_wait(
+    byop: Option<&ByopDispatch>,
+    ctx: &mut ModelContext<ResponseStream>,
+) -> Option<KeyLoad> {
+    if !byop?.waits_for_keys {
+        return None;
+    }
+    crate::ai::agent_providers::AgentProviderSecrets::handle(ctx)
+        .update(ctx, |secrets, ctx| secrets.wait_for_load(ctx))
+}
+
+/// Holds the request until the keyring read settles, racing cancellation. On success the real
+/// key replaces the (empty) one captured while the read was in flight.
+async fn wait_for_loaded_keys(
+    key_load: KeyLoad,
+    cancellation_rx: &mut oneshot::Receiver<()>,
+    provider_id: &str,
+    api_key: &mut String,
+) -> KeyWait {
+    match futures::future::select(cancellation_rx, key_load).await {
+        futures::future::Either::Left(_) => KeyWait::Cancelled,
+        futures::future::Either::Right((Ok(Some(keys)), _)) => {
+            *api_key = keys.get(provider_id).cloned().unwrap_or_default();
+            KeyWait::Ready
+        }
+        futures::future::Either::Right(_) => {
+            log::warn!(
+                "[byop] not sending the request: the API key could not be read from the keyring"
+            );
+            KeyWait::Failed
+        }
+    }
+}
+
+async fn byop_keyring_error_response_stream(
+    cancellation_rx: oneshot::Receiver<()>,
+) -> Result<api::ResponseStream, ConvertToAPITypeError> {
+    let error_stream = futures::stream::once(async {
+        Err(Arc::new(AIApiError::Other(anyhow::Error::new(
+            crate::ai::agent_providers::KeyringReadFailed,
+        ))))
+    })
+    .take_until(cancellation_rx);
+    Ok(Box::pin(error_stream))
 }
 
 async fn byop_required_response_stream(

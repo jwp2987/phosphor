@@ -23,12 +23,8 @@ use warpui::{Action, AppContext, Entity, ModelContext};
 /// if an async source is slow.
 const INITIAL_RESULTS_TIMEOUT: Duration = Duration::from_millis(500);
 
-#[cfg(not(target_family = "wasm"))]
 pub(crate) type BoxFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
-
-#[cfg(target_family = "wasm")]
-pub(crate) type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
 #[derive(Debug, Clone, Default)]
 pub enum DedupeStrategy {
@@ -105,6 +101,16 @@ pub struct SearchMixer<T: Action + Clone> {
 
     /// How long a query waits for its async sources before committing whatever it has.
     initial_results_timeout: Duration,
+
+    /// When set, a query commits its synchronous results as soon as they are available instead
+    /// of holding them back for slow async sources, and async results that arrive afterwards
+    /// are inserted so they render below the committed ones (see `add_new_results`). Only
+    /// meant for top-down result lists.
+    early_sync_commit: bool,
+
+    /// Whether the most recent `ResultsChanged` only appended late async results to a result
+    /// set that was already visible. Views use this to keep the selection where it is.
+    last_change_was_append: bool,
 }
 
 impl<T: Action + Clone> Entity for SearchMixer<T> {
@@ -148,7 +154,27 @@ impl<T: Action + Clone> SearchMixer<T> {
             pending_results: None,
             initial_results_emitted: false,
             initial_results_timeout: INITIAL_RESULTS_TIMEOUT,
+            early_sync_commit: false,
+            last_change_was_append: false,
         }
+    }
+
+    /// Opts this mixer into committing synchronous results immediately and streaming async
+    /// results in below them as they arrive (#1166). Without it a query waits for every async
+    /// source (up to [`INITIAL_RESULTS_TIMEOUT`]) before showing anything new.
+    pub fn set_early_sync_commit(&mut self, enabled: bool) {
+        self.early_sync_commit = enabled;
+    }
+
+    /// True when the latest `ResultsChanged` only appended late results below an already
+    /// visible result set, so the current selection should not move.
+    pub fn last_change_was_append(&self) -> bool {
+        self.last_change_was_append
+    }
+
+    fn emit_results_changed(&mut self, appended: bool, ctx: &mut ModelContext<Self>) {
+        self.last_change_was_append = appended;
+        ctx.emit(SearchMixerEvent::ResultsChanged);
     }
 
     /// Overrides how long a query waits for slow async sources before committing partial
@@ -174,7 +200,7 @@ impl<T: Action + Clone> SearchMixer<T> {
         self.pending_results = None;
         self.query.take();
         self.initial_results_emitted = false;
-        ctx.emit(SearchMixerEvent::ResultsChanged);
+        self.emit_results_changed(false, ctx);
     }
 
     /// Abort the current in-flight query to avoid stale searches
@@ -203,7 +229,7 @@ impl<T: Action + Clone> SearchMixer<T> {
         self.pending_results = None;
         self.query.take();
         self.initial_results_emitted = false;
-        ctx.emit(SearchMixerEvent::ResultsChanged);
+        self.emit_results_changed(false, ctx);
     }
 
     /// Adds a [`SyncDataSource`] to produce results when the mixer is queried. Query results will
@@ -291,6 +317,13 @@ impl<T: Action + Clone> SearchMixer<T> {
         // inside the loop. If everything is done, commit immediately.
         if self.pending_results.is_some() {
             if !self.is_loading() {
+                self.commit_pending_results_for_current_query(ctx);
+            } else if self.early_sync_commit
+                && self.pending_results.as_ref().is_some_and(|p| !p.is_empty())
+            {
+                // Sync results are already in; show them now and let the async sources
+                // append when they finish. An empty set is NOT committed early, so a slow
+                // source cannot flash "No results".
                 self.commit_pending_results_for_current_query(ctx);
             } else {
                 let query_generation = self.query_generation;
@@ -499,17 +532,25 @@ impl<T: Action + Clone> SearchMixer<T> {
                     let mut late_results = results_with_order;
                     late_results.sort_by_key(|r| (r.priority_tier(), r.score(), r.source_order));
 
-                    self.results.extend(late_results);
+                    if self.early_sync_commit {
+                        // Display-stable mode (top-down lists, which render `results` reversed):
+                        // late results go in front of the existing ones so they render BELOW
+                        // what the user is already looking at and nothing shifts underneath
+                        // the selection.
+                        self.results.splice(0..0, late_results);
+                    } else {
+                        self.results.extend(late_results);
+                    }
 
                     if matches!(self.dedupe_strategy, DedupeStrategy::HighestScore) {
                         self.results = dedupe_score(std::mem::take(&mut self.results));
                     }
 
-                    ctx.emit(SearchMixerEvent::ResultsChanged);
+                    self.emit_results_changed(true, ctx);
                 } else {
                     self.results.extend(results_with_order);
                     self.sort_and_dedupe_results();
-                    ctx.emit(SearchMixerEvent::ResultsChanged);
+                    self.emit_results_changed(false, ctx);
                 }
             }
             Err(e) => {
@@ -520,7 +561,7 @@ impl<T: Action + Clone> SearchMixer<T> {
                 if self.pending_results.is_some() && !self.is_loading() {
                     self.commit_pending_results_for_current_query(ctx);
                 } else if self.pending_results.is_none() {
-                    ctx.emit(SearchMixerEvent::ResultsChanged);
+                    self.emit_results_changed(false, ctx);
                 }
             }
         }
@@ -534,7 +575,7 @@ impl<T: Action + Clone> SearchMixer<T> {
         };
         self.results = pending;
         self.sort_and_dedupe_results();
-        ctx.emit(SearchMixerEvent::ResultsChanged);
+        self.emit_results_changed(false, ctx);
     }
 
     fn commit_pending_results_for_current_query(&mut self, ctx: &mut ModelContext<Self>) {
@@ -599,8 +640,7 @@ pub trait SyncDataSource: 'static {
 }
 
 /// A trait representing a set of data that can be queried for search results asynchronously.
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[async_trait]
 pub trait AsyncDataSource: 'static + Send + Sync {
     /// The action that is dispatched when a result produced by this data source is
     /// accepted.

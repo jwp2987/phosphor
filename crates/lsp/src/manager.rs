@@ -388,17 +388,11 @@ impl LspManagerModel {
         }
         None
     }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn repo_path_for_path(_path: &Path, _ctx: &AppContext) -> Option<PathBuf> {
-        None
-    }
 }
 
 /// LSP shutdowns started by [`LspManagerModel::begin_terminate_for_app_exit`].
 #[must_use = "call `wait` to give the servers time to shut down"]
 pub struct LspAppExitShutdown {
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     done: std::sync::mpsc::Receiver<()>,
     pending: usize,
 }
@@ -415,32 +409,21 @@ impl LspAppExitShutdown {
         if self.pending == 0 {
             return 0;
         }
-        // wasm has no LSP processes (starting one fails there) and cannot block its
-        // main thread, so it never waits.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let finished = wait_for_shutdowns(&self.done, self.pending, grace);
-            if finished < self.pending {
-                log::warn!(
-                    "{} of {} LSP server(s) did not finish shutting down within {grace:?}; \
-                     exiting anyway",
-                    self.pending - finished,
-                    self.pending
-                );
-            }
-            finished
+        let finished = wait_for_shutdowns(&self.done, self.pending, grace);
+        if finished < self.pending {
+            log::warn!(
+                "{} of {} LSP server(s) did not finish shutting down within {grace:?}; \
+                 exiting anyway",
+                self.pending - finished,
+                self.pending
+            );
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = grace;
-            0
-        }
+        finished
     }
 }
 
 /// Blocks until `pending` completions arrive on `done` or `grace` elapses, whichever is
 /// first, and returns how many arrived. Also returns early if every sender is dropped.
-#[cfg(not(target_arch = "wasm32"))]
 fn wait_for_shutdowns(
     done: &std::sync::mpsc::Receiver<()>,
     pending: usize,

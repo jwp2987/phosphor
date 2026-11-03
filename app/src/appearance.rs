@@ -186,9 +186,6 @@ impl AppearanceManager {
             Settings::theme_for_theme_kind(&theme_kind, ctx)
         };
 
-        #[cfg(target_family = "wasm")]
-        emit_theme_background_event(&new_theme);
-
         Appearance::handle(ctx).update(ctx, |appearance, ctx| {
             appearance.set_theme(new_theme, ctx);
         })
@@ -417,13 +414,6 @@ fn load_password_font_family(ctx: &mut AppContext) -> anyhow::Result<FamilyId> {
     })
 }
 
-#[cfg(target_family = "wasm")]
-/// On wasm we don't support loading fonts, so we just use the default.
-fn get_or_load_font_family(_font_name: &str, _ctx: &mut AppContext) -> Option<FamilyId> {
-    None
-}
-
-#[cfg(not(target_family = "wasm"))]
 /// If we're running on a native platform (where we support font loading),
 /// make sure we load the user's selected monospace font. We first check
 /// the font cache in case we are using a pre-bundled font like Hack.
@@ -509,8 +499,6 @@ fn build_appearance(ctx: &mut AppContext) -> Appearance {
 
     let theme_kind = active_theme_kind(ThemeSettings::as_ref(ctx), ctx);
     let theme = Settings::theme_for_theme_kind(&theme_kind, ctx);
-    #[cfg(target_family = "wasm")]
-    emit_theme_background_event(&theme);
 
     Appearance::new(
         theme,
@@ -525,15 +513,6 @@ fn build_appearance(ctx: &mut AppContext) -> Appearance {
         ui_font_size.clamp(UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX),
         heading_multipliers,
     )
-}
-
-#[cfg(target_family = "wasm")]
-fn emit_theme_background_event(theme: &WarpTheme) {
-    let bg = theme.background().into_solid();
-    let color = format!("#{:02x}{:02x}{:02x}", bg.r, bg.g, bg.b);
-    crate::platform::wasm::emit_event(crate::platform::wasm::WarpEvent::ThemeBackgroundChanged {
-        color,
-    });
 }
 
 pub fn register(app: &mut impl AddSingletonModel) {

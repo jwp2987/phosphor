@@ -607,6 +607,308 @@ fn container_subshell_bootstrap_is_written_in_bounded_chunks() {
     });
 }
 
+/// Builds a controller on a recording sender, as the container-bootstrap tests do.
+#[cfg(feature = "local_fs")]
+fn paced_write_controller(
+    app: &mut App,
+    model: Arc<FairMutex<TerminalModel>>,
+    sender: &TestEventLoopSender,
+) -> (ModelHandle<PtyController<TestEventLoopSender>>, impl Sized + use<>) {
+    let (model_events_tx, model_events_rx) = async_channel::unbounded();
+    let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+    let sessions = app.add_model(|_| Sessions::new_for_test());
+    let model_events =
+        app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+    let line_editor_status =
+        app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+    let sender = sender.clone();
+    let controller = app.add_model(|ctx| {
+        PtyController::new(
+            sender,
+            model_events,
+            line_editor_status,
+            sessions,
+            executor_command_rx,
+            model,
+            ctx,
+        )
+    });
+    (controller, model_events_tx)
+}
+
+/// A ^C in the middle of a paced (container) bootstrap write stops it: the chunks after it, and
+/// the closing CR that submits the script, are never written. Before, every chunk was its own
+/// free-standing timer, so all of them were typed into the live shell after the interrupt.
+#[cfg(feature = "local_fs")]
+#[test]
+fn ctrl_c_mid_bootstrap_writes_no_further_chunks() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        // Three chunks (2 x 4KB + a remainder).
+        let bootstrap: Vec<u8> = (0..(2 * 4096 + 100)).map(|i| (i % 251) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.into(),
+            );
+            assert_eq!(controller.paced_writes_remaining(), 2, "first chunk is out");
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+            assert_eq!(controller.paced_writes_remaining(), 0);
+        });
+        // Wait well past the pacing gaps: nothing else may be written.
+        Timer::after(Duration::from_millis(400)).await;
+        let messages = sender.messages.lock();
+        let inputs: Vec<&Message> = messages
+            .iter()
+            .filter(|m| matches!(m, Message::Input(_)))
+            .collect();
+        assert_eq!(inputs.len(), 2, "first chunk and the ^C only: {messages:?}");
+        assert!(
+            !messages.iter().any(|m| matches!(
+                m,
+                Message::Input(bytes) if bytes.ends_with(&[escape_sequences::C0::CR])
+            )),
+            "the closing CR must never be typed after the interrupt"
+        );
+    });
+}
+
+/// Shutting the pty down (tab close) drops the rest of a paced bootstrap write too.
+#[cfg(feature = "local_fs")]
+#[test]
+fn shutdown_mid_bootstrap_writes_no_further_chunks() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let bootstrap: Vec<u8> = (0..(2 * 4096 + 100)).map(|i| (i % 251) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.into(),
+            );
+            controller.shutdown_pty(ctx);
+        });
+        Timer::after(Duration::from_millis(400)).await;
+        let messages = sender.messages.lock();
+        let inputs = messages
+            .iter()
+            .filter(|m| matches!(m, Message::Input(_)))
+            .count();
+        assert_eq!(
+            inputs, 1,
+            "only the chunk written before the close: {messages:?}"
+        );
+    });
+}
+
+/// Chunks go out in order, one per pacing step, and a second bootstrap replaces the first's
+/// leftovers instead of interleaving with them.
+#[cfg(feature = "local_fs")]
+#[test]
+fn a_newer_paced_write_replaces_the_unwritten_chunks_of_the_older_one() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let session_info = docker_exec_session_info();
+        let first: Vec<u8> = vec![b'a'; 2 * 4096 + 10];
+        let second: Vec<u8> = vec![b'b'; 10];
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                first.into(),
+            );
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                second.into(),
+            );
+        });
+        Timer::after(Duration::from_millis(400)).await;
+        let messages = sender.messages.lock();
+        let written: Vec<u8> = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Input(bytes) => Some(bytes.to_vec()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let a_count = written.iter().filter(|b| **b == b'a').count();
+        assert_eq!(
+            a_count, 4096,
+            "only the first chunk of the superseded write: {a_count}"
+        );
+        assert_eq!(written.iter().filter(|b| **b == b'b').count(), 10);
+    });
+}
+
+/// The messages a bootstrap produces with the writer-owned job queue on (#1384): ONE
+/// `SetupChunked` job for the whole paced script, instead of a timer-chained `Input` per chunk.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_container_bootstrap_is_one_setup_job_with_the_pacing_named() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let bootstrap: Vec<u8> = (0..(4096 + 100)).map(|i| (i % 256) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.clone().into(),
+            );
+        });
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
+        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+            panic!("expected a setup job: {:?}", messages[0]);
+        };
+        assert!(matches!(
+            pacing,
+            Pacing::Gap { dur, .. } if *dur == Duration::from_millis(50)
+        ));
+        assert_eq!(chunks.len(), 2);
+        let mut expected = escape_sequences::BRACKETED_PASTE_START.to_vec();
+        expected.extend_from_slice(&bootstrap);
+        expected.extend_from_slice(escape_sequences::BRACKETED_PASTE_END);
+        expected.push(escape_sequences::C0::CR);
+        assert_eq!(chunks.concat(), expected);
+        assert!(chunks[0].starts_with(escape_sequences::BRACKETED_PASTE_START));
+        assert!(chunks[1].ends_with(&[escape_sequences::C0::CR]));
+    });
+}
+
+/// A ^C aborts the setup job before the interrupt goes out, and the submitted-command discard
+/// still follows, as on the timer path.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_ctrl_c_aborts_the_setup_job_then_interrupts() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let bootstrap: Vec<u8> = (0..(2 * 4096 + 100)).map(|i| (i % 251) as u8).collect();
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.into(),
+            );
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(messages[0], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[1], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[2], Message::DiscardQueuedInput),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(&messages[3], Message::Input(bytes) if bytes.as_ref() == [escape_sequences::C0::ETX]),
+            "{messages:?}"
+        );
+        assert_eq!(messages.len(), 4);
+    });
+}
+
+/// Shutting the pty down aborts the job before the shutdown.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_shutdown_aborts_the_setup_job() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                vec![b'a'; 2 * 4096 + 10].into(),
+            );
+            controller.shutdown_pty(ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(messages[0], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[1], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        assert!(matches!(messages[2], Message::Shutdown), "{messages:?}");
+        assert_eq!(messages.len(), 3);
+    });
+}
+
+/// A newer bootstrap aborts the older job before it queues its own, and with no job outstanding
+/// a ^C sends no abort at all.
+#[cfg(feature = "local_fs")]
+#[test]
+fn queued_newer_bootstrap_aborts_the_older_job() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let session_info = docker_exec_session_info();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            // No job yet: a ^C must not send an abort.
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                vec![b'a'; 2 * 4096 + 10].into(),
+            );
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                vec![b'b'; 10].into(),
+            );
+        });
+        let messages = sender.messages.lock();
+        let kinds: Vec<&str> = messages
+            .iter()
+            .map(|m| match m {
+                Message::Input(_) => "input",
+                Message::DiscardQueuedInput => "discard",
+                Message::SetupChunked { .. } => "setup",
+                Message::Abort(_) => "abort",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["discard", "input", "setup", "abort", "setup"],
+            "{messages:?}"
+        );
+    });
+}
+
 /// The chunking decision is `is_container_subshell`, not "the bootstrap is
 /// large": a non-container session with a bootstrap over the 4KB chunk size
 /// must still go out as a single write, so this only depends on the container
@@ -1431,7 +1733,8 @@ mod typeahead_handoff {
     use crate::terminal::model::ansi::{Handler, PreexecValue};
     use crate::terminal::model::terminal_model::ExitReason;
     use crate::terminal::model::typeahead_handoff::{
-        HandoffState, InterruptOutcome, ReportDisposition, UserBytesRoute,
+        HandoffState, InterruptOutcome, ReportDisposition, UserBytesRoute, YoungHoldEnd,
+        YoungHoldExpiry,
     };
 
     const SHELL: ShellType = ShellType::Zsh;
@@ -1556,6 +1859,44 @@ mod typeahead_handoff {
                 }
             })
             .collect()
+    }
+
+    /// #1384 P4: the hand-off's accounting is the same on the legacy route and on the write
+    /// queue's. One write per chunk (a paste-sized chunk is a `PasteInput` on the queue and a
+    /// `CommandInput` without), and each retires exactly one in-flight count.
+    #[test]
+    fn handoff_user_write_accounting_is_the_same_with_and_without_the_write_queue() {
+        for queue in [false, true] {
+            App::test((), |mut app| async move {
+                let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+                let harness = harness(&mut app);
+                harness.controller.update(&mut app, |controller, _| {
+                    controller.force_write_queue(queue)
+                });
+                // A command is running, so the pty owns input and user writes are counted (an
+                // editor-owned write is not, and `user_types` asserts the counted route).
+                submit(&mut app, &harness, "sleep 1");
+                harness.sender.messages.lock().clear();
+                let paste: &'static [u8] =
+                    Box::leak(vec![b'x'; PASTE_WRITE_MIN_BYTES].into_boxed_slice());
+                user_types(&mut app, &harness, paste);
+                user_types(&mut app, &harness, b"k");
+                let messages = harness.sender.messages.lock();
+                assert_eq!(messages.len(), 2, "queue={queue}: {messages:?}");
+                match (&messages[0], queue) {
+                    (Message::PasteInput(bytes), true) | (Message::CommandInput(bytes), false) => {
+                        assert_eq!(&bytes[..], paste)
+                    }
+                    (other, _) => panic!("queue={queue}: unexpected {other:?}"),
+                }
+                assert!(matches!(&messages[1], Message::Input(bytes) if &bytes[..] == b"k"));
+                assert_eq!(
+                    harness.model.lock().typeahead_handoff().writes_in_flight(),
+                    0,
+                    "queue={queue}: each counted write retires one in-flight count"
+                );
+            });
+        }
     }
 
     #[test]
@@ -1693,26 +2034,34 @@ mod typeahead_handoff {
             line_editor_becomes_active(&mut app, &harness);
             assert_eq!(written(&harness).last(), Some(&REQUEST.to_vec()));
 
-            // Enter in the editor before the report: deferred, and later keys are held.
-            {
+            // Enter in the editor before the report: deferred, and later keys are held (as
+            // entries of the view's queue; the controller keeps no bytes for them).
+            let gate = {
                 let mut model = harness.model.lock();
-                let handoff = model.typeahead_handoff_mut();
+                let mut handoff = model.typeahead_handoff_mut();
                 assert!(handoff.defer_enter());
-                assert_eq!(handoff.on_user_bytes(b"pwd\r"), UserBytesRoute::Held);
+                let gate = handoff.deferred_gate().expect("a gate");
                 assert_eq!(handoff.on_report(), ReportDisposition::InsertThenSubmit);
-            }
+                gate
+            };
             // The deferred submit, with the report (`ec`) inserted in front of the editor text.
             submit(&mut app, &harness, "echo 1");
             let written = written(&harness);
             assert_eq!(
-                &written[written.len() - 2..],
-                &[
-                    bytes_to_execute_command("echo 1", SHELL, false),
-                    b"pwd\r".to_vec()
-                ]
+                written.last(),
+                Some(&bytes_to_execute_command("echo 1", SHELL, false))
             );
+            // The keys behind the Enter follow the command: the hand-off records the end for the
+            // view, which writes them behind the command and counts them.
+            let mut model = harness.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
             assert_eq!(
-                harness.model.lock().typeahead_handoff().state(),
+                handoff.take_young_hold_ends(),
+                vec![(gate, YoungHoldEnd::FollowCommand)]
+            );
+            handoff.count_followed_young_hold(gate, b"pwd\r");
+            assert_eq!(
+                handoff.state(),
                 &HandoffState::PtyOwned {
                     wrote_user_bytes: false,
                     enters_written: 2,
@@ -1936,6 +2285,114 @@ mod typeahead_handoff {
                 &HandoffState::EditorOwned
             );
             assert!(!written(&harness).contains(&REQUEST.to_vec()));
+        });
+    }
+
+    /// #1614 (review R3, the timer rule): the stale-count give-up never ends a live young hold.
+    /// Its retry of the request decision is skipped while the hold lives (the hold has its own
+    /// event releases and the hand-back cap); run by this timer, the decision could otherwise
+    /// write the held keys (the no-binding and committed-delivery ends) or a request.
+    #[test]
+    fn the_stale_count_reset_leaves_a_live_young_hold_to_its_own_events() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"frob");
+            // The Enter is held (the view's queue carries it; here only the hand-off's record).
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+                assert!(handoff.take_young_hold_started().is_some());
+            }
+            // The decision waits (the block runs) and arms the stale-count reset.
+            line_editor_becomes_active(&mut app, &harness);
+            assert!(harness.model.lock().typeahead_handoff().young_hold_queued());
+            // Meanwhile a delivery was committed to the shell's line: a decision run now would
+            // end the hold as typeahead (`committed_delivery`), which only an event may do.
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_committed_delivery();
+
+            Timer::after(Duration::from_millis(400)).await;
+            {
+                let model = harness.model.lock();
+                let handoff = model.typeahead_handoff();
+                assert!(
+                    handoff.young_hold_queued(),
+                    "the timer left the hold to its events"
+                );
+                assert!(!handoff.young_hold_end_pending(), "no end from a timer");
+                assert!(handoff.is_pty_owned());
+            }
+            assert!(
+                !written(&harness).contains(&REQUEST.to_vec()),
+                "no request from the timer"
+            );
+            // The skipped decision is remembered, to run on the next flushed write.
+            harness.controller.update(&mut app, |controller, _| {
+                assert!(controller.handoff_request_waiting);
+            });
+        });
+    }
+
+    /// #1614 (review C2): the decision the stale-count timer skipped while a young hold lived runs
+    /// once the hold is gone. The cap hands the hold back (the view also asks for the decision
+    /// then, `hand_back_young_hold_keys`), the shell's prompt comes with the typed `frob` still in
+    /// its line, and the next flushed write runs the decision: the request goes out and the editor
+    /// takes the line back, instead of the pane staying pty-owned with the handed-back text in
+    /// the editor.
+    #[test]
+    fn after_the_cap_hands_a_hold_back_the_skipped_decision_runs_on_the_next_write() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"frob");
+            let hold_id = {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+                handoff.take_young_hold_started().expect("a hold started")
+            };
+            line_editor_becomes_active(&mut app, &harness);
+            Timer::after(Duration::from_millis(400)).await;
+            harness.controller.update(&mut app, |controller, _| {
+                assert!(
+                    controller.handoff_request_waiting,
+                    "the retry was skipped, not lost"
+                );
+            });
+            assert!(harness.model.lock().typeahead_handoff().young_hold_queued());
+
+            // The cap: the hold is handed back (the hand-off's side of the view's hand-back).
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(
+                    handoff.expire_queued_young_hold(hold_id),
+                    YoungHoldExpiry::Release
+                );
+                handoff.finish_young_hold_handed_back(hold_id);
+                assert!(!handoff.young_hold_queued());
+            }
+            // The command ends; its prompt. The counts agree and `frob` is in the shell's line.
+            shell_runs_a_command(&harness.model, "sleep 2");
+            assert!(!harness.model.lock().typeahead_handoff().counts_diverged());
+            assert!(!written(&harness).contains(&REQUEST.to_vec()));
+            // The next flushed write runs the skipped decision: the request goes out.
+            user_types(&mut app, &harness, b"z");
+            assert!(
+                written(&harness).contains(&REQUEST.to_vec()),
+                "the decision ran once the hold was gone"
+            );
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
         });
     }
 
@@ -2442,12 +2899,73 @@ mod typeahead_handoff {
                 "the legacy request is written"
             );
             let mut model = harness.model.lock();
-            let handoff = model.typeahead_handoff_mut();
+            let mut handoff = model.typeahead_handoff_mut();
             assert_eq!(handoff.state(), &HandoffState::EditorOwned);
             assert!(handoff.untracked_bytes_requested());
             assert!(handoff.editor_text_precedes_report());
             handoff.on_report();
             assert!(!handoff.editor_text_precedes_report());
+        });
+    }
+
+    /// #1104: keys written behind a legacy request stay in the shell's line when its report
+    /// comes back; one more request is written behind them, and only once.
+    #[test]
+    fn a_report_that_missed_untracked_keys_is_followed_by_a_drain_request() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            line_editor_becomes_active(&mut app, &harness);
+            assert_eq!(written(&harness), vec![REQUEST.to_vec()]);
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                handoff.note_untracked_line_bytes();
+                // The report of the first request: it missed the keys.
+                handoff.on_report();
+                assert!(handoff.drain_pending());
+            }
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.retry_typeahead_handoff_request(ctx)
+            });
+            assert_eq!(written(&harness), vec![REQUEST.to_vec(), REQUEST.to_vec()]);
+            harness.controller.update(&mut app, |controller, ctx| {
+                controller.retry_typeahead_handoff_request(ctx)
+            });
+            assert_eq!(
+                written(&harness).len(),
+                2,
+                "the second request covers the keys; no third"
+            );
+            let mut model = harness.model.lock();
+            let mut handoff = model.typeahead_handoff_mut();
+            assert!(handoff.editor_text_precedes_report());
+            handoff.on_report();
+            assert!(!handoff.editor_text_precedes_report());
+        });
+    }
+
+    /// #1104: a command the hand-off does not own (an agent's, a queued prompt) must not kill
+    /// untracked user keys in the shell's line before a request has collected them: the request
+    /// is written first, the command right behind it.
+    #[test]
+    fn a_queued_command_goes_out_behind_a_request_that_collects_untracked_keys() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_untracked_line_bytes();
+            fire_queued_command(&mut app, &harness);
+            assert_eq!(
+                written(&harness),
+                vec![
+                    REQUEST.to_vec(),
+                    bytes_to_execute_command("queued", SHELL, false)
+                ]
+            );
         });
     }
 }
@@ -2507,7 +3025,7 @@ fn nu_rc_file_bootstrap_sources_the_file_with_a_space_led_line_and_cr() {
 fn ctrl_c_discards_queued_input_before_the_interrupt_is_written() {
     App::test((), |mut app| async move {
         let model = terminal_model();
-        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_model_events_tx, model_events_rx) = async_channel::unbounded();
         let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
         let sessions = app.add_model(|_| Sessions::new_for_test());
         let model_events =
@@ -2603,6 +3121,54 @@ fn user_command_is_sent_as_command_input_but_in_band_is_not() {
     });
 }
 
+/// #1255: a paste-sized user write is tagged cancellable (a ^C drops what the event loop has not
+/// yet written), while the bytes themselves are sent whole and unchanged: nothing is split,
+/// capped or dropped on the way to the pty, whatever the size.
+#[test]
+fn paste_bytes_are_sent_whole_as_cancellable_input() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        let paste: Vec<u8> = (0..PASTE_WRITE_MIN_BYTES * 3 + 17)
+            .map(|i| b'a' + (i % 26) as u8)
+            .collect();
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_paste_bytes(paste.clone(), ctx);
+            controller.write_bytes(&b"k"[..], ctx);
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        match &messages[0] {
+            Message::CommandInput(bytes) => assert_eq!(&bytes[..], paste.as_slice()),
+            other => panic!("a paste must be sent as cancellable input, got {other:?}"),
+        }
+        // A keystroke behind it stays ordinary input, so a cancel never takes typed keys.
+        assert!(matches!(&messages[1], Message::Input(bytes) if &bytes[..] == b"k"));
+
+        drop(model_events_tx);
+    });
+}
+
 /// #1046: the input's multi-line confirmation asks `command_is_sent_as_bracketed_paste`, the
 /// same decision `bytes_to_execute_command` wraps by, so the two cannot disagree.
 #[test]
@@ -2617,5 +3183,134 @@ fn bracketed_paste_decision_is_shared_with_the_command_bytes() {
             command_is_sent_as_bracketed_paste(enabled, command),
             "enabled={enabled} command={command:?}"
         );
+    }
+}
+
+// ---- #1384 P3: the ssh-warpify line-clear payload is one job ----
+
+fn line_clear_prefix() -> Vec<u8> {
+    vec![b' ', escape_sequences::C0::VT, escape_sequences::C0::NAK]
+}
+
+/// With the writer-owned queue the payload is ONE `SetupChunked` job of 1000-byte chunks whose
+/// pacing is decided by the writer from the tty mode; nothing is timer-chained on the UI side.
+#[test]
+fn line_clear_payload_is_one_setup_job_paced_by_tty_mode() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        let payload: Vec<u8> = (0..4500).map(|i| (i % 251) as u8).collect();
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(payload.clone(), ctx);
+        });
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1, "one job, no timers: {messages:?}");
+        let Message::SetupChunked { chunks, pacing } = &messages[0] else {
+            panic!("expected a setup job: {:?}", messages[0]);
+        };
+        assert!(matches!(
+            pacing,
+            Pacing::GapIfCanonical { dur, .. } if *dur == Duration::from_millis(10)
+        ));
+        assert!(chunks.iter().all(|c| c.len() <= 1000));
+        let mut expected = line_clear_prefix();
+        expected.extend_from_slice(&payload);
+        assert_eq!(chunks.concat(), expected);
+    });
+}
+
+/// A ^C aborts the line-clear job before it goes out, and a cancelled warpify does too.
+#[test]
+fn ctrl_c_and_cancel_abort_the_line_clear_job() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(true);
+            controller.write_line_clear_setup(vec![b'x'; 3000], ctx);
+            controller.write_bytes(&[escape_sequences::C0::ETX][..], ctx);
+            controller.write_line_clear_setup(vec![b'y'; 3000], ctx);
+            controller.cancel_paced_writes(ctx);
+        });
+        let messages = sender.messages.lock();
+        assert!(
+            matches!(messages[0], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(messages[1], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        let tail: Vec<_> = messages.iter().rev().take(2).collect();
+        assert!(
+            matches!(tail[0], Message::Abort(AbortScope::Setup)),
+            "{messages:?}"
+        );
+        assert!(
+            matches!(tail[1], Message::SetupChunked { .. }),
+            "{messages:?}"
+        );
+    });
+}
+
+/// Kill switch: the timer chain of before, first chunk at once, the rest left to timers, and a
+/// cancel drops them.
+#[test]
+fn line_clear_payload_without_the_queue_uses_the_timer_chain() {
+    App::test((), |mut app| async move {
+        let sender = TestEventLoopSender::default();
+        let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+        controller.update(&mut app, |controller, ctx| {
+            controller.force_write_queue(false);
+            controller.write_line_clear_setup(vec![b'x'; 3500], ctx);
+            assert_eq!(
+                controller.paced_writes_remaining(),
+                3,
+                "4 chunks, 1 written"
+            );
+            controller.cancel_paced_writes(ctx);
+            assert_eq!(controller.paced_writes_remaining(), 0);
+        });
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_input_matches(&messages[0], {
+            let mut first = line_clear_prefix();
+            first.extend_from_slice(&[b'x'; 997]);
+            first
+        });
+    });
+}
+
+/// #1384 P4: on a pty with the write queue, agent input is its own class on the wire, a paste is
+/// its own class, and a cancelled agent command aborts the agent's jobs only. Without the queue
+/// (ConPTY, `PHOSPHOR_PTY_WRITE_QUEUE=0`) everything travels as before and nothing is aborted.
+#[test]
+fn agent_and_paste_writes_are_split_on_the_wire_only_with_the_write_queue() {
+    for queue in [true, false] {
+        App::test((), |mut app| async move {
+            let sender = TestEventLoopSender::default();
+            let (controller, _tx) = paced_write_controller(&mut app, terminal_model(), &sender);
+            controller.update(&mut app, |controller, ctx| {
+                controller.force_write_queue(queue);
+                controller.write_paste_bytes(&b"paste"[..], ctx);
+                controller.write_agent_bytes(&b"agent"[..], &AIAgentPtyWriteMode::Raw, ctx);
+                controller.write_bytes(&b"k"[..], ctx);
+                controller.cancel_agent_writes(ctx);
+            });
+            let messages = sender.messages.lock();
+            if queue {
+                assert_eq!(messages.len(), 4, "{messages:?}");
+                assert!(matches!(&messages[0], Message::PasteInput(b) if &b[..] == b"paste"));
+                assert!(matches!(&messages[1], Message::AgentInput(b) if &b[..] == b"agent"));
+                assert!(matches!(&messages[2], Message::Input(b) if &b[..] == b"k"));
+                assert!(matches!(&messages[3], Message::Abort(AbortScope::Agent)));
+            } else {
+                assert_eq!(messages.len(), 3, "{messages:?}");
+                assert!(matches!(&messages[0], Message::CommandInput(b) if &b[..] == b"paste"));
+                assert!(matches!(&messages[1], Message::Input(b) if &b[..] == b"agent"));
+                assert!(matches!(&messages[2], Message::Input(b) if &b[..] == b"k"));
+            }
+        });
     }
 }

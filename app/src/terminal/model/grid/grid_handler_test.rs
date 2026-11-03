@@ -608,6 +608,37 @@ fn test_secrets_serialization() {
 }
 
 #[test]
+fn test_has_secrets_tracks_whether_the_renderer_needs_secret_lookups() {
+    let mut blockgrid = mock_blockgrid("foo zach@warp.dev bar");
+    blockgrid.maybe_enable_secret_obfuscation(ObfuscateSecrets::Yes);
+
+    // No secret has been detected/marked: every per-cell lookup is `None`, so the renderer may
+    // skip them.
+    assert!(!blockgrid.grid_handler().has_secrets());
+    assert!(blockgrid
+        .grid_handler()
+        .secret_at_displayed_point(Point::new(0, 4))
+        .is_none());
+
+    blockgrid.grid_handler_mut().mark_secret_range(
+        Point::new(0, 4)..=Point::new(0, 16),
+        IsObfuscated::Yes,
+        "zach@warp.dev".to_string(),
+        SecretLevel::User,
+    );
+
+    // Once a secret exists the renderer must look every cell up, so redaction still applies.
+    assert!(blockgrid.grid_handler().has_secrets());
+    assert!(blockgrid
+        .grid_handler()
+        .secret_at_displayed_point(Point::new(0, 4))
+        .is_some());
+
+    blockgrid.grid_handler_mut().clear_secrets();
+    assert!(!blockgrid.grid_handler().has_secrets());
+}
+
+#[test]
 fn test_finds_url_in_grid() {
     // Test url in one line.
     let blockgrid = mock_blockgrid("https://google.com");
@@ -3052,6 +3083,59 @@ fn test_finished_grid_reflows_after_its_storage_was_shrunk() {
     assert!(grid.grid.raw.capacity() < rows);
 }
 
+#[test]
+fn test_finished_grid_rows_only_resize_skips_reflow() {
+    let cols = 5;
+    let build = || {
+        let mut grid = GridHandler::new_for_test_with_scroll_limit(10, cols, MAX_SCROLL_LIMIT);
+        for line in ["one", "two", "tre", "four", "five"] {
+            grid.input_at_cursor(line);
+            grid.carriage_return();
+            grid.linefeed();
+        }
+        grid.finish();
+        grid
+    };
+    let contents = |grid: &GridHandler| -> Vec<String> {
+        (0..grid.total_rows())
+            .map(|row| row_text(grid, row))
+            .collect()
+    };
+
+    let mut grid = build();
+    let before = contents(&grid);
+    let generation = grid.content_generation();
+    let visible_rows = grid.visible_rows();
+
+    // Shrinking and growing the height must leave a finished grid exactly as it was; the old
+    // path re-materialised the rows and bumped the content generation on every call.
+    for rows in [3, 40, 7] {
+        grid.resize(SizeInfo::new_without_font_metrics(rows, cols));
+        assert_eq!(contents(&grid), before);
+        assert_eq!(grid.total_rows(), before.len());
+        assert_eq!(grid.content_generation(), generation);
+        assert_eq!(grid.visible_rows(), visible_rows);
+    }
+
+    // A later column change still reflows, and reaches the same result as a grid that never
+    // saw the height changes.
+    let mut control = build();
+    grid.resize(SizeInfo::new_without_font_metrics(7, 3));
+    control.resize(SizeInfo::new_without_font_metrics(7, 3));
+    assert_eq!(grid.columns(), 3);
+    assert_eq!(contents(&grid), contents(&control));
+    assert_ne!(contents(&grid), before);
+}
+
+#[test]
+fn test_unfinished_grid_rows_only_resize_still_runs() {
+    // The fast path is for finished grids only: a live grid must still adjust its rows.
+    let mut grid = GridHandler::new_for_test_with_scroll_limit(10, 5, MAX_SCROLL_LIMIT);
+    grid.input_at_cursor("abc");
+    grid.resize(SizeInfo::new_without_font_metrics(4, 5));
+    assert_eq!(grid.visible_rows(), 4);
+}
+
 /// A small grid with two lines of text and the cursor at the end of the second,
 /// for the content-generation tests below.
 fn content_generation_test_grid() -> GridHandler {
@@ -3483,4 +3567,228 @@ fn combining_marks_are_stored_on_base_cell() {
     assert_eq!(cell_text(&g, 1), "e\u{0301}\u{0489}\u{0315}");
     assert_eq!(g.grid_storage()[0][2].c, 'q');
     assert_eq!(g.grid_handler().cursor_point().col, 3);
+}
+
+// ─── #1304: off-thread selection text ────────────────────────────────
+
+fn snapshot_test_grid(columns: usize) -> GridHandler {
+    let size = SizeInfo::new_without_font_metrics(12, columns);
+    let mut grid = GridHandler::new(
+        size,
+        MAX_SCROLL_LIMIT,
+        ChannelEventListener::new_for_test(),
+        false,
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::default(),
+    );
+    // Wrapped line, tabs, wide chars (including one that wraps), zero-width marks, blank rows.
+    for line in [
+        "abcdefghijklmnopqrstuvwxyz",
+        "a\tb\tc",
+        "\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}",
+        "e\u{301}x",
+        "",
+        "tail",
+    ] {
+        for c in line.chars() {
+            grid.input(c);
+        }
+        grid.carriage_return();
+        grid.linefeed();
+    }
+    grid
+}
+
+fn assert_snapshot_matches_inline(grid: &GridHandler, secrets: RespectObfuscatedSecrets) {
+    let total = grid.total_rows();
+    let last_col = grid.columns() - 1;
+    let mut ranges = vec![(Point::new(0, 0), Point::new(total - 1, last_col))];
+    for row in 0..total {
+        ranges.push((Point::new(row, 0), Point::new(row, last_col)));
+        ranges.push((Point::new(row, 1), Point::new(total - 1, 2)));
+        ranges.push((Point::new(0, last_col), Point::new(row, 0)));
+    }
+    for (start, end) in ranges {
+        if (start.row, start.col) > (end.row, end.col) {
+            continue;
+        }
+        let inline = grid.bounds_to_string(
+            start,
+            end,
+            false,
+            secrets,
+            false,
+            RespectDisplayedOutput::Yes,
+        );
+        let snapshot = grid
+            .bounds_to_text_snapshot(start, end, secrets, false, RespectDisplayedOutput::Yes)
+            .render();
+        assert_eq!(snapshot, inline, "range {start:?}..{end:?}");
+    }
+}
+
+#[test]
+fn text_snapshot_is_byte_identical_to_bounds_to_string() {
+    for columns in [6, 7, 10, 40] {
+        let grid = snapshot_test_grid(columns);
+        assert_snapshot_matches_inline(&grid, RespectObfuscatedSecrets::Yes);
+        assert_snapshot_matches_inline(&grid, RespectObfuscatedSecrets::No);
+    }
+}
+
+#[test]
+fn text_snapshot_keeps_secret_redaction() {
+    let mut blockgrid = mock_blockgrid("foo zach@warp.dev bar\r\nsecond line");
+    blockgrid.maybe_enable_secret_obfuscation(ObfuscateSecrets::Yes);
+    blockgrid.grid_handler_mut().mark_secret_range(
+        Point::new(0, 4)..=Point::new(0, 16),
+        IsObfuscated::Yes,
+        "zach@warp.dev".to_string(),
+        SecretLevel::User,
+    );
+    let snapshot = blockgrid.start_to_point_text_snapshot(blockgrid.end_point());
+    let rendered = snapshot.render();
+    assert!(rendered.starts_with("foo ************* bar"), "{rendered}");
+    assert!(!rendered.contains("zach@warp.dev"));
+    assert_eq!(
+        rendered,
+        blockgrid.start_to_point_as_string(blockgrid.end_point())
+    );
+    assert_snapshot_matches_inline(blockgrid.grid_handler(), RespectObfuscatedSecrets::Yes);
+}
+
+#[test]
+fn text_snapshot_of_empty_grid_is_empty() {
+    let size = SizeInfo::new_without_font_metrics(0, 0);
+    let grid = GridHandler::new(
+        size,
+        MAX_SCROLL_LIMIT,
+        ChannelEventListener::new_for_test(),
+        false,
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::No,
+    );
+    let snapshot = grid.bounds_to_text_snapshot(
+        Point::new(0, 0),
+        Point::new(0, 0),
+        RespectObfuscatedSecrets::No,
+        false,
+        RespectDisplayedOutput::No,
+    );
+    assert_eq!(snapshot.render(), "");
+}
+
+#[test]
+fn text_snapshot_can_render_on_another_thread() {
+    // The point of the snapshot: it owns its data, so it can leave the UI thread.
+    let grid = snapshot_test_grid(10);
+    let total = grid.total_rows();
+    let inline = grid.bounds_to_string(
+        Point::new(0, 0),
+        Point::new(total - 1, 9),
+        false,
+        RespectObfuscatedSecrets::Yes,
+        false,
+        RespectDisplayedOutput::Yes,
+    );
+    let snapshot = grid.bounds_to_text_snapshot(
+        Point::new(0, 0),
+        Point::new(total - 1, 9),
+        RespectObfuscatedSecrets::Yes,
+        false,
+        RespectDisplayedOutput::Yes,
+    );
+    drop(grid);
+    let rendered = std::thread::spawn(move || snapshot.render())
+        .join()
+        .expect("render thread");
+    assert_eq!(rendered, inline);
+}
+
+#[test]
+fn selection_parts_join_text_and_snapshots_like_the_inline_path() {
+    use crate::terminal::model::grid::text_snapshot::{
+        BlockTextSnapshot, SelectionPart, SelectionParts,
+    };
+    let blockgrid = mock_blockgrid("one\r\ntwo\r\nthree");
+    let end = blockgrid.end_point();
+    let block_text = blockgrid.start_to_point_as_string(end);
+    let parts = SelectionParts::new(vec![
+        SelectionPart::Text("ai block".to_string()),
+        SelectionPart::Block(BlockTextSnapshot {
+            pieces: vec![blockgrid.start_to_point_text_snapshot(end)],
+        }),
+        SelectionPart::Text("tail".to_string()),
+    ]);
+    assert!(parts.has_snapshots());
+    assert_eq!(parts.render(), format!("ai block\n{block_text}\ntail"));
+}
+
+#[test]
+fn selection_render_stops_when_cancelled_and_matches_when_not() {
+    use crate::terminal::model::grid::text_snapshot::{
+        BlockTextSnapshot, SelectionPart, SelectionParts,
+    };
+    use std::sync::atomic::AtomicBool;
+    let blockgrid = mock_blockgrid("one\r\ntwo\r\nthree");
+    let end = blockgrid.end_point();
+    let make = || {
+        SelectionParts::new(vec![SelectionPart::Block(BlockTextSnapshot {
+            pieces: vec![blockgrid.start_to_point_text_snapshot(end)],
+        })])
+    };
+    let live = AtomicBool::new(false);
+    assert_eq!(make().render_cancellable(&live), Some(make().render()));
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(make().render_cancellable(&cancelled), None);
+}
+
+#[test]
+fn bounded_selection_from_parts_never_renders_snapshots() {
+    use crate::terminal::model::grid::text_snapshot::{
+        BlockTextSnapshot, BoundedSelection, SelectionPart, SelectionParts,
+    };
+    assert_eq!(BoundedSelection::from_parts(None), BoundedSelection::None);
+    let text = SelectionParts::new(vec![SelectionPart::Text("hi".to_string())]);
+    assert_eq!(
+        BoundedSelection::from_parts(Some(text)),
+        BoundedSelection::Text("hi".to_string())
+    );
+    let blockgrid = mock_blockgrid("one\r\ntwo");
+    let end = blockgrid.end_point();
+    let big = SelectionParts::new(vec![SelectionPart::Block(BlockTextSnapshot {
+        pieces: vec![blockgrid.start_to_point_text_snapshot(end)],
+    })]);
+    assert_eq!(
+        BoundedSelection::from_parts(Some(big)),
+        BoundedSelection::TooLarge
+    );
+}
+
+#[test]
+fn test_ris_resets_modes_and_keyboard_stack_to_a_new_grids_defaults_1599() {
+    let mut grid = GridHandler::new_for_test(5, 10);
+    let defaults = grid.ansi_handler_state.mode.bits();
+
+    grid.set_mode(ansi::Mode::CursorKeys);
+    grid.set_mode(ansi::Mode::BracketedPaste);
+    grid.set_keypad_application_mode();
+    grid.push_keyboard_mode(
+        KeyboardModes::DISAMBIGUATE_ESC_CODES | KeyboardModes::REPORT_EVENT_TYPES,
+    );
+    assert!(grid.is_mode_set(TermMode::APP_CURSOR));
+    assert!(grid.is_mode_set(TermMode::KEYBOARD_DISAMBIGUATE_ESCAPE));
+
+    grid.reset_state();
+
+    assert_eq!(grid.ansi_handler_state.mode.bits(), defaults);
+    assert!(!grid.is_mode_set(TermMode::APP_CURSOR));
+    assert!(!grid.is_mode_set(TermMode::APP_KEYPAD));
+    assert!(!grid.is_mode_set(TermMode::BRACKETED_PASTE));
+    assert!(!grid.is_mode_set(TermMode::KEYBOARD_PROTOCOL));
+    assert_eq!(
+        grid.ansi_handler_state.keyboard_mode,
+        KeyboardModes::NO_MODE
+    );
+    assert!(grid.ansi_handler_state.keyboard_mode_stack.is_empty());
 }

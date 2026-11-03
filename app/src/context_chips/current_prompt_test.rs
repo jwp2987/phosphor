@@ -12,6 +12,7 @@ use warp_core::command::ExitCode;
 use warpui::{App, SingletonEntity};
 use warpui_extras::user_preferences;
 
+use crate::ai::blocklist::agent_view::agent_input_footer::toolbar_item::AgentToolbarItemKind;
 #[cfg(feature = "local_fs")]
 use crate::code_review::diff_state::DiffStats;
 #[cfg(feature = "local_fs")]
@@ -20,7 +21,6 @@ use crate::code_review::git_status_update::{GitRepoStatusModel, GitStatusMetadat
 use crate::context_chips::display_chip::GitBranchTrackingStatus;
 #[cfg(windows)]
 use crate::system::SystemInfo;
-use crate::ai::blocklist::agent_view::agent_input_footer::toolbar_item::AgentToolbarItemKind;
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext, CLIAgentSessionStatus,
     CLIAgentSessionsModel,
@@ -54,11 +54,15 @@ use crate::{
 use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
-use super::{ActiveChipSurfaces, ChipUpdateStatus, CurrentPrompt, PromptContext};
+use super::{
+    effective_command_timeout, next_poll_delay, poll_decision, ActiveChipSurfaces, ChipState,
+    ChipUpdateStatus, CurrentPrompt, PollDecision, PromptContext, DEFAULT_CHIP_COMMAND_TIMEOUT,
+};
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::GitHubRepoModel;
 #[cfg(feature = "local_fs")]
 use crate::util::git::PrInfo;
+use std::time::Duration;
 
 #[cfg(feature = "local_fs")]
 fn git_status_metadata(branch: &str) -> GitStatusMetadata {
@@ -242,6 +246,54 @@ fn test_fingerprint_skips_contextual_chip_recompute_when_context_is_unchanged() 
                 state.last_computed_value.as_ref().and_then(|v| v.as_text()),
                 Some("/tmp/project")
             ));
+        });
+    });
+}
+
+#[test]
+fn test_typing_only_reports_a_change_when_a_chip_starts_or_stops_rendering() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::KubernetesContext],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        current_prompt.update(&mut app, |current_prompt, _| {
+            let aliases = Default::default();
+            current_prompt.states.insert(
+                ContextChipKind::KubernetesContext,
+                ChipState::new(&ContextChipKind::KubernetesContext),
+            );
+
+            // Typing a command the kubernetes chip does not care about changes nothing, so the
+            // prompt has no reason to rebuild itself.
+            assert!(!current_prompt.refresh_should_render("l", &aliases));
+            assert!(!current_prompt.refresh_should_render("ls -la", &aliases));
+
+            // The chip appears once the command is a kubernetes one, and only then.
+            assert!(current_prompt.refresh_should_render("kubectl get pods", &aliases));
+            assert!(!current_prompt.refresh_should_render("kubectl get pods -A", &aliases));
+
+            // And disappears again when the command changes.
+            assert!(current_prompt.refresh_should_render("ls", &aliases));
+            assert!(!current_prompt.refresh_should_render("ls -la", &aliases));
         });
     });
 }
@@ -982,6 +1034,219 @@ fn test_git_status_change_updates_branch_status_chip_value() {
     });
 }
 
+/// #1167: counts the shell commands a chip with an on-click generator (`GitBranchStatus`:
+/// status command + branch-list command) spawns across prompt updates.
+///
+/// Before the fix every fetch spawned both commands (so a new block with unchanged output cost
+/// 2 spawns) and a repeated update for the same block restarted everything again.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_unchanged_chip_refetch_does_not_respawn_on_click_command() {
+    App::test((), |mut app| async move {
+        let session_id = SessionId::from(1167);
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::GitBranchStatus],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_| History::new(vec![]));
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(AuthManager::new_for_test);
+        app.add_singleton_model(|_| crate::settings::manager::SettingsManager::default());
+        crate::settings::InputSettings::register(&mut app);
+        app.update(crate::settings::AISettings::register_and_subscribe_to_events);
+        app.add_singleton_model(crate::workspaces::user_workspaces::UserWorkspaces::default_mock);
+        #[cfg(windows)]
+        app.add_singleton_model(SystemInfo::new);
+        app.update(|ctx| {
+            crate::settings::InputSettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .input_box_type
+                    .set_value(crate::settings::InputBoxType::Classic, ctx);
+            });
+        });
+
+        let executor = Arc::new(RecordingCommandExecutor::default());
+        let sessions = app.add_model(|ctx| {
+            let mut sessions = Sessions::new_for_test().with_command_executor(executor.clone());
+            sessions.initialize_bootstrapped_session(
+                SessionInfo::new_for_test().with_id(session_id),
+                "test command".to_string(),
+                vec![],
+                None,
+                ctx,
+            );
+            sessions
+        });
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+        executor.clear();
+
+        let context = || PromptContext {
+            active_block_metadata: BlockMetadata::new(Some(session_id), Some("/a".to_string())),
+            environment: Environment::default(),
+        };
+        // Runs one prompt update and waits for the chip's commands, including the on-click
+        // command that is spawned from the main command's completion.
+        async fn settle(
+            app: &mut App,
+            current_prompt: &warpui::ModelHandle<CurrentPrompt>,
+            block_id: &str,
+            context: PromptContext,
+        ) {
+            current_prompt
+                .update(app, |cp, ctx| {
+                    cp.apply_context(block_id.to_string(), context, ctx);
+                    cp.await_generators(ctx)
+                })
+                .await;
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(50)).await;
+            current_prompt
+                .update(app, |cp, ctx| cp.await_generators(ctx))
+                .await;
+        }
+
+        // First prompt: the status command and the branch-list command both run.
+        settle(&mut app, &current_prompt, "block-1", context()).await;
+        assert_eq!(executor.commands.lock().len(), 2, "status + branch list");
+
+        // New block, same inputs, same output: the status is re-read (diff/ahead-behind can
+        // move) but the unchanged answer must not trigger another branch-list spawn.
+        settle(&mut app, &current_prompt, "block-2", context()).await;
+        assert_eq!(
+            executor.commands.lock().len(),
+            3,
+            "an unchanged refetch must not re-run the on-click command"
+        );
+
+        // The same block reporting the same context again changes no input: nothing restarts.
+        settle(&mut app, &current_prompt, "block-2", context()).await;
+        assert_eq!(
+            executor.commands.lock().len(),
+            3,
+            "a repeated update for the same block must not spawn anything"
+        );
+    });
+}
+
+/// #1166: the branch chip must follow the branch the shell reported in precmd immediately,
+/// instead of waiting for the git-status refresh, and the refresh must then take over.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_branch_status_chip_is_seeded_from_precmd_branch_before_git_status_refresh() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::GitBranchStatus],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+        let repo_handle = watcher_handle.update(&mut app, |watcher, ctx| {
+            watcher
+                .add_directory(
+                    warp_util::standardized_path::StandardizedPath::from_local_canonicalized(
+                        temp_dir.path(),
+                    )
+                    .unwrap(),
+                    ctx,
+                )
+                .unwrap()
+        });
+        let git_status = app
+            .add_model(move |ctx| GitRepoStatusModel::new_local_for_test(repo_handle, None, ctx));
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        // The git-status model has published nothing yet; the shell's precmd says "feat/seed".
+        current_prompt.update(&mut app, |cp, ctx| {
+            cp.set_git_repo_status(Some(git_status.downgrade()), ctx);
+            cp.latest_context = Some(PromptContext {
+                active_block_metadata: BlockMetadata::new(None, Some("/tmp/project".to_string())),
+                environment: Environment::default().with_git_branch("feat/seed"),
+            });
+            cp.update_states_with_new_context(ctx);
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                current_prompt
+                    .as_ref(ctx)
+                    .latest_chip_value(&ContextChipKind::GitBranchStatus),
+                Some(&crate::context_chips::ChipValue::GitBranchStatus(
+                    GitBranchTrackingStatus::without_counts("feat/seed".to_string(), None),
+                )),
+                "branch chip should show the precmd branch before the git-status refresh"
+            );
+        });
+
+        // The refresh lands and replaces the seed with the full status.
+        let full_status = GitBranchTrackingStatus::new(
+            "feat/seed".to_string(),
+            Some("origin/feat/seed".to_string()),
+            2,
+            0,
+        );
+        git_status.update(&mut app, |model, ctx| {
+            model.set_metadata_for_test(
+                Some(GitStatusMetadata {
+                    current_branch_name: "feat/seed".to_string(),
+                    main_branch_name: "main".to_string(),
+                    stats_against_head: DiffStats::default(),
+                    branch_tracking_status: full_status.clone(),
+                }),
+                ctx,
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                current_prompt
+                    .as_ref(ctx)
+                    .latest_chip_value(&ContextChipKind::GitBranchStatus),
+                Some(&crate::context_chips::ChipValue::GitBranchStatus(
+                    full_status
+                )),
+            );
+        });
+
+        // A later prompt for the same branch must not clobber the counts with a bare seed.
+        current_prompt.update(&mut app, |cp, ctx| {
+            cp.update_states_with_new_context(ctx);
+            let Some(crate::context_chips::ChipValue::GitBranchStatus(status)) =
+                cp.latest_chip_value(&ContextChipKind::GitBranchStatus)
+            else {
+                panic!("expected a branch status value");
+            };
+            assert_eq!(status.ahead, 2);
+        });
+    });
+}
+
 /// A [`CommandExecutor`] implementation that records which commands were run, but does not
 /// execute them.
 #[derive(Debug, Default)]
@@ -1187,4 +1452,162 @@ fn test_git_status_pr_info_updates_github_pr_chip_value() {
             );
         });
     });
+}
+
+#[test]
+fn poll_runs_when_foreground_and_input_empty() {
+    assert_eq!(poll_decision(true, false), PollDecision::Run);
+}
+
+#[test]
+fn poll_parks_for_background_terminals() {
+    // Parked, not re-timed: a hidden tab arms no timer until it is shown again.
+    assert_eq!(poll_decision(false, false), PollDecision::Park);
+    assert_eq!(poll_decision(false, true), PollDecision::Park);
+}
+
+/// A half-typed command parks the poll (no recheck timer); the input emptying resumes it.
+#[test]
+fn poll_parks_while_a_command_is_half_typed() {
+    assert_eq!(poll_decision(true, true), PollDecision::Park);
+}
+
+#[test]
+fn chip_commands_always_run_under_a_timeout() {
+    // A chip whose policy sets no timeout still gets the default, so a hung helper cannot
+    // run (and pile up on every refresh) forever.
+    assert_eq!(
+        effective_command_timeout(None),
+        DEFAULT_CHIP_COMMAND_TIMEOUT
+    );
+    // A chip's own timeout is honoured, whether shorter or longer than the default.
+    let short = Duration::from_secs(2);
+    assert_eq!(effective_command_timeout(Some(short)), short);
+    let long = DEFAULT_CHIP_COMMAND_TIMEOUT * 2;
+    assert_eq!(effective_command_timeout(Some(long)), long);
+}
+
+#[test]
+fn parked_poll_stays_parked_while_the_terminal_is_not_on_screen() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::ShellGitBranch],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        current_prompt.update(&mut app, |current_prompt, ctx| {
+            // A terminal whose window is not the active one is in the background.
+            current_prompt.terminal_window_id = Some(warpui::WindowId::new());
+            current_prompt.terminal_view_id = Some(warpui::EntityId::new());
+            let mut state = ChipState::new(&ContextChipKind::ShellGitBranch);
+            state.parked = true;
+            current_prompt
+                .states
+                .insert(ContextChipKind::ShellGitBranch, state);
+
+            // Window focus / editor activity elsewhere must not restart a hidden tab's poll.
+            current_prompt.resume_parked_polls(ctx);
+            let state = &current_prompt.states[&ContextChipKind::ShellGitBranch];
+            assert!(state.parked, "a background terminal's poll stays parked");
+            assert!(state.refresh_handle.is_none(), "and arms no timer");
+
+            // Clearing the chips drops the parked flag so a later resume cannot revive them.
+            current_prompt.clear_chips();
+            assert!(!current_prompt.states[&ContextChipKind::ShellGitBranch].parked);
+        });
+    });
+}
+
+/// A poll parked because a command is half-typed is not restarted by editor events while the
+/// buffer still holds text (no recheck timer, no elapsed-time guess).
+#[test]
+fn poll_parked_for_typing_is_not_resumed_while_input_has_text() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            Prompt::mock_with(
+                [ContextChipKind::ShellGitBranch],
+                false,
+                WarpPromptSeparator::None,
+            )
+        });
+        app.add_singleton_model(SessionSettings::new_with_defaults);
+        app.add_singleton_model(|_ctx| {
+            settings::PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        app.add_singleton_model(|_| {
+            settings::PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let current_prompt = app.add_model(move |ctx| CurrentPrompt::new(sessions, ctx));
+
+        current_prompt.update(&mut app, |current_prompt, ctx| {
+            let mut state = ChipState::new(&ContextChipKind::ShellGitBranch);
+            state.parked = true;
+            current_prompt
+                .states
+                .insert(ContextChipKind::ShellGitBranch, state);
+
+            // Foreground (no window ids), but the user is mid-command.
+            current_prompt.editor_input_has_text = true;
+            current_prompt.resume_parked_polls(ctx);
+            let state = &current_prompt.states[&ContextChipKind::ShellGitBranch];
+            assert!(state.parked, "stays parked while the input has text");
+            assert!(state.refresh_handle.is_none(), "and arms no timer");
+        });
+    });
+}
+
+/// Git chips never poll, local (repo watcher) or remote (the remote shell's precmd starts a new
+/// block, which re-runs the chips). No 120 s remote tick.
+#[test]
+fn git_chips_do_not_poll_local_or_remote() {
+    let thirty = Duration::from_secs(30);
+    for kind in [
+        ContextChipKind::ShellGitBranch,
+        ContextChipKind::GitBranchStatus,
+        ContextChipKind::GitDiffStats,
+    ] {
+        assert_eq!(next_poll_delay(&kind, thirty, 0), None, "{kind:?}");
+    }
+    // Non-git slow chips are unchanged.
+    assert_eq!(
+        next_poll_delay(&ContextChipKind::Date, Duration::from_secs(1800), 0),
+        Some(Duration::from_secs(1800))
+    );
+}
+
+/// The clock chips show minutes, so they wake on the minute boundary, not every second.
+#[test]
+fn clock_chips_wake_on_the_minute_boundary() {
+    let one_s = Duration::from_secs(1);
+    for kind in [ContextChipKind::Time12, ContextChipKind::Time24] {
+        assert_eq!(
+            next_poll_delay(&kind, one_s, 0),
+            Some(Duration::from_millis(60_010))
+        );
+        assert_eq!(
+            next_poll_delay(&kind, one_s, 59_500),
+            Some(Duration::from_millis(510))
+        );
+    }
 }

@@ -1,9 +1,10 @@
 use crate::ai::blocklist::agent_view::{agent_view_bg_fill, AgentViewState};
+use settings::Setting as _;
 use crate::ai::blocklist::block::cli::{
     CLI_SUBAGENT_MIN_RESIZABLE_HEIGHT, CLI_SUBAGENT_MIN_RESIZABLE_WIDTH,
 };
 use crate::ai::blocklist::{ai_brand_color, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT};
-use crate::ai_assistant::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
+use crate::ai::ask_ai::{AI_ASSISTANT_SVG_PATH, ASK_AI_ASSISTANT_TEXT};
 use crate::appearance::Appearance;
 use crate::drive::settings::WarpDriveSettings;
 use crate::features::FeatureFlag;
@@ -67,9 +68,12 @@ use warpui::{
 use warpui::{EntityId, ModelHandle, SingletonEntity as _};
 
 use super::block_list_viewport::{ClampingMode, InputMode, ScrollPosition, ViewportState};
-use super::blockgrid_renderer::GridRenderParams;
+use super::blockgrid_renderer::{
+    block_list_paint_from_snapshot, DeferredGridDraw, GridRenderParams, GridSnapshotCache,
+    GridSnapshotKey,
+};
 use super::find::{BlockFindRenderData, TerminalFindModel};
-use super::grid_renderer::CellGlyphCache;
+use super::grid_renderer::{CellGlyphCache, SharedCellGlyphCache};
 
 use super::meta_shortcuts::handle_keystroke_despite_composing;
 use super::model::ansi::CursorShape;
@@ -87,7 +91,8 @@ use super::shared_session::presence_manager::{
 use super::shared_session::render_util::SHARED_SESSION_AVATAR_DIAMETER;
 use super::view::{
     BlocklistAIRenderContext, InlineBannerId, RichContentMetadata, SeparatorId,
-    SharedSessionBanners, TerminalEditor, TerminalViewRenderContext, BLOCK_BANNER_HEIGHT,
+    SharedSessionBanners, TerminalEditor, TerminalView, TerminalViewRenderContext,
+    BLOCK_BANNER_HEIGHT,
 };
 use super::warpify::render::{draw_flag_pole, render_subshell_flag};
 use super::TerminalModel;
@@ -99,6 +104,10 @@ use crate::terminal::warpify::SubshellSource;
 use crate::terminal::model::escape_sequences::{
     maybe_kitty_keyboard_escape_sequence, KeystrokeWithDetails, ToEscapeSequence,
 };
+
+/// Lines above and below the viewport whose stale (deferred-reflow) blocks layout reflows
+/// before measuring (#1303).
+const STALE_REFLOW_LAYOUT_MARGIN_LINES: f64 = 60.;
 
 /// The number of pixels at the bottom of padding where selection scrolling is performed.
 const BOTTOM_VERTICAL_MARGIN: f32 = 10.0;
@@ -141,7 +150,7 @@ const SNACKBAR_HOVER_OPACITY: Opacity = 60;
 
 // If the header is more than SNACKBAR_HEADER_MAX_RATIO percent of the entire
 // grid height, we disable the "sticky" behavior and have the block scroll normally.
-const SNACKBAR_HEADER_MAX_RATIO: f32 = 0.5;
+pub(super) const SNACKBAR_HEADER_MAX_RATIO: f32 = 0.5;
 
 /// Scrolling speed increases by this exponent curve the further out of bounds the
 /// mouse has been dragged
@@ -155,7 +164,7 @@ const LINEAR_SCROLLING: ScrollingAcceleration = ScrollingAcceleration::Polynomia
 /// Height for a block hover button element.
 /// Without making the vertical size fixed, for some reason some elements (bookmark, block filter, shared session avatar)
 /// have a height that extends down to the bottom of the window when there's a horizontal scroll bar, which messes with the on-hover behavior.
-const BLOCK_HOVER_BUTTON_HEIGHT: f32 = 28.;
+pub(super) const BLOCK_HOVER_BUTTON_HEIGHT: f32 = 28.;
 
 enum ScrollingAcceleration {
     Polynomial(f32),
@@ -706,8 +715,38 @@ impl BlockListHoverState {
 
 /// Whether the terminal takes a key. The live focus decides alone whenever it is known; the
 /// render-time snapshot is only the fallback (#934).
-fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bool {
+pub(crate) fn terminal_accepts_keys(snapshot_focused: bool, live_focus: Option<bool>) -> bool {
     live_focus.unwrap_or(snapshot_focused)
+}
+
+/// Space kept clear at the right edge of a block for the hover toolbelt (4 icons + padding, see
+/// `block_menu_items_start_origin` in `paint`), so the PS1 run time never sits under it.
+const PS1_DURATION_RIGHT_RESERVED_PX: f32 = 144.;
+
+/// #1145: whether a block gets the right-aligned run time on its first line. The Phosphor
+/// prompt (`!honor_ps1`) shows its run time in the block label instead, and background, static
+/// and in-band blocks have no user command to time.
+fn ps1_duration_visible(
+    honor_ps1: bool,
+    is_background: bool,
+    is_static: bool,
+    is_in_band: bool,
+    setting_enabled: bool,
+) -> bool {
+    setting_enabled && honor_ps1 && !(is_background || is_static || is_in_band)
+}
+
+/// #1145: the x offset (from the block's left edge) the PS1 run time is drawn at, or `None` when
+/// it would touch the prompt/command text on the first line (or does not fit in the pane).
+/// `first_line_right_px` is the right edge of the last non-empty cell of the block's first line.
+fn ps1_duration_x(
+    pane_width_px: f32,
+    first_line_right_px: f32,
+    duration_width_px: f32,
+    min_gap_px: f32,
+) -> Option<f32> {
+    let x = pane_width_px - PS1_DURATION_RIGHT_RESERVED_PX - duration_width_px;
+    (x >= first_line_right_px + min_gap_px).then_some(x)
 }
 
 pub struct BlockListElement {
@@ -718,8 +757,8 @@ pub struct BlockListElement {
     is_terminal_focused: bool,
     /// See `TerminalViewRenderContext::approval_card_view_id` (#1028).
     approval_card_view_id: Option<EntityId>,
-    /// See `TerminalViewRenderContext::settled_ai_focus_view_ids` (#1095).
-    settled_ai_focus_view_ids: Vec<EntityId>,
+    /// See `TerminalViewRenderContext::settled_ai_focus_view_id` (#1095).
+    settled_ai_focus_view_id: Option<EntityId>,
     /// See `TerminalViewRenderContext::ssh_choice_card_view_id` (#1087).
     ssh_choice_card_view_id: Option<EntityId>,
     is_terminal_selecting: bool,
@@ -750,7 +789,7 @@ pub struct BlockListElement {
     font_size: f32,
     font_weight: Weight,
     line_height_ratio: f32,
-    warp_theme: WarpTheme,
+    warp_theme: Arc<WarpTheme>,
     ui_builder: UiBuilder,
     block_borders_enabled: bool,
     overflow_offset: f32,
@@ -777,6 +816,9 @@ pub struct BlockListElement {
 
     label_elements_builder: Box<LabelBuilderFn>,
     label_elements: HashMap<BlockIndex, Box<dyn Element>>,
+    /// #1145: run time of blocks that honour PS1 (no label), with the x offset from the block's
+    /// left edge it is painted at. Only holds blocks where it fits on the first line.
+    duration_elements: HashMap<BlockIndex, (Box<dyn Element>, f32)>,
 
     bookmark_element_builder: Box<BookmarkBuilderFn>,
     bookmark_elements: HashMap<BlockIndex, Box<dyn Element>>,
@@ -816,6 +858,8 @@ pub struct BlockListElement {
 
     /// Used to save the position of the active cursor.
     terminal_view_id: EntityId,
+    /// The published key modes (#1411): a modifier key event is encoded without the model's lock.
+    key_model: crate::terminal::model::key_facts::KeyModelCell,
 
     pane_state: SplitPaneState,
 
@@ -864,6 +908,9 @@ pub struct BlockListElement {
 
     /// If `Some()`, lays out and renders the element next to the cursor.
     cursor_hint_text_element: Option<Box<dyn Element>>,
+
+    /// Snapshots of the block grids painted last frame; see [`GridSnapshotCache`].
+    grid_snapshots: GridSnapshotCache,
 
     /// Voice input toggle key code for CLI agent footer integration.
     #[cfg(feature = "voice_input")]
@@ -1081,11 +1128,12 @@ impl BlockListElement {
             find_model,
             input_mode,
             terminal_view_id: terminal_view_render_context.terminal_view_id,
+            key_model: terminal_view_render_context.key_model.clone(),
             size_info: terminal_view_render_context.size_info,
             scroll_position: terminal_view_render_context.scroll_position,
             is_terminal_focused: terminal_view_render_context.is_terminal_focused,
             approval_card_view_id: terminal_view_render_context.approval_card_view_id,
-            settled_ai_focus_view_ids: terminal_view_render_context.settled_ai_focus_view_ids,
+            settled_ai_focus_view_id: terminal_view_render_context.settled_ai_focus_view_id,
             ssh_choice_card_view_id: terminal_view_render_context.ssh_choice_card_view_id,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             rich_content_drag_selecting: terminal_view_render_context.rich_content_drag_selecting,
@@ -1100,7 +1148,7 @@ impl BlockListElement {
             font_size: appearance.monospace_font_size(),
             font_weight: appearance.monospace_font_weight(),
             line_height_ratio: appearance.ui_builder().line_height_ratio(),
-            warp_theme: appearance.theme().clone(),
+            warp_theme: appearance.shared_theme(),
             ui_builder: appearance.ui_builder().clone(),
             block_borders_enabled: terminal_spacing.block_borders_enabled,
             overflow_offset: terminal_spacing.overflow_offset,
@@ -1115,6 +1163,7 @@ impl BlockListElement {
             subshell_separators,
             selected_blocks: terminal_view_render_context.selected_blocks,
             label_elements: HashMap::new(),
+            duration_elements: HashMap::new(),
             label_elements_builder,
             bookmark_element_builder,
             bookmark_elements: HashMap::new(),
@@ -1150,6 +1199,7 @@ impl BlockListElement {
             input_size_at_last_frame,
             block_footer_elements: HashMap::new(),
             cursor_hint_text_element,
+            grid_snapshots: GridSnapshotCache::default(),
             cli_subagent_views,
             cli_subagent_active_drag_block_ids,
             inline_menu_positioner,
@@ -1179,7 +1229,9 @@ impl BlockListElement {
     where
         I: IntoIterator<Item = (EntityId, Box<dyn Element>, Option<RichContentMetadata>)>,
     {
-        for (id, element, metadata) in content.into_iter() {
+        let content = content.into_iter();
+        self.rich_content_elements.reserve(content.size_hint().0);
+        for (id, element, metadata) in content {
             self.rich_content_elements.insert(id, element);
             if let Some(metadata) = metadata {
                 self.rich_content_metadata.insert(id, metadata);
@@ -1484,11 +1536,23 @@ impl BlockListElement {
         )
     }
 
+    /// Whether the pane key sink is on and was offered this event: it is, whenever the window has
+    /// a focused view (the terminal view is a sink and is in the focus chain of everything in it).
+    fn sink_has_seen_keys(&self, ctx: &EventContext) -> bool {
+        crate::terminal::pane_key::sink_owns_keys()
+            && ctx.live_focus_of(self.terminal_view_id).is_some()
+    }
+
+    /// Control characters typed while the terminal itself has focus. With the pane key sink on
+    /// (#1404) the sink has already seen this key: it takes the control keys of a focus gap during
+    /// an ssh hold, and anything it does not take is this element's, which owns the translation of
+    /// a key into the terminal's escape sequences.
     fn key_down(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
         if self.terminal_focused_now(ctx)
             && !chars.is_empty()
             && chars.chars().all(|c| c.is_control())
         {
+            warpui::input_order::log_key_hop("kh_element_key_down", || "taken=true".to_owned());
             ctx.dispatch_typed_action(TerminalAction::KeyDown(chars.to_string()));
             true
         } else {
@@ -1497,31 +1561,33 @@ impl BlockListElement {
     }
 
     fn typed_characters(&mut self, chars: &str, ctx: &mut EventContext) -> bool {
-        // #1028: with focus on a pending approval card, printable keys are meant for the agent
-        // input (the card has no use for them), not the void.
+        // #1404: the pane's key sink has delivered (or declined) this text before any element saw
+        // it. The element no longer decides whether it "claims" a key. The one exception is a
+        // window with no focused view at all: no sink can be found from nothing, so the snapshot
+        // of the last frame decides, as it always did.
+        if self.sink_has_seen_keys(ctx) {
+            return false;
+        }
+        // The sink is off (`PHOSPHOR_PANE_KEY=0`), only shadowing, or there is no focus chain: the
+        // terminal takes the text when it has focus, or a card it hands the keys on for does
+        // (#1028, #1087, #1095).
         let on_approval_card = self
             .approval_card_view_id
             .is_some_and(|card| ctx.live_focus_is_exactly(card) == Some(true));
-        // #1087: likewise the SSH-extension choice card (focus is on it or its inner buttons);
-        // the terminal view turns the keys into the card's "choose an option first" hint.
         let on_ssh_choice_card = self
             .ssh_choice_card_view_id
             .is_some_and(|card| ctx.live_focus_of(card) == Some(true));
-        // #1095: focus left on an AI block or a settled (finished, running, queued) action card
-        // is focus nowhere for printable keys; the terminal view routes them as if it held
-        // focus, instead of the element dropping them.
         let on_settled_ai_target = self
-            .settled_ai_focus_view_ids
-            .iter()
-            .any(|view| ctx.live_focus_is_exactly(*view) == Some(true));
-        if (self.terminal_focused_now(ctx)
+            .settled_ai_focus_view_id
+            .is_some_and(|view| ctx.live_focus_is_exactly(view) == Some(true));
+        let claimed = self.terminal_focused_now(ctx)
             || on_approval_card
             || on_ssh_choice_card
-            || on_settled_ai_target)
-            && !chars.is_empty()
-        {
-            ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
+            || on_settled_ai_target;
+        if chars.is_empty() || !claimed {
+            return false;
         }
+        ctx.dispatch_typed_action(TerminalAction::TypedCharacters(chars.to_string()));
         true
     }
 
@@ -1531,20 +1597,23 @@ impl BlockListElement {
         selected_range: &Range<usize>,
         ctx: &mut EventContext,
     ) -> bool {
-        if self.is_terminal_focused {
+        if self.is_terminal_focused && !self.sink_has_seen_keys(ctx) {
             ctx.dispatch_typed_action(TerminalAction::SetMarkedText {
                 marked_text: UserInput::new(marked_text),
                 selected_range: selected_range.clone(),
             });
+            return true;
         }
-        true
+        // Not delivered, so not consumed.
+        false
     }
 
     fn clear_marked_text(&mut self, ctx: &mut EventContext) -> bool {
-        if self.is_terminal_focused {
+        if self.is_terminal_focused && !self.sink_has_seen_keys(ctx) {
             ctx.dispatch_typed_action(TerminalAction::ClearMarkedText);
+            return true;
         }
-        true
+        false
     }
 
     fn ctrl_d(&self, ctx: &mut EventContext) -> bool {
@@ -2741,6 +2810,7 @@ impl BlockListElement {
         hovered_secret: Option<SecretHandle>,
         glyphs: &mut CellGlyphCache,
         label_element: Option<&mut Box<dyn Element>>,
+        duration_element: Option<&mut (Box<dyn Element>, f32)>,
         footer_element: Option<&mut Box<dyn Element>>,
         block_index: BlockIndex,
         block_borders_enabled: bool,
@@ -2753,6 +2823,8 @@ impl BlockListElement {
         cursor_hint_text: Option<&mut Box<dyn Element>>,
         image_metadata: &HashMap<u32, StoredImageMetadata>,
         agent_view_state: &AgentViewState,
+        deferred_grid_draws: &mut Option<Vec<DeferredGridDraw>>,
+        grid_snapshots: &mut GridSnapshotCache,
         ctx: &mut PaintContext,
         app: &AppContext,
     ) {
@@ -2797,26 +2869,59 @@ impl BlockListElement {
         if let Some(label_element) = label_element {
             label_element.paint(prompt_origin, ctx, app);
         } else {
+            // #1145: PS1 blocks have no label; the run time goes at the right of the first line.
+            if let Some((duration_element, x)) = duration_element {
+                // Centre the (slightly smaller) text on the first grid line.
+                let dy = duration_element
+                    .size()
+                    .map_or(0., |size| ((cell_size_height - size.y()) / 2.).max(0.));
+                duration_element.paint(prompt_origin + vec2f(*x, dy), ctx, app);
+            }
             let size_info = &block_grid_params.grid_render_params.size_info;
             if block.should_display_rprompt(size_info) {
                 let rprompt_origin = prompt_origin + block.rprompt_render_offset(size_info);
-                block.rprompt_grid().draw(
-                    rprompt_origin,
-                    element_origin,
-                    glyphs,
-                    COMMAND_ALPHA,
-                    None,
-                    None,
-                    hovered_secret,
-                    None::<std::iter::Empty<&RangeInclusive<IndexPoint>>>,
-                    None,
-                    Properties::default(),
-                    block_grid_params,
-                    None,
-                    image_metadata,
-                    ctx,
-                    app,
-                );
+                let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
+                    let draw = block.rprompt_grid().capture_draw(
+                        rprompt_origin,
+                        element_origin,
+                        COMMAND_ALPHA,
+                        None,
+                        None,
+                        hovered_secret,
+                        None::<std::iter::Empty<&RangeInclusive<IndexPoint>>>,
+                        None,
+                        Properties::default(),
+                        block_grid_params,
+                        None,
+                        grid_snapshots,
+                        GridSnapshotKey {
+                            block_index,
+                            grid: GridType::Rprompt,
+                        },
+                        ctx.scene.insertion_point(),
+                    )?;
+                    draws.push(draw);
+                    Some(())
+                });
+                if deferred.is_none() {
+                    block.rprompt_grid().draw(
+                        rprompt_origin,
+                        element_origin,
+                        glyphs,
+                        COMMAND_ALPHA,
+                        None,
+                        None,
+                        hovered_secret,
+                        None::<std::iter::Empty<&RangeInclusive<IndexPoint>>>,
+                        None,
+                        Properties::default(),
+                        block_grid_params,
+                        None,
+                        image_metadata,
+                        ctx,
+                        app,
+                    );
+                }
             }
         }
 
@@ -2846,29 +2951,60 @@ impl BlockListElement {
             .and_then(|data: &BlockFindRenderData<'_>| {
                 data.focused_range_for_grid(GridType::PromptAndCommand)
             });
-        block.prompt_and_command_grid().draw(
-            command_origin,
-            element_origin,
-            glyphs,
-            COMMAND_ALPHA,
-            highlighted_url
-                .filter(|url| url.is_in_command_content() && url.block_index == block_index)
-                .map(|url| &url.inner),
-            link_tool_tip
-                .filter(|url| url.is_in_command_content() && url.block_index == block_index)
-                .map(|url| &url.inner),
-            hovered_secret,
-            find_render_data
-                .as_ref()
-                .and_then(|data: &BlockFindRenderData<'_>| data.command_grid_matches()),
-            command_focused_range.as_ref(),
-            command_grid_properties,
-            block_grid_params,
-            command_grid_visible_cursor_shape(block),
-            image_metadata,
-            ctx,
-            app,
-        );
+        let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
+            let draw = block.prompt_and_command_grid().capture_draw(
+                command_origin,
+                element_origin,
+                COMMAND_ALPHA,
+                highlighted_url
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                link_tool_tip
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                hovered_secret,
+                find_render_data
+                    .as_ref()
+                    .and_then(|data: &BlockFindRenderData<'_>| data.command_grid_matches()),
+                command_focused_range.as_ref(),
+                command_grid_properties,
+                block_grid_params,
+                command_grid_visible_cursor_shape(block),
+                grid_snapshots,
+                GridSnapshotKey {
+                    block_index,
+                    grid: GridType::PromptAndCommand,
+                },
+                ctx.scene.insertion_point(),
+            )?;
+            draws.push(draw);
+            Some(())
+        });
+        if deferred.is_none() {
+            block.prompt_and_command_grid().draw(
+                command_origin,
+                element_origin,
+                glyphs,
+                COMMAND_ALPHA,
+                highlighted_url
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                link_tool_tip
+                    .filter(|url| url.is_in_command_content() && url.block_index == block_index)
+                    .map(|url| &url.inner),
+                hovered_secret,
+                find_render_data
+                    .as_ref()
+                    .and_then(|data: &BlockFindRenderData<'_>| data.command_grid_matches()),
+                command_focused_range.as_ref(),
+                command_grid_properties,
+                block_grid_params,
+                command_grid_visible_cursor_shape(block),
+                image_metadata,
+                ctx,
+                app,
+            );
+        }
 
         // Only render the cursor in the command grid if the command grid is active and if it's
         // long running. This is to avoid jitter where a cursor just flickers while the pty is
@@ -2933,33 +3069,72 @@ impl BlockListElement {
 
             let output_grid_properties =
                 Properties::default().weight(block_grid_params.grid_render_params.font_weight);
+            // Find highlights only matter for the rows about to be painted (#1327).
+            let output_find_matches = find_render_data.as_ref().and_then(|data| {
+                data.output_grid_matches_in_rows(block.output_grid().visible_row_window(
+                    *grid_origin,
+                    viewport_origin,
+                    block_grid_params,
+                ))
+            });
             let output_focused_range = find_render_data
                 .as_ref()
                 .and_then(|data: &BlockFindRenderData<'_>| data.focused_range_for_grid(GridType::Output));
-            block.output_grid().draw(
-                *grid_origin,
-                viewport_origin,
-                glyphs,
-                255,
-                highlighted_url
-                    .filter(|url| url.is_output_grid() && url.block_index == block_index)
-                    .map(|url| &url.inner),
-                link_tool_tip
-                    .filter(|url| !url.is_in_command_content() && url.block_index == block_index)
-                    .map(|url| &url.inner),
-                hovered_secret,
-                // Render find matches in output grid
-                find_render_data
-                    .as_ref()
-                    .and_then(|data: &BlockFindRenderData<'_>| data.output_grid_matches()),
-                output_focused_range.as_ref(),
-                output_grid_properties,
-                block_grid_params,
-                output_grid_visible_cursor_shape(block),
-                image_metadata,
-                ctx,
-                app,
-            );
+            let deferred = deferred_grid_draws.as_mut().and_then(|draws| {
+                let draw = block.output_grid().capture_draw(
+                    *grid_origin,
+                    viewport_origin,
+                    255,
+                    highlighted_url
+                        .filter(|url| url.is_output_grid() && url.block_index == block_index)
+                        .map(|url| &url.inner),
+                    link_tool_tip
+                        .filter(|url| {
+                            !url.is_in_command_content() && url.block_index == block_index
+                        })
+                        .map(|url| &url.inner),
+                    hovered_secret,
+                    output_find_matches.as_ref().map(|matches| matches.iter()),
+                    output_focused_range.as_ref(),
+                    output_grid_properties,
+                    block_grid_params,
+                    output_grid_visible_cursor_shape(block),
+                    grid_snapshots,
+                    GridSnapshotKey {
+                        block_index,
+                        grid: GridType::Output,
+                    },
+                    ctx.scene.insertion_point(),
+                )?;
+                draws.push(draw);
+                Some(())
+            });
+            if deferred.is_none() {
+                block.output_grid().draw(
+                    *grid_origin,
+                    viewport_origin,
+                    glyphs,
+                    255,
+                    highlighted_url
+                        .filter(|url| url.is_output_grid() && url.block_index == block_index)
+                        .map(|url| &url.inner),
+                    link_tool_tip
+                        .filter(|url| {
+                            !url.is_in_command_content() && url.block_index == block_index
+                        })
+                        .map(|url| &url.inner),
+                    hovered_secret,
+                    // Render find matches in output grid
+                    output_find_matches.as_ref().map(|matches| matches.iter()),
+                    output_focused_range.as_ref(),
+                    output_grid_properties,
+                    block_grid_params,
+                    output_grid_visible_cursor_shape(block),
+                    image_metadata,
+                    ctx,
+                    app,
+                );
+            }
 
             if block.is_output_cursor_visible()
             // Don't draw the Zap cursor when rich input is hiding
@@ -3420,6 +3595,8 @@ impl Element for BlockListElement {
         }
 
         let mut model = self.model.lock();
+        let mut hold =
+            crate::terminal::model_lock_trace::HoldTimer::start("BlockListElement::layout");
         let cell_size = Vector2F::new(
             self.size_info.cell_width_px().as_f32(),
             self.size_info.cell_height_px().as_f32(),
@@ -3429,24 +3606,50 @@ impl Element for BlockListElement {
         let mut visible_block_indices = vec![];
         let mut updated_rich_content_heights = HashMap::new();
 
+        // Restored blocks parsed off the UI thread (#1254) are installed before anything
+        // measures heights, so this frame already lays out their real content.
+        model.block_list_mut().install_ready_deferred_restores();
+
         // First, remeasure any rich content items whose heights may be out of date.
         // We track these in the BlockList via a dirty set keyed by view ID to
         // avoid laying out every rich content block on every frame.
         let dirty_rich_content_items = model.block_list_mut().take_dirty_rich_content_items();
         if !dirty_rich_content_items.is_empty() {
-            for view_id in &dirty_rich_content_items {
-                if let Some(rich_content) = self.rich_content_elements.get_mut(view_id) {
-                    // Lay out the rich content with an infinite vertical constraint,
-                    // allowing it to take up as much size as it needs.
-                    let current_size = rich_content.layout(
-                        SizeConstraint::tight_on_cross_axis(Axis::Vertical, constraint),
-                        ctx,
-                        app,
-                    );
-                    let height_px = current_size.y();
+            // Laying out a rich-content view (an AI block, a CLI subagent bubble) is arbitrary
+            // view work that reads none of the model, so it runs with the guard released: the
+            // pty reader's `try_lock` is not refused for it. The measured heights are applied
+            // by view id after re-locking, which tolerates an item removed in the gap, and the
+            // viewport and everything else read from the model are derived after the re-lock,
+            // so no state from before the gap is carried over. `PHOSPHOR_RENDER_LOCK_LEGACY=1`
+            // keeps the guard held.
+            macro_rules! layout_dirty_rich_content {
+                () => {
+                    for view_id in &dirty_rich_content_items {
+                        if let Some(rich_content) = self.rich_content_elements.get_mut(view_id) {
+                            // Lay out the rich content with an infinite vertical constraint,
+                            // allowing it to take up as much size as it needs.
+                            let current_size = rich_content.layout(
+                                SizeConstraint::tight_on_cross_axis(Axis::Vertical, constraint),
+                                ctx,
+                                app,
+                            );
+                            let height_px = current_size.y();
 
-                    updated_rich_content_heights.insert(*view_id, height_px as f64);
-                }
+                            updated_rich_content_heights.insert(*view_id, height_px as f64);
+                        }
+                    }
+                };
+            }
+            if crate::terminal::model_lock_trace::legacy_lock_scoping() {
+                layout_dirty_rich_content!();
+            } else {
+                drop(model);
+                drop(hold);
+                layout_dirty_rich_content!();
+                model = self.model.lock();
+                hold = crate::terminal::model_lock_trace::HoldTimer::start(
+                    "BlockListElement::layout (after dirty rich content)",
+                );
             }
         }
         // O(1) when the map is empty, which is almost every frame; otherwise patches only the
@@ -3477,6 +3680,26 @@ impl Element for BlockListElement {
                     self.inline_menu_positioner.clone(),
                 )
             };
+        }
+
+        // Deferred reflow (#1303): a block flagged stale after a column change still has its old
+        // wrap width and height. Reflow the visible range plus a margin before anything below
+        // measures or draws, so a stale block is never shown. Heights can move when blocks
+        // reflow, so repeat once to catch blocks that slid into range. O(1) when nothing is
+        // stale.
+        if model.block_list().stale_reflow_pending() {
+            for _ in 0..2 {
+                let range = create_viewport!(model.block_list())
+                    .block_range_with_margin(Lines::new(STALE_REFLOW_LAYOUT_MARGIN_LINES));
+                let Some((first, last)) = range else { break };
+                if model
+                    .block_list_mut()
+                    .reflow_stale_blocks_in_range(first, last)
+                    == 0
+                {
+                    break;
+                }
+            }
         }
 
         // Manually construct the viewport with the max size constraint because
@@ -3567,6 +3790,11 @@ impl Element for BlockListElement {
         // Rebuild the viewport to account for updated block heights, then compute visible items.
         let viewport = create_viewport!(model.block_list());
 
+        self.duration_elements.clear();
+        let show_ps1_duration = *crate::terminal::BlockListSettings::as_ref(app)
+            .show_block_duration_with_shell_prompt
+            .value();
+
         let mut viewport_iter = viewport.iter();
         let mut visible_height_px: f64 = 0.;
         for viewport_item in viewport_iter.by_ref() {
@@ -3579,6 +3807,37 @@ impl Element for BlockListElement {
                         if let Some(block) = model.block_list().block_at(block_index) {
                             if !(block.honor_ps1() || block.is_background() || block.is_static()) {
                                 block_indices_with_label_elements.push(block_index);
+                            } else if ps1_duration_visible(
+                                block.honor_ps1(),
+                                block.is_background(),
+                                block.is_static(),
+                                block.is_in_band_command_block(),
+                                show_ps1_duration,
+                            ) {
+                                // #1145: the Phosphor-prompt label is not laid out, so draw the
+                                // run time (same element as the label's) on the first line.
+                                if let Some(mut duration) = TerminalView::render_duration_element(
+                                    block_index,
+                                    &model,
+                                    self.mouse_states.label_mouse_states.get(&block_index),
+                                    visible_block_indices.is_empty(),
+                                    Appearance::as_ref(app),
+                                ) {
+                                    let width = duration.layout(constraint, ctx, app).x();
+                                    let first_line_right = self.size_info.padding_x_px().as_f32()
+                                        + block
+                                            .prompt_and_command_grid()
+                                            .rightmost_visible_nonempty_cell_with_max_row(0)
+                                            .map_or(0., |col| (col as f32 + 1.) * cell_size.x());
+                                    if let Some(x) = ps1_duration_x(
+                                        self.size_info.pane_width_px().as_f32(),
+                                        first_line_right,
+                                        width,
+                                        cell_size.x(),
+                                    ) {
+                                        self.duration_elements.insert(block_index, (duration, x));
+                                    }
+                                }
                             }
 
                             // Check if the current block belongs to a subshell session. We'll add
@@ -3866,6 +4125,7 @@ impl Element for BlockListElement {
         // Explicitly drop the terminal model mutex guard so that it can be freed up for other
         // threads
         drop(model);
+        drop(hold);
 
         for (idx, element) in block_indices_with_label_elements.iter().zip(elements) {
             self.label_elements.insert(*idx, element);
@@ -3981,8 +4241,12 @@ impl Element for BlockListElement {
             size.cell_height_px().as_f32(),
         );
 
-        let mut glyphs = CellGlyphCache::default();
+        let mut glyphs = SharedCellGlyphCache::acquire();
         let mut grid_origin = origin;
+        // Block grids are captured here, under the lock, and painted after it is released (see
+        // `DeferredGridDraw`); the pty reader parses the next output meanwhile.
+        self.grid_snapshots.begin_frame();
+        let mut deferred_grid_draws = block_list_paint_from_snapshot().then(Vec::new);
 
         let block_list = model.block_list();
         let total_block_height = block_list.block_heights().summary().height;
@@ -4322,6 +4586,7 @@ impl Element for BlockListElement {
                         self.hovered_secret,
                         &mut glyphs,
                         self.label_elements.get_mut(block_index),
+                        self.duration_elements.get_mut(block_index),
                         self.block_footer_elements.get_mut(block_index),
                         *block_index,
                         self.block_borders_enabled,
@@ -4334,6 +4599,8 @@ impl Element for BlockListElement {
                         self.cursor_hint_text_element.as_mut(),
                         &model.image_id_to_metadata,
                         agent_view_state,
+                        &mut deferred_grid_draws,
+                        &mut self.grid_snapshots,
                         ctx,
                         app,
                     );
@@ -4693,6 +4960,14 @@ impl Element for BlockListElement {
             }
         }
 
+        drop(model);
+        if let Some(draws) = &deferred_grid_draws {
+            // Later insertion points move when an earlier one is spliced, hence the reverse.
+            for draw in draws.iter().rev() {
+                draw.paint(&mut glyphs, &block_grid_params, ctx, app);
+            }
+        }
+
         ctx.scene.stop_layer();
         self.child_max_z_index = Some(ctx.scene.max_active_z_index());
     }
@@ -4849,6 +5124,9 @@ impl Element for BlockListElement {
             for label_element in self.label_elements.values_mut() {
                 handled |= label_element.dispatch_event(event, ctx, app);
             }
+            for (duration_element, _) in self.duration_elements.values_mut() {
+                handled |= duration_element.dispatch_event(event, ctx, app);
+            }
 
             if let Some(banner) = &mut self.block_banner {
                 handled |= banner.dispatch_event(event, ctx, app);
@@ -4931,6 +5209,12 @@ impl Element for BlockListElement {
                 // If this isn't the currently focused session, it shouldn't receive the keydown
                 // event.
                 if !self.terminal_focused_now(ctx) {
+                    return false;
+                }
+                // #1411: with the pane key sink on, the sink has already translated this key (from
+                // the published terminal modes, without the model's lock) and delivered it or
+                // declined it. Translating it again here would wait for the pty reader.
+                if self.sink_has_seen_keys(ctx) {
                     return false;
                 }
 
@@ -5050,8 +5334,10 @@ impl Element for BlockListElement {
             Event::ModifierKeyChanged { key_code, state } => {
                 if self.is_terminal_focused {
                     let is_press = matches!(state, KeyState::Pressed);
+                    // The modes as published (the model's lock is the pty reader's while it parses).
+                    let modes = self.key_model.eager_modes().unwrap_or_default();
                     if let Some(escape_sequence) = maybe_kitty_keyboard_escape_sequence(
-                        self.model.lock().deref(),
+                        &modes,
                         key_code,
                         is_press,
                     ) {
@@ -5267,6 +5553,51 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1145: the PS1 run time shows only for user command blocks that honour PS1, with the
+    /// setting on. Fails on old code: the helper (and the whole PS1 duration) did not exist; the
+    /// old layout condition showed nothing for PS1 blocks.
+    #[test]
+    fn ps1_duration_visibility_rules() {
+        // PS1 block, setting on.
+        assert!(ps1_duration_visible(true, false, false, false, true));
+        // Phosphor prompt keeps its label (and so no PS1 duration).
+        assert!(!ps1_duration_visible(false, false, false, false, true));
+        // Setting off.
+        assert!(!ps1_duration_visible(true, false, false, false, false));
+        // Background, static and in-band blocks.
+        assert!(!ps1_duration_visible(true, true, false, false, true));
+        assert!(!ps1_duration_visible(true, false, true, false, true));
+        assert!(!ps1_duration_visible(true, false, false, true, true));
+    }
+
+    #[test]
+    fn ps1_duration_hidden_when_it_would_touch_the_command() {
+        let pane = 800.;
+        let width = 60.;
+        let gap = 8.;
+        let x_right = pane - PS1_DURATION_RIGHT_RESERVED_PX - width;
+        // Short first line: right-aligned left of the toolbelt area.
+        assert_eq!(ps1_duration_x(pane, 100., width, gap), Some(x_right));
+        // Exactly the minimum gap still fits.
+        assert_eq!(
+            ps1_duration_x(pane, x_right - gap, width, gap),
+            Some(x_right)
+        );
+        // One pixel closer overlaps/touches: hidden.
+        assert_eq!(ps1_duration_x(pane, x_right - gap + 1., width, gap), None);
+        // A wrapped/long command reaching the pane edge: hidden.
+        assert_eq!(ps1_duration_x(pane, pane, width, gap), None);
+        // A pane too narrow for the reserved toolbelt area: hidden.
+        assert_eq!(ps1_duration_x(100., 0., width, gap), None);
+    }
+
+    /// #1145: shown by default.
+    #[test]
+    fn ps1_duration_setting_defaults_on() {
+        use settings::Setting as _;
+        assert!(crate::terminal::ShowBlockDurationWithShellPrompt::default_value());
+    }
 
     /// #987: Shift-drag over a program that reports the mouse selects text, not blocks.
     #[test]

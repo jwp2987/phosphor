@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="32" failures="5" skipped="2">
+<testcase classname="terminal" name="mode_proof" time="4.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.60">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="40.40">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="77.50">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="68.30">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="8.10">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="25.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="250.40">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="36.20">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="10.00">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="8.20">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="137.60">
+<failure message="Enter to command start: Phosphor overhead 6.02 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 6.02 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.51 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="29.90">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="72.60">
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="35.20">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="104.40">
+<failure message="nu: 12 typed lines: expected ['t220_dfgg8yi2zl', 't221_27cm25yswl', 't222_lb9de9o2u2', 't223_gyd3r03v6g', 't224_z8146jujwi', 't225_on3jgg1d3j', 't226_9urzay52tt', 't227_uslg5l2j3g', 't228_8uu59vu93u',">nu: 12 typed lines: expected ['t220_dfgg8yi2zl', 't221_27cm25yswl', 't222_lb9de9o2u2', 't223_gyd3r03v6g', 't224_z8146jujwi', 't225_on3jgg1d3j', 't226_9urzay52tt', 't227_uslg5l2j3g', 't228_8uu59vu93u', 't229_z8nkp8mpdu', 't230_v0bwxx0nso', 't231_zylaywooeu'], got ['t220_dfgg8yi2zlt221_27cm25yswlt222_lb9de9o2u2t223_gyd3r03v6gt224_z8146jujwit225_on3jgg1d3jt226_9urzay52ttt227_uslg5l2j3gt228_8uu59vu93ut229_z8nkp8mpdut230_v0bwxx0nsot231_zylaywooeu']
+nu: pasted lines + instant Enter: expected ['t232_nsg1awf0jh', 't233_8lvjy1u87r', 't234_nmkk8kjh27', 't235_i1ivuibwlo'], got ['t232_nsg1awf0jht233_8lvjy1u87rt234_nmkk8kjh27t235_i1ivuibwlo']
+nu: nested nu, exit to the outer nu, next line: expected ['t236_p55cfi84', 't237_jnxirwey', 't238_4b73mpna'], got ['t236_p55cfi84t237_jnxirweyt238_4b73mpna']</failure>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="6.50">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="2.90">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="66.90">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="25.40">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="250.20">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="36.00">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="10.10">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="36.00">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T111_jblqxi never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted | BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted</failure>
+</testcase>
+<testcase classname="agent" name="latency_enter" time="137.50">
+<failure message="Enter to command start: Phosphor overhead 10.00 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 10.00 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.18 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="30.40">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="72.30">
+</testcase>
+<testcase classname="agent" name="shell_fish" time="33.70">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="102.10">
+<failure message="nu: 12 typed lines: expected ['t135_ywsv2p7jdv', 't136_6l85vhb4ny', 't137_zogpvvp34x', 't138_m12z8h5rij', 't139_y0gbel3y6s', 't140_j7gqb3zo8z', 't141_8p1klvpe89', 't142_lyb6n1pc7m', 't143_pz3hdyf9g4',">nu: 12 typed lines: expected ['t135_ywsv2p7jdv', 't136_6l85vhb4ny', 't137_zogpvvp34x', 't138_m12z8h5rij', 't139_y0gbel3y6s', 't140_j7gqb3zo8z', 't141_8p1klvpe89', 't142_lyb6n1pc7m', 't143_pz3hdyf9g4', 't144_7pabt3r0ki', 't145_82609kzym5', 't146_xjqrlfxvjq'], got ['t135_ywsv2p7jdvt136_6l85vhb4nyt137_zogpvvp34xt138_m12z8h5rijt139_y0gbel3y6st140_j7gqb3zo8zt141_8p1klvpe89t142_lyb6n1pc7mt143_pz3hdyf9g4t144_7pabt3r0kit145_82609kzym5t146_xjqrlfxvjq']
+nu: pasted lines + instant Enter: expected ['t147_qwyr3ajiqo', 't148_me8m81pi93', 't149_zmfejdbzy0', 't150_ii88epyism'], got ['t147_qwyr3ajiqot148_me8m81pi93t149_zmfejdbzy0t150_ii88epyism']
+nu: nested nu, exit to the outer nu, next line: expected ['t151_zwlotjw5', 't152_8sf6tn3b', 't153_sgx2qddu'], got ['t151_zwlotjw5t152_8sf6tn3bt153_sgx2qddu']
+nu app log: 2026-11-02T22:03:48Z [DEBUG] frame 1: updated=["ActionButton", "Workspace", "RightPanelView", "ActionButton", "PaneView", "UseAgentToolbar", "ActionButton", "Input", "ActionButton", "Menu", "Terminal"
+nu app log: 2026-11-02T22:03:48Z [DEBUG] frame 1: updated=["Input", "ActionButton", "Menu", "Workspace", "PaneView", "RightPanelView", "Terminal", "WarpifyFooterView", "ActionButton", "PaneHeader", "ActionButton"
+nu app log: 2026-11-02T22:03:49Z [DEBUG] frame 1: updated=["RightPanelView", "Workspace", "Input", "ActionButton", "Menu", "WarpifyFooterView", "UseAgentToolbar", "ActionButton", "ActionButton", "PaneHeader", "Pa
+nu app log: 2026-11-02T22:03:52Z [DEBUG] frame 1: updated=["Menu", "ActionButton", "PaneView", "PaneHeader", "WarpifyFooterView", "UseAgentToolbar", "ActionButton", "RightPanelView", "ActionButton", "Terminal", "</failure>
+</testcase>
+<testcase classname="agent" name="md_viewer" time="6.40">
+</testcase>
+</testsuite>

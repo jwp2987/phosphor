@@ -43,6 +43,7 @@ void warp_app_os_appearance_changed(id app);
 BOOL warp_app_should_terminate_app(id app);
 void warp_app_quit_menu_item_triggered(id app);
 void warp_app_terminate_declined(id app);
+void warp_app_terminate_hide_fallback_fired(id app);
 BOOL warp_app_should_close_window(id app, id window);
 BOOL warp_app_are_key_bindings_disabled_for_window(id app, id window);
 BOOL warp_app_has_binding_for_keystroke(id app, id event);

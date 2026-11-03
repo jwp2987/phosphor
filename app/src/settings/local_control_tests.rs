@@ -246,3 +246,123 @@ fn cloud_sync_cannot_disable_local_control() {
         });
     });
 }
+
+// ── off-thread startup read (#1309) ─────────────────────────────
+
+struct SendStore(
+    std::sync::Arc<Mutex<HashMap<String, String>>>,
+    std::thread::ThreadId,
+);
+
+impl secure_storage::SecureStorage for SendStore {
+    fn write_value(&self, key: &str, value: &str) -> Result<(), secure_storage::Error> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), value.to_owned());
+        Ok(())
+    }
+    fn read_value(&self, key: &str) -> Result<String, secure_storage::Error> {
+        assert_ne!(
+            std::thread::current().id(),
+            self.1,
+            "the keychain must not be read on the UI thread"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        self.0
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or(secure_storage::Error::NotFound)
+    }
+    fn remove_value(&self, key: &str) -> Result<(), secure_storage::Error> {
+        self.0.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+fn register_async_fixture(
+    app: &mut warpui::App,
+    stored: Option<LocalControlMode>,
+) -> std::sync::Arc<Mutex<HashMap<String, String>>> {
+    let data = std::sync::Arc::new(Mutex::new(HashMap::new()));
+    if let Some(mode) = stored {
+        data.lock().unwrap().insert(
+            LocalControlModeSetting::storage_key().to_owned(),
+            serde_json::to_string(&mode).unwrap(),
+        );
+    }
+    let main = std::thread::current().id();
+    let for_factory = data.clone();
+    secure_storage::background::set_factory_for_test(Some(std::sync::Arc::new(move || {
+        Box::new(SendStore(for_factory.clone(), main)) as secure_storage::Model
+    })));
+    app.update(|ctx| {
+        ctx.add_singleton_model(|_| {
+            PublicPreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        ctx.add_singleton_model(|_| {
+            PrivatePreferences::new(
+                Box::<user_preferences::in_memory::InMemoryPreferences>::default(),
+            )
+        });
+        ctx.add_singleton_model(|_| SettingsManager::default());
+        ctx.add_singleton_model(|_| -> secure_storage::Model {
+            Box::<InMemorySecureStorage>::default()
+        });
+        LocalControlSettings::register(ctx);
+        super::begin_async_load(ctx);
+    });
+    data
+}
+
+async fn wait_for(mut done: impl FnMut() -> bool) {
+    for _ in 0..400 {
+        if done() {
+            return;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("condition not reached");
+}
+
+#[test]
+fn stored_mode_arrives_after_startup_and_until_then_local_control_is_off() {
+    warpui::App::test((), |mut app| async move {
+        register_async_fixture(&mut app, Some(LocalControlMode::Enabled));
+        // Fail closed until the read lands, whatever the channel default is.
+        assert!(!app.read(|ctx| LocalControlSettings::as_ref(ctx).is_enabled()));
+        wait_for(|| app.read(|ctx| LocalControlSettings::as_ref(ctx).is_enabled())).await;
+        secure_storage::background::set_factory_for_test(None);
+    });
+}
+
+#[test]
+fn a_change_made_before_the_read_lands_wins_over_the_read() {
+    warpui::App::test((), |mut app| async move {
+        let data = register_async_fixture(&mut app, Some(LocalControlMode::Enabled));
+        app.update(|ctx| {
+            LocalControlSettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .local_control_mode
+                    .set_value(LocalControlMode::Disabled, ctx)
+            })
+        })
+        .expect("update should succeed");
+        let key = LocalControlModeSetting::storage_key();
+        wait_for(|| {
+            data.lock()
+                .unwrap()
+                .get(key)
+                .is_some_and(|v| v.contains("Disabled"))
+        })
+        .await;
+        // Give the (now stale) read a chance to land; it must not flip the setting back.
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(100)).await;
+        assert!(!app.read(|ctx| LocalControlSettings::as_ref(ctx).is_enabled()));
+        secure_storage::background::set_factory_for_test(None);
+    });
+}

@@ -26,6 +26,10 @@ use crate::{
     },
 };
 
+use crate::terminal::model::grid::text_snapshot::{
+    PendingBlockRange, SelectionPart, SelectionParts,
+};
+
 use super::{
     BlockHeight, BlockHeightItem, BlockHeightSummary, BlockList, BlockListPoint, RichContentItem,
 };
@@ -355,6 +359,7 @@ impl BlockList {
     /// Returns the start and end points of the current text selection in the block list, if any,
     /// and whether the selection was reversed.
     /// Note that the `start` is always before `end`.
+    #[cfg(test)]
     pub fn text_selection_range(
         &self,
         semantic_selection: &SemanticSelection,
@@ -443,7 +448,7 @@ impl BlockList {
     /// Used to update an existing selection's tail to a new BlockListPoint (and an associated `side`).
     /// Must have an existing selection to update - otherwise, this is a no-op (use start_selection first).
     pub fn update_selection(&mut self, point: BlockListPoint, side: Side) {
-        let Some(mut selection) = self.selection.take() else {
+        let Some(mut selection) = self.take_selection() else {
             return;
         };
 
@@ -489,7 +494,7 @@ impl BlockList {
     ) -> Option<BlockListPoint> {
         let tail = match self.expand_selection(semantic_selection, inverted_blocklist) {
             Some(selection) => selection.tail().within_grid_point,
-            None => match self.selection.take() {
+            None => match self.take_selection() {
                 None => return None,
                 Some(mut selection) => {
                     // In this case, there's an underlying selection that spans an empty range
@@ -512,7 +517,7 @@ impl BlockList {
             },
         };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         let tail_point = tail.get();
         let grid = match self.block_at(tail.block_index) {
@@ -576,7 +581,7 @@ impl BlockList {
     ) -> Option<BlockListPoint> {
         let tail = match self.expand_selection(semantic_selection, inverted_blocklist) {
             Some(selection) => selection.tail().within_grid_point,
-            None => match self.selection.take() {
+            None => match self.take_selection() {
                 None => return None,
                 Some(mut selection) => {
                     // In this case, there's an underlying selection that spans an empty range
@@ -599,7 +604,7 @@ impl BlockList {
             },
         };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         let tail_point = tail.get();
         let grid = match self.block_at(tail.block_index) {
@@ -672,7 +677,7 @@ impl BlockList {
                 None => return None,
             };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         // If the selection spans exactly one line, ensure the tail is at the beginning
         // This is custom logic to make sure that shift-down on a selected line grabs
@@ -758,7 +763,7 @@ impl BlockList {
                 None => return None,
             };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         // If the selection spans exactly one line, ensure the tail is at the end.
         // This is custom logic to make sure that shift-down on a selected line grabs
@@ -903,10 +908,21 @@ impl BlockList {
     }
 
     pub fn clear_selection(&mut self) {
-        self.selection = None;
+        self.take_selection();
         self.rich_content_selections.clear();
         self.event_proxy
             .send_terminal_event(TerminalEvent::TextSelectionChanged);
+    }
+
+    /// Takes the selection out, telling the key path's copy there is none (#1411). Every write to
+    /// `selection` goes through this or [`Self::set_selection`]: a method that takes the
+    /// selection to move it and then does not put it back (a truncation, a reflow, a stale
+    /// block index) has still left the copy exact, so a Ctrl-C that finds the parser inside the
+    /// model never copies a selection the parser just dropped.
+    pub(super) fn take_selection(&mut self) -> Option<BlockListSelection> {
+        let selection = std::mem::take(&mut self.selection);
+        self.key_model.store_block_list_selection(false);
+        selection
     }
 
     /// Records that the given rich content (AI) block view currently has an
@@ -927,7 +943,7 @@ impl BlockList {
             // Otherwise the point selection doesn't involve this block (e.g. a
             // stale command-block selection elsewhere); a fresh rich content
             // selection supersedes it (single-selection semantics).
-            self.selection = None;
+            self.take_selection();
         }
         self.rich_content_selections = vec![view_id];
         self.event_proxy
@@ -965,12 +981,64 @@ impl BlockList {
         inverted_blocklist: bool,
         app: &AppContext,
     ) -> Option<String> {
+        self.selection_to_parts(semantic_selection, inverted_blocklist, app, None)
+            .map(|parts| parts.render())
+    }
+
+    /// Like [`Self::selection_to_string`], but when the selection spans more than
+    /// `defer_over_rows` rows, the grid text of each block is captured as a snapshot instead of
+    /// being built, so the caller can render it off the UI thread (#1304). Everything else
+    /// (rich content selections, rect selections) is still read inline.
+    pub fn selection_to_parts(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        app: &AppContext,
+        defer_over_rows: Option<usize>,
+    ) -> Option<SelectionParts> {
+        self.selection_to_parts_inner(
+            semantic_selection,
+            inverted_blocklist,
+            app,
+            defer_over_rows,
+            false,
+        )
+    }
+
+    /// [`Self::selection_to_parts`] for a copy: a selection over `defer_over_rows` rows takes no
+    /// snapshot here at all. Its blocks become [`SelectionPart::Range`]s that the caller fills
+    /// with `SelectionParts::advance` in time-budgeted slices (#1377), so this call's lock hold
+    /// no longer grows with the selection.
+    pub fn selection_to_parts_sliced(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        app: &AppContext,
+        defer_over_rows: Option<usize>,
+    ) -> Option<SelectionParts> {
+        self.selection_to_parts_inner(
+            semantic_selection,
+            inverted_blocklist,
+            app,
+            defer_over_rows,
+            true,
+        )
+    }
+
+    fn selection_to_parts_inner(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        app: &AppContext,
+        defer_over_rows: Option<usize>,
+        sliced: bool,
+    ) -> Option<SelectionParts> {
         match self.expand_selection(semantic_selection, inverted_blocklist) {
             Some(ExpandedSelectionRange::Regular { start, end, .. }) => {
                 let start_within_grid_point = start.within_grid_point;
                 let end_within_grid_point = end.within_grid_point;
 
-                let mut selected_texts: Vec<String> = vec![];
+                let mut selected_texts: Vec<SelectionPart> = vec![];
                 let mut selection_start_cursor = self
                     .block_heights()
                     .cursor::<BlockHeight, BlockHeightSummary>();
@@ -986,6 +1054,9 @@ impl BlockList {
                     top_row = original_selection.tail.point.row;
                     bottom_row = original_selection.head.point.row;
                 }
+                let defer_blocks = defer_over_rows.is_some_and(|max_rows| {
+                    (bottom_row.as_f64() - top_row.as_f64()) > max_rows as f64
+                });
                 selection_start_cursor.seek(&BlockHeight::from(top_row), SeekBias::Right);
 
                 // Loop over each block, adding their contents to the output.
@@ -1019,15 +1090,29 @@ impl BlockList {
                                     command_block.end_point()
                                 };
 
-                                selected_texts
-                                    .push(command_block.bounds_to_string(start_point, end_point));
+                                selected_texts.push(if defer_blocks && sliced {
+                                    SelectionPart::Range(Box::new(PendingBlockRange::new(
+                                        command_block.id().clone(),
+                                        start_point,
+                                        end_point,
+                                    )))
+                                } else if defer_blocks {
+                                    SelectionPart::Block(
+                                        command_block
+                                            .bounds_to_text_snapshot(start_point, end_point),
+                                    )
+                                } else {
+                                    SelectionPart::Text(
+                                        command_block.bounds_to_string(start_point, end_point),
+                                    )
+                                });
                             }
                         }
                         BlockHeightItem::RichContent(RichContentItem { view_id, .. }) => {
                             if let Some(selected_text) =
                                 read_selected_text_from_ai_block(*view_id, app)
                             {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
 
                             if let Some(active_window_id) = app.windows().active_window() {
@@ -1038,7 +1123,7 @@ impl BlockList {
                                     if let Some(selected_text) =
                                         warpify_success_block.selected_text()
                                     {
-                                        selected_texts.push(selected_text);
+                                        selected_texts.push(selected_text.into());
                                     }
                                 }
                             }
@@ -1056,10 +1141,10 @@ impl BlockList {
                     selected_texts.reverse();
                 }
 
-                Some(selected_texts.join("\n"))
+                Some(SelectionParts::new(selected_texts))
             }
             Some(ExpandedSelectionRange::Rect { rows }) => {
-                let mut selected_texts: Vec<String> = vec![];
+                let mut selected_texts: Vec<SelectionPart> = vec![];
 
                 let mut selection_start_cursor = self
                     .block_heights()
@@ -1090,7 +1175,7 @@ impl BlockList {
                             if let Some(selected_text) =
                                 read_selected_text_from_ai_block(item.view_id, app)
                             {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
                         selection_start_cursor.next();
@@ -1101,7 +1186,11 @@ impl BlockList {
                     };
                     let start_point = start.within_grid_point.into();
                     let end_point = end.within_grid_point.into();
-                    selected_texts.push(command_block.bounds_to_string(start_point, end_point));
+                    selected_texts.push(
+                        command_block
+                            .bounds_to_string(start_point, end_point)
+                            .into(),
+                    );
                 }
 
                 // Read AI block selected text in the trailing AI blocks.
@@ -1111,13 +1200,13 @@ impl BlockList {
                         if let Some(selected_text) =
                             read_selected_text_from_ai_block(item.view_id, app)
                         {
-                            selected_texts.push(selected_text);
+                            selected_texts.push(selected_text.into());
                         }
                     }
                     selection_start_cursor.next();
                 }
 
-                Some(selected_texts.join("\n"))
+                Some(SelectionParts::new(selected_texts))
             }
             None => {
                 // Check if there are rich content blocks in the selection. This is to cover
@@ -1137,7 +1226,7 @@ impl BlockList {
                         {
                             let ai_block_view = app.view(&ai_block);
                             if let Some(selected_text) = ai_block_view.selected_text(app) {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
 
@@ -1146,7 +1235,7 @@ impl BlockList {
                         {
                             let block = app.view(&env_var_block);
                             if let Some(selected_text) = block.selected_text(app) {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
 
@@ -1155,7 +1244,7 @@ impl BlockList {
                         {
                             let warpify_success_block = app.view(&ssh_block);
                             if let Some(selected_text) = warpify_success_block.selected_text() {
-                                selected_texts.push(selected_text);
+                                selected_texts.push(selected_text.into());
                             }
                         }
                     }
@@ -1163,7 +1252,7 @@ impl BlockList {
 
                 // TODO: If `selected_texts` is empty, should we return `None` instead of `Some("")`?
                 // As of 02/18/2025, this scenario can be reproduced by single-clicking anywhere on an AI response block.
-                Some(selected_texts.join("\n"))
+                Some(SelectionParts::new(selected_texts))
             }
         }
     }
@@ -1181,7 +1270,7 @@ impl BlockList {
 
     pub(super) fn update_selection_after_height_change(&mut self) {
         let max_height = self.block_heights.summary().height;
-        if let Some(mut selection) = self.selection.take() {
+        if let Some(mut selection) = self.take_selection() {
             let start_point = selection.start_anchor().point;
             let mut end_point = selection.end_anchor().point;
 
@@ -1207,6 +1296,44 @@ impl BlockList {
                 self.set_selection(selection);
             }
         }
+    }
+
+    /// Re-addresses the selection after one block's height changed from `old_height` to
+    /// `new_height` (a deferred reflow, #1303). `top` is the block's first row before the change.
+    /// Selections are addressed by absolute row, so an anchor below the block moves by the height
+    /// delta and an anchor above it stays; the selected text is unchanged. An anchor INSIDE the
+    /// block cannot be re-addressed (the wrap changed under it), so the selection is cleared.
+    /// Returns whether the selection survived (also true when there was none).
+    pub(super) fn remap_selection_for_block_height_change(
+        &mut self,
+        top: Lines,
+        old_height: Lines,
+        new_height: Lines,
+    ) -> bool {
+        let Some(mut selection) = self.take_selection() else {
+            return true;
+        };
+        let bottom = top + old_height;
+        let delta = new_height - old_height;
+        let mut inside = false;
+        for anchor in [&mut selection.head, &mut selection.tail] {
+            let row = anchor.point.row;
+            if row >= bottom {
+                anchor.point.row = row + delta;
+            } else if row >= top {
+                inside = true;
+            }
+        }
+        if inside {
+            // Restore then clear so the TextSelectionChanged event fires exactly as before.
+            self.selection = Some(selection);
+            self.clear_selection();
+            return false;
+        }
+        // The double-click override is block-relative and may point into the reflowed block.
+        selection.smart_select_override = None;
+        self.set_selection(selection);
+        true
     }
 
     /// Update the selection after a grid's content was truncated because it hit the maximum number
@@ -1244,7 +1371,7 @@ impl BlockList {
             }
 
             if end.in_same_block_and_grid(&active_block_location) {
-                if let Some(mut selection) = self.selection.take() {
+                if let Some(mut selection) = self.take_selection() {
                     selection.end_anchor().point.row = max(
                         selection.end_anchor().point.row - 1.into_lines(),
                         Lines::zero(),
@@ -1271,6 +1398,7 @@ impl BlockList {
 
     fn set_selection(&mut self, value: BlockListSelection) {
         self.selection = Some(value);
+        self.key_model.store_block_list_selection(true);
         self.event_proxy
             .send_terminal_event(TerminalEvent::TextSelectionChanged);
     }

@@ -13,7 +13,7 @@ use warpui::{ModelContext, SingletonEntity};
 use crate::WindowSettings;
 use crate::local_control::LocalControlBridge;
 use crate::settings::{
-    AccessibilitySettings, FontSettings, InputSettings, ThemeSettings, derived_theme_kind,
+    AccessibilitySettings, FontSettings, InputSettings, ThemeSettings, derived_theme_kind_with,
 };
 use crate::themes::theme::ThemeKind;
 use crate::user_config::WarpConfig;
@@ -252,7 +252,7 @@ fn active_theme_kind(
     theme_settings: &ThemeSettings,
     ctx: &ModelContext<LocalControlBridge>,
 ) -> ThemeKind {
-    derived_theme_kind(theme_settings, ctx.system_theme())
+    derived_theme_kind_with(theme_settings, || ctx.system_theme())
 }
 
 fn rounded_u32(value: f32) -> Option<u32> {

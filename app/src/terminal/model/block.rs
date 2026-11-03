@@ -1,4 +1,5 @@
 mod interaction_mode;
+pub mod interactive_latch;
 mod serialized_block;
 
 pub use interaction_mode::*;
@@ -6,7 +7,9 @@ pub use serialized_block::*;
 use warp_core::features::FeatureFlag;
 
 use super::grid::grid_handler::{GridHandler, PerformResetGridChecks};
+use super::grid::text_snapshot::BlockTextSnapshot;
 use super::grid::{Cursor, RespectDisplayedOutput};
+use super::header_grid::CommandSnapshot;
 use super::header_grid::HeaderGrid;
 use super::header_grid::PromptEndPoint;
 use super::image_map::StoredImageMetadata;
@@ -80,7 +83,8 @@ use std::{
     },
 };
 
-pub const LONG_RUNNING_COMMAND_DURATION_MS: u64 = 50;
+/// Presentation debounce only (see `interactive_latch`): never decides interactivity by itself.
+pub const LONG_RUNNING_COMMAND_DURATION_MS: u64 = interactive_latch::SETTLE_DELAY_MS;
 pub const LONG_RUNNING_BOTTOM_PADDING_LINES: f32 = 0.2;
 
 /// Top padding for a block running a long-running command, mirroring
@@ -372,13 +376,13 @@ pub struct Block {
     rprompt: Option<String>,
 
     /// Executor used for spawning futures in the background
-    #[allow(dead_code)]
     background_executor: Arc<Background>,
 
     event_proxy: ChannelEventListener,
 
     render_delay_complete: Arc<AtomicBool>,
-    was_long_running: AtomicBool,
+    /// Latched by events; see [`interactive_latch`]. Replaces the old 50 ms wall-clock test.
+    interactive_latch: interactive_latch::InteractiveLatch,
     bootstrap_stage: BootstrapStage,
 
     show_bootstrap_block: bool,
@@ -462,6 +466,12 @@ pub struct Block {
     /// This may only be `true` for long running commands.
     has_received_user_input: bool,
 
+    /// `true` once a ^C (ETX) was written to this block's pty by the user or by Phosphor (the
+    /// stop button, an Escape stop, a ^C the agent wrote). A command that exits 130 on its own
+    /// leaves this `false`, so the agent can tell an interrupted command from one that merely
+    /// reports 130 (#1178).
+    interrupted_by_ctrl_c: bool,
+
     /// When true, don't show the block in the blocklist.
     hidden: bool,
 
@@ -490,10 +500,17 @@ pub struct Block {
     /// disagree today; port the desktop guard together with whatever first sets it.
     should_hide_command_grid: bool,
 
+    /// Set when a column change left this finished block's grids at the old wrap width because
+    /// it was far from the viewport (#1303). The block list reflows it before it can be drawn.
+    reflow_stale: bool,
+
     /// [`Self::linefeed`] may discard some linefeeds at the beginning of the prompt. Doing so will
     /// alter the row numbers for [`Self::goto`] and [`Self::goto_line`] when ConPTY is involved. We
     /// track the count of discarded newlines here in order to correct the row number.
     leading_linefeeds_ignored: usize,
+    /// True for a restored placeholder whose grids are still being parsed off-thread (#1254):
+    /// serializing it would save a blank block (#1265).
+    restore_pending: bool,
 
     /// `true` if client-side telemetry for user-generated AI data is enabled.
     pub(super) is_ai_ugc_telemetry_enabled: bool,
@@ -533,7 +550,7 @@ impl std::fmt::Debug for Block {
             .field("creation_ts", &self.creation_ts)
             .field("start_ts", &self.start_ts)
             .field("completed_ts", &self.completed_ts)
-            .field("was_long_running", &self.was_long_running)
+            .field("interactive_latch", &self.interactive_latch)
             .field("exit_code", &self.exit_code)
             .finish()
     }
@@ -667,6 +684,10 @@ impl From<&Block> for BlockType {
                         lazy_block_field!(id, |block: &Block| Arc::new(SerializedBlock::from(
                             block
                         ))),
+                        lazy_block_field!(id, |block: &Block| Arc::new(
+                            SerializedBlock::from_block_metadata_only(block)
+                        )),
+                        lazy_block_field!(id, DeferredBlockContent::capture),
                         lazy_block_field!(id, Block::command_to_string),
                         lazy_block_field!(id, Block::compute_command_with_obfuscated_secrets),
                         lazy_block_field!(id, Block::compute_output_truncated),
@@ -766,6 +787,13 @@ pub enum BlockSection {
     NotContained,
 }
 
+/// Where a sliced block snapshot resumes: which grid piece and which row offset in it (#1377).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct SnapshotSliceCursor {
+    piece: usize,
+    offset: usize,
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BlockGridPoint {
     Prompt(Point),
@@ -811,13 +839,6 @@ impl BlockGridPoint {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum GridIndex {
-    PromptAndCommand(usize),
-    Command(usize),
-    Output(usize),
-}
-
 #[derive(Debug)]
 pub struct BlockMatches {
     prompt_and_command_grid_matches: Vec<RangeInclusive<Point>>,
@@ -825,29 +846,6 @@ pub struct BlockMatches {
     command_grid_matches: Vec<RangeInclusive<Point>>,
     output_grid_matches: Vec<RangeInclusive<Point>>,
     filtered_output_grid_matches: Option<Vec<RangeInclusive<Point>>>,
-}
-
-/// Returns the match that applies to the given point and advances the iterator if necessary.
-///
-/// NOTE: `matches_iter` must be sorted in descending order.
-fn active_or_prev_row<I>(
-    row_iter: &mut I,
-    active_row: Option<usize>,
-    current_row: &usize,
-) -> Option<usize>
-where
-    I: Iterator<Item = usize>,
-{
-    let mut row = active_row.or_else(|| row_iter.next());
-    while let Some(curr_row) = row {
-        if curr_row <= *current_row {
-            return row;
-        } else {
-            row = row_iter.next();
-        }
-    }
-
-    None
 }
 
 impl BlockMatches {
@@ -862,57 +860,6 @@ impl BlockMatches {
             output_grid_matches,
             filtered_output_grid_matches: None,
         }
-    }
-
-    pub fn calculate_filtered_output_grid_matches(
-        &self,
-        displayed_output_rows: impl DoubleEndedIterator<Item = usize>,
-    ) -> Vec<RangeInclusive<Point>> {
-        let output_grid_match_iter = self.output_grid_matches.iter();
-        let mut displayed_output_rows_iter = displayed_output_rows.rev();
-        let mut displayed_row = None;
-        let mut filtered_output_grid_matches = Vec::new();
-
-        // Add the output grid matches (in descending order) if they are contained in displayed rows.
-        for output_grid_match in output_grid_match_iter {
-            displayed_row = active_or_prev_row(
-                &mut displayed_output_rows_iter,
-                displayed_row,
-                &output_grid_match.end().row,
-            );
-            let end_row_is_displayed = displayed_row
-                .is_some_and(|displayed_row| output_grid_match.end().row == displayed_row);
-            displayed_row = active_or_prev_row(
-                &mut displayed_output_rows_iter,
-                displayed_row,
-                &output_grid_match.start().row,
-            );
-            let start_row_is_displayed = displayed_row
-                .is_some_and(|displayed_row| output_grid_match.start().row == displayed_row);
-
-            // We include a match if both the start row and end row of the match are displayed.
-            // This is to be defensive against any bugs that might cause only part of a logical line to be displayed.
-            // NOTE: When a match spans multiple rows, we include it when the start and end rows are displayed
-            // but the middle rows are not.
-            if start_row_is_displayed && end_row_is_displayed {
-                filtered_output_grid_matches.push(output_grid_match.clone());
-            }
-        }
-
-        filtered_output_grid_matches
-    }
-
-    /// Sets the filtered output grid matches
-    pub fn set_filtered_output_grid_matches(
-        &mut self,
-        filtered_output_grid_matches: Vec<RangeInclusive<Point>>,
-    ) {
-        self.filtered_output_grid_matches = Some(filtered_output_grid_matches);
-    }
-
-    /// Resets any filter on the output grid matches.
-    pub fn reset_output_grid_matches(&mut self) {
-        self.filtered_output_grid_matches = None;
     }
 
     pub fn prompt_and_command_grid_matches(&self) -> &[RangeInclusive<Point>] {
@@ -934,10 +881,6 @@ impl BlockMatches {
         self.prompt_and_command_grid_matches.len()
     }
 
-    pub fn number_of_command_grid_matches(&self) -> usize {
-        self.command_grid_matches.len()
-    }
-
     pub fn number_of_output_grid_matches(&self) -> usize {
         match &self.filtered_output_grid_matches {
             Some(filtered_output_grid_matches) => filtered_output_grid_matches.len(),
@@ -947,33 +890,6 @@ impl BlockMatches {
 
     pub fn num_matches(&self) -> usize {
         self.number_of_prompt_and_command_grid_matches() + self.number_of_output_grid_matches()
-    }
-
-    /// Returns the index of the bottommost match in the entire block grid.
-    /// Matches are ordered from the bottom of the grid to the top.
-    pub fn bottommost_match(&self) -> Option<GridIndex> {
-        if self.num_matches() == 0 {
-            return None;
-        }
-
-        if self.output_grid_matches().is_empty() {
-            return Some(GridIndex::PromptAndCommand(0));
-        }
-        Some(GridIndex::Output(0))
-    }
-
-    /// Returns the index of the topmost match in the entire block grid
-    pub fn topmost_match(&self) -> Option<GridIndex> {
-        if self.num_matches() == 0 {
-            return None;
-        }
-
-        if self.prompt_and_command_grid_matches.is_empty() {
-            return Some(GridIndex::Output(self.number_of_output_grid_matches() - 1));
-        }
-        Some(GridIndex::PromptAndCommand(
-            self.number_of_prompt_and_command_grid_matches() - 1,
-        ))
     }
 }
 
@@ -1048,6 +964,8 @@ impl Block {
             perform_reset_grid_checks,
         );
 
+        let interactive_latch =
+            interactive_latch::InteractiveLatch::new(id.clone(), event_proxy.clone());
         Block {
             id,
             size: sizes.size,
@@ -1056,7 +974,7 @@ impl Block {
             output_grid,
             padding: sizes.block_padding,
             render_delay_complete: Arc::new(AtomicBool::new(false)),
-            was_long_running: AtomicBool::new(false),
+            interactive_latch,
             state: BlockState::BeforeExecution,
             precmd_state: PrecmdState::BeforePrecmd,
             exit_code: ExitCode::from(0),
@@ -1091,11 +1009,14 @@ impl Block {
             cloud_env_var_collection_id: None,
             last_painted_at: None.into(),
             has_received_user_input: false,
+            interrupted_by_ctrl_c: false,
             hidden: false,
             should_hide_output_grid: false,
             ssh_payload_only: false,
             should_hide_command_grid: false,
+            reflow_stale: false,
             leading_linefeeds_ignored: 0,
+            restore_pending: false,
             is_ai_ugc_telemetry_enabled,
             restored_block_was_local: None,
             agent_view_visibility: match conversation_id {
@@ -1253,6 +1174,33 @@ impl Block {
         self.block_banner.as_ref()
     }
 
+    /// Takes the contents a restore parses (the command/prompt grid and the output grid, plus the
+    /// scalars that parsing sets) from `restored`, a copy of this block built off the UI thread
+    /// from the same saved bytes (#1254). Everything else on `self` is kept, because the model
+    /// and view may have changed it since this placeholder was created.
+    pub(super) fn adopt_restored_content(&mut self, mut restored: Block) {
+        // The scratch block was built at the size captured when the job started; the placeholder
+        // may have been resized since (#1265).
+        restored.resize(self.size);
+        // A `honor_ps1` toggle applied to the placeholder meanwhile must survive the grid swap.
+        let honor_ps1 = self.header_grid.honor_ps1();
+        self.restore_pending = false;
+        std::mem::swap(&mut self.header_grid, &mut restored.header_grid);
+        std::mem::swap(&mut self.output_grid, &mut restored.output_grid);
+        self.is_for_in_band_command = restored.is_for_in_band_command;
+        self.leading_linefeeds_ignored = restored.leading_linefeeds_ignored;
+        self.header_grid.set_honor_ps1(honor_ps1);
+    }
+
+    /// Whether this is a restored placeholder whose content has not been installed yet (#1265).
+    pub fn is_restore_pending(&self) -> bool {
+        self.restore_pending
+    }
+
+    pub(super) fn set_restore_pending(&mut self, pending: bool) {
+        self.restore_pending = pending;
+    }
+
     /// Prefer using the `reset_block_index` fn on the BlockList instead.
     /// Resets the index of the block to `index`. This is useful in the case where the block list
     /// may have had a block deleted, in which case some blocks may need to have their index reset.
@@ -1271,6 +1219,10 @@ impl Block {
     pub fn start(&mut self) {
         if self.start_ts.is_none() {
             self.start_ts = Some(Local::now());
+            // A ^C typed at the prompt (to clear a line) was recorded on this block before it had
+            // a command; it did not interrupt the command that starts now (#1178). A later
+            // `start` (preexec of an already started block) keeps a ^C typed after the Enter.
+            self.interrupted_by_ctrl_c = false;
         }
 
         self.header_grid.start_command_grid();
@@ -1302,11 +1254,6 @@ impl Block {
                 block_grid.disable_secret_obfuscation();
             }
         });
-    }
-
-    /// Scans the entire block (not just the dirty bytes) for secrets.
-    pub fn scan_full_block_for_secrets(&mut self) {
-        self.for_each_block_grid(|block_grid| block_grid.scan_full_grid_for_secrets())
     }
 
     /// Starts this block as a background output block, with no command.
@@ -1363,6 +1310,16 @@ impl Block {
     /// command execution.
     pub fn mark_received_user_input(&mut self) {
         self.has_received_user_input = true;
+    }
+
+    /// Whether a ^C was written to this block's pty by the user or by Phosphor.
+    pub fn was_interrupted_by_ctrl_c(&self) -> bool {
+        self.interrupted_by_ctrl_c
+    }
+
+    /// Records that a ^C was written to this block's pty (#1178).
+    pub fn mark_interrupted_by_ctrl_c(&mut self) {
+        self.interrupted_by_ctrl_c = true;
     }
 
     fn init_rprompt_grid(&mut self, rprompt: &str) {
@@ -1685,6 +1642,7 @@ impl Block {
             BlockState::Static => BlockState::Static,
             _ => BlockState::DoneWithNoExecution,
         };
+        self.interactive_latch.set_executing(false);
         log::info!("Block finished with new state {:?}", self.state);
 
         self.block_banner = None;
@@ -1825,55 +1783,55 @@ impl Block {
             && self.output_grid.should_show_as_empty_when_finished()
     }
 
-    /// Whether a command is long running.
-    /// We use this to determine whether to hide the input box.
+    /// Whether a program (rather than the shell prompt) owns the terminal for the running command.
+    /// We use this to determine whether to hide the input box, route keys to the pty, etc.
+    ///
+    /// Decided by latched events, never by elapsed time (#1373): see [`interactive_latch`]. A
+    /// block that is still before `preexec` is not running anything yet, however long ago the
+    /// command line was submitted -- except that entering the alt screen latches in any state.
     pub fn is_active_and_long_running(&self) -> bool {
         if self.is_empty_pre_bootstrap_block() {
             return false;
         }
-        // Use the command grid start time by default (which should be earlier)
-        // than the output grid start time.  If for some reason there isn't a
-        // command grid start time, then fall back to the start time of the output
-        // grid.
-        let start_time = match self.state {
-            BlockState::Background => return !self.finished(),
-            BlockState::BeforeExecution => self.header_grid.command_start_time(),
-            BlockState::Executing => self
-                .header_grid
-                .command_start_time()
-                .or_else(|| self.output_grid.start_time()),
+        match self.state {
+            BlockState::Background => !self.finished(),
+            BlockState::BeforeExecution | BlockState::Executing => {
+                self.interactive_latch.is_latched() || self.is_pre_bootstrap_block_past_debounce()
+            }
             BlockState::DoneWithNoExecution
             | BlockState::DoneWithExecution
-            | BlockState::Static => return false,
-        };
-
-        if self.was_long_running.load(Ordering::Relaxed) {
-            true
-        } else {
-            start_time.is_some_and(|start_time| {
-                let was_long_running =
-                    start_time.elapsed().as_millis() >= (LONG_RUNNING_COMMAND_DURATION_MS as u128);
-                // If we assessed once that a command was long running, it won't become short
-                // running ever again, so we can cache and don't do this computation again
-                if was_long_running {
-                    self.was_long_running.store(true, Ordering::Relaxed);
-                }
-                was_long_running
-            })
+            | BlockState::Static => false,
         }
+    }
+
+    /// A block of the bootstrap script itself: the shell is not yet instrumented, so there is no
+    /// `preexec` hook, no probe and no event to wait for -- the only signal that exists is that the
+    /// script has been running past the presentation debounce. This is the one remaining
+    /// elapsed-time decision, kept because bootstrap output must stay visible, and it cannot
+    /// misfire on a loaded app: no user command is involved before bootstrap completes.
+    fn is_pre_bootstrap_block_past_debounce(&self) -> bool {
+        if self.bootstrap_stage.is_done() {
+            return false;
+        }
+        let start_time = self
+            .header_grid
+            .command_start_time()
+            .or_else(|| self.output_grid.start_time());
+        start_time.is_some_and(|start_time| {
+            start_time.elapsed().as_millis() >= (LONG_RUNNING_COMMAND_DURATION_MS as u128)
+        })
+    }
+
+    /// The latch behind `is_active_and_long_running`, for the event sources that set it (alt
+    /// screen, the pty probe) and for tests.
+    pub fn interactive_latch(&self) -> &interactive_latch::InteractiveLatch {
+        &self.interactive_latch
     }
 
     #[cfg(any(test, feature = "test-util"))]
     pub fn set_was_long_running(&mut self, was_long_running: AtomicBool) {
-        self.was_long_running = was_long_running;
-    }
-
-    /// Test-only: overrides the command start time `is_active_and_long_running` measures from,
-    /// so a test can hold a block deterministically inside (a future instant) or past the
-    /// `LONG_RUNNING_COMMAND_DURATION_MS` window.
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn set_command_start_time_for_test(&mut self, start_time: Instant) {
-        self.header_grid.set_command_start_time_for_test(start_time);
+        self.interactive_latch
+            .force(was_long_running.load(Ordering::Relaxed));
     }
 
     // Collateral of these two predicates, inherited from upstream `ee95ac0fd` and
@@ -1926,6 +1884,13 @@ impl Block {
     pub fn command_with_secrets_unobfuscated(&self, include_escape_sequences: bool) -> String {
         self.header_grid
             .command_with_secrets_unobfuscated(include_escape_sequences)
+    }
+
+    /// A copy of the command grid that converts to the same text as
+    /// `command_with_secrets_unobfuscated(true)`, for converting off the UI thread.
+    pub fn command_snapshot_with_secrets_unobfuscated(&self) -> CommandSnapshot {
+        self.header_grid
+            .command_snapshot_with_secrets_unobfuscated()
     }
 
     pub fn command_should_show_as_empty_when_finished(&self) -> bool {
@@ -2168,16 +2133,6 @@ impl Block {
         }
     }
 
-    /// The height of the output grid's full contents, irrespective of what is
-    /// actually being displayed in the block list.
-    pub fn output_grid_full_content_height(&self) -> Lines {
-        if self.output_grid.is_empty() || !self.ready_to_render() {
-            Lines::zero()
-        } else {
-            self.output_grid.len().into_lines()
-        }
-    }
-
     /// Returns prompt height in lines.
     pub fn prompt_height(&self) -> Lines {
         if !self.ready_to_render() {
@@ -2308,6 +2263,15 @@ impl Block {
             // The footer is one line of text.
             1.0.into_lines()
         }
+    }
+
+    /// Whether this block's grids still have the wrap width from before a deferred reflow.
+    pub fn is_reflow_stale(&self) -> bool {
+        self.reflow_stale
+    }
+
+    pub fn set_reflow_stale(&mut self, stale: bool) {
+        self.reflow_stale = stale;
     }
 
     /// Resize terminal to new dimensions.
@@ -2455,6 +2419,14 @@ impl Block {
             .contents_to_string_with_secrets_unobfuscated(false, None)
     }
 
+    /// Like [`Self::output_with_secrets_unobfuscated`] but only the leading rows needed for
+    /// `min_bytes` of text; the bool is whether later rows were left out. Bounded cost, for
+    /// callers on the agent path that cap the output anyway (#1190).
+    pub fn output_head_with_secrets_unobfuscated(&self, min_bytes: usize) -> (String, bool) {
+        self.output_grid()
+            .head_contents_with_secrets_unobfuscated(min_bytes)
+    }
+
     /// Returns an iterator over all grids in the block.
     pub fn all_grids_iter(&self) -> impl Iterator<Item = &BlockGrid> {
         [
@@ -2482,6 +2454,105 @@ impl Block {
         end: BlockGridPoint,
         line_limit: Option<usize>,
     ) -> String {
+        self.with_range_grids(start, end, |blockgrids, start_point, end_point| {
+            Self::join_range_grids(blockgrids, start_point, end_point, line_limit)
+        })
+    }
+
+    /// Snapshot twin of [`Self::bounds_to_string`]: copies the cells in the range so the text can
+    /// be built off the UI thread and outside the model lock (#1304).
+    pub fn bounds_to_text_snapshot(
+        &self,
+        start: BlockGridPoint,
+        end: BlockGridPoint,
+    ) -> BlockTextSnapshot {
+        let mut out = BlockTextSnapshot::default();
+        let mut cursor = SnapshotSliceCursor::default();
+        let done = self.bounds_to_text_snapshot_sliced(start, end, &mut cursor, None, &mut out);
+        debug_assert!(done);
+        out
+    }
+
+    /// Row-chunked [`Self::bounds_to_text_snapshot`] (#1377). Appends to `out` until `deadline`
+    /// (`None` = to completion) and returns whether the range is complete; if not, call again
+    /// with the same `cursor` and `out` after releasing the model lock. A finished block never
+    /// changes, so the slices join into exactly the unsliced snapshot.
+    pub fn bounds_to_text_snapshot_sliced(
+        &self,
+        start: BlockGridPoint,
+        end: BlockGridPoint,
+        cursor: &mut SnapshotSliceCursor,
+        deadline: Option<std::time::Instant>,
+        out: &mut BlockTextSnapshot,
+    ) -> bool {
+        self.with_range_grids(start, end, |blockgrids, start_point, end_point| {
+            let last = blockgrids.len().saturating_sub(1);
+            for (idx, grid) in blockgrids.iter().enumerate() {
+                if idx < cursor.piece {
+                    continue;
+                }
+                while out.pieces.len() <= idx {
+                    out.pieces.push(Default::default());
+                }
+                let piece = &mut out.pieces[idx];
+                let from = cursor.offset;
+                let next = match (idx == 0, idx == last) {
+                    (true, false) => grid.range_text_snapshot_sliced(
+                        start_point,
+                        grid.end_point(),
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                    (false, true) => grid.range_text_snapshot_sliced(
+                        grid.start_point(),
+                        end_point,
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                    (false, false) => grid.range_text_snapshot_sliced(
+                        Point::new(0, 0),
+                        grid.end_point(),
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                    (true, true) => grid.grid_handler.bounds_to_text_snapshot_sliced(
+                        start_point,
+                        end_point,
+                        RespectObfuscatedSecrets::Yes,
+                        false, /* force_obfuscated_secrets */
+                        RespectDisplayedOutput::Yes,
+                        from,
+                        deadline,
+                        piece,
+                    ),
+                };
+                match next {
+                    Some(next) => {
+                        cursor.piece = idx;
+                        cursor.offset = next;
+                        return false;
+                    }
+                    None => {
+                        cursor.piece = idx + 1;
+                        cursor.offset = 0;
+                    }
+                }
+            }
+            true
+        })
+    }
+
+    /// Resolves which grids (and the start/end points relative to them) the range covers, then
+    /// hands them to `f`.
+    fn with_range_grids<R>(
+        &self,
+        start: BlockGridPoint,
+        end: BlockGridPoint,
+        f: impl FnOnce(&[&BlockGrid], Point, Point) -> R,
+    ) -> R {
         let (mut start_point, mut end_point) = (start.grid_point(), end.grid_point());
 
         // Declared here to ensure these values live long enough for future iteration through BlockGrids.
@@ -2631,7 +2702,16 @@ impl Block {
             }
         };
 
-        // Iterate over the BlockGrids and construct the final string, given the start/end points.
+        f(&blockgrids, start_point, end_point)
+    }
+
+    /// Iterates over the BlockGrids and constructs the final string, given the start/end points.
+    fn join_range_grids(
+        blockgrids: &[&BlockGrid],
+        start_point: Point,
+        end_point: Point,
+        line_limit: Option<usize>,
+    ) -> String {
         itertools::join(
             blockgrids
                 .iter()
@@ -2747,8 +2827,14 @@ impl Block {
         // Spawn a future on the background thread to explicitly send a `Wakeup` event. This is so
         // we can force trigger a re-render for a command that is still running but may not have
         // any output (such as the `read` command).
+        //
+        // For an executing command the same task is the presentation debounce of the interactive
+        // latch (`interactive_latch` module docs): once it elapses the probe is consulted about
+        // who owns the terminal NOW. The delay is anchored here, when `preexec` was processed, so a
+        // slow app cannot make a command look old. Pacing only: the probe decides.
         let event_proxy = self.event_proxy.clone();
         let ready_to_render = self.render_delay_complete.clone();
+        let latch = (self.state == BlockState::Executing).then(|| self.interactive_latch.clone());
         let delay_ms = match self.state {
             BlockState::Background => BACKGROUND_OUTPUT_RENDER_DELAY_MS,
             _ => LONG_RUNNING_COMMAND_DURATION_MS,
@@ -2757,6 +2843,9 @@ impl Block {
         self.background_executor
             .spawn(async move {
                 warpui::r#async::Timer::after(std::time::Duration::from_millis(delay_ms)).await;
+                if let Some(latch) = latch {
+                    latch.on_settled();
+                }
                 ready_to_render.store(true, Ordering::Relaxed);
                 event_proxy.send_wakeup_event();
             })
@@ -2903,12 +2992,6 @@ impl Block {
 
     pub fn cloud_workflow_state(&self) -> Option<SyncId> {
         self.cloud_workflow_id
-    }
-
-    pub fn server_pwd(&self) -> Option<Cow<'_, str>> {
-        self.pwd
-            .as_ref()
-            .map(|pwd| user_friendly_path(pwd.as_str(), self.home_dir.as_deref()))
     }
 
     pub fn creation_ts(&self) -> &DateTime<Local> {
@@ -3183,6 +3266,10 @@ impl Block {
         }
         self.output_grid.clear_marked_text();
     }
+
+    pub(super) fn has_marked_text(&self) -> bool {
+        self.output_grid.has_marked_text()
+    }
 }
 
 /// Used in the ansi::Handler implementation for Block below. Performs
@@ -3269,6 +3356,7 @@ impl Block {
         self.leading_linefeeds_ignored = 0;
         self.output_grid.start();
         self.state = BlockState::Executing;
+        self.interactive_latch.set_executing(true);
         self.is_for_in_band_command |=
             command_executor::is_in_band_command(self.command_to_string().as_str());
     }
@@ -3743,6 +3831,7 @@ impl ansi::Handler for Block {
         self.leading_linefeeds_ignored = 0;
         self.output_grid.start();
         self.state = BlockState::Executing;
+        self.interactive_latch.set_executing(true);
         self.is_for_in_band_command = is_for_in_band_command;
 
         self.wakeup_after_delay();

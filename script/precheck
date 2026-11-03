@@ -222,6 +222,22 @@ step "fork boundary guards"
     || fail "cloud boundary -- run ./script/check_cloud_boundary for detail"
 ./script/check_stub_coverage  >/dev/null 2>&1 && ok "stub coverage" \
     || fail "stub coverage -- run ./script/check_stub_coverage for detail"
+if [[ -x ./script/check_test_results ]]; then
+    ./script/check_test_results >/dev/null 2>&1 && ok "test-results archive" \
+        || fail "test-results archive -- run ./script/check_test_results for detail"
+fi
+if [[ -x ./script/check_queue_access ]]; then
+    ./script/check_queue_access >/dev/null 2>&1 && ok "input queue access" \
+        || fail "input queue access -- run ./script/check_queue_access for detail"
+fi
+if [[ -x ./script/check_pty_doors ]]; then
+    ./script/check_pty_doors >/dev/null 2>&1 && ok "pty doors" \
+        || fail "pty doors -- run ./script/check_pty_doors for detail"
+fi
+if [[ -x ./script/check_outbound_redaction ]]; then
+    ./script/check_outbound_redaction >/dev/null 2>&1 && ok "outbound redaction" \
+        || fail "outbound redaction -- run ./script/check_outbound_redaction for detail"
+fi
 if [[ -x ./script/check_declined_collisions ]]; then
     ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
         || fail "declined collisions -- run ./script/check_declined_collisions for detail"
@@ -233,6 +249,12 @@ fi
 if [[ -x ./script/check_brand_strings ]]; then
     ./script/check_brand_strings >/dev/null 2>&1 && ok "brand strings" \
         || fail "brand strings -- run ./script/check_brand_strings for detail"
+fi
+if [[ -x ./script/check_pwsh_parse ]]; then
+    # #1161: a bundled .ps1 that doesn't parse ships a PowerShell that never bootstraps.
+    _pwsh_out="$(./script/check_pwsh_parse 2>&1)" && {
+        if [[ "$_pwsh_out" == *SKIPPED* ]]; then warn "pwsh parse -- SKIPPED (pwsh not installed)"; else ok "pwsh parse"; fi
+    } || fail "pwsh parse -- run ./script/check_pwsh_parse for detail"
 fi
 if [[ -x ./script/check_settings_registry ]]; then
     ./script/check_settings_registry >/dev/null 2>&1 && ok "settings registry" \
@@ -305,9 +327,13 @@ fi
 # a pty (python3 + bash, ~1 s) -- the only check of the bootstrap scripts that
 # needs no build (#825). script/test_zsh_bootstrap_strict_options is its zsh
 # counterpart for err_return/nounset/err_exit and failing user precmds (#836,
-# #844).
+# #844). script/test_bootstrap_hook_equivalence pins the fork-free hook helpers
+# in the bash/zsh/fish bootstraps to the output of the forks they replaced
+# (hex encoding, JSON escaping, git branch, prompt runs) (#1170).
+# script/test_pwsh_hook_equivalence does the same for pwsh.ps1 against a golden
+# recording of its hook messages (#1231); it skips when pwsh is not installed.
 step "shell tests (packaging and bootstrap scripts)"
-for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options; do
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch ./script/test_bash_bootstrap_nounset ./script/test_zsh_bootstrap_strict_options ./script/test_bootstrap_hook_equivalence ./script/test_pwsh_hook_equivalence ./script/test_nu_bootstrap_hook_equivalence ./script/test_bash_bootstrap_builtins ./script/test_ssh_keepalive ./script/test_ssh_probe_cache ./script/test_ssh_wrapper_forks ./script/test_ssh_raw_bootstrap_hook ./script/test_local_counted_bootstrap; do
     [[ -x "$shell_test" ]] || continue
     _shell_rc=0
     _shell_out="$("$shell_test" 2>&1)" || _shell_rc=$?
@@ -347,7 +373,7 @@ fi
 # through this blind spot -- the required single-package check cannot see them.
 step "cargo check (feature-unified, multi-package)"
 if "${CARGO_RUN[@]}" check -p warp -p warp_completer -p integration \
-        -p app-installation-detection -p warp_ripgrep --features gui \
+        -p warp_ripgrep --features gui \
         >/tmp/precheck-unified.$$ 2>&1; then
     ok "compiles under feature unification"
 else
@@ -500,9 +526,6 @@ fi
 # They were not skipped out of carelessness -- the obvious command genuinely
 # does not work here, and each obstacle stops you before reaching a test:
 #
-#   * `nextest run --workspace` fails outright on command-signatures-v2, whose
-#     build script shells out to yarn to generate code. It has 0 tests, so it
-#     is excluded rather than fixed.
 #   * A cold --workspace build exceeds any reasonable CI/agent time budget, and
 #     it re-resolves features so it invalidates the cached single-package
 #     builds -- making the NEXT run slower too.
@@ -518,7 +541,7 @@ fi
 # not existed. Unrun is not the same as broken; it just means nobody would know.
 #
 # NOTE (still open): this runs DEFAULT features. Code behind `local_fs`
-# (repo_metadata, persistence, ai), `plugin_host` (warp_cli) and `test-util` is
+# (repo_metadata, persistence, ai), and `test-util` is
 # still not exercised. Calling the workspace green on the strength of this step
 # would repeat the exact warpui_core mistake.
 step "rest of the workspace (40 packages)"
@@ -526,7 +549,7 @@ if ./script/check_test_failures \
         -p sum_tree -p string-offset -p fuzzy_match -p handlebars -p syntax_tree \
         -p languages -p asset_cache -p settings_value -p jsonrpc -p simple_logger \
         -p warp_logging -p channel_versions -p command -p http_client -p warp_features \
-        -p managed_secrets_wasm -p voice_input -p warp_isolation_platform -p websocket \
+        -p voice_input -p warp_isolation_platform -p websocket \
         -p input_classifier -p warp_search_core -p persistence -p settings \
         -p warp_managed_secrets -p markdown_parser -p warp_util -p warp_core \
         -p repo_metadata -p warp_terminal -p warp_files -p local_control -p vim \

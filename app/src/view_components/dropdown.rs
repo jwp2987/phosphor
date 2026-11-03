@@ -23,7 +23,6 @@ use crate::{
     menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields, MenuVariant},
 };
 
-pub const TOP_MENU_BAR_HEIGHT: f32 = 30.;
 pub const TOP_MENU_BAR_MAX_WIDTH: f32 = 190.;
 pub const DROPDOWN_PADDING: f32 = 6.;
 
@@ -226,7 +225,6 @@ where
         ctx.notify();
     }
 
-    #[allow(dead_code)]
     pub fn set_style(&mut self, style: DropdownStyle, ctx: &mut ViewContext<Self>) {
         self.style = style;
         ctx.notify();

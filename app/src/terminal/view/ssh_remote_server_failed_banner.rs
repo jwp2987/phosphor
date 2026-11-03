@@ -1,27 +1,26 @@
 //! Banner shown when the remote-server binary check, installation, or connection fails on the remote host.
 //! We fall back to the existing Warpification behavior and display this banner so the user knows why advanced features are unavailable.
 
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::AnsiColorIdentifier;
+use warp_core::ui::theme::color::internal_colors;
 use warpui::{
+    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
     elements::{
         ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex, Hoverable,
         MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Radius, Shrinkable, Text,
     },
     platform::Cursor,
-    AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use remote_server::setup::UnsupportedReason;
 
 use crate::{
+    Appearance,
     terminal::model::session::{LegacySshFallbackReason, SessionId},
     ui_components::icons::Icon,
-    Appearance,
 };
 
-const BANNER_BODY: &str =
-    "While advanced features like file browsing and code review are currently \
+const BANNER_BODY: &str = "While advanced features like file browsing and code review are currently \
     disabled, the rest of your Phosphorized experience is fully available.";
 
 #[derive(Clone, Debug)]
@@ -163,6 +162,7 @@ pub fn describe_unsupported_reason(reason: &UnsupportedReason) -> String {
 /// Pure and unit-tested on its own (see `ssh_remote_server_failed_banner_tests.rs`)
 /// so the mapping from [`LegacySshFallbackReason`] to user-facing text can be
 /// checked without constructing any view.
+#[cfg(test)]
 pub fn describe_legacy_fallback_reason(reason: &LegacySshFallbackReason) -> String {
     match reason {
         LegacySshFallbackReason::FeatureDisabled => {

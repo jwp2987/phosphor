@@ -1,0 +1,2722 @@
+{
+ "pipeline": 3021881600,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3021881600",
+ "ref": "build/r18e4",
+ "commit": "e253f6c143ce873dc4b0f4c97accc60141d93f41",
+ "created_at": "2026-11-03T10:46:34.409Z",
+ "date": "2026-11-03",
+ "tier": "release",
+ "pipeline_status": "manual",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505257,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505256,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505255,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505254,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "failed",
+   "duration": 1277.051257,
+   "id": 17694505253,
+   "runner": "phosphor-windows-vm"
+  },
+  "app-test-macos": {
+   "status": "failed",
+   "duration": 7964.684669,
+   "id": 17694505252,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11": {
+   "status": "canceled",
+   "duration": null,
+   "id": 17694505251,
+   "runner": null,
+   "note": "no results artifact (job canceled)"
+  },
+  "app-test-linux-wayland": {
+   "status": "canceled",
+   "duration": null,
+   "id": 17694505250,
+   "runner": null,
+   "note": "no results artifact (job canceled)"
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505249,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505248,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505247,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "success",
+   "duration": 3098.639135,
+   "id": 17694505246,
+   "runner": "phosphor-windows-vm"
+  },
+  "build-linux-x86_64": {
+   "status": "success",
+   "duration": 2077.409466,
+   "id": 17694505245,
+   "runner": ""
+  },
+  "build-macos-arm64": {
+   "status": "success",
+   "duration": 1201.542656,
+   "id": 17694505244,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505243,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505242,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "success",
+   "duration": 661.974516,
+   "id": 17694505241,
+   "runner": ""
+  },
+  "mutants-warpui-core": {
+   "status": "canceled",
+   "duration": null,
+   "id": 17694505240,
+   "runner": null
+  },
+  "mutants": {
+   "status": "canceled",
+   "duration": null,
+   "id": 17694505239,
+   "runner": null
+  },
+  "fuzz-smoke": {
+   "status": "failed",
+   "duration": 3860.852552,
+   "id": 17694505238,
+   "runner": ""
+  },
+  "test-shuttle-loom": {
+   "status": "canceled",
+   "duration": null,
+   "id": 17694505237,
+   "runner": null
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505236,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505235,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505234,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505233,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "success",
+   "duration": 115.634541,
+   "id": 17694505232,
+   "runner": ""
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505231,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "success",
+   "duration": 70.959943,
+   "id": 17694505230,
+   "runner": ""
+  },
+  "test-linux": {
+   "status": "failed",
+   "duration": 384.731073,
+   "id": 17694505229,
+   "runner": ""
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 15.086887,
+   "id": 17694505228,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 21.957262,
+   "id": 17694505227,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505226,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505225,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505224,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505223,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17694505222,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 437.335579,
+   "id": 17694505221,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 99.708045,
+   "id": 17694505220,
+   "runner": ""
+  }
+ },
+ "unit": {
+  "test-shuttle-loom": {
+   "summary_line": null,
+   "duration_s": null,
+   "run": null,
+   "passed": 0,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 0,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [],
+   "errors": [],
+   "job": "test-shuttle-loom",
+   "status": "canceled",
+   "duration": null
+  },
+  "test-workspace-rest": {
+   "summary_line": "Summary [  25.639s] 3259 tests run: 3259 passed, 19 skipped",
+   "duration_s": 25.639,
+   "run": 3259,
+   "passed": 3259,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 19,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-workspace-rest",
+   "status": "success",
+   "duration": 115.634541
+  },
+  "test-warpui-core": {
+   "summary_line": "Summary [   4.849s] 776 tests run: 776 passed, 7 skipped",
+   "duration_s": 4.849,
+   "run": 776,
+   "passed": 776,
+   "failed": 0,
+   "timed_out": 0,
+   "skipped": 7,
+   "slow": 0,
+   "flaky": 0,
+   "failures": [],
+   "regressions": [],
+   "notes": [
+    "tests: ok (0 known failure(s), no regressions)"
+   ],
+   "job": "test-warpui-core",
+   "status": "success",
+   "duration": 70.959943
+  },
+  "test-linux": {
+   "summary_line": "Summary [ 234.269s] 10757 tests run: 10754 passed (1 slow), 3 failed, 29 skipped",
+   "duration_s": 234.269,
+   "run": 10757,
+   "passed": 10754,
+   "failed": 3,
+   "timed_out": 0,
+   "skipped": 29,
+   "slow": 1,
+   "flaky": 0,
+   "failures": [
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group1_handover_tests::nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell",
+     "seconds": 0.298
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::group3_paste_tests::editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold",
+     "seconds": 0.282
+    },
+    {
+     "kind": "FAIL",
+     "crate": "warp",
+     "test": "terminal::view::tests::ssh_in_the_agent_view_on_an_unready_shell_is_routed_to_the_shell_and_held_not_sent_to_the_agent",
+     "seconds": 1.252
+    }
+   ],
+   "regressions": [
+    "terminal::view::tests::group1_handover_tests::nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell",
+    "terminal::view::tests::group3_paste_tests::editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold",
+    "terminal::view::tests::ssh_in_the_agent_view_on_an_unready_shell_is_routed_to_the_shell_and_held_not_sent_to_the_agent"
+   ],
+   "notes": [
+    "REGRESSION -- this change broke test(s). Fix the code.",
+    "error: test(s) failed that are not in script/known_test_failures.txt:"
+   ],
+   "job": "test-linux",
+   "status": "failed",
+   "duration": 384.731073
+  }
+ },
+ "app": {
+  "windows": {
+   "job": "app-test-windows",
+   "job_id": 17694505253,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.4,
+     "detail": [
+      "mode machine-verified from the app log (hop=view_mode mode=terminal); no OCR engine"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: compares the typed line with the shell's own rec.log; a PowerShell pane has no rc hook (the app starts it with -NoProfile): runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 96.9,
+     "detail": [
+      "reference conhost (powershell.exe) gap 0.00s: 0/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "reference conhost (powershell.exe) gap 0.25s: 1/30 lines missing (merged/lost Enter), None lines not received exactly, injector posted 30 Enters",
+      "the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": 52.7,
+     "detail": [
+      "ft0: PowerShell received 1 of 30 lines NOT exactly as typed (PSReadLine history; first: got '\\x15exit', want 'Add-Content r_ft0.txt t64_tegozu5glc')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "rollover",
+     "status": "pass",
+     "seconds": 21.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "expert_fuzz",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: BackSpace / Left / Ctrl-W editing of `echo ... >>` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 5.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "arrows_behind_paste",
+     "status": "pass",
+     "seconds": 7.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "keydown_count",
+     "status": "pass",
+     "seconds": 24.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "big_paste",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: `cat > file` + Ctrl-D end-of-input: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 18.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "skip",
+     "seconds": 240.5,
+     "detail": [
+      "NO-CONTROL: the injected Ctrl-C stopped the PowerShell sleep in neither Phosphor (0/3 tried) nor the conhost reference (0/4); this harness cannot judge Ctrl-C in PowerShell -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 3 of 33 samples (indexes [0",
+      "Phosphor stopped the sleep on 0 samples; reference conhost (powershell.exe): Ctrl-C stopped it on 0 of 4 samples"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "read_x",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: bash `read x` / printf: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "subshells",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run on Windows: uses `sh -c 'ps -o comm= -p $PPID'` to prove the subshell's parent; msys ps output differs. Not yet ported (gitbash_subshell and ctrl_c_d cover bash inside the pane)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "alt_screen",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: `seq | less` and vim: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "gitbash_subshell",
+     "status": "pass",
+     "seconds": 35.5,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 26.4,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T196_8tf2wm never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 05:43:25 conpty output ended: 195 bytes sent to the client in total | 05:43:25 connection closed: authentica",
+      "remote shell received 1/2 typed-ahead commands exactly (missing 1)",
+      "remote rec.log lacks the exact typed command for some trials",
+      "ssh_connect_typing loss: 1 of 2 typed-ahead commands lost (observed 50.0 %); 95 % upper confidence bound 97.5 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_not_local_after_ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 22.0,
+     "detail": [
+      "ssh_enter_then_immediate_command: T201_9tk76t never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 05:44:07 connection closed: authenticated=False channels=1 | 05:44:07 conpty output ended: 317 bytes sent ",
+      "remote shell received 0/1 immediately-typed commands exactly: []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_not_local_after_ssh_enter_then_immediate_command",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ssh_enter_then_immediate_command the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 33.0,
+     "detail": [
+      "the line typed behind a nested ssh ran exactly once remotely: []",
+      "ssh_nested_typeahead (inner): T206_swlrlb never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 05:45:12 connection closed: authenticated=False channels=1 | 05:45:12 conpty output ended: 317 bytes sent to t"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_not_local_after_ssh_nested_typeahead",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ssh_nested_typeahead the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_delivery",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "marker typed and received via SendInput vk"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_failing_not_local",
+     "status": "noref",
+     "seconds": 14.7,
+     "detail": [
+      "ssh_failing_not_local: ssh started 1.98 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (ConnectTimeout 6 s)",
+      "ssh gate at the first MUSTNOT key: no kh_hold_entry logged (app key trace off or rotated); first gate release/exit after it: none logged; ssh failed (connection closed) 5.71 s after typing began; listener-side typing window 0.40 s",
+      "NO-REFERENCE: UNVERIFIABLE: ssh_failing_not_local: no kh_hold_entry in the app log after the first MUSTNOT key (input_order trace is ON (other lines present) but the gate hop is absent; log C:\\Users\\Winters\\AppData\\Local\\phosphor\\Phosphor\\data\\logs\\phosphor.log): the ssh gate was not observed, so \"t"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "idle_cpu",
+     "status": "pass",
+     "seconds": 24.0,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 243.9,
+     "detail": [
+      "Enter to command start: Phosphor overhead 39.98 +/- 0.74 ms (SE) over conhost (powershell.exe) exceeds the 2 ms budget (overhead - 2 SE > budget)",
+      "W1: reference burst 8.2 ms vs per-key 8.0 ms (+0.2 ms): burst ingestion does not explain the gap",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 47.94,
+       "p95": 57.69,
+       "n": 60,
+       "overhead_ms": 39.98,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: types into a running `cat > /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.5,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only; no key->paint read-back exists on this platform, so there is nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_first_key_after_idle",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: types into a running `cat > /dev/null` (key -> frame from the app log): no PowerShell equivalent: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "routing_table",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "agent_mode_switch",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_tab_menu",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: asserts the exact line from rec.log: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "flood_typed_line",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run on Windows: not yet ported: POSIX `seq`/`yes` floods and /proc sampling"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "remote_session_legacy",
+     "status": "skip",
+     "seconds": 0,
+     "detail": [
+      "not run in the PowerShell pane: uses rec.log and prompt.log of the local shell and `ssh.cmd` Ctrl-C paths: runs in the Git Bash pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "harness_crash",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "the terminal pass crashed outside a case: UnicodeEncodeError('charmap', 'save_case_log: UnicodeEncodeError(\\'charmap\\', \\'2026-11-03T13:51:40Z [DEBUG] frame 1: updated=[] removed=0 redraw=false paint_only=true\\\\r\\\\n2026-11-03T13:51:40Z [DEBUG] frame 2: updated=[] removed=0 redraw=false paint_only=fa"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "-",
+     "name": "restore",
+     "status": "pass",
+     "seconds": 0,
+     "detail": [
+      "all 10 restore steps ok (data md5 identical, version v0.1.15, PATH/handler/uninstall/shortcuts restored)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "windows/junit.xml",
+    "windows/summary.md"
+   ],
+   "meta": {
+    "platform": "windows",
+    "backend": "windows",
+    "commit": "e253f6c1"
+   },
+   "summary": {
+    "pass": 15,
+    "fail": 9,
+    "skip": 15,
+    "noref": 1
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots\\terminal_fast_typing_FAIL.png",
+    "shots\\terminal_ssh_connect_typing_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_not_local_after_ssh_connect_typing.png",
+    "shots\\terminal_ssh_enter_then_immediate_command_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_not_local_after_ssh_enter_then_immediate_command.png",
+    "shots\\terminal_ssh_nested_typeahead_FAIL.png",
+    "C:\\gl\\b\\07xLPX_fG\\0\\winters-phosphor\\phosphor\\appci-out\\windows\\run\\shots\\terminal_not_local_after_ssh_nested_typeahead.png",
+    "shots\\terminal_latency_enter_FAIL.png"
+   ]
+  },
+  "macos": {
+   "job": "app-test-macos",
+   "job_id": 17694505252,
+   "status": "failed",
+   "reuse": false,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 4.0,
+     "detail": [
+      "injector accounting: injector sent 1 keys (0 Enter); app key trace not available, so nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 7.6,
+     "detail": [
+      "injector accounting: WARN loss case: injector sent 179; app saw 175; lost-before-app 4 (Enter: sent 1, app saw 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 40.9,
+     "detail": [
+      "injector mode: None (persistent = one session-long virtual keyboard, so 'unprimed' measures Phosphor itself; percall = a keyboard per wtype call, the #1414 artifact)",
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "reference / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "injector accounting: WARN loss case: injector sent 1043; app saw 528; lost-before-app 515 (Enter: sent 26, app saw 13)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 77.3,
+     "detail": [
+      "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), 0 lines not received exactly, injector posted 30 Enters",
+      "injector accounting: WARN loss case: injector sent 2141; app saw 0; lost-before-app 2141 (Enter: sent 61, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 67.9,
+     "detail": [
+      "injector accounting: WARN loss case: injector sent 2057; app saw 2055; lost-before-app 2 (Enter: sent 60, app saw 60)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "rollover",
+     "status": "pass",
+     "seconds": 17.2,
+     "detail": [
+      "injector accounting: injector sent 702; app saw 700; lost-before-app 2 (Enter: sent 20, app saw 20)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 37.0,
+     "detail": [
+      "injector accounting: injector sent 767; app saw 698; lost-before-app 69 (Enter: sent 17, app saw 25)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 8.0,
+     "detail": [
+      "injector accounting: injector sent 14; app saw 6; lost-before-app 8 (Enter: sent 0, app saw 6)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "arrows_behind_paste",
+     "status": "pass",
+     "seconds": 12.6,
+     "detail": [
+      "injector accounting: injector sent 157; app saw 140; lost-before-app 17 (Enter: sent 5, app saw 5)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "keydown_count",
+     "status": "pass",
+     "seconds": 26.6,
+     "detail": [
+      "injector accounting: injector sent 564; app saw 560; lost-before-app 4 (Enter: sent 20, app saw 20)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "big_paste",
+     "status": "pass",
+     "seconds": 10.4,
+     "detail": [
+      "injector accounting: injector sent 21; app saw 16; lost-before-app 5 (Enter: sent 1, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 25.7,
+     "detail": [
+      "injector accounting: injector sent 482; app saw 468; lost-before-app 14 (Enter: sent 0, app saw 12)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 557.9,
+     "detail": [
+      "Ctrl-C under flood: Phosphor overhead 49.42 +/- 3.06 ms (SE) over Terminal.app (.command via open) exceeds the 20 ms budget (overhead - 2 SE > budget)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 202.04 ms includes the input-tool spawn (harness floor 141.02762495167553 ms)",
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+      "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+      "injector accounting: injector sent 18323; app saw 8989; lost-before-app 9334 (Enter: sent 153, app saw 79)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 202.04,
+       "p95": 208.6,
+       "n": 30,
+       "overhead_ms": 5.12,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      },
+      "ctrl_c_flood": {
+       "p50": 235.52,
+       "p95": 247.84,
+       "n": 30,
+       "overhead_ms": 49.42,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "read_x",
+     "status": "fail",
+     "seconds": 12.9,
+     "detail": [
+      "read x received []",
+      "injector accounting: injector sent 77; app saw 75; lost-before-app 2 (Enter: sent 3, app saw 3)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "subshells",
+     "status": "fail",
+     "seconds": 93.0,
+     "detail": [
+      "bash subshell (setup gap 0.25s): lines []",
+      "zsh subshell (setup gap 2.00s): lines []",
+      "fish subshell (setup gap 2.00s): lines []",
+      "nu subshell (setup gap 2.50s): lines []",
+      "injector accounting: injector sent 699; app saw 692; lost-before-app 7 (Enter: sent 25, app saw 26)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "alt_screen",
+     "status": "fail",
+     "seconds": 15.2,
+     "detail": [
+      "shell usable after less/vim: []",
+      "vim received typed text: []",
+      "injector accounting: injector sent 81; app saw 79; lost-before-app 2 (Enter: sent 4, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "gitbash_subshell",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)",
+      "injector accounting: injector sent 2; app saw 1; lost-before-app 1 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 24.7,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T194_vg274r never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: session_by_pid: pid 17129 | debug1: session_exit_message: session 0 channel 0 pid 17129 exit 0 | deb",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)",
+      "ssh_connect_typing loss: 1 of 1 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "injector accounting: WARN loss case: injector sent 44; app saw 41; lost-before-app 3 (Enter: sent 2, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "pane_not_local_after_ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 10.1,
+     "detail": [
+      "injector accounting: injector sent 247; app saw 243; lost-before-app 4 (Enter: sent 12, app saw 12)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 8.0,
+     "detail": [
+      "injector accounting: injector sent 137; app saw 154; lost-before-app 0 (Enter: sent 7, app saw 8); app logged 17 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_failing_not_local",
+     "status": "noref",
+     "seconds": 25.4,
+     "detail": [
+      "ssh_failing_not_local: ssh started 2.31 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (ConnectTimeout 6 s)",
+      "ssh gate at the first MUSTNOT key: no kh_hold_entry logged (app key trace off or rotated); first gate release/exit after it: none logged; ssh failed (connection closed) 14.72 s after typing began; listener-side typing window 0.70 s",
+      "NO-REFERENCE: UNVERIFIABLE: ssh_failing_not_local: no kh_hold_entry in the app log after the first MUSTNOT key (input_order trace is ON (other lines present) but the gate hop is absent; log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log):",
+      "injector accounting: injector sent 147; app saw 162; lost-before-app 0 (Enter: sent 2, app saw 3); app logged 15 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "idle_cpu",
+     "status": "pass",
+     "seconds": 25.4,
+     "detail": [
+      "injector accounting: injector sent 4; app saw 18; lost-before-app 0 (Enter: sent 0, app saw 1); app logged 14 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 352.0,
+     "detail": [
+      "Enter to command start: Phosphor overhead 8.61 +/- 0.77 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE > budget)",
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+      "app share of Enter->start: enter_begin -> pty_write median 0.73 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "shell side: pty_write -> first pty_read median 1.40 ms (n=74)",
+      "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+      "injector accounting: injector sent 8761; app saw 4350; lost-before-app 4411 (Enter: sent 1, app saw 75)"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 203.57,
+       "p95": 217.62,
+       "n": 60,
+       "overhead_ms": 8.61,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 30.3,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists",
+      "injector accounting: injector sent 85; app saw 79; lost-before-app 6 (Enter: sent 1, app saw 1)"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 5.86,
+       "p95": 9.3,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "noref",
+     "seconds": 125.6,
+     "detail": [
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+      "NO-REFERENCE: Key to paint: overhead 2.38 +/- 1.94 ms (SE) vs budget 2 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+      "Key to paint: overhead 2.38 +/- 1.94 ms (SE of the median difference) vs budget 2 ms: neither within nor over budget at 2 SE; more samples needed",
+      "injector accounting: injector sent 35; app saw 20; lost-before-app 15 (Enter: sent 1, app saw 0)"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 36.16,
+       "p95": 45.74,
+       "n": 30,
+       "overhead_ms": 2.38,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "inconclusive"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_first_key_after_idle",
+     "status": "noref",
+     "seconds": 752.6,
+     "detail": [
+      "First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+      "NO-REFERENCE: First key after 2 s idle: overhead -13.58 +/- 15.73 ms (SE) vs budget 5 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+      "First key after 2 s idle: first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+      "First key after 2 s idle: overhead -13.58 +/- 15.73 ms (SE of the median difference) vs budget 5 ms: neither within nor over budget at 2 SE; more samples needed",
+      "NO-REFERENCE: First key after 5 s idle: the reference measured implausibly slow (overhead -28.85 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+      "First key after 5 s idle: first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap"
+     ],
+     "lat": {
+      "gap1s": {
+       "p50": 35.25,
+       "p95": 100.23,
+       "n": 30,
+       "overhead_ms": -22.54,
+       "budget_ms": 5.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      },
+      "gap2s": {
+       "p50": 41.34,
+       "p95": 108.38,
+       "n": 30,
+       "overhead_ms": -13.58,
+       "budget_ms": 5.0,
+       "budget_kind": "overhead",
+       "verdict": "inconclusive"
+      },
+      "gap5s": {
+       "p50": 42.07,
+       "p95": 49.94,
+       "n": 30,
+       "overhead_ms": -28.85,
+       "budget_ms": 5.0,
+       "budget_kind": "overhead",
+       "verdict": "no-compare"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "routing_table",
+     "status": "fail",
+     "seconds": 73.9,
+     "detail": [
+      "'what is 5 > 3' (prose) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['what is 5 > 3']",
+      "injector accounting: injector sent 615; app saw 549; lost-before-app 66 (Enter: sent 26, app saw 26)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "agent_mode_switch",
+     "status": "pass",
+     "seconds": 15.8,
+     "detail": [
+      "injector accounting: injector sent 222; app saw 204; lost-before-app 18 (Enter: sent 4, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_tab_menu",
+     "status": "fail",
+     "seconds": 11.1,
+     "detail": [
+      "tab_return: shell received ['echo t213_4tqsni >> tc/menuzz_'], expected exactly one of ['echo t213_4tqsni >> tc/menuzz_one.txt', 'echo t213_4tqsni >> tc/menuzz_two.txt']",
+      "down_return: shell received ['echo t214_ycy38b >> tc/menuzz_ '], expected exactly one of ['echo t214_ycy38b >> tc/menuzz_one.txt', 'echo t214_ycy38b >> tc/menuzz_two.txt']",
+      "a file named like the uncompleted prefix (tc/menuzz_) was created: Enter ran the uncompleted line",
+      "injector accounting: injector sent 72; app saw 63; lost-before-app 9 (Enter: sent 0, app saw 3)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "flood_typed_line",
+     "status": "fail",
+     "seconds": 18.3,
+     "detail": [
+      "yes: the flood ended (-2.42 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES",
+      "seq: the flood ended (-2.55 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES",
+      "injector accounting: injector sent 204; app saw 198; lost-before-app 6 (Enter: sent 4, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "remote_session_legacy",
+     "status": "fail",
+     "seconds": 106.5,
+     "detail": [
+      "[legacy] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t232_ebiuf78q, outer pid again], got ['40674', '40673', 't232_ebiuf78q']",
+      "[legacy] vim over ssh wrote the typed text: expected ['hello remote t233_8rwq8y'], got []",
+      "[legacy] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t234_z7783rfl'], got []",
+      "[legacy] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []",
+      "[legacy] no local prompt after `exit` from the remote shell",
+      "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_wide_type",
+     "status": "fail",
+     "seconds": 8.8,
+     "detail": [
+      "typed zwj: shell received 'echo \ud83d\udc68\\\\u200d\ud83d\udc69\\\\u200d\ud83d\udc67 >> iw_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069775f7a776a2e747874], expected 'echo \ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67 >> iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069775f7a776a2e747874]",
+      "injector accounting: injector sent 159; app saw 157; lost-before-app 2 (Enter: sent 6, app saw 6)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_ghost_accept",
+     "status": "pass",
+     "seconds": 17.7,
+     "detail": [
+      "End probe received ['echo t236_c046eci >> gh']",
+      "injector accounting: injector sent 241; app saw 232; lost-before-app 9 (Enter: sent 4, app saw 9)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "flood_typing_latency",
+     "status": "fail",
+     "seconds": 21.1,
+     "detail": [
+      "the flood in tab A ended before the typing finished (before=False, after=False): raise APPCI_FLOOD_LINES",
+      "no reference terminal in this case: gap p50 18.9 / p95 20.8 ms are recorded, not judged against one",
+      "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+      "injector accounting: injector sent 323; app saw 318; lost-before-app 5 (Enter: sent 2, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "remote_session_ext",
+     "status": "fail",
+     "seconds": 119.6,
+     "detail": [
+      "[ext] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t255_4hojhydl, outer pid again], got ['43014', '43013', 't255_4hojhydl']",
+      "[ext] vim over ssh wrote the typed text: expected ['hello remote t256_93bdrd'], got []",
+      "[ext] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t257_74nw2hvu'], got []",
+      "[ext] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []",
+      "[ext] no local prompt after `exit` from the remote shell",
+      "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_wide_paste",
+     "status": "fail",
+     "seconds": 11.3,
+     "detail": [
+      "paste inside typed zwj: shell received 'echo \ud83d\udc68\\\\u200d\ud83d\udc69\\\\u200d\ud83d\udc67 >> ip_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069705f7a776a2e747874], expected 'echo \ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67 >> ip_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069705f7a776a2e747874]",
+      "injector accounting: injector sent 125; app saw 130; lost-before-app 0 (Enter: sent 5, app saw 11); app logged 5 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_ctrl_r",
+     "status": "pass",
+     "seconds": 15.6,
+     "detail": [
+      "injector accounting: injector sent 104; app saw 94; lost-before-app 10 (Enter: sent 2, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "flood_scrollback_find",
+     "status": "fail",
+     "seconds": 13.0,
+     "detail": [
+      "control: the marker is already visible before the Find (the flood did not scroll it away; raise APPCI_SCALE/lines)",
+      "the Find typed into the shell: ['echo FZEWNPRMYBTCAM; seq 1 300000; now >> ff_end.txt', 'FZEWNPRMYBTCAM']",
+      "injector accounting: injector sent 72; app saw 68; lost-before-app 4 (Enter: sent 2, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_hanging_host_not_local",
+     "status": "fail",
+     "seconds": 32.1,
+     "detail": [
+      "[refused host] the local shell is usable afterwards (and has none of the held line): expected ['t263_r1v4vf'], got ['MUSTNOT_T262_pjnz26', 't263_r1v4vf']",
+      "[refused host] timing: ssh started t0; ssh client first seen never (exited before the first 50 ms poll or never started), exited not observed; first MUSTNOT key +1.69 s, last MUSTNOT key +2.66 s; app ssh gate lines after the first key: 0",
+      "NO-REFERENCE: UNVERIFIABLE [refused host]: the ssh client had not been seen before the first MUSTNOT key, so a local run of the line is correct and says nothing about the hold",
+      "[hanging host] timing: ssh started t0; ssh client first seen +1.52 s, exited +5.47 s; first MUSTNOT key +1.67 s, last MUSTNOT key +2.64 s; app ssh gate lines after the first key: 43",
+      "injector accounting: injector sent 340; app saw 332; lost-before-app 8 (Enter: sent 6, app saw 6)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_wide_edit",
+     "status": "pass",
+     "seconds": 10.6,
+     "detail": [
+      "injector accounting: injector sent 123; app saw 127; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 4 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_palette",
+     "status": "fail",
+     "seconds": 17.8,
+     "detail": [
+      "palette did not open: 'Search for a command' not on screen (see shots/*palette_open.png)",
+      "nonsense filter did not show 'No results found'",
+      "injector accounting: injector sent 212; app saw 206; lost-before-app 6 (Enter: sent 5, app saw 5)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_password_prompt",
+     "status": "fail",
+     "seconds": 43.0,
+     "detail": [
+      "after a wrong passphrase the next command ran in the LOCAL shell: expected ['t274_yrhqahg3'], got []",
+      "injector accounting: injector sent 142; app saw 136; lost-before-app 6 (Enter: sent 8, app saw 8)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_wide_program",
+     "status": "pass",
+     "seconds": 25.3,
+     "detail": [
+      "injector accounting: injector sent 282; app saw 296; lost-before-app 0 (Enter: sent 12, app saw 17); app logged 14 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter_ssh",
+     "status": "noref",
+     "seconds": 364.5,
+     "detail": [
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+      "NO-REFERENCE: Enter to command start over ssh: overhead 4.87 +/- 2.6 ms (SE) vs budget 1 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+      "Enter to command start over ssh: both sides type into the SAME remote shell over ssh to the harness's local sshd; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+      "Enter to command start over ssh: overhead 4.87 +/- 2.60 ms (SE of the median difference) vs budget 1 ms: neither within nor over budget at 2 SE; more samples needed",
+      "injector accounting: injector sent 9305; app saw 4659; lost-before-app 4646 (Enter: sent 7, app saw 79)"
+     ],
+     "lat": {
+      "ssh_enter_to_start": {
+       "p50": 216.17,
+       "p95": 235.86,
+       "n": 60,
+       "overhead_ms": 4.87,
+       "budget_ms": 1.0,
+       "budget_kind": "overhead",
+       "verdict": "inconclusive"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_compose_linux",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_ime_japanese",
+     "status": "skip",
+     "seconds": 1.8,
+     "detail": [
+      "NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): System Settings > Keyboard > Text Input > Input Sources > Edit... > + > Japanese > Romaji (Hiragana)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_ime_pinyin",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): System Settings > Keyboard > Text Input > Input Sources > Edit... > + > Chinese, Simplified > Pinyin",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_deadkey_option",
+     "status": "pass",
+     "seconds": 56.8,
+     "detail": [
+      "injector accounting: injector sent 813; app saw 807; lost-before-app 6 (Enter: sent 14, app saw 14)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_altgr_ps",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "intl_altgr_bash",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_mouse_select_copy",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "editor_edit_save",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows have no verified equivalent, and the editor key set differs (Cmd-S/Cmd-V on macOS, close = cmd-shift",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_zsh",
+     "status": "fail",
+     "seconds": 20.6,
+     "detail": [
+      "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')",
+      "APP DIED: pid 44304 is gone (kill -0 fails) and no process of /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/Phosphor.app exists",
+      "injector accounting: injector sent 497; app saw 493; lost-before-app 4 (Enter: sent 14, app saw 16)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 35.4,
+     "detail": [
+      "injector accounting: injector sent 755; app saw 746; lost-before-app 9 (Enter: sent 21, app saw 25)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "pass",
+     "seconds": 43.3,
+     "detail": [
+      "nu app log: 2026-11-03T14:05:08Z [DEBUG] frame 1: updated=[\"ActionButton\", \"FeaturePopup\", \"Menu\", \"SearchBar\", \"Dropdown\", \"AutosuggestionIgnore\", \"FeaturePopup\", \"Menu\", \"FeaturePopup\", \"Menu\", \"AutosuggestionI",
+      "injector accounting: injector sent 901; app saw 892; lost-before-app 9 (Enter: sent 23, app saw 27)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_pwsh",
+     "status": "pass",
+     "seconds": 36.1,
+     "detail": [
+      "injector accounting: injector sent 689; app saw 680; lost-before-app 9 (Enter: sent 18, app saw 22)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_right_click_paste",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "editor_paste",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows have no verified equivalent, and the editor key set differs (Cmd-S/Cmd-V on macOS, close = cmd-shift",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_drag_drop_file",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "mac: no way to synthesize a drag source (XDND needs a client that owns the drag; Wayland wl_data_device likewise)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_resize_typing",
+     "status": "pass",
+     "seconds": 30.8,
+     "detail": [
+      "injector accounting: injector sent 831; app saw 829; lost-before-app 2 (Enter: sent 17, app saw 17)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_split_panes",
+     "status": "pass",
+     "seconds": 55.6,
+     "detail": [
+      "injector accounting: injector sent 1528; app saw 1520; lost-before-app 8 (Enter: sent 34, app saw 34)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 6.6,
+     "detail": [
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer_big",
+     "status": "fail",
+     "seconds": 93.0,
+     "detail": [
+      "2 MB markdown file: first heading not visible within 90 s",
+      "injector accounting: injector sent 2; app saw 2; lost-before-app 0 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "editor_memory_7mb",
+     "status": "fail",
+     "seconds": 35.7,
+     "detail": [
+      "txt: opening a 7 MB file cost 247 MB of RSS (> 100 MB target)",
+      "txt: release on close NOT MEASURED: no close key on this platform (APPCI_KEY_CLOSE empty; macOS: cmd-shift-W is refused by the guard). Only the open-cost half of this case is judged",
+      "SKIPPED rs: RSS grew only -109.9 MB after opening /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/editor_mem_rs.rs through the palette (cmd+p): the file did not open; set APPCI_KEY_PALETTE",
+      "injector accounting: injector sent 225; app saw 220; lost-before-app 5 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_startup_time",
+     "status": "pass",
+     "seconds": 28.9,
+     "detail": [
+      "injector accounting: injector sent 332; app saw 164; lost-before-app 168 (Enter: sent 8, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "session_restore",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "session_restore needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and MacBackend has no quit/relaunch (an osascript 'tell application to quit' path and a relaunch through",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ui_settings_live",
+     "status": "pass",
+     "seconds": 47.9,
+     "detail": [
+      "injector accounting: injector sent 1131; app saw 1129; lost-before-app 2 (Enter: sent 27, app saw 27)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "quit_24_tabs",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "quit_24_tabs needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and MacBackend has no quit/relaunch (an osascript 'tell application to quit' path and a relaunch through th",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "soak",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is cmd-shift-W, which the frontmost-app guard refuses by policy",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tabs_two_windows",
+     "status": "pass",
+     "seconds": 41.5,
+     "detail": [
+      "injector accounting: injector sent 1080; app saw 1062; lost-before-app 18 (Enter: sent 27, app saw 28)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tabs_streaming",
+     "status": "pass",
+     "seconds": 35.9,
+     "detail": [
+      "injector accounting: injector sent 953; app saw 936; lost-before-app 17 (Enter: sent 22, app saw 22)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 7.6,
+     "detail": [
+      "injector accounting: WARN loss case: injector sent 179; app saw 175; lost-before-app 4 (Enter: sent 1, app saw 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 66.7,
+     "detail": [
+      "injector accounting: WARN loss case: injector sent 2003; app saw 2001; lost-before-app 2 (Enter: sent 60, app saw 60)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "rollover",
+     "status": "pass",
+     "seconds": 16.5,
+     "detail": [
+      "injector accounting: injector sent 682; app saw 680; lost-before-app 2 (Enter: sent 20, app saw 20)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "expert_fuzz",
+     "status": "pass",
+     "seconds": 40.6,
+     "detail": [
+      "injector accounting: injector sent 759; app saw 673; lost-before-app 86 (Enter: sent 22, app saw 25)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 8.0,
+     "detail": [
+      "injector accounting: injector sent 14; app saw 6; lost-before-app 8 (Enter: sent 0, app saw 6)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "arrows_behind_paste",
+     "status": "pass",
+     "seconds": 12.7,
+     "detail": [
+      "injector accounting: injector sent 157; app saw 140; lost-before-app 17 (Enter: sent 5, app saw 5)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "keydown_count",
+     "status": "pass",
+     "seconds": 26.1,
+     "detail": [
+      "injector accounting: injector sent 563; app saw 560; lost-before-app 3 (Enter: sent 20, app saw 20)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "big_paste",
+     "status": "pass",
+     "seconds": 10.4,
+     "detail": [
+      "injector accounting: injector sent 21; app saw 16; lost-before-app 5 (Enter: sent 1, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 25.8,
+     "detail": [
+      "injector accounting: injector sent 474; app saw 460; lost-before-app 14 (Enter: sent 0, app saw 12)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 553.7,
+     "detail": [
+      "Ctrl-C under flood: Phosphor overhead 36.41 +/- 1.82 ms (SE) over Terminal.app (.command via open) exceeds the 20 ms budget (overhead - 2 SE > budget)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 201.9 ms includes the input-tool spawn (harness floor 141.76991605199873 ms)",
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+      "Ctrl-C under flood: Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+      "injector accounting: injector sent 18342; app saw 9022; lost-before-app 9320 (Enter: sent 154, app saw 80)"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 201.9,
+       "p95": 212.37,
+       "n": 30,
+       "overhead_ms": 4.36,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      },
+      "ctrl_c_flood": {
+       "p50": 224.1,
+       "p95": 230.92,
+       "n": 30,
+       "overhead_ms": 36.41,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "read_x",
+     "status": "fail",
+     "seconds": 12.9,
+     "detail": [
+      "read x received []",
+      "injector accounting: injector sent 77; app saw 75; lost-before-app 2 (Enter: sent 3, app saw 3)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "subshells",
+     "status": "fail",
+     "seconds": 92.9,
+     "detail": [
+      "bash subshell (setup gap 0.25s): lines []",
+      "zsh subshell (setup gap 2.00s): lines []",
+      "fish subshell (setup gap 2.00s): lines []",
+      "nu subshell (setup gap 2.50s): lines []",
+      "injector accounting: injector sent 699; app saw 692; lost-before-app 7 (Enter: sent 25, app saw 26)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "alt_screen",
+     "status": "fail",
+     "seconds": 15.3,
+     "detail": [
+      "shell usable after less/vim: []",
+      "vim received typed text: []",
+      "injector accounting: injector sent 81; app saw 79; lost-before-app 2 (Enter: sent 4, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "gitbash_subshell",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "Windows only: Git for Windows' bash.exe as a subshell of the pane's PowerShell (POSIX hosts: the subshells case)",
+      "injector accounting: injector sent 2; app saw 1; lost-before-app 1 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 24.4,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T110_igh1pn never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: debug1: server_input_global_request: rtype keepalive@openssh.com want_reply 1 | debug1: server_input_global_",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)",
+      "ssh_connect_typing loss: 1 of 1 typed-ahead commands lost (observed 100.0 %); 95 % upper confidence bound 100.0 %; this n cannot exclude a 1/40 (2.5 %) rate: needs 119 clean trials",
+      "injector accounting: WARN loss case: injector sent 43; app saw 41; lost-before-app 2 (Enter: sent 2, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "pane_not_local_after_ssh_connect_typing",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ssh_connect_typing the pane could not be proven back in the local shell (none); the app is relaunched so later cases start clean"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_enter_then_immediate_command",
+     "status": "pass",
+     "seconds": 10.1,
+     "detail": [
+      "injector accounting: injector sent 247; app saw 243; lost-before-app 4 (Enter: sent 12, app saw 12)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_nested_typeahead",
+     "status": "pass",
+     "seconds": 7.9,
+     "detail": [
+      "injector accounting: injector sent 137; app saw 152; lost-before-app 0 (Enter: sent 7, app saw 8); app logged 15 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_failing_not_local",
+     "status": "noref",
+     "seconds": 25.3,
+     "detail": [
+      "ssh_failing_not_local: ssh started 2.30 s before the first MUSTNOT key; the hanging listener had accepted 1 connection(s), 1 still open when typing began and 1 when it ended (ConnectTimeout 6 s)",
+      "ssh gate at the first MUSTNOT key: no kh_hold_entry logged (app key trace off or rotated); first gate release/exit after it: none logged; ssh failed (connection closed) 14.73 s after typing began; listener-side typing window 0.69 s",
+      "NO-REFERENCE: UNVERIFIABLE: ssh_failing_not_local: no kh_hold_entry in the app log after the first MUSTNOT key (input_order trace is ON (other lines present) but the gate hop is absent; log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log):",
+      "injector accounting: injector sent 147; app saw 161; lost-before-app 0 (Enter: sent 2, app saw 3); app logged 14 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "idle_cpu",
+     "status": "pass",
+     "seconds": 25.1,
+     "detail": [
+      "injector accounting: injector sent 3; app saw 18; lost-before-app 0 (Enter: sent 0, app saw 1); app logged 15 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 351.9,
+     "detail": [
+      "Enter to command start: Phosphor overhead 10.59 +/- 1.23 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE > budget)",
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+      "app share of Enter->start: enter_begin -> pty_write median 1.31 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side",
+      "shell side: pty_write -> first pty_read median 1.50 ms (n=75)",
+      "Enter to command start: reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+      "injector accounting: injector sent 8760; app saw 4350; lost-before-app 4410 (Enter: sent 1, app saw 75)"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 206.3,
+       "p95": 222.44,
+       "n": 60,
+       "overhead_ms": 10.59,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "noref",
+     "seconds": 30.0,
+     "detail": [
+      "NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists",
+      "injector accounting: injector sent 84; app saw 79; lost-before-app 5 (Enter: sent 1, app saw 1)"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 7.41,
+       "p95": 9.3,
+       "n": 60,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "fail",
+     "seconds": 125.7,
+     "detail": [
+      "Key to paint: Phosphor overhead 9.55 +/- 2.61 ms (SE) over Terminal.app (.command via open) exceeds the 2 ms budget (overhead - 2 SE > budget)",
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 12 blocks",
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+      "injector accounting: injector sent 34; app saw 20; lost-before-app 14 (Enter: sent 1, app saw 0)"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 42.35,
+       "p95": 50.98,
+       "n": 30,
+       "overhead_ms": 9.55,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_first_key_after_idle",
+     "status": "noref",
+     "seconds": 752.2,
+     "detail": [
+      "NO-REFERENCE: First key after 1 s idle: overhead -1.61 +/- 5.39 ms (SE) vs budget 5 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+      "First key after 1 s idle: first key after 1 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+      "First key after 1 s idle: overhead -1.61 +/- 5.39 ms (SE of the median difference) vs budget 5 ms: neither within nor over budget at 2 SE; more samples needed",
+      "First key after 2 s idle: first key after 2 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap",
+      "NO-REFERENCE: First key after 5 s idle: the reference measured implausibly slow (overhead -17.37 ms): INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+      "First key after 5 s idle: first key after 5 s idle, kl3 post-to-first-changed-pixel at 240 Hz (4.17 ms quantum, not applied as a resolution veto: the SE of the median difference is); Phosphor and Terminal.app in blocks of 10, the first side alternating per gap"
+     ],
+     "lat": {
+      "gap1s": {
+       "p50": 41.72,
+       "p95": 100.98,
+       "n": 30,
+       "overhead_ms": -1.61,
+       "budget_ms": 5.0,
+       "budget_kind": "overhead",
+       "verdict": "inconclusive"
+      },
+      "gap2s": {
+       "p50": 42.2,
+       "p95": 49.01,
+       "n": 30,
+       "overhead_ms": -2.03,
+       "budget_ms": 5.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      },
+      "gap5s": {
+       "p50": 42.61,
+       "p95": 59.75,
+       "n": 30,
+       "overhead_ms": -17.37,
+       "budget_ms": 5.0,
+       "budget_kind": "overhead",
+       "verdict": "no-compare"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "approval_card_pause",
+     "status": "pass",
+     "seconds": 21.5,
+     "detail": [
+      "injector accounting: injector sent 90; app saw 87; lost-before-app 3 (Enter: sent 1, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_stream_cancel",
+     "status": "fail",
+     "seconds": 28.9,
+     "detail": [
+      "the first Ctrl-C did not clear the text typed while the reply streamed ('keepmet125_ohi6hr' still visible): the key did not reach the input",
+      "the screen kept changing 6 s after the Ctrl-C that follows the input clear (4 distinct frames in 5): the stream did not stop",
+      "injector accounting: injector sent 133; app saw 130; lost-before-app 3 (Enter: sent 1, app saw 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_approval",
+     "status": "pass",
+     "seconds": 71.4,
+     "detail": [
+      "follow-up reply visible on screen (OCR; model wording varies, not a verdict)",
+      "injector accounting: injector sent 256; app saw 251; lost-before-app 5 (Enter: sent 3, app saw 5)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_input_exact",
+     "status": "pass",
+     "seconds": 8.5,
+     "detail": [
+      "injector accounting: injector sent 159; app saw 153; lost-before-app 6 (Enter: sent 2, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "routing_table",
+     "status": "fail",
+     "seconds": 79.4,
+     "detail": [
+      "'ls -la' (shell) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter (dest lost, surface AgentConversation)",
+      "'what is 5 > 3' (prose) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['what is 5 > 3']",
+      "injector accounting: injector sent 602; app saw 549; lost-before-app 53 (Enter: sent 26, app saw 26)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "agent_mode_switch",
+     "status": "pass",
+     "seconds": 15.4,
+     "detail": [
+      "injector accounting: injector sent 220; app saw 204; lost-before-app 16 (Enter: sent 4, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_tab_menu",
+     "status": "fail",
+     "seconds": 11.3,
+     "detail": [
+      "tab_return: shell received ['echo t135_nfvhei >> tc/menuzz_'], expected exactly one of ['echo t135_nfvhei >> tc/menuzz_one.txt', 'echo t135_nfvhei >> tc/menuzz_two.txt']",
+      "down_return: shell received ['echo t136_s0vobl >> tc/menuzz_ '], expected exactly one of ['echo t136_s0vobl >> tc/menuzz_one.txt', 'echo t136_s0vobl >> tc/menuzz_two.txt']",
+      "a file named like the uncompleted prefix (tc/menuzz_) was created: Enter ran the uncompleted line",
+      "injector accounting: injector sent 72; app saw 63; lost-before-app 9 (Enter: sent 0, app saw 3)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "flood_typed_line",
+     "status": "fail",
+     "seconds": 18.0,
+     "detail": [
+      "yes: the flood ended (-1.88 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES",
+      "seq: the flood ended (-2.55 s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES",
+      "injector accounting: injector sent 204; app saw 198; lost-before-app 6 (Enter: sent 4, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "remote_session_legacy",
+     "status": "fail",
+     "seconds": 109.2,
+     "detail": [
+      "[legacy] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t154_qpwukr4t, outer pid again], got ['23486', '23485', 't154_qpwukr4t']",
+      "[legacy] vim over ssh wrote the typed text: expected ['hello remote t155_9w2gju'], got []",
+      "[legacy] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t156_el48ccmw'], got []",
+      "[legacy] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []",
+      "[legacy] no local prompt after `exit` from the remote shell",
+      "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_wide_type",
+     "status": "fail",
+     "seconds": 8.4,
+     "detail": [
+      "typed zwj: shell received 'echo \ud83d\udc68\\\\u200d\ud83d\udc69\\\\u200d\ud83d\udc67 >> iw_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069775f7a776a2e747874], expected 'echo \ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67 >> iw_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069775f7a776a2e747874]",
+      "injector accounting: injector sent 159; app saw 157; lost-before-app 2 (Enter: sent 6, app saw 6)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_ghost_accept",
+     "status": "pass",
+     "seconds": 18.0,
+     "detail": [
+      "End probe received ['echo t158_ptuzpxd >> gh']",
+      "injector accounting: injector sent 241; app saw 232; lost-before-app 9 (Enter: sent 4, app saw 9)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "flood_typing_latency",
+     "status": "fail",
+     "seconds": 21.1,
+     "detail": [
+      "the flood in tab A ended before the typing finished (before=False, after=False): raise APPCI_FLOOD_LINES",
+      "no reference terminal in this case: gap p50 18.7 / p95 20.8 ms are recorded, not judged against one",
+      "no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)",
+      "injector accounting: injector sent 323; app saw 318; lost-before-app 5 (Enter: sent 2, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "remote_session_ext",
+     "status": "fail",
+     "seconds": 120.9,
+     "detail": [
+      "[ext] remote subshell clean-env bash (ksu/su stand-in) (setup gap 2.0s): want [outer pid, same pid as inner $PPID, t177_xndfgg8y, outer pid again], got ['25808', '25807', 't177_xndfgg8y']",
+      "[ext] vim over ssh wrote the typed text: expected ['hello remote t178_l427cm'], got []",
+      "[ext] remote shell usable after vim/less (keys of less/vim did not leak into the shell): expected ['t179_25yswlrl'], got []",
+      "[ext] Ctrl-C reached the REMOTE command and the remote shell continued: expected ['INT', 'AFTER'], got []",
+      "[ext] no local prompt after `exit` from the remote shell",
+      "harness exception: RuntimeError('Phosphor PID unknown (app not running?): refusing to send keys')"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_remote_session_ext",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after remote_session_ext the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_wide_paste",
+     "status": "fail",
+     "seconds": 11.4,
+     "detail": [
+      "paste inside typed zwj: shell received 'echo \ud83d\udc68\\\\u200d\ud83d\udc69\\\\u200d\ud83d\udc67 >> ip_zwj.txt' [utf8 6563686f20f09f91a85c7532303064f09f91a95c7532303064f09f91a7203e3e2069705f7a776a2e747874], expected 'echo \ud83d\udc68\\u200d\ud83d\udc69\\u200d\ud83d\udc67 >> ip_zwj.txt' [utf8 6563686f20f09f91a8e2808df09f91a9e2808df09f91a7203e3e2069705f7a776a2e747874]",
+      "injector accounting: injector sent 125; app saw 113; lost-before-app 12 (Enter: sent 5, app saw 10)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_ctrl_r",
+     "status": "pass",
+     "seconds": 15.2,
+     "detail": [
+      "injector accounting: injector sent 104; app saw 94; lost-before-app 10 (Enter: sent 2, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "flood_scrollback_find",
+     "status": "fail",
+     "seconds": 13.5,
+     "detail": [
+      "control: the marker is already visible before the Find (the flood did not scroll it away; raise APPCI_SCALE/lines)",
+      "injector accounting: injector sent 72; app saw 68; lost-before-app 4 (Enter: sent 2, app saw 2)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_hanging_host_not_local",
+     "status": "fail",
+     "seconds": 32.1,
+     "detail": [
+      "[refused host] the local shell is usable afterwards (and has none of the held line): expected ['t185_2ttyus'], got ['MUSTNOT_T184_urzay5', 't185_2ttyus']",
+      "[refused host] timing: ssh started t0; ssh client first seen never (exited before the first 50 ms poll or never started), exited not observed; first MUSTNOT key +1.64 s, last MUSTNOT key +2.60 s; app ssh gate lines after the first key: 0",
+      "NO-REFERENCE: UNVERIFIABLE [refused host]: the ssh client had not been seen before the first MUSTNOT key, so a local run of the line is correct and says nothing about the hold",
+      "[hanging host] timing: ssh started t0; ssh client first seen +1.52 s, exited +9.52 s; first MUSTNOT key +1.66 s, last MUSTNOT key +2.64 s; app ssh gate lines after the first key: 43",
+      "injector accounting: injector sent 340; app saw 332; lost-before-app 8 (Enter: sent 6, app saw 6)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_wide_edit",
+     "status": "pass",
+     "seconds": 10.9,
+     "detail": [
+      "injector accounting: injector sent 123; app saw 128; lost-before-app 0 (Enter: sent 5, app saw 6); app logged 5 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_palette",
+     "status": "fail",
+     "seconds": 18.5,
+     "detail": [
+      "palette did not open: 'Search for a command' not on screen (see shots/*palette_open.png)",
+      "nonsense filter did not show 'No results found'",
+      "injector accounting: injector sent 212; app saw 206; lost-before-app 6 (Enter: sent 5, app saw 5)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_password_prompt",
+     "status": "fail",
+     "seconds": 43.3,
+     "detail": [
+      "after a wrong passphrase the next command ran in the LOCAL shell: expected ['t196_h27i1ivu'], got []",
+      "injector accounting: injector sent 142; app saw 136; lost-before-app 6 (Enter: sent 8, app saw 8)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_wide_program",
+     "status": "pass",
+     "seconds": 25.2,
+     "detail": [
+      "injector accounting: injector sent 282; app saw 293; lost-before-app 0 (Enter: sent 12, app saw 17); app logged 11 more than were injected (keys from an earlier case or another source)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter_ssh",
+     "status": "noref",
+     "seconds": 363.2,
+     "detail": [
+      "measurement mode: interleaved, blocks of 5 kept samples (+1 discarded lead per block), 24 blocks",
+      "NO-REFERENCE: Enter to command start over ssh: overhead 5.53 +/- 2.99 ms (SE) vs budget 1 ms is within noise: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)",
+      "Enter to command start over ssh: both sides type into the SAME remote shell over ssh to the harness's local sshd; reference interleaved with Phosphor in blocks of 5 (A/B/A/B, same session)",
+      "Enter to command start over ssh: overhead 5.53 +/- 2.99 ms (SE of the median difference) vs budget 1 ms: neither within nor over budget at 2 SE; more samples needed",
+      "injector accounting: injector sent 9305; app saw 4659; lost-before-app 4646 (Enter: sent 7, app saw 79)"
+     ],
+     "lat": {
+      "ssh_enter_to_start": {
+       "p50": 216.83,
+       "p95": 242.01,
+       "n": 60,
+       "overhead_ms": 5.53,
+       "budget_ms": 1.0,
+       "budget_kind": "overhead",
+       "verdict": "inconclusive"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "intl_compose_linux",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "Linux compose/dead keys need the wayland (wtype) or x11 (xdotool) backend, this is mac",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_ime_japanese",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): System Settings > Keyboard > Text Input > Input Sources > Edit... > + > Japanese > Romaji (Hiragana)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_ime_pinyin",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "NEEDS_OWNER: the input method under test is not enabled for this user (enabled: com.apple.keylayout.US, com.apple.CharacterPaletteIM). In the GUI session of user gitrunner (Screen Sharing / console): System Settings > Keyboard > Text Input > Input Sources > Edit... > + > Chinese, Simplified > Pinyin",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_deadkey_option",
+     "status": "pass",
+     "seconds": 56.5,
+     "detail": [
+      "injector accounting: injector sent 813; app saw 807; lost-before-app 6 (Enter: sent 14, app saw 14)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_altgr_ps",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "intl_altgr_bash",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "Windows only: a per-window German keyboard layout + AltGr (Linux has intl_compose_linux, macOS intl_deadkey_option)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_mouse_select_copy",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "macOS: the harness has no pointer tool (htype2/kl3 are keyboard-only; cliclick is not part of the CI toolset and Retina point/pixel mapping is not calibrated)",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "editor_edit_save",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows have no verified equivalent, and the editor key set differs (Cmd-S/Cmd-V on macOS, close = cmd-shift",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_zsh",
+     "status": "pass",
+     "seconds": 30.7,
+     "detail": [
+      "injector accounting: injector sent 592; app saw 583; lost-before-app 9 (Enter: sent 18, app saw 22)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 35.8,
+     "detail": [
+      "injector accounting: injector sent 755; app saw 746; lost-before-app 9 (Enter: sent 21, app saw 25)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_nu",
+     "status": "pass",
+     "seconds": 43.1,
+     "detail": [
+      "nu app log: 2026-11-03T15:11:14Z [DEBUG] frame 1: updated=[\"PaneView\", \"Terminal\", \"PaneHeader\", \"ActionButton\", \"Menu\", \"Workspace\", \"WarpifyFooterView\", \"UseAgentToolbar\", \"Input\"] removed=0 redraw=true paint_o",
+      "nu app log: 2026-11-03T15:11:50Z [DEBUG] frame 1: updated=[\"UseAgentToolbar\", \"Workspace\", \"ActionButton\", \"WarpifyFooterView\", \"ActionButton\", \"Input\", \"ActionButton\", \"Terminal\", \"ActionButton\", \"PaneView\", \"Ac",
+      "injector accounting: injector sent 901; app saw 892; lost-before-app 9 (Enter: sent 23, app saw 27)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_pwsh",
+     "status": "pass",
+     "seconds": 37.0,
+     "detail": [
+      "injector accounting: injector sent 689; app saw 680; lost-before-app 9 (Enter: sent 18, app saw 22)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "editor_paste",
+     "status": "skip",
+     "seconds": 1.5,
+     "detail": [
+      "the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux only); macOS (open -a / an Apple Event open-document handler) and Windows have no verified equivalent, and the editor key set differs (Cmd-S/Cmd-V on macOS, close = cmd-shift",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_resize_typing",
+     "status": "pass",
+     "seconds": 29.7,
+     "detail": [
+      "injector accounting: injector sent 831; app saw 829; lost-before-app 2 (Enter: sent 17, app saw 17)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_split_panes",
+     "status": "pass",
+     "seconds": 53.5,
+     "detail": [
+      "injector accounting: injector sent 1528; app saw 1520; lost-before-app 8 (Enter: sent 34, app saw 34)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 7.3,
+     "detail": [
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer_ai_answer",
+     "status": "pass",
+     "seconds": 8.9,
+     "detail": [
+      "injector accounting: injector sent 211; app saw 210; lost-before-app 1 (Enter: sent 1, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_startup_time",
+     "status": "pass",
+     "seconds": 27.3,
+     "detail": [
+      "injector accounting: injector sent 331; app saw 164; lost-before-app 167 (Enter: sent 8, app saw 4)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "left_agent_mode_after_ui_startup_time",
+     "status": "fail",
+     "seconds": 0,
+     "detail": [
+      "after ui_startup_time the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape."
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "session_restore",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "session_restore needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and MacBackend has no quit/relaunch (an osascript 'tell application to quit' path and a relaunch through",
+      "injector accounting: injector sent 2 keys (0 Enter); app key trace not available, so nothing to compare"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ui_settings_live",
+     "status": "pass",
+     "seconds": 46.8,
+     "detail": [
+      "injector accounting: injector sent 1131; app saw 1129; lost-before-app 2 (Enter: sent 27, app saw 27)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "quit_24_tabs",
+     "status": "skip",
+     "seconds": 1.4,
+     "detail": [
+      "quit_24_tabs needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; on macOS Cmd-Q is refused by the frontmost-app guard and MacBackend has no quit/relaunch (an osascript 'tell application to quit' path and a relaunch through th",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "soak",
+     "status": "skip",
+     "seconds": 1.3,
+     "detail": [
+      "no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is cmd-shift-W, which the frontmost-app guard refuses by policy",
+      "injector accounting: injector sent 2; app saw 0; lost-before-app 2 (Enter: sent 0, app saw 0)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tabs_two_windows",
+     "status": "pass",
+     "seconds": 41.7,
+     "detail": [
+      "injector accounting: injector sent 1079; app saw 1062; lost-before-app 17 (Enter: sent 27, app saw 28)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tabs_streaming",
+     "status": "pass",
+     "seconds": 36.1,
+     "detail": [
+      "injector accounting: injector sent 952; app saw 936; lost-before-app 16 (Enter: sent 22, app saw 22)"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/junit.xml",
+    "macos/results.json",
+    "macos/summary.md"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "macos",
+    "seed": "1",
+    "commit": "e253f6c1",
+    "owner_settings": "sha256 a0613b641a27",
+    "tier": "full",
+    "scale": "1"
+   },
+   "summary": {
+    "pass": 65,
+    "fail": 45,
+    "skip": 26,
+    "noref": 9
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_ctrl_c_d_FAIL.png",
+    "shots/terminal_read_x_FAIL.png",
+    "shots/terminal_subshells_FAIL.png",
+    "shots/terminal_alt_screen_FAIL.png",
+    "shots/terminal_ssh_connect_typing_FAIL.png",
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/terminal_not_local_after_ssh_connect_typing.png",
+    "shots/terminal_latency_enter_FAIL.png",
+    "shots/terminal_routing_table_FAIL.png",
+    "shots/terminal_ui_tab_menu_FAIL.png",
+    "shots/terminal_flood_typed_line_FAIL.png",
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/terminal_remote_session_legacy_FAIL.png",
+    "shots/terminal_intl_wide_type_FAIL.png",
+    "shots/terminal_flood_typing_latency_FAIL.png",
+    "shots/terminal_remote_session_ext_FAIL.png",
+    "shots/terminal_intl_wide_paste_FAIL.png",
+    "shots/terminal_flood_scrollback_find_FAIL.png",
+    "shots/terminal_ssh_hanging_host_not_local_FAIL.png",
+    "shots/terminal_ui_palette_FAIL.png",
+    "shots/terminal_ssh_password_prompt_FAIL.png",
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/terminal_shell_zsh_FAIL.png",
+    "shots/terminal_md_viewer_big_FAIL.png",
+    "shots/terminal_editor_memory_7mb_FAIL.png",
+    "shots/agent_ctrl_c_d_FAIL.png",
+    "shots/agent_read_x_FAIL.png",
+    "shots/agent_subshells_FAIL.png",
+    "shots/agent_alt_screen_FAIL.png",
+    "shots/agent_ssh_connect_typing_FAIL.png",
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_not_local_after_ssh_connect_typing.png",
+    "shots/agent_latency_enter_FAIL.png",
+    "shots/agent_latency_paint_FAIL.png",
+    "shots/agent_agent_stream_cancel_FAIL.png",
+    "shots/agent_routing_table_FAIL.png",
+    "shots/agent_ui_tab_menu_FAIL.png",
+    "shots/agent_flood_typed_line_FAIL.png",
+    "/Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/shots/agent_remote_session_legacy_FAIL.png",
+    "shots/agent_intl_wide_type_FAIL.png",
+    "shots/agent_flood_typing_latency_FAIL.png",
+    "shots/agent_remote_session_ext_FAIL.png",
+    "shots/agent_left_agent_after_remote_session_ext.png",
+    "shots/agent_intl_wide_paste_FAIL.png",
+    "shots/agent_flood_scrollback_find_FAIL.png",
+    "shots/agent_ssh_hanging_host_not_local_FAIL.png",
+    "shots/agent_ui_palette_FAIL.png",
+    "shots/agent_ssh_password_prompt_FAIL.png",
+    "shots/agent_left_agent_after_ui_startup_time.png"
+   ]
+  }
+ },
+ "notes": [
+  "windows/run/results.json: 1527 KB skipped (over 1 MB)"
+ ],
+ "compile": {
+  "warning_count": 52,
+  "warnings_by_crate": {
+   "markdown_parser (lib)": 1,
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 24,
+   "warp (lib test)": 20
+  },
+  "warning_lines_by_kind": {
+   "unused import": 82,
+   "unused imports": 23,
+   "function": 12,
+   "use of deprecated type alias": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 437.335579
+ }
+}

@@ -1533,13 +1533,27 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             pre: "",
             exit_fails: false,
         },
-        // The connection failed: ssh's own error and status come back, nothing else runs.
+        // #1551: the master step failed (ssh already printed why; -N, so no remote command ever
+        // ran). The user's own plain ssh runs instead -- once, with exactly the user's arguments
+        // -- and its status is the helper's status. Nothing else (no probe, no -O exit) runs.
         Case {
             name: "auth-failure",
             master: "fail255",
             probe: "",
-            session: "none",
-            status: 255,
+            session: "fallback",
+            status: 0,
+            extra: &[],
+            pre: "",
+            exit_fails: false,
+        },
+        // #1551: Git Bash / MSYS2 (WARP_IN_MSYS2=true): no master at all, just the plain ssh.
+        // Bash only (the zsh/fish wrappers do not run in Git Bash).
+        Case {
+            name: "msys2",
+            master: "fail255",
+            probe: "",
+            session: "plainonly",
+            status: 0,
             extra: &[],
             pre: "",
             exit_fails: false,
@@ -1653,6 +1667,9 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
         // find the master's socket (`-S` test), so the probe and the single-connection session
         // happen; it passes the tilde path on to ssh unexpanded, as ssh expands it itself.
         for (case, tilde) in cases.iter().flat_map(|c| [(c, false), (c, true)]) {
+            if case.name == "msys2" && kind != 0 {
+                continue;
+            }
             let dir = std::env::temp_dir().join(format!(
                 "p1035-{name}-{}-{}{}",
                 cases.iter().position(|c| c.name == case.name).unwrap(),
@@ -1671,18 +1688,23 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
             } else {
                 socks.display().to_string()
             };
+            let msys2 = if case.name == "msys2" {
+                "WARP_IN_MSYS2=true;"
+            } else {
+                ""
+            };
             let prelude = match kind {
                 2 => format!(
                     "function warp_init_shell; echo init-$argv; end; function warp_send_json_message; end; set -g SSH_SOCKET_DIR '{}'; set -g WARP_SESSION_ID 77; set -g WARP_HONOR_PS1 1;",
                     socket_dir_literal
                 ),
                 _ => format!(
-                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1;",
+                    "init_shell_hook(){{ echo hook-$1; }}; warp_send_json_message(){{ :; }}; SSH_SOCKET_DIR='{}'; WARP_SESSION_ID=77; WARP_HONOR_PS1=1; {msys2}",
                     socket_dir_literal
                 ),
             };
             // The stub records every invocation (arguments one per line after a `CALL` marker),
-            // fails -G, and otherwise behaves like ssh would:
+            // answers -G with a minimal resolved config, and otherwise behaves like ssh would:
             //   -O check -> 0 when a master listens on the ControlPath, else 255;
             //   -O exit  -> tells that master to exit (it unlinks its socket), or 255 ($EXIT_FAILS
             //               or no master);
@@ -1741,7 +1763,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
 p=
 for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac;; esac; done
 case " $* " in
-  *" -G "*) exit 1;;
+  *" -G "*) printf 'user u\nhostname h\nport 22\n'; exit 0;;
   *" -O check "*) python3 "$MUX" check "$p"; exit $?;;
   *" -O exit "*) test -n "$EXIT_FAILS" && exit 255; python3 "$MUX" exit "$p"; exit $?;;
   *" -N "*)
@@ -1896,6 +1918,23 @@ exit 0
                 "{name}/{}: an occupied ControlPath is checked (once) before anything else: {recorded:?}",
                 case.name
             );
+            // #1172: the connect adds as few processes over plain ssh as it can. ONE `ssh -G` per
+            // wrapped ssh (none when the wrapper runs the plain ssh before reading any config), and
+            // an `-O check` only where the answer is needed: for an occupied ControlPath before the
+            // master starts, never again once the master has been started and its socket is there.
+            let g_calls = all_calls.len() - calls.len();
+            assert_eq!(
+                g_calls,
+                usize::from(case.name != "msys2"),
+                "{name}/{}: ssh -G runs once: {recorded:?}",
+                case.name
+            );
+            let total_checks = calls.iter().filter(|c| c.contains("-O\ncheck\n")).count();
+            assert_eq!(
+                total_checks, checks_before_master,
+                "{name}/{}: no -O check after the master is started: {recorded:?}",
+                case.name
+            );
             if case.session == "unwrapped" {
                 // A live master of another ssh: not checked twice, not stopped, not replaced; this
                 // ssh is the user's plain command.
@@ -1906,6 +1945,13 @@ exit 0
                     "{name}/{}: live master removed",
                     case.name
                 );
+                std::fs::remove_dir_all(&dir).ok();
+                continue;
+            }
+            if case.session == "plainonly" {
+                // #1551: no master, no probe, no session options: only the user's own ssh.
+                assert_eq!(calls.len(), 1, "{name}/{}: {recorded:?}", case.name);
+                assert_eq!(calls[0], user_args, "{name}/{}: {recorded:?}", case.name);
                 std::fs::remove_dir_all(&dir).ok();
                 continue;
             }
@@ -1929,6 +1975,18 @@ exit 0
                 .filter(|c| c.contains("-t\n") && !is_master(c))
                 .collect();
             match case.session {
+                "fallback" => {
+                    // #1551: the failed master, then the user's plain ssh and nothing else.
+                    assert_eq!(calls.len(), 2, "{name}/{}: {recorded:?}", case.name);
+                    assert_eq!(calls[1], user_args, "{name}/{}: {recorded:?}", case.name);
+                    assert_eq!(
+                        (probes, exits),
+                        (0, 0),
+                        "{name}/{}: {recorded:?}",
+                        case.name
+                    );
+                    continue;
+                }
                 "none" => {
                     assert_eq!(
                         (calls.len(), probes, exits),
@@ -3072,7 +3130,9 @@ fn test_nu_real_local_bootstrap_emits_hooks_and_keeps_history_clean() {
             "local",
             &["--login".to_owned(), "--execute".to_owned(), init],
             // A user config that records space-led lines: the init script must still hide ours.
-            "$env.config.history.ignore_space_prefixed = false\n",
+            // nushell ships no default aliases (0.116), so the config defines one to prove
+            // `Bootstrapped.aliases` reports the shell's real alias table.
+            "$env.config.history.ignore_space_prefixed = false\nalias phosphor_test_alias = echo aliased\n",
             &[("WARP_HONOR_PS1", "1")],
             &steps,
         ) else {
@@ -3110,6 +3170,14 @@ fn test_nu_real_local_bootstrap_emits_hooks_and_keeps_history_clean() {
                 "Bootstrapped.{key} is empty: {bootstrapped}"
             );
         }
+        assert!(
+            bootstrapped["aliases"]
+                .as_str()
+                .unwrap()
+                .contains("phosphor_test_alias -> echo aliased"),
+            "alias table: {}",
+            bootstrapped["aliases"]
+        );
         let builtins: Vec<&str> = bootstrapped["builtins"].as_str().unwrap().lines().collect();
         for builtin in ["ls", "where", "each", "open", "get", "select", "http"] {
             assert!(
@@ -3461,4 +3529,743 @@ fn powershell_bootstrap_lines_carry_no_control_characters() {
             }
         });
     });
+}
+
+fn bash_here_document_script() -> &'static [u8] {
+    b"before\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body1\n body2\nEOM\n # comment\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n"
+}
+
+#[test]
+fn bash_counted_read_bootstrap_replaces_the_here_document_with_a_counted_read() {
+    // #1172: the body moves out of the here-document; what is before and after it is untouched.
+    let rewritten =
+        bash_counted_read_bootstrap(bash_here_document_script()).expect("has the here-document");
+    // #1549: the `stty sane` and the `eval` run from the command line; nothing follows the body.
+    assert_eq!(
+        decode_script(&rewritten),
+        "before\n command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c 14); \
+         command -p stty echo; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\r \
+         body1\n body2\n"
+    );
+}
+
+#[test]
+fn bash_counted_read_bootstrap_counts_bytes_not_characters() {
+    // `head -c` counts bytes; a multi-byte character in the body must be counted as its bytes.
+    let script = "x\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n \u{2328}\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n"
+        .as_bytes()
+        .to_vec();
+    let rewritten = bash_counted_read_bootstrap(&script).expect("has the here-document");
+    // " \u{2328}\n" is 1 + 3 + 1 bytes.
+    assert!(decode_script(&rewritten).contains("head -c 5)"));
+}
+
+#[test]
+fn bash_counted_read_bootstrap_leaves_other_scripts_alone() {
+    assert_eq!(bash_counted_read_bootstrap(b"echo hi\n"), None);
+    // An unterminated here-document is not rewritten either.
+    assert_eq!(
+        bash_counted_read_bootstrap(
+            b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\n"
+        ),
+        None
+    );
+}
+
+#[test]
+fn bash_counted_read_bootstrap_applies_to_the_bundled_bash_script() {
+    // Guards the markers against edits to bash.sh: the real script (its `#include` line replaced
+    // by the body, as `script_for_shell` does before trimming) must be rewritable, and the byte
+    // count in the new command must be exactly the length of the body that follows it.
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/bundled/bootstrap/");
+    let top = std::fs::read_to_string(format!("{dir}bash.sh")).expect("bash.sh");
+    let body = std::fs::read_to_string(format!("{dir}bash_body.sh")).expect("bash_body.sh");
+    let script = top.replace("#include bundled/bootstrap/bash_body.sh", body.trim_end());
+    let rewritten = bash_counted_read_bootstrap(script.as_bytes())
+        .expect("bash.sh must keep the here-document that bash_counted_read_bootstrap rewrites");
+    let text = decode_script(&rewritten);
+    let after_head = text.split("head -c ").nth(1).expect("a head -c command");
+    let count: usize = after_head
+        .split(')')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .expect("a byte count");
+    let command_end =
+        text.find("unset WARP_BOOTSTRAP_VAR\r").unwrap() + "unset WARP_BOOTSTRAP_VAR\r".len();
+    // #1549: the body is the end of the write; the `stty sane` and `eval` that followed the
+    // terminator line in the original now run from the command line.
+    assert_eq!(text.len() - command_end, count);
+    assert!(text.contains("command -p stty echo; stty sane; eval \"$WARP_BOOTSTRAP_VAR\""));
+    assert!(!text.contains("<< 'EOM'"));
+}
+
+#[test]
+fn strip_local_only_block_drops_exactly_the_marked_lines() {
+    let script: Cow<'static, [u8]> = Cow::Borrowed(
+        b" a\n : __warp_local_only_begin\n ssh()\n : __warp_local_only_end\n b\n",
+    );
+    assert_eq!(&*strip_local_only_block(script), &b" a\n b\n"[..]);
+    // A missing, doubled or reversed marker leaves the script alone.
+    for bad in [
+        &b" a\n : __warp_local_only_begin\n b\n"[..],
+        b" a\n : __warp_local_only_end\n b\n",
+        b" : __warp_local_only_end\n x\n : __warp_local_only_begin\n",
+        b" : __warp_local_only_begin\n : __warp_local_only_begin\n : __warp_local_only_end\n",
+        b" plain\n",
+    ] {
+        let input: Cow<'static, [u8]> = Cow::Owned(bad.to_vec());
+        assert_eq!(&*strip_local_only_block(input), bad);
+    }
+}
+
+#[test]
+fn bundled_bash_body_has_one_local_only_block_holding_the_ssh_wrapper() {
+    // #1164: the markers must stay in bash_body.sh, the stripped body must not define the ssh
+    // wrapper, and the unstripped one must.
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/bundled/bootstrap/");
+    let body = std::fs::read_to_string(format!("{dir}bash_body.sh")).expect("bash_body.sh");
+    let stripped = strip_local_only_block(Cow::Owned(body.clone().into_bytes()));
+    let stripped = String::from_utf8(stripped.into_owned()).unwrap();
+    assert!(body.contains("function warp_ssh_helper()"));
+    assert!(!stripped.contains("warp_ssh_helper"));
+    assert!(!stripped.contains("__warp_ssh_impl"));
+    assert!(stripped.len() < body.len());
+    assert!(stripped.contains("function warp_bootstrapped"));
+}
+
+#[test]
+fn counted_read_rewrite_ends_exactly_with_the_body_for_every_shell() {
+    // #1549: macOS `head` over-reads a tty and swallows whatever is queued after the counted
+    // bytes, so nothing may follow the body.
+    let bash_body = b" body1\n body2\n";
+    let zsh_body = b" body1\n body2\n";
+    for (script, shell, body) in [
+        (bash_here_document_script(), ShellType::Bash, &bash_body[..]),
+        (zsh_here_document_script(), ShellType::Zsh, &zsh_body[..]),
+    ] {
+        let (rewritten, prefix_len) = counted_read_rewrite(script, shell).expect("rewritable");
+        assert!(rewritten.ends_with(body), "{shell:?}: bytes after the body");
+        assert_eq!(&rewritten[prefix_len..], body, "{shell:?}");
+    }
+    // Fish and the other shells are not rewritten at all.
+    for shell in [ShellType::Fish, ShellType::Nu, ShellType::PowerShell] {
+        assert_eq!(
+            counted_read_rewrite(bash_here_document_script(), shell),
+            None
+        );
+    }
+    // A script with an unknown line after the here-document would put it after the body (or lose
+    // it): not rewritten.
+    assert_eq!(
+        counted_read_rewrite(
+            b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n echo extra\n",
+            ShellType::Bash
+        ),
+        None
+    );
+}
+
+#[test]
+fn bash_counted_read_runs_the_eval_from_the_head_line() {
+    let (rewritten, prefix_len) =
+        counted_read_rewrite(bash_here_document_script(), ShellType::Bash).expect("rewritable");
+    let command = decode_script(&rewritten[..prefix_len]);
+    let command = command.rsplit('\n').next().unwrap();
+    assert_eq!(
+        command,
+        " command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c 14); \
+         command -p stty echo; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\r"
+    );
+}
+
+#[test]
+fn counted_read_count_is_the_body_byte_length_including_multibyte() {
+    for shell in [ShellType::Bash, ShellType::Zsh] {
+        let body = " \u{2328} h\u{e9}llo \u{1f600}\n";
+        let script = match shell {
+            ShellType::Bash => format!(
+                "x\n builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n{body}EOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n"
+            ),
+            _ => format!(
+                "x\n read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval \"$WARP_BOOTSTRAP_VAR\"\n{body}EOM\n"
+            ),
+        };
+        let (rewritten, prefix_len) =
+            counted_read_rewrite(script.as_bytes(), shell).expect("rewritable");
+        let command = decode_script(&rewritten[..prefix_len]);
+        let count: usize = command
+            .split("head -c ")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .and_then(|n| n.parse().ok())
+            .expect("a byte count");
+        assert_eq!(count, body.len(), "{shell:?}");
+        assert_eq!(&rewritten[prefix_len..], body.as_bytes(), "{shell:?}");
+    }
+}
+
+#[test]
+fn counted_read_bootstrap_is_on_unless_switched_off() {
+    assert!(counted_read_bootstrap_enabled_from_env(None));
+    assert!(counted_read_bootstrap_enabled_from_env(Some("1")));
+    assert!(!counted_read_bootstrap_enabled_from_env(Some("0")));
+    assert!(!counted_read_bootstrap_enabled_from_env(Some(" off ")));
+}
+
+#[test]
+fn bootstrap_for_session_rewrites_only_bash_over_ssh_that_asked_for_it() {
+    let script: Cow<'static, [u8]> = Cow::Borrowed(
+        b" builtin read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :\n body\nEOM\n stty sane\n eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR\n",
+    );
+    let ssh_raw = SessionInfo::new_for_test()
+        .with_ssh_socket_path(std::path::PathBuf::from("/tmp/sock"))
+        .with_raw_bootstrap(true);
+    let rewritten = bootstrap_for_session(script.clone(), ShellType::Bash, &ssh_raw);
+    assert!(decode_script(&rewritten).contains("head -c 6)"));
+
+    // The remote did not report support: unchanged.
+    let ssh_plain = SessionInfo::new_for_test()
+        .with_ssh_socket_path(std::path::PathBuf::from("/tmp/sock"))
+        .with_raw_bootstrap(false);
+    assert_eq!(
+        bootstrap_for_session(script.clone(), ShellType::Bash, &ssh_plain),
+        script
+    );
+    // Another shell: unchanged.
+    assert_eq!(
+        bootstrap_for_session(script.clone(), ShellType::Zsh, &ssh_raw),
+        script
+    );
+    // Not an ssh session: unchanged.
+    assert_eq!(
+        bootstrap_for_session(
+            script.clone(),
+            ShellType::Bash,
+            &SessionInfo::new_for_test()
+        ),
+        script
+    );
+}
+
+// ---- #1226: counted read for local bash/zsh tabs and sudo/su subshells ----
+
+fn zsh_here_document_script() -> &'static [u8] {
+    b" setopt x\n read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval \"$WARP_BOOTSTRAP_VAR\" || :; unset WARP_BOOTSTRAP_VAR\n body1\n body2\nEOM\n"
+}
+
+#[test]
+fn zsh_counted_read_keeps_the_eval_on_the_command_line_after_the_read() {
+    // The zsh script runs the body from the same line as the `read`, so the rewritten command
+    // line reads the body first and then runs what followed the `read`.
+    let (rewritten, prefix_len) = counted_read_rewrite(zsh_here_document_script(), ShellType::Zsh)
+        .expect("zsh here-document");
+    assert_eq!(
+        decode_script(&rewritten),
+        " setopt x\n command -p stty -echo; WARP_BOOTSTRAP_VAR=$(LC_ALL=C command -p head -c 14); \
+         command -p stty echo; eval \"$WARP_BOOTSTRAP_VAR\" || :; unset WARP_BOOTSTRAP_VAR\r body1\n body2\n"
+    );
+    // The prefix ends with the CR of the command line; the body follows it.
+    assert_eq!(rewritten[prefix_len - 1], b'\r');
+    assert_eq!(&rewritten[prefix_len..], b" body1\n body2\n");
+}
+
+#[test]
+fn counted_read_rewrite_only_handles_bash_and_zsh_scripts_it_recognises() {
+    assert_eq!(
+        counted_read_rewrite(zsh_here_document_script(), ShellType::Fish),
+        None
+    );
+    // The zsh marker is not the bash marker and the other way round.
+    assert_eq!(
+        counted_read_rewrite(zsh_here_document_script(), ShellType::Bash),
+        None
+    );
+    assert_eq!(counted_read_rewrite(b"echo hi\n", ShellType::Zsh), None);
+    // The `read` line without a newline after it, or an unterminated here-document: unchanged.
+    assert_eq!(
+        counted_read_rewrite(
+            b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval x",
+            ShellType::Zsh
+        ),
+        None
+    );
+    assert_eq!(
+        counted_read_rewrite(
+            b" read -r -d '' WARP_BOOTSTRAP_VAR << 'EOM' || :; eval x\n body\n",
+            ShellType::Zsh
+        ),
+        None
+    );
+}
+
+#[test]
+fn zsh_counted_read_applies_to_the_bundled_zsh_script() {
+    // Guards the markers against edits to zsh.sh, and the byte count against the body that follows.
+    let script = script_for_shell(ShellType::Zsh, &crate::ASSETS);
+    let (rewritten, prefix_len) = counted_read_rewrite(&script, ShellType::Zsh)
+        .expect("zsh.sh must keep the here-document that counted_read_rewrite rewrites");
+    let text = decode_script(&rewritten);
+    assert!(!text.contains("<< 'EOM'"));
+    let count: usize = text
+        .split("head -c ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .and_then(|n| n.parse().ok())
+        .expect("a byte count");
+    // The zsh script ends with the body: the here-document is its last construct.
+    assert_eq!(rewritten.len() - prefix_len, count);
+    // Everything the original line ran after the `read` still runs, after the body is read.
+    let command = decode_script(&rewritten[..prefix_len]);
+    let command = command.rsplit('\n').next().unwrap();
+    assert!(command.contains(
+        "command -p stty echo; eval \"$WARP_BOOTSTRAP_VAR\" || :; unset WARP_BOOTSTRAP_VAR;"
+    ));
+    assert!(command.ends_with(
+        "unset WARP_RESTORE_PRINT_EXIT_VALUE WARP_RESTORE_PIPE_FAIL WARP_RESTORE_NOUNSET\r"
+    ));
+}
+
+#[test]
+fn bundled_bootstrap_bodies_are_safe_to_read_through_a_cooked_tty() {
+    // While `head` reads the body the tty is cooked: a control character would act on the tty
+    // (^C, ^Z, ^D, ^\ ...), and a line over the canonical limit is cut (#962; the subshell limit
+    // is the smaller 1024 of macOS). Tab and newline are fine.
+    for shell_type in [ShellType::Bash, ShellType::Zsh] {
+        let script = script_for_shell(shell_type, &crate::ASSETS);
+        // 1024 is the canonical line limit on macOS (see MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES).
+        assert!(
+            script.split(|b| *b == b'\n').all(|line| line.len() < 1024),
+            "{shell_type:?}: a line of 1024 bytes or more"
+        );
+        assert!(
+            !script
+                .iter()
+                .any(|b| (*b < 0x20 && *b != b'\n' && *b != b'\t') || *b == 0x7f),
+            "{shell_type:?} carries a control character"
+        );
+    }
+}
+
+#[test]
+fn local_counted_bootstrap_is_on_unless_switched_off() {
+    assert!(local_counted_bootstrap_enabled_from_env(None));
+    assert!(local_counted_bootstrap_enabled_from_env(Some("1")));
+    assert!(!local_counted_bootstrap_enabled_from_env(Some("0")));
+    assert!(!local_counted_bootstrap_enabled_from_env(Some(" off ")));
+}
+
+fn subshell_of(command: &str) -> SessionInfo {
+    let mut info = SessionInfo::new_for_test();
+    info.subshell_info = Some(
+        crate::terminal::model::terminal_model::SubshellInitializationInfo {
+            spawning_command: command.to_owned(),
+            was_triggered_by_rc_file_snippet: false,
+            env_var_collection_name: None,
+            ssh_connection_info: None,
+        },
+    );
+    info
+}
+
+#[cfg(unix)]
+#[test]
+fn local_counted_bootstrap_applies_to_local_bash_zsh_and_host_subshells_only() {
+    let local = SessionInfo::new_for_test();
+    assert!(local_counted_bootstrap_applies(ShellType::Bash, &local));
+    assert!(local_counted_bootstrap_applies(ShellType::Zsh, &local));
+    // Other shells keep their own way in (fish and pwsh source a file).
+    assert!(!local_counted_bootstrap_applies(ShellType::Fish, &local));
+    assert!(!local_counted_bootstrap_applies(
+        ShellType::PowerShell,
+        &local
+    ));
+
+    // The host's own privilege-changing subshells; env prefixes and paths are looked through.
+    for command in [
+        "sudo -s",
+        "su -",
+        "ksu",
+        "doas -s",
+        "FOO=1 sudo -i",
+        "/usr/bin/sudo -s",
+    ] {
+        assert!(
+            local_counted_bootstrap_applies(ShellType::Bash, &subshell_of(command)),
+            "{command}"
+        );
+    }
+    // Subshells whose filesystem or tty may not be this host's keep the typed form.
+    for command in [
+        "docker exec -it c bash",
+        "kubectl exec -it pod -- bash",
+        "nix-shell",
+        "ssh host",
+        "poetry shell",
+        "",
+    ] {
+        assert!(
+            !local_counted_bootstrap_applies(ShellType::Bash, &subshell_of(command)),
+            "{command}"
+        );
+    }
+    // A sudo subshell that is really an ssh one.
+    let mut ssh_sudo = subshell_of("sudo -s");
+    ssh_sudo.subshell_info.as_mut().unwrap().ssh_connection_info = Some(Default::default());
+    assert!(!local_counted_bootstrap_applies(ShellType::Bash, &ssh_sudo));
+
+    // An ssh session is the business of `bootstrap_for_session`.
+    let ssh = SessionInfo::new_for_test().with_ssh_socket_path(std::path::PathBuf::from("/tmp/s"));
+    assert!(!local_counted_bootstrap_applies(ShellType::Bash, &ssh));
+}
+
+#[test]
+fn counted_subshell_chunks_pace_the_prefix_and_send_the_body_as_one_write() {
+    let mut script = vec![b'a'; SUBSHELL_BOOTSTRAP_CHUNK_SIZE * 2 + 100];
+    let prefix_len = script.len();
+    script.resize(prefix_len + SUBSHELL_BOOTSTRAP_CHUNK_SIZE * 5, b'b');
+    let chunks = counted_subshell_bootstrap_chunks(&script, prefix_len);
+    // 3 paced prefix chunks, then the whole body.
+    assert_eq!(chunks.len(), 4);
+    assert!(
+        chunks[..3]
+            .iter()
+            .all(|c| c.len() <= SUBSHELL_BOOTSTRAP_CHUNK_SIZE && c.iter().all(|b| *b == b'a'))
+    );
+    assert_eq!(chunks[3].len(), SUBSHELL_BOOTSTRAP_CHUNK_SIZE * 5);
+    assert_eq!(chunks.concat(), script);
+    // Nothing after the prefix: no empty body write.
+    assert_eq!(
+        counted_subshell_bootstrap_chunks(b"abc", 3),
+        vec![b"abc".to_vec()]
+    );
+    assert_eq!(
+        counted_subshell_bootstrap_chunks(b"abc", 99),
+        vec![b"abc".to_vec()]
+    );
+}
+
+/// #1354: the setup lines of bash, zsh and fish end in a marker the shell prints once it ran the
+/// line, so the app can write the next line when the previous one was consumed instead of after
+/// a delay. The last line (it evaluates the script) carries none, and a plain build of the lines
+/// is unchanged.
+#[test]
+fn marked_setup_lines_end_in_a_marker_except_the_last() {
+    let raw = "echo 'x' ".repeat(500);
+    for shell_type in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+        let plain = chunked_eval_lines(shell_type, &raw);
+        let marked = chunked_eval_lines_with_markers(shell_type, &raw, Some(77));
+        assert_eq!(plain.len(), marked.len(), "{shell_type:?}");
+        let last = marked.len() - 1;
+        for (index, (plain_line, marked_line)) in plain.iter().zip(&marked).enumerate() {
+            if index == last {
+                assert_eq!(
+                    plain_line, marked_line,
+                    "{shell_type:?}: last line is unmarked"
+                );
+            } else {
+                assert!(
+                    marked_line.starts_with(plain_line.as_str()),
+                    "{shell_type:?} {index}"
+                );
+                assert!(
+                    marked_line.ends_with(&format!("\\e]7771;77;{index}\\a'")),
+                    "{shell_type:?} {index}: {marked_line}"
+                );
+            }
+        }
+        assert!(
+            marked
+                .iter()
+                .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES),
+            "{shell_type:?}: the marker must not push a line past the tty line limit"
+        );
+        assert_eq!(
+            chunked_eval_lines(shell_type, &raw),
+            chunked_eval_lines_with_markers(shell_type, &raw, None)
+        );
+    }
+}
+
+/// #1354: typed into a real bash, zsh and fish, the marked lines print every marker, in order,
+/// and the script still runs.
+#[test]
+#[cfg(unix)]
+fn marked_setup_lines_print_their_markers_in_a_real_shell() {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let cases: [(&str, &[&str], ShellType); 3] = [
+        ("bash", &["--norc", "-i"], ShellType::Bash),
+        ("zsh", &["-f", "-i"], ShellType::Zsh),
+        ("fish", &["--no-config", "-i"], ShellType::Fish),
+    ];
+    for (bin, args, shell_type) in cases {
+        let Ok(path) = Command::new("sh")
+            .args(["-c", &format!("command -v {bin}")])
+            .output()
+        else {
+            continue;
+        };
+        let path = String::from_utf8_lossy(&path.stdout).trim().to_owned();
+        if path.is_empty() {
+            eprintln!("skipping {bin}: not installed");
+            continue;
+        }
+        let lines = chunked_eval_lines_with_markers(shell_type, "echo STAGE2-RAN", Some(4242));
+        let dir =
+            std::env::temp_dir().join(format!("phosphor-marker-{bin}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("data/fish")).unwrap();
+        let mut child = Command::new(&path)
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", &dir)
+            .env("XDG_DATA_HOME", dir.join("data"))
+            .env("XDG_CONFIG_HOME", dir.join("cfg"))
+            .env("TERM", "dumb")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            for line in &lines {
+                stdin.write_all(line.as_bytes()).unwrap();
+                stdin.write_all(b"\n").unwrap();
+            }
+            stdin.write_all(b"exit\n").unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut from = 0;
+        for index in 0..lines.len() - 1 {
+            let marker = format!("\u{1b}]7771;4242;{index}\u{7}");
+            let found = stdout[from..].find(&marker).unwrap_or_else(|| {
+                panic!("{bin}: marker {index} missing or out of order: {stdout:?}")
+            });
+            from += found + marker.len();
+        }
+        assert!(
+            stdout.contains("STAGE2-RAN"),
+            "{bin}: script did not run: {stdout:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// #1372: the nushell setup lines end in a marker (the same OSC 7771 as bash/zsh/fish, written in
+/// nushell syntax so the typed text holds no escape byte), except the last; each line is still
+/// one `;`-joined statement sequence under the tty line limit; an unmarked build is unchanged.
+#[test]
+fn marked_nu_setup_lines_end_in_a_nu_marker_except_the_last() {
+    let raw = "print 'x'\n".repeat(300);
+    let session = SessionId::from(77u64);
+    let plain = nu_subshell_lines_with_markers(&raw, session, false);
+    let marked = nu_subshell_lines_with_markers(&raw, session, true);
+    assert_eq!(plain.len(), marked.len());
+    assert!(marked.len() >= 4);
+    let last = marked.len() - 1;
+    for (index, (plain_line, marked_line)) in plain.iter().zip(&marked).enumerate() {
+        if index == last {
+            assert_eq!(plain_line, marked_line, "last line is unmarked");
+        } else {
+            assert!(marked_line.starts_with(plain_line.as_str()), "{index}");
+            assert!(
+                marked_line.ends_with(&format!(
+                    "; print -n $\"(ansi esc)]7771;77;{index}(char bel)\""
+                )),
+                "{index}: {marked_line}"
+            );
+        }
+        assert!(
+            !marked_line.contains('\u{1b}'),
+            "{index}: no escape byte typed"
+        );
+        assert!(
+            marked_line.starts_with(' '),
+            "{index}: stays out of history"
+        );
+    }
+    assert!(
+        marked
+            .iter()
+            .all(|l| l.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES)
+    );
+}
+
+/// #1399: nushell 0.116 has no `char esc`; a marker built with it fails the whole line at parse
+/// time, so no marker ever arrived. The marker uses `ansi esc` and no other unknown named char.
+#[test]
+fn nu_setup_marker_uses_only_names_nushell_0_116_has() {
+    let marker = nu_setup_line_marker(9, 3);
+    assert_eq!(marker, " print -n $\"(ansi esc)]7771;9;3(char bel)\"");
+    assert!(!marker.contains("char esc"), "{marker}");
+}
+
+/// #1372: typed into a real nushell, the marked lines print every marker in order and the script
+/// still runs. Skipped when nu (or python3, for the pty driver) is missing.
+#[test]
+#[cfg(unix)]
+fn marked_nu_setup_lines_print_their_markers_in_a_real_shell() {
+    let lines =
+        nu_subshell_lines_with_markers("print 'STAGE2-RAN'\n", SessionId::from(4242u64), true);
+    let steps: Vec<String> = lines.iter().map(|line| format!("{line}\r")).collect();
+    let Some(session) = run_nu_session(
+        "marker",
+        &[],
+        "$env.config.show_banner = false\n",
+        &[],
+        &steps,
+    ) else {
+        return;
+    };
+    let mut from = 0;
+    for index in 0..lines.len() - 1 {
+        let marker = format!("\u{1b}]7771;4242;{index}\u{7}");
+        let found = session.raw[from..]
+            .find(&marker)
+            .unwrap_or_else(|| panic!("marker {index} missing or out of order: {:?}", session.raw));
+        from += found + marker.len();
+    }
+    assert!(session.raw.contains("STAGE2-RAN"), "{:?}", session.raw);
+}
+
+/// #1372: the PowerShell setup lines carry the marker mechanics -- a `PSConsoleHostReadLine`
+/// wrapper installed by the first line that prints the pending index when PSReadLine is about to
+/// read, a pending index set by each of the first two lines -- and the last line, an unmarked
+/// build and the history handler's trailing comment word are untouched.
+#[test]
+fn marked_powershell_setup_lines_set_a_pending_marker_and_install_the_read_hook() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let session = SessionId::from(18_446_744_073_709_551_000u64);
+            let plain = init_subshell_command_lines(Some(ShellType::PowerShell), &[], session, ctx);
+            let marked = init_subshell_command_lines_with_markers(
+                Some(ShellType::PowerShell),
+                &[],
+                session,
+                true,
+                ctx,
+            );
+            assert_eq!(plain.len(), 3);
+            assert_eq!(marked.len(), 3);
+            assert_eq!(plain[2], marked[2], "the last line is unmarked");
+            assert!(!plain[0].contains("7771") && !plain[1].contains("7771"));
+            // Line 0 installs the hook that prints the marker, outside the history guard, before
+            // the comment word; line 1 records that it ran.
+            assert!(marked[0].starts_with(plain[0].trim_end_matches(" # apikey")));
+            assert!(marked[0].trim_end().ends_with("# apikey"), "{}", marked[0]);
+            assert!(marked[0].contains("PSConsoleHostReadLine"));
+            assert!(marked[0].contains(&format!("]7771;{};", session.as_u64())));
+            assert!(marked[0].contains("$global:_phMk = 0"));
+            assert!(marked[1].starts_with(plain[1].as_str()));
+            assert!(marked[1].ends_with("$global:_phMk = 1"), "{}", marked[1]);
+            for line in &marked {
+                assert!(line.starts_with(' ') || line.starts_with("if "), "{line}");
+                assert!(!line.contains('\u{1b}'), "no escape byte is typed");
+                assert!(
+                    line.len() < MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES,
+                    "{}",
+                    line.len()
+                );
+            }
+        });
+    });
+}
+
+/// #1372: every PowerShell setup line, plain and marked, parses as PowerShell. The history
+/// handler line shipped with an unescaped `'` inside a single-quoted string and never parsed, so
+/// Windows PowerShell sat at its `>>` continuation prompt. Skipped without pwsh.
+#[test]
+#[cfg(unix)]
+fn powershell_setup_lines_parse_as_powershell() {
+    use std::process::Command;
+    if Command::new("pwsh")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg("1")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            let dir = std::env::temp_dir().join(format!("phosphor-pwsh-parse-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            for marked in [false, true] {
+                let lines = init_subshell_command_lines_with_markers(
+                    Some(ShellType::PowerShell),
+                    &[],
+                    SessionId::from(42u64),
+                    marked,
+                    ctx,
+                );
+                for (index, line) in lines.iter().enumerate() {
+                    let file = dir.join(format!("line{marked}{index}.ps1"));
+                    std::fs::write(&file, line).unwrap();
+                    let out = Command::new("pwsh")
+                        .arg("-NoProfile")
+                        .arg("-Command")
+                        .arg("$e = $null; $t = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:PHOSPHOR_PARSE_FILE, [ref]$t, [ref]$e); $e | ForEach-Object { $_.Message }")
+                        .env("PHOSPHOR_PARSE_FILE", &file)
+                        .output()
+                        .unwrap();
+                    let errors = String::from_utf8_lossy(&out.stdout);
+                    assert!(errors.trim().is_empty(), "marked={marked} line {index}: {errors}");
+                }
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        });
+    });
+}
+
+/// #1172: the zsh wrapper no longer forks `printf | od | tr` to hex-encode the remote env script;
+/// the constant head and tail are hex literals in the body. Decode them and check they are still
+/// the script they replaced, so editing the script without re-encoding fails here.
+#[test]
+fn test_zsh_env_script_hex_constants_decode_to_the_script() {
+    // A constant may be split over lines (`local name='..'` then `name+='..'`) to keep every typed
+    // line under macOS MAX_CANON; the pieces are joined.
+    fn constant(zsh: &str, name: &str) -> String {
+        fn piece<'a>(zsh: &'a str, marker: &str) -> Option<&'a str> {
+            let start = zsh.find(marker)? + marker.len();
+            let len = zsh[start..].find('\'').expect("unterminated constant");
+            Some(&zsh[start..start + len])
+        }
+        let mut hex = piece(zsh, &format!("local {name}='"))
+            .unwrap_or_else(|| panic!("zsh_body.sh lost `local {name}='`"))
+            .to_owned();
+        let more = format!("{name}+='");
+        for line in zsh.lines() {
+            if let Some(rest) = line.trim_start().strip_prefix(&more) {
+                hex.push_str(rest.split('\'').next().expect("unterminated constant"));
+            }
+        }
+        hex
+    }
+    fn decode(hex: &str) -> String {
+        assert_eq!(hex.len() % 2, 0, "odd hex length");
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("not hex"))
+            .collect();
+        String::from_utf8(bytes).expect("not utf-8")
+    }
+
+    let zsh = bundled_script("bundled/bootstrap/zsh_body.sh");
+    let head = decode(&constant(&zsh, "zsh_env_head"));
+    let tail = decode(&constant(&zsh, "zsh_env_tail"));
+    assert_eq!(head, "unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID=");
+    assert!(tail.starts_with("_hostname=$(command -pv hostname"), "{tail}");
+    assert!(
+        tail.ends_with("unset _hostname _user _msg _ju _jh"),
+        "{tail}"
+    );
+    // No substituted placeholder may hide in a constant: those belong in the builtin-encoded middle.
+    assert!(!tail.contains("@@"), "{tail}");
 }

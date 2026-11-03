@@ -636,7 +636,6 @@ fn wrapper_forwards_branches_received_from_the_local_backend() {
 
         let local = wrapper.read(&app, |model, _| match model {
             DiffStateModel::Local(handle) => handle.clone(),
-            #[cfg(not(target_family = "wasm"))]
             DiffStateModel::Remote(_) => {
                 panic!("DiffStateModel::new should build a local backend")
             }
@@ -1197,4 +1196,71 @@ fn hunk_to_patch_preserves_missing_trailing_newline() {
         patch.contains("\\ No newline at end of file"),
         "missing-newline marker must survive into the patch, got:\n{patch}"
     );
+}
+
+// ─── Git chip stats (#1134) ──────────────────────────────────────────────────
+
+#[test]
+fn sum_numstat_z_adds_insertions_and_deletions() {
+    let output = "5\t2\ta.txt\00\t10\tb.txt\0";
+    assert_eq!(LocalDiffStateModel::sum_numstat_z(output), (5, 12));
+}
+
+#[test]
+fn sum_numstat_z_counts_renames_and_skips_binary() {
+    // Rename: counts on the first token, then `<old>\0<new>\0` follow and must
+    // be skipped. Binary files (`-\t-`) count as zero.
+    let output = "1\t3\t\0old name é.txt\0new.txt\0-\t-\timg.png\04\t0\tc.txt\0";
+    assert_eq!(LocalDiffStateModel::sum_numstat_z(output), (5, 3));
+    assert_eq!(LocalDiffStateModel::sum_numstat_z(""), (0, 0));
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn chip_stats_report_deletions_and_ignore_untracked_lines() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo = dir.path().to_path_buf();
+    run_git_command(&repo, &["init", "-b", "main"])
+        .await
+        .unwrap();
+    run_git_command(&repo, &["config", "user.email", "t@t.com"])
+        .await
+        .unwrap();
+    run_git_command(&repo, &["config", "user.name", "T"])
+        .await
+        .unwrap();
+    let hundred: String = (1..=100).map(|n| format!("{n}\n")).collect();
+    std::fs::write(repo.join("a.txt"), &hundred).unwrap();
+    std::fs::write(repo.join("b.txt"), "x\ny\nz\n").unwrap();
+    std::fs::write(repo.join("sp ace é.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n").unwrap();
+    run_git_command(&repo, &["add", "."]).await.unwrap();
+    run_git_command(&repo, &["commit", "-m", "initial"])
+        .await
+        .unwrap();
+
+    // Tracked: 10 deleted lines, one deleted file (3 lines), a rename + 1 added line.
+    std::fs::write(
+        repo.join("a.txt"),
+        &hundred[hundred.find("11\n").unwrap()..],
+    )
+    .unwrap();
+    std::fs::remove_file(repo.join("b.txt")).unwrap();
+    run_git_command(&repo, &["mv", "sp ace é.txt", "renamed.txt"])
+        .await
+        .unwrap();
+    std::fs::write(repo.join("renamed.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n0\n").unwrap();
+    // Untracked: a big file and a directory must not add lines.
+    let big: String = (1..=60_000).map(|n| format!("{n}\n")).collect();
+    std::fs::write(repo.join("big.txt"), big).unwrap();
+    std::fs::create_dir(repo.join("d")).unwrap();
+    std::fs::write(repo.join("d/u1"), "1\n").unwrap();
+    std::fs::write(repo.join("d/u2"), "1\n").unwrap();
+
+    let stats = LocalDiffStateModel::chip_stats_against_head(&repo)
+        .await
+        .unwrap();
+    assert_eq!(stats.total_additions, 1);
+    assert_eq!(stats.total_deletions, 13);
+    // 3 tracked files + untracked big.txt + untracked dir `d/` (collapsed).
+    assert_eq!(stats.files_changed, 5);
 }

@@ -127,6 +127,27 @@ pub(super) enum PromptEndPoint {
     Stale,
 }
 
+/// A copy of the command grid and the bounds of the command text; see
+/// [`HeaderGrid::command_snapshot_with_secrets_unobfuscated`].
+pub struct CommandSnapshot(Option<(BlockGrid, Point, Point)>);
+
+impl CommandSnapshot {
+    /// The command with escape sequences and unobfuscated secrets.
+    pub fn into_stylized_string(self) -> String {
+        let Some((grid, start, end)) = self.0 else {
+            return String::new();
+        };
+        grid.grid_handler.bounds_to_string(
+            start,
+            end,
+            true, /* include_esc_sequences */
+            RespectObfuscatedSecrets::No,
+            false, /* force_obfuscated_secrets */
+            RespectDisplayedOutput::Yes,
+        )
+    }
+}
+
 pub struct HeaderGrid {
     prompt_grid: BlockGrid,
     prompt_and_command_grid: BlockGrid,
@@ -278,6 +299,32 @@ impl HeaderGrid {
             force_obfuscated_secrets,
             RespectDisplayedOutput::Yes,
         )
+    }
+
+    /// Copies what `command_with_secrets_unobfuscated(true)` would read, so converting it to text
+    /// (slow for a very long command) can happen later and elsewhere. The copy is converted with
+    /// the same call over the same bounds, so the text is identical.
+    pub fn command_snapshot_with_secrets_unobfuscated(&self) -> CommandSnapshot {
+        if self.prompt_and_command_grid.is_empty() {
+            return CommandSnapshot(None);
+        }
+        let Some(CommandStartPoint::CommandStart {
+            point: command_start_point,
+        }) = self.command_start_point()
+        else {
+            return CommandSnapshot(None);
+        };
+        // No row limit, so the start is the command start (see `command_to_string_internal`).
+        let origin = Point::new(0, 0);
+        let start_point = command_start_point.max_point(
+            &origin,
+            self.prompt_and_command_grid.grid_handler().columns(),
+        );
+        CommandSnapshot(Some((
+            self.prompt_and_command_grid.clone(),
+            *start_point,
+            self.prompt_and_command_grid.end_point(),
+        )))
     }
 
     pub fn command_to_string(&self) -> String {
@@ -818,11 +865,6 @@ impl HeaderGrid {
 
     pub fn command_start_time(&self) -> Option<Instant> {
         self.command_start_time
-    }
-
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn set_command_start_time_for_test(&mut self, start_time: Instant) {
-        self.command_start_time = Some(start_time);
     }
 
     pub fn num_secrets_obfuscated(&self) -> usize {

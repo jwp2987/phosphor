@@ -1,0 +1,22 @@
+{
+ "summary_line": null,
+ "duration_s": null,
+ "run": null,
+ "passed": 0,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 0,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [],
+ "errors": [
+  "error[E0277]: `sync_shim::model::MutexGuard<'_, Vec<u64>>` doesn't implement `std::fmt::Debug`",
+  "error: could not compile `warpui_core` (lib test) due to 1 previous error; 1 warning emitted",
+  "ERROR: Job failed: exit status 101"
+ ],
+ "job": "test-shuttle-loom",
+ "status": "failed",
+ "duration": 151.972519
+}

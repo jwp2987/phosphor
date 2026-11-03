@@ -7,7 +7,7 @@ use crate::terminal::model::session::{ExecuteCommandOptions, Session, SessionsEv
 use crate::terminal::model::terminal_model::TerminalModel;
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::{
-    debounce::debounce,
+    debounce::debounce_leading,
     editor::EditorView,
     menu::{MenuItem, MenuItemFields},
     terminal::{
@@ -25,7 +25,7 @@ use parking_lot::FairMutex;
 use warp_completer::completer::CommandExitStatus;
 use warp_core::user_preferences::GetUserPreferences;
 
-use super::ChipResult;
+use super::{empty_on_click_values, ChipResult};
 use super::{
     chips_to_string,
     context_chip::{
@@ -42,15 +42,16 @@ use crate::code_review::git_status_update::{GitRepoStatusEvent, GitRepoStatusMod
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::{GitHubRepoEvent, GitHubRepoModel};
 #[cfg(feature = "local_fs")]
-use crate::context_chips::display_chip::GitLineChanges;
+use crate::context_chips::display_chip::{GitBranchTrackingStatus, GitLineChanges};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use warpui::windowing::WindowManager;
 use warpui::WeakModelHandle;
 use warpui::{
     r#async::{SpawnedFutureHandle, Timer},
-    AppContext, EntityId, ViewHandle,
+    AppContext, EntityId, ViewHandle, WindowId,
 };
 use warpui::{Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity};
 
@@ -59,7 +60,98 @@ use warpui::{Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity};
 mod tests;
 
 const PROMPT_DEBOUNCE_PERIOD: Duration = Duration::from_millis(50);
+/// How long a chip's on-click values (the branch list behind the branch chips) are reused
+/// when a refetch of the chip's main value comes back unchanged. The list can change without
+/// the current value changing (a branch created or deleted), so it is not reused forever.
+const ON_CLICK_VALUES_MAX_AGE: Duration = Duration::from_secs(60);
 const PROMPT_DEBOUNCE_PERIOD_KEY: &str = "PromptDebouncePeriod";
+
+/// Chips polling at least this slowly (the VCS chips, date) are gated by [`poll_decision`]; fast
+/// chips (the 1 s clock) are not, since they do no I/O.
+const GATED_POLL_MIN_INTERVAL: Duration = Duration::from_secs(30);
+/// What a due poll tick should do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PollDecision {
+    Run,
+    /// The terminal is not on screen (hidden tab, unfocused or minimised window) or the user has
+    /// a command half-typed: do not look again on a timer at all.
+    /// [`CurrentPrompt::resume_parked_polls`] restarts the poll when the tab is shown, the window
+    /// regains focus, or the input editor reports its buffer empty again (command submitted or
+    /// cleared), so neither case costs a wakeup and nothing is inferred from elapsed time.
+    Park,
+}
+
+/// Decides whether a due slow-poll tick runs its chip command now. Typing wins over bookkeeping:
+/// `input_has_text` is the input editor's own state (a non-empty buffer), not a quiet-period guess.
+fn poll_decision(in_foreground: bool, input_has_text: bool) -> PollDecision {
+    if !in_foreground || input_has_text {
+        return PollDecision::Park;
+    }
+    PollDecision::Run
+}
+
+/// Whether `kind` is a git chip that is driven by events instead of a poll.
+///
+/// For these, the poll is gone: on a local session the filesystem watcher (`GitRepoStatusModel`,
+/// attached by the terminal view via `set_git_repo_status`) pushes branch, ahead/behind and
+/// diff-stat changes. On a remote (ssh) session there is no watcher, but the remote shell's own
+/// precmd hook starts a new block each time a command finishes (and carries the new cwd), which
+/// reaches [`CurrentPrompt::update_context`] and re-runs every chip; that is the remote session's
+/// signal for "the repo may have changed" (`cd`, `git checkout`, `git commit` all end in a
+/// precmd). Only a change made outside this shell (another terminal) goes unseen until the next
+/// prompt, which is the same staleness the local chip has for non-watched state. A remote
+/// session without precmd hooks has no blocks at all, so no chip is computed for it in the first
+/// place; there is no signal for a timer to stand in for.
+fn is_git_chip_driven_by_events(kind: &ContextChipKind) -> bool {
+    matches!(
+        kind,
+        ContextChipKind::ShellGitBranch
+            | ContextChipKind::GitBranchStatus
+            | ContextChipKind::GitDiffStats
+    )
+}
+
+/// When a chip's poll should next fire, or `None` if it should not poll at all.
+///
+/// * Git chips: never (see [`is_git_chip_driven_by_events`]).
+/// * The clock chips display minutes, so they only change on a minute boundary: wake once per
+///   minute, aligned to it, instead of every second.  Here time itself is the requirement.
+/// * Everything else: the configured interval.
+///
+/// `millis_into_minute` is the wall clock's position within the current minute.
+fn next_poll_delay(
+    kind: &ContextChipKind,
+    base: Duration,
+    millis_into_minute: u64,
+) -> Option<Duration> {
+    if is_git_chip_driven_by_events(kind) {
+        return None;
+    }
+    if matches!(kind, ContextChipKind::Time12 | ContextChipKind::Time24) {
+        // 10 ms past the boundary so the render sees the new minute.
+        return Some(Duration::from_millis(
+            60_000 - (millis_into_minute % 60_000) + 10,
+        ));
+    }
+    Some(base)
+}
+
+fn millis_into_current_minute() -> u64 {
+    use chrono::Timelike as _;
+    let now = chrono::Local::now();
+    u64::from(now.second()) * 1000 + u64::from(now.timestamp_subsec_millis() % 1000)
+}
+
+/// Upper bound for a chip's shell command when its policy sets no timeout of its own. A hung
+/// helper (a stuck `git`, a network mount) would otherwise run forever, and on every refresh
+/// another one would pile up behind it.
+const DEFAULT_CHIP_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The timeout a chip command actually runs under: its own, or the default.
+fn effective_command_timeout(policy_timeout: Option<Duration>) -> Duration {
+    policy_timeout.unwrap_or(DEFAULT_CHIP_COMMAND_TIMEOUT)
+}
+
 type ChipFingerprint = u64;
 
 /// The lifecycle state of a chip's value computation within a [`CurrentPrompt`].
@@ -80,7 +172,11 @@ enum ChipUpdateStatus {
 #[derive(Clone, Debug, Default)]
 pub struct ChipState {
     last_computed_value: Option<ChipValue>,
-    last_on_click_values: Option<Vec<String>>,
+    /// Shared (`Arc`) so every block/prompt snapshot taken between refreshes points at one copy
+    /// of the (possibly hundreds of entries long) git branch list instead of cloning it.
+    last_on_click_values: Option<Arc<[String]>>,
+    /// When `last_on_click_values` was last computed.
+    last_on_click_at: Option<Instant>,
     last_fingerprint: Option<ChipFingerprint>,
     /// The fingerprint from the last fetch that failed. When the current fingerprint matches,
     /// chips with `suppress_on_failure` skip re-execution.
@@ -89,6 +185,8 @@ pub struct ChipState {
     update_status: ChipUpdateStatus,
     /// Future handle for periodically-refreshing chips.
     refresh_handle: Option<SpawnedFutureHandle>,
+    /// The poll is waiting for its terminal to come back on screen (no timer is armed).
+    parked: bool,
     /// Future handle for asynchronous generators.
     generator_handle: Option<SpawnedFutureHandle>,
     /// Future handle for asynchronous on-click generators.
@@ -121,11 +219,13 @@ impl ChipState {
         Self {
             last_computed_value: None,
             last_on_click_values: None,
+            last_on_click_at: None,
             last_fingerprint: None,
             last_failure_fingerprint: None,
             availability: ChipAvailability::Enabled,
             update_status: ChipUpdateStatus::Idle,
             refresh_handle: None,
+            parked: false,
             generator_handle: None,
             on_click_generator_handle: None,
             should_render: kind.should_render("", &Default::default()),
@@ -134,6 +234,7 @@ impl ChipState {
     }
 
     fn clear_abort_handlers(&mut self) {
+        self.parked = false;
         if let Some(refresh_handle) = self.refresh_handle.take() {
             refresh_handle.abort();
         }
@@ -148,6 +249,7 @@ impl ChipState {
     fn clear_cache(&mut self) {
         self.last_computed_value = None;
         self.last_on_click_values = None;
+        self.last_on_click_at = None;
         self.last_fingerprint = None;
         self.last_failure_fingerprint = None;
         self.availability = ChipAvailability::Enabled;
@@ -168,11 +270,19 @@ pub struct CurrentPrompt {
     separator: WarpPromptSeparator,
 
     latest_context: Option<PromptContext>,
+    /// Identity of the last context passed to `apply_context`; see [`PromptContextKey`].
+    latest_context_key: Option<PromptContextKey>,
     sessions: ModelHandle<Sessions>,
     prompt_chip_logger: PromptChipLogger,
     update_tx: async_channel::Sender<()>,
     agent_view_controller: Option<WeakModelHandle<AgentViewController>>,
     terminal_view_id: Option<EntityId>,
+    /// Window of the terminal's input editor; with `terminal_view_id` it tells slow polls whether
+    /// the terminal is on screen and focused. `None` means "unknown, assume foreground".
+    terminal_window_id: Option<WindowId>,
+    /// Whether the terminal's input editor currently holds text (a half-typed command). Updated
+    /// from the editor's own events; slow polls do not start a chip command while it is set.
+    editor_input_has_text: bool,
 
     /// When set, `ShellGitBranch` chip values are driven by filesystem events from
     /// `GitRepoStatusModel` instead of the 30s periodic timer.
@@ -190,6 +300,20 @@ pub struct CurrentPrompt {
     /// parameter, which bundles this with the model events subscription so the two can't
     /// disagree.
     terminal_model: Option<Weak<FairMutex<TerminalModel>>>,
+}
+
+/// What identifies one prompt-context update: the block it belongs to plus every context value a
+/// chip input can read. Equal keys mean "nothing a chip depends on has changed".
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PromptContextKey {
+    block_id: String,
+    session_id: Option<crate::terminal::model::session::SessionId>,
+    working_directory: Option<String>,
+    git_branch: Option<String>,
+    python_virtualenv: Option<String>,
+    conda_environment: Option<String>,
+    node_version: Option<String>,
+    external_commands_loaded: bool,
 }
 
 /// Context about the current terminal session, needed to update the prompt.
@@ -271,9 +395,11 @@ impl CurrentPrompt {
             .map(Duration::from_millis)
             .unwrap_or(PROMPT_DEBOUNCE_PERIOD);
 
-        // Debounce rendering updates to the prompt
+        // Rate-limit rendering updates to the prompt. Leading-edge (#1166): the first change paints
+        // at once; changes inside the window coalesce into one trailing update, so the final
+        // value is never lost.
         ctx.spawn_stream_local(
-            debounce(debounce_period, update_rx),
+            debounce_leading(debounce_period, update_rx),
             |_, _, ctx| ctx.notify(),
             |_, _| {},
         );
@@ -282,10 +408,13 @@ impl CurrentPrompt {
             renderable_chips: Default::default(),
             sessions,
             latest_context: None,
+            latest_context_key: None,
             prompt_chip_logger: PromptChipLogger::default(),
             update_tx,
             agent_view_controller: None,
             terminal_view_id: None,
+            terminal_window_id: None,
+            editor_input_has_text: false,
             same_line_prompt_enabled: prompt.as_ref(ctx).same_line_prompt_enabled(),
             separator: prompt.as_ref(ctx).separator(),
             #[cfg(feature = "local_fs")]
@@ -307,6 +436,7 @@ impl CurrentPrompt {
     ) {
         self.agent_view_controller = Some(agent_view_controller.downgrade());
         self.terminal_view_id = Some(terminal_view_id);
+        self.terminal_window_id = Some(editor.window_id(ctx));
 
         ctx.subscribe_to_model(&agent_view_controller, |me, _, ctx| {
             me.update_states_with_new_context(ctx);
@@ -325,9 +455,17 @@ impl CurrentPrompt {
                 me.update_states_with_new_context(ctx);
             }
         });
+        // A hidden tab's slow polls are parked, not timed; the window regaining focus restarts them.
+        ctx.subscribe_to_model(&WindowManager::handle(ctx), |me, _, ctx| {
+            me.resume_parked_polls(ctx);
+        });
         // A WeakViewHandle is used here to avoid leaking the terminal model
         let weak_editor_handle = editor.downgrade();
         ctx.subscribe_to_view(&editor, move |me, _, ctx| {
+            if let Some(editor) = weak_editor_handle.upgrade(ctx) {
+                me.editor_input_has_text = !editor.as_ref(ctx).buffer_text(ctx).is_empty();
+            }
+            me.resume_parked_polls(ctx);
             if !me.active(ctx) {
                 return;
             }
@@ -344,17 +482,35 @@ impl CurrentPrompt {
 
                     if let Some(session) = session {
                         let buffer_text = editor.as_ref(ctx).buffer_text(ctx);
-                        for (kind, state) in me.states.iter_mut() {
-                            state.should_render =
-                                kind.should_render(&buffer_text, session.aliases());
+                        // Only a chip appearing or disappearing changes what the prompt shows.
+                        // Notifying on every editor event made each keystroke rebuild the chip
+                        // snapshot (a deep clone of every chip's values, including the git
+                        // branch list) in each of the prompt's observers, for no visible change.
+                        if me.refresh_should_render(&buffer_text, session.aliases()) {
+                            ctx.notify();
                         }
-                        ctx.notify();
                     }
                 }
             }
         });
 
         self.update_states_with_new_context(ctx);
+    }
+
+    /// Recomputes whether each chip should render for the command in the input, and returns whether
+    /// that changed for any chip.
+    fn refresh_should_render(
+        &mut self,
+        buffer_text: &str,
+        aliases: &HashMap<smol_str::SmolStr, String>,
+    ) -> bool {
+        let mut changed = false;
+        for (kind, state) in self.states.iter_mut() {
+            let should_render = kind.should_render(buffer_text, aliases);
+            changed |= state.should_render != should_render;
+            state.should_render = should_render;
+        }
+        changed
     }
 
     pub fn snapshot(&self) -> HashMap<ContextChipKind, Option<ChipValue>> {
@@ -372,7 +528,7 @@ impl CurrentPrompt {
         cur
     }
 
-    pub fn on_click_snapshot(&self) -> HashMap<ContextChipKind, Vec<String>> {
+    pub fn on_click_snapshot(&self) -> HashMap<ContextChipKind, Arc<[String]>> {
         self.states
             .iter()
             .filter_map(|(kind, state)| {
@@ -403,14 +559,16 @@ impl CurrentPrompt {
         // generator and from the watcher alike. The debug line above is invisible at
         // the default Info level, which is why "the value never arrives" could not be
         // told apart from "the value arrives empty". Info for the git chips only.
-        if matches!(
-            chip_kind,
-            ContextChipKind::ShellGitBranch | ContextChipKind::GitBranchStatus
-        ) {
-            log::info!("[chips] update_chip_value {chip_kind:?} -> {value:?}");
-        }
+        // #1143: only when the value actually changes; unchanged refreshes repeat
+        // thousands of times per session.
         if let Some(state) = self.states.get_mut(chip_kind) {
             if state.last_computed_value != value {
+                if matches!(
+                    chip_kind,
+                    ContextChipKind::ShellGitBranch | ContextChipKind::GitBranchStatus
+                ) {
+                    log::info!("[chips] update_chip_value {chip_kind:?} -> {value:?}");
+                }
                 state.last_computed_value = value;
                 state.update_status = ChipUpdateStatus::Ready;
                 let _ = self.update_tx.try_send(());
@@ -427,7 +585,8 @@ impl CurrentPrompt {
             _ => value,
         };
         if let Some(state) = self.states.get_mut(chip_kind) {
-            state.last_on_click_values = filter_values;
+            state.last_on_click_values = filter_values.map(Arc::from);
+            state.last_on_click_at = state.last_on_click_values.is_some().then(Instant::now);
             let _ = self.update_tx.try_send(());
         }
     }
@@ -682,11 +841,7 @@ impl CurrentPrompt {
                 ExecuteCommandOptions::default(),
             )
             .fuse();
-        let timeout_future = match timeout {
-            Some(duration) => Timer::after(duration),
-            None => Timer::never(),
-        }
-        .fuse();
+        let timeout_future = Timer::after(effective_command_timeout(timeout)).fuse();
         pin_mut!(command_future);
         pin_mut!(timeout_future);
 
@@ -818,7 +973,7 @@ impl CurrentPrompt {
                         .await;
                         (value, timed_out, chip_kind, exec_ctx, chip_title)
                     },
-                    move |me, (value, timed_out, chip_kind, exec_ctx, chip_title), _ctx| {
+                    move |me, (value, timed_out, chip_kind, exec_ctx, chip_title), ctx| {
                         logger.log_shell_command(&ChipCommandLogEntry {
                             chip_kind: &chip_kind,
                             chip_title: &chip_title,
@@ -879,8 +1034,18 @@ impl CurrentPrompt {
                                 }
                             }
                         }
-                        me.update_chip_value(&chip_kind, output.map(ChipValue::Text));
+                        let output = output.map(ChipValue::Text);
+                        let value_changed = me.chip_value_differs(&chip_kind, output.as_ref());
+                        me.update_chip_value(&chip_kind, output);
                         me.set_chip_update_status(&chip_kind, status);
+                        // Run once the main value is in, and only if it moved (or the list
+                        // is missing/stale): this used to be a second shell spawn per fetch.
+                        me.refresh_on_click_values_if_needed(
+                            &chip_kind,
+                            on_click_generator,
+                            value_changed,
+                            ctx,
+                        );
                     },
                 );
 
@@ -889,14 +1054,50 @@ impl CurrentPrompt {
             PromptGenerator::Contextual { from_context_fn } => {
                 self.set_chip_update_status(chip_kind, ChipUpdateStatus::Loading);
                 let value = self.with_generator_context(ctx, from_context_fn);
+                let value_changed = self.chip_value_differs(chip_kind, value.as_ref());
                 self.update_chip_value(chip_kind, value);
                 self.set_chip_update_status(chip_kind, ChipUpdateStatus::Ready);
+                self.refresh_on_click_values_if_needed(
+                    chip_kind,
+                    on_click_generator,
+                    value_changed,
+                    ctx,
+                );
             }
         }
+    }
 
-        if let Some(on_click_gen) = on_click_generator {
-            self.refresh_on_click_values(chip_kind, on_click_gen, ctx);
+    /// Whether `value` differs from what the chip currently holds.
+    fn chip_value_differs(&self, chip_kind: &ContextChipKind, value: Option<&ChipValue>) -> bool {
+        self.states
+            .get(chip_kind)
+            .is_none_or(|state| state.last_computed_value.as_ref() != value)
+    }
+
+    /// Runs the chip's on-click generator after a fetch of its main value, unless that fetch
+    /// changed nothing and the on-click values are still fresh. Each on-click run is a second
+    /// shell command per chip fetch (#1167), so it is skipped when its answer cannot have moved.
+    fn refresh_on_click_values_if_needed(
+        &mut self,
+        chip_kind: &ContextChipKind,
+        on_click_generator: Option<PromptGenerator>,
+        value_changed: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(on_click_generator) = on_click_generator else {
+            return;
+        };
+        let still_fresh = self.states.get(chip_kind).is_some_and(|state| {
+            state.last_on_click_values.is_some()
+                && state
+                    .last_on_click_at
+                    .is_some_and(|at| at.elapsed() < ON_CLICK_VALUES_MAX_AGE)
+        });
+        if !value_changed && still_fresh {
+            log::debug!("[chips] {chip_kind:?}: value unchanged, reusing on-click values");
+            return;
         }
+        self.refresh_on_click_values(chip_kind, on_click_generator, ctx);
     }
 
     /// Run only the on-click generator for the given chip, updating the
@@ -1018,23 +1219,105 @@ impl CurrentPrompt {
                 allow_fingerprint_skip,
                 ctx,
             );
-            let interval = *interval;
+            let Some(interval) = next_poll_delay(
+                chip_kind,
+                *interval,
+                millis_into_current_minute(),
+            ) else {
+                // Event-driven chip: no timer (see `is_git_chip_driven_by_events`).
+                if let Some(state) = self.states.get_mut(chip_kind) {
+                    state.refresh_handle = None;
+                    state.parked = false;
+                }
+                return;
+            };
             let chip_kind_clone = chip_kind.clone();
             let future = ctx.spawn(
                 async move {
                     Timer::after(interval).await;
                     chip_kind_clone
                 },
-                |me, chip_kind, ctx| {
-                    me.fetch_chip_value_at_interval(&chip_kind, None, None, true, ctx);
-                },
+                |me, chip_kind, ctx| me.handle_poll_tick(&chip_kind, ctx),
             );
 
             match self.states.get_mut(chip_kind) {
-                Some(state) => state.refresh_handle = Some(future),
+                Some(state) => {
+                    state.refresh_handle = Some(future);
+                    state.parked = false;
+                }
                 None => log::warn!("Missing state for {chip_kind:?}"),
             }
         }
+    }
+
+    /// A periodic timer fired. Slow pollers (VCS chips) skip the tick while their terminal is in
+    /// a hidden tab / unfocused window or a half-typed command and park (no timer); the chip
+    /// refreshes when the terminal is shown or the input empties. Block completion
+    /// refreshes chips independently of this, so a `cd`/branch switch run in the terminal never
+    /// waits on the poll.
+    fn handle_poll_tick(&mut self, chip_kind: &ContextChipKind, ctx: &mut ModelContext<Self>) {
+        if !self.active(ctx) {
+            return;
+        }
+        let gated = chip_kind.to_chip().is_some_and(|chip| {
+            matches!(
+                chip.refresh_config(),
+                RefreshConfig::Periodically { interval } if *interval >= GATED_POLL_MIN_INTERVAL
+            )
+        });
+        let decision = if gated {
+            poll_decision(self.terminal_in_foreground(ctx), self.editor_input_has_text)
+        } else {
+            PollDecision::Run
+        };
+        match decision {
+            PollDecision::Run => {
+                self.fetch_chip_value_at_interval(chip_kind, None, None, true, ctx)
+            }
+            PollDecision::Park => {
+                if let Some(state) = self.states.get_mut(chip_kind) {
+                    if let Some(handle) = state.refresh_handle.take() {
+                        handle.abort();
+                    }
+                    state.parked = true;
+                }
+            }
+        }
+    }
+
+    /// Restarts the polls parked by [`PollDecision::Park`] once the terminal is back on screen
+    /// (called when its tab is shown, its window regains focus, or the editor reports activity).
+    /// Each restarted poll runs at once, so a chip is fresh the moment its tab is shown.
+    pub fn resume_parked_polls(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.states.values().any(|state| state.parked)
+            || self.editor_input_has_text
+            || !self.terminal_in_foreground(ctx)
+        {
+            return;
+        }
+        let parked: Vec<ContextChipKind> = self
+            .states
+            .iter_mut()
+            .filter(|(_, state)| state.parked)
+            .map(|(kind, state)| {
+                state.parked = false;
+                kind.clone()
+            })
+            .collect();
+        for kind in parked {
+            self.handle_poll_tick(&kind, ctx);
+        }
+    }
+
+    /// Whether this prompt's terminal is in the active window with focus inside it (so its tab
+    /// is the one on screen). Unknown (no editor subscribed yet) counts as foreground.
+    fn terminal_in_foreground(&self, ctx: &AppContext) -> bool {
+        let (Some(window_id), Some(view_id)) = (self.terminal_window_id, self.terminal_view_id)
+        else {
+            return true;
+        };
+        ctx.windows().state().active_window == Some(window_id)
+            && ctx.check_view_or_child_focused(window_id, &view_id)
     }
 
     fn run_chips(&mut self, chips: Vec<ContextChipKind>, ctx: &mut ModelContext<Self>) {
@@ -1106,6 +1389,13 @@ impl CurrentPrompt {
                     #[cfg(feature = "local_fs")]
                     if matches!(chip_kind, ContextChipKind::GithubPullRequest) {
                         self.sync_pr_chip_from_model(ctx);
+                    }
+                    // The branch the shell reported in precmd is already for the new
+                    // prompt; show it now and let the git-status refresh confirm or correct
+                    // it (and fill in ahead/behind) when it lands (#1166).
+                    #[cfg(feature = "local_fs")]
+                    if matches!(chip_kind, ContextChipKind::GitBranchStatus) {
+                        self.seed_git_branch_status_from_precmd(ctx);
                     }
                 }
                 return;
@@ -1404,14 +1694,62 @@ impl CurrentPrompt {
     /// Update the prompt context to reflect a new active block. This should be called from the
     /// parent terminal whenever a new set of block metadata is received.
     pub fn update_context(&mut self, active_block: &Block, ctx: &mut ModelContext<Self>) {
+        self.apply_context(
+            active_block.id().to_string(),
+            PromptContext {
+                active_block_metadata: active_block.metadata(),
+                environment: Environment::from_block(active_block),
+            },
+            ctx,
+        );
+    }
+
+    /// The body of [`Self::update_context`], split out so it can be driven without a `Block`.
+    ///
+    /// A repeat of the exact same context for the same block (same cwd, session and
+    /// environment: the terminal re-sends block metadata several times per prompt) changes no
+    /// chip input, so it must not abort every in-flight chip command and spawn them all again
+    /// (#1167). A new block always refreshes, so state that no input tracks (diff stats,
+    /// ahead/behind) is still re-read once per prompt.
+    fn apply_context(
+        &mut self,
+        block_id: String,
+        context: PromptContext,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let session_has_changed = match &self.latest_context {
-            Some(ctx) => ctx.active_block_metadata.session_id() != active_block.session_id(),
+            Some(previous) => {
+                previous.active_block_metadata.session_id()
+                    != context.active_block_metadata.session_id()
+            }
             None => true,
         };
-        self.latest_context = Some(PromptContext {
-            active_block_metadata: active_block.metadata(),
-            environment: Environment::from_block(active_block),
-        });
+        let key = PromptContextKey {
+            block_id,
+            session_id: context.active_block_metadata.session_id(),
+            working_directory: context
+                .active_block_metadata
+                .current_working_directory()
+                .map(|dir| dir.to_string()),
+            git_branch: context.environment.git_branch().cloned(),
+            python_virtualenv: context.environment.python_virtualenv().cloned(),
+            conda_environment: context.environment.conda_environment().cloned(),
+            node_version: context.environment.node_version().cloned(),
+            // Chip availability depends on which executables the session has found; a load
+            // that completes mid-prompt must still restart the chips.
+            external_commands_loaded: context
+                .active_block_metadata
+                .session_id()
+                .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
+                .is_some_and(|session| session.has_loaded_external_commands()),
+        };
+        let unchanged = self.latest_context_key.as_ref() == Some(&key);
+        self.latest_context_key = Some(key);
+        self.latest_context = Some(context);
+        if unchanged && !session_has_changed && !self.states.is_empty() && self.active(ctx) {
+            log::debug!("[chips] update_context: same block and inputs, not restarting chips");
+            return;
+        }
         if session_has_changed {
             self.update_states_with_new_context_and_session(ctx);
         } else {
@@ -1493,7 +1831,10 @@ impl CurrentPrompt {
         Some(ChipResult {
             kind: chip_kind.clone(),
             value: state.last_computed_value.clone(),
-            on_click_values: state.last_on_click_values.clone().unwrap_or_default(),
+            on_click_values: state
+                .last_on_click_values
+                .clone()
+                .unwrap_or_else(empty_on_click_values),
         })
     }
 
@@ -1509,7 +1850,7 @@ impl CurrentPrompt {
                     let chip_result = ChipResult {
                         kind: chip_kind,
                         value: value.clone(),
-                        on_click_values: on_click_value.unwrap_or_default(),
+                        on_click_values: on_click_value.unwrap_or_else(empty_on_click_values),
                     };
                     Some(chip_result)
                 }),
@@ -1654,6 +1995,42 @@ impl CurrentPrompt {
         }
     }
 
+    /// Seeds the `GitBranchStatus` chip from the branch the shell reported in its precmd hook
+    /// for the active block, so the chip changes together with the prompt instead of waiting
+    /// for the git-status refresh. Only the branch name is known here, so the seed carries no
+    /// upstream or ahead/behind counts; `apply_git_repo_metadata` replaces it with the full
+    /// status. A precmd with no branch leaves the chip alone (the repo-detach path clears it),
+    /// and the value always comes from the active block's own context, never another cwd's.
+    #[cfg(feature = "local_fs")]
+    fn seed_git_branch_status_from_precmd(&mut self, ctx: &mut ModelContext<Self>) {
+        let chip_kind = ContextChipKind::GitBranchStatus;
+        let Some(branch) = self
+            .latest_context
+            .as_ref()
+            .and_then(|context| context.environment.git_branch())
+            .filter(|branch| !branch.is_empty())
+            .cloned()
+        else {
+            return;
+        };
+        let already_showing = matches!(
+            self.latest_chip_value(&chip_kind),
+            Some(ChipValue::GitBranchStatus(status)) if status.branch == branch
+        );
+        if already_showing {
+            return;
+        }
+        self.update_chip_value(
+            &chip_kind,
+            Some(ChipValue::GitBranchStatus(
+                GitBranchTrackingStatus::without_counts(branch, None),
+            )),
+        );
+        // `apply_git_repo_metadata` only refreshes the dropdown on a branch change relative to
+        // the current value, which the seed has just made equal; do it here instead.
+        self.refresh_git_branch_dropdown(chip_kind, ctx);
+    }
+
     /// Re-run the branch-list generator for a git-branch-backed chip so its
     /// on-click dropdown stays in sync after the current branch changes.
     #[cfg(feature = "local_fs")]
@@ -1687,7 +2064,7 @@ impl CurrentPrompt {
             return;
         };
 
-        log::info!(
+        log::debug!(
             "[chips] apply_git_repo_metadata: current_branch_name={:?}",
             metadata.current_branch_name
         );

@@ -2156,6 +2156,83 @@ fn test_autosuggestions() -> Result<()> {
     })
 }
 
+/// #1398: a huge history entry as the suggestion for the typed prefix froze the UI for ~76 s in
+/// text layout. A suggestion over the cap is not offered (and clears a stale one); at the cap and
+/// below nothing changes.
+#[test]
+fn test_oversized_autosuggestion_is_not_offered() -> Result<()> {
+    use super::snapshot::MAX_GHOST_TEXT_BYTES;
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let kind = AutosuggestionType::Command {
+            was_intelligent_autosuggestion: false,
+        };
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("ec", Default::default(), ctx)
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.set_autosuggestion(
+                "ho hi",
+                AutosuggestionLocation::EndOfBuffer,
+                kind.clone(),
+                ctx,
+            );
+            assert_eq!(view.current_autosuggestion_text(), Some("ho hi"));
+            // Over the cap: dropped, and the earlier ghost does not linger.
+            view.set_autosuggestion(
+                "a".repeat(MAX_GHOST_TEXT_BYTES + 1),
+                AutosuggestionLocation::EndOfBuffer,
+                kind.clone(),
+                ctx,
+            );
+            assert_eq!(view.current_autosuggestion_text(), None);
+            // Exactly the cap is still offered.
+            view.set_autosuggestion(
+                "a".repeat(MAX_GHOST_TEXT_BYTES),
+                AutosuggestionLocation::EndOfBuffer,
+                kind.clone(),
+                ctx,
+            );
+            assert_eq!(
+                view.current_autosuggestion_text().map(str::len),
+                Some(MAX_GHOST_TEXT_BYTES)
+            );
+            // A 1.3 MB entry (the report) is never stored.
+            view.set_autosuggestion(
+                "b".repeat(1_300_000),
+                AutosuggestionLocation::EndOfBuffer,
+                kind,
+                ctx,
+            );
+            assert_eq!(view.current_autosuggestion_text(), None);
+        });
+        Ok(())
+    })
+}
+
+/// #1398: whatever reaches the ghost layout (a placeholder included) is bounded, cut on a char
+/// boundary and marked with an ellipsis; short text is borrowed untouched.
+#[test]
+fn test_bounded_ghost_text() {
+    use super::snapshot::{MAX_GHOST_TEXT_BYTES, bounded_ghost_text};
+    assert!(matches!(
+        bounded_ghost_text("echo hi"),
+        std::borrow::Cow::Borrowed("echo hi")
+    ));
+    let at_cap = "x".repeat(MAX_GHOST_TEXT_BYTES);
+    assert_eq!(bounded_ghost_text(&at_cap), at_cap.as_str());
+    let long = "x".repeat(1_300_000);
+    let cut = bounded_ghost_text(&long);
+    assert_eq!(cut.len(), MAX_GHOST_TEXT_BYTES + '\u{2026}'.len_utf8());
+    assert!(cut.ends_with('\u{2026}'));
+    // A multi-byte char straddling the cap is not split.
+    let wide = "\u{e9}".repeat(MAX_GHOST_TEXT_BYTES);
+    let cut = bounded_ghost_text(&wide);
+    assert!(cut.len() <= MAX_GHOST_TEXT_BYTES + '\u{2026}'.len_utf8());
+    assert!(cut.ends_with('\u{2026}'));
+}
+
 #[test]
 fn test_partial_autosuggestion() -> Result<()> {
     App::test((), |mut app| async move {
@@ -5032,3 +5109,643 @@ mod vim_handler_tests;
 
 #[path = "marked_text_tests.rs"]
 mod marked_text_tests;
+
+fn ghost_type() -> AutosuggestionType {
+    AutosuggestionType::Command {
+        was_intelligent_autosuggestion: false,
+    }
+}
+
+// #1186: Right pressed at the end of the buffer before the ghost lands is applied once the
+// ghost for that same buffer lands.
+#[test]
+fn test_accept_before_ghost_lands_is_applied() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            assert_eq!(view.buffer_text(ctx), "git st");
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git status");
+            assert_eq!(view.current_autosuggestion_text(), None);
+        });
+    })
+}
+
+// End behaves the same as Right.
+#[test]
+fn test_end_before_ghost_lands_is_applied() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_to_line_end(ctx);
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git status");
+        });
+    })
+}
+
+// The accept is dropped if the buffer changed before the ghost landed.
+#[test]
+fn test_pending_accept_dropped_when_buffer_changed() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            view.user_insert("a", ctx);
+            view.set_autosuggestion(
+                "tus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git sta");
+            assert_eq!(view.current_autosuggestion_text(), Some("tus"));
+        });
+    })
+}
+
+// #1355: the accept is keyed to the buffer, not a clock: a ghost landing 200 ms later for the
+// same buffer is still accepted.
+#[test]
+fn test_pending_accept_applied_when_ghost_is_late() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git status");
+            assert_eq!(view.current_autosuggestion_text(), None);
+        });
+    })
+}
+
+// #1355: the request for that buffer completing with no suggestion discards the accept, so a
+// later ghost for the same buffer is only shown.
+#[test]
+fn test_pending_accept_discarded_when_request_completes_empty() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            view.move_right(false, ctx);
+            assert!(view.pending_autosuggestion_accept.is_some());
+            view.discard_pending_autosuggestion_accept();
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git st");
+            assert_eq!(view.current_autosuggestion_text(), Some("atus"));
+        });
+    })
+}
+
+// Right not at the end of the buffer still moves the cursor and records no accept.
+#[test]
+fn test_right_mid_buffer_moves_cursor_without_pending_accept() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("git st", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_start(ctx);
+            view.move_right(false, ctx);
+            assert!(view.pending_autosuggestion_accept.is_none());
+            assert!(!view.single_cursor_at_buffer_end(false, ctx));
+            view.set_autosuggestion(
+                "atus",
+                AutosuggestionLocation::EndOfBuffer,
+                ghost_type(),
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "git st");
+        });
+    })
+}
+
+// #1300: keys typed while a paste is still being read are held and applied behind it, in order.
+#[test]
+fn test_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let hold = view.paste_hold();
+            // The `PasteSequencer` path plain editors use; the queue path has its own twin of
+            // this test below.
+            let id = hold.begin();
+
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            view.handle_action(&EditorAction::Enter, ctx);
+            // Nothing was applied yet, and the Enter did not run on a fragment.
+            assert_eq!(view.buffer_text(ctx), "a");
+
+            let held = hold.complete(id).expect("paste still pending");
+            // Keys are held one by one, in typing order (the sequencer does not coalesce text).
+            assert!(matches!(
+                held.as_slice(),
+                [
+                    HeldPasteKey::Text(x),
+                    HeldPasteKey::Text(y),
+                    HeldPasteKey::Action(EditorAction::Enter)
+                ] if x == "x" && y == "y"
+            ));
+            // The paste lands first, at the cursor that was there when it was asked for.
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            // Replay the two text keys; the Enter is the terminal input's to submit.
+            for key in held.into_iter().take(2) {
+                view.apply_held_paste_key(key, ctx);
+            }
+            assert_eq!(view.buffer_text(ctx), "aPASTExy");
+        });
+    })
+}
+
+// #1300: Ctrl-C cancels the pending paste; what was typed before it is applied first.
+#[test]
+fn test_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        let cleared = std::rc::Rc::new(std::cell::Cell::new(None));
+        let cleared_in_handler = cleared.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event: &Event, _| {
+                if let Event::CtrlC { cleared_buffer_len } = event {
+                    cleared_in_handler.set(Some(*cleared_buffer_len));
+                }
+            });
+        });
+        view.update(&mut app, |view, ctx| {
+            let hold = view.paste_hold();
+            let id = hold.begin();
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "");
+            view.handle_action(&EditorAction::CtrlC, ctx);
+            assert!(!hold.has_pending());
+            // The held "x" was applied before the Ctrl-C acted, and the Ctrl-C then cleared the
+            // line as it always does: the buffer is empty, but it had held the one typed byte.
+            assert_eq!(view.buffer_text(ctx), "");
+            // The late read of the cancelled paste pastes nothing.
+            assert!(hold.complete(id).is_none());
+        });
+        // Emitted events reach subscribers when the update's effects flush, i.e. after the
+        // closure above returns, not inside it.
+        assert_eq!(cleared.get(), Some(1));
+    })
+}
+
+/// Starts a paste on the editor's input queue the way the terminal input does, hosting it with the
+/// editor's own host (which never delivers a paste itself).
+fn start_queued_paste(view: &mut EditorView, ctx: &mut ViewContext<EditorView>) -> u64 {
+    use crate::terminal::input_queue::{EntryKind, GateKind, GateSpec};
+    let hold = view.paste_hold();
+    let id = hold.next_queue_paste_id();
+    let queue = hold.queue();
+    let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
+    queue.borrow_mut().offer_gated(
+        &mut host,
+        EntryKind::Paste {
+            paste_id: id,
+            payload: None,
+        },
+        GateSpec::new(GateKind::PasteReading, id),
+    );
+    id
+}
+
+/// The reader's result for `id`, as the terminal input reports it.
+fn finish_queued_paste(
+    view: &mut EditorView,
+    ctx: &mut ViewContext<EditorView>,
+    id: u64,
+    result: Result<Vec<u8>, ()>,
+) {
+    let queue = view.paste_hold().queue();
+    let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
+    queue.borrow_mut().on_paste_read(&mut host, id, result);
+}
+
+// #1353 phase 1: the same ordering as the #1300 test above, on the input queue: keys typed while
+// the paste is read are queued behind its gate and applied, in order, when the read finishes.
+#[test]
+fn test_queue_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let id = start_queued_paste(view, ctx);
+            assert!(view.paste_hold().has_pending());
+            assert!(view.paste_hold().is_pending(id));
+
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            view.handle_action(&EditorAction::Left, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+            // Nothing was applied yet.
+            assert_eq!(view.buffer_text(ctx), "a");
+
+            // The paste lands first, at the cursor that was there when it was asked for, then
+            // the queue applies x, y, Left, z in typing order.
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+            assert!(!view.paste_hold().has_pending());
+            // x and y are applied at once; the Left (and z behind it) wait for the display map to
+            // catch up with the edits before them, so they apply when this update's effects flush
+            // (#1389).
+            assert_eq!(view.buffer_text(ctx), "aPASTExy");
+        });
+        // After the flush: the Left saw the map with "aPASTExy" and moved before the y.
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.buffer_text(ctx), "aPASTExzy");
+            assert!(!view.paste_hold().replay_pending());
+        });
+    })
+}
+
+// #1389, `PasteSequencer` path (plain editors): the twin of the test above.
+// The `for key in held` replay must not compute a cursor motion on a stale display map either.
+#[test]
+fn test_legacy_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let hold = view.paste_hold();
+            let id = hold.begin();
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            view.handle_action(&EditorAction::Left, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+            assert_eq!(view.buffer_text(ctx), "a");
+
+            let held = hold.complete(id).expect("paste still pending");
+            view.user_initiated_insert("PASTE", PlainTextEditorViewAction::Paste, ctx);
+            for key in held {
+                view.apply_held_paste_key(key, ctx);
+            }
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.buffer_text(ctx), "aPASTExzy");
+            assert!(!view.paste_hold().replay_pending());
+        });
+    })
+}
+
+// #1353 phase 1: a failed read applies the held keys in order and pastes nothing.
+#[test]
+fn test_queue_failed_read_applies_the_held_keys() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("a", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.move_to_buffer_end(ctx);
+            let id = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            finish_queued_paste(view, ctx, id, Err(()));
+            assert_eq!(view.buffer_text(ctx), "axy");
+            assert!(!view.paste_hold().has_pending());
+        });
+    })
+}
+
+// #1353 phase 1: Ctrl-C cancels the pending paste on the queue; what was typed before it is
+// applied first, the Ctrl-C then clears the line as always, and the late read changes nothing.
+#[test]
+fn test_queue_ctrl_c_cancels_a_pending_paste_and_releases_the_held_keys() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        let cleared = std::rc::Rc::new(std::cell::Cell::new(None));
+        let cleared_in_handler = cleared.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event: &Event, _| {
+                if let Event::CtrlC { cleared_buffer_len } = event {
+                    cleared_in_handler.set(Some(*cleared_buffer_len));
+                }
+            });
+        });
+        view.update(&mut app, |view, ctx| {
+            let id = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "");
+            view.handle_action(&EditorAction::CtrlC, ctx);
+            assert!(!view.paste_hold().has_pending());
+            assert_eq!(view.buffer_text(ctx), "");
+            // The late read of the cancelled paste does nothing.
+            finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+            assert_eq!(view.buffer_text(ctx), "");
+            assert!(view.paste_hold().queue().borrow().is_idle());
+        });
+        // The held "x" was applied before the Ctrl-C cleared the line.
+        assert_eq!(cleared.get(), Some(1));
+    })
+}
+
+// #1353 phase 1: a paste typed behind a pending paste queues behind it; neither read loses the
+// other's keys, whichever read finishes first.
+#[test]
+fn test_queue_second_paste_waits_for_the_first() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            let first = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            let second = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            // The second read finishes first: still nothing, the first paste is ahead of it.
+            finish_queued_paste(view, ctx, second, Ok(Vec::new()));
+            assert_eq!(view.buffer_text(ctx), "");
+            assert!(view.paste_hold().has_pending());
+            finish_queued_paste(view, ctx, first, Ok(Vec::new()));
+            assert!(!view.paste_hold().has_pending());
+            // (The editor's host does not insert paste text; the keys keep their order.)
+            assert_eq!(view.buffer_text(ctx), "xy");
+        });
+    })
+}
+
+/// Opens a gate of `kind` on the editor's queue, as the terminal does for a pty setup.
+fn open_queue_gate(
+    view: &mut EditorView,
+    ctx: &mut ViewContext<EditorView>,
+    kind: crate::terminal::input_queue::GateKind,
+) {
+    use crate::terminal::input_queue::GateSpec;
+    let queue = view.paste_hold().queue();
+    let mut host = paste_hold::EditorQueueHost { editor: view, ctx };
+    queue
+        .borrow_mut()
+        .open_gate(&mut host, GateSpec::new(kind, 0).with_cap(None));
+}
+
+// #1423: behind a subshell / PowerShell setup gate alone, typing in the editor shows at once; an
+// Enter still waits (it would reach the shell mid-setup), and once one key is held the ones
+// after it stay behind it, in order.
+#[test]
+fn test_queue_editor_keys_behind_a_setup_gate_apply_at_once_but_enter_waits() {
+    use crate::terminal::input_queue::GateKind;
+    for kind in [GateKind::SubshellSetup, GateKind::PowershellSetup] {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                EditorView::new_with_base_text("", Default::default(), ctx)
+            });
+            view.update(&mut app, |view, ctx| {
+                open_queue_gate(view, ctx, kind);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("a")), ctx);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("b")), ctx);
+                assert_eq!(
+                    view.buffer_text(ctx),
+                    "ab",
+                    "{kind:?}: typing shows at once"
+                );
+                // An Enter is held, and so is everything typed behind it.
+                view.handle_action(&EditorAction::Enter, ctx);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("c")), ctx);
+                assert_eq!(
+                    view.buffer_text(ctx),
+                    "ab",
+                    "{kind:?}: Enter and what follows wait"
+                );
+            });
+        })
+    }
+}
+
+// #1423: a gate that decides where the key goes (an Enter's verdict, the hand-off's report) still
+// holds the editor's text.
+#[test]
+fn test_queue_editor_text_behind_a_handoff_gate_still_waits() {
+    use crate::terminal::input_queue::GateKind;
+    for kind in [
+        GateKind::HandoffReport,
+        GateKind::EnterVerdict,
+        GateKind::CliSubmit,
+    ] {
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                EditorView::new_with_base_text("", Default::default(), ctx)
+            });
+            view.update(&mut app, |view, ctx| {
+                open_queue_gate(view, ctx, kind);
+                view.handle_action(&EditorAction::Left, ctx);
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("a")), ctx);
+                assert_eq!(view.buffer_text(ctx), "", "{kind:?}: held");
+            });
+        })
+    }
+}
+
+// #1353 phase 1: the idle fast path. With nothing pending the editor never touches the queue.
+#[test]
+fn test_queue_idle_editor_keys_do_not_touch_the_queue() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            assert!(!view.paste_hold().queue_is_busy());
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "x");
+            assert!(view.paste_hold().queue().borrow().is_idle());
+        });
+    })
+}
+
+// #1300: with no paste pending, keys apply at once (the hold is invisible).
+#[test]
+fn test_keys_apply_immediately_when_no_paste_is_pending() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "x");
+        });
+    })
+}
+
+#[test]
+fn test_cursor_blink_tick_requests_paint_only_frame() {
+    // A blink tick toggles a flag the element reads at paint time: it must ask for a
+    // paint-only frame, not notify the view (re-render + whole-window layout every 500 ms).
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (window_id, editor_handle) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            let mut editor = EditorView::single_line(Default::default(), ctx);
+            editor.on_focus(&FocusContext::SelfFocused, ctx);
+            editor
+        });
+        let windowing_state = app.get_singleton_model_handle::<WindowManager>();
+        app.update_model(&windowing_state, |state, ctx| {
+            state.overwrite_for_test(state.stage(), Some(window_id));
+            ctx.notify();
+        });
+        // Drain whatever the setup invalidated.
+        let _ = app.take_invalidation_kind_for_test(window_id);
+        // One `app.update` defers the effect flush: outside it, the flush after `update_view`
+        // builds the scene eagerly (the unit-test `on_window_invalidated` path) and consumes the
+        // pending invalidation before it can be inspected.
+        let (needs_layout, paint_only) = app.update(|ctx| {
+            ctx.update_view(&editor_handle, |editor, ctx| {
+                let before = editor.cursors_visible;
+                let epoch = editor.next_blink_epoch();
+                editor.blink_cursors(epoch, ctx);
+                assert_ne!(editor.cursors_visible, before);
+                assert_eq!(
+                    editor
+                        .cursors_visible_shared
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    editor.cursors_visible
+                );
+            });
+            ctx.take_invalidation_kind_for_test(window_id)
+        });
+        assert!(!needs_layout, "a blink tick must not notify the view");
+        assert!(paint_only, "a blink tick must request a paint-only frame");
+    });
+}
+
+/// #1380: a plain editor's paste goes through the off-thread read path. With a clipboard that has
+/// no worker reader (the test platform) the read completes at once, so the paste lands inside the
+/// action exactly as the old synchronous read did.
+#[test]
+fn test_plain_editor_paste_lands_at_once_when_the_platform_has_no_worker_reader() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            ctx.clipboard()
+                .write(warpui::clipboard::ClipboardContent::plain_text(
+                    "hello".into(),
+                ));
+            view.paste(ctx);
+            assert_eq!(view.buffer_text(ctx), "hello");
+            assert!(!view.paste_hold().sequencer_pending());
+        });
+    })
+}
+
+/// #1380: while a plain editor's paste is being read, the keys typed are held and applied behind
+/// it, in order.
+#[test]
+fn test_plain_editor_keys_typed_during_a_paste_read_apply_after_it_in_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            EditorView::new_with_base_text("", Default::default(), ctx)
+        });
+        view.update(&mut app, |view, ctx| {
+            // A read in flight (the worker has not answered yet).
+            let id = view.paste_hold().begin();
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("y")), ctx);
+            assert_eq!(
+                view.buffer_text(ctx),
+                "",
+                "typed keys are held behind the paste"
+            );
+            // The read answers: the paste first, then the held keys.
+            view.finish_plain_paste(
+                id,
+                warpui::clipboard::BackgroundTextRead::Content(
+                    warpui::clipboard::ClipboardContent::plain_text("PASTE".into()),
+                ),
+                false,
+                ctx,
+            );
+            assert_eq!(view.buffer_text(ctx), "PASTExy");
+            assert!(!view.paste_hold().sequencer_pending());
+        });
+    })
+}
+
+/// #1380 x #1382: a read that failed or is over the paste cap inserts nothing (never a truncated
+/// paste) and the held keys are still applied.
+#[test]
+fn test_plain_editor_failed_or_oversize_paste_inserts_nothing_and_keeps_the_keys() {
+    for failure in [
+        warpui::clipboard::BackgroundTextRead::TimedOut,
+        warpui::clipboard::BackgroundTextRead::TooLarge(warpui::clipboard::MAX_PASTE_BYTES + 1),
+    ] {
+        App::test((), move |mut app| async move {
+            initialize_app(&mut app);
+            let (_, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+                EditorView::new_with_base_text("ab", Default::default(), ctx)
+            });
+            view.update(&mut app, |view, ctx| {
+                view.move_to_buffer_end(ctx);
+                let id = view.paste_hold().begin();
+                view.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+                view.finish_plain_paste(id, failure, false, ctx);
+                assert_eq!(view.buffer_text(ctx), "abz");
+            });
+        });
+    }
+}

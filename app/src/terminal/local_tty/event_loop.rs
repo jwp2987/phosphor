@@ -18,11 +18,14 @@ use log::error;
 use mio::{self, Events, Interest};
 use parking_lot::{FairMutex, FairMutexGuard};
 
+use crate::terminal::writeable_pty::write_queue::{
+    AbortScope, JobClass, JobId, Pacing, SetupJob, is_signal_byte,
+};
 use crate::terminal::{
     TerminalModel,
     event_listener::ChannelEventListener,
     local_tty,
-    model::{BlockId, ansi, reply_ledger::SharedReplyLedger},
+    model::{BlockId, ansi, pty_stream_barrier::PtyStreamBarrier, reply_ledger::SharedReplyLedger},
 };
 use crate::terminal::{model::terminal_model::ExitReason, writeable_pty::Message};
 
@@ -30,12 +33,55 @@ use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PAST
 
 use super::mio_channel::Receiver;
 
+/// Slow-operation thresholds for the pty loop (#1146). The parse holds the terminal model lock
+/// the UI thread renders from, so it is held to the UI-thread budget.
+const PTY_PARSE_SLOW: Duration = Duration::from_millis(16);
+/// User input waiting in the writer (owner budget: Enter→shell ≤2 ms, so 16 ms is a real stall).
+const PTY_WRITE_SLOW: Duration = Duration::from_millis(16);
+/// Write -> first output read: includes the shell's and, over ssh, the network's round trip.
+const PTY_ECHO_SLOW: Duration = Duration::from_millis(50);
+
+/// How long after user input reaches the pty its output still counts as the keystroke's echo and
+/// is redrawn without waiting for the wakeup throttle (#1138). Long enough to cover a LAN ssh
+/// round trip and a TUI's multi-write response; a flood that starts within the window (Enter on
+/// `cat bigfile`) is only capped by the throttle's floor until the window closes.
+const USER_WRITE_ECHO_WINDOW: Duration = Duration::from_millis(300);
+static SLOW_PTY_PARSE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "pty parse (terminal model lock held)",
+    PTY_PARSE_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_PTY_WRITE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "pty write (input received -> written)",
+    PTY_WRITE_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+static SLOW_PTY_ECHO: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
+    "pty echo (write -> first output read)",
+    PTY_ECHO_SLOW,
+    warp_util::slow_log::DEFAULT_WINDOW,
+);
+
 /// The size of the buffer to read data into from the PTY.
 const READ_BUFFER_SIZE: usize = 0x4_0000;
 
 /// Max bytes to process from the PTY while holding the lock before giving
 /// someone else an opportunity to lock it.
 const MAX_LOCKED_READ: usize = 0x1_0000;
+
+/// Most bytes parsed in one hold of the terminal model lock. The reader parses what it has read
+/// in slices of this size and lets a waiting thread (the UI) in between them, so one hold is
+/// bounded by a slice rather than by everything buffered (#1135).
+const PARSE_SLICE: usize = 0x4000;
+
+/// Most bytes buffered while the terminal model is locked elsewhere (the UI is laying out or
+/// painting) before the reader blocks for the lock instead of reading on. Without a cap the
+/// reader buffered the whole read buffer and parsed it in one hold right after the UI let go,
+/// just before the UI wanted the lock again (#1135).
+const MAX_UNLOCKED_ACCUMULATION: usize = 0x8000;
+
+/// A hold of the terminal model lock longer than this is logged at debug level.
+const SLOW_PARSE_HOLD: Duration = Duration::from_millis(8);
 
 pub const CHANNEL_TOKEN: mio::Token = mio::Token(0);
 pub const PTY_TOKEN: mio::Token = mio::Token(1);
@@ -52,6 +98,10 @@ pub struct EventLoop<T: local_tty::EventedPty> {
     /// Query replies and every pty write, so a reply that leaks into the shell's line can be
     /// told from typed text (#921).
     reply_ledger: SharedReplyLedger,
+    /// The read / applied byte counts of this pty (#1392), owned by the terminal model: every read
+    /// of the master is counted, and the applied total is published after each parsed slice, so
+    /// the typeahead hand-off can tell whether its hook account is current.
+    stream_barrier: Arc<PtyStreamBarrier>,
 
     /// The event listener is available to the PTY event loop
     /// to emit relevant events to subscribers. The ansi handler
@@ -65,10 +115,9 @@ pub struct EventLoop<T: local_tty::EventedPty> {
 struct Writing {
     source: Cow<'static, [u8]>,
     written: usize,
-    /// A reply to a terminal query rather than user input.
-    is_reply: bool,
-    /// See `QueuedWrite::discardable`.
-    discardable: bool,
+    /// What this write is; see `QueuedWrite::class`. A `SetupChunked` writing is one chunk of
+    /// `State::active_job`.
+    class: JobClass,
 }
 
 /// All of the mutable state needed to run the event loop.
@@ -79,6 +128,16 @@ pub struct State {
     /// earlier terminal-query reply.
     write_list: VecDeque<QueuedWrite>,
     writing: Option<Writing>,
+    /// The `SetupChunked` job being written (#1384). Strict FIFO: it was taken off the front of
+    /// `write_list`, and until it is finished nothing from the list is started except a reply at
+    /// the head, and only between two of its chunks. A user key behind it waits for all of it.
+    active_job: Option<SetupJob>,
+    /// Whether the pty was canonical when the loop last looked (`None`: not looked at, or cannot
+    /// be told). Read on demand, only while a setup job whose pacing depends on it is waiting to
+    /// start; see [`Pacing::GapIfCanonical`].
+    pty_canonical: Option<bool>,
+    /// The id the next submitted job gets (monotonic, in every log line about it).
+    next_job_id: JobId,
     parser: ansi::Processor,
     /// Whether replies generated while a command runs may be written now. They may not while the
     /// pty is in canonical mode: nobody can read a reply there (it has no line terminator), so
@@ -94,9 +153,53 @@ pub struct State {
     /// yet. Nothing more can be read or written, so the loop must wait for the exit event
     /// instead of retrying the dead fd (#953).
     hung_up: bool,
+    /// When the hang-up was seen, so the exit check backs off and the wait is logged (#1375).
+    hung_up_since: Option<Instant>,
+    /// Whether the "child still has not exited" warning was logged for this hang-up.
+    hung_up_warned: bool,
     /// When the last user input (not a query reply) finished reaching the pty and no output has
     /// been read since. Times the keystroke round trip for the input-order log (#1092).
     user_write_finished_at: Option<Instant>,
+    /// When the last user input finished reaching the pty, kept across reads: every read within
+    /// [`USER_WRITE_ECHO_WINDOW`] of it is part of the keystroke's echo (#1138).
+    last_user_write_at: Option<Instant>,
+    /// When the oldest user input not yet fully written was received by this loop. Times the
+    /// receive -> pty write leg for the slow-operation log (#1146).
+    user_input_received_at: Option<Instant>,
+    /// Whether consecutive plain-text key writes are merged into one write (see
+    /// [`State::coalesce_keys_into`]). On for a pty whose writes complete asynchronously (the
+    /// Windows ConPTY pipe), where each write must wait for the previous one's completion event.
+    coalesce_keys: bool,
+    /// A terminate request (`Shutdown` / `ChildExited`) met while draining the channel in the
+    /// middle of a read pass (#1408). Acted on when the pass returns; the bytes already read are
+    /// still parsed first, so the tail of the output is not lost.
+    terminate_requested: Option<bool>,
+    /// A pty write error met while writing in the middle of a read pass (#1408); reported when
+    /// the pass returns.
+    mid_read_write_error: Option<io::Error>,
+    /// Inputs dropped for [`MAX_QUEUED_WRITES`] since the surface was last told (#1442).
+    input_overflow_dropped: u64,
+    /// The surface has not been told about `input_overflow_dropped` yet.
+    input_overflow_unreported: bool,
+    /// Bytes handed to the parser so far (#1392); published to the stream barrier as applied
+    /// whenever no synchronized-output frame holds some of them unapplied.
+    bytes_fed: u64,
+}
+
+/// `PHOSPHOR_PTY_COALESCE=0` turns key-write coalescing off.
+fn coalesce_keys_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| !std::env::var("PHOSPHOR_PTY_COALESCE").is_ok_and(|v| v.trim() == "0"))
+}
+
+/// Most bytes one coalesced key write carries.
+const MAX_COALESCED_KEY_BYTES: usize = 4096;
+
+/// Whether `bytes` is plain typed text that may share a write with other plain typed text:
+/// nothing below 0x20 (no ESC, whose meaning depends on what follows it in the same read, no ^C
+/// or other signal byte, no CR) and non-empty.
+fn is_plain_key_text(bytes: &[u8]) -> bool {
+    !bytes.is_empty() && bytes.iter().all(|&b| b >= 0x20)
 }
 
 /// How often a withheld reply re-checks whether the pty has left canonical mode: promptly for the
@@ -104,13 +207,53 @@ pub struct State {
 /// milliseconds), then less often for a reply nobody is waiting for.
 const REPLY_GATE_POLL: Duration = Duration::from_millis(10);
 const REPLY_GATE_POLL_SLOW: Duration = Duration::from_millis(100);
+/// How many consecutive non-EINTR `poll` failures the reader retries before ending the session.
+const MAX_CONSECUTIVE_POLL_ERRORS: u32 = 3;
+
+/// What the reader does about a failed `poll` (#1376): it used to panic the reader thread, which
+/// took the tab's output down with it.
+#[derive(Debug, PartialEq, Eq)]
+enum PollErrorAction {
+    /// Poll again.
+    Retry,
+    /// Give up on this session cleanly (it is torn down like a disconnect).
+    EndSession,
+}
+
+/// Decides how to react to `err` given how many polls in a row have now failed (EINTR excluded).
+fn poll_error_action(err: &io::Error, consecutive_failures: u32) -> PollErrorAction {
+    if err.kind() == ErrorKind::Interrupted {
+        return PollErrorAction::Retry;
+    }
+    if consecutive_failures > MAX_CONSECUTIVE_POLL_ERRORS {
+        PollErrorAction::EndSession
+    } else {
+        PollErrorAction::Retry
+    }
+}
+
 /// While the pty has hung up, how often to check whether the child has exited, in case its
 /// `SIGCHLD` was consumed before the hang-up was seen.
+///
+/// The exit normally arrives as an event (`SIGCHLD` / the pty's exit notification); this check is
+/// only a give-up safety net for the case where that signal was consumed before the hang-up was
+/// seen, an OS-level race with no event of its own. It backs off to [`HUNG_UP_POLL_SLOW`] and
+/// logs once at [`HUNG_UP_WARN_AFTER`], so a child that never exits is visible instead of being
+/// polled forever in silence.
 const HUNG_UP_POLL: Duration = Duration::from_millis(100);
+const HUNG_UP_POLL_SLOW: Duration = Duration::from_secs(1);
+const HUNG_UP_WARN_AFTER: Duration = Duration::from_secs(5);
 const REPLY_GATE_SLOW_AFTER: Duration = Duration::from_secs(1);
 /// Most gated replies kept. A program that queries in a loop without reading gets its oldest
 /// replies dropped; nobody can read them from a cooked tty anyway.
 const MAX_GATED_REPLIES: usize = 1024;
+
+/// Most writes the pty's FIFO keeps (#1442). It only grows while the child does not read its tty
+/// (a hung program) and keys keep coming: 180 s of the fastest key repeat is ~11,000 writes, the
+/// bound is six times that. Past it the newest user input is dropped, logged once and reported
+/// to the surface ([`State::take_input_overflow_report`]); a signal byte (^C ^D ^Z ^\\) is never
+/// dropped, and replies have their own bound ([`MAX_GATED_REPLIES`]).
+const MAX_QUEUED_WRITES: usize = 64 * 1024;
 
 /// A queued pty write. `produced_while_executing` is `Some(block id)` for a reply to a
 /// terminal query (DA, OSC colors, ...) that was generated while that block was
@@ -118,18 +261,20 @@ const MAX_GATED_REPLIES: usize = 1024;
 /// dropped, as the shell would otherwise read it back as typed text (#829). User input
 /// and replies produced at the prompt carry `None` and are never dropped.
 struct QueuedWrite {
+    id: JobId,
     bytes: Cow<'static, [u8]>,
     produced_while_executing: Option<BlockId>,
-    /// A reply to a terminal query, as opposed to user input.
-    is_reply: bool,
-    /// The submitted buffer of a user command (#1046); the only thing `DiscardQueuedInput` drops.
-    discardable: bool,
+    /// What this is; decides what may drop it (a submitted user command is the only thing
+    /// `DiscardQueuedInput` drops, #1046) and what may interleave with it.
+    class: JobClass,
+    /// The chunks of a `SetupChunked` job (`bytes` is empty then).
+    setup: Option<SetupJob>,
 }
 
 impl QueuedWrite {
     /// Replies generated while a command runs wait for the pty to leave canonical mode.
     fn is_gated(&self) -> bool {
-        self.is_reply && self.produced_while_executing.is_some()
+        self.class.is_reply() && self.produced_while_executing.is_some()
     }
 }
 
@@ -139,16 +284,46 @@ impl Default for State {
             write_list: VecDeque::new(),
             parser: ansi::Processor::new(),
             writing: None,
+            active_job: None,
+            pty_canonical: None,
+            next_job_id: 1,
             reply_gate_open: true,
             gated_count: 0,
             withheld_since: None,
             hung_up: false,
+            hung_up_since: None,
+            hung_up_warned: false,
             user_write_finished_at: None,
+            last_user_write_at: None,
+            user_input_received_at: None,
+            coalesce_keys: false,
+            terminate_requested: None,
+            mid_read_write_error: None,
+            input_overflow_dropped: 0,
+            input_overflow_unreported: false,
+            bytes_fed: 0,
         }
     }
 }
 
 impl State {
+    /// #1392: `n` more bytes were parsed into the model (every hook in them handled); publishes
+    /// the applied total, see [`Self::publish_applied`].
+    fn note_parsed(&mut self, n: usize, barrier: &PtyStreamBarrier) {
+        self.bytes_fed += n as u64;
+        self.publish_applied(barrier);
+    }
+
+    /// Publishes every byte fed to the parser as applied, unless a synchronized-output frame is
+    /// open: its bytes are buffered in the parser, not applied, so a hook among them has not been
+    /// handled yet and the barrier keeps the last total (behind the read count) until the frame
+    /// ends.
+    fn publish_applied(&self, barrier: &PtyStreamBarrier) {
+        if self.parser.sync_output_buffer_len().is_none() {
+            barrier.publish_applied(self.bytes_fed);
+        }
+    }
+
     #[inline]
     fn ensure_next(&mut self) {
         if self.writing.is_none() {
@@ -158,30 +333,206 @@ impl State {
 
     #[inline]
     fn goto_next(&mut self) {
-        // The first entry that may be written now: a withheld reply is skipped, not waited for,
-        // so user input behind it is never delayed.
-        let open = self.reply_gate_open;
-        let next = if open || self.gated_count == 0 {
-            self.write_list.pop_front()
-        } else if self.write_list.len() == self.gated_count {
-            None
-        } else {
-            self.write_list
-                .iter()
-                .position(|entry| !entry.is_gated())
-                .and_then(|index| self.write_list.remove(index))
-        };
-        if next.as_ref().is_some_and(QueuedWrite::is_gated) {
+        self.goto_next_at(Instant::now());
+    }
+
+    /// Picks what is written next. While a `SetupChunked` job is active it is the only thing
+    /// written, except a reply at the head of the list (a chunk boundary is the one place a reply
+    /// may land without corrupting the job); its next chunk is picked once its gap has passed.
+    fn goto_next_at(&mut self, now: Instant) {
+        loop {
+            match self
+                .active_job
+                .as_ref()
+                .map(|job| (job.is_exhausted(), job.is_due(now)))
+            {
+                Some((true, _)) => {
+                    self.active_job = None;
+                    continue;
+                }
+                Some((false, due)) => {
+                    self.writing = if let Some(reply) = self.take_leading_reply() {
+                        Some(Writing::new(reply.bytes, JobClass::Reply))
+                    } else if due {
+                        self.active_job
+                            .as_mut()
+                            .and_then(SetupJob::take_chunk)
+                            .map(|chunk| Writing::new(chunk, JobClass::SetupChunked))
+                    } else {
+                        None
+                    };
+                    return;
+                }
+                None => {}
+            }
+            // The first entry that may be written now: a withheld reply is skipped, not waited
+            // for, so user input behind it is never delayed.
+            let open = self.reply_gate_open;
+            let next = if open || self.gated_count == 0 {
+                self.write_list.pop_front()
+            } else if self.write_list.len() == self.gated_count {
+                None
+            } else {
+                self.write_list
+                    .iter()
+                    .position(|entry| !entry.is_gated())
+                    .and_then(|index| self.write_list.remove(index))
+            };
+            if next.as_ref().is_some_and(QueuedWrite::is_gated) {
+                self.gated_count -= 1;
+            }
+            match next {
+                Some(QueuedWrite {
+                    id,
+                    setup: Some(job),
+                    ..
+                }) => {
+                    let mut job = job;
+                    let canonical = self.pty_canonical;
+                    job.resolve_pacing(canonical);
+                    match job.pacing() {
+                        Pacing::Gap { dur, why } => log::info!(
+                            "pty write job {id}: setup, paced {dur:?} between chunks ({why}; tty canonical: \
+                             {canonical:?})"
+                        ),
+                        Pacing::None => log::info!(
+                            "pty write job {id}: setup, unpaced (tty canonical: {canonical:?})"
+                        ),
+                        Pacing::GapIfCanonical { .. } => {
+                            log::warn!("pty write job {id}: setup, pacing left unresolved")
+                        }
+                    }
+                    self.active_job = Some(job);
+                }
+                Some(mut entry) => {
+                    if self.coalesce_keys {
+                        self.coalesce_keys_into(&mut entry);
+                    }
+                    self.writing = Some(Writing::new(entry.bytes, entry.class));
+                    return;
+                }
+                None => {
+                    self.writing = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Merges the typed-text jobs queued directly behind `entry` into it, so a burst of keys that
+    /// piled up while the previous write was in flight goes out as ONE write instead of one write
+    /// (and one wait for its completion event) per key. Order is exactly the queue order: only
+    /// jobs adjacent to `entry` are taken, only of class [`JobClass::UserKey`] holding plain text
+    /// (see [`is_plain_key_text`]), so no reply, command, paste, agent write, signal byte or
+    /// escape sequence is ever moved, merged or split from what follows it.
+    fn coalesce_keys_into(&mut self, entry: &mut QueuedWrite) {
+        if entry.class != JobClass::UserKey
+            || entry.setup.is_some()
+            || entry.is_gated()
+            || !is_plain_key_text(&entry.bytes)
+        {
+            return;
+        }
+        let mut merged = 0usize;
+        while let Some(next) = self.write_list.front() {
+            if next.class != JobClass::UserKey
+                || next.setup.is_some()
+                || next.is_gated()
+                || !is_plain_key_text(&next.bytes)
+                || entry.bytes.len() + next.bytes.len() > MAX_COALESCED_KEY_BYTES
+            {
+                break;
+            }
+            let Some(next) = self.write_list.pop_front() else {
+                break;
+            };
+            entry.bytes.to_mut().extend_from_slice(&next.bytes);
+            merged += 1;
+        }
+        if merged > 0 {
+            warpui::input_order::log_hop("pty_write_coalesced", || {
+                format!("jobs={} bytes={}", merged + 1, entry.bytes.len())
+            });
+        }
+    }
+
+    /// Whether the head of the list is a reply that may be written now.
+    fn has_leading_reply(&self) -> bool {
+        self.write_list.front().is_some_and(|entry| {
+            entry.class.is_reply() && (self.reply_gate_open || !entry.is_gated())
+        })
+    }
+
+    fn take_leading_reply(&mut self) -> Option<QueuedWrite> {
+        if !self.has_leading_reply() {
+            return None;
+        }
+        let entry = self.write_list.pop_front()?;
+        if entry.is_gated() {
             self.gated_count -= 1;
         }
-        self.writing =
-            next.map(|entry| Writing::new(entry.bytes, entry.is_reply, entry.discardable));
+        Some(entry)
+    }
+
+    /// How long until the active job's next chunk is due, if the writer is waiting for that.
+    fn job_timeout(&self) -> Option<Duration> {
+        if self.writing.is_some() {
+            return None;
+        }
+        self.active_job.as_ref()?.wait(Instant::now())
+    }
+
+    /// Called when a write finished: a chunk of the active job starts the gap before the next
+    /// one, and the last chunk (or the last of an aborted job) ends the job.
+    fn note_job_chunk_finished(&mut self, finished: &Writing, at: Instant) {
+        if finished.class != JobClass::SetupChunked {
+            return;
+        }
+        let Some(job) = self.active_job.as_mut() else {
+            return;
+        };
+        job.chunk_written(&finished.source, at);
+        if job.is_exhausted() {
+            let close_paste = job.is_aborted() && job.is_paste_open();
+            self.active_job = None;
+            if close_paste {
+                self.push_paste_close();
+            }
+        }
+    }
+
+    fn push_paste_close(&mut self) {
+        let id = self.alloc_job_id();
+        self.write_list.push_front(QueuedWrite {
+            id,
+            bytes: Cow::Borrowed(BRACKETED_PASTE_END),
+            produced_while_executing: None,
+            class: JobClass::UserKey,
+            setup: None,
+        });
+    }
+
+    fn alloc_job_id(&mut self) -> JobId {
+        let id = self.next_job_id;
+        self.next_job_id = self.next_job_id.wrapping_add(1);
+        id
     }
 
     /// Whether any queued write is a reply that the gate may be withholding.
     #[inline]
     fn has_gated(&self) -> bool {
         self.gated_count > 0
+    }
+
+    /// Whether a setup job that has not started yet is paced by the tty mode, so the loop must
+    /// read it before the job is picked.
+    fn needs_canonical_probe(&self) -> bool {
+        self.write_list.iter().any(|entry| {
+            entry
+                .setup
+                .as_ref()
+                .is_some_and(|job| matches!(job.pacing(), Pacing::GapIfCanonical { .. }))
+        })
     }
 
     /// Whether some replies are being withheld right now.
@@ -211,35 +562,152 @@ impl State {
     /// How long the event loop may sleep, given the synchronized-output timeout and any withheld
     /// reply waiting for the pty to leave canonical mode.
     fn poll_timeout(&self, sync_timeout: Option<Duration>) -> Option<Duration> {
-        let timeout = match (sync_timeout, self.gate_timeout()) {
-            (Some(sync), Some(gate)) => Some(sync.min(gate)),
-            (sync, gate) => sync.or(gate),
-        };
+        let timeout = [sync_timeout, self.gate_timeout(), self.job_timeout()]
+            .into_iter()
+            .flatten()
+            .min();
         if self.hung_up {
-            Some(timeout.map_or(HUNG_UP_POLL, |t| t.min(HUNG_UP_POLL)))
+            let poll = self.hung_up_poll();
+            Some(timeout.map_or(poll, |t| t.min(poll)))
         } else {
             timeout
         }
     }
 
-    /// Queues user input; never dropped.
+    /// How often to look for the child's exit while the pty is hung up: promptly at first, then
+    /// slowly once the exit is clearly not coming straight away.
+    fn hung_up_poll(&self) -> Duration {
+        match self.hung_up_since {
+            Some(since) if since.elapsed() >= HUNG_UP_WARN_AFTER => HUNG_UP_POLL_SLOW,
+            _ => HUNG_UP_POLL,
+        }
+    }
+
+    /// Records the hang-up (once).
+    fn note_hung_up(&mut self) {
+        if !self.hung_up {
+            log::info!("pty hung up (EIO on the master); waiting for the child's exit");
+        }
+        self.hung_up = true;
+        self.hung_up_since.get_or_insert_with(Instant::now);
+    }
+
+    /// Logs once when the child has still not exited long after the hang-up.
+    fn warn_if_hung_up_too_long(&mut self) {
+        if !self.hung_up_warned
+            && self
+                .hung_up_since
+                .is_some_and(|since| since.elapsed() >= HUNG_UP_WARN_AFTER)
+        {
+            self.hung_up_warned = true;
+            log::warn!(
+                "pty has been hung up for {:?} and the child has not exited; still checking every {:?}",
+                HUNG_UP_WARN_AFTER,
+                HUNG_UP_POLL_SLOW
+            );
+        }
+    }
+
+    /// Whether `bytes` of user input may join the FIFO (#1442). Refused (counted, logged once, to
+    /// be reported to the surface) only when the FIFO is at [`MAX_QUEUED_WRITES`]; a signal byte
+    /// always gets in.
+    fn user_input_has_room(&mut self, bytes: &[u8]) -> bool {
+        if self.write_list.len() < MAX_QUEUED_WRITES || is_signal_byte(bytes) {
+            return true;
+        }
+        self.input_overflow_dropped += 1;
+        if !self.input_overflow_unreported {
+            self.input_overflow_unreported = true;
+            log::warn!(
+                "pty write queue full ({} writes waiting, the child is not reading): dropping the newest user input",
+                self.write_list.len()
+            );
+        }
+        false
+    }
+
+    /// Whether input was dropped since the last call (the surface is told once per episode).
+    fn take_input_overflow_report(&mut self) -> bool {
+        std::mem::take(&mut self.input_overflow_unreported)
+    }
+
+    /// Queues user input. Dropped only past [`MAX_QUEUED_WRITES`] (#1442), see
+    /// [`Self::user_input_has_room`].
     fn queue_input(&mut self, bytes: Cow<'static, [u8]>) {
+        if !self.user_input_has_room(&bytes) {
+            return;
+        }
+        let id = self.alloc_job_id();
         self.write_list.push_back(QueuedWrite {
+            id,
             bytes,
             produced_while_executing: None,
-            is_reply: false,
-            discardable: false,
+            class: JobClass::UserKey,
+            setup: None,
+        });
+    }
+
+    /// Queues a bootstrap script as one paced job (#1384). A job still queued or in flight is
+    /// replaced: the newer bootstrap supersedes the older, as `cancel_paced_writes` did.
+    fn queue_setup(&mut self, chunks: Vec<Vec<u8>>, pacing: Pacing) {
+        self.abort(AbortScope::Setup);
+        let id = self.alloc_job_id();
+        let job = SetupJob::new(id, chunks, pacing);
+        if job.is_exhausted() {
+            return;
+        }
+        self.write_list.push_back(QueuedWrite {
+            id,
+            bytes: Cow::Borrowed(&[]),
+            produced_while_executing: None,
+            class: JobClass::SetupChunked,
+            setup: Some(job),
         });
     }
 
     /// Queues the submitted buffer of a user command, which a ^C may cancel while unwritten.
     fn queue_command_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.queue_classed(bytes, JobClass::UserCommand);
+    }
+
+    /// Queues a paste (#1384 P4): cancelled by a ^C like a command, and by `AbortScope::Paste`.
+    fn queue_paste_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.queue_classed(bytes, JobClass::Paste);
+    }
+
+    /// Queues an agent's input (#1384 P4): kept by a ^C, removed by `AbortScope::Agent`.
+    fn queue_agent_input(&mut self, bytes: Cow<'static, [u8]>) {
+        self.queue_classed(bytes, JobClass::Agent);
+    }
+
+    fn queue_classed(&mut self, bytes: Cow<'static, [u8]>, class: JobClass) {
+        if !self.user_input_has_room(&bytes) {
+            return;
+        }
+        let id = self.alloc_job_id();
         self.write_list.push_back(QueuedWrite {
+            id,
             bytes,
             produced_while_executing: None,
-            is_reply: false,
-            discardable: true,
+            class,
+            setup: None,
         });
+    }
+
+    /// Removes the unwritten jobs of `class`, and cuts the write in progress if it is one. A
+    /// write cut inside a bracketed paste is followed by the paste close, so the shell does not
+    /// swallow what comes next as pasted text.
+    fn abort_class(&mut self, class: JobClass) {
+        self.write_list.retain(|entry| entry.class != class);
+        if self.writing.as_ref().is_some_and(|w| w.class == class) {
+            let cut_paste = self
+                .writing
+                .take()
+                .is_some_and(|w| w.cut_inside_bracketed_paste());
+            if cut_paste {
+                self.push_paste_close();
+            }
+        }
     }
 
     /// Queues a reply to a terminal query. `executing_block` is the id of the active
@@ -257,10 +725,11 @@ impl State {
             return evicted;
         }
         let entry = QueuedWrite {
+            id: self.alloc_job_id(),
             bytes: Cow::Owned(bytes),
             produced_while_executing: executing_block,
-            is_reply: true,
-            discardable: false,
+            class: JobClass::Reply,
+            setup: None,
         };
         if entry.is_gated() {
             self.gated_count += 1;
@@ -313,6 +782,7 @@ impl State {
     fn discard_pending_writes(&mut self) {
         self.write_list.clear();
         self.writing = None;
+        self.active_job = None;
         self.gated_count = 0;
         self.withheld_since = None;
     }
@@ -325,20 +795,67 @@ impl State {
     /// and not yet started is dropped too. If the write in progress was cut inside a bracketed
     /// paste, the paste is closed so the shell does not swallow what follows as pasted text.
     fn discard_queued_input(&mut self) {
-        self.write_list.retain(|entry| !entry.discardable);
-        if self.writing.as_ref().is_some_and(|w| w.discardable) {
+        self.write_list
+            .retain(|entry| !entry.class.is_discardable());
+        if self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.class.is_discardable())
+        {
             let cut_paste = self
                 .writing
                 .take()
                 .is_some_and(|w| w.cut_inside_bracketed_paste());
             if cut_paste {
-                self.write_list.push_front(QueuedWrite {
-                    bytes: Cow::Borrowed(BRACKETED_PASTE_END),
-                    produced_while_executing: None,
-                    is_reply: false,
-                    discardable: false,
-                });
+                self.push_paste_close();
             }
+        }
+    }
+
+    /// Removes the queued and in-flight jobs `scope` covers (#1384), at the next chunk boundary.
+    ///
+    /// A discardable write is cut where it stands (see [`Self::discard_queued_input`]). A setup
+    /// job is cut before its next chunk; a chunk already partly written is finished first (a
+    /// chunk is never split), and a bracketed paste the job left open is closed after it.
+    fn abort(&mut self, scope: AbortScope) {
+        if scope.covers(JobClass::UserCommand) {
+            self.discard_queued_input();
+        } else {
+            for class in [JobClass::Paste, JobClass::Agent] {
+                if scope.covers(class) {
+                    self.abort_class(class);
+                }
+            }
+        }
+        if !scope.covers(JobClass::SetupChunked) {
+            return;
+        }
+        self.write_list
+            .retain(|entry| entry.class != JobClass::SetupChunked);
+        let Some(job) = self.active_job.as_mut() else {
+            return;
+        };
+        log::info!("pty write job {}: aborted", job.id);
+        job.cut();
+        let mid_chunk = self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.class == JobClass::SetupChunked && w.written > 0);
+        if mid_chunk {
+            // `note_job_chunk_finished` ends the job and closes the paste.
+            return;
+        }
+        if self
+            .writing
+            .as_ref()
+            .is_some_and(|w| w.class == JobClass::SetupChunked)
+        {
+            self.writing = None;
+        }
+        let close_paste = job.is_paste_open();
+        self.active_job = None;
+        if close_paste {
+            self.push_paste_close();
         }
     }
 
@@ -349,8 +866,15 @@ impl State {
 
     #[inline]
     fn needs_write(&self) -> bool {
-        self.writing.is_some()
-            || (self.reply_gate_open && !self.write_list.is_empty())
+        if self.writing.is_some() {
+            return true;
+        }
+        // Inside a setup job the list is not written from: only a reply at its head may go, and
+        // the job's own next chunk once its gap has passed. Anything else waits for the whole job.
+        if let Some(job) = &self.active_job {
+            return job.is_exhausted() || job.is_due(Instant::now()) || self.has_leading_reply();
+        }
+        (self.reply_gate_open && !self.write_list.is_empty())
             || self.write_list.len() > self.gated_count
     }
 
@@ -364,7 +888,21 @@ impl State {
     fn note_write_finished(&mut self, is_reply: bool, at: Instant) {
         if !is_reply {
             self.user_write_finished_at = Some(at);
+            self.last_user_write_at = Some(at);
+            if let Some(received) = self.user_input_received_at.take() {
+                SLOW_PTY_WRITE.report(
+                    at.saturating_duration_since(received),
+                    at,
+                    log::Level::Warn,
+                    || "user input waited in the pty writer".to_string(),
+                );
+            }
         }
+    }
+
+    /// Notes that user input reached this loop, keeping the oldest unwritten one (#1146).
+    fn note_user_input_received(&mut self, at: Instant) {
+        self.user_input_received_at.get_or_insert(at);
     }
 
     /// How long ago user input finished reaching the pty, for the first output read after it;
@@ -374,6 +912,15 @@ impl State {
             .take()
             .map(|at| now.saturating_duration_since(at))
     }
+
+    /// Whether output read at `now` belongs to the echo of a keystroke: user input reached the
+    /// pty within [`USER_WRITE_ECHO_WINDOW`]. Unlike [`Self::take_user_write_age`] this holds for
+    /// every read in the window, not only the first, because a program answers a key in several
+    /// writes (the character, then the cursor position; the echo, then the prompt redraw).
+    fn read_follows_user_write(&self, now: Instant) -> bool {
+        self.last_user_write_at
+            .is_some_and(|at| now.saturating_duration_since(at) <= USER_WRITE_ECHO_WINDOW)
+    }
 }
 
 /// The id of the active block if it is currently executing a command.
@@ -382,15 +929,60 @@ fn executing_block_id(terminal: &TerminalModel) -> Option<BlockId> {
     block.is_executing().then(|| block.id().clone())
 }
 
+/// Parses one slice of pty output into the terminal model, queueing the replies the parser
+/// generates. The executing block is read for each slice: the command may finish, and the next
+/// one start, inside the parse of an earlier slice. The parser is incremental (it advances a
+/// byte at a time and already sees arbitrary read boundaries), so slicing does not change the
+/// result.
+fn parse_slice(
+    state: &mut State,
+    terminal: &mut TerminalModel,
+    reply_ledger: &SharedReplyLedger,
+    bytes: &[u8],
+) {
+    // Any terminal response sequences the parser generates (e.g. cursor position / device
+    // status reports) are collected into a buffer and queued onto `write_list` below, rather
+    // than written directly to the PTY here: a direct write can hit `WouldBlock` if the PTY's
+    // write buffer is full, and `ansi::Processor` does not retry a failed write, so a direct
+    // write silently drops the response. `write_list`/`pty_write` already retry across
+    // `WouldBlock`, so routing through it is what actually guarantees delivery.
+    // Upstream: e59c7a491489 "Fix dropped terminal response sequences when PTY writes block"
+    // (#11906).
+    let mut terminal_response_sequences = Vec::new();
+    // Read the active block BEFORE parsing: replies are generated, and the command may finish,
+    // synchronously inside `parse_bytes`.
+    let executing_block = executing_block_id(terminal);
+    state.parser.parse_bytes(
+        terminal,
+        bytes,
+        &mut ReplyWriter {
+            replies: &mut terminal_response_sequences,
+            ledger: reply_ledger,
+        },
+    );
+    let evicted = state.queue_response(terminal_response_sequences, executing_block);
+    if !evicted.is_empty() {
+        let mut ledger = reply_ledger.lock();
+        for bytes in &evicted {
+            ledger.forget_replies(bytes);
+        }
+    }
+}
+
 impl Writing {
     #[inline]
-    fn new(c: Cow<'static, [u8]>, is_reply: bool, discardable: bool) -> Writing {
+    fn new(c: Cow<'static, [u8]>, class: JobClass) -> Writing {
         Writing {
             source: c,
             written: 0,
-            is_reply,
-            discardable,
+            class,
         }
+    }
+
+    /// A reply to a terminal query rather than user input.
+    #[inline]
+    fn is_reply(&self) -> bool {
+        self.class.is_reply()
     }
 
     /// Whether the bytes written so far opened a bracketed paste that was not closed. Cutting the
@@ -476,12 +1068,16 @@ where
 
         match registered {
             Ok(poll) => {
-                let reply_ledger = terminal.lock().reply_ledger();
+                let (reply_ledger, stream_barrier) = {
+                    let terminal = terminal.lock();
+                    (terminal.reply_ledger(), terminal.pty_stream_barrier())
+                };
                 Ok(EventLoop {
                     poll,
                     pty,
                     rx,
                     reply_ledger,
+                    stream_barrier,
                     terminal,
                     event_listener,
                 })
@@ -509,18 +1105,73 @@ where
             None
         };
         state.set_reply_gate(canonical);
+        // The tty mode a setup job is paced by is read here, on demand, just before the job can be
+        // picked (one cheap `tcgetattr`, only while such a job waits).
+        state.pty_canonical = if state.needs_canonical_probe() {
+            self.pty.is_canonical()
+        } else {
+            None
+        };
     }
 
     /// Drain the channel.
     /// Returns `false` when a shutdown message was received.
     fn drain_recv_channel(&mut self, state: &mut State) -> ChannelResult {
+        // Resizes are coalesced keep-last (#1376): a window drag sends one per pixel, and each
+        // would be its own TIOCSWINSZ + SIGWINCH. The last size seen is applied before any later
+        // message that is ordered against it (input) and at the end of the drain, so the final
+        // size is always applied and never reordered relative to writes.
+        let mut pending_resize = None;
         while let Ok(msg) = self.rx.try_recv() {
+            if !matches!(msg, Message::Resize(_)) {
+                if let Some(size) = pending_resize.take() {
+                    self.pty.on_resize(&size);
+                }
+            }
             match msg {
                 Message::Input(input) => {
                     // The single choke point for everything written to the pty.
                     self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
+                    // A signal byte (^C ^D ^Z ^\) preempts a setup job: it cuts the job at its
+                    // next chunk boundary instead of queueing behind the rest of the script.
+                    if is_signal_byte(&input) {
+                        state.abort(AbortScope::Setup);
+                    }
+                    if input.contains(&0x03) {
+                        warpui::input_order::log_hop("ctrl_c_received", || {
+                            format!("queued={}", state.write_list.len())
+                        });
+                    }
                     state.queue_input(input)
                 }
+                Message::AgentInput(input) => {
+                    self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
+                    // An agent may write a ^C into its command: a signal byte preempts a setup
+                    // job exactly as a typed one does.
+                    if is_signal_byte(&input) {
+                        state.abort(AbortScope::Setup);
+                    }
+                    state.queue_agent_input(input)
+                }
+                Message::PasteInput(input) => {
+                    self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
+                    state.queue_paste_input(input)
+                }
+                Message::SetupChunked { chunks, pacing } => {
+                    // The ledger sees the bytes now, as it saw each chunk as its own `Input`.
+                    // Not `note_user_input_received`: the gaps are not a user waiting.
+                    {
+                        let mut ledger = self.reply_ledger.lock();
+                        for chunk in &chunks {
+                            ledger.note_input(chunk);
+                        }
+                    }
+                    state.queue_setup(chunks, pacing)
+                }
+                Message::Abort(scope) => state.abort(scope),
                 Message::Shutdown => {
                     return ChannelResult::TerminateLoop {
                         child_exited: false,
@@ -528,12 +1179,20 @@ where
                 }
                 Message::CommandInput(input) => {
                     self.reply_ledger.lock().note_input(&input);
+                    state.note_user_input_received(Instant::now());
                     state.queue_command_input(input)
                 }
-                Message::DiscardQueuedInput => state.discard_queued_input(),
-                Message::Resize(size) => self.pty.on_resize(&size),
+                Message::DiscardQueuedInput => state.abort(AbortScope::Discardable),
+                Message::Resize(size) => pending_resize = Some(size),
                 Message::ChildExited => return ChannelResult::TerminateLoop { child_exited: true },
             }
+        }
+        if let Some(size) = pending_resize {
+            self.pty.on_resize(&size);
+        }
+        if state.take_input_overflow_report() {
+            self.event_listener
+                .send_terminal_event(crate::terminal::event::Event::InputBufferOverflow);
         }
 
         ChannelResult::Continue
@@ -557,17 +1216,39 @@ where
         state: &mut State,
         buf: &mut [u8],
         can_read: &mut bool,
+        can_write: &mut bool,
     ) -> io::Result<()> {
+        warpui::profiling::zone!("pty_read");
         let mut bytes_in_buffer = 0;
         let mut bytes_processed = 0;
 
+        // A clone of the handle, so the guard borrows this local and not `self`: the loop below
+        // services waiting input (`&mut self`) while the guard is held (#1408).
+        let model = self.terminal.clone();
         let mut terminal = None;
 
         // We read up to sizeof(buf) to limit the amount of time spent
         // reading from the PTY for a given event. Currently, the buf
         // has size [`MAX_READ`].
         loop {
-            match self.pty.reader().read(&mut buf[bytes_in_buffer..]) {
+            // #1408: a ^C (or any keystroke) that arrived since the last look is written now, not
+            // after this pass. The pass can last a UI frame (the reader waits for the model lock
+            // the UI holds while it paints) plus a parse of up to a full read buffer.
+            self.service_waiting_input(state, can_write);
+            // Nothing read is left unparsed here, so a parked terminate or write error ends the
+            // pass without losing output.
+            if bytes_in_buffer == 0
+                && (state.terminate_requested.is_some() || state.mid_read_write_error.is_some())
+            {
+                break;
+            }
+            // #1392: the read is bracketed for the stream barrier, so a check made while bytes
+            // have left the master but are not counted yet sees a read in flight.
+            self.stream_barrier.begin_read();
+            let read = self.pty.reader().read(&mut buf[bytes_in_buffer..]);
+            self.stream_barrier
+                .end_read(read.as_ref().map_or(0, |got| *got));
+            match read {
                 Ok(0) if bytes_in_buffer == 0 => {
                     // If we get 0 here with an empty buffer (guaranteed if
                     // bytes_in_buffer == 0), it means the object is unable to
@@ -595,9 +1276,17 @@ where
 
             let terminal = match &mut terminal {
                 Some(terminal) => terminal,
-                None => terminal.insert(match self.terminal.try_lock() {
-                    // If we've filled up the buffer, block on locking the terminal.
-                    None if bytes_in_buffer >= READ_BUFFER_SIZE => self.terminal.lock(),
+                None => terminal.insert(match model.try_lock() {
+                    // If we've buffered a lot while the terminal was locked elsewhere, block
+                    // on it rather than read on: the wait is one hold by the other thread
+                    // (fair mutex), and the parse that follows stays small (#1135). The same
+                    // goes once the pty has been drained (`WouldBlock`, `can_read` cleared):
+                    // there is nothing more to accumulate, and reading on would only spin on
+                    // `read` + `try_lock` for as long as the UI paints, a whole core burnt
+                    // while the echo of a keystroke waits for the lock anyway.
+                    None if bytes_in_buffer >= MAX_UNLOCKED_ACCUMULATION || !*can_read => {
+                        model.lock()
+                    }
                     // Otherwise, if we failed to acquire the lock, try to read more
                     // data into the buffer.
                     None => continue,
@@ -606,36 +1295,46 @@ where
                 }),
             };
 
-            // Process the bytes read into the buffer. Any terminal response
-            // sequences the parser generates (e.g. cursor position / device
-            // status reports) are collected into a buffer and queued onto
-            // `write_list` below, rather than written directly to the PTY
-            // here: a direct write can hit `WouldBlock` if the PTY's write
-            // buffer is full, and `ansi::Processor` does not retry a failed
-            // write, so a direct write silently drops the response.
-            // `write_list`/`pty_write` already retry across `WouldBlock`
-            // (see below), so routing through it is what actually
-            // guarantees delivery.
-            // Upstream: e59c7a491489 "Fix dropped terminal response
-            // sequences when PTY writes block" (#11906).
-            let mut terminal_response_sequences = Vec::new();
-            // Read the active block BEFORE parsing: replies are generated, and the
-            // command may finish, synchronously inside `parse_bytes`.
-            let executing_block = executing_block_id(terminal);
-            state.parser.parse_bytes(
-                terminal.deref_mut(),
-                &buf[..bytes_in_buffer],
-                &mut ReplyWriter {
-                    replies: &mut terminal_response_sequences,
-                    ledger: &self.reply_ledger,
-                },
-            );
-            let evicted = state.queue_response(terminal_response_sequences, executing_block);
-            if !evicted.is_empty() {
-                let mut ledger = self.reply_ledger.lock();
-                for bytes in &evicted {
-                    ledger.forget_replies(bytes);
+            // Parse in bounded slices, handing the lock to a waiting thread between them, so
+            // no single hold covers everything read (#1135).
+            let mut offset = 0;
+            while offset < bytes_in_buffer {
+                let end = (offset + PARSE_SLICE).min(bytes_in_buffer);
+                warpui::profiling::zone!("parse");
+                // What the main thread left for the model (a key's bookkeeping, #1403) is applied
+                // before the bytes are parsed: the record of a key is in place before the echo it
+                // causes. Then the facts the user-key path reads without this lock are published.
+                terminal.apply_inbox();
+                let held_since = Instant::now();
+                parse_slice(
+                    state,
+                    terminal.deref_mut(),
+                    &self.reply_ledger,
+                    &buf[offset..end],
+                );
+                // #1392: the hooks in this slice are applied; say so to the stream barrier.
+                state.note_parsed(end - offset, &self.stream_barrier);
+                // #1614: a young hold waiting on the barrier is decided again now.
+                terminal.on_pty_stream_applied();
+                terminal.publish_key_facts();
+                let held = held_since.elapsed();
+                SLOW_PTY_PARSE.finish(held_since, || {
+                    format!("{} bytes, terminal model locked", end - offset)
+                });
+                if held >= SLOW_PARSE_HOLD {
+                    log::debug!(
+                        "pty parse held the model lock for {held:?} ({} bytes)",
+                        end - offset
+                    );
                 }
+                offset = end;
+                if offset < bytes_in_buffer {
+                    FairMutexGuard::bump(terminal);
+                }
+                // #1408: between parse slices too, so a keystroke waits for one slice (16 KiB)
+                // at most, not for everything read in this pass (up to 256 KiB). Writing to the
+                // pty never needs the model lock, so doing it with the lock held is fine.
+                self.service_waiting_input(state, can_write);
             }
 
             bytes_processed += bytes_in_buffer;
@@ -648,26 +1347,71 @@ where
             // Give up the lock to a waiting thread, if any, before reading
             // more bytes from the PTY.
             FairMutexGuard::bump(terminal);
+
+            // Something (a keystroke, a resize, shutdown) is waiting in the channel: end the
+            // pass here instead of after up to MAX_LOCKED_READ more bytes. `service_io` takes
+            // the message and writes it before it reads on, so under a flood a Ctrl-C waits for
+            // one read-and-parse rather than a whole pass.
+            if self.rx.has_pending()
+                || state.terminate_requested.is_some()
+                || state.mid_read_write_error.is_some()
+            {
+                break;
+            }
         }
 
         // #1092: time the first output after a keystroke reached the pty (counts only).
+        let now = Instant::now();
+        let follows_user_write = bytes_processed > 0 && state.read_follows_user_write(now);
         if bytes_processed > 0
-            && let Some(age) = state.take_user_write_age(Instant::now())
+            && let Some(age) = state.take_user_write_age(now)
         {
             warpui::input_order::log_pty_read_after_write(bytes_processed, age);
+            SLOW_PTY_ECHO.report(age, Instant::now(), log::Level::Warn, || {
+                format!("{bytes_processed} bytes read after the pty write")
+            });
         }
 
         // Queue a terminal redraw if we processed some number
-        // of non-(synchronized output) bytes.
+        // of non-(synchronized output) bytes. The echo of a keystroke asks the receiving
+        // throttle to skip its trailing-edge wait (#1138).
         if bytes_processed > state.parser.sync_output_buffer_len().unwrap_or(0) {
-            self.event_listener.send_wakeup_event();
+            if follows_user_write {
+                self.event_listener.send_after_user_input_wakeup_event();
+            } else {
+                self.event_listener.send_wakeup_event();
+            }
         }
 
         Ok(())
     }
 
+    /// Takes what is waiting in the channel and writes it, from inside a read pass (#1408). One
+    /// atomic load when nothing waits. A terminate request or a write error is parked in `state`
+    /// for `service_io` to act on when the pass returns: the pass itself must finish parsing the
+    /// bytes it has already read.
+    fn service_waiting_input(&mut self, state: &mut State, can_write: &mut bool) {
+        if !self.rx.has_pending()
+            || state.terminate_requested.is_some()
+            || state.mid_read_write_error.is_some()
+        {
+            return;
+        }
+        if let ChannelResult::TerminateLoop { child_exited } = self.drain_recv_channel(state) {
+            state.terminate_requested = Some(child_exited);
+            return;
+        }
+        self.refresh_reply_gate(state);
+        if state.needs_write() && *can_write {
+            if let Err(err) = self.pty_write(state, can_write) {
+                state.mid_read_write_error = Some(err);
+            }
+        }
+    }
+
     #[inline]
     fn pty_write(&mut self, state: &mut State, can_write: &mut bool) -> io::Result<()> {
+        warpui::profiling::zone!("pty_write");
         state.ensure_next();
 
         'write_many: while let Some(mut current) = state.take_current() {
@@ -682,13 +1426,52 @@ where
                         break 'write_many;
                     }
                     Ok(n) => {
+                        // #1162: a short write (a ConPTY pipe taking part of a buffer), and every
+                        // reply written between user bytes, to place a lost or reordered byte.
+                        if n < current.remaining_bytes().len() {
+                            warpui::input_order::log_hop("pty_write_partial", || {
+                                format!("wrote={n} of={}", current.remaining_bytes().len())
+                            });
+                        }
+                        // #1490: the exact bytes the ConPTY pipe accepted, in write order, with
+                        // how long after each shell-ready signal they went out. Windows only: a
+                        // bootstrap chunk is logged by size, everything else by its bytes (shown
+                        // only for synthetic test text, `WARP_INPUT_ORDER_LOG_TEXT=1`).
+                        if cfg!(windows) {
+                            warpui::input_order::log_hop("pty_write_bytes", || {
+                                let accepted = current.remaining_bytes().get(..n).unwrap_or(&[]);
+                                let shown = if current.class == JobClass::SetupChunked {
+                                    format!("<setup {} bytes>", accepted.len())
+                                } else {
+                                    warpui::input_order::describe_bytes_escaped(accepted)
+                                };
+                                format!(
+                                    "class={:?} wrote={n} of_job={} bytes={shown} {}",
+                                    current.class,
+                                    current.source.len(),
+                                    warpui::input_order::shell_signal_ages()
+                                )
+                            });
+                        }
                         current.advance(n);
                         if current.finished() {
-                            state.note_write_finished(current.is_reply, Instant::now());
-                            if !current.is_reply {
-                                warpui::input_order::log_pty_write(current.source.len());
+                            if current.is_reply() {
+                                warpui::input_order::log_hop("pty_write_reply", || {
+                                    format!("bytes={}", current.source.len())
+                                });
                             }
-                            state.goto_next();
+                            let finished_at = Instant::now();
+                            state.note_write_finished(current.is_reply(), finished_at);
+                            if !current.is_reply() {
+                                warpui::input_order::log_pty_write(current.source.len());
+                                if current.source.contains(&0x03) {
+                                    warpui::input_order::log_hop("ctrl_c_pty_write", || {
+                                        format!("bytes={}", current.source.len())
+                                    });
+                                }
+                            }
+                            state.note_job_chunk_finished(&current, finished_at);
+                            state.goto_next_at(finished_at);
                             break 'write_one;
                         }
                     }
@@ -698,6 +1481,9 @@ where
                             ErrorKind::Interrupted | ErrorKind::WouldBlock => {
                                 if err.kind() == ErrorKind::WouldBlock {
                                     *can_write = false;
+                                    warpui::input_order::log_hop("pty_write_wouldblock", || {
+                                        format!("queued={}", state.write_list.len())
+                                    });
                                 }
                                 break 'write_many;
                             }
@@ -725,11 +1511,11 @@ where
         buf: &mut [u8],
         can_read: &mut bool,
         can_write: &mut bool,
-    ) -> Result<(), ()> {
+    ) -> Result<ChannelResult, ()> {
         self.refresh_reply_gate(state);
         while *can_read || (state.needs_write() && *can_write) {
             if *can_read {
-                if let Err(err) = self.pty_read(state, buf, can_read) {
+                if let Err(err) = self.pty_read(state, buf, can_read, can_write) {
                     // On Linux, a `read` on the master side of a PTY can fail with `EIO` if the
                     // client side hangs up. `io::Error::kind()` cannot be used here: EIO maps
                     // to `ErrorKind::Uncategorized`, which is unstable and deliberately
@@ -738,15 +1524,35 @@ where
                     if err.raw_os_error() == Some(libc::EIO) {
                         *can_read = false;
                         *can_write = false;
-                        state.hung_up = true;
+                        state.note_hung_up();
                         // Nothing queued can reach a dead pty, and a withheld reply would
                         // keep the gate poll timer armed.
                         state.discard_pending_writes();
-                        return Ok(());
+                        return Ok(ChannelResult::Continue);
                     }
 
                     error!("Error reading from PTY in event loop: {err}");
                     return Err(());
+                }
+
+                if let Some(err) = state.mid_read_write_error.take() {
+                    error!("Error writing to PTY in event loop: {err}");
+                    return Err(());
+                }
+                if let Some(child_exited) = state.terminate_requested.take() {
+                    return Ok(ChannelResult::TerminateLoop { child_exited });
+                }
+
+                // Under a sustained flood the pty never reports `WouldBlock`, so this loop
+                // would not return to `poll` (the only other place the channel is drained)
+                // until the output stopped: typed keys, resizes and shutdown waited behind
+                // it (#1132). Take them between read passes. This must not return early:
+                // `mio` is edge-triggered, so leaving with `can_read` still set would wait
+                // for an edge that has already been consumed.
+                if let ChannelResult::TerminateLoop { child_exited } =
+                    self.drain_recv_channel(state)
+                {
+                    return Ok(ChannelResult::TerminateLoop { child_exited });
                 }
             }
 
@@ -758,7 +1564,16 @@ where
                 }
             }
         }
-        Ok(())
+        Ok(ChannelResult::Continue)
+    }
+
+    /// What the loop does when it is asked to stop. Returns whether the child had exited.
+    fn note_terminating(&self, child_exited: bool) -> bool {
+        if child_exited {
+            self.terminal.lock().exit(ExitReason::ShellProcessExited);
+            self.event_listener.send_wakeup_event();
+        }
+        child_exited
     }
 
     pub fn spawn(mut self) -> JoinHandle<()> {
@@ -773,8 +1588,13 @@ where
                 #[cfg(test)]
                 warp_core::features::set_overrides(feature_flag_overrides);
 
-                let mut state = State::default();
-                let mut buf = [0u8; READ_BUFFER_SIZE];
+                let mut state = State {
+                    coalesce_keys: self.pty.coalesces_key_writes() && coalesce_keys_enabled(),
+                    ..State::default()
+                };
+                // Heap (calloc) rather than stack: a stack array is memset up front and
+                // keeps ~256 KB resident per pane even when the pane is idle.
+                let mut buf = vec![0u8; READ_BUFFER_SIZE].into_boxed_slice();
 
                 // Keep track of whether we've "drained" read and write
                 // readiness.  Once we receive a read or write readiness event,
@@ -792,6 +1612,7 @@ where
                 // True if the child exiting caused the event loop to wind down
                 // (e.g. CTRL D or `exit`) rather than the inverse.
                 let mut child_exited = false;
+                let mut poll_failures = 0u32;
 
                 'event_loop: loop {
                     // Clear the events so that we can reliably equate the absence of events
@@ -804,20 +1625,28 @@ where
                     // While replies are withheld, wake often enough to notice the pty leaving
                     // canonical mode.
                     let gate_poll = state.gate_timeout();
+                    let job_poll = state.job_timeout();
                     let poll_timeout = state.poll_timeout(sync_state_timeout);
                     if let Err(err) = self.poll.poll(&mut events, poll_timeout) {
-                        match err.kind() {
-                            ErrorKind::Interrupted => continue,
-                            _ => panic!("EventLoop polling error: {err:?}"),
+                        if err.kind() != ErrorKind::Interrupted {
+                            poll_failures += 1;
+                            log::error!("EventLoop polling error ({poll_failures}): {err:?}");
+                        }
+                        match poll_error_action(&err, poll_failures) {
+                            PollErrorAction::Retry => continue,
+                            PollErrorAction::EndSession => break 'event_loop,
                         }
                     }
+                    poll_failures = 0;
 
                     // If there were no events but `poll` returned, that means we hit the timeout.
                     // (A wake-up for the reply gate alone is not the synchronized-output timeout.)
                     let woke_for_gate = gate_poll
                         .is_some_and(|gate| sync_state_timeout.is_none_or(|sync| gate < sync))
+                        || job_poll
+                            .is_some_and(|job| sync_state_timeout.is_none_or(|sync| job < sync))
                         || (state.hung_up
-                            && sync_state_timeout.is_none_or(|sync| HUNG_UP_POLL < sync));
+                            && sync_state_timeout.is_none_or(|sync| state.hung_up_poll() < sync));
                     if events.is_empty() && !woke_for_gate {
                         // Same reasoning as the `parse_bytes` call above: route any
                         // response sequences through `write_list` instead of writing
@@ -834,6 +1663,10 @@ where
                                     ledger: &self.reply_ledger,
                                 },
                             );
+                            // #1392: the frame's bytes are applied now.
+                            state.publish_applied(&self.stream_barrier);
+                            // #1614: a young hold waiting on the barrier is decided again now.
+                            terminal.on_pty_stream_applied();
                             executing_block
                         };
                         let evicted =
@@ -859,13 +1692,7 @@ where
                                     ChannelResult::TerminateLoop {
                                         child_exited: exited,
                                     } => {
-                                        if exited {
-                                            self.terminal
-                                                .lock()
-                                                .exit(ExitReason::ShellProcessExited);
-                                            child_exited = true;
-                                            self.event_listener.send_wakeup_event();
-                                        }
+                                        child_exited = self.note_terminating(exited);
                                         break 'event_loop;
                                     }
                                 }
@@ -920,11 +1747,18 @@ where
                     }
                     self.refresh_reply_gate(&mut state);
                     match self.service_io(&mut state, &mut buf, &mut can_read, &mut can_write) {
-                        Ok(()) => {}
+                        Ok(ChannelResult::Continue) => {}
+                        Ok(ChannelResult::TerminateLoop {
+                            child_exited: exited,
+                        }) => {
+                            child_exited = self.note_terminating(exited);
+                            break 'event_loop;
+                        }
                         Err(()) => break 'event_loop,
                     }
                     // After a hang-up the exit event may already have been consumed; ask the
                     // child directly rather than waiting on a signal that will not come.
+                    state.warn_if_hung_up_too_long();
                     if state.hung_up && self.pty.has_exited() {
                         self.terminal.lock().exit(ExitReason::ShellProcessExited);
                         child_exited = true;

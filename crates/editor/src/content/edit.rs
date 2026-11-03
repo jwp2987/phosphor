@@ -30,13 +30,18 @@ use crate::{
     parallel_util::Last,
     render::{
         TABLE_BASELINE_RATIO, TABLE_LINE_HEIGHT_RATIO,
-        layout::{InlineTextLayoutInput, TextLayout, add_link_to_style_and_font},
+        layout::{
+            InlineTextLayoutInput, LAZY_LAYOUT_EXACT_WIDTH_LINES, LAZY_LAYOUT_MIN_BLOCKS,
+            TextLayout, add_link_to_style_and_font,
+        },
         model::{
             BlockItem, BlockLocation, BlockSpacing, CellLayout, Cursor, Decoration, FrameOffset,
             HiddenBlockConfig, HorizontalRuleConfig, ImageBlockConfig, LaidOutEmbeddedItem,
-            LaidOutTable, LineCount, OffsetMap, Paragraph, ParagraphBlock, ParagraphStyles,
-            RenderLayoutOptions, SelectableTextRun, TableBlockConfig, TableStyle,
-            gutter_expansion_button_types,
+            LaidOutTable, LineCount, LineSource, OffsetMap, Paragraph, ParagraphBlock,
+            ParagraphMetrics, ParagraphStyles, RenderLayoutOptions, SelectableTextRun,
+            TableBlockConfig, TableStyle, gutter_expansion_button_types,
+            hydration::{estimate_paragraph_metrics, has_line_break},
+            parked::{PARK_MIN_RUN, Parker},
         },
     },
 };
@@ -80,9 +85,6 @@ pub(crate) fn layout_mermaid_block_for_test(
 /// - URLs: `http://` or `https://` prefixed paths
 /// - Absolute paths: paths starting with `/`
 /// - Relative paths: all other paths, resolved relative to the document location
-///
-/// Note: Path canonicalization is not available on WASM targets.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_asset_source_relative_to_directory(
     source: &str,
     base_directory: Option<&Path>,
@@ -115,21 +117,6 @@ fn resolve_asset_source(source: &str, base_path: Option<&Path>) -> AssetSource {
     let base_directory = base_path.map(|base| base.parent().unwrap_or(base));
     resolve_asset_source_relative_to_directory(source, base_directory)
         .with_local_file_content_version()
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn resolve_asset_source_relative_to_directory(
-    source: &str,
-    _base_directory: Option<&Path>,
-) -> AssetSource {
-    if source.starts_with("http://") || source.starts_with("https://") {
-        asset_cache::url_source(source)
-    } else {
-        AssetSource::LocalFile {
-            path: source.to_string(),
-            content_version: None,
-        }
-    }
 }
 
 /// Default height multiplier for images when no dimensions are specified.
@@ -173,6 +160,7 @@ pub struct PreciseDelta {
 
 impl PreciseDelta {
     /// The length of the resolved content range in the final buffer.
+    #[cfg(test)]
     pub fn resolved_length(&self) -> CharOffset {
         self.resolved_range
             .end
@@ -612,10 +600,24 @@ impl EditDelta {
 
         let last_task = layout_tasks.len().saturating_sub(1);
 
+        // A large delta (opening a file) lays its plain-text paragraphs out dehydrated; see
+        // `render::model::hydration`. Small edits stay eager.
+        let dehydrate = layout.lazy_capable() && layout_tasks.len() >= LAZY_LAYOUT_MIN_BLOCKS;
+        layout.set_dehydrate_paragraphs(dehydrate);
+        // Dehydrated runs are grouped into compact chunks as each parallel batch lands, so the
+        // per-line items of a whole file never coexist (#1340 P5). Not while hidden ranges are in
+        // play: their boundaries cut the tree at offsets this layout does not control.
+        let mut parker = (dehydrate && layout.parking_enabled() && hidden_ranges.is_empty())
+            .then(|| Parker::new(PARK_MIN_RUN));
+
         // Then, run the tasks in bounded chunks (each chunk in parallel, chunks in sequence),
         // collecting (a) the laid out BlockItems in order and (b) whether or not the last item
         // ends with a newline.
-        let mut block_items = Vec::with_capacity(layout_tasks.len());
+        let mut block_items = if parker.is_some() {
+            Vec::new()
+        } else {
+            Vec::with_capacity(layout_tasks.len())
+        };
         let mut has_trailing_newline = None;
         let mut chunk_start = 0;
 
@@ -648,11 +650,23 @@ impl EditDelta {
                 })
                 .unzip();
 
-            block_items.extend(chunk_items);
+            match parker.as_mut() {
+                Some(parker) => {
+                    for item in chunk_items {
+                        parker.push(item);
+                    }
+                }
+                None => block_items.extend(chunk_items),
+            }
             if let Some(trailing_newline) = chunk_trailing_newline.into_inner() {
                 has_trailing_newline = Some(trailing_newline);
             }
             chunk_start += chunk_len;
+        }
+
+        layout.set_dehydrate_paragraphs(false);
+        if let Some(parker) = parker {
+            block_items = parker.finish();
         }
 
         // Iterate through block_items, and collapse adjacent Hidden items.
@@ -677,6 +691,11 @@ impl EditDelta {
         let has_trailing_newline = has_trailing_newline.unwrap_or(true);
         let rich_text_styles = layout.rich_text_styles();
 
+        let mut block_items = block_items;
+        if dehydrate {
+            measure_widest_dehydrated(&mut block_items, layout);
+        }
+
         LaidOutRenderDelta {
             old_offset: self.old_offset.clone(),
             laid_out_line: block_items,
@@ -690,6 +709,51 @@ impl EditDelta {
                     rich_text_styles.minimum_paragraph_height,
                 )
             }),
+        }
+    }
+}
+
+/// Shapes the widest few dehydrated lines once so their metrics (and therefore the content
+/// width) are exact, then drops their glyphs again. The rest keep their estimated width until
+/// they are hydrated. Lines inside parked chunks are measured the same way and their cached
+/// width in the chunk is replaced by the measurement.
+fn measure_widest_dehydrated(items: &mut [BlockItem], layout: &TextLayout) {
+    // (item index, line within a parked chunk or `None` for a paragraph item, estimated width)
+    let mut candidates: Vec<(usize, Option<usize>, f32)> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            BlockItem::Paragraph(paragraph)
+                if !paragraph.is_hydrated() && !paragraph.metrics().width_exact =>
+            {
+                candidates.push((index, None, paragraph.width().as_f32()));
+            }
+            BlockItem::ParkedLines(chunk) => {
+                candidates.extend(
+                    chunk
+                        .widest_lines(LAZY_LAYOUT_EXACT_WIDTH_LINES)
+                        .into_iter()
+                        .filter(|(width, _)| *width > 0.)
+                        .map(|(width, line)| (index, Some(line), width)),
+                );
+            }
+            _ => {}
+        }
+    }
+    candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    candidates.truncate(LAZY_LAYOUT_EXACT_WIDTH_LINES);
+    for (index, line, _) in candidates {
+        match (&mut items[index], line) {
+            (BlockItem::Paragraph(paragraph), None) => {
+                if let Some(source) = paragraph.line_source().cloned() {
+                    paragraph.hydrate(source.layout(layout));
+                    paragraph.evict();
+                }
+            }
+            (BlockItem::ParkedLines(chunk), Some(line)) => {
+                let frame = chunk.line_source(line).layout(layout);
+                chunk.set_line_width(line, ParagraphMetrics::from_frame(&frame).width.as_f32());
+            }
+            _ => {}
         }
     }
 }
@@ -1116,22 +1180,26 @@ fn layout_text_block(
 
     active_line.next_url_index = 0;
 
+    // Plain text in a lazy-capable (unwrapped) editor keeps its source so it can be dehydrated
+    // and evicted; during a large delta it is built dehydrated.
+    let lazy_style = (layout.lazy_capable()
+        && matches!(text_block.style, BufferBlockStyle::PlainText))
+    .then(|| layout.dehydrate_paragraphs());
+
     for run in &text_block.block {
         let new_line = active_line.layout_run(layout, run, &paragraph_styles);
 
         if new_line && !matches!(text_block.style, BufferBlockStyle::Table { .. }) {
             let offsets = active_line.finish_offsets();
-            paragraphs.push(Paragraph::new(
-                layout.layout_text(
-                    &active_line.text,
-                    &paragraph_styles,
-                    &spacing,
-                    &active_line.style_runs,
-                ),
+            paragraphs.push(build_paragraph(
+                layout,
+                lazy_style,
+                &active_line,
+                &paragraph_styles,
+                spacing,
                 offsets,
                 active_line.content_length,
                 active_line.active_line_url.clone(),
-                spacing,
                 rich_text_styles.minimum_paragraph_height,
             ));
             active_line.reset_for_newline();
@@ -1140,13 +1208,14 @@ fn layout_text_block(
 
     let has_trailing_newline = if !active_line.is_empty() {
         let offsets = active_line.finish_offsets();
-        paragraphs.push(Paragraph::new(
-            layout.layout_text(
-                &active_line.text,
-                &paragraph_styles,
-                &spacing,
-                &active_line.style_runs,
-            ),
+        let content_length = active_line.content_length + 1;
+        let urls = mem::take(&mut active_line.active_line_url);
+        paragraphs.push(build_paragraph(
+            layout,
+            lazy_style,
+            &active_line,
+            &paragraph_styles,
+            spacing,
             offsets,
             // This assumes that every line is ended by a newline, block marker, or
             // block item. Currently, that's true of every paragraph but the last,
@@ -1154,15 +1223,18 @@ fn layout_text_block(
             // a newline character there lets us render the cursor at the end of
             // the buffer and distinguish between the end of the last paragraph and
             // a potential TrailingNewline item.
-            active_line.content_length + 1,
-            active_line.active_line_url,
-            spacing,
+            content_length,
+            urls,
             rich_text_styles.minimum_paragraph_height,
         ));
         false
     } else {
         true
     };
+
+    // `paragraphs` was sized by an overestimate (one slot per run for code blocks); drop the
+    // slack before the vector is retained for the lifetime of the block.
+    paragraphs.shrink_to_fit();
 
     let block_item = match &text_block.style {
         BufferBlockStyle::CodeBlock { code_block_type } => {
@@ -1269,6 +1341,59 @@ fn layout_text_block(
     };
 
     block_item.map(|item| (item, has_trailing_newline))
+}
+
+/// Builds one paragraph from the accumulated line. `lazy_style` is `None` for eager editors;
+/// `Some(false)` keeps the source on an eagerly laid-out paragraph (so it can be evicted later);
+/// `Some(true)` builds it dehydrated with estimated metrics.
+#[allow(clippy::too_many_arguments)]
+fn build_paragraph(
+    layout: &TextLayout,
+    lazy_style: Option<bool>,
+    line: &LayOutArgs,
+    paragraph_styles: &ParagraphStyles,
+    spacing: BlockSpacing,
+    offsets: OffsetMap,
+    content_length: CharOffset,
+    urls: Vec<ParsedUrl>,
+    minimum_height: Option<Pixels>,
+) -> Paragraph {
+    let Some(dehydrate) = lazy_style else {
+        return Paragraph::new(
+            layout.layout_text(&line.text, paragraph_styles, &spacing, &line.style_runs),
+            offsets,
+            content_length,
+            urls,
+            spacing,
+            minimum_height,
+        );
+    };
+    let source = LineSource::new(&line.text, *paragraph_styles, spacing, &line.style_runs);
+    if dehydrate && !has_line_break(&line.text) {
+        let metrics = estimate_paragraph_metrics(
+            &line.text,
+            paragraph_styles,
+            layout.monospace_advance(paragraph_styles),
+        );
+        return Paragraph::dehydrated(
+            source,
+            metrics,
+            offsets,
+            content_length,
+            urls,
+            spacing,
+            minimum_height,
+        );
+    }
+    Paragraph::hydrated_with_source(
+        layout.layout_text(&line.text, paragraph_styles, &spacing, &line.style_runs),
+        source,
+        offsets,
+        content_length,
+        urls,
+        spacing,
+        minimum_height,
+    )
 }
 
 fn layout_mermaid_diagram_block(

@@ -1,0 +1,733 @@
+{
+ "pipeline": 3018380432,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3018380432",
+ "ref": "build/r18ci",
+ "commit": "1159a084f849ea8dc489348bdd165974557dbb81",
+ "created_at": "2026-11-02T15:14:59.662Z",
+ "date": "2026-11-02",
+ "tier": "fix",
+ "pipeline_status": "success",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904893,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "failed",
+   "duration": 2012.811857,
+   "id": 17668904892,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904891,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904890,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17668904889,
+   "runner": null
+  },
+  "app-test-macos": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17668904888,
+   "runner": null
+  },
+  "app-test-linux-x11": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17668904887,
+   "runner": null
+  },
+  "app-test-linux-wayland": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17668904886,
+   "runner": null
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904885,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904884,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904883,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904882,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904881,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-arm64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904880,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904879,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904878,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904877,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904876,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904875,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904874,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904873,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904872,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904871,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904870,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904869,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904868,
+   "runner": null,
+   "note": "not run"
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904867,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904866,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904865,
+   "runner": null,
+   "note": "not run"
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 10.967533,
+   "id": 17668904864,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 11.885814,
+   "id": 17668904863,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904862,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904861,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904860,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17668904859,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 560.698102,
+   "id": 17668904858,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 58.017485,
+   "id": 17668904857,
+   "runner": ""
+  }
+ },
+ "unit": {},
+ "app": {
+  "macos": {
+   "job": "app-test-macos-reuse",
+   "job_id": 17668904892,
+   "status": "failed",
+   "reuse": true,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 7.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "fail",
+     "seconds": 26.9,
+     "detail": [
+      "harness exception: RuntimeError(\"frontmost app is 'Phosphor', not Terminal: refusing to send keys\")",
+      "reference windows left open: Terminal was already running (pid 66832)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "enter_loss_control",
+     "status": "pass",
+     "seconds": 73.1,
+     "detail": [
+      "reference windows left open: Terminal was already running (pid 66832)",
+      "reference Terminal.app (.command via open) gap 0.00s: 0/30 lines missing (merged/lost Enter), injector posted 30 Enters",
+      "reference Terminal.app (.command via open) gap 0.25s: 0/30 lines missing (merged/lost Enter), injector posted 30 Enters"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 64.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 22.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 399.2,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+      "Ctrl-D in cat: file ['helloecho done1 >> cd.txt']",
+      "nested bash not entered (SHLVL lines []): Ctrl-D NOT sent (it would exit the pane's own shell and quit the app)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 199.01 ms includes the input-tool spawn (harness floor 23.075833916664124 ms)",
+      "Ctrl-C: n=28 < 30 samples (smoke/scaled run): numbers are indicative only"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 199.01,
+       "p95": 206.46,
+       "n": 28,
+       "overhead_ms": 5.53,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 23.8,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T163_c71lmo never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 116.0,
+     "detail": [
+      "only 22/30 Enter timings captured",
+      "Enter to command start: Phosphor overhead 10.33 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "reference windows left open: Terminal was already running (pid 66832)",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+      "Enter to command start: n=22 < 30 samples (smoke/scaled run): numbers are indicative only"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 201.17,
+       "p95": 213.46,
+       "n": 22,
+       "overhead_ms": 10.33,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "pass",
+     "seconds": 23.8,
+     "detail": [
+      "key to frame: no reference terminal measured in this session, overhead verdict 'no-reference' (absolute numbers recorded)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 7.76,
+       "p95": 9.44,
+       "n": 52,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "fail",
+     "seconds": 72.4,
+     "detail": [
+      "Key to paint: Phosphor overhead 7.33 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 34.77,
+       "p95": 46.12,
+       "n": 30,
+       "overhead_ms": 7.33,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": 61.3,
+     "detail": [
+      "fish: autosuggestion (a history line sharing the typed prefix) did not change the executed line: expected ['AUTOSUGG_alpha_t180_dmdhfosq', 'AUTOSUGG_beta_t181_71pcqmuw'], got ['AUTOSUGG_alpha_t180_dmdhfosq AUTOSUGG_beta_t181_71pcqmuw']",
+      "fish: nested `fish -c`: expected ['AUTOSUGG_alpha_t180_dmdhfosq', 'AUTOSUGG_beta_t181_71pcqmuw', 't182_w3yyf1p5'], got ['AUTOSUGG_alpha_t180_dmdhfosq AUTOSUGG_beta_t181_71pcqmuw', 't182_w3yyf1p5']",
+      "fish: after exit the pane's bash ran the next command: expected ['t184_tvx03xwu'], got []",
+      "fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 100.9,
+     "detail": [
+      "nu: 12 typed lines: expected ['t185_z46bxitkti', 't186_k3jikfqpwu', 't187_r4te1j9w2g', 't188_uel48ccmwx', 't189_6xvhlycrnd', 't190_tuzpxdosam', 't191_iox6rjkoet', 't192_264l6wm1er', 't193_ojinbk5xld', 't194_fpnf2mvkbn', 't195_49cdx59wi5', 't196_6utuf4v0eq'], got ['t185_z46bxitktit186_k3jikfqpwut187_",
+      "nu: pasted lines + instant Enter: expected ['t197_ubluouqqt5', 't198_0asksdh11n', 't199_rw5sqlujwg', 't200_zw7mz2j4pc'], got ['t198_0asksdh11nt199_rw5sqlujwgt200_zw7mz2j4pc']",
+      "nu: nested nu, exit to the outer nu, next line: expected ['t201_pfec7644', 't202_u7k5zay9', 't203_92kxdxw2'], got ['t201_pfec7644t202_u7k5zay9t203_92kxdxw2']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 6.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 3.9,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "fail",
+     "seconds": 21.3,
+     "detail": [
+      "ts_reader produced no output (python3 missing or app did not run it)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 62.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 7.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": 32.0,
+     "detail": [
+      "Tab+Enter: completed file has 1/12 expected lines",
+      "Tab+Enter ran the UNCOMPLETED line, stray files: ['zzcompl_alpha_u']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 421.8,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times",
+      "`cat > cd.txt` never started (its Enter was lost?): Ctrl-D NOT sent (it would hit the top-level shell)",
+      "nested bash not entered (SHLVL lines []): Ctrl-D NOT sent (it would exit the pane's own shell and quit the app)",
+      "Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 200.96 ms includes the input-tool spawn (harness floor 10.892124846577644 ms)",
+      "Ctrl-C: n=28 < 30 samples (smoke/scaled run): numbers are indicative only"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 200.96,
+       "p95": 212.23,
+       "n": 28,
+       "overhead_ms": 8.33,
+       "budget_ms": 20.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": 23.7,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T79_1ereql never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log)",
+      "remote shell received 0/1 typed-ahead commands exactly (missing 1)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": 118.5,
+     "detail": [
+      "only 20/30 Enter timings captured",
+      "Enter to command start: Phosphor overhead 8.88 ms over Terminal.app (.command via open) exceeds the 2 ms budget",
+      "reference windows left open: Terminal was already running (pid 66832)",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines",
+      "Enter to command start: n=20 < 30 samples (smoke/scaled run): numbers are indicative only"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 198.93,
+       "p95": 212.91,
+       "n": 20,
+       "overhead_ms": 8.88,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "pass",
+     "seconds": 23.8,
+     "detail": [
+      "key to frame: no reference terminal measured in this session, overhead verdict 'no-reference' (absolute numbers recorded)",
+      "key to frame: Phosphor-side keydown to first frame; no same-method reference exists"
+     ],
+     "lat": {
+      "key_to_frame": {
+       "p50": 8.44,
+       "p95": 9.3,
+       "n": 55,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      },
+      "ui_work": {
+       "p50": null,
+       "p95": null,
+       "n": 0,
+       "overhead_ms": null,
+       "budget_ms": 4,
+       "budget_kind": "slow-log",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "pass",
+     "seconds": 71.9,
+     "detail": [
+      "Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"
+     ],
+     "lat": {
+      "key_to_paint": {
+       "p50": 34.4,
+       "p95": 41.75,
+       "n": 30,
+       "overhead_ms": 0.48,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "pass"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": 44.5,
+     "detail": [
+      "fish: after exit the pane's bash ran the next command: expected ['t100_q08s58nv'], got []",
+      "fish_rec.log empty: the fish_postexec hook from config.fish did not run (effect files were still checked)"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 108.7,
+     "detail": [
+      "nu: 12 typed lines: expected ['t101_5gawrd82tg', 't102_6rrp0jiqm0', 't103_86j0rr4tr5', 't104_5x4pvll28j', 't105_6u7inu54vh', 't106_iqof8dlhom', 't107_1uabtoforv', 't108_7ybhvwihqj', 't109_wefgtupr7d', 't110_bfizxpgvra', 't111_hwirzf7408', 't112_tot9id6hlp'], got ['t101_5gawrd82tgt102_6rrp0jiqm0t103_",
+      "nu: pasted lines + instant Enter: expected ['t113_1r8bq8r7q4', 't114_izgxe8x896', 't115_bt2ijejn4v', 't116_xskjy2zhjr'], got ['t113_1r8bq8r7q4t114_izgxe8x896t115_bt2ijejn4vt116_xskjy2zhjr']",
+      "nu: nested nu, exit to the outer nu, next line: expected ['t117_sa8aiy9g', 't118_3b11rx0z', 't119_3dg4cach'], got ['t117_sa8aiy9gt118_3b11rx0z']",
+      "nu: after exit the pane's bash ran the next command: expected ['t121_ppg9wkhc'], got []"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 6.3,
+     "detail": [],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/junit.xml",
+    "macos/results.json",
+    "macos/summary.md",
+    "macos/reused_build.json"
+   ],
+   "meta": {
+    "platform": "macos",
+    "backend": "mac",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "1159a084",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 14,
+    "fail": 14,
+    "skip": 0
+   },
+   "reused_build": {
+    "reused_build": {
+     "job_id": 17667172373,
+     "job_name": "build-macos-arm64",
+     "pipeline_id": "3018144637",
+     "commit": "e01e2afad5f0ec958a271cfe949eed8bdc56fe8b",
+     "this_pipeline": "3018380432",
+     "this_commit": "1159a084f849ea8dc489348bdd165974557dbb81",
+     "fetched": "local cache (/Users/<user>/.cache/phosphor-ci/builds/macos/17667172373)"
+    }
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_key_loss_control_FAIL.png",
+    "shots/terminal_ctrl_c_d_FAIL.png",
+    "shots/terminal_ssh_connect_typing_FAIL.png",
+    "shots/terminal_latency_enter_FAIL.png",
+    "shots/terminal_latency_paint_FAIL.png",
+    "shots/terminal_shell_fish_FAIL.png",
+    "shots/terminal_shell_nu_FAIL.png",
+    "shots/agent_cadence_FAIL.png",
+    "shots/agent_tab_enter_FAIL.png",
+    "shots/agent_ctrl_c_d_FAIL.png",
+    "shots/agent_ssh_connect_typing_FAIL.png",
+    "shots/agent_latency_enter_FAIL.png",
+    "shots/agent_shell_fish_FAIL.png",
+    "shots/agent_shell_nu_FAIL.png"
+   ]
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 46,
+  "warnings_by_crate": {
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 21,
+   "warp (lib test)": 18
+  },
+  "warning_lines_by_kind": {
+   "unused import": 78,
+   "unused imports": 15,
+   "use of deprecated type alias": 8,
+   "function": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 560.698102
+ }
+}

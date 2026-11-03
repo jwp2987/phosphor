@@ -105,6 +105,156 @@ pub fn convert_persisted_conversation_to_ai_conversation_with_metadata(
     }
 }
 
+/// Reads one conversation from the database. Blocking: takes the connection mutex and does the
+/// query, so it must run off the UI thread.
+#[cfg(feature = "local_fs")]
+pub(super) fn read_conversation_from_db(
+    conn: Option<std::sync::Arc<std::sync::Mutex<diesel::SqliteConnection>>>,
+    conversation_id: &AIConversationId,
+) -> Option<AIConversation> {
+    let persisted = conn.and_then(|conn| {
+        let mut conn = conn.lock().ok()?;
+        let id_str = conversation_id.to_string();
+        log::info!("Loading conversation {id_str} from db");
+        match read_agent_conversation_by_id(&mut conn, &id_str) {
+            Ok(Some(conv)) => Some(conv),
+            Ok(None) => {
+                log::warn!("No AgentConversation found with id {id_str}");
+                None
+            }
+            Err(e) => {
+                log::warn!("Failed to read AgentConversation {id_str}: {e:?}");
+                None
+            }
+        }
+    })?;
+    convert_persisted_conversation_to_ai_conversation(persisted)
+}
+
+/// A small fixed pool for conversation loads (#1363). Every load serialises on the one SQLite
+/// connection mutex, so more threads than this only add stacks and context switches; extra loads
+/// queue (in order) instead of each getting a thread.
+#[cfg(feature = "local_fs")]
+pub(super) mod load_pool {
+    use std::sync::mpsc::{Sender, channel};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    /// Worker threads; at most this many conversation loads run at once.
+    pub(in super::super) const MAX_LOAD_THREADS: usize = 2;
+
+    pub(super) type Job = Box<dyn FnOnce() + Send + 'static>;
+
+    static POOL: OnceLock<Result<Sender<Job>, String>> = OnceLock::new();
+
+    pub(super) fn submit(job: Job) -> Result<(), String> {
+        let pool = POOL.get_or_init(|| start(MAX_LOAD_THREADS));
+        match pool {
+            Ok(tx) => tx.send(job).map_err(|e| e.to_string()),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// Loads in flight, by key. A request for a key that is already being loaded joins that load
+    /// instead of starting a second read and restore (#1370).
+    pub(in super::super) struct InFlight<K, V> {
+        map: Arc<Mutex<std::collections::HashMap<K, SharedLoad<V>>>>,
+    }
+
+    /// The shared slot a load resolves. The value is wrapped in `Arc<Mutex<_>>` so the shared
+    /// future (and the registry holding it) is `Send + Sync` for any `V: Send`.
+    type Slot<V> = std::sync::Arc<Mutex<V>>;
+
+    type SharedLoad<V> = futures::future::Shared<futures::future::BoxFuture<'static, Slot<V>>>;
+
+    pub(in super::super) type Loading<V> = futures::future::BoxFuture<'static, V>;
+
+    impl<K, V> InFlight<K, V>
+    where
+        K: std::hash::Hash + Eq + Clone + Send + 'static,
+        V: Clone + Default + Send + 'static,
+    {
+        pub(in super::super) fn new() -> Self {
+            Self {
+                map: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            }
+        }
+
+        /// The future of the load for `key`: the one already in flight, or a new one started by
+        /// `run`. `run` receives a `finish` callback it must call exactly once, from wherever the
+        /// load executes, with the loaded value; it retires the entry and resolves every joiner.
+        pub(in super::super) fn join_or_start(
+            &self,
+            key: K,
+            run: impl FnOnce(Box<dyn FnOnce(V) + Send>) -> Result<(), String>,
+        ) -> Result<Loading<V>, String> {
+            use futures::FutureExt as _;
+            let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+            let join = |shared: SharedLoad<V>| -> Loading<V> {
+                shared
+                    .map(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).clone())
+                    .boxed()
+            };
+            if let Some(existing) = map.get(&key) {
+                return Ok(join(existing.clone()));
+            }
+            let (tx, rx) = futures::channel::oneshot::channel::<Slot<V>>();
+            // A load that never finishes (its `run` failed, or the callback was dropped) resolves
+            // its joiners with `V::default()` (an absent result) instead of panicking them.
+            let shared = rx
+                .map(|r| r.unwrap_or_else(|_| std::sync::Arc::new(Mutex::new(V::default()))))
+                .boxed()
+                .shared();
+            map.insert(key.clone(), shared.clone());
+            // `run` may finish synchronously (the callback locks this same registry), so the lock
+            // must not be held across it. The entry is already registered, so a request arriving
+            // meanwhile joins it rather than starting a second load.
+            drop(map);
+            let registry = self.map.clone();
+            let finish_key = key.clone();
+            let finish = Box::new(move |value: V| {
+                registry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&finish_key);
+                let _ = tx.send(std::sync::Arc::new(Mutex::new(value)));
+            });
+            if let Err(e) = run(finish) {
+                self.map
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&key);
+                return Err(e);
+            }
+            Ok(join(shared))
+        }
+    }
+
+    pub(super) fn start(threads: usize) -> Result<Sender<Job>, String> {
+        let (tx, rx) = channel::<Job>();
+        let rx = Arc::new(Mutex::new(rx));
+        for i in 0..threads {
+            let rx = rx.clone();
+            std::thread::Builder::new()
+                .name(format!("conversation-load-{i}"))
+                .spawn(move || {
+                    loop {
+                        // The lock is held only while waiting for the next job.
+                        let job = match rx.lock() {
+                            Ok(rx) => rx.recv(),
+                            Err(_) => return,
+                        };
+                        match job {
+                            Ok(job) => job(),
+                            Err(_) => return,
+                        }
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(tx)
+    }
+}
+
 /// Boxes a future with the right type for the platform.
 /// On WASM, futures must not implement Send.
 fn box_future<F>(f: F) -> warpui::r#async::BoxFuture<'static, Option<LoadedConversationData>>
@@ -151,14 +301,103 @@ impl BlocklistAIHistoryModel {
         };
 
         if metadata.has_local_data {
-            // Load from local database synchronously
-            let result = self
-                .load_conversation_from_db(&conversation_id)
-                .map(|c| LoadedConversationData::Oz(Box::new(c)));
-            box_future(futures::future::ready(result))
+            // Read from the local database on a worker thread so the (possibly multi-MB) read and
+            // the wait on the shared connection mutex never run on the UI thread. Callers `await`
+            // this future through `ctx.spawn`, so the result is applied on the main thread.
+            #[cfg(feature = "local_fs")]
+            {
+                let loading = self.start_db_load(conversation_id);
+                return match loading {
+                    Ok(loading) => box_future(
+                        loading.map(|c| c.map(|c| LoadedConversationData::Oz(Box::new(c)))),
+                    ),
+                    Err(e) => {
+                        log::warn!("Failed to start a conversation load worker: {e}");
+                        box_future(futures::future::ready(None))
+                    }
+                };
+            }
+            #[cfg(not(feature = "local_fs"))]
+            {
+                box_future(futures::future::ready(None))
+            }
         } else {
             log::warn!("Cannot load conversation {conversation_id}: no local data");
             box_future(futures::future::ready(None))
+        }
+    }
+
+    /// Starts (or joins) the off-thread read of one conversation on the load pool. Never blocks
+    /// the caller; the future resolves when the pool thread has read and converted it.
+    #[cfg(feature = "local_fs")]
+    pub(super) fn start_db_load(
+        &self,
+        conversation_id: AIConversationId,
+    ) -> Result<load_pool::Loading<Option<AIConversation>>, String> {
+        let conn = self.db_connection.clone();
+        static IN_FLIGHT: std::sync::OnceLock<
+            load_pool::InFlight<AIConversationId, Option<AIConversation>>,
+        > = std::sync::OnceLock::new();
+        let in_flight = IN_FLIGHT.get_or_init(load_pool::InFlight::new);
+        in_flight.join_or_start(conversation_id, move |finish| {
+            load_pool::submit(Box::new(move || {
+                finish(read_conversation_from_db(conn, &conversation_id))
+            }))
+        })
+    }
+
+    /// #1363: hydrates the orchestration children whose rows carried no tasks at startup. The
+    /// reads run on the conversation load pool (never on the UI thread); each child is inserted
+    /// when it lands. A child that was removed meanwhile (its parent closed), or that was already
+    /// restored by a pane, is left alone.
+    pub fn hydrate_pending_orchestration_children(&mut self, ctx: &mut warpui::ModelContext<Self>) {
+        let pending = std::mem::take(&mut self.pending_child_hydrations);
+        for conversation_id in pending {
+            if self.conversations_by_id.contains_key(&conversation_id) {
+                continue;
+            }
+            #[cfg(feature = "local_fs")]
+            {
+                let loading = match self.start_db_load(conversation_id) {
+                    Ok(loading) => loading,
+                    Err(e) => {
+                        log::warn!("Failed to start an orchestration child load: {e}");
+                        continue;
+                    }
+                };
+                ctx.spawn(loading, move |model, loaded, _| {
+                    model.finish_orchestration_child_hydration(conversation_id, loaded);
+                });
+            }
+            #[cfg(not(feature = "local_fs"))]
+            let _ = (conversation_id, &ctx);
+        }
+    }
+
+    /// Applies a landed child load. Never overwrites a conversation a pane restored in the
+    /// meantime, and drops the result if the child was removed from the parent index (parent or
+    /// child closed before the read finished).
+    pub(super) fn finish_orchestration_child_hydration(
+        &mut self,
+        conversation_id: AIConversationId,
+        loaded: Option<AIConversation>,
+    ) {
+        let still_a_child = self
+            .children_by_parent
+            .values()
+            .any(|ids| ids.contains(&conversation_id));
+        if !still_a_child || self.conversations_by_id.contains_key(&conversation_id) {
+            return;
+        }
+        match loaded {
+            Some(conversation) => {
+                self.conversations_by_id
+                    .insert(conversation_id, conversation);
+            }
+            None => log::warn!(
+                "Failed to eagerly hydrate orchestration child {conversation_id}; \
+                 pill bar / name resolution will fall back to lazy materialization",
+            ),
         }
     }
 
@@ -173,54 +412,6 @@ impl BlocklistAIHistoryModel {
         _server_token: &ServerConversationToken,
     ) -> warpui::r#async::BoxFuture<'static, Option<LoadedConversationData>> {
         box_future(futures::future::ready(None))
-    }
-
-    /// Loads a conversation from local DB and returns it.
-    /// This is a private helper method. Use `get_load_conversation_data_future` instead.
-    ///
-    /// Note: This does NOT insert the conversation into memory. Callers are responsible
-    /// for inserting the loaded conversation if needed.
-    pub(super) fn load_conversation_from_db(
-        &self,
-        conversation_id: &AIConversationId,
-    ) -> Option<AIConversation> {
-        // First check if the conversation is in memory
-        if let Some(conversation) = self.conversations_by_id.get(conversation_id) {
-            return Some(conversation.clone());
-        }
-
-        // If not in memory, try to load from the database
-        #[cfg(feature = "local_fs")]
-        {
-            let persisted_ai_conversation = self.db_connection.clone().and_then(|conn| {
-                let mut conn = conn.lock().ok()?;
-
-                let id_str = conversation_id.to_string();
-                log::info!("Loading conversation {id_str} from db");
-                match read_agent_conversation_by_id(&mut conn, &id_str) {
-                    Ok(Some(conv)) => Some(conv),
-                    Ok(None) => {
-                        log::warn!("No AgentConversation found with id {id_str}");
-                        None
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to read AgentConversation {id_str}: {e:?}");
-                        None
-                    }
-                }
-            });
-
-            // Convert the persisted conversation to an AIConversation
-            if let Some(persisted_conversation) = persisted_ai_conversation {
-                if let Some(conversation) =
-                    convert_persisted_conversation_to_ai_conversation(persisted_conversation)
-                {
-                    return Some(conversation);
-                }
-            }
-        }
-
-        None
     }
 
     /// Initializes historical conversations from restored agent conversations.
@@ -353,8 +544,11 @@ impl BlocklistAIHistoryModel {
                     // historical conversations still load lazily. A
                     // subsequent `restore_conversations` call replaces this
                     // entry idempotently.
+                    // #1363: a row without tasks is read off the UI thread afterwards
+                    // (`hydrate_pending_orchestration_children`), never here.
                     let child_conversation = if agent_conv.tasks.is_empty() {
-                        self.load_conversation_from_db(&conversation_id)
+                        self.pending_child_hydrations.push(conversation_id);
+                        return None;
                     } else {
                         convert_persisted_conversation_to_ai_conversation_with_metadata(
                             agent_conv.clone(),
@@ -437,3 +631,7 @@ impl BlocklistAIHistoryModel {
         self.all_conversations_metadata = collected;
     }
 }
+
+#[cfg(all(test, feature = "local_fs"))]
+#[path = "conversation_loader_tests.rs"]
+mod tests;

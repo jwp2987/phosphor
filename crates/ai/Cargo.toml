@@ -64,6 +64,9 @@ unicode-width.workspace = true
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-fs.workspace = true
 arborium.workspace = true
@@ -79,6 +82,7 @@ serial_test = "0.8.0"
 tempfile.workspace = true
 virtual-fs.workspace = true
 warp_core = { workspace = true, features = ["test-util"] }
+warpui = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 anyhow.workspace = true

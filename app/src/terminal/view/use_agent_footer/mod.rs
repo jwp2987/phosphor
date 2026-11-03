@@ -9,8 +9,8 @@ use crate::ai::blocklist::agent_view::agent_input_footer::{
     AgentInputFooter, AgentInputFooterEvent,
 };
 use crate::terminal::cli_agent_sessions::{
-    event::{CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType},
     CLIAgentInputEntrypoint, CLIAgentSessionsModel,
+    event::{CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType},
 };
 use base64::Engine;
 use warpui::clipboard::{ClipboardContent, ImageData};
@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use crate::util::image::{infer_mime_type, MAX_IMAGE_SIZE_BYTES_FOR_CLI_AGENT, MIME_SNIFF_BYTES};
+use crate::util::image::{MAX_IMAGE_SIZE_BYTES_FOR_CLI_AGENT, MIME_SNIFF_BYTES, infer_mime_type};
 
 use warpui::r#async::Timer;
 
@@ -39,20 +39,20 @@ use warp_core::{
     ui::{
         appearance::Appearance,
         color::contrast::{
-            high_enough_contrast, pick_best_foreground_color, MinimumAllowedContrast,
+            MinimumAllowedContrast, high_enough_contrast, pick_best_foreground_color,
         },
-        theme::{color::internal_colors, Fill as ThemeFill},
+        theme::{Fill as ThemeFill, color::internal_colors},
     },
 };
 
 use warpui::{
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
     elements::{
         ChildView, Container, CrossAxisAlignment, Empty, Expanded, Flex, MainAxisSize,
         ParentElement,
     },
     keymap::Keystroke,
-    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
-    ViewContext, ViewHandle,
 };
 
 use crate::{
@@ -65,8 +65,8 @@ use crate::{
     },
     terminal::cli_agent_sessions::CLIAgentRichInputCloseReason,
     terminal::{
-        model_events::{ModelEvent, ModelEventDispatcher},
         TerminalModel,
+        model_events::{ModelEvent, ModelEventDispatcher},
     },
     ui_components::{blended_colors, icons::Icon},
     view_components::action_button::{
@@ -78,6 +78,18 @@ use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PAST
 
 use super::{TerminalAction, TerminalView};
 use crate::terminal::view::block_banner::WarpificationMode;
+
+// WHY THESE THREE ARE STILL TIMERS (#1364, owner events-not-timers rule):
+// the three delays below pace writes into a third-party TUI's stdin, and no event exists to
+// sequence them on. A CLI agent gives no acknowledgement that it has consumed a mode-switch
+// prefix, a bracketed paste, or an image-paste keystroke (the clipboard read for the image
+// happens inside the agent, invisibly to us). The only observable candidate, "the agent
+// produced pty output after our write", is not a usable signal: agents such as Claude Code or
+// Copilot redraw continuously (spinners, status lines), so output arriving says nothing about
+// whether the write was processed, and gating on it would release the Enter/next paste EARLIER
+// than the fixed delay does. The CLI-agent session events (prompt submit, stop, ...) fire only
+// after the submit, so they cannot sequence it. These stay as per-agent pacing delays, not
+// give-up nets; if an agent ever exposes an input-consumed acknowledgement, replace them.
 
 /// Small delay inserted between separate PTY writes to CLI agents.
 /// (Used both for the mode-switch prefix split and for the `DelayedEnter`
@@ -157,6 +169,15 @@ fn rich_input_submit_strategy(agent: CLIAgent) -> RichInputSubmitStrategy {
         | CLIAgent::PhosphorTui
         | CLIAgent::Unknown => RichInputSubmitStrategy::Inline,
     }
+}
+
+/// Whether submitting with `strategy` spreads its writes over timers (a delayed Enter), so keys
+/// typed meanwhile could land between them (#1353 phase 3).
+fn strategy_is_paced(strategy: RichInputSubmitStrategy) -> bool {
+    matches!(
+        strategy,
+        RichInputSubmitStrategy::DelayedEnter | RichInputSubmitStrategy::BracketedPasteDelayedEnter
+    )
 }
 
 /// The "Use agent" shortcut the footer and the SSH Warpifying banner display. This is the one
@@ -837,8 +858,15 @@ impl TerminalView {
         //
         // Only applied to known ASCII prefixes to avoid splitting multi-byte
         // UTF-8 characters.
-        if text_bytes.len() > 1 && CLI_AGENT_MODE_SWITCH_PREFIXES.contains(&text_bytes[0]) {
-            self.write_user_bytes_to_pty(vec![text_bytes[0]], ctx);
+        let has_prefix =
+            text_bytes.len() > 1 && CLI_AGENT_MODE_SWITCH_PREFIXES.contains(&text_bytes[0]);
+        // #1353 phase 3: the paced writes below are ONE submit. Keys the user types while it is
+        // still being written wait behind it instead of landing between its pieces.
+        if has_prefix || !images.is_empty() || strategy_is_paced(strategy) {
+            self.begin_cli_submit_gate(ctx);
+        }
+        if has_prefix {
+            self.write_cli_submit_bytes(vec![text_bytes[0]], ctx);
             let rest = text_bytes[1..].to_vec();
             ctx.spawn(
                 Timer::after(CLI_AGENT_PTY_WRITE_DELAY),
@@ -878,6 +906,9 @@ impl TerminalView {
         }
 
         let strategy = rich_input_submit_strategy(agent);
+        if strategy_is_paced(strategy) {
+            self.begin_cli_submit_gate(ctx);
+        }
         self.write_cli_agent_text_then_submit(text_bytes, strategy, ctx);
     }
 
@@ -899,6 +930,7 @@ impl TerminalView {
     ) {
         // Bail if the rich input session was closed before we got here.
         if !self.has_active_cli_agent_input_session(ctx) {
+            self.end_cli_submit_gate(ctx);
             return;
         }
 
@@ -940,7 +972,7 @@ impl TerminalView {
                                 }]),
                                 ..Default::default()
                             });
-                            me.write_user_bytes_to_pty(vec![0x16], ctx);
+                            me.write_cli_submit_bytes(vec![0x16], ctx);
                             true
                         })
                         .await;
@@ -957,6 +989,7 @@ impl TerminalView {
             },
             move |me, ok, ctx| {
                 if !ok || !me.has_active_cli_agent_input_session(ctx) {
+                    me.end_cli_submit_gate(ctx);
                     return;
                 }
                 me.write_cli_agent_text_then_submit(text_bytes, strategy, ctx);
@@ -1083,8 +1116,9 @@ impl TerminalView {
             RichInputSubmitStrategy::Inline => {
                 let mut bytes = text_bytes;
                 bytes.extend_from_slice(b"\r");
-                self.write_user_bytes_to_pty(bytes, ctx);
+                self.write_cli_submit_bytes(bytes, ctx);
                 self.maybe_close_rich_input_after_submit(ctx);
+                self.end_cli_submit_gate(ctx);
             }
             RichInputSubmitStrategy::BracketedPaste => {
                 let mut bytes = Vec::with_capacity(
@@ -1093,17 +1127,19 @@ impl TerminalView {
                 bytes.extend_from_slice(BRACKETED_PASTE_START);
                 bytes.extend_from_slice(&text_bytes);
                 bytes.extend_from_slice(BRACKETED_PASTE_END);
-                self.write_user_bytes_to_pty(bytes, ctx);
-                self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                self.write_cli_submit_bytes(bytes, ctx);
+                self.write_cli_submit_bytes(b"\r".to_vec(), ctx);
                 self.maybe_close_rich_input_after_submit(ctx);
+                self.end_cli_submit_gate(ctx);
             }
             RichInputSubmitStrategy::DelayedEnter => {
-                self.write_user_bytes_to_pty(text_bytes, ctx);
+                self.write_cli_submit_bytes(text_bytes, ctx);
                 ctx.spawn(
                     Timer::after(CLI_AGENT_PTY_WRITE_DELAY),
                     move |me, _, ctx| {
-                        me.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                        me.write_cli_submit_bytes(b"\r".to_vec(), ctx);
                         me.maybe_close_rich_input_after_submit(ctx);
+                        me.end_cli_submit_gate(ctx);
                     },
                 );
             }
@@ -1114,12 +1150,13 @@ impl TerminalView {
                 bytes.extend_from_slice(BRACKETED_PASTE_START);
                 bytes.extend_from_slice(&text_bytes);
                 bytes.extend_from_slice(BRACKETED_PASTE_END);
-                self.write_user_bytes_to_pty(bytes, ctx);
+                self.write_cli_submit_bytes(bytes, ctx);
                 ctx.spawn(
                     Timer::after(CLI_AGENT_BRACKETED_PASTE_ENTER_DELAY),
                     move |me, _, ctx| {
-                        me.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                        me.write_cli_submit_bytes(b"\r".to_vec(), ctx);
                         me.maybe_close_rich_input_after_submit(ctx);
+                        me.end_cli_submit_gate(ctx);
                     },
                 );
             }
@@ -1404,7 +1441,6 @@ impl UseAgentToolbar {
     }
 
     /// Returns whether there's a current CLI agent (like Claude Code).
-    #[cfg(feature = "voice_input")]
     pub fn has_cli_agent(&self, app: &AppContext) -> bool {
         self.cli_agent(app).is_some()
     }
@@ -1543,8 +1579,10 @@ impl TypedActionView for UseAgentToolbar {
                     .should_render_use_agent_footer_for_user_commands
                     .set_value(false, ctx)
                 {
-                    report_error!(anyhow!("{e:?}")
-                        .context("Failed to set `ShouldRenderUseAgentToolbarForUserCommands`"));
+                    report_error!(
+                        anyhow!("{e:?}")
+                            .context("Failed to set `ShouldRenderUseAgentToolbarForUserCommands`")
+                    );
                 }
             });
         }

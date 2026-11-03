@@ -32,11 +32,12 @@ use super::pty_controller::{EventLoopSender, PtyController};
 /// can be measured when the flow reaches `SessionConnected`.
 enum SshInitState {
     Idle,
-    /// Stash held, `check_binary` in flight.
+    /// Stash held, `check_binary` in flight (and, with #1266, a speculative connect).
     AwaitingCheck {
         session_info: SessionInfo,
         transport: SshTransport,
         setup_start: Instant,
+        speculative: SpeculativeConnect,
     },
     /// Stash held, choice block showing.
     AwaitingUserChoice {
@@ -45,23 +46,52 @@ enum SshInitState {
         setup_start: Instant,
     },
     /// Stash held, `install_binary` in flight.
-    /// `for_update` is `true` when reinstalling over an existing install
-    /// (auto-update path) and `false` for a fresh install.
     AwaitingInstall {
         session_id: SessionId,
         session_info: SessionInfo,
         transport: SshTransport,
         setup_start: Instant,
-        #[allow(dead_code)]
-        for_update: bool,
     },
-    /// Stash held, `connect_session` in flight. Bootstrap is flushed only
-    /// once `SessionConnected` arrives (or on connection failure).
+    /// `connect_session` in flight. The bootstrap is flushed when the binary check passes
+    /// (#1172, `bootstrap_flushed`), or otherwise once `SessionConnected` arrives (or on
+    /// connection failure).
     AwaitingConnect {
         session_id: SessionId,
         session_info: SessionInfo,
         setup_start: Instant,
+        /// The stashed bootstrap was already written to the PTY (see
+        /// `early_bootstrap_flush_enabled`), so no later path may write it again.
+        bootstrap_flushed: bool,
+        /// The connect being waited for is the speculative one (#1266): the binary check passed
+        /// while it was still in flight, so no second connect was started. If it fails, a
+        /// probe-driven connect runs then.
+        speculative: bool,
     },
+}
+
+/// Where a session's speculative connect (#1266) stands while its binary check runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpeculativeConnect {
+    /// Not started (switched off).
+    Off,
+    InFlight,
+    /// It did not succeed; the probe-driven setup proceeds as if it had never run.
+    Failed,
+}
+
+/// What `on_binary_check_complete` does with a passed check (#1266): start the probe-driven
+/// connect, or keep waiting for the speculative one that is still in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CheckPassedAction {
+    StartConnect,
+    WaitForSpeculativeConnect,
+}
+
+fn check_passed_action(speculative: SpeculativeConnect) -> CheckPassedAction {
+    match speculative {
+        SpeculativeConnect::InFlight => CheckPassedAction::WaitForSpeculativeConnect,
+        SpeculativeConnect::Off | SpeculativeConnect::Failed => CheckPassedAction::StartConnect,
+    }
 }
 
 /// Per-pane orchestrator that defers the bootstrap script write for SSH sessions,
@@ -81,6 +111,10 @@ pub struct RemoteServerController<T: EventLoopSender> {
     /// Outcome of the preinstall check from the binary check phase,
     /// used for telemetry on the supported path.
     preinstall_check: Option<PreinstallCheckResult>,
+    /// The current ssh init's bootstrap has been written to the PTY (#1172). Makes a second
+    /// write impossible by construction: every path that releases the stash goes through
+    /// `flush_stashed_bootstrap`, which is a no-op once this is set. Reset per ssh init.
+    bootstrap_written: bool,
 }
 
 impl<T: EventLoopSender> Entity for RemoteServerController<T> {
@@ -133,8 +167,12 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             RemoteServerManagerEvent::SessionConnectionFailed { session_id, .. } => {
                 me.on_session_connection_failed(*session_id, ctx);
             }
+            RemoteServerManagerEvent::SessionSpeculativeConnectFailed { session_id } => {
+                me.on_speculative_connect_failed(*session_id, ctx);
+            }
             RemoteServerManagerEvent::SessionConnecting { .. }
             | RemoteServerManagerEvent::SessionDisconnected { .. }
+            | RemoteServerManagerEvent::SessionConnectionLost { .. }
             | RemoteServerManagerEvent::SessionReconnected { .. }
             | RemoteServerManagerEvent::SessionDeregistered { .. }
             | RemoteServerManagerEvent::HostConnected { .. }
@@ -168,12 +206,17 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             did_install: false,
             remote_platform: None,
             preinstall_check: None,
+            bootstrap_written: false,
         }
     }
 
     /// Extracts the `SessionInfo` from the stash and writes the bootstrap
     /// script to the PTY via `PtyController::initialize_shell`.
     fn flush_stashed_bootstrap(&mut self, session_info: SessionInfo, ctx: &mut ModelContext<Self>) {
+        if self.bootstrap_written {
+            return;
+        }
+        self.bootstrap_written = true;
         match self.pty_controller.upgrade(ctx) { Some(pty) => {
             pty.update(ctx, |pty, ctx| {
                 pty.initialize_shell(&session_info, ctx);
@@ -188,6 +231,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         let IsLegacySSHSession::Yes {
             socket_path,
             external_control_master,
+            ..
         } = &info.is_legacy_ssh_session
         else {
             return;
@@ -209,34 +253,162 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             | SshInitState::AwaitingInstall {
                 session_info: old_info,
                 ..
-            }
-            | SshInitState::AwaitingConnect {
-                session_info: old_info,
-                ..
             } => {
                 self.flush_stashed_bootstrap(old_info, ctx);
             }
+            SshInitState::AwaitingConnect {
+                session_info: old_info,
+                bootstrap_flushed,
+                ..
+            } => {
+                if !bootstrap_flushed {
+                    self.flush_stashed_bootstrap(old_info, ctx);
+                }
+            }
         }
+        // A new ssh init: the previous one's stash was released above, so its write flag ends.
+        self.bootstrap_written = false;
         // ControlMaster ownership is driven by the bootstrap SSH hook's
         // `external_control_master` flag (parsed from the DCS hook into
         // `IsLegacySSHSession::Yes`). Warp owns the master only when the
         // wrapper created it, i.e. when the flag is `false`.
         let transport = SshTransport::new(
-            socket_path,
+            socket_path.clone(),
             self.auth_context.clone(),
             warp_owns_control_master,
         );
         self.did_install = false;
         self.remote_platform = None;
         self.preinstall_check = None;
+        // #1266: on a host that has the extension, the connect is what the session is waiting
+        // for, and the probes only confirm what the connect proves by succeeding. Start both;
+        // whichever lands first flushes the bootstrap. A failed speculative connect costs one
+        // ssh exec and changes nothing: the probes decide as before.
+        let speculative = if speculative_connect_enabled() {
+            let connection_label = connection_label_for_session_info(&info);
+            let speculative_transport = SshTransport::new(
+                socket_path,
+                self.auth_context.clone(),
+                warp_owns_control_master,
+            );
+            let auth_context = self.auth_context.clone();
+            RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
+                mgr.connect_session_speculative(
+                    session_id,
+                    speculative_transport,
+                    auth_context,
+                    Some(connection_label),
+                    ctx,
+                );
+            });
+            SpeculativeConnect::InFlight
+        } else {
+            SpeculativeConnect::Off
+        };
+        // #1172 (proposal 1): a host that already proved to have the extension this app session
+        // gets its bootstrap NOW; the binary check runs behind it instead of holding the remote
+        // shell idle for a mux round trip. The stash is still kept: a check that then says
+        // absent / old / unsupported / failed runs the same install, prompt and fallback paths
+        // as ever, and `bootstrap_written` stops any of them writing the script a second time.
+        let host_key = connection_label_for_session_info(&info);
+        if early_flush_known_hosts_enabled()
+            && !info.hostname.is_empty()
+            && known_extension_hosts().contains(&host_key)
+        {
+            self.flush_stashed_bootstrap(info.clone(), ctx);
+            log::info!(
+                "remote-server bootstrap flushed immediately for {host_key} (extension known \
+                 present); binary check runs behind it for session {session_id:?}"
+            );
+        }
         self.state = SshInitState::AwaitingCheck {
             session_info: info,
             transport: transport.clone(),
             setup_start: Instant::now(),
+            speculative,
         };
         RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
             mgr.check_binary(session_id, transport, ctx);
         });
+    }
+
+    /// The speculative connect did not succeed (#1266). While the check is still running, the
+    /// passed-check path later starts a probe-driven connect as if nothing had been tried;
+    /// if the check already passed and was waiting for this connect, that connect starts now.
+    fn on_speculative_connect_failed(
+        &mut self,
+        session_id: SessionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match &mut self.state {
+            SshInitState::AwaitingCheck {
+                session_info,
+                speculative,
+                ..
+            } if session_info.session_id == session_id => {
+                *speculative = SpeculativeConnect::Failed;
+            }
+            SshInitState::AwaitingConnect {
+                session_id: expected,
+                speculative: true,
+                ..
+            } if *expected == session_id => {
+                let SshInitState::AwaitingConnect {
+                    session_id,
+                    session_info,
+                    setup_start,
+                    bootstrap_flushed,
+                    ..
+                } = std::mem::replace(&mut self.state, SshInitState::Idle)
+                else {
+                    unreachable!("just matched AwaitingConnect above");
+                };
+                let IsLegacySSHSession::Yes {
+                    socket_path,
+                    external_control_master,
+                    ..
+                } = &session_info.is_legacy_ssh_session
+                else {
+                    return;
+                };
+                let socket_path = socket_path.clone();
+                let owns_control_master = !external_control_master;
+                let connection_label = connection_label_for_session_info(&session_info);
+                self.state = SshInitState::AwaitingConnect {
+                    session_id,
+                    session_info,
+                    setup_start,
+                    bootstrap_flushed,
+                    speculative: false,
+                };
+                self.connect_session_for_current_identity(
+                    session_id,
+                    socket_path,
+                    owns_control_master,
+                    connection_label,
+                    ctx,
+                );
+            }
+            SshInitState::Idle
+            | SshInitState::AwaitingCheck { .. }
+            | SshInitState::AwaitingUserChoice { .. }
+            | SshInitState::AwaitingInstall { .. }
+            | SshInitState::AwaitingConnect { .. } => {}
+        }
+    }
+
+    /// Abandons the speculative connect (#1266) before a path that will install, skip or fail:
+    /// a connect landing later must not install a client over that decision.
+    fn cancel_speculative_connect(
+        session_id: SessionId,
+        speculative: SpeculativeConnect,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if speculative == SpeculativeConnect::InFlight {
+            RemoteServerManager::handle(ctx).update(ctx, |mgr, _ctx| {
+                mgr.cancel_speculative_connect(session_id);
+            });
+        }
     }
 
     fn on_binary_check_complete(
@@ -261,6 +433,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             session_info,
             transport,
             setup_start,
+            speculative,
         } = std::mem::replace(&mut self.state, SshInitState::Idle)
         else {
             unreachable!("just matched AwaitingCheck above");
@@ -282,7 +455,9 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                  ({:?}); falling back to legacy SSH",
                 check.status
             );
+            known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
             send_unsupported_telemetry(self.remote_platform.as_ref(), check, ctx);
+            Self::cancel_speculative_connect(session_id, speculative, ctx);
             RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
                 mgr.mark_setup_unsupported(session_id, reason, ctx);
             });
@@ -295,20 +470,45 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 let socket_path = transport.socket_path().clone();
                 let owns_control_master = transport.owns_control_master();
                 let connection_label = connection_label_for_session_info(&session_info);
+                // #1172: the binary is there, so the connect below is what the bootstrap was
+                // waiting for -- and the remote shell needs hundreds of ms to read and run the
+                // bootstrap, far longer than the connect + handshake (tens of ms). Write it now
+                // so the two overlap. If the connect somehow lands after the session was
+                // initialized, `Sessions` swaps the remote-server executor in (the same swap a
+                // reconnect does); a failed connect just leaves the legacy executor.
+                known_extension_hosts().remember(&connection_label);
+                let bootstrap_flushed = self.bootstrap_written || early_bootstrap_flush_enabled();
+                if bootstrap_flushed && !self.bootstrap_written {
+                    self.flush_stashed_bootstrap(session_info.clone(), ctx);
+                    log::info!(
+                        "remote-server bootstrap flushed {} ms after ssh init, \
+                         overlapping the connect for session {session_id:?}",
+                        setup_start.elapsed().as_millis()
+                    );
+                }
+                // #1266: a speculative connect still in flight IS the connect; a second one
+                // would race it for the same session. Wait for it instead.
+                let action = check_passed_action(speculative);
                 self.state = SshInitState::AwaitingConnect {
                     session_id,
                     session_info,
                     setup_start,
+                    bootstrap_flushed,
+                    speculative: action == CheckPassedAction::WaitForSpeculativeConnect,
                 };
-                self.connect_session_for_current_identity(
-                    session_id,
-                    socket_path,
-                    owns_control_master,
-                    connection_label,
-                    ctx,
-                );
+                if action == CheckPassedAction::StartConnect {
+                    self.connect_session_for_current_identity(
+                        session_id,
+                        socket_path,
+                        owns_control_master,
+                        connection_label,
+                        ctx,
+                    );
+                }
             }
             Ok(false) if has_old_binary => {
+                known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
+                Self::cancel_speculative_connect(session_id, speculative, ctx);
                 // Auto-update: a prior install exists, so skip the modal
                 // and reinstall.
                 self.did_install = true;
@@ -317,13 +517,14 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                     session_info,
                     transport: transport.clone(),
                     setup_start,
-                    for_update: true,
                 };
                 RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
                     mgr.install_binary(session_id, transport, true, ctx);
                 });
             }
             Ok(false) => {
+                known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
+                Self::cancel_speculative_connect(session_id, speculative, ctx);
                 let install_mode = *WarpifySettings::as_ref(ctx)
                     .ssh_extension_install_mode
                     .value();
@@ -345,7 +546,6 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                             session_info,
                             transport: transport.clone(),
                             setup_start,
-                            for_update: false,
                         };
                         RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
                             mgr.install_binary(session_id, transport, false, ctx);
@@ -357,7 +557,11 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 }
             }
             Err(err) => {
+                // #1266: a speculative connect still in flight is left to run: if it succeeds
+                // where the probe failed, `Sessions` adopts its client (the #1172 swap); if not,
+                // nothing changes. The session goes on with the bootstrap either way, as before.
                 log::error!("Binary check failed for {session_id:?}: {err}");
+                known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
                 self.flush_stashed_bootstrap(session_info, ctx);
             }
         }
@@ -392,7 +596,6 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             session_info,
             transport: transport.clone(),
             setup_start,
-            for_update: false,
         };
         RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
             mgr.install_binary(session_id, transport, false, ctx);
@@ -403,35 +606,68 @@ impl<T: EventLoopSender> RemoteServerController<T> {
     /// stashed bootstrap (so the session initializes with a live client)
     /// and emits the `RemoteServerSetupDuration` telemetry event.
     fn on_session_connected(&mut self, session_id: SessionId, ctx: &mut ModelContext<Self>) {
-        let SshInitState::AwaitingConnect {
-            session_id: expected,
-            ..
-        } = &self.state
-        else {
-            return;
+        let (session_info, setup_start, bootstrap_flushed, speculative) = match &self.state {
+            SshInitState::AwaitingConnect {
+                session_id: expected,
+                ..
+            } if *expected == session_id => {
+                let SshInitState::AwaitingConnect {
+                    session_info,
+                    setup_start,
+                    bootstrap_flushed,
+                    speculative,
+                    ..
+                } = std::mem::replace(&mut self.state, SshInitState::Idle)
+                else {
+                    unreachable!("just matched AwaitingConnect above");
+                };
+                (session_info, setup_start, bootstrap_flushed, speculative)
+            }
+            // #1266: the speculative connect landed before the binary check did. The check's
+            // result is moot now (its `BinaryCheckComplete` finds the state Idle and is ignored).
+            SshInitState::AwaitingCheck {
+                session_info,
+                speculative: SpeculativeConnect::InFlight,
+                ..
+            } if session_info.session_id == session_id => {
+                let SshInitState::AwaitingCheck {
+                    session_info,
+                    setup_start,
+                    ..
+                } = std::mem::replace(&mut self.state, SshInitState::Idle)
+                else {
+                    unreachable!("just matched AwaitingCheck above");
+                };
+                (session_info, setup_start, false, true)
+            }
+            SshInitState::Idle
+            | SshInitState::AwaitingCheck { .. }
+            | SshInitState::AwaitingUserChoice { .. }
+            | SshInitState::AwaitingInstall { .. }
+            | SshInitState::AwaitingConnect { .. } => return,
         };
-        if *expected != session_id {
-            return;
-        }
 
-        let SshInitState::AwaitingConnect {
-            session_info,
-            setup_start,
-            ..
-        } = std::mem::replace(&mut self.state, SshInitState::Idle)
-        else {
-            unreachable!("just matched AwaitingConnect above");
-        };
-
-        // Flush the stashed bootstrap now that the server is connected.
-        // `client_for_session` will return `Some` when the session
+        known_extension_hosts().remember(&connection_label_for_session_info(&session_info));
+        // Flush the stashed bootstrap now that the server is connected (unless the binary check
+        // already did, #1172). `client_for_session` will return `Some` when the session
         // subsequently initializes, so it picks `RemoteServerCommandExecutor`.
-        self.flush_stashed_bootstrap(session_info, ctx);
+        if !bootstrap_flushed {
+            self.flush_stashed_bootstrap(session_info, ctx);
+        }
+        let bootstrap_flushed = bootstrap_flushed || self.bootstrap_written;
 
         let duration_ms = Instant::now()
             .duration_since(setup_start)
             .as_millis()
             .min(u64::MAX as u128) as u64;
+        // #1146: the end of the per-connect stage timings (see the manager's setup, install and
+        // connect lines): the shell bootstrap was held this long behind the ssh init.
+        log::info!(
+            "remote-server setup done for session {session_id:?}: connected \
+             {duration_ms} ms after ssh init (early_flush={bootstrap_flushed}, \
+             speculative={speculative}, installed_binary={})",
+            self.did_install
+        );
         let (remote_os, remote_arch) = self
             .remote_platform
             .as_ref()
@@ -476,11 +712,21 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             return;
         }
 
-        let SshInitState::AwaitingConnect { session_info, .. } =
-            std::mem::replace(&mut self.state, SshInitState::Idle)
+        let SshInitState::AwaitingConnect {
+            session_info,
+            bootstrap_flushed,
+            ..
+        } = std::mem::replace(&mut self.state, SshInitState::Idle)
         else {
             unreachable!("just matched AwaitingConnect above");
         };
+        if bootstrap_flushed {
+            log::warn!(
+                "Remote server connection failed for session {session_id:?}; the bootstrap \
+                 was already flushed, so the session continues on the ControlMaster executor"
+            );
+            return;
+        }
         log::warn!(
             "Remote server connection failed for session {session_id:?}; \
              flushing bootstrap to unblock SSH session"
@@ -535,6 +781,8 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                     session_id,
                     session_info,
                     setup_start,
+                    bootstrap_flushed: false,
+                    speculative: false,
                 };
                 self.connect_session_for_current_identity(
                     session_id,
@@ -576,6 +824,76 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             );
         });
     }
+}
+
+/// #1266: whether a connect is started alongside the binary probes instead of after them. On by
+/// default; `PHOSPHOR_SSH_SPECULATIVE_CONNECT=0` restores the probe-then-connect order.
+fn speculative_connect_enabled() -> bool {
+    speculative_connect_from_env(
+        std::env::var("PHOSPHOR_SSH_SPECULATIVE_CONNECT")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn speculative_connect_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// #1172: whether the stashed shell bootstrap is written as soon as the binary check passes
+/// instead of after the remote-server connect and handshake. On by default;
+/// `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` restores the old order (bootstrap held until connected).
+fn early_bootstrap_flush_enabled() -> bool {
+    early_bootstrap_flush_from_env(
+        std::env::var("PHOSPHOR_SSH_EARLY_BOOTSTRAP")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn early_bootstrap_flush_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// #1172: whether a host already known to have the extension gets its bootstrap written at ssh
+/// init, with the binary check running behind it. On by default;
+/// `PHOSPHOR_SSH_EARLY_FLUSH_KNOWN=0` restores the stash-until-checked order.
+fn early_flush_known_hosts_enabled() -> bool {
+    early_flush_known_hosts_from_env(
+        std::env::var("PHOSPHOR_SSH_EARLY_FLUSH_KNOWN")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn early_flush_known_hosts_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// Hosts (by connection label) whose binary check passed, or whose server connected, earlier in
+/// this app session. In-memory only: a restart pays one stashed connect, then it is warm.
+#[derive(Default)]
+struct KnownExtensionHosts(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl KnownExtensionHosts {
+    fn contains(&self, key: &str) -> bool {
+        self.0.lock().map(|set| set.contains(key)).unwrap_or(false)
+    }
+    fn remember(&self, key: &str) {
+        if let Ok(mut set) = self.0.lock() {
+            set.insert(key.to_owned());
+        }
+    }
+    fn forget(&self, key: &str) {
+        if let Ok(mut set) = self.0.lock() {
+            set.remove(key);
+        }
+    }
+}
+
+fn known_extension_hosts() -> &'static KnownExtensionHosts {
+    static HOSTS: std::sync::OnceLock<KnownExtensionHosts> = std::sync::OnceLock::new();
+    HOSTS.get_or_init(KnownExtensionHosts::default)
 }
 
 /// Builds the connection label for a session from its [`SessionInfo`],

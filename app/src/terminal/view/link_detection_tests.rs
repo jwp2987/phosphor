@@ -3,7 +3,7 @@ use std::iter;
 use warp_util::path::CleanPathResult;
 
 use super::super::TerminalView;
-use super::{path_without_trailing_sentence_punctuation, GridHighlightedLink};
+use super::{GridHighlightedLink, path_without_trailing_sentence_punctuation};
 use crate::terminal::model::grid::grid_handler::PossiblePath;
 use crate::terminal::model::index::Point;
 use crate::terminal::model::terminal_model::WithinModel;
@@ -212,4 +212,163 @@ fn compute_valid_paths_keeps_trailing_fullwidth_punctuation_when_it_is_the_filen
             col: end_col,
         }
     );
+}
+
+#[test]
+fn new_hover_cancels_previous_file_link_scan() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (abort, registration) = futures::future::AbortHandle::new_pair();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let scan = super::FileLinkScan::new(abort.clone(), cancelled.clone());
+    assert!(!abort.is_aborted());
+    assert!(!cancelled.load(Ordering::Relaxed));
+
+    scan.cancel();
+
+    // The async wrapper is aborted and a blocking scan already running is told to stop.
+    assert!(abort.is_aborted());
+    assert!(cancelled.load(Ordering::Relaxed));
+    let aborted = futures::executor::block_on(futures::future::Abortable::new(
+        futures::future::pending::<()>(),
+        registration,
+    ));
+    assert!(aborted.is_err());
+}
+
+fn alt_candidate(token: &str, line: Option<(usize, Option<usize>)>) -> WithinModel<PossiblePath> {
+    WithinModel::AltScreen(PossiblePath {
+        path: CleanPathResult {
+            path: token.to_string(),
+            line_and_column_num: line.map(|(line_num, column_num)| {
+                warp_util::path::LineAndColumnArg {
+                    line_num,
+                    column_num,
+                }
+            }),
+        },
+        range: Point { row: 3, col: 2 }..=Point {
+            row: 3,
+            col: 2 + token.chars().count() - 1,
+        },
+    })
+}
+
+// #1347: paths printed by a full-screen TUI (alt-screen candidates) resolve against the session
+// cwd, keep their :line:col, and produce alt-screen links.
+#[test]
+fn alt_screen_relative_path_resolves_against_cwd_with_line_and_column() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let link = TerminalView::compute_valid_paths(
+        dir.path().to_str().unwrap(),
+        iter::once(alt_candidate("src/main.rs", Some((12, Some(4))))),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    )
+    .expect("relative alt-screen path should be detected");
+
+    let GridHighlightedLink::File(file_link) = link else {
+        panic!("expected a file link");
+    };
+    assert!(matches!(file_link, WithinModel::AltScreen(_)));
+    let file_link = file_link.get_inner();
+    assert!(file_link.absolute_path.ends_with("src/main.rs"));
+    assert!(file_link.absolute_path.is_absolute());
+    let line = file_link.line_and_column_num.expect("line and column kept");
+    assert_eq!((line.line_num, line.column_num), (12, Some(4)));
+}
+
+#[test]
+fn alt_screen_absolute_path_is_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "x").unwrap();
+    let link = TerminalView::compute_valid_paths(
+        "/",
+        iter::once(alt_candidate(file.to_str().unwrap(), None)),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    );
+    assert!(matches!(link, Some(GridHighlightedLink::File(_))));
+}
+
+#[test]
+fn path_menu_has_open_reveal_and_copy_locally() {
+    use crate::terminal::view::TerminalAction;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "x").unwrap();
+    let link = TerminalView::compute_valid_paths(
+        dir.path().to_str().unwrap(),
+        iter::once(alt_candidate("a.txt", None)),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    )
+    .unwrap();
+
+    let items = super::alt_screen_link_menu_items(&link, None, false);
+    let actions: Vec<_> = items
+        .iter()
+        .filter_map(|item| item.fields()?.on_select_action().cloned())
+        .collect();
+    assert_eq!(actions.len(), 3);
+    assert!(matches!(actions[0], TerminalAction::OpenGridLink(_)));
+    assert!(matches!(actions[1], TerminalAction::ShowInFileExplorer(_)));
+    assert!(matches!(actions[2], TerminalAction::ContextMenu(_)));
+
+    // Remote session: a local reveal would show the wrong machine, so only Open + Copy.
+    let remote = super::alt_screen_link_menu_items(&link, None, true);
+    let remote_actions: Vec<_> = remote
+        .iter()
+        .filter_map(|item| item.fields()?.on_select_action().cloned())
+        .collect();
+    assert_eq!(remote_actions.len(), 2);
+    assert!(
+        !remote_actions
+            .iter()
+            .any(|a| matches!(a, TerminalAction::ShowInFileExplorer(_)))
+    );
+}
+
+/// A click or right-click on a file path is always a local action (open, reveal, copy). It must
+/// never become an agent query (#1347: "/agent Open the file <path>" cost an LLM turn).
+#[test]
+fn path_menu_actions_are_all_local_never_agent() {
+    use crate::terminal::view::{ContextMenuAction, TerminalAction};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("b.txt");
+    std::fs::write(&file, "x").unwrap();
+    let link = TerminalView::compute_valid_paths(
+        dir.path().to_str().unwrap(),
+        iter::once(alt_candidate("b.txt", Some((3, Some(4))))),
+        1000,
+        None,
+        LinkValidationContext::Local,
+    )
+    .unwrap();
+    for remote in [false, true] {
+        for item in super::alt_screen_link_menu_items(&link, None, remote) {
+            let Some(action) = item.fields().and_then(|f| f.on_select_action().cloned()) else {
+                continue;
+            };
+            assert!(
+                matches!(
+                    action,
+                    TerminalAction::OpenGridLink(_)
+                        | TerminalAction::ShowInFileExplorer(_)
+                        | TerminalAction::ContextMenu(ContextMenuAction::CopyUrl { .. })
+                ),
+                "file link menu offered a non-local action"
+            );
+        }
+    }
 }

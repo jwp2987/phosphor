@@ -246,10 +246,8 @@ pub struct PersistedWorkspace {
 pub enum PersistedWorkspaceEvent {
     /// Emitted when the user explicitly adds a repo via a picker (e.g. the tab-config
     /// params modal's repo dropdown). Subscribers can use this to refresh their list.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     WorkspaceAdded { path: PathBuf },
     /// Emitted when LSP installation status changes.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     InstallStatusUpdate {
         server_type: LSPServerType,
         status: LSPInstallationStatus,
@@ -257,14 +255,11 @@ pub enum PersistedWorkspaceEvent {
     /// Emitted when LSP installation completes successfully.
     /// Toast notification is shown directly by PersistedWorkspace.
     /// The server is also spawned automatically by PersistedWorkspace.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     InstallationSucceeded,
     /// Emitted when LSP installation fails.
     /// Toast notification is shown directly by PersistedWorkspace.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     InstallationFailed,
     /// Emitted when async detection of available servers for a workspace completes.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     AvailableServersDetected {
         workspace_path: PathBuf,
         servers: Vec<LSPServerType>,
@@ -648,14 +643,10 @@ impl PersistedWorkspace {
         }
     }
 
-    /// INDEXING SEAM (handler, fully restored — currently has no caller).
+    /// INDEXING SEAM (handler; subscribed in [`Self::new`] when the
+    /// `FullSourceCodeEmbedding` feature flag is on).
     ///
-    /// At the pin this is driven by
-    /// `CodebaseIndexManagerEvent::IndexMetadataUpdated { root_path, event }`,
-    /// registered in [`Self::new`]. The body is restored verbatim so that
-    /// re-subscribing is the only work required; `WorkspaceMetadataEvent` lives
-    /// in `ai::workspace` and is restored alongside it.
-    #[allow(dead_code)]
+    /// Driven by `CodebaseIndexManagerEvent::IndexMetadataUpdated { root_path, event }`.
     fn handle_index_metadata_event(&mut self, root_path: &PathBuf, event: WorkspaceMetadataEvent) {
         match event {
             WorkspaceMetadataEvent::Queried => {
@@ -731,7 +722,6 @@ impl PersistedWorkspace {
     /// startup `inner_join`, making enabled servers look disabled. That arm must
     /// come back at the same time as the LSP leg — deleting it and the table
     /// together is safe, restoring one without the other is not.
-    #[allow(dead_code)]
     fn clean_up_expired_metadata(
         &self,
         indices_to_remove: Arc<Vec<PathBuf>>,

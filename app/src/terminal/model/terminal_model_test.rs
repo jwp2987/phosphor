@@ -9,15 +9,15 @@ use crate::terminal::model::block::BlockId;
 use crate::terminal::model::bootstrap::BootstrapStage;
 use crate::terminal::model::grid::Dimensions as _;
 use crate::terminal::model::index::Side;
+use crate::terminal::model::kitty::parse_kitty_chunk;
 use crate::terminal::model::selection::ExpandedSelectionRange;
 use crate::terminal::model::test_utils::block_size;
 use chrono::{DateTime, Local};
 use vec1::vec1;
 use warp_core::command::ExitCode;
 use warp_terminal::model::ansi::ClearMode;
-use crate::terminal::model::kitty::parse_kitty_chunk;
-use warpui::text::str_to_byte_vec;
 use warpui::text::SelectionType;
+use warpui::text::str_to_byte_vec;
 
 /// Helper function to create a SerializedBlock with default values,
 /// including the new is_local field.
@@ -93,6 +93,7 @@ fn ssh_bootstraps_if_blocklist_empty_and_reconciles_parent_return() {
 
     let bootstrapped_value = BootstrappedValue {
         histfile: None,
+        history_sqlite: None,
         shell: String::from("bash"),
         home_dir: None,
         path: None,
@@ -1217,7 +1218,11 @@ fn precmd_with_completion_metadata_recovers_missing_completion_with_exact_side_e
     assert_eq!(completed_block.command_to_string(), "missing-finish");
     assert_eq!(terminal.active_block_id(), &next_block_id);
     assert_eq!(
-        terminal.block_list().active_block().pwd().map(String::as_str),
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
         Some("/recovered")
     );
 
@@ -2147,8 +2152,8 @@ fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored()
 }
 
 #[test]
-fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored_when_recovery_is_disabled(
-) {
+fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored_when_recovery_is_disabled()
+ {
     let _recovery_disabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(false);
     let mut terminal = TerminalModel::mock(None, None);
     normal_command_finished_and_precmd(
@@ -2801,6 +2806,86 @@ fn ssh_login_classifies_current_last_line_after_scan_cursor_has_advanced() {
     );
 }
 
+/// #1374: a failed-auth re-prompt that arrives long after "Permission denied" (the timer's 3 s
+/// have passed) is not treated as login done.
+#[test]
+fn ssh_login_failed_auth_reprompt_is_not_login_done() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+
+    model.process_bytes("user@myhost's password: ");
+    model.process_bytes("\r\nPermission denied, please try again.\r\n");
+    // The delayed confirmation fires (as the old 3 s timer did) before the re-prompt shows up.
+    model.check_for_end_of_ssh_login(true);
+    let state = |m: &TerminalModel| {
+        m.notify_on_end_of_ssh_login
+            .as_ref()
+            .unwrap()
+            .notification_state
+            .clone()
+    };
+    assert_ne!(state(&model), SshLoginNotificationState::Completed);
+
+    model.process_bytes("user@myhost's password: ");
+    model.check_for_end_of_ssh_login(true);
+    assert_ne!(state(&model), SshLoginNotificationState::Completed);
+}
+
+/// #1374: a re-prompt after a non-prompt line withdraws the pending recheck; the stale timer's
+/// confirmation then does nothing.
+#[test]
+fn ssh_login_reprompt_withdraws_pending_recheck() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+    model.process_bytes("some banner text\r\n");
+    let state = |m: &TerminalModel| {
+        m.notify_on_end_of_ssh_login
+            .as_ref()
+            .unwrap()
+            .notification_state
+            .clone()
+    };
+    assert_eq!(
+        state(&model),
+        SshLoginNotificationState::SentInitialNotification
+    );
+    model.process_bytes("Enter passphrase for key: ");
+    assert_eq!(state(&model), SshLoginNotificationState::Monitoring);
+    model.check_for_end_of_ssh_login(true);
+    assert_eq!(state(&model), SshLoginNotificationState::Monitoring);
+}
+
+/// #1374: the remote shell's bootstrap DCS arriving right after a non-prompt line completes the
+/// login at once, with no confirmation check involved.
+#[test]
+fn ssh_login_remote_bootstrap_dcs_completes_login_immediately() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+    model.process_bytes("some banner text\r\n");
+    let state = |m: &TerminalModel| {
+        m.notify_on_end_of_ssh_login
+            .as_ref()
+            .unwrap()
+            .notification_state
+            .clone()
+    };
+    assert_eq!(
+        state(&model),
+        SshLoginNotificationState::SentInitialNotification
+    );
+    model.init_shell(InitShellValue {
+        shell: "bash".into(),
+        user: "u".to_owned(),
+        hostname: "myhost".to_owned(),
+        session_id: 0.into(),
+        ..Default::default()
+    });
+    assert_eq!(state(&model), SshLoginNotificationState::Completed);
+}
+
 #[test]
 fn dropped_oversized_apc_abandons_pending_kitty_transmission() {
     let mut terminal = TerminalModel::mock(None, None);
@@ -3099,6 +3184,47 @@ fn stalled_subshell_bootstrap_can_be_abandoned_once() {
         !terminal.abandon_stalled_subshell_bootstrap(),
         "nothing left to abandon"
     );
+}
+
+/// #1119: the block left active after an abandoned subshell bootstrap is the hidden bootstrap
+/// block, which discards the shell's output (so keys and Ctrl-C were typed blind). Abandoning must
+/// continue in an ordinary running block that is drawn, named after the spawning command.
+/// Not compiled/run when written (no builds in the fix pass).
+#[test]
+fn abandoned_subshell_bootstrap_continues_in_a_visible_running_block() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "zsh".to_owned(),
+        session_id: None,
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "zsh".into(),
+        user: "u".to_owned(),
+        hostname: "h".to_owned(),
+        session_id: 0.into(),
+        is_subshell: true,
+        ..Default::default()
+    });
+    assert_eq!(
+        terminal.block_list().active_block().bootstrap_stage(),
+        BootstrapStage::WarpInput,
+        "InitShell leaves the hidden bootstrap block active"
+    );
+
+    assert!(terminal.abandon_stalled_subshell_bootstrap());
+    let active = terminal.block_list().active_block();
+    assert_eq!(
+        active.bootstrap_stage(),
+        BootstrapStage::PostBootstrapPrecmd
+    );
+    assert_eq!(active.state(), BlockState::Executing);
+    assert!(active.started());
+    assert_eq!(active.command_to_string(), "zsh");
+    assert!(!active.is_hidden());
 }
 
 /// #1014: a shell whose rc file sleeps only *looks* stalled; when it finally reads the script the
@@ -3415,4 +3541,290 @@ fn running_multiline_command_title_does_not_replace_a_custom_title() {
         last_title_event(&event_rx).as_deref(),
         Some("sleep 5\u{2026}")
     );
+}
+
+#[test]
+fn test_clear_marked_text_is_noop_without_marked_text() {
+    let _ime = FeatureFlag::ImeMarkedText.override_enabled(true);
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.enter_alt_screen(true);
+    assert!(terminal.alt_screen_active);
+
+    let before = terminal.alt_screen().grid_handler().content_generation();
+    assert!(!terminal.has_marked_text());
+    assert!(!terminal.clear_marked_text());
+    assert_eq!(
+        terminal.alt_screen().grid_handler().content_generation(),
+        before,
+        "clearing with nothing marked must not invalidate the grid"
+    );
+
+    terminal.set_marked_text("あ", &(0..1));
+    assert!(terminal.has_marked_text());
+    assert!(terminal.clear_marked_text());
+    assert!(!terminal.has_marked_text());
+}
+
+/// #1373: a fast command that enters the alt screen is interactive at once; it is not judged by
+/// how long ago it started.
+#[test]
+fn fast_command_entering_alt_screen_is_long_running() {
+    let mut terminal: TerminalModel = TerminalModel::mock(None, None);
+    terminal.block_list_mut().active_block_mut().start();
+    terminal.simulate_cmd("vim");
+    assert!(
+        !terminal
+            .block_list()
+            .active_block()
+            .interactive_latch()
+            .is_latched()
+    );
+
+    terminal.enter_alt_screen(true);
+
+    assert!(
+        terminal
+            .block_list()
+            .active_block()
+            .is_active_and_long_running()
+    );
+}
+
+/// #1373: output from a command whose tty is raw (a TUI, a password read) latches it through the
+/// installed probe; a slow command whose tty is cooked and owned by the shell does not.
+#[test]
+fn output_with_raw_tty_latches_and_cooked_shell_does_not() {
+    use crate::terminal::model::block::interactive_latch::TerminalOwner;
+    for (owner, expect) in [(TerminalOwner::Input, true), (TerminalOwner::Shell, false)] {
+        let mut terminal: TerminalModel = TerminalModel::mock(None, None);
+        terminal.set_interactive_probe(std::sync::Arc::new(move || owner));
+        terminal.block_list_mut().active_block_mut().start();
+        terminal.simulate_cmd("tool");
+        terminal.process_bytes("some output");
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        terminal.process_bytes("more output");
+        // The latch, not the predicate: a mock model's blocks are pre-bootstrap, where the
+        // elapsed-time fallback (no hooks, no probe) still applies.
+        assert_eq!(
+            terminal
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .is_latched(),
+            expect
+        );
+    }
+}
+
+/// #1390, #1391: the line-editor markers reach the event channel with their session and sequence
+/// number, in the order the shell sent them.
+#[test]
+fn line_editor_markers_become_terminal_events_in_order() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    while event_rx.try_recv().is_ok() {}
+
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    terminal.continuation_prompt(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    // No session: nothing can be attributed, nothing is sent.
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: None,
+        seq: Some(4),
+    });
+
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(
+        matches!(
+            &events[0],
+            Event::LineEditorReading { session_id, seq: Some(3) } if *session_id == SessionId::from(5)
+        ),
+        "{:?}",
+        events[0]
+    );
+    assert!(
+        matches!(
+            &events[1],
+            Event::ContinuationPrompt { session_id, seq: Some(3) } if *session_id == SessionId::from(5)
+        ),
+        "{:?}",
+        events[1]
+    );
+}
+
+/// #1390, #1391: the markers also update the typeahead hand-off's own account of the shell, on the
+/// thread that parses them and in the order the shell sent them. A marker without a session is
+/// not attributable and changes nothing.
+#[test]
+fn line_editor_markers_update_the_handoffs_account_in_stream_order() {
+    use crate::terminal::model::typeahead_handoff::ShellActivity;
+    // The flag goes on after the mock is built: the mock's own bootstrap precmd would otherwise
+    // already put the hand-off's account at `Prompt`.
+    let mut terminal = TerminalModel::mock(None, None);
+    let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+    assert_eq!(
+        terminal.typeahead_handoff().shell_activity(),
+        ShellActivity::Unknown
+    );
+    assert!(!terminal.typeahead_handoff().line_editor_markers_live());
+
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: None,
+        seq: Some(4),
+    });
+    assert!(!terminal.typeahead_handoff().line_editor_markers_live());
+
+    terminal.line_editor_reading(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    assert_eq!(
+        terminal.typeahead_handoff().shell_activity(),
+        ShellActivity::Reading
+    );
+    assert!(terminal.typeahead_handoff().line_editor_markers_live());
+
+    terminal.continuation_prompt(LineEditorMarkerValue {
+        session_id: Some(5),
+        seq: Some(3),
+    });
+    assert_eq!(
+        terminal.typeahead_handoff().shell_activity(),
+        ShellActivity::Continuation
+    );
+}
+
+// ---- #1411: the eager key modes follow a block switch and a full reset ----
+
+/// A program that dies with DECCKM set leaves the mode on its finished block only: the prompt's
+/// fresh block has default modes, and the word a key encodes with says so the moment the precmd
+/// makes that block active, not at the end of the slice.
+#[test]
+fn eager_key_modes_follow_the_precmd_block_switch() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.simulate_long_running_block("cat", "");
+    terminal.set_mode(ansi::Mode::CursorKeys);
+    assert!(terminal.is_term_mode_set(TermMode::APP_CURSOR));
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the mode change");
+    assert!(eager.app_cursor);
+
+    terminal.finish_block();
+    assert!(
+        !terminal.is_term_mode_set(TermMode::APP_CURSOR),
+        "the fresh block has default modes"
+    );
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the block switch");
+    assert_eq!(eager, PublishedKeyModes::from_model(&terminal));
+    assert!(!eager.app_cursor);
+}
+
+/// RIS republishes the modes: whatever the reset left in the grids is what a key encodes with
+/// from here on, and the alt-screen bit rides along.
+#[test]
+fn eager_key_modes_are_republished_by_a_full_reset() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.set_mode(ansi::Mode::CursorKeys);
+    // A copy that does not match the model: the reset must overwrite it.
+    terminal
+        .key_model_cell()
+        .store_eager_modes(PublishedKeyModes::default(), true);
+    terminal.reset_state();
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the reset");
+    assert_eq!(eager, PublishedKeyModes::from_model(&terminal));
+    assert_eq!(
+        terminal
+            .key_model_cell()
+            .load_exact_modes()
+            .input_box
+            .alt_screen_active,
+        terminal.is_alt_screen_active()
+    );
+}
+
+// ---- #1411: the selection bits are published where the selection changes ----
+
+/// Both screens tell the key path's copy about their selection the moment it is set or dropped,
+/// under the model's lock, so a Ctrl-C that finds the parser inside the model never copies a
+/// selection that is gone (or ignores one that exists). No slice end and no event is involved.
+#[test]
+fn selection_bits_are_published_where_the_selection_changes() {
+    use crate::terminal::model::blocks::BlockListPoint;
+    let mut terminal = TerminalModel::mock(None, None);
+    let copy = terminal.key_model_cell();
+    let bits = |copy: &KeyModelCell| {
+        let snapshot = copy.load_exact_modes();
+        (
+            snapshot.has_block_list_selection,
+            snapshot.has_alt_screen_selection,
+        )
+    };
+    assert_eq!(bits(&copy), (false, false));
+
+    terminal.block_list_mut().start_selection(
+        BlockListPoint::new(0.0, 0),
+        SelectionType::Simple,
+        Side::Left,
+    );
+    assert_eq!(bits(&copy), (true, false));
+    terminal
+        .alt_screen_mut()
+        .start_selection(Point::new(1, 1), SelectionType::Simple, Side::Left);
+    assert_eq!(bits(&copy), (true, true));
+    terminal.block_list_mut().clear_selection();
+    assert_eq!(bits(&copy), (false, true));
+    terminal.alt_screen_mut().clear_selection();
+    assert_eq!(bits(&copy), (false, false));
+
+    // The clear a Ctrl-C leaves in the inbox (the parser held the model) publishes the same way.
+    terminal
+        .alt_screen_mut()
+        .start_selection(Point::new(1, 1), SelectionType::Simple, Side::Left);
+    assert_eq!(bits(&copy), (false, true));
+    terminal
+        .model_inbox()
+        .post(ModelCommand::ClearAltScreenSelection);
+    terminal.apply_inbox();
+    assert_eq!(bits(&copy), (false, false));
+}
+
+/// #1599: RIS resets DECCKM and the kitty flags, and the published key-modes word is the reset one.
+#[test]
+fn full_reset_clears_app_cursor_and_kitty_flags_and_publishes_them_1599() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _kitty = FeatureFlag::KittyKeyboardProtocol.override_enabled(true);
+    // A fresh mock still routes modes to the early-output handler; a running block owns them.
+    terminal.simulate_long_running_block("cat", "");
+    terminal.set_mode(ansi::Mode::CursorKeys);
+    terminal.push_keyboard_enhancement_flags(KeyboardModes::DISAMBIGUATE_ESC_CODES);
+    assert!(terminal.is_term_mode_set(TermMode::APP_CURSOR));
+    assert!(terminal.is_term_mode_set(TermMode::KEYBOARD_DISAMBIGUATE_ESCAPE));
+
+    terminal.reset_state();
+
+    assert!(!terminal.is_term_mode_set(TermMode::APP_CURSOR));
+    assert!(!terminal.is_term_mode_set(TermMode::KEYBOARD_PROTOCOL));
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the reset");
+    assert_eq!(eager, PublishedKeyModes::from_model(&terminal));
+    assert!(!eager.app_cursor);
 }

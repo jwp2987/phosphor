@@ -124,6 +124,10 @@ NSUInteger activeScreenId() {
     // being hidden.  This allows us to hide the app before running any
     // slower termination logic.
     BOOL terminateOnHide;
+
+    // Set once `applicationDidHide:` has resumed termination, so the 5s fallback
+    // can tell whether it is firing because the hide notification never came.
+    BOOL hideNotified;
 }
 
 - (id)init {
@@ -290,6 +294,11 @@ NSUInteger activeScreenId() {
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
                        dispatch_get_main_queue(), ^{
+                         // Give-up net for a hide notification that never came: say so
+                         // (the normal path already terminated and set `hideNotified`).
+                         if (!self->hideNotified) {
+                             warp_app_terminate_hide_fallback_fired(application);
+                         }
                          [application terminate:nil];
                        });
     } else {
@@ -305,6 +314,7 @@ NSUInteger activeScreenId() {
 
 - (void)applicationDidHide:(NSNotification *)note {
     if (terminateOnHide) {
+        hideNotified = YES;
         NSApplication *app = note.object;
         [app terminate:nil];
     }
@@ -486,6 +496,20 @@ NSUInteger activeScreenId() {
 // (`applicationShouldTerminate:` and on) is unchanged.
 - (void)warpTerminateFromMenu:(id)sender {
     warp_app_quit_menu_item_triggered(self);
+}
+
+// Enter-key tracing (#1482): the first place an Enter reaches the app, before AppKit picks a
+// window for it. Logs only; always forwards to super.
+- (void)sendEvent:(NSEvent *)event {
+    if (warpIsEnterKeyDown(event)) {
+        NSWindow *keyWindow = [self keyWindow];
+        WARP_LOG_ENTER(event, "app_send_event",
+                       @"keycode=%u ts=%.9f event_window=%ld key_window=%ld key_window_class=%@",
+                       (unsigned)[event keyCode], (double)[event timestamp],
+                       (long)[event windowNumber], (long)[keyWindow windowNumber],
+                       keyWindow ? NSStringFromClass([keyWindow class]) : @"none");
+    }
+    [super sendEvent:event];
 }
 
 - (void)showModal:(NSAlert *)alert modalId:(NSUInteger)modalId {

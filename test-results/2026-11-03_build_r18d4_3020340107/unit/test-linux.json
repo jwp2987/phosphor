@@ -1,0 +1,24 @@
+{
+ "summary_line": null,
+ "duration_s": null,
+ "run": null,
+ "passed": 0,
+ "failed": 0,
+ "timed_out": 0,
+ "skipped": 0,
+ "slow": 0,
+ "flaky": 0,
+ "failures": [],
+ "regressions": [],
+ "notes": [],
+ "errors": [
+  "error[E0004]: non-exhaustive patterns: `&FormattedTextLine::BlockQuote { .. }` not covered",
+  "error: could not compile `warp_tui` (lib test) due to 1 previous error",
+  "error: command `/home/<user>/.rustup/toolchains/1.92.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --message-format json-render-diagnostics --package warp --package warp_tui --lib --features war",
+  "error: nextest exited 101 (not 0=passed / 100=test failures).",
+  "ERROR: Job failed: exit status 2"
+ ],
+ "job": "test-linux",
+ "status": "failed",
+ "duration": 353.955712
+}

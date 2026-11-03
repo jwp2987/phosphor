@@ -33,6 +33,31 @@ use warpui::text::point::Point;
 
 const MAX_SYNTAX_TREES: usize = 3;
 
+/// Buffers larger than this many bytes are not parsed or highlighted (#1340). A tree-sitter tree
+/// plus highlight ranges for a 7 MB Rust file measured in the hundreds of MB and the parse runs
+/// on the UI thread. Such a buffer behaves like one with no highlighting support; indentation,
+/// bracket and comment data from the language stay available.
+/// `PHOSPHOR_SYNTAX_MAX_BYTES=<n>` overrides the cap, `0` removes it.
+pub const DEFAULT_MAX_HIGHLIGHT_BYTES: usize = 5_000_000;
+
+/// The cap in effect: [`DEFAULT_MAX_HIGHLIGHT_BYTES`] unless `PHOSPHOR_SYNTAX_MAX_BYTES` is set.
+/// `None` means unlimited. Read once.
+fn max_highlight_bytes() -> Option<usize> {
+    static CAP: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        let configured = std::env::var("PHOSPHOR_SYNTAX_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_MAX_HIGHLIGHT_BYTES);
+        (configured != 0).then_some(configured)
+    })
+}
+
+/// Whether a buffer of `byte_len` bytes is past `cap` (`None` = unlimited).
+fn exceeds_highlight_cap(byte_len: usize, cap: Option<usize>) -> bool {
+    cap.is_some_and(|cap| byte_len > cap)
+}
+
 thread_local! {
     static PARSER: RefCell<Parser> = RefCell::new(Parser::new());
 }
@@ -91,6 +116,8 @@ pub struct SyntaxTreeState {
     parsing_handle: Option<AbortHandle>,
     /// Cache for highlight results to avoid recomputing for the same viewport ranges.
     highlight_cache: RefCell<Option<HighlightCache>>,
+    /// The buffer is past [`DEFAULT_MAX_HIGHLIGHT_BYTES`]: no tree is parsed or kept for it.
+    too_large: bool,
 }
 
 impl SyntaxTreeState {
@@ -107,6 +134,7 @@ impl SyntaxTreeState {
             parsing_handle: None,
             language_queries: None,
             highlight_cache: RefCell::new(None),
+            too_large: false,
         }
     }
 
@@ -138,8 +166,32 @@ impl SyntaxTreeState {
         });
     }
 
+    /// Drops every parsed tree, the highlight cache and the language queries, and aborts any parse
+    /// in flight. For an editor that is being closed: a 7 MB file holds hundreds of MB of
+    /// tree-sitter nodes and highlight ranges, and a closed editor must not keep them even if
+    /// something still references the model (#1407). The state stays valid (just empty) if the
+    /// model is queried afterwards.
+    pub fn release(&mut self) {
+        if let Some(handle) = self.parsing_handle.take() {
+            handle.abort();
+        }
+        *self.syntax_tree.lock() = HashMap::new();
+        *self.highlight_cache.borrow_mut() = None;
+        self.language_queries = None;
+    }
+
+    /// Number of syntax trees currently held (for tests and memory diagnostics).
+    pub fn tree_count(&self) -> usize {
+        self.syntax_tree.lock().len()
+    }
+
     pub fn has_supported_highlighting(&self) -> bool {
-        self.language_queries.is_some()
+        self.language_queries.is_some() && !self.too_large
+    }
+
+    /// Whether the buffer was too large to parse at its last update.
+    pub fn is_too_large_to_highlight(&self) -> bool {
+        self.too_large
     }
 
     pub fn indent_unit(&self) -> Option<IndentUnit> {
@@ -377,6 +429,17 @@ impl DecorationLayer for SyntaxTreeState {
             return;
         };
 
+        self.too_large = exceeds_highlight_cap(content.byte_len(), max_highlight_bytes());
+        if self.too_large {
+            // Nothing is parsed: drop what a smaller earlier version left behind and report the
+            // version as done so an editor waiting on highlighting renders it plain.
+            *self.syntax_tree.lock() = HashMap::new();
+            *self.highlight_cache.borrow_mut() = None;
+            self.buffer_version = version;
+            ctx.emit(DecorationStateEvent::DecorationUpdated { version });
+            return;
+        }
+
         let mut syntax_tree_lock = self.syntax_tree.lock();
         let mut tree = syntax_tree_lock.get(&self.buffer_version).cloned();
         if let Some(tree) = &mut tree {
@@ -432,5 +495,91 @@ fn point_to_syntax_point(point: Point) -> arborium::tree_sitter::Point {
     arborium::tree_sitter::Point {
         row: point.row.saturating_sub(1) as usize,
         column: point.column as usize,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use warpui::App;
+
+    fn color_map() -> ColorMap {
+        let c = ColorU::black();
+        ColorMap {
+            keyword_color: c,
+            function_color: c,
+            string_color: c,
+            type_color: c,
+            number_color: c,
+            comment_color: c,
+            property_color: c,
+            tag_color: c,
+        }
+    }
+
+    /// A buffer past the cap is never parsed: no tree is kept, highlighting reports unsupported,
+    /// and the version is still announced so an editor waiting on highlighting can render
+    /// (#1340).
+    #[test]
+    fn a_buffer_past_the_cap_keeps_no_tree_and_reports_the_version() {
+        App::test((), |mut app| async move {
+            let buffer = app.add_model(|_| Buffer::default());
+            let state = app.add_model(|_| {
+                let mut state =
+                    SyntaxTreeState::new(buffer.downgrade(), BufferVersion::new(), color_map());
+                state.set_language(languages::language_by_name("rust").expect("rust grammar"));
+                state
+            });
+            let big = "fn a() { let x = 1; }\n".repeat(DEFAULT_MAX_HIGHLIGHT_BYTES / 20);
+            assert!(big.len() > DEFAULT_MAX_HIGHLIGHT_BYTES);
+            let snapshot = BufferSnapshot::from_plain_text(&big);
+            assert!(snapshot.byte_len() > DEFAULT_MAX_HIGHLIGHT_BYTES);
+            let version = BufferVersion::new();
+            state.update(&mut app, |state, ctx| {
+                state.update_internal_state_with_delta(&[], version, snapshot, ctx);
+            });
+            state.read(&app, |state, _| {
+                assert!(state.is_too_large_to_highlight());
+                assert!(!state.has_supported_highlighting());
+                assert_eq!(state.tree_count(), 0);
+                assert!(state.parsing_handle.is_none());
+            });
+        })
+    }
+
+    #[test]
+    fn release_drops_every_tree_and_the_highlight_cache() {
+        App::test((), |mut app| async move {
+            let buffer = app.add_model(|_| Buffer::default());
+            let state = app.add_model(|_| {
+                SyntaxTreeState::new(buffer.downgrade(), BufferVersion::new(), color_map())
+            });
+            state.update(&mut app, |state, _| {
+                let mut parser = Parser::new();
+                let language = languages::language_by_name("rust").expect("rust grammar");
+                parser.set_language(&language.grammar).expect("grammar");
+                let tree = parser.parse("fn a() {}", None).expect("parse");
+                state.syntax_tree.lock().insert(BufferVersion::new(), tree);
+                assert_eq!(state.tree_count(), 1);
+                state.release();
+                assert_eq!(state.tree_count(), 0);
+                assert!(state.highlight_cache.borrow().is_none());
+                assert!(!state.has_supported_highlighting());
+            });
+        })
+    }
+
+    #[test]
+    fn highlight_cap_boundaries() {
+        assert!(!exceeds_highlight_cap(10_000_000, None));
+        assert!(!exceeds_highlight_cap(5_000_000, Some(5_000_000)));
+        assert!(exceeds_highlight_cap(5_000_001, Some(5_000_000)));
+        assert!(!exceeds_highlight_cap(0, Some(5_000_000)));
+    }
+
+    #[test]
+    fn default_cap_is_below_the_7mb_report() {
+        assert!(DEFAULT_MAX_HIGHLIGHT_BYTES < 7 * 1024 * 1024);
+        assert!(DEFAULT_MAX_HIGHLIGHT_BYTES >= 1_000_000);
     }
 }

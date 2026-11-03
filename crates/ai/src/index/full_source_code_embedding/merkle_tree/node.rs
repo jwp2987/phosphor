@@ -122,9 +122,11 @@ impl MerkleNode {
                 // are an ordered function of the file content.
                 let hash = MerkleHash::from_hashes(children.iter().map(|child| &child.hash));
 
-                // Add a small delay after file processing to reduce CPU spikes
-                // during large repository indexing, allowing other work to continue
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                // Indexing already runs on a bounded, lowered-priority pool (`THREADPOOL`), which is
+                // what keeps it from crowding out foreground work. A fixed per-file sleep added
+                // nothing to that but 5 ms of dead time per file (a 1000-file repo spent 5 s of
+                // thread time asleep). Hand the core back so a waiting thread can run (#1381).
+                std::thread::yield_now();
 
                 Ok((
                     MerkleNode {

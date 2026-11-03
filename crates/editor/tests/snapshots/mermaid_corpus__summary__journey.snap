@@ -1,0 +1,29 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ?
+height: ~570
+viewBox: true
+g: 8
+rect: 5
+path: 3
+circle: 15
+ellipse: 0
+polygon: 0
+polyline: 0
+line: 5
+text: 8
+tspan: 7
+marker: 1
+foreignObject: 5
+image: 0
+labels:
+  - "Me"
+  - "Cat"
+  - "Go to work"
+  - "Go home"
+  - "Make tea"
+  - "Go upstairs"
+  - "Sit down"
+  - "My working day"

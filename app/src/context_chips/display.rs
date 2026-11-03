@@ -187,7 +187,7 @@ impl PromptDisplay {
                 let existing = &self.last_chip_results[i];
                 existing.value() != chip_result.value.as_ref()
                     || existing.kind() != &chip_result.kind
-                    || existing.on_click_values() != chip_result.on_click_values.as_slice()
+                    || existing.on_click_values() != &*chip_result.on_click_values
             })
     }
 

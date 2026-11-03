@@ -38,6 +38,47 @@ pub struct TerminalInputMessageBar {
     suggestions_mode_model: ModelHandle<InputSuggestionsModeModel>,
     inline_history_model: ModelHandle<InlineMenuModel<AcceptHistoryItem, HistoryTab>>,
     misroute_mouse_state: MouseStateHandle,
+    /// What the last buffer event told the bar about the buffer (#1491).
+    last_buffer_signature: Option<BufferSignature>,
+}
+
+/// The only facts about the typed text that `render` reads: whether it is empty, and whether it
+/// starts with the `/agent`, `/new` or `/plan` command names. A keystroke that leaves all three
+/// as they were cannot change the bar, so it does not re-render it (#1491).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BufferSignature {
+    empty: bool,
+    agent_prefix: bool,
+    new_prefix: bool,
+    plan_prefix: bool,
+}
+
+impl BufferSignature {
+    fn of(buffer: &str) -> Self {
+        Self {
+            empty: buffer.is_empty(),
+            agent_prefix: buffer.starts_with(commands::AGENT.name),
+            new_prefix: buffer.starts_with(commands::NEW.name),
+            plan_prefix: buffer.trim_start().starts_with(commands::PLAN.name),
+        }
+    }
+}
+
+/// `PHOSPHOR_SKIP_REDUNDANT_MSGBAR_RENDER=0` restores a re-render on every buffer event.
+fn skip_redundant_render_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("PHOSPHOR_SKIP_REDUNDANT_MSGBAR_RENDER").is_ok_and(|value| value == "0")
+    })
+}
+
+/// Whether a buffer event moving the bar from `previous` to `current` needs a re-render.
+fn buffer_event_needs_render(
+    previous: Option<BufferSignature>,
+    current: BufferSignature,
+    skip_redundant: bool,
+) -> bool {
+    !skip_redundant || previous != Some(current)
 }
 
 impl Entity for TerminalInputMessageBar {
@@ -59,8 +100,17 @@ impl TerminalInputMessageBar {
         });
         // The misroute recovery offer (#835) changes without an input-config event.
         ctx.observe(&ai_input_model, |_, _, ctx| ctx.notify());
-        ctx.subscribe_to_model(&input_buffer_model, |_, _, _, ctx| {
-            ctx.notify();
+        ctx.subscribe_to_model(&input_buffer_model, |me, model, _, ctx| {
+            let current = BufferSignature::of(model.as_ref(ctx).current_value());
+            let needs_render = buffer_event_needs_render(
+                me.last_buffer_signature,
+                current,
+                skip_redundant_render_enabled(),
+            );
+            me.last_buffer_signature = Some(current);
+            if needs_render {
+                ctx.notify();
+            }
         });
         ctx.subscribe_to_model(&context_model, |_, _, event, ctx| {
             if let BlocklistAIContextEvent::UpdatedPendingContext { .. } = event {
@@ -85,6 +135,7 @@ impl TerminalInputMessageBar {
             suggestions_mode_model,
             inline_history_model,
             misroute_mouse_state: MouseStateHandle::default(),
+            last_buffer_signature: None,
         }
     }
 }

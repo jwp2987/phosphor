@@ -736,7 +736,6 @@ impl SettingsWidget for SSHWidget {
                     None,
                     LocalOnlyIconState::for_setting(
                         EnableSshWarpification::storage_key(),
-                        EnableSshWarpification::sync_to_cloud(),
                         &mut self.local_only_icon_tooltip_states.borrow_mut(),
                         app,
                     ),
@@ -775,7 +774,6 @@ impl SettingsWidget for SSHWidget {
                         None,
                         LocalOnlyIconState::for_setting(
                             SshExtensionInstallModeSetting::storage_key(),
-                            SshExtensionInstallModeSetting::sync_to_cloud(),
                             &mut self.local_only_icon_tooltip_states.borrow_mut(),
                             app,
                         ),
@@ -804,7 +802,6 @@ impl SettingsWidget for SSHWidget {
                         None,
                         LocalOnlyIconState::for_setting(
                             ReuseExistingSshControlMaster::storage_key(),
-                            ReuseExistingSshControlMaster::sync_to_cloud(),
                             &mut self.local_only_icon_tooltip_states.borrow_mut(),
                             app,
                         ),
@@ -861,7 +858,6 @@ impl SettingsWidget for SSHWidget {
                     None,
                     LocalOnlyIconState::for_setting(
                         SplitInheritsSshSetting::storage_key(),
-                        SplitInheritsSshSetting::sync_to_cloud(),
                         &mut self.local_only_icon_tooltip_states.borrow_mut(),
                         app,
                     ),
@@ -920,7 +916,6 @@ impl SettingsWidget for SSHWidget {
                     }),
                     LocalOnlyIconState::for_setting(
                         UseSshTmuxWrapper::storage_key(),
-                        UseSshTmuxWrapper::sync_to_cloud(),
                         &mut self.local_only_icon_tooltip_states.borrow_mut(),
                         app,
                     ),

@@ -10,48 +10,13 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use warp_managed_secrets::client::{
-    ManagedSecretConfigs, ManagedSecretsClient, SecretOwner, TaskIdentityToken,
-};
-use warp_managed_secrets::{ManagedSecret, ManagedSecretType, ManagedSecretValue};
+use warp_managed_secrets::client::{ManagedSecretsClient, TaskIdentityToken};
+use warp_managed_secrets::{ManagedSecret, ManagedSecretValue};
 
 pub(crate) struct DisabledManagedSecretsClient;
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+#[async_trait]
 impl ManagedSecretsClient for DisabledManagedSecretsClient {
-    async fn get_managed_secret_configs(&self) -> Result<ManagedSecretConfigs> {
-        Ok(ManagedSecretConfigs {
-            user_secrets: None,
-            team_secrets: HashMap::new(),
-        })
-    }
-
-    async fn create_managed_secret(
-        &self,
-        _owner: SecretOwner,
-        _name: String,
-        _secret_type: ManagedSecretType,
-        _encrypted_value: String,
-        _description: Option<String>,
-    ) -> Result<ManagedSecret> {
-        Err(anyhow!("Cloud managed secrets disabled in Phosphor"))
-    }
-
-    async fn delete_managed_secret(&self, _owner: SecretOwner, _name: String) -> Result<()> {
-        Err(anyhow!("Cloud managed secrets disabled in Phosphor"))
-    }
-
-    async fn update_managed_secret(
-        &self,
-        _owner: SecretOwner,
-        _name: String,
-        _encrypted_value: Option<String>,
-        _description: Option<String>,
-    ) -> Result<ManagedSecret> {
-        Err(anyhow!("Cloud managed secrets disabled in Phosphor"))
-    }
-
     async fn list_secrets(&self) -> Result<Vec<ManagedSecret>> {
         Ok(Vec::new())
     }

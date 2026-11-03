@@ -109,11 +109,6 @@ impl Team {
         self.members.iter().find(|member| member.email == email)
     }
 
-    pub fn has_owner_permissions(&self, user_email: &str) -> bool {
-        self.get_member_by_email(user_email)
-            .is_some_and(|member| member.role.is_owner())
-    }
-
     pub fn is_multi_admin_enabled(&self) -> bool {
         self.billing_metadata
             .tier
@@ -126,28 +121,6 @@ impl Team {
             member.role.is_owner()
                 || (member.role == MembershipRole::Admin && self.is_multi_admin_enabled())
         })
-    }
-
-    pub fn get_delete_disabled_reason(
-        &self,
-        current_user_email: &str,
-        remaining_workspace_credits: i32,
-    ) -> Option<TeamDeleteDisabledReason> {
-        if self.members.len() > 1
-            || self
-                .members
-                .first()
-                .is_none_or(|m| m.email != current_user_email)
-        {
-            return Some(TeamDeleteDisabledReason::OtherMembers);
-        }
-        if self.billing_metadata.is_user_on_paid_plan() {
-            return Some(TeamDeleteDisabledReason::ActivePaidSubscription);
-        }
-        if remaining_workspace_credits > 0 {
-            return Some(TeamDeleteDisabledReason::RemainingBonusCredits);
-        }
-        None // No reason found, team can be deleted
     }
 
     pub fn is_custom_llm_enabled(&self) -> bool {

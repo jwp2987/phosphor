@@ -101,7 +101,6 @@ const WARP_KV_ENTRY_BYTE: &[u8] = b"B";
 const WARP_KV_END_BYTE: &[u8] = b"C";
 
 /// Parse colors in XParseColor format.
-#[allow(dead_code)]
 fn xparse_color(color: &[u8]) -> Option<ColorU> {
     if !color.is_empty() && color[0] == b'#' {
         parse_legacy_color(&color[1..])
@@ -741,6 +740,9 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 self.handler.tmux_install_failed(value)
             }
             Ok(DProtoHook::ExitShell { value }) => self.handler.exit_shell(value),
+            Ok(DProtoHook::LineEditorReading { value }) => self.handler.line_editor_reading(value),
+            Ok(DProtoHook::ContinuationPrompt { value }) => self.handler.continuation_prompt(value),
+            Ok(DProtoHook::CommandFileFailed { value }) => self.handler.command_file_failed(value),
 
             Err(e) => safe_error!(
                 safe: ("Error when deserializing escape sequence data"),
@@ -773,6 +775,10 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             Ok(DProtoHook::InitSsh { value }) => {
                 self.handler.init_ssh(value);
             }
+            // The line-editor markers (#1390, #1391) are plain ASCII (two integers), sent
+            // unencoded so a shell emits them with one builtin write and no hex encoding.
+            Ok(DProtoHook::LineEditorReading { value }) => self.handler.line_editor_reading(value),
+            Ok(DProtoHook::ContinuationPrompt { value }) => self.handler.continuation_prompt(value),
             Ok(_) => {
                 log::error!("Received non hex-encoded hook that is not SourcedRcFileForWarp");
             }
@@ -1048,6 +1054,22 @@ where
                     }
                 }
                 unhandled(params);
+            }
+
+            // Setup-line marker: the typed subshell setup line `index` of setup `token` has been
+            // executed by the shell. Format: OSC 7771 ; <token> ; <index> BEL.
+            b"7771" => {
+                let parsed = (params.len() == 3)
+                    .then(|| {
+                        let token = str::from_utf8(params[1]).ok()?.parse::<u64>().ok()?;
+                        let index = str::from_utf8(params[2]).ok()?.parse::<usize>().ok()?;
+                        Some((token, index))
+                    })
+                    .flatten();
+                match parsed {
+                    Some((token, index)) => self.handler.setup_line_consumed(token, index),
+                    None => unhandled(params),
+                }
             }
 
             // Set color index.

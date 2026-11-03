@@ -1,0 +1,129 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown(&text))
+---
+FormattedText {
+    lines: [
+        BlockQuote {
+            depth: 1,
+            line: Line(
+                [
+                    FormattedTextFragment {
+                        text: "single quote",
+                        styles: PlainText,
+                    },
+                ],
+            ),
+        },
+        LineBreak,
+        BlockQuote {
+            depth: 1,
+            line: Line(
+                [
+                    FormattedTextFragment {
+                        text: "multi",
+                        styles: PlainText,
+                    },
+                ],
+            ),
+        },
+        BlockQuote {
+            depth: 1,
+            line: Line(
+                [
+                    FormattedTextFragment {
+                        text: "line",
+                        styles: PlainText,
+                    },
+                ],
+            ),
+        },
+        BlockQuote {
+            depth: 1,
+            line: Line(
+                [
+                    FormattedTextFragment {
+                        text: "quote",
+                        styles: PlainText,
+                    },
+                ],
+            ),
+        },
+        LineBreak,
+        BlockQuote {
+            depth: 1,
+            line: Line(
+                [
+                    FormattedTextFragment {
+                        text: "outer",
+                        styles: PlainText,
+                    },
+                ],
+            ),
+        },
+        BlockQuote {
+            depth: 2,
+            line: Line(
+                [
+                    FormattedTextFragment {
+                        text: "inner",
+                        styles: PlainText,
+                    },
+                ],
+            ),
+        },
+        BlockQuote {
+            depth: 3,
+            line: Line(
+                [
+                    FormattedTextFragment {
+                        text: "innermost",
+                        styles: PlainText,
+                    },
+                ],
+            ),
+        },
+        LineBreak,
+        BlockQuote {
+            depth: 1,
+            line: UnorderedList(
+                FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: [
+                        FormattedTextFragment {
+                            text: "list in quote",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            ),
+        },
+        BlockQuote {
+            depth: 1,
+            line: UnorderedList(
+                FormattedIndentTextInline {
+                    indent_level: 0,
+                    text: [
+                        FormattedTextFragment {
+                            text: "second",
+                            styles: PlainText,
+                        },
+                    ],
+                },
+            ),
+        },
+        BlockQuote {
+            depth: 1,
+            line: LineBreak,
+        },
+        BlockQuote {
+            depth: 1,
+            line: CodeBlock(
+                CodeBlockText {
+                    lang: "rust",
+                    code: "let x = 1;\n",
+                },
+            ),
+        },
+    ],
+}

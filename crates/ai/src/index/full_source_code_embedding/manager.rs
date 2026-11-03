@@ -701,18 +701,6 @@ impl CodebaseIndexManager {
         }
     }
 
-    pub fn handle_active_session_changed(&mut self, active_directory: &Path) {
-        if !self.is_indexing_enabled() {
-            return;
-        }
-        let Some(root_path) = self.root_path_for_codebase(active_directory) else {
-            return;
-        };
-
-        self.build_queue
-            .update_path_priority(root_path, Priority::ActiveSession);
-    }
-
     pub fn update_max_limits(
         &mut self,
         new_max_indices: Option<usize>,
@@ -818,10 +806,6 @@ impl CodebaseIndexManager {
             .fragment_metadatas_from_hashes(root_hash, content_hashes)
     }
 
-    pub fn get_codebase_paths(&self) -> impl Iterator<Item = &PathBuf> {
-        self.codebase_indices.keys()
-    }
-
     pub fn num_active_indices(&self) -> usize {
         self.codebase_indices.len()
     }
@@ -901,13 +885,6 @@ impl CodebaseIndexManager {
         self.watcher.update(ctx, |watcher, _ctx| {
             std::mem::drop(watcher.unregister_path(root_path));
         });
-    }
-
-    #[cfg(feature = "local_fs")]
-    fn unwatch_all_paths(&self, ctx: &mut ModelContext<Self>) {
-        for path in self.get_codebase_paths() {
-            self.unwatch_path(path, ctx);
-        }
     }
 
     pub fn build_and_sync_codebase_index(

@@ -2,7 +2,6 @@ use futures_util::future::LocalBoxFuture;
 use std::mem::ManuallyDrop;
 
 use crate::{
-    clipboard::ClipboardContent,
     integration::TestDriver,
     keymap,
     platform::{self, TerminationMode},
@@ -47,16 +46,14 @@ pub enum CustomEvent {
     /// (jwp2987/phosphor#726). Posted by the termination-signal handler thread
     /// installed in `App::run` (`#[cfg(unix)]` only) or, on Windows, by a
     /// window's `WM_ENDSESSION` subclass (`windowing::winit::windows::session_end`,
-    /// `#[cfg(windows)]`); not constructed on wasm.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    /// `#[cfg(windows)]`).
     TerminateFromSignal(i32),
     /// Close the specified window.
     CloseWindow {
         window_id: crate::WindowId,
         termination_mode: TerminationMode,
     },
-    /// A global hotkey was pressed. Global hotkeys are not yet supported on wasm.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    /// A global hotkey was pressed.
     GlobalShortcutTriggered(keymap::Keystroke),
     /// The active window changed.
     ///
@@ -67,6 +64,12 @@ pub enum CustomEvent {
     /// multiple `Focused` events into a single `ActiveWindowChanged` event on the next tick of the
     /// [`winit::event_loop::EventLoop`].
     ActiveWindowChanged,
+    /// A `RedrawRequested` arrived while the app was mutably borrowed (a nested native loop such
+    /// as a Windows modal move/resize), so the draw was recorded as owed. This event is queued
+    /// once per owed burst and flushes the owed redraws; it is delivered after the current
+    /// callback returns, i.e. once the borrow has been released (UI-R8, mirrors the macOS
+    /// `DrawOwed` flush of #1358).
+    FlushOwedRedraws,
     /// Update the UI App using the given closure.
     UpdateUIApp(#[derivative(Debug = "ignore")] Box<dyn FnOnce(&mut AppContext) + Send + Sync>),
     RequestUserAttention {
@@ -75,8 +78,6 @@ pub enum CustomEvent {
     StopRequestingUserAttention {
         window_id: WindowId,
     },
-    #[allow(dead_code)]
-    Clipboard(ClipboardEvent),
     SetCursorShape(platform::Cursor),
     ActiveCursorPositionUpdated,
     #[cfg_attr(not(any(target_os = "linux", target_os = "freebsd")), allow(dead_code))]
@@ -99,7 +100,6 @@ pub enum CustomEvent {
         notification_info: NotificationInfo,
     },
     /// Focus the native window that triggered a notification.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     FocusWindow {
         window_id: WindowId,
     },
@@ -108,25 +108,17 @@ pub enum CustomEvent {
     DragAndDropFilesDebounced {
         window_id: winit::window::WindowId,
     },
-    /// Input received from the soft keyboard on mobile WASM.
-    #[cfg(target_family = "wasm")]
-    SoftKeyboardInput(crate::platform::wasm::SoftKeyboardInput),
-    /// The visual viewport was resized (typically due to soft keyboard appearing/disappearing).
-    #[cfg(target_family = "wasm")]
-    VisualViewportResized {
-        width: f32,
-        height: f32,
-    },
     /// Momentum scrolling animation frame.
     MomentumScroll {
         window_id: winit::window::WindowId,
     },
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum ClipboardEvent {
-    Paste(ClipboardContent),
+    /// A touch has been held in place for the long-press duration (armed at touch-down, so the
+    /// context menu opens while the finger is still down). `generation` identifies the touch
+    /// the timer was armed for; a stale one is ignored.
+    TouchLongPress {
+        window_id: winit::window::WindowId,
+        generation: u64,
+    },
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -161,9 +153,9 @@ impl App {
         }
     }
 
-    // Dead code is allowed on wasm and Windows as the window class is only set for Linux
+    // Dead code is allowed on Windows as the window class is only set for Linux
     // platforms.
-    #[cfg_attr(any(target_family = "wasm", target_os = "windows"), allow(dead_code))]
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub(crate) fn set_window_class(&mut self, window_class: String) {
         self.window_class = Some(window_class);
     }
@@ -205,13 +197,6 @@ impl App {
             if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
                 super::linux::maybe_register_xlib_error_hook(&event_loop);
                 super::linux::ensure_cursor_theme();
-            } else if #[cfg(target_family = "wasm")] {
-                crate::platform::wasm::add_paste_listener(event_loop.create_proxy());
-                if callbacks.on_internet_reachability_changed.is_some() {
-                    crate::platform::wasm::add_network_connection_listener(event_loop.create_proxy());
-                }
-                crate::platform::wasm::add_system_theme_listener(event_loop.create_proxy());
-                crate::platform::wasm::setup_visual_viewport_resize_listener(event_loop.create_proxy());
             }
         }
 

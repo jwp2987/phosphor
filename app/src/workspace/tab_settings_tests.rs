@@ -177,3 +177,34 @@ fn header_toolbar_chip_selection_custom_empty_reports_all_absent() {
         assert!(!config.contains_item(&item));
     }
 }
+
+#[test]
+fn directory_tab_colors_empty_map_never_matches_and_canonical_lookup_is_pure() {
+    let empty = DirectoryTabColors::default();
+    assert!(empty.is_empty());
+    assert_eq!(empty.color_for_directory(Path::new("/nonexistent/x")), None);
+
+    // `color_for_canonical_directory` takes the path as given (no canonicalize), so a path that
+    // does not exist on disk still matches by prefix; render relies on this to stay off the fs.
+    let colors = DirectoryTabColors(HashMap::from([
+        (
+            "/definitely/not/a/real/dir".to_owned(),
+            DirectoryTabColor::Color(AnsiColorIdentifier::Blue),
+        ),
+        (
+            "/definitely/not/a/real/dir/sub".to_owned(),
+            DirectoryTabColor::Suppressed,
+        ),
+    ]));
+    assert!(!colors.is_empty());
+    assert_eq!(
+        colors
+            .color_for_canonical_directory(Path::new("/definitely/not/a/real/dir/other"))
+            .and_then(|c| c.ansi_color()),
+        Some(AnsiColorIdentifier::Blue)
+    );
+    assert_eq!(
+        colors.color_for_canonical_directory(Path::new("/elsewhere")),
+        None
+    );
+}

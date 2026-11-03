@@ -1,6 +1,3 @@
-#![cfg_attr(target_family = "wasm", allow(dead_code, unused_imports))]
-// Adding this file level gate as some of the code around editability is not used in WASM yet.
-
 use crate::code::editor::{
     comment_editor::{CommentEditor, CommentEditorEvent},
     comments::PendingComment,
@@ -66,6 +63,7 @@ use warp_editor::{
     search::{SearchEvent, Searcher, MATCH_FILL, SELECTED_MATCH_FILL},
 };
 use warp_util::content_version::ContentVersion;
+use warp_util::user_input::UserInput;
 use warpui::{
     elements::{
         new_scrollable::{
@@ -258,21 +256,18 @@ impl CodeEditorRenderOptions {
         self.show_comment_editor_provider = Box::new(comment_editor_provider);
         self
     }
-
-    pub fn with_show_find_references_provider(
-        mut self,
-        find_references_provider: impl ShowFindReferencesCardProvider,
-    ) -> Self {
-        self.show_find_references_provider = Box::new(find_references_provider);
-        self
-    }
 }
 
 pub struct CodeEditorView {
     pub model: ModelHandle<CodeEditorModel>,
     pub searcher: ModelHandle<Searcher>,
+    /// Created on first use (#1267): each of Find, GoToLine and the comment editor owns full
+    /// text editors, and an agent answer keeps one `CodeEditorView` per fenced code block for
+    /// the life of the conversation, so building them eagerly cost ~0.5 MB per code block.
     find_bar: Option<ViewHandle<Find>>,
-    goto_line_dialog: ViewHandle<GoToLineView>,
+    /// False when find and replace is disabled for this editor (`disable_find_and_replace`).
+    find_enabled: bool,
+    goto_line_dialog: Option<ViewHandle<GoToLineView>>,
     nav_bar: ViewHandle<NavBar>,
     display_states: DisplayHandles,
     is_selecting: bool,
@@ -283,7 +278,7 @@ pub struct CodeEditorView {
     vim_model: ModelHandle<VimModel>,
     // Track the most recent Vim search direction to determine how to cycle (n/N) thereafter.
     last_search_direction: Direction,
-    active_comment_editor: ViewHandle<CommentEditor>,
+    active_comment_editor: Option<ViewHandle<CommentEditor>>,
     /// TODO: maybe turn into a map for fast UUID or range lookup
     comment_locations: Vec<SavedComment>,
     /// Save position of the comment button rendered within this code editor view.
@@ -295,6 +290,9 @@ pub struct CodeEditorView {
     /// The offset where find references card is anchored (if showing).
     find_references_anchor_offset: Option<CharOffset>,
     window_id: WindowId,
+    /// Holds the keys typed while a paste is read off the UI thread, so they apply after the
+    /// pasted text in typing order (#1380).
+    paste_gate: crate::terminal::paste_sequencer::PasteSequencer<CodeEditorViewAction>,
 }
 
 impl CodeEditorView {
@@ -352,16 +350,6 @@ impl CodeEditorView {
             me.handle_searcher_event(event, ctx);
         });
 
-        let find_bar = ctx.add_typed_action_view(|ctx| Find::new(searcher.clone(), ctx));
-        ctx.subscribe_to_view(&find_bar, move |me, _, event, ctx| {
-            me.handle_find_event(event, ctx);
-        });
-
-        let goto_line_dialog = ctx.add_typed_action_view(GoToLineView::new);
-        ctx.subscribe_to_view(&goto_line_dialog, |me, _, event, ctx| {
-            me.handle_goto_line_event(event, ctx);
-        });
-
         let nav_bar = ctx.add_typed_action_view(|ctx| NavBar::new(model.clone(), ctx));
         ctx.subscribe_to_view(&nav_bar, |me, _, event, ctx| match event {
             NavBarEvent::Close => {
@@ -389,17 +377,11 @@ impl CodeEditorView {
             ctx.notify();
         });
 
-        let comment_model = model.as_ref(ctx).comments().clone();
-        let comment_editor =
-            ctx.add_typed_action_view(|ctx| CommentEditor::new(ctx, comment_model));
-        ctx.subscribe_to_view(&comment_editor, |me, _, event, ctx| {
-            me.handle_comment_editor_event(event, ctx);
-        });
-
         Self {
             searcher,
-            find_bar: Some(find_bar),
-            goto_line_dialog,
+            find_bar: None,
+            find_enabled: true,
+            goto_line_dialog: None,
             model,
             display_states: Default::default(),
             is_selecting: false,
@@ -438,7 +420,7 @@ impl CodeEditorView {
             supports_vim_mode,
             vim_model,
             last_search_direction: Direction::Forward,
-            active_comment_editor: comment_editor,
+            active_comment_editor: None,
             comment_save_position_id: format!("code_editor_comment_{}", ctx.view_id()),
             show_comment_editor_provider: render_options.show_comment_editor_provider,
             find_references_save_position_id: format!(
@@ -448,6 +430,7 @@ impl CodeEditorView {
             show_find_references_provider: render_options.show_find_references_provider,
             find_references_anchor_offset: None,
             window_id: ctx.window_id(),
+            paste_gate: Default::default(),
         }
     }
 
@@ -536,7 +519,63 @@ impl CodeEditorView {
 
     pub(crate) fn disable_find_and_replace(mut self) -> Self {
         self.find_bar = None;
+        self.find_enabled = false;
         self
+    }
+
+    /// The find bar, created on first use. None when find and replace is disabled.
+    fn ensure_find_bar(&mut self, ctx: &mut ViewContext<Self>) -> Option<ViewHandle<Find>> {
+        if !self.find_enabled {
+            return None;
+        }
+        if self.find_bar.is_none() {
+            let searcher = self.searcher.clone();
+            let find_bar = ctx.add_typed_action_view(|ctx| Find::new(searcher.clone(), ctx));
+            ctx.subscribe_to_view(&find_bar, move |me, _, event, ctx| {
+                me.handle_find_event(event, ctx);
+            });
+            self.find_bar = Some(find_bar);
+        }
+        self.find_bar.clone()
+    }
+
+    /// The go-to-line dialog, created on first use.
+    fn ensure_goto_line_dialog(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<GoToLineView> {
+        if let Some(dialog) = &self.goto_line_dialog {
+            return dialog.clone();
+        }
+        let dialog = ctx.add_typed_action_view(GoToLineView::new);
+        ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
+            me.handle_goto_line_event(event, ctx);
+        });
+        self.goto_line_dialog = Some(dialog.clone());
+        dialog
+    }
+
+    fn goto_line_dialog_open(&self, app: &AppContext) -> bool {
+        self.goto_line_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.as_ref(app).is_open())
+    }
+
+    /// The inline comment editor, created on first use.
+    fn ensure_comment_editor(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<CommentEditor> {
+        if let Some(editor) = &self.active_comment_editor {
+            return editor.clone();
+        }
+        let comment_model = self.model.as_ref(ctx).comments().clone();
+        let editor = ctx.add_typed_action_view(|ctx| CommentEditor::new(ctx, comment_model));
+        ctx.subscribe_to_view(&editor, |me, _, event, ctx| {
+            me.handle_comment_editor_event(event, ctx);
+        });
+        self.active_comment_editor = Some(editor.clone());
+        editor
     }
 
     fn find_bar_open(&self, ctx: &mut ViewContext<Self>) -> bool {
@@ -548,7 +587,7 @@ impl CodeEditorView {
     }
 
     fn show_find_bar(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(find_bar) = &self.find_bar else {
+        let Some(find_bar) = self.ensure_find_bar(ctx) else {
             return;
         };
 
@@ -576,7 +615,7 @@ impl CodeEditorView {
             find_bar.set_open(true);
         });
         self.update_decorations_and_position(ctx);
-        ctx.focus(find_bar);
+        ctx.focus(&find_bar);
         ctx.notify();
     }
 
@@ -678,17 +717,20 @@ impl CodeEditorView {
         if self.find_bar_open(ctx) {
             self.close_find_bar(false, ctx);
         }
-        self.goto_line_dialog.update(ctx, |dialog, ctx| {
+        let goto_line_dialog = self.ensure_goto_line_dialog(ctx);
+        goto_line_dialog.update(ctx, |dialog, ctx| {
             dialog.open(ctx);
         });
-        ctx.focus(&self.goto_line_dialog);
+        ctx.focus(&goto_line_dialog);
         ctx.notify();
     }
 
     fn close_goto_line_dialog(&mut self, ctx: &mut ViewContext<Self>) {
-        self.goto_line_dialog.update(ctx, |dialog, ctx| {
-            dialog.close(ctx);
-        });
+        if let Some(goto_line_dialog) = &self.goto_line_dialog {
+            goto_line_dialog.update(ctx, |dialog, ctx| {
+                dialog.close(ctx);
+            });
+        }
         self.focus(ctx);
         ctx.notify();
     }
@@ -699,9 +741,10 @@ impl CodeEditorView {
                 self.close_goto_line_dialog(ctx);
             }
             GoToLineEvent::Confirm { input } => {
+                let goto_line_dialog = self.ensure_goto_line_dialog(ctx);
                 let trimmed = input.trim().to_string();
                 if trimmed.is_empty() {
-                    self.goto_line_dialog.update(ctx, |dialog, ctx| {
+                    goto_line_dialog.update(ctx, |dialog, ctx| {
                         dialog.set_error("Please enter a line number".to_string(), ctx);
                     });
                     return;
@@ -713,7 +756,7 @@ impl CodeEditorView {
                 let line_number = match line_str.parse::<usize>() {
                     Ok(n) if n >= 1 => n,
                     _ => {
-                        self.goto_line_dialog.update(ctx, |dialog, ctx| {
+                        goto_line_dialog.update(ctx, |dialog, ctx| {
                             dialog.set_error("Please enter a valid line number".to_string(), ctx);
                         });
                         return;
@@ -723,7 +766,7 @@ impl CodeEditorView {
                     Some(c) if !c.is_empty() => match c.parse::<usize>() {
                         Ok(n) => Some(n),
                         Err(_) => {
-                            self.goto_line_dialog.update(ctx, |dialog, ctx| {
+                            goto_line_dialog.update(ctx, |dialog, ctx| {
                                 dialog.set_error(
                                     "Please enter a valid column number".to_string(),
                                     ctx,
@@ -745,7 +788,7 @@ impl CodeEditorView {
     }
 
     fn escape(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.goto_line_dialog.as_ref(ctx).is_open() {
+        if self.goto_line_dialog_open(ctx) {
             self.close_goto_line_dialog(ctx);
             return;
         }
@@ -826,13 +869,6 @@ impl CodeEditorView {
 
     pub fn set_horizontal_scrollbar_appearance(&mut self, appearance: ScrollableAppearance) {
         self.display_options.horizontal_scrollbar_appearance = appearance;
-    }
-
-    pub fn set_show_find_references_provider(
-        &mut self,
-        provider: impl ShowFindReferencesCardProvider,
-    ) {
-        self.show_find_references_provider = Box::new(provider);
     }
 
     pub fn set_find_highlights(
@@ -1025,9 +1061,10 @@ impl CodeEditorView {
     }
 
     fn handle_find_event(&mut self, event: &FindViewEvent, ctx: &mut ViewContext<Self>) {
-        let Some(find_bar) = &self.find_bar else {
+        let Some(find_bar) = self.find_bar.clone() else {
             return;
         };
+        let find_bar = &find_bar;
 
         match event {
             FindViewEvent::CloseFindBar => {
@@ -1558,6 +1595,13 @@ impl CodeEditorView {
         })
     }
 
+    /// Drops the editor's laid-out paragraphs, syntax trees and highlight data now (#1407); see
+    /// [`CodeEditorModel::release_memory`]. For a closed editor only.
+    pub fn release_memory(&self, ctx: &mut ViewContext<Self>) {
+        self.model
+            .update(ctx, |model, ctx| model.release_memory(ctx));
+    }
+
     /// Reset editor content using InitialBufferState.
     /// This is the preferred method for resetting editor content as it consolidates all parameters.
     pub fn reset(&self, state: InitialBufferState, ctx: &mut ViewContext<Self>) {
@@ -1639,18 +1683,6 @@ impl CodeEditorView {
         self.model.update(ctx, |model, ctx| {
             model.retrieve_unified_diff(file_name, ctx);
         });
-    }
-
-    /// Identifies which line (current or removed) is at the given content-space
-    /// vertical offset. Delegates to [`CodeEditorModel::line_at_vertical_offset`].
-    #[allow(dead_code)]
-    pub fn line_at_vertical_offset(
-        &self,
-        offset: Pixels,
-        ctx: &mut ViewContext<Self>,
-    ) -> Option<(StableEditorLine, Pixels)> {
-        self.model
-            .update(ctx, |model, ctx| model.line_at_vertical_offset(offset, ctx))
     }
 
     /// Returns the content-space vertical offset of the top of the given line.
@@ -2197,11 +2229,24 @@ impl CodeEditorView {
         if !ctx.is_self_focused() {
             return;
         }
+        // One character per step. The vim model's events (a paste that starts a clipboard read
+        // among them) reach this view only once the current update ends, so the next character
+        // cannot be told from here whether the previous one started a read. The rest of the input
+        // is queued as a deferred action: it runs after this character's events, and the paste
+        // gate holds it, in order, when one of them began a read (#1405).
+        let mut chars = text.chars();
+        let Some(c) = chars.next() else {
+            return;
+        };
+        let rest = chars.as_str();
         self.vim_model.update(ctx, |vim_model, ctx| {
-            for c in text.chars() {
-                vim_model.typed_character(c, ctx);
-            }
+            vim_model.typed_character(c, ctx);
         });
+        if !rest.is_empty() {
+            ctx.dispatch_typed_action_deferred(CodeEditorViewAction::VimUserTyped(
+                UserInput::new(rest),
+            ));
+        }
     }
 
     /// Similar to Self::vim_user_insert, but for keystrokes which aren't represented by a char.
@@ -2236,16 +2281,16 @@ impl CodeEditorView {
             return;
         }
 
-        self.active_comment_editor
-            .update(ctx, |comment_editor, ctx| {
-                comment_editor.reopen_saved_comment(
-                    id,
-                    Some(location.clone()),
-                    comment_text,
-                    origin,
-                    ctx,
-                );
-            });
+        let active_comment_editor = self.ensure_comment_editor(ctx);
+        active_comment_editor.update(ctx, |comment_editor, ctx| {
+            comment_editor.reopen_saved_comment(
+                id,
+                Some(location.clone()),
+                comment_text,
+                origin,
+                ctx,
+            );
+        });
 
         self.model.update(ctx, |editor_model, ctx| {
             editor_model.reopen_comment_line(id, location, comment_text, origin, ctx);
@@ -2262,6 +2307,11 @@ impl Entity for CodeEditorView {
 impl View for CodeEditorView {
     fn ui_name() -> &'static str {
         "CodeEditorView"
+    }
+
+    fn takes_typed_text(&self) -> bool {
+        // A terminal pane's key sink leaves the keys typed here to this editor (#1404).
+        true
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
@@ -2429,8 +2479,12 @@ impl View for CodeEditorView {
                 stack.add_overlay_child(ChildView::new(find_bar).finish());
             }
         }
-        if self.goto_line_dialog.as_ref(app).is_open() {
-            let dialog = Dismiss::new(ChildView::new(&self.goto_line_dialog).finish())
+        if let Some(goto_line_dialog) = self
+            .goto_line_dialog
+            .as_ref()
+            .filter(|dialog| dialog.as_ref(app).is_open())
+        {
+            let dialog = Dismiss::new(ChildView::new(goto_line_dialog).finish())
                 .on_dismiss(|ctx, _app| {
                     ctx.dispatch_typed_action(CodeEditorViewAction::Escape);
                 })
@@ -2438,38 +2492,40 @@ impl View for CodeEditorView {
             stack.add_overlay_child(dialog);
         }
 
-        if !FeatureFlag::EmbeddedCodeReviewComments.is_enabled() {
-            // Render the open comment editor.
-            if let PendingComment::Open { line, .. } = pending_comment {
-                let render_state_ref = render_state.as_ref(app);
-                let vertical_offset = render_state_ref
-                    .vertical_offset_at_render_location(line.clone().into_render_line_location())
-                    .unwrap_or_default()
-                    + render_state_ref.styles().base_line_height();
+        // Render the open comment editor.
+        if let PendingComment::Open { line, .. } = pending_comment {
+            let render_state_ref = render_state.as_ref(app);
+            let vertical_offset = render_state_ref
+                .vertical_offset_at_render_location(line.clone().into_render_line_location())
+                .unwrap_or_default()
+                + render_state_ref.styles().base_line_height();
 
-                let line_location = app.element_position_by_id_at_last_frame(
-                    self.window_id,
-                    &self.comment_save_position_id,
+            let line_location = app.element_position_by_id_at_last_frame(
+                self.window_id,
+                &self.comment_save_position_id,
+            );
+
+            let should_render_comment_editor = match line_location {
+                Some(line_location) => self
+                    .show_comment_editor_provider
+                    .should_show_comment_editor(line_location, app),
+                None => true,
+            };
+
+            if let Some(active_comment_editor) = self
+                .active_comment_editor
+                .as_ref()
+                .filter(|_| should_render_comment_editor)
+            {
+                stack.add_positioned_child(
+                    ChildView::new(active_comment_editor).finish(),
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(0., vertical_offset.as_f32()),
+                        ParentOffsetBounds::ParentByPosition,
+                        ParentAnchor::TopLeft,
+                        ChildAnchor::TopLeft,
+                    ),
                 );
-
-                let should_render_comment_editor = match line_location {
-                    Some(line_location) => self
-                        .show_comment_editor_provider
-                        .should_show_comment_editor(line_location, app),
-                    None => true,
-                };
-
-                if should_render_comment_editor {
-                    stack.add_positioned_child(
-                        ChildView::new(&self.active_comment_editor).finish(),
-                        OffsetPositioning::offset_from_parent(
-                            vec2f(0., vertical_offset.as_f32()),
-                            ParentOffsetBounds::ParentByPosition,
-                            ParentAnchor::TopLeft,
-                            ChildAnchor::TopLeft,
-                        ),
-                    );
-                }
             }
         }
         stack.finish()
@@ -2477,8 +2533,12 @@ impl View for CodeEditorView {
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
         if focus_ctx.is_self_focused() {
-            if self.goto_line_dialog.as_ref(ctx).is_open() {
-                ctx.focus(&self.goto_line_dialog);
+            if let Some(goto_line_dialog) = self
+                .goto_line_dialog
+                .as_ref()
+                .filter(|dialog| dialog.as_ref(ctx).is_open())
+            {
+                ctx.focus(goto_line_dialog);
             } else {
                 // Re-render to show the cursor, and restart the blink cycle from "visible" so it
                 // doesn't come back showing whatever phase it happened to freeze in while
@@ -2519,7 +2579,7 @@ impl View for CodeEditorView {
                 context.set.insert("VimNormalMode");
             }
         }
-        if self.find_bar.is_some() {
+        if self.find_enabled {
             context.set.insert("FindBarAvailable");
         }
         context

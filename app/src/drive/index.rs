@@ -1,5 +1,3 @@
-#[cfg(target_family = "wasm")]
-use crate::uri::web_intent_parser::open_url_on_desktop;
 use crate::{
     ai::{
         document::ai_document_model::AIDocumentId,
@@ -102,7 +100,6 @@ const HINT_TEXT_PADDING: f32 = 12.;
 
 const SCROLLBAR_WIDTH: ScrollbarWidth = ScrollbarWidth::Auto;
 const SECTION_HEADER_FONT_SIZE: f32 = 12.;
-const TEAM_SECTIONS_TITLE_FONT_SIZE: f32 = 12.;
 pub const ITEM_FONT_SIZE: f32 = 14.;
 const TITLE_FONT_SIZE: f32 = 16.;
 const WARNING_FONT_SIZE: f32 = 12.;
@@ -138,8 +135,6 @@ const DIALOG_OFFSET_PIXELS: f32 = -16.;
 const HOVER_PREVIEW_X_OFFSET: f32 = 4.;
 const HOVER_PREVIEW_Y_OFFSET: f32 = 0.;
 
-const CREATE_TEAM_ICON_WIDTH: f32 = 16.;
-const CREATE_TEAM_ICON_HEIGHT: f32 = 16.;
 const MENU_WIDTH: f32 = 194.;
 const CLOUD_OFFLINE_ICON_WIDTH: f32 = 20.;
 const CLOUD_OFFLINE_ICON_HEIGHT: f32 = 18.;
@@ -4918,7 +4913,6 @@ impl TypedActionView for DriveIndex {
             DriveIndexAction::OpenObjectLinkOnDesktop(url) => {
                 open_url_on_desktop(url);
             }
-            #[cfg(not(target_family = "wasm"))]
             DriveIndexAction::OpenObjectLinkOnDesktop(_) => {
                 // No-op when not on wasm
             }

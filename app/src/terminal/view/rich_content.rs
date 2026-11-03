@@ -1,25 +1,24 @@
-use warpui::{prelude::ChildView, Element, EntityId, View, ViewContext, ViewHandle};
+use warpui::{Element, EntityId, View, ViewContext, ViewHandle, prelude::ChildView};
 
 use crate::{
     ai::{
-        agent::{conversation::AIConversationId, AIAgentExchangeId},
-        blocklist::{agent_view::AgentViewEntryOrigin, AIBlock},
+        agent::{AIAgentExchangeId, conversation::AIConversationId},
+        blocklist::{AIBlock, agent_view::AgentViewEntryOrigin},
     },
     env_vars::env_var_collection_block::EnvVarCollectionBlock,
     terminal::{
+        TerminalView,
         block_list_viewport::ScrollPositionUpdate,
         model::{
             blocks::RichContentItem, rich_content::RichContentType, terminal_model::BlockIndex,
         },
         ssh::{error::SshErrorBlock, install_tmux::SshInstallTmuxBlock, warpify::SshWarpifyBlock},
         view::{
-            ambient_agent::AmbientAgentEntryBlock,
             block_onboarding::onboarding_agentic_suggestions_block::OnboardingAgenticSuggestionsBlock,
             ssh_remote_server_choice_view::SshRemoteServerChoiceView,
             ssh_remote_server_failed_banner::SshRemoteServerFailedBanner,
         },
         warpify::success_block::WarpifySuccessBlock,
-        TerminalView,
     },
 };
 
@@ -152,10 +151,6 @@ impl RichContent {
         matches!(self.metadata, Some(RichContentMetadata::UsageFooter))
     }
 
-    pub fn is_agent_view_entry(&self) -> bool {
-        matches!(self.metadata, Some(RichContentMetadata::AgentViewEntry(_)))
-    }
-
     pub fn is_inline_agent_view_header(&self) -> bool {
         matches!(
             self.metadata,
@@ -226,9 +221,6 @@ pub enum RichContentMetadata {
         bootstrap_success_block_handle: ViewHandle<WarpifySuccessBlock>,
     },
     AgentViewEntry(AgentViewEntryMetadata),
-    AmbientAgentBlock {
-        block_handle: ViewHandle<AmbientAgentEntryBlock>,
-    },
     InlineAgentViewHeader,
     AgentViewZeroState,
     TerminalViewZeroState,

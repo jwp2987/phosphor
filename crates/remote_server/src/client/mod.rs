@@ -45,6 +45,21 @@ pub use remote_server_log::RemoteServerLog;
 /// Default request timeout (2 minutes).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Whether `Initialize` tells the daemon this client reassembles `FrameChunk`s (#1244). The
+/// reader always reassembles; the announcement only lets the daemon split its large responses.
+/// `PHOSPHOR_SSH_CHUNKED_RESPONSES=0` keeps whole frames, as from an older daemon.
+fn chunked_responses_announced() -> bool {
+    chunked_responses_announced_from_env(
+        std::env::var("PHOSPHOR_SSH_CHUNKED_RESPONSES")
+            .ok()
+            .as_deref(),
+    )
+}
+
+pub(crate) fn chunked_responses_announced_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
 /// Errors from the `RemoteServerClient`.
 #[derive(thiserror::Error, Debug)]
 pub enum ClientError {
@@ -228,7 +243,6 @@ impl fmt::Debug for RemoteServerClient {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl RemoteServerClient {
     /// Creates a client from a child process's stdin, stdout, and stderr.
     ///
@@ -348,6 +362,7 @@ impl RemoteServerClient {
                 auth_token: auth_token.unwrap_or_default().to_owned(),
                 codebase_index_limits: preferences.codebase_index_limits,
                 embedding_provider: preferences.embedding_provider,
+                chunked_responses: chunked_responses_announced(),
             }),
         );
 
@@ -1134,6 +1149,13 @@ impl RemoteServerClient {
     /// Registers a oneshot channel keyed by `request_id`, sends the message
     /// through the outbound channel, and awaits the correlated response.
     /// Times out after `REQUEST_TIMEOUT` and sends an `Abort` to the server.
+    ///
+    /// Dropping the returned future before it completes also sends an `Abort` (#1128, #1241):
+    /// generators are superseded per keystroke, agent reads and searches are cancelled by Stop,
+    /// link probes by the next hover. Without telling the server the work runs to completion
+    /// remotely and its result crosses the shared ssh connection to be discarded. The server
+    /// drops the handler future, which kills the command's process group; a server that does
+    /// not know the request (older, or already finished) ignores it.
     async fn send_request(
         &self,
         request_id: RequestId,
@@ -1141,22 +1163,31 @@ impl RemoteServerClient {
     ) -> Result<ServerMessage, ClientError> {
         let (tx, rx) = oneshot::channel();
         self.pending_requests.insert(request_id.clone(), tx);
+        let mut abort_guard = AbortOnDrop {
+            client: self,
+            request_id: Some(request_id.clone()),
+        };
 
         // Check if the reader task has already marked the connection as dead.
         // The DashMap lock from `insert` above synchronizes with the lock from
         // `clear` in `reader_task`, so if `clear` ran before our insert the
         // flag is guaranteed to be visible here.
         if self.disconnected.load(Ordering::Acquire) {
+            abort_guard.request_id = None;
             self.pending_requests.clear();
             return Err(ClientError::Disconnected);
         }
 
         if self.outbound_tx.send(msg).await.is_err() {
+            abort_guard.request_id = None;
             self.pending_requests.remove(&request_id);
             return Err(ClientError::Disconnected);
         }
 
-        let result = match rx.with_timeout(REQUEST_TIMEOUT).await {
+        let result = rx.with_timeout(REQUEST_TIMEOUT).await;
+        // Settled one way or another: nothing is left to cancel on drop.
+        abort_guard.request_id = None;
+        let result = match result {
             Ok(Ok(inner)) => inner,
             Ok(Err(_)) => return Err(ClientError::ResponseChannelClosed),
             Err(_) => {
@@ -1262,8 +1293,31 @@ impl RemoteServerClient {
         host_response_tx: async_channel::Sender<ServerMessage>,
     ) {
         let mut reader = futures::io::BufReader::new(reader);
+        // #1244: a large response arrives as `FrameChunk`s; the reassembled message, or a
+        // chunk stream's decode error, takes the same path as a whole frame.
+        let mut reassembler = crate::frames::ChunkReassembler::default();
         loop {
-            match protocol::read_server_message(&mut reader).await {
+            let read = match protocol::read_server_message(&mut reader).await {
+                Ok(ServerMessage {
+                    message: Some(server_message::Message::FrameChunk(chunk)),
+                    ..
+                }) => match reassembler.accept(chunk) {
+                    Ok(None) => continue,
+                    Ok(Some(msg)) => Ok(msg),
+                    // The stream outgrew the message cap and was dropped; the wire stays
+                    // aligned, so reading goes on (its request times out, as a lost response
+                    // always did). A whole frame over the cap is fatal below, as before.
+                    Err(ProtocolError::MessageTooLarge { size, max }) => {
+                        log::warn!(
+                            "Reader task: dropped a chunked response of {size} bytes (cap {max})"
+                        );
+                        continue;
+                    }
+                    Err(e) => Err(e),
+                },
+                other => other,
+            };
+            match read {
                 Ok(msg) => {
                     let request_id = RequestId::from(msg.request_id.clone());
                     if request_id.is_empty() {
@@ -1370,7 +1424,6 @@ impl RemoteServerClient {
 /// Spawns a background task that reads lines from the server's stderr,
 /// forwards them to the client's logging, and retains the last few lines
 /// in a shared buffer for failure diagnostics.
-#[cfg(not(target_family = "wasm"))]
 pub fn spawn_stderr_forwarder(
     stderr: impl AsyncRead + TransportStream,
     executor: &executor::Background,
@@ -1393,6 +1446,23 @@ pub fn spawn_stderr_forwarder(
         .detach();
 
     tail
+}
+
+/// Sends an `Abort` for an in-flight request if dropped while still armed, i.e. when the
+/// future awaiting the response is cancelled before it completes. Armed by `send_request` for
+/// every awaited request; disarmed on every settled path.
+struct AbortOnDrop<'a> {
+    client: &'a RemoteServerClient,
+    request_id: Option<RequestId>,
+}
+
+impl Drop for AbortOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(request_id) = self.request_id.take() {
+            self.client.pending_requests.remove(&request_id);
+            self.client.send_abort(&request_id);
+        }
+    }
 }
 
 #[cfg(test)]

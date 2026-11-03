@@ -757,7 +757,7 @@ fn test_format_single_errors() {
 
     assert_eq!(
         DiffApplicationError::error_for_conversation(&errs),
-        "Could not read no_permissions.scala"
+        "Could not read no_permissions.scala: permission denied"
     );
 }
 
@@ -1413,4 +1413,376 @@ fn test_apply_v4a_rename_destination_is_resolved_against_session_cwd() {
             }
         }
     });
+}
+
+// ── #1277: errors instead of silent drops, and causes kept ──────────────────────────────
+
+/// Runs `edits` against the real filesystem and returns the result.
+async fn apply_on_disk(
+    app: &App,
+    edits: Vec<FileEdit>,
+) -> Result<Vec<AIRequestedCodeDiff>, Vec1<DiffApplicationError>> {
+    apply_edits(
+        edits,
+        &SessionContext::new_for_test(),
+        &AIIdentifiers::default(),
+        app.background_executor(),
+        Arc::new(AuthState::new_for_test()),
+        false,
+        |path| async move { FileReadResult::from(std::fs::read_to_string(path)) },
+    )
+    .await
+}
+
+fn str_replace(file: &str, search: Option<&str>, replace: Option<&str>) -> FileEdit {
+    FileEdit::Edit(ParsedDiff::StrReplaceEdit {
+        file: Some(file.to_owned()),
+        search: search.map(str::to_owned),
+        replace: replace.map(str::to_owned),
+    })
+}
+
+/// Old code prepended the replacement at line 0 of the existing file.
+#[test]
+fn an_empty_search_on_an_existing_file_is_rejected() {
+    App::test((), |app| async move {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_string_lossy().to_string();
+        writeln!(&mut temp_file, "existing content").unwrap();
+
+        for search in [None, Some("")] {
+            let errors = apply_on_disk(
+                &app,
+                vec![str_replace(&file_path, search, Some("overwrite attempt"))],
+            )
+            .await
+            .expect_err("an empty search on a non-empty file must not prepend");
+            match &errors[..] {
+                [DiffApplicationError::EmptySearch { file }] => assert_eq!(*file, file_path),
+                other => panic!("expected EmptySearch, got {other:?}"),
+            }
+            let message = DiffApplicationError::error_for_conversation(&errors);
+            assert!(message.contains("empty search"), "got: {message}");
+        }
+    });
+}
+
+/// An empty search remains the way to create a file that does not exist.
+#[test]
+fn an_empty_search_on_a_missing_file_still_creates_it() {
+    App::test((), |app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt").to_string_lossy().to_string();
+        let diffs = apply_on_disk(&app, vec![str_replace(&path, Some(""), Some("hello"))])
+            .await
+            .expect("explicit create via empty search");
+        assert!(matches!(diffs[0].diff_type, DiffType::Create { .. }));
+    });
+}
+
+#[test]
+fn an_edit_with_neither_search_nor_replace_is_an_error() {
+    App::test((), |app| async move {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let file_path = temp_file.path().to_string_lossy().to_string();
+        writeln!(&mut temp_file, "existing content").unwrap();
+
+        for (search, replace) in [(None, None), (Some(""), Some(""))] {
+            let errors = apply_on_disk(&app, vec![str_replace(&file_path, search, replace)])
+                .await
+                .expect_err("an edit that changes nothing must be reported");
+            assert!(
+                matches!(&errors[..], [DiffApplicationError::EmptyEdit { file }] if *file == file_path),
+                "got {errors:?}"
+            );
+        }
+    });
+}
+
+/// Old code dropped a create with no content (`continue`), so the call reported "No diffs
+/// could be applied" or silently skipped the file when other edits succeeded.
+#[test]
+fn a_create_with_empty_content_is_an_error() {
+    App::test((), |app| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.txt").to_string_lossy().to_string();
+        for content in [None, Some(String::new())] {
+            let errors = apply_on_disk(
+                &app,
+                vec![FileEdit::Create {
+                    file: Some(path.clone()),
+                    content,
+                }],
+            )
+            .await
+            .expect_err("an empty create must be reported");
+            assert!(
+                matches!(&errors[..], [DiffApplicationError::EmptyCreate { file }] if *file == path),
+                "got {errors:?}"
+            );
+        }
+    });
+}
+
+/// The cause of a failed read reaches the model (EACCES, non-UTF-8, ...).
+#[test]
+fn a_read_failure_carries_its_cause_into_the_message() {
+    App::test((), |app| async move {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(&[0xff, 0xfe, 0x00, 0x80]).unwrap();
+        let file_path = temp_file.path().to_string_lossy().to_string();
+        let errors = apply_on_disk(&app, vec![str_replace(&file_path, Some("x"), Some("y"))])
+            .await
+            .expect_err("a non-UTF-8 file cannot be read as text");
+        let message = DiffApplicationError::error_for_conversation(&errors);
+        assert!(
+            message.starts_with(&format!("Could not read {file_path}:")),
+            "got: {message}"
+        );
+        assert!(message.len() > format!("Could not read {file_path}:").len() + 1);
+    });
+}
+
+// ── #1288: `~` on a remote session is the remote home ───────────────────────────────────
+
+/// Runs `edits` on `session` with a reader that records every path it is asked for.
+async fn read_paths_for(
+    app: &App,
+    session: &SessionContext,
+    edits: Vec<FileEdit>,
+) -> (
+    Result<Vec<AIRequestedCodeDiff>, Vec1<DiffApplicationError>>,
+    Vec<String>,
+) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_in_reader = seen.clone();
+    let result = apply_edits(
+        edits,
+        session,
+        &AIIdentifiers::default(),
+        app.background_executor(),
+        Arc::new(AuthState::new_for_test()),
+        false,
+        move |path| {
+            seen_in_reader.lock().unwrap().push(path);
+            async { FileReadResult::NotFound }
+        },
+    )
+    .await;
+    let seen = seen.lock().unwrap().clone();
+    (result, seen)
+}
+
+/// Old code resolved `~/tmp-r18-1288/a.txt` with the local home, so the remote server was asked
+/// for `<local home>/tmp-r18-1288/a.txt`.
+#[test]
+fn a_remote_create_reads_the_remote_home_path() {
+    App::test((), |app| async move {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser",
+        );
+        let create = FileEdit::Create {
+            file: Some("~/tmp-r18-1288/a.txt".to_owned()),
+            content: Some("hi".to_owned()),
+        };
+        let (_, seen) = read_paths_for(&app, &session, vec![create]).await;
+        assert_eq!(seen, ["/home/remoteuser/tmp-r18-1288/a.txt"]);
+    });
+}
+
+#[test]
+fn a_remote_move_resolves_source_and_destination_against_the_remote_home() {
+    App::test((), |app| async move {
+        let session = SessionContext::new_remote_with_home_for_test(
+            Some("/home/remoteuser"),
+            "/home/remoteuser",
+        );
+        let edit = FileEdit::Edit(ParsedDiff::V4AEdit {
+            file: Some("~/a.txt".to_owned()),
+            move_to: Some("~/b.txt".to_owned()),
+            hunks: Vec::new(),
+        });
+        let (_, seen) = read_paths_for(&app, &session, vec![edit]).await;
+        assert_eq!(
+            seen.first().map(String::as_str),
+            Some("/home/remoteuser/a.txt")
+        );
+        assert!(
+            seen.iter()
+                .all(|path| path.starts_with("/home/remoteuser/")),
+            "{seen:?}"
+        );
+    });
+}
+
+/// Unknown remote home: nothing is read or written, and the model is told why.
+#[test]
+fn a_remote_tilde_with_unknown_home_is_refused_before_any_io() {
+    App::test((), |app| async move {
+        let session = SessionContext::new_remote_with_home_for_test(None, "/srv");
+        let create = FileEdit::Create {
+            file: Some("~/tmp-r18-1288/a.txt".to_owned()),
+            content: Some("hi".to_owned()),
+        };
+        let (result, seen) = read_paths_for(&app, &session, vec![create]).await;
+        assert!(seen.is_empty(), "no read may happen: {seen:?}");
+        let errors = result.expect_err("must fail closed");
+        assert!(matches!(
+            &errors[..],
+            [DiffApplicationError::ReadFailed { .. }]
+        ));
+    });
+}
+
+/// #1277: a batch whose second diff fails to match yields an error for the whole batch (no
+/// diffs are returned to be written), and the first file is untouched on disk.
+#[test]
+fn batch_with_a_failing_second_diff_applies_nothing() {
+    App::test((), |app| async move {
+        let mut first = NamedTempFile::new().unwrap();
+        write!(&mut first, "alpha\nbeta\n").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let mut second = NamedTempFile::new().unwrap();
+        write!(&mut second, "gamma\n").unwrap();
+        let second_path = second.path().to_string_lossy().to_string();
+
+        let good = ParsedDiff::StrReplaceEdit {
+            file: Some(first_path.clone()),
+            search: Some("1|alpha".to_string()),
+            replace: Some("ALPHA".to_string()),
+        };
+        let bad = ParsedDiff::StrReplaceEdit {
+            file: Some(second_path.clone()),
+            search: Some("1|does not exist".to_string()),
+            replace: Some("x".to_string()),
+        };
+
+        let result = apply_edits(
+            vec![FileEdit::Edit(good), FileEdit::Edit(bad)],
+            &SessionContext::new_for_test(),
+            &AIIdentifiers::default(),
+            app.background_executor(),
+            Arc::new(AuthState::new_for_test()),
+            false,
+            |path| async move { FileReadResult::from(std::fs::read_to_string(path)) },
+        )
+        .await;
+
+        let errors = result.expect_err("a failing diff fails the whole batch");
+        assert!(
+            matches!(&errors[..], [DiffApplicationError::UnmatchedDiffs { file, .. }] if *file == second_path)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&first_path).unwrap(),
+            "alpha\nbeta\n"
+        );
+    })
+}
+
+async fn strict_run(
+    app: &App,
+    path: &str,
+    search: &str,
+    replace: &str,
+    strict: bool,
+) -> Result<Vec<ai::diff_validation::AIRequestedCodeDiff>, vec1::Vec1<DiffApplicationError>> {
+    let edit = FileEdit::Edit(ParsedDiff::StrReplaceEdit {
+        file: Some(path.to_string()),
+        search: Some(search.to_string()),
+        replace: Some(replace.to_string()),
+    });
+    let session_context = SessionContext::new_for_test();
+    let auth_state = Arc::new(AuthState::new_for_test());
+    let ids = AIIdentifiers::default();
+    let exec = app.background_executor();
+    let read = |path: String| async move { FileReadResult::from(std::fs::read_to_string(path)) };
+    if strict {
+        apply_edits_strict(
+            vec![edit],
+            &session_context,
+            &ids,
+            exec,
+            auth_state,
+            false,
+            read,
+        )
+        .await
+    } else {
+        apply_edits(
+            vec![edit],
+            &session_context,
+            &ids,
+            exec,
+            auth_state,
+            false,
+            read,
+        )
+        .await
+    }
+}
+
+/// #1277: the agent path refuses a search that matches in several places; other callers keep
+/// applying it (to the best match).
+#[test]
+fn strict_mode_refuses_a_search_matching_several_places() {
+    App::test((), |app| async move {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(
+            &mut file,
+            "fn a() {{\n    x();\n}}\nfn b() {{\n    x();\n}}\n"
+        )
+        .unwrap();
+        let path = file.path().to_string_lossy().to_string();
+
+        let errors = strict_run(&app, &path, "    x();", "    y();", true)
+            .await
+            .expect_err("ambiguous search must be refused");
+        match &errors[..] {
+            [DiffApplicationError::AmbiguousMatch { lines, .. }] => assert_eq!(lines, &vec![2, 5]),
+            other => panic!("expected AmbiguousMatch, got {other:?}"),
+        }
+        let message = DiffApplicationError::error_for_conversation(&errors);
+        assert!(message.contains("matched 2 places"), "{message}");
+        assert!(message.contains("more surrounding context"), "{message}");
+
+        // The non-agent entry point is unchanged.
+        assert!(
+            strict_run(&app, &path, "    x();", "    y();", false)
+                .await
+                .is_ok()
+        );
+        // A unique search is fine in strict mode.
+        assert!(
+            strict_run(&app, &path, "fn b() {", "fn c() {", true)
+                .await
+                .is_ok()
+        );
+    })
+}
+
+/// #1277: a whitespace-insensitive-only match is applied but reported.
+#[test]
+fn strict_mode_reports_a_loose_whitespace_match() {
+    App::test((), |app| async move {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(&mut file, "fn a() {{\n    only_here();\n}}\n").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+
+        let diffs = strict_run(&app, &path, "only_here();", "there();", true)
+            .await
+            .expect("a single loose match is applied");
+        assert_eq!(diffs.len(), 1);
+        let notes = crate::ai::agent_providers::tools::edit::edit_notes_for(&path);
+        assert_eq!(
+            notes,
+            vec!["applied via loose whitespace match at lines 2–2"]
+        );
+
+        // An exact match leaves no note.
+        strict_run(&app, &path, "    only_here();", "there();", true)
+            .await
+            .unwrap();
+        assert!(crate::ai::agent_providers::tools::edit::edit_notes_for(&path).is_empty());
+    })
 }

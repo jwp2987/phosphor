@@ -62,19 +62,16 @@ impl platform::FontDB for EmWidthFontDB {
         unimplemented!()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_from_system(&mut self, _font_family: &str) -> Result<FamilyId> {
         unimplemented!()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_all_system_fonts(
         &self,
     ) -> futures::future::BoxFuture<'static, Box<dyn platform::LoadedSystemFonts>> {
         unimplemented!()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn process_loaded_system_fonts(
         &mut self,
         _loaded_system_fonts: Box<dyn platform::LoadedSystemFonts>,
@@ -178,4 +175,150 @@ fn em_width_falls_back_when_horizontal_advance_is_zero() {
     let cache = EmWidthFontDB::cache(None, Some(vec2i(0, 0)));
 
     assert_eq!(cache.em_width(FamilyId(0), 16.0), 16.0);
+}
+
+/// A font database in which no font maps any character, counting how often the system fallback
+/// list is walked.
+struct NoGlyphFontDB {
+    fallback_walks: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl platform::FontDB for NoGlyphFontDB {
+    fn load_from_bytes(&mut self, _name: &str, _bytes: Vec<Vec<u8>>) -> Result<FamilyId> {
+        Ok(FamilyId(1))
+    }
+
+    fn load_from_system(&mut self, _font_family: &str) -> Result<FamilyId> {
+        Ok(FamilyId(2))
+    }
+
+    fn load_all_system_fonts(
+        &self,
+    ) -> futures::future::BoxFuture<'static, Box<dyn platform::LoadedSystemFonts>> {
+        unimplemented!()
+    }
+
+    fn process_loaded_system_fonts(
+        &mut self,
+        _loaded_system_fonts: Box<dyn platform::LoadedSystemFonts>,
+    ) -> Vec<(Option<FamilyId>, FontInfo)> {
+        unimplemented!()
+    }
+
+    fn fallback_fonts(&self, _ch: char, _font_id: FontId) -> Vec<FontId> {
+        self.fallback_walks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Vec::new()
+    }
+
+    fn select_font(&self, _family_id: FamilyId, _properties: Properties) -> FontId {
+        FontId(0)
+    }
+
+    fn font_metrics(&self, _font_id: FontId) -> Metrics {
+        unimplemented!()
+    }
+
+    fn glyph_advance(&self, _font_id: FontId, _glyph_id: GlyphId) -> Result<Vector2I> {
+        unimplemented!()
+    }
+
+    fn load_family_name_from_id(&self, _id: FamilyId) -> Option<String> {
+        unimplemented!()
+    }
+
+    fn glyph_raster_bounds(
+        &self,
+        _font_id: FontId,
+        _size: f32,
+        _glyph_id: GlyphId,
+        _scale: Vector2F,
+        _glyph_config: &crate::rendering::GlyphConfig,
+    ) -> Result<RectI> {
+        unimplemented!()
+    }
+
+    fn glyph_typographic_bounds(&self, _font_id: FontId, _glyph_id: GlyphId) -> Result<RectI> {
+        unimplemented!()
+    }
+
+    fn rasterize_glyph(
+        &self,
+        _font_id: FontId,
+        _size: f32,
+        _glyph_id: GlyphId,
+        _scale: Vector2F,
+        _subpixel_alignment: SubpixelAlignment,
+        _glyph_config: &crate::rendering::GlyphConfig,
+        _format: canvas::RasterFormat,
+    ) -> Result<RasterizedGlyph> {
+        unimplemented!()
+    }
+
+    fn glyph_for_char(&self, _font_id: FontId, _char: char) -> Option<GlyphId> {
+        None
+    }
+
+    fn family_id_for_name(&self, _name: &str) -> Option<FamilyId> {
+        unimplemented!()
+    }
+
+    fn text_layout_system(&self) -> &dyn TextLayoutSystem {
+        unimplemented!()
+    }
+}
+
+fn no_glyph_cache() -> (Cache, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let walks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cache = Cache::new(Box::new(NoGlyphFontDB {
+        fallback_walks: walks.clone(),
+    }));
+    (cache, walks)
+}
+
+#[test]
+fn unmapped_char_walks_the_fallback_list_once() {
+    use std::sync::atomic::Ordering;
+    let (cache, walks) = no_glyph_cache();
+
+    for _ in 0..5 {
+        assert_eq!(cache.glyph_for_char(FontId(0), '\u{e0b0}', true), None);
+    }
+    assert_eq!(walks.load(Ordering::SeqCst), 1);
+
+    // A different character is a different miss.
+    assert_eq!(cache.glyph_for_char(FontId(0), '\u{e0b1}', true), None);
+    assert_eq!(walks.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn negative_fallback_cache_is_invalidated_by_new_fonts() {
+    use std::sync::atomic::Ordering;
+    let (mut cache, walks) = no_glyph_cache();
+    let epoch = cache.glyph_epoch();
+
+    assert_eq!(cache.glyph_for_char(FontId(0), '\u{e0b0}', true), None);
+    assert_eq!(cache.glyph_for_char(FontId(0), '\u{e0b0}', true), None);
+    assert_eq!(walks.load(Ordering::SeqCst), 1);
+    assert_eq!(cache.glyph_epoch(), epoch);
+
+    cache.load_family_from_bytes("Fallback", vec![]).unwrap();
+    assert_ne!(cache.glyph_epoch(), epoch);
+    assert_eq!(cache.glyph_for_char(FontId(0), '\u{e0b0}', true), None);
+    assert_eq!(walks.load(Ordering::SeqCst), 2);
+
+    cache.set_fallback_font_fn(Box::new(|_| None));
+    assert_eq!(cache.glyph_for_char(FontId(0), '\u{e0b0}', true), None);
+    assert_eq!(walks.load(Ordering::SeqCst), 3);
+
+    cache.remove_glyphs_by_char_entry((FontId(0), '\u{e0b0}'));
+    assert_eq!(cache.glyph_for_char(FontId(0), '\u{e0b0}', true), None);
+    assert_eq!(walks.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn glyph_epoch_differs_between_caches() {
+    let (a, _) = no_glyph_cache();
+    let (b, _) = no_glyph_cache();
+    assert_ne!(a.glyph_epoch(), b.glyph_epoch());
 }

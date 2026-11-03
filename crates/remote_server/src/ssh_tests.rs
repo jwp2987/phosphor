@@ -102,3 +102,64 @@ fn stop_control_master_uses_the_guarded_args() {
     );
     assert!(!body.contains("ssh_args("), "{body}");
 }
+
+/// #1100: the app's background mux clients (`run_ssh_command`, `run_ssh_script`, the
+/// remote-server proxy, `RemoteCommandExecutor`) must carry the same fallback guards as
+/// `mux_control_args`, so a dead master fails fast instead of opening a real connection.
+#[test]
+fn ssh_args_can_never_fall_back_to_a_login() {
+    let args = ssh_args(Path::new("/home/u/.ssh/123"));
+    let joined = args.join(" ");
+    assert_eq!(&args[..2], ["-F", "/dev/null"], "{joined}");
+    for option in [
+        "ControlMaster=no",
+        "ControlPath=/home/u/.ssh/123",
+        "ProxyCommand=false",
+        "BatchMode=yes",
+        "ConnectTimeout=5",
+        "ClearAllForwardings=yes",
+    ] {
+        let at = args
+            .iter()
+            .position(|a| a == option)
+            .unwrap_or_else(|| panic!("missing {option}: {joined}"));
+        assert_eq!(args[at - 1], "-o", "{option} must be an -o value: {joined}");
+    }
+    assert_eq!(args.last().unwrap(), "placeholder@placeholder");
+    assert!(!args.iter().any(|a| a == "-J"), "{joined}");
+}
+
+/// #1100: a socket path with whitespace is quoted (ssh splits `-o` values on whitespace) and
+/// `%` is escaped (ssh expands `%` tokens in ControlPath).
+#[test]
+fn control_path_option_quotes_whitespace_and_escapes_percent() {
+    assert_eq!(
+        control_path_option(Path::new("/home/a b/.ssh/1")),
+        "ControlPath=\"/home/a b/.ssh/1\""
+    );
+    assert_eq!(
+        control_path_option(Path::new("/home/u/.ssh/1")),
+        "ControlPath=/home/u/.ssh/1"
+    );
+    assert_eq!(
+        control_path_option(Path::new("/home/u%h/.ssh/1")),
+        "ControlPath=/home/u%%h/.ssh/1"
+    );
+    assert!(
+        mux_control_args("check", Path::new("/h/a b/s"))
+            .contains(&"ControlPath=\"/h/a b/s\"".to_string())
+    );
+}
+
+/// #1100: every spawn of ssh/scp in this module goes through a guarded arg list.
+#[test]
+fn every_ssh_spawn_is_guarded() {
+    let source = include_str!("ssh.rs");
+    let code = &source[..source.find("#[cfg(test)]").unwrap()];
+    assert_eq!(code.matches(".args(ssh_args(socket_path))").count(), 2);
+    let scp = &code[code.find("Command::new(\"scp\")").unwrap()..];
+    assert!(
+        scp.contains("\"/dev/null\"") && scp.contains("ProxyCommand=false"),
+        "scp unguarded"
+    );
+}

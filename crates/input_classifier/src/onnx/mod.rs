@@ -1,7 +1,5 @@
 #[cfg(feature = "onnx_candle")]
 mod candle;
-#[cfg(feature = "onnx_ort")]
-mod ort;
 
 use std::borrow::Cow;
 
@@ -66,17 +64,6 @@ impl OnnxClassifier {
                 });
             }
             Err(err) => log::warn!("Failed to initialize candle inference runner: {err:#}"),
-        }
-
-        #[cfg(feature = "onnx_ort")]
-        match ort::InferenceRunner::new(_model).map(Box::new) {
-            Ok(inference_runner) => {
-                return Ok(Self {
-                    inference_runner,
-                    has_panicked: HasPanicked::new(),
-                });
-            }
-            Err(err) => log::warn!("Failed to initialize ort inference runner: {err:#}"),
         }
 
         Err(anyhow::anyhow!("No onnx inference engine enabled"))

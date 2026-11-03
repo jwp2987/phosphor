@@ -457,6 +457,249 @@ pub fn test_restore_completed_blocks() {
     ));
 }
 
+fn lazy_restore_test_blocks() -> Vec<SerializedBlockListItem> {
+    // A small block, a block that wraps and is styled, and a block with a multi-line command.
+    let small: SerializedBlockListItem =
+        SerializedBlock::new_for_test("small".into(), "tiny\r\n".into()).into();
+    let mut wide_output = b"\x1b[31mred\x1b[0m plain\r\n".to_vec();
+    for i in 0..400 {
+        wide_output.extend_from_slice(format!("line {i} {}\r\n", "x".repeat(150)).as_bytes());
+    }
+    let wide: SerializedBlockListItem =
+        SerializedBlock::new_for_test(b"echo wide".to_vec(), wide_output).into();
+    let multiline: SerializedBlockListItem = SerializedBlock::new_for_test(
+        b"for i in 1 2 3\r\ndo echo $i\r\ndone".to_vec(),
+        b"1\r\n2\r\n3\r\n".to_vec(),
+    )
+    .into();
+    vec![small, wide, multiline]
+}
+
+/// The background parse finishes each block on a scratch list; that `finish` must not reach the
+/// terminal's own event channel as a second `BlockCompleted` per block (the placeholder already
+/// sent one), where the view would treat it as a block completing mid-session.
+#[test]
+fn test_deferred_restore_sends_one_block_completed_per_block_like_eager_restore() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let block_completed_count = |events_rx: &async_channel::Receiver<Event>| {
+        let mut count = 0;
+        while let Ok(event) = events_rx.try_recv() {
+            if matches!(event, Event::BlockCompleted(_)) {
+                count += 1;
+            }
+        }
+        count
+    };
+
+    let (eager_tx, eager_rx) = async_channel::unbounded();
+    let _eager = TestBlockListBuilder::new()
+        .with_channel_event_proxy(
+            ChannelEventListener::builder_for_test()
+                .with_terminal_events_tx(eager_tx)
+                .build(),
+        )
+        .with_restored_blocks(&restored_blocks)
+        .build();
+    let eager_completed = block_completed_count(&eager_rx);
+    assert_eq!(eager_completed, restored_blocks.len());
+
+    let (deferred_tx, deferred_rx) = async_channel::unbounded();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_channel_event_proxy(
+            ChannelEventListener::builder_for_test()
+                .with_terminal_events_tx(deferred_tx)
+                .build(),
+        )
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    assert!(deferred.install_ready_deferred_restores());
+    assert_eq!(
+        block_completed_count(&deferred_rx),
+        eager_completed,
+        "the scratch parse must not add a BlockCompleted per deferred block"
+    );
+}
+
+// A selection made on a placeholder points into its empty grid; installing the real content
+// drops it instead of leaving points that may be out of range (#1265).
+#[test]
+fn test_deferred_restore_install_clears_stale_selection() {
+    use crate::terminal::Side;
+    use warpui::text::SelectionType;
+    let restored_blocks = lazy_restore_test_blocks();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    deferred.start_selection(
+        BlockListPoint::new(1.0, 3),
+        SelectionType::Simple,
+        Side::Left,
+    );
+    assert!(deferred.selection().is_some());
+    assert!(deferred.install_ready_deferred_restores());
+    assert!(
+        deferred.selection().is_none(),
+        "the selection referenced the placeholder and must be cleared on install"
+    );
+    // Installing again with nothing ready must not touch a fresh selection.
+    deferred.start_selection(
+        BlockListPoint::new(1.0, 3),
+        SelectionType::Simple,
+        Side::Left,
+    );
+    assert!(!deferred.install_ready_deferred_restores());
+    assert!(deferred.selection().is_some());
+}
+
+// Installing deferred content tells the view which blocks changed so an active Find can rescan
+// them (they were empty placeholders when it ran); the list is drained once (#1265).
+#[test]
+fn test_deferred_restore_install_reports_installed_blocks_once() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    assert!(
+        deferred.take_installed_restore_blocks().is_empty(),
+        "nothing is installed before install_ready_deferred_restores runs"
+    );
+    assert!(deferred.install_ready_deferred_restores());
+    let installed = deferred.take_installed_restore_blocks();
+    assert_eq!(installed.len(), restored_blocks.len());
+    assert!(
+        deferred.take_installed_restore_blocks().is_empty(),
+        "the installed list is drained by the first take"
+    );
+}
+
+// A block restored as a placeholder and filled in by the background parse must end up identical
+// to one restored eagerly: same text, same grid sizes, same heights (#1254).
+#[test]
+fn test_deferred_restore_matches_eager_restore() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let eager = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .build();
+    // A threshold of 0 defers every restored block.
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+
+    // Before the install the placeholders carry the metadata but no grid contents.
+    assert!(deferred.has_ready_deferred_restores());
+    assert_eq!(deferred.blocks.len(), eager.blocks.len());
+    assert_eq!(deferred.blocks[1].command_to_string(), "");
+    assert_eq!(deferred.blocks[1].output_to_string(), "");
+    // A placeholder must not be serialized (a fork would save it blank) until it is filled in
+    // (#1265).
+    assert!(deferred.blocks[1].is_restore_pending());
+    assert!(!eager.blocks[1].is_restore_pending());
+    assert_ne!(
+        deferred.blocks[1].output_to_string(),
+        eager.blocks[1].output_to_string()
+    );
+
+    assert!(deferred.install_ready_deferred_restores());
+    assert!(deferred.blocks.iter().all(|b| !b.is_restore_pending()));
+    assert!(!deferred.has_ready_deferred_restores());
+    // Nothing left to install.
+    assert!(!deferred.install_ready_deferred_restores());
+
+    for (index, (eager_block, deferred_block)) in
+        eager.blocks.iter().zip(deferred.blocks.iter()).enumerate()
+    {
+        // Each list ends in a fresh active input block whose id is random per list; only the
+        // restored blocks carry the saved ids.
+        if let Some(saved) = restored_blocks.get(index) {
+            let SerializedBlockListItem::Command { block: saved } = saved;
+            assert_eq!(eager_block.id(), &saved.id);
+            assert_eq!(deferred_block.id(), &saved.id);
+        }
+        assert_eq!(
+            eager_block.command_to_string(),
+            deferred_block.command_to_string()
+        );
+        assert_eq!(
+            eager_block.output_to_string(),
+            deferred_block.output_to_string()
+        );
+        assert_eq!(
+            eager_block.output_grid().len(),
+            deferred_block.output_grid().len()
+        );
+        assert_eq!(
+            eager_block.is_empty(&TranscriptScope::Terminal),
+            deferred_block.is_empty(&TranscriptScope::Terminal)
+        );
+        assert_lines_approx_eq!(
+            deferred_block.height(&TranscriptScope::Terminal),
+            eager_block.height(&TranscriptScope::Terminal)
+        );
+        assert_eq!(eager_block.finished(), deferred_block.finished());
+        assert_eq!(eager_block.exit_code(), deferred_block.exit_code());
+    }
+    // The height tree was refreshed for the installed blocks, not just the blocks themselves.
+    assert_lines_approx_eq!(
+        deferred.block_heights.summary().height,
+        eager.block_heights.summary().height
+    );
+    assert_eq!(deferred.blocks[1].command_to_string(), "echo wide");
+}
+
+// Only blocks at or over the threshold are deferred, and the kill switch value `None` defers
+// nothing (#1254).
+#[test]
+fn test_deferred_restore_threshold_and_kill_switch() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let eager = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .build();
+
+    // Only the wide block is over 10 KiB.
+    let mut some_deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(10 * 1024)
+        .build();
+    assert_eq!(some_deferred.blocks[0].command_to_string(), "small");
+    assert_eq!(some_deferred.blocks[1].command_to_string(), "");
+    assert_eq!(
+        some_deferred.blocks[2].command_to_string(),
+        eager.blocks[2].command_to_string()
+    );
+    assert!(some_deferred.install_ready_deferred_restores());
+    assert_eq!(some_deferred.blocks[1].command_to_string(), "echo wide");
+
+    // The default builder (and `PHOSPHOR_LAZY_RESTORE=0`) restores eagerly: nothing pending.
+    assert!(!eager.has_ready_deferred_restores());
+    assert_eq!(eager.blocks[1].command_to_string(), "echo wide");
+}
+
+// A placeholder's later changes survive the install, and a block that has since been removed is
+// skipped rather than corrupting another block (#1254).
+#[test]
+fn test_deferred_restore_install_keeps_placeholder_state_and_skips_removed() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+
+    deferred.blocks[1].hide();
+    let removed_id = deferred.blocks[2].id().clone();
+    let removed_index = deferred.blocks[2].index();
+    deferred.remove_block_at_index(removed_index);
+
+    assert!(deferred.install_ready_deferred_restores());
+    assert!(deferred.block_index_for_id(&removed_id).is_none());
+    assert_eq!(deferred.blocks[0].command_to_string(), "small");
+    assert_eq!(deferred.blocks[1].command_to_string(), "echo wide");
+    assert!(deferred.blocks[1].is_hidden());
+}
+
 #[test]
 pub fn test_restore_blocks_with_local_status() {
     let (events_tx, events_rx) = async_channel::unbounded();
@@ -950,6 +1193,237 @@ fn test_eviction_partial_budget_keeps_recent_blocks_and_stays_consistent() {
         height_before - outcome.removed_height
     );
     assert_block_indices_consistent(&block_list);
+}
+
+#[test]
+fn test_eviction_running_total_matches_a_full_sum() {
+    let mut block_list = block_list_with_finished_blocks(8);
+    let (inc, full) = block_list.retained_lines_total_for_test();
+    assert_eq!(inc, full);
+    // Evict a couple of blocks; the maintained total must still equal a full re-sum.
+    let first_two: usize = block_list
+        .blocks()
+        .iter()
+        .take(2)
+        .map(|b| b.retained_lines())
+        .sum();
+    block_list.evict_oldest_blocks_to_budget(full - first_two);
+    let (inc, full) = block_list.retained_lines_total_for_test();
+    assert_eq!(inc, full);
+    // Evicting again from the maintained prefix agrees with a fresh sum.
+    block_list.evict_oldest_blocks_to_budget(0);
+    let (inc, full) = block_list.retained_lines_total_for_test();
+    assert_eq!(inc, full);
+}
+
+fn resize_columns(block_list: &mut BlockList, columns: usize) {
+    let rows = block_list.size().rows();
+    let update = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: SizeInfo::new_without_font_metrics(rows, columns),
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: columns,
+    };
+    block_list.resize(&update, true);
+}
+
+#[test]
+fn test_lazy_reflow_defers_far_blocks_and_flushes_before_draw() {
+    let mut block_list = block_list_with_finished_blocks(60);
+    block_list.lazy_reflow_forced = true;
+    let base = block_list.size().columns();
+    let new_cols = base + 7;
+    resize_columns(&mut block_list, new_cols);
+
+    // The newest blocks reflowed synchronously; the oldest are stale at the old width.
+    assert!(block_list.has_stale_reflow());
+    let first = block_list.blocks().first().unwrap();
+    assert!(first.is_reflow_stale());
+    assert_eq!(first.size().columns(), base);
+    let last_finished = block_list.blocks().len() - 2;
+    assert!(!block_list.blocks()[last_finished].is_reflow_stale());
+    assert_eq!(
+        block_list.blocks()[last_finished].size().columns(),
+        new_cols
+    );
+
+    // A later pixel-only change must not reflow stale blocks behind the height tree's back.
+    let stale_before = block_list
+        .blocks()
+        .iter()
+        .filter(|b| b.is_reflow_stale())
+        .count();
+    resize_columns(&mut block_list, new_cols);
+    assert_eq!(
+        block_list
+            .blocks()
+            .iter()
+            .filter(|b| b.is_reflow_stale())
+            .count(),
+        stale_before
+    );
+
+    // Reflowing the range about to be drawn clears the flag and applies the new width.
+    let n = block_list.reflow_stale_blocks_in_range(0.into(), 3.into());
+    assert!(n > 0);
+    for b in &block_list.blocks()[..=3] {
+        assert!(!b.is_reflow_stale());
+        assert_eq!(b.size().columns(), new_cols);
+    }
+    // Background chunks drain the rest.
+    while block_list.reflow_stale_blocks(8) > 0 {}
+    assert!(!block_list.has_stale_reflow());
+    assert!(
+        block_list
+            .blocks()
+            .iter()
+            .all(|b| b.size().columns() == new_cols)
+    );
+    assert_block_indices_consistent(&block_list);
+}
+
+#[test]
+fn test_lazy_reflow_driver_finishes_and_matches_eager_heights() {
+    let mut lazy = block_list_with_finished_blocks(60);
+    lazy.lazy_reflow_forced = true;
+    let mut eager = block_list_with_finished_blocks(60);
+    let new_cols = lazy.size().columns() + 7;
+    resize_columns(&mut lazy, new_cols);
+    resize_columns(&mut eager, new_cols);
+    assert!(lazy.has_stale_reflow());
+    assert!(lazy.stale_reflow_pending());
+    assert!(!eager.has_stale_reflow());
+
+    // The driver reflows newest first and always makes progress, even with a zero budget.
+    let newest_stale = lazy
+        .blocks()
+        .iter()
+        .rev()
+        .find(|b| b.is_reflow_stale())
+        .unwrap()
+        .index();
+    assert_eq!(
+        lazy.reflow_stale_blocks_within(std::time::Duration::ZERO),
+        1
+    );
+    assert!(!lazy.blocks()[newest_stale.0].is_reflow_stale());
+    let mut rounds = 0;
+    while lazy.reflow_stale_blocks_within(std::time::Duration::from_millis(4)) > 0 {
+        rounds += 1;
+        assert!(rounds < 1000, "driver must terminate");
+    }
+    assert!(!lazy.has_stale_reflow());
+    assert!(!lazy.stale_reflow_pending());
+    // Nothing left: further calls are no-ops.
+    assert_eq!(
+        lazy.reflow_stale_blocks_within(std::time::Duration::from_millis(4)),
+        0
+    );
+
+    // Total scroll height and every block height agree with an eager reflow.
+    assert_eq!(
+        lazy.block_heights().summary().height,
+        eager.block_heights().summary().height
+    );
+    for (l, e) in lazy.blocks().iter().zip(eager.blocks()) {
+        assert_eq!(
+            l.height(lazy.transcript_scope()),
+            e.height(eager.transcript_scope())
+        );
+    }
+    assert_block_indices_consistent(&lazy);
+}
+
+#[test]
+fn test_lazy_reflow_flush_all_clears_every_stale_block() {
+    let mut block_list = block_list_with_finished_blocks(60);
+    block_list.lazy_reflow_forced = true;
+    let new_cols = block_list.size().columns() + 5;
+    resize_columns(&mut block_list, new_cols);
+    assert!(block_list.has_stale_reflow());
+    assert!(block_list.flush_all_stale_reflow() > 0);
+    assert!(!block_list.has_stale_reflow());
+    assert!(
+        block_list
+            .blocks()
+            .iter()
+            .all(|b| !b.is_reflow_stale() && b.size().columns() == new_cols)
+    );
+}
+
+#[test]
+fn test_lazy_reflow_range_flush_leaves_other_blocks_stale() {
+    let mut block_list = block_list_with_finished_blocks(60);
+    block_list.lazy_reflow_forced = true;
+    let new_cols = block_list.size().columns() + 5;
+    resize_columns(&mut block_list, new_cols);
+    let n = block_list.reflow_stale_blocks_in_range(2.into(), 4.into());
+    assert!(n > 0 && n <= 3);
+    assert!(block_list.has_stale_reflow());
+    assert!(block_list.blocks()[0].is_reflow_stale());
+    assert!(!block_list.blocks()[3].is_reflow_stale());
+}
+
+// A selection spanning a lazily reflowed block keeps selecting the same text when that block's
+// height changes: the anchor below it shifts by the height delta instead of the whole selection
+// being cleared (#1370 F7).
+#[test]
+fn test_lazy_reflow_keeps_selection_across_reflowed_block() {
+    use crate::terminal::Side;
+    use warpui::text::SelectionType;
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    block_list.lazy_reflow_forced = true;
+    let base = block_list.size().columns();
+    let long_output = format!("{}\n", "x".repeat(base * 2));
+    for i in 0..60 {
+        insert_block(&mut block_list, &format!("command {i}\n"), &long_output);
+    }
+    // Widening makes every long line fit on one row, so each reflowed block gets shorter.
+    resize_columns(&mut block_list, base * 3);
+    // Blocks 0..3 are the bootstrap blocks (no visible rows); the first command block is 3.
+    let head_block = BlockIndex::from(3);
+    assert!(block_list.blocks()[head_block.0].is_reflow_stale());
+    assert!(block_list.blocks()[head_block.0 + 1].is_reflow_stale());
+    let tail_block = BlockIndex::from(block_list.blocks().len() - 2);
+    assert!(!block_list.blocks()[tail_block.0].is_reflow_stale());
+
+    // Select from the start of stale block 3's output (the first block with rows of its own: an
+    // anchor on a zero-height bootstrap block sits on the first reflowed block's top row and would
+    // correctly count as inside it) to the middle of a current block, with stale blocks in between.
+    let head = BlockListPoint::try_from_within_block_point(
+        &WithinBlock::new(Point { row: 0, col: 0 }, head_block, GridType::Output),
+        &block_list,
+    )
+    .unwrap();
+    let tail = BlockListPoint::try_from_within_block_point(
+        &WithinBlock::new(Point { row: 0, col: 3 }, tail_block, GridType::Output),
+        &block_list,
+    )
+    .unwrap();
+    block_list.start_selection(head, SelectionType::Simple, Side::Left);
+    block_list.update_selection(tail, Side::Right);
+    let anchors = |block_list: &BlockList| {
+        let (start, end) = block_list
+            .selection()
+            .expect("selection must survive the reflow")
+            .clone()
+            .clamp_to_grid_points(block_list)
+            .expect("selection must resolve to grid points");
+        (
+            (start.block_index, start.grid, *start.get()),
+            (end.block_index, end.grid, *end.get()),
+        )
+    };
+    let before = anchors(&block_list);
+
+    // Reflow the stale blocks between the anchors (heights change); the head block stays put.
+    let heights_before = block_list.block_heights().summary().height;
+    assert!(block_list.reflow_stale_blocks_in_range(4.into(), 12.into()) > 0);
+    assert!(block_list.block_heights().summary().height != heights_before);
+    assert_eq!(anchors(&block_list), before);
 }
 
 #[test]
@@ -2132,6 +2606,93 @@ pub fn test_emits_after_block_completed_event() {
         after_block_completed_events[1].block_type,
         BlockType::User(..)
     ));
+}
+
+#[test]
+fn user_block_completed_without_output_variant_skips_the_command_and_output_bytes() {
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let mut block_list = new_bootstrapped_block_list(
+        None,
+        None,
+        ChannelEventListener::builder_for_test()
+            .with_terminal_events_tx(events_tx)
+            .build(),
+    );
+    command_finished_and_precmd(&mut block_list);
+    while let Ok(_event) = events_rx.try_recv() {}
+
+    insert_block(&mut block_list, "command\n", "output\n");
+    input_string(&mut block_list, "next");
+
+    let mut completed = vec![];
+    while let Ok(event) = events_rx.try_recv() {
+        if let Event::AfterBlockCompleted(event_content) = event {
+            completed.push(event_content);
+        }
+    }
+    let Some(BlockType::User(block)) = completed.first().map(|e| &e.block_type) else {
+        panic!("Expected a completed user block, got {} events", completed.len());
+    };
+    let lite = block.serialized_block_without_output.get(&block_list);
+    let full = block.serialized_block.get(&block_list);
+    assert!(lite.stylized_output.is_empty());
+    assert!(!full.stylized_output.is_empty());
+    assert_eq!(lite.id, full.id);
+    // The metadata-only block carries neither the command nor the output bytes (serializing them
+    // is the slow part and only persistence reads them) ...
+    assert!(lite.stylized_command.is_empty());
+    assert!(!full.stylized_command.is_empty());
+    // ... and the deferred content converts to exactly the bytes of the full block.
+    let materialized = block.persisted_content.get(&block_list).materialize(lite);
+    assert_eq!(materialized.stylized_command, full.stylized_command);
+    assert_eq!(materialized.stylized_output, full.stylized_output);
+    assert_eq!(materialized.id, full.id);
+    assert_eq!(lite.exit_code, full.exit_code);
+    assert_eq!(lite.pwd, full.pwd);
+    assert_eq!(lite.session_id, full.session_id);
+    assert_eq!(lite.start_ts, full.start_ts);
+    assert_eq!(lite.completed_ts, full.completed_ts);
+    assert_eq!(lite.honor_ps1, full.honor_ps1);
+}
+
+/// A long, wrapping, multi-line command and a multi-line output survive the deferred path byte
+/// for byte, and a second `materialize` (a retried save) returns the same bytes.
+#[test]
+fn deferred_content_of_a_long_command_matches_the_full_block() {
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let mut block_list = new_bootstrapped_block_list(
+        None,
+        None,
+        ChannelEventListener::builder_for_test()
+            .with_terminal_events_tx(events_tx)
+            .build(),
+    );
+    command_finished_and_precmd(&mut block_list);
+    while let Ok(_event) = events_rx.try_recv() {}
+
+    let command = format!("echo {}\n", "word ".repeat(2000));
+    insert_block(&mut block_list, &command, "line one\nline two\nline three\n");
+    input_string(&mut block_list, "next");
+
+    let mut completed = vec![];
+    while let Ok(event) = events_rx.try_recv() {
+        if let Event::AfterBlockCompleted(event_content) = event {
+            completed.push(event_content);
+        }
+    }
+    let Some(BlockType::User(block)) = completed.first().map(|e| &e.block_type) else {
+        panic!("Expected a completed user block, got {} events", completed.len());
+    };
+    let lite = block.serialized_block_without_output.get(&block_list);
+    let full = block.serialized_block.get(&block_list);
+    assert!(full.stylized_command.len() > 10_000);
+    let deferred = block.persisted_content.get(&block_list);
+    let first = deferred.materialize(lite);
+    assert_eq!(first.stylized_command, full.stylized_command);
+    assert_eq!(first.stylized_output, full.stylized_output);
+    let second = deferred.materialize(lite);
+    assert_eq!(second.stylized_command, full.stylized_command);
+    assert_eq!(second.stylized_output, full.stylized_output);
 }
 
 #[test]
@@ -3321,7 +3882,8 @@ fn test_max_visible_columns_tracks_visible_blocks() {
 
 #[test]
 fn test_retained_lines_counts_flat_storage_history() {
-    // Release builds enable this flag; it moves a finished block's scrollback into flat storage.
+    // Shipped builds enable this flag by default (`enabled_features()`); tests start with every
+    // flag off, so force it to move a finished block's scrollback into flat storage.
     let _flat = FeatureFlag::MaximizeFlatStorage.override_enabled(true);
     let mut block_list =
         new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
@@ -3404,4 +3966,162 @@ fn restoring_conversation_blocks_into_running_pane_keeps_existing_terminal_block
             .is_visible(&scope),
         "the agent-owned restored block belongs to the conversation, not the terminal scope"
     );
+}
+
+/// #1150: a resize that changes only pixels (rows, columns and gap untouched) must not rebuild the
+/// whole height tree, but must still hand every block the new `SizeInfo`. A column change must
+/// keep rebuilding it.
+#[test]
+fn test_pixel_only_resize_skips_height_tree_rebuild() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    for _ in 0..3 {
+        insert_block(&mut block_list, "cmd", "output");
+    }
+    let rows = block_list.size().rows();
+    let cols = block_list.size().columns();
+    let items_before = block_list.block_heights().items();
+
+    let pixel_only_size =
+        SizeInfo::new_without_font_metrics(rows + 1, cols + 1).with_rows_and_columns(rows, cols);
+    assert_ne!(
+        pixel_only_size.pane_size_px(),
+        block_list.size().pane_size_px()
+    );
+    let pixel_only = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: pixel_only_size,
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: cols,
+    };
+    let rebuilds_before = block_list.sumtree_rebuild_count();
+    block_list.resize(&pixel_only, true);
+    assert_eq!(
+        block_list.sumtree_rebuild_count(),
+        rebuilds_before,
+        "a pixel-only resize must not rebuild the block-height tree"
+    );
+    assert_eq!(block_list.block_heights().items(), items_before);
+    assert_eq!(*block_list.size(), pixel_only_size);
+    for block in block_list.blocks() {
+        assert_eq!(block.size(), pixel_only_size);
+    }
+
+    let narrower = SizeUpdate {
+        update_reason: SizeUpdateReason::Refresh,
+        last_size: *block_list.size(),
+        new_size: SizeInfo::new_without_font_metrics(rows, cols - 1),
+        new_gap_height: None,
+        natural_rows: rows,
+        natural_cols: cols - 1,
+    };
+    block_list.resize(&narrower, true);
+    assert_eq!(block_list.sumtree_rebuild_count(), rebuilds_before + 1);
+}
+
+/// #1152: with `MaximizeFlatStorage` on (the shipped default), finishing a block compacts its
+/// content into flat storage, so a finished block with screens of output holds far less memory
+/// than the same block finished with the flag off. (That the flag is in the shipped default set
+/// is pinned by `maximize_flat_storage_is_enabled_by_default` in `lib_tests.rs`.)
+#[test]
+fn test_flat_storage_at_finish_reduces_finished_block_memory() {
+    let output = (0..100)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let measure = |flat: bool| {
+        let _flag = FeatureFlag::MaximizeFlatStorage.override_enabled(flat);
+        // A realistic grid. The 10x7 default fixture has so few, so narrow, live rows that
+        // flat storage's per-row index bookkeeping outweighs the cells it frees (the old
+        // assertion failed there by 704 B); the saving is the live rows' cells.
+        let block_sizes = BlockSize {
+            size: SizeInfo::new_without_font_metrics(40, 200),
+            ..test_utils::block_size()
+        };
+        let mut block_list = new_bootstrapped_block_list(
+            Some(block_sizes),
+            None,
+            ChannelEventListener::new_for_test(),
+        );
+        let index = insert_block(&mut block_list, "seq\n", &output);
+        insert_block(&mut block_list, "echo\n", "done\n");
+        let block = &block_list.blocks()[index.0];
+        (
+            block.grid_storage_lines(),
+            block.estimated_memory_usage_bytes(),
+        )
+    };
+    let (lines_off, bytes_off) = measure(false);
+    let (lines_on, bytes_on) = measure(true);
+    assert!(
+        lines_on < lines_off,
+        "flat storage must hold the finished rows: {lines_on} live lines vs {lines_off}"
+    );
+    assert!(
+        bytes_on < bytes_off,
+        "estimated memory must drop: {bytes_on} B vs {bytes_off} B"
+    );
+}
+
+#[test]
+fn test_output_row_content_anchor_survives_a_column_change() {
+    // #1328: a scroll offset kept in rows lands on different content once lines re-wrap.
+    let mut block_list = block_list_with_finished_blocks(0);
+    let cols = block_list.size().columns();
+    let line = "x".repeat(cols * 2 + 3);
+    let output: String = (0..40).map(|_| format!("{line}\n")).collect();
+    let index = insert_block(&mut block_list, "cmd\n", &output);
+
+    // Three rows per logical line at the original width.
+    let old_row = 10 * 3 + 1;
+    let anchor = block_list.blocks()[index.0]
+        .output_grid()
+        .row_content_anchor(old_row)
+        .expect("row in range");
+    assert_eq!(anchor, (10, 1));
+
+    resize_columns(&mut block_list, cols / 2);
+
+    let grid = block_list.blocks()[index.0].output_grid();
+    let new_row = grid
+        .row_for_content_anchor(anchor)
+        .expect("line still there");
+    assert_ne!(new_row, old_row, "lines re-wrapped to more rows");
+    // The same logical line and wrapped offset, not the same row number.
+    assert_eq!(grid.row_content_anchor(new_row), Some(anchor));
+    // A wrapped offset past the line's new end clamps to its last row.
+    let last_of_line = grid.row_for_content_anchor((10, 1000)).unwrap();
+    assert_eq!(grid.row_content_anchor(last_of_line).unwrap().0, 10);
+    assert_eq!(grid.row_content_anchor(last_of_line + 1).unwrap().0, 11);
+}
+
+#[test]
+fn test_output_row_content_anchor_keeps_the_same_line_across_repeated_column_changes() {
+    // #1328 round 2: lines of mixed lengths, narrowed and widened repeatedly, keep the same
+    // logical line at the anchored row at every width.
+    let mut block_list = block_list_with_finished_blocks(0);
+    let cols = block_list.size().columns();
+    let output: String = (0..200)
+        .map(|i| format!("{}\n", "y".repeat(1 + (i * 37) % (cols * 3))))
+        .collect();
+    let index = insert_block(&mut block_list, "cmd\n", &output);
+
+    let anchored_line = 150;
+    let mut row = block_list.blocks()[index.0]
+        .output_grid()
+        .row_for_content_anchor((anchored_line, 0))
+        .expect("line present");
+    for columns in [cols / 2, cols, cols / 3, cols * 2, cols / 2 + 1, cols] {
+        let anchor = block_list.blocks()[index.0]
+            .output_grid()
+            .row_content_anchor(row)
+            .expect("row in range");
+        assert_eq!(anchor, (anchored_line, 0));
+        resize_columns(&mut block_list, columns.max(2));
+        let grid = block_list.blocks()[index.0].output_grid();
+        row = grid.row_for_content_anchor(anchor).expect("line present");
+        assert_eq!(grid.row_content_anchor(row), Some((anchored_line, 0)));
+    }
 }

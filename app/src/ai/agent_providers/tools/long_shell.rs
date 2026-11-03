@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use warp_multi_agent_api as api;
 
 use super::OpenAiTool;
@@ -58,13 +58,19 @@ fn write_parameters() -> Value {
 
 fn write_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     let parsed: WriteArgs = serde_json::from_str(args)?;
-    use api::message::tool_call::write_to_long_running_shell_command::mode::Mode as InnerMode;
     use api::message::tool_call::write_to_long_running_shell_command::Mode;
-    let is_raw = parsed.mode == "raw";
-    let inner = match parsed.mode.as_str() {
+    use api::message::tool_call::write_to_long_running_shell_command::mode::Mode as InnerMode;
+    // Case-insensitive, and an unknown value is an error the model sees rather than a silent
+    // fall back to Line (which wraps the input in ^A ^K ... CR) (#1278).
+    let mode = parsed.mode.trim().to_ascii_lowercase();
+    let is_raw = mode == "raw";
+    let inner = match mode.as_str() {
         "raw" => InnerMode::Raw(()),
         "block" => InnerMode::Block(()),
-        _ => InnerMode::Line(()),
+        "line" | "" => InnerMode::Line(()),
+        other => {
+            anyhow::bail!("unknown mode {other:?}; expected one of \"raw\", \"line\", \"block\"")
+        }
     };
     let input = if is_raw {
         expand_raw_input_tokens(&parsed.input)

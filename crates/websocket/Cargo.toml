@@ -25,9 +25,6 @@ url.workspace = true
 futures-test-sink = "0.1.1"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
-[target.'cfg(target_family = "wasm")'.dependencies]
-ws_stream_wasm = "0.7"
-
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-io.workspace = true
 async-net = "2.0.0"

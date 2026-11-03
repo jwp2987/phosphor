@@ -132,7 +132,7 @@ fn test_malicious_histfile_path_does_not_execute_injected_commands() {
         let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
 
         // read_history for a WarpifiedRemote session calls read_history_from_file,
-        // which builds `cat '{escaped_path}'` and executes it via TestCommandExecutor
+        // which builds `tail -n N '{escaped_path}'` and executes it via TestCommandExecutor
         let _ = session.read_history(false).await;
 
         assert!(
@@ -591,7 +591,7 @@ mod late_commands {
             assert!(!session.top_level_commands().any(|c| c == "zorkle"));
 
             install(dir.path(), "zorkle", 0o755);
-            // The earlier miss is remembered for a few seconds ...
+            // The earlier miss is remembered until a command completes ...
             session.discover_command_word("zorkle");
             assert_eq!(session.knows_command_word("zorkle"), Some(false));
             // ... until a command that may have installed something runs.
@@ -601,6 +601,49 @@ mod late_commands {
             assert!(session.top_level_commands().any(|c| c == "zorkle"));
             // Bootstrap-known names are untouched.
             assert_eq!(session.knows_command_word("git"), Some(true));
+        });
+    }
+
+    /// #1381: a miss is not a 3 s timer. It holds as long as nothing ran, however long that is,
+    /// and ends at the next completed command, even a harmless-looking one (a build or an
+    /// install script can create an executable).
+    #[test]
+    fn a_miss_lasts_until_the_next_command_completes_not_for_a_fixed_time() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            let session = session_with_path(dir.path());
+            session.discover_command_word("zorkle");
+            install(dir.path(), "zorkle", 0o755);
+            assert!(!session.command_word_needs_probe("zorkle"));
+            session.note_user_command("make-it-somehow");
+            assert!(session.command_word_needs_probe("zorkle"));
+            session.discover_command_word("zorkle");
+            assert_eq!(session.knows_command_word("zorkle"), Some(true));
+        });
+    }
+
+    #[test]
+    fn needs_probe_is_a_pure_cache_check_that_the_background_probe_satisfies() {
+        App::test((), |_app| async move {
+            let dir = tempfile::tempdir().unwrap();
+            install(dir.path(), "zorkle", 0o755);
+            let session = session_with_path(dir.path());
+            // Asking (the Enter path) does not stat, record a miss, or find the program ...
+            assert!(session.command_word_needs_probe("zorkle"));
+            assert!(session.command_word_needs_probe("zorkle"));
+            assert!(!session.top_level_commands().any(|c| c == "zorkle"));
+            // ... known and non-candidate words never need one ...
+            assert!(!session.command_word_needs_probe("git"));
+            assert!(!session.command_word_needs_probe("./zorkle"));
+            // ... and the probe (run off-thread by Enter) finds it and settles the question.
+            session.probe_command_word("zorkle");
+            assert!(!session.command_word_needs_probe("zorkle"));
+            assert_eq!(session.knows_command_word("zorkle"), Some(true));
+
+            // A miss is cached, so the same unknown word is not probed again.
+            assert!(session.command_word_needs_probe("nope"));
+            session.probe_command_word("nope");
+            assert!(!session.command_word_needs_probe("nope"));
         });
     }
 
@@ -785,4 +828,454 @@ fn nu_session_quotes_paths_in_the_nushell_dialect() {
         session.shell_dialect().escape("dir with spaces/"),
         "\"dir with spaces/\""
     );
+}
+
+#[cfg(feature = "local_tty")]
+mod control_master_fallback {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::super::command_executor::RemoteCommandExecutor;
+    use super::super::command_executor::testing::{
+        TestCommandExecutor, TestRemoteServerKindExecutor,
+    };
+    use super::super::{Session, SessionInfo};
+
+    fn is_control_master_executor(session: &Session) -> bool {
+        session
+            .command_executor
+            .read()
+            .as_ref()
+            .as_any()
+            .downcast_ref::<RemoteCommandExecutor>()
+            .is_some()
+    }
+
+    #[test]
+    fn losing_the_remote_server_swaps_an_ssh_session_to_the_control_master() {
+        let info = SessionInfo::new_for_test().with_ssh_socket_path(PathBuf::from("/tmp/ctl.sock"));
+        let session = Session::new(info, Arc::new(TestRemoteServerKindExecutor::default()));
+        assert!(!is_control_master_executor(&session));
+
+        assert!(session.fall_back_to_control_master_executor());
+        assert!(is_control_master_executor(&session));
+
+        // A second disconnect-style event is a no-op, not a second swap.
+        assert!(!session.fall_back_to_control_master_executor());
+        assert!(is_control_master_executor(&session));
+    }
+
+    #[test]
+    fn a_non_helper_executor_is_never_swapped_to_the_control_master() {
+        let info = SessionInfo::new_for_test().with_ssh_socket_path(PathBuf::from("/tmp/ctl.sock"));
+        let session = Session::new(info, Arc::new(TestCommandExecutor::default()));
+        assert!(!session.fall_back_to_control_master_executor());
+        assert!(!is_control_master_executor(&session));
+        assert!(
+            session
+                .command_executor
+                .read()
+                .as_ref()
+                .as_any()
+                .downcast_ref::<TestCommandExecutor>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_non_ssh_session_keeps_its_executor() {
+        let session = Session::new(
+            SessionInfo::new_for_test(),
+            Arc::new(TestCommandExecutor::default()),
+        );
+        assert!(!session.fall_back_to_control_master_executor());
+        assert!(!is_control_master_executor(&session));
+    }
+}
+
+#[test]
+fn git_corrections_skipped_only_for_existing_dirs_outside_a_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    assert!(super::local_dir_is_outside_git_repo(&plain));
+
+    // Inside a repo (including nested directories) git must still be consulted.
+    let repo = tmp.path().join("repo");
+    let nested = repo.join("a/b");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir(repo.join(".git")).unwrap();
+    assert!(!super::local_dir_is_outside_git_repo(&repo));
+    assert!(!super::local_dir_is_outside_git_repo(&nested));
+
+    // A worktree/submodule `.git` file counts too.
+    let wt = tmp.path().join("wt");
+    std::fs::create_dir(&wt).unwrap();
+    std::fs::write(wt.join(".git"), "gitdir: elsewhere").unwrap();
+    assert!(!super::local_dir_is_outside_git_repo(&wt));
+
+    // Paths we can't inspect fall back to running git.
+    assert!(!super::local_dir_is_outside_git_repo(&tmp.path().join("missing")));
+}
+
+/// #1203: nushell's sqlite history (its default `file_format`) is read as the shell wrote it,
+/// oldest first, multi-line entries intact; a file that is not such a database yields nothing.
+#[test]
+fn nu_sqlite_history_is_read_in_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let database = tmp.path().join("history.sqlite3");
+    let database = database.to_str().unwrap().to_owned();
+    {
+        let mut connection =
+            <diesel::sqlite::SqliteConnection as diesel::Connection>::establish(&database).unwrap();
+        diesel::connection::SimpleConnection::batch_execute(
+            &mut connection,
+            "CREATE TABLE history (id integer primary key autoincrement, command_line text not \
+             null, start_timestamp integer, session_id integer, hostname text, cwd text, \
+             duration_ms integer, exit_status integer, more_info text) strict;
+             INSERT INTO history (command_line, exit_status) VALUES ('ls | where size > 1kb', 0), \
+             ('git status', 128), ('def f [] {' || char(10) || ' echo multi' || char(10) || '}', 0);",
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        super::read_nu_sqlite_history(&database),
+        Some(vec![
+            "ls | where size > 1kb".to_owned(),
+            "git status".to_owned(),
+            "def f [] {\n echo multi\n}".to_owned(),
+        ])
+    );
+    let plain = tmp.path().join("history.txt");
+    std::fs::write(&plain, "ls\n").unwrap();
+    assert_eq!(
+        super::read_nu_sqlite_history(plain.to_str().unwrap()),
+        None,
+        "not a database: nothing is loaded, the plaintext path handles it"
+    );
+}
+
+#[test]
+fn deferred_name_enumeration_is_redundant_only_for_a_local_powershell_session() {
+    App::test((), |_app| async move {
+        // #1230: a local PowerShell session would start two `pwsh -NoProfile` processes to list
+        // what the Bootstrapped hook already carried.
+        let local = |shell_type| {
+            let info = SessionInfo::new_for_test().with_shell_type(shell_type);
+            Session::new(
+                info,
+                Arc::new(super::command_executor::LocalCommandExecutor::new(None, shell_type)),
+            )
+        };
+        assert!(local(ShellType::PowerShell).deferred_name_enumeration_is_redundant());
+        assert!(!local(ShellType::Bash).deferred_name_enumeration_is_redundant());
+
+        // Any other executor (in-band, remote, ...) keeps the enumeration.
+        let session = session_for_shell(
+            ShellType::PowerShell,
+            RecordingCommandExecutor::succeeding(""),
+        );
+        assert!(!session.deferred_name_enumeration_is_redundant());
+    });
+}
+
+/// #1239: a subshell Phosphorized inside an ssh session (`sudo -s`, `ksu`) runs on that session's
+/// host, but the remote-server manager only ever names the ssh session itself. The subshell takes
+/// the host id of its nearest ancestor that has one, and follows that ancestor's connection.
+mod subshell_remote_host {
+    use std::path::PathBuf;
+
+    use warp_core::HostId;
+
+    use super::*;
+
+    const SSH: u64 = 100;
+    const SUDO: u64 = 101;
+    const SU: u64 = 102;
+    const OTHER: u64 = 200;
+
+    fn host() -> HostId {
+        HostId::new("host-1239".to_owned())
+    }
+
+    /// `ssh` -> `sudo -s` -> `su -`, plus an unrelated remote session.
+    fn sessions() -> Sessions {
+        let mut sessions = Sessions::new_for_test();
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SSH)
+                .with_ssh_socket_path(PathBuf::from("/tmp/ctl.sock")),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SUDO)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SSH.into())
+                .with_subshell_spawned_by("sudo -s"),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SU)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SUDO.into())
+                .with_subshell_spawned_by("su -"),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(OTHER)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote),
+        );
+        sessions
+    }
+
+    fn host_of(sessions: &Sessions, id: u64) -> Option<HostId> {
+        sessions.get(id.into()).unwrap().remote_host_id()
+    }
+
+    #[test]
+    fn a_subshell_inherits_the_host_of_the_nearest_connected_ancestor() {
+        let sessions = sessions();
+        assert_eq!(sessions.inherited_remote_host_id(Some(SSH.into())), None);
+
+        sessions.get(SSH.into()).unwrap().set_remote_host_id(Some(host()));
+        // The direct child and the grandchild both resolve to the ssh session's host.
+        assert_eq!(sessions.inherited_remote_host_id(Some(SSH.into())), Some(host()));
+        assert_eq!(sessions.inherited_remote_host_id(Some(SUDO.into())), Some(host()));
+        // No chain, or a chain that leads to a session without a host, resolves to nothing.
+        assert_eq!(sessions.inherited_remote_host_id(None), None);
+        assert_eq!(sessions.inherited_remote_host_id(Some(OTHER.into())), None);
+    }
+
+    #[test]
+    fn the_ssh_sessions_connection_events_reach_its_subshells_only() {
+        let sessions = sessions();
+        sessions.set_remote_host_id_for_descendants(SSH.into(), Some(host()));
+        assert_eq!(host_of(&sessions, SUDO), Some(host()));
+        assert_eq!(host_of(&sessions, SU), Some(host()));
+        // The root is the caller's business, and an unrelated session is untouched.
+        assert_eq!(host_of(&sessions, SSH), None);
+        assert_eq!(host_of(&sessions, OTHER), None);
+
+        // A lost connection clears the whole chain below the ssh session.
+        sessions.set_remote_host_id_for_descendants(SSH.into(), None);
+        assert_eq!(host_of(&sessions, SUDO), None);
+        assert_eq!(host_of(&sessions, SU), None);
+    }
+
+    #[test]
+    fn a_cycle_in_the_spawning_chain_terminates() {
+        let mut sessions = Sessions::new_for_test();
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SUDO)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SU.into()),
+        );
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(SU)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                .with_spawning_session_id(SUDO.into()),
+        );
+        assert_eq!(sessions.inherited_remote_host_id(Some(SUDO.into())), None);
+        sessions.set_remote_host_id_for_descendants(OTHER.into(), Some(host()));
+        assert_eq!(host_of(&sessions, SUDO), None);
+    }
+}
+
+/// #1242: a remote history is read as its newest lines, not whole, unless the override says so.
+#[test]
+fn remote_history_is_read_as_a_bounded_tail() {
+    use super::{remote_history_max_lines_from_env, remote_history_read_command};
+
+    assert_eq!(remote_history_max_lines_from_env(None), Some(50_000));
+    assert_eq!(remote_history_max_lines_from_env(Some("abc")), Some(50_000));
+    assert_eq!(remote_history_max_lines_from_env(Some(" 1000 ")), Some(1000));
+    assert_eq!(remote_history_max_lines_from_env(Some("0")), None);
+
+    // The path is passed through already quoted; the command never re-interprets it.
+    let quoted = "'/home/u/.bash_history'";
+    assert_eq!(
+        remote_history_read_command(quoted, Some(50_000)),
+        "tail -n 50000 '/home/u/.bash_history'"
+    );
+    assert_eq!(
+        remote_history_read_command(quoted, None),
+        "cat '/home/u/.bash_history'"
+    );
+}
+
+/// #1230: a local PowerShell session lists the executables on its PATH itself; the shell path
+/// below does not exist, so only the native scan can produce them.
+#[cfg(unix)]
+#[test]
+fn local_powershell_session_lists_path_executables_without_running_pwsh() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    App::test((), |_app| async move {
+        let bin = tempfile::tempdir().unwrap();
+        for (name, mode) in [("my-tool", 0o755), ("not-exec.txt", 0o644)] {
+            let path = bin.path().join(name);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let info = SessionInfo::new_for_test()
+            .with_shell_type(ShellType::PowerShell)
+            .with_path(Some(bin.path().display().to_string()));
+        let session = Session::new(
+            info,
+            Arc::new(super::command_executor::LocalCommandExecutor::new(
+                Some("/nonexistent/pwsh".into()),
+                ShellType::PowerShell,
+            )),
+        );
+
+        session.load_external_commands().await;
+
+        assert!(session.has_loaded_external_commands());
+        let commands = sorted(session.top_level_commands());
+        assert!(commands.contains(&"my-tool"));
+        assert!(!commands.contains(&"not-exec.txt"));
+    });
+}
+
+/// #1289: fails once the way a request does when the remote-server connection drops under it,
+/// and the session's executor is swapped while it is failing.
+#[derive(Debug)]
+struct DropsAndSwapsExecutor {
+    session: std::sync::OnceLock<Arc<Session>>,
+    replacement: Arc<RecordingCommandExecutor>,
+}
+
+#[async_trait]
+impl CommandExecutor for DropsAndSwapsExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _execute_command_options: ExecuteCommandOptions,
+    ) -> anyhow::Result<CommandOutput> {
+        self.session
+            .get()
+            .expect("session set")
+            .set_command_executor(self.replacement.clone());
+        anyhow::bail!("Remote command failed: the connection was lost")
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_remote_command_caught_by_an_executor_swap_runs_on_the_new_executor() {
+    App::test((), |_app| async move {
+        let replacement = RecordingCommandExecutor::succeeding("x\n");
+        let dropping = Arc::new(DropsAndSwapsExecutor {
+            session: Default::default(),
+            replacement: replacement.clone(),
+        });
+        let info = SessionInfo::new_for_test()
+            .with_session_type(BootstrapSessionType::WarpifiedRemote)
+            .with_shell_type(ShellType::Bash);
+        let session = Arc::new(Session::new(info, dropping.clone()));
+        dropping.session.set(session.clone()).unwrap();
+
+        let output = session
+            .execute_command("ls", None, None, ExecuteCommandOptions::default())
+            .await
+            .expect("the retry on the swapped-in executor must serve the command");
+        assert_eq!(output.stdout, b"x\n");
+        assert_eq!(replacement.recorded(), vec!["ls".to_owned()]);
+    });
+}
+
+#[test]
+fn a_local_command_that_fails_is_not_retried() {
+    App::test((), |_app| async move {
+        let replacement = RecordingCommandExecutor::succeeding("x\n");
+        let dropping = Arc::new(DropsAndSwapsExecutor {
+            session: Default::default(),
+            replacement: replacement.clone(),
+        });
+        // Local session: no retry, the error is the caller's to handle.
+        let session = Arc::new(Session::new(SessionInfo::new_for_test(), dropping.clone()));
+        dropping.session.set(session.clone()).unwrap();
+        assert!(
+            session
+                .execute_command("ls", None, None, ExecuteCommandOptions::default())
+                .await
+                .is_err()
+        );
+        assert!(replacement.recorded().is_empty());
+    });
+}
+
+/// Errors on the first `failures` calls (a dropped remote connection), then lists names.
+#[derive(Debug)]
+struct ErrorsThenNamesExecutor {
+    failures: Mutex<usize>,
+}
+
+#[async_trait]
+impl CommandExecutor for ErrorsThenNamesExecutor {
+    async fn execute_command(
+        &self,
+        _command: &str,
+        _shell: &Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _execute_command_options: ExecuteCommandOptions,
+    ) -> anyhow::Result<CommandOutput> {
+        {
+            let mut failures = self.failures.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                anyhow::bail!("Remote command failed: the connection was lost");
+            }
+        }
+        Ok(CommandOutput {
+            stdout: b"Invoke-Custom\n".to_vec(),
+            stderr: Vec::new(),
+            status: CommandExitStatus::Success,
+            exit_code: None,
+        })
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        false
+    }
+}
+
+/// #1289: a transport error while enumerating deferred names must not be kept as an empty set
+/// for the rest of the session; the load is retried and the names arrive.
+#[test]
+fn a_transport_error_does_not_make_the_deferred_names_permanently_empty() {
+    App::test((), |_app| async move {
+        let executor = Arc::new(ErrorsThenNamesExecutor {
+            failures: Mutex::new(1),
+        });
+        let info = SessionInfo::new_for_test()
+            .with_shell_type(ShellType::PowerShell)
+            .with_function_names(names(&["prompt"]));
+        let session = Arc::new(Session::new(info, executor));
+
+        session.load_all_function_names().await;
+
+        assert_eq!(
+            sorted(session.function_names()),
+            vec!["Invoke-Custom", "prompt"],
+            "the retry after the dropped request must have stored the names"
+        );
+    });
 }

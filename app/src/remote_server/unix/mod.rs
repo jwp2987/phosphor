@@ -14,6 +14,7 @@
 pub(super) mod proxy;
 
 use super::server_model::{ConnectionId, ServerModel};
+use remote_server::frames::{CHUNK_PAYLOAD_BYTES, OutboundScheduler};
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
 use warpui::r#async::executor;
@@ -51,6 +52,8 @@ pub fn run_daemon(identity_key: String) -> anyhow::Result<()> {
     log::info!("Daemon bound to {}", socket_path.display());
 
     std::fs::write(&pid_path, std::process::id().to_string())?;
+    // The socket is bound and listening and the PID file is written: tell the proxy.
+    proxy::signal_ready_from_env();
 
     super::run_daemon_app(identity_key, move |ctx| {
         // Spawn the Unix socket accept loop.  The listener and connection
@@ -121,12 +124,17 @@ pub(super) async fn handle_daemon_connection(
     use futures::io::{AsyncWriteExt, BufReader, BufWriter};
 
     let (conn_tx, conn_rx) = async_channel::unbounded::<remote_server::proto::ServerMessage>();
+    // #1244: set by `ServerModel` when this connection's client announces that it reassembles
+    // chunked frames; read by the writer loop below on every message.
+    let chunking = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Register with ServerModel (cancels grace timer if running).
     let _ = spawner
         .spawn({
             let conn_tx_reg = conn_tx.clone();
+            let chunking = chunking.clone();
             move |me, ctx| {
+                me.register_connection_chunking(conn_id, chunking);
                 me.register_connection(conn_id, conn_tx_reg, ctx);
             }
         })
@@ -194,56 +202,36 @@ pub(super) async fn handle_daemon_connection(
     // oversized `RunCommand` response, or a routine broken-pipe when the
     // client just disconnected — tore down the whole connection and logged
     // at `error!`.
-    while let Ok(msg) = conn_rx.recv().await {
-        if let Err(e) = remote_server::protocol::write_server_message(&mut writer, &msg).await {
-            if !e.is_write_recoverable() {
-                if is_disconnect_protocol_error(&e) {
-                    log::warn!("Daemon: write error on conn {conn_id} (client disconnected): {e}");
-                } else {
-                    log::error!("Daemon: write error on conn {conn_id}: {e}");
-                }
-                break;
+    //
+    // #1244: two lanes. Every queued message is encoded and classified by `OutboundScheduler`:
+    // small frames go first, in order; a large one goes out one chunk at a time (one whole frame
+    // for a client that cannot reassemble), so a small response queued behind a multi-MB one
+    // waits for at most one chunk instead of the whole frame. The loop blocks on the channel
+    // only when nothing is left to write, and otherwise drains whatever has arrived between
+    // frames so a small response can overtake the chunks still in the queue.
+    let mut scheduler = OutboundScheduler::new(CHUNK_PAYLOAD_BYTES);
+    'writer: loop {
+        if scheduler.is_empty() {
+            match conn_rx.recv().await {
+                Ok(msg) => enqueue_outbound(&mut scheduler, msg, &chunking, conn_id),
+                Err(_) => break,
             }
-            // Recoverable write error (e.g. MessageTooLarge): nothing was
-            // written to the stream, so it remains aligned. Log and skip
-            // rather than tearing down the entire connection.
-            log::warn!("Daemon: skipping undeliverable message on conn {conn_id}: {e}");
-
-            // Send an ErrorResponse so the client doesn't hang waiting
-            // for a response that will never arrive.
-            if msg.request_id.is_empty() {
-                continue;
-            }
-            let error_msg = remote_server::proto::ServerMessage {
-                request_id: msg.request_id.clone(),
-                message: Some(remote_server::proto::server_message::Message::Error(
-                    remote_server::proto::ErrorResponse {
-                        code: remote_server::proto::ErrorCode::Internal.into(),
-                        message: format!("Response could not be delivered: {e}"),
-                    },
-                )),
-            };
-            if let Err(e2) =
-                remote_server::protocol::write_server_message(&mut writer, &error_msg).await
-            {
-                if !e2.is_write_recoverable() {
-                    log::error!("Daemon: failed to send error response on conn {conn_id}: {e2}");
-                    break;
-                }
-                log::warn!("Daemon: failed to send error response on conn {conn_id}: {e2}");
-                continue;
-            }
-            // Fall through to flush the error response.
         }
-        // Flush after every message so responses reach the proxy without
-        // waiting for the BufWriter's internal buffer to fill up.
-        if let Err(e) = writer.flush().await {
-            if is_disconnect_io_error(&e) {
-                log::warn!("Daemon: flush error on conn {conn_id} (client disconnected): {e}");
+        while let Ok(msg) = conn_rx.try_recv() {
+            enqueue_outbound(&mut scheduler, msg, &chunking, conn_id);
+        }
+        let Some(frame) = scheduler.next_frame() else {
+            continue;
+        };
+        // `write_encoded_message` flushes after the frame, so every frame reaches the proxy
+        // without waiting for the BufWriter's internal buffer to fill up.
+        if let Err(e) = remote_server::protocol::write_encoded_message(&mut writer, &frame).await {
+            if is_disconnect_protocol_error(&e) {
+                log::warn!("Daemon: write error on conn {conn_id} (client disconnected): {e}");
             } else {
-                log::error!("Daemon: flush error on conn {conn_id}: {e}");
+                log::error!("Daemon: write error on conn {conn_id}: {e}");
             }
-            break;
+            break 'writer;
         }
     }
 
@@ -256,6 +244,38 @@ pub(super) async fn handle_daemon_connection(
             me.deregister_connection(conn_id, ctx);
         })
         .await;
+}
+
+/// Queues `msg` on the connection's lanes. A message that cannot be sent at all (over the
+/// wire-level cap, `MessageTooLarge`) is replaced by an `ErrorResponse` so the client does not
+/// hang waiting for it; nothing was written, so the stream stays aligned (upstream d9dee18e1e,
+/// #10681).
+fn enqueue_outbound(
+    scheduler: &mut OutboundScheduler,
+    msg: remote_server::proto::ServerMessage,
+    chunking: &std::sync::atomic::AtomicBool,
+    conn_id: ConnectionId,
+) {
+    let chunking = chunking.load(std::sync::atomic::Ordering::Acquire);
+    let Err(e) = scheduler.enqueue(&msg, chunking) else {
+        return;
+    };
+    log::warn!("Daemon: skipping undeliverable message on conn {conn_id}: {e}");
+    if msg.request_id.is_empty() {
+        return;
+    }
+    let error_msg = remote_server::proto::ServerMessage {
+        request_id: msg.request_id,
+        message: Some(remote_server::proto::server_message::Message::Error(
+            remote_server::proto::ErrorResponse {
+                code: remote_server::proto::ErrorCode::Internal.into(),
+                message: format!("Response could not be delivered: {e}"),
+            },
+        )),
+    };
+    if let Err(e2) = scheduler.enqueue(&error_msg, chunking) {
+        log::warn!("Daemon: failed to queue error response on conn {conn_id}: {e2}");
+    }
 }
 
 /// Returns `true` if the IO error represents a normal client disconnect.

@@ -42,7 +42,7 @@ use crate::{
         model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher},
         prompt,
         view::{
-            ambient_agent::{AmbientAgentViewModel, AmbientAgentViewModelEvent},
+            ambient_agent::AmbientAgentViewModel,
             TerminalAction,
         },
         TerminalModel,
@@ -110,15 +110,8 @@ impl AgentViewZeroStateBlock {
                     }
                 }
 
-                match event {
-                    BlocklistAIHistoryEvent::StartedNewConversation { .. }
-                    | BlocklistAIHistoryEvent::AppendedExchange { .. }
-                    | BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
-                    | BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
-                    | BlocklistAIHistoryEvent::RestoredConversations { .. }
-                    | BlocklistAIHistoryEvent::RemoveConversation { .. }
-                    | BlocklistAIHistoryEvent::DeletedConversation { .. } => ctx.notify(),
-                    _ => {}
+                if history_event_rerenders_zero_state(event) {
+                    ctx.notify();
                 }
             },
         );
@@ -161,22 +154,8 @@ impl AgentViewZeroStateBlock {
         });
 
         let model_events_clone = model_events_dispatcher.clone();
-        ctx.subscribe_to_model(ambient_agent_view_model, move |me, model, event, ctx| {
-            if false {
-                match event {
-                    AmbientAgentViewModelEvent::DispatchedAgent
-                    | AmbientAgentViewModelEvent::Cancelled
-                        if !me.should_hide =>
-                    {
-                        me.should_hide = true;
-                        ctx.unsubscribe_to_model(&model);
-                        ctx.unsubscribe_to_model(&model_events_clone);
-                        ctx.unsubscribe_to_model(&BlocklistAIHistoryModel::handle(ctx));
-                        ctx.notify();
-                    }
-                    _ => (),
-                }
-            } else if model.as_ref(ctx).should_show_status_footer() {
+        ctx.subscribe_to_model(ambient_agent_view_model, move |me, model, _event, ctx| {
+            if model.as_ref(ctx).should_show_status_footer() {
                 me.should_hide = true;
                 ctx.unsubscribe_to_model(&model);
                 ctx.unsubscribe_to_model(&model_events_clone);
@@ -290,6 +269,22 @@ impl AgentViewZeroStateBlock {
             .take(MAX_RECENT_CONVERSATION_COUNT)
             .collect()
     }
+}
+
+/// Whether a history event can change what the zero state renders. A streamed delta
+/// (`UpdatedStreamingExchange`) never does: the view draws only its cached recent conversations
+/// and session location, and hides on `AppendedExchange`. Re-rendering for every delta of a
+/// background conversation kept the window at ~30 fps (#1336).
+fn history_event_rerenders_zero_state(event: &BlocklistAIHistoryEvent) -> bool {
+    matches!(
+        event,
+        BlocklistAIHistoryEvent::StartedNewConversation { .. }
+            | BlocklistAIHistoryEvent::AppendedExchange { .. }
+            | BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
+            | BlocklistAIHistoryEvent::RestoredConversations { .. }
+            | BlocklistAIHistoryEvent::RemoveConversation { .. }
+            | BlocklistAIHistoryEvent::DeletedConversation { .. }
+    )
 }
 
 fn format_session_location(session: &Session, working_directory: Option<&str>) -> Option<String> {

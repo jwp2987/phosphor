@@ -1636,3 +1636,45 @@ fn test_artifact_dir_from_out_dir_rejects_unexpected_shapes() {
     let too_short = Path::new("build").join("warp-0123").join("out");
     assert_eq!(artifact_dir_from_out_dir(&too_short), None);
 }
+
+#[cfg(unix)]
+#[test]
+fn executable_file_names_in_path_lists_what_get_command_application_lists() {
+    use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+    let root = tempfile::tempdir().unwrap();
+    let one = root.path().join("one");
+    let two = root.path().join("two");
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    let write = |dir: &std::path::Path, name: &str, mode: u32| {
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    write(&one, "tool", 0o755);
+    write(&one, "data.txt", 0o644);
+    write(&one, "group-exec", 0o010);
+    write(&two, "other", 0o700);
+    write(&two, "tool", 0o755);
+    std::fs::create_dir_all(one.join("a-directory")).unwrap();
+    symlink(one.join("tool"), two.join("link-to-tool")).unwrap();
+    symlink(one.join("missing"), two.join("dangling")).unwrap();
+
+    let path_env = std::env::join_paths([
+        one.clone(),
+        two.clone(),
+        // Listed twice and a directory that does not exist.
+        one.clone(),
+        root.path().join("nope"),
+    ])
+    .unwrap();
+    let mut names = executable_file_names_in_path(&path_env, None);
+    names.sort();
+    names.dedup();
+    assert_eq!(names, ["group-exec", "link-to-tool", "other", "tool"]);
+
+    // One entry per directory that has it: `tool` is in both.
+    let all = executable_file_names_in_path(&path_env, None);
+    assert_eq!(all.iter().filter(|n| *n == "tool").count(), 2);
+}

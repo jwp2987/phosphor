@@ -2,7 +2,6 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::SerializedBlockListItem;
-use crate::terminal::available_shells::AvailableShell;
 use crate::terminal::block_list_element::GridType;
 use crate::terminal::event::{
     BootstrappedEvent, Event, ExecutedExecutorCommandEvent, InitSshEvent, InitSubshellEvent,
@@ -17,7 +16,7 @@ use crate::terminal::model::completions::{
 use crate::terminal::model::escape_sequences::ModeProvider;
 use crate::terminal::model::index::VisibleRow;
 use crate::terminal::model::iterm_image::{ITermImage, ITermImageMetadata};
-use crate::terminal::shared_session::{ai_agent::encode_agent_response_event, SharedSessionStatus};
+use crate::terminal::shared_session::SharedSessionStatus;
 use crate::terminal::ssh::util::{InteractiveSshCommand, SshLoginState};
 use crate::terminal::{block_filter::BlockFilterQuery, model::ansi::Handler};
 use crate::terminal::{color, ssh, BlockPadding, ShellHost, SizeUpdate, SizeUpdateReason};
@@ -41,6 +40,10 @@ use super::grid::grid_handler::{
 };
 use super::image_map::StoredImageMetadata;
 use super::index::Point;
+use super::key_facts::{
+    KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand, ModelInbox,
+    PublishedKeyModes,
+};
 use super::kitty::{
     create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
     KittyDecodeError, KittyError, KittyMessage, KittyResponse, PendingKittyMessage,
@@ -53,22 +56,25 @@ use super::lifecycle::{
 };
 use super::secrets::{RespectObfuscatedSecrets, SecretAndHandle};
 use super::selection::ScrollDelta;
-use super::session::{BootstrapSessionType, InBandCommandOutputReceiver, SessionId};
+use super::session::{InBandCommandOutputReceiver, SessionId};
 use super::tmux::commands::TmuxCommand;
 use super::early_output::TypeaheadMode;
+use super::pty_stream_barrier::PtyStreamBarrier;
 use super::reply_ledger::SharedReplyLedger;
 use super::setup_echo_filter::SetupEchoFilter;
-use super::typeahead_handoff::TypeaheadHandoff;
+use super::typeahead_handoff::{PaneHandoff, ParsedShellHook, StreamApplied, TypeaheadHandoff};
 use super::{
     super::{AltScreen, BlockList},
     ansi::BootstrappedValue,
 };
 use super::{tmux, Secret, SecretHandle};
 use crate::terminal::model::ansi::{
-    ClearValue, CommandFinishedValue, CompletionMetadata, ExitShellValue, InitShellValue,
-    InitSshValue, InitSubshellValue, PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue,
-    PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
+    ClearValue, CommandFileFailedValue, CommandFinishedValue, CompletionMetadata, ExitShellValue,
+    InitShellValue, InitSshValue, InitSubshellValue, LineEditorMarkerValue,
+    PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata, SSHValue,
+    SourcedRcFileForWarpValue,
 };
+use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::grid::IndexRegion;
 use crate::terminal::model::session::SessionInfo;
 use crate::terminal::shell::{ShellName, ShellType};
@@ -76,7 +82,6 @@ use crate::terminal::shell::{ShellName, ShellType};
 use crate::terminal::model::secrets::ObfuscateSecrets;
 use crate::terminal::shared_session::protocol::SessionSourceType;
 use warp_core::command::ExitCode;
-use warp_core::report_error;
 
 use crate::terminal::shared_session::protocol::{
     AICommandMetadata, OrderedTerminalEventType, ParticipantId,
@@ -94,6 +99,7 @@ use std::ops::{Range, RangeInclusive};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 pub use warp_terminal::model::BlockIndex;
@@ -293,10 +299,6 @@ impl<T> WithinBlock<T> {
             grid: self.grid,
         }
     }
-
-    pub fn is_within_this_block(&self, index: BlockIndex) -> bool {
-        self.block_index == index
-    }
 }
 
 impl<T: Copy> WithinBlock<RangeInclusive<T>> {
@@ -380,22 +382,6 @@ enum IsReceivingKittyActionData {
 enum IsReceivingHook {
     Yes { pending_hook: Box<PendingHook> },
     No,
-}
-
-/// Information needed to render a warpify "success" block upon successful subshell bootstrap.
-#[derive(Debug, Clone)]
-pub struct SubshellSuccessBlockInfo {
-    /// The ID of the newly bootstrapped subshell session.
-    /// This ID is needed in order to associate the success block with the subshell session (and
-    /// include it in the subshell "context" UI, with the flag and block border).
-    pub subshell_session_id: SessionId,
-
-    /// The command which spawned the subshell.
-    pub spawning_command: String,
-
-    pub shell_type: ShellType,
-
-    pub session_type: BootstrapSessionType,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
@@ -493,13 +479,38 @@ pub struct TerminalModel {
     /// Who owns the user's keystrokes around a command submitted from the input editor
     /// (`FeatureFlag::TypeaheadHandoff`). Kept here so every routing and request decision is made
     /// under the model lock.
-    typeahead_handoff: TypeaheadHandoff,
+    typeahead_handoff: PaneHandoff,
+    /// The facts the user-key path reads without this model's lock (#1403); stored after every
+    /// parse and wherever the main thread changes what they derive from.
+    key_facts: KeyFactsCell,
+    /// What the rest of the user-key path reads (#1404); see [`KeyModelSnapshot`].
+    key_model: KeyModelCell,
+    /// The publication counter (#1424): bumped by every `publish_key_facts`, stored in BOTH
+    /// published cells so a reader can tell whether they describe the same moment. Never moves
+    /// backwards and is never stored by the main thread (a refresh stores the gen it read).
+    facts_gen: AtomicU64,
+    /// What the snapshot remembers about the active block's output between publications.
+    sticky_output: warpui_core::sync_shim::Mutex<super::key_facts::StickyOutput>,
+    /// What the main thread left for this model to apply (the key path writes here instead of
+    /// taking the lock); drained before every parse.
+    inbox: ModelInbox,
     /// Replies written to the pty and text the user wrote, so a reply that leaks into the
     /// shell's line can be told from typed text (#921).
     reply_ledger: SharedReplyLedger,
+    /// The pty reader's read / applied byte counts (#1392), so a decision can tell whether the
+    /// hook account in the hand-off is current. The event loop counts into it; the hand-off's
+    /// probe checks it.
+    pty_stream_barrier: Arc<PtyStreamBarrier>,
     /// Hides the tty's echo of the typed subshell setup script while the shell has not read it
     /// yet (#1038).
     setup_echo_filter: SetupEchoFilter,
+    /// The latest setup-line marker the shell printed (`(setup token, line index)`), see
+    /// [`Handler::setup_line_consumed`]. The view reads it when output arrives to write the next
+    /// typed setup line (#1354).
+    last_setup_line_marker: Option<(u64, usize)>,
+    /// How many setup-line markers have arrived, ever: tells a repeat of the same marker from a
+    /// fresh one (#1372).
+    setup_line_marker_count: u64,
     /// The command the user should see for an agent command typed into the shell in a wrapped
     /// form, by the action that requested it (#904). Consumed at preexec.
     agent_display_commands: HashMap<AIAgentActionId, String>,
@@ -510,6 +521,9 @@ pub struct TerminalModel {
     pub blocklist_has_been_cleared: bool,
 
     alt_screen_active: bool,
+    /// Asks the pty who owns the terminal; see `block::interactive_latch`. None where the
+    /// platform has no such API (ConPTY).
+    interactive_probe: Option<super::block::interactive_latch::InteractiveProbe>,
 
     /// Stack of saved window titles. When a title is popped from this stack, the `title` for the
     /// term is set.
@@ -1209,11 +1223,15 @@ impl TerminalModel {
         shared_session_status: SharedSessionStatus,
         is_dummy_ambient_agent_session: bool,
     ) -> Self {
+        // Shared with both screens: they publish their selection bit to it where the selection
+        // changes (#1411).
+        let key_model = KeyModelCell::default();
         let alt_screen = AltScreen::new(
             sizes.size,
             0, /* max_scroll_limit */
             event_proxy.clone(),
             obfuscate_secrets,
+            key_model.clone(),
         );
         let block_list = BlockList::new(
             restored_blocks,
@@ -1227,6 +1245,7 @@ impl TerminalModel {
             is_inverted,
             obfuscate_secrets,
             is_ai_ugc_telemetry_enabled,
+            key_model.clone(),
         );
 
         Self {
@@ -1235,13 +1254,27 @@ impl TerminalModel {
             pty_bracketed_paste: false,
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
-            typeahead_handoff: TypeaheadHandoff::default(),
+            typeahead_handoff: {
+                // #1353 phase 6: the kill switch for the prompt-sequence decisions.
+                let mut handoff = TypeaheadHandoff::default();
+                handoff.set_prompt_seq_enabled(super::typeahead_handoff::prompt_seq_env_enabled());
+                PaneHandoff::from(handoff)
+            },
+            key_facts: KeyFactsCell::default(),
+            key_model,
+            facts_gen: AtomicU64::new(0),
+            sticky_output: Default::default(),
+            inbox: ModelInbox::default(),
             reply_ledger: SharedReplyLedger::default(),
+            pty_stream_barrier: Arc::default(),
             setup_echo_filter: SetupEchoFilter::default(),
+            last_setup_line_marker: None,
+            setup_line_marker_count: 0,
             agent_display_commands: HashMap::new(),
             command_display_overrides: HashMap::new(),
             blocklist_has_been_cleared: false,
             alt_screen_active: false,
+            interactive_probe: None,
             title_stack: Vec::new(),
             title: None,
             custom_title: None,
@@ -1326,6 +1359,7 @@ impl TerminalModel {
 
     /// Creates a terminal model for a ambient-agent pane before it has connected to a shared session.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn new_for_ambient_agent_shared_session_viewer(
         sizes: BlockSize,
         colors: color::List,
@@ -1336,7 +1370,7 @@ impl TerminalModel {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
     ) -> Self {
-        let mut me = Self::new_for_shared_session_viewer_internal(
+        Self::new_for_shared_session_viewer_internal(
             sizes,
             colors,
             event_proxy,
@@ -1346,12 +1380,7 @@ impl TerminalModel {
             is_inverted,
             obfuscate_secrets,
             true,
-        );
-        if false {
-            me.block_list_mut()
-                .set_is_executing_oz_environment_startup_commands(true);
-        }
-        me
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1393,6 +1422,7 @@ impl TerminalModel {
 
     /// Creates a terminal model for a terminal session that is being viewed.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn new_for_shared_session_viewer(
         sizes: BlockSize,
         colors: color::List,
@@ -1416,6 +1446,7 @@ impl TerminalModel {
         )
     }
 
+    #[cfg(test)]
     pub fn set_ordered_terminal_events_for_shared_session_tx(
         &mut self,
         tx: Sender<OrderedTerminalEventType>,
@@ -1438,10 +1469,6 @@ impl TerminalModel {
         }
     }
 
-    pub fn set_write_to_pty_events_for_shared_session_tx(&mut self, tx: Sender<Vec<u8>>) {
-        self.write_to_pty_events_for_shared_session_tx = Some(tx);
-    }
-
     pub fn send_write_to_pty_events_for_shared_session(&mut self, bytes: Vec<u8>) {
         if !self.shared_session_status().is_executor() {
             return;
@@ -1454,80 +1481,10 @@ impl TerminalModel {
         }
     }
 
-    pub fn clear_write_to_pty_events_for_shared_session_tx(&mut self) {
-        self.write_to_pty_events_for_shared_session_tx = None;
-    }
-
-    /// Sends an Agent ResponseEvent to viewers if this session is shared.
-    /// The participant_id should be the ID of the participant who initiated the query.
-    /// The forked_from_conversation_token is used for forked conversations to help viewers
-    /// link the new server-assigned token to an existing conversation from historical replay.
-    pub fn send_agent_response_for_shared_session(
-        &mut self,
-        response: &warp_multi_agent_api::ResponseEvent,
-        response_initiator: Option<ParticipantId>,
-        forked_from_conversation_token: Option<String>,
-    ) {
-        // We should always have a response initiator for shared sessions,
-        // but if we don't we should still send the response event to the viewers
-        // (as opposed to completely failing and skipping the send).
-        if response_initiator.is_none() {
-            report_error!(anyhow::anyhow!(
-                "No response initiator tracked for agent response event."
-            ));
-        }
-
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                let encoded = encode_agent_response_event(response);
-                if let Err(e) = tx.try_send(OrderedTerminalEventType::AgentResponseEvent {
-                    response_initiator,
-                    response_event: encoded,
-                    forked_from_conversation_token,
-                }) {
-                    log::warn!("Failed to send OrderedTerminalEventType::AgentResponseEvent: {e}");
-                }
-            }
-        } else {
-            log::debug!("Not sharing this session; ignoring agent response event");
-        }
-    }
-
-    pub fn send_agent_conversation_replay_started_for_shared_session(&mut self) {
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                if let Err(e) =
-                    tx.try_send(OrderedTerminalEventType::AgentConversationReplayStarted)
-                {
-                    log::warn!(
-                        "Failed to send OrderedTerminalEventType::AgentConversationReplayStarted: {e}"
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn send_agent_conversation_replay_ended_for_shared_session(&mut self) {
-        if self.shared_session_status().is_sharer() {
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                if let Err(e) = tx.try_send(OrderedTerminalEventType::AgentConversationReplayEnded)
-                {
-                    log::warn!(
-                        "Failed to send OrderedTerminalEventType::AgentConversationReplayEnded: {e}"
-                    );
-                }
-            }
-        }
-    }
-
     /// Whether the session sharing server is currently replaying
     /// conversation events (for conversation reconstruction).
     pub fn is_receiving_agent_conversation_replay(&self) -> bool {
         self.is_receiving_agent_conversation_replay
-    }
-
-    pub fn set_is_receiving_agent_conversation_replay(&mut self, value: bool) {
-        self.is_receiving_agent_conversation_replay = value;
     }
 
     pub fn set_shared_session_source_type(
@@ -1636,7 +1593,7 @@ impl TerminalModel {
         self.handled_exit = true;
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             // Nothing can answer an outstanding typeahead request or run held keys any more.
-            self.typeahead_handoff.reset_on_exit();
+            self.typeahead_handoff.write().reset_on_exit();
         }
         // Forcibly exit the alt screen so that we can show the user the
         // banner informing them that the shell process exited.
@@ -1825,6 +1782,21 @@ impl TerminalModel {
         self.disarm_setup_echo();
         self.abandoned_subshell_session = self.pending_session_info.take();
         self.block_list.set_bootstrapped();
+        // The active block is still the hidden bootstrap block, which discards output (#1119).
+        // Continue in an ordinary running block named after the command that started the shell,
+        // so its output is drawn and keys and Ctrl-C reach it like any raw command.
+        if self.block_list.replace_stalled_bootstrap_block() {
+            let command = self
+                .abandoned_subshell_session
+                .as_ref()
+                .and_then(|session| session.subshell_info.as_ref())
+                .map(|info| info.spawning_command.clone())
+                .unwrap_or_default();
+            self.preexec(PreexecValue {
+                command,
+                session_id: None,
+            });
+        }
         true
     }
 
@@ -1874,12 +1846,126 @@ impl TerminalModel {
         &mut self.block_list
     }
 
-    pub fn typeahead_handoff(&self) -> &TypeaheadHandoff {
-        &self.typeahead_handoff
+    /// Shared access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
+    pub fn typeahead_handoff(&self) -> warpui_core::sync_shim::RwLockReadGuard<'_, TypeaheadHandoff> {
+        self.typeahead_handoff.read()
     }
 
-    pub fn typeahead_handoff_mut(&mut self) -> &mut TypeaheadHandoff {
-        &mut self.typeahead_handoff
+    /// The handle the terminal view and the pty controller keep, so the hand-off is reachable
+    /// without this model's lock.
+    pub fn pane_handoff(&self) -> PaneHandoff {
+        self.typeahead_handoff.clone()
+    }
+
+    /// The cell [`KeyFacts`] are published to; the view loads from it on the key path.
+    pub fn key_facts_cell(&self) -> KeyFactsCell {
+        self.key_facts.clone()
+    }
+
+    /// The cell [`KeyModelSnapshot`]s are published to; the view loads from it on the key path.
+    pub fn key_model_cell(&self) -> KeyModelCell {
+        self.key_model.clone()
+    }
+
+    /// The inbox the key path leaves its bookkeeping in.
+    pub fn model_inbox(&self) -> ModelInbox {
+        self.inbox.clone()
+    }
+
+    /// Stores the key-path facts for readers that cannot take this model's lock. Called after
+    /// every parse, after the inbox is applied, and by the main thread where it changes them.
+    ///
+    /// Every publication has a new gen (#1424), stored in both cells: the snapshot first, then
+    /// the facts, so a reader that finds the same gen in both read one publication whole (see
+    /// `key_facts::load_consistent`).
+    pub fn publish_key_facts(&self) {
+        let facts_gen = self.facts_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        let snapshot = KeyModelSnapshot::from_model(self);
+        debug_assert_eq!(snapshot.facts_gen, facts_gen);
+        self.key_model.store(snapshot);
+        self.key_facts
+            .store_with_gen(KeyFacts::from_model(self), facts_gen);
+    }
+
+    /// Publishes the key modes and the alt-screen bit now, in the middle of a parse slice (#1411):
+    /// a key that finds this model locked is encoded with the modes of this moment.
+    fn publish_key_modes(&self) {
+        self.key_model
+            .store_eager_modes(PublishedKeyModes::from_model(self), self.alt_screen_active);
+    }
+
+    /// The gen of the latest publication (0 before the first). A main-thread refresh that read
+    /// the exact state stores it unchanged.
+    pub fn facts_gen(&self) -> u64 {
+        self.facts_gen.load(Ordering::Acquire)
+    }
+
+    /// The sticky output facts the snapshot is built with.
+    pub(crate) fn sticky_output(
+        &self,
+    ) -> &warpui_core::sync_shim::Mutex<super::key_facts::StickyOutput> {
+        &self.sticky_output
+    }
+
+    /// Applies, in order, what the main thread left in the inbox (the key path's bookkeeping),
+    /// then republishes the key facts. Called with the lock held, before bytes are parsed, so the
+    /// record of a key is in place before the echo it causes.
+    pub fn apply_inbox(&mut self) {
+        let commands = self.inbox.take();
+        if commands.is_empty() {
+            return;
+        }
+        for command in commands {
+            match command {
+                ModelCommand::UserWrote {
+                    first_input,
+                    ctrl_c,
+                } => {
+                    let active_block = self.block_list.active_block_mut();
+                    if first_input
+                        && active_block.is_active_and_long_running()
+                        && !active_block.has_received_user_input()
+                    {
+                        active_block.mark_received_user_input();
+                    }
+                    // #1178: a ^C typed into the running command interrupts it.
+                    if ctrl_c {
+                        active_block.mark_interrupted_by_ctrl_c();
+                    }
+                }
+                ModelCommand::UserInput(input) => self.push_user_input(&input),
+                ModelCommand::SharedSessionWrite(bytes) => {
+                    self.send_write_to_pty_events_for_shared_session(bytes)
+                }
+                ModelCommand::IgnoreBootstrappingMessages => self.ignore_bootstrapping_messages(),
+                ModelCommand::ClearAltScreenSelection => self.alt_screen_mut().clear_selection(),
+                ModelCommand::ClearBlockListSelection => self.block_list.clear_selection(),
+                ModelCommand::TypedAhead(bytes) => {
+                    // #1033: the tty echoes these keys wherever the output is when they arrive;
+                    // record them so that echo can be told from output. A full-screen program
+                    // reads them raw.
+                    if self.is_alt_screen_active() {
+                        self.block_list.forget_typed_ahead_bytes();
+                    } else {
+                        self.block_list.record_typed_ahead_bytes(&bytes);
+                    }
+                }
+            }
+        }
+        self.publish_key_facts();
+    }
+
+    /// Installs the pty probe the interactive latch consults (unix local ptys).
+    pub fn set_interactive_probe(
+        &mut self,
+        probe: super::block::interactive_latch::InteractiveProbe,
+    ) {
+        self.interactive_probe = Some(probe);
+    }
+
+    /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
+    pub fn typeahead_handoff_mut(&mut self) -> warpui_core::sync_shim::RwLockWriteGuard<'_, TypeaheadHandoff> {
+        self.typeahead_handoff.write()
     }
 
     /// Expects the tty to echo `line` (a subshell setup line the app is about to type) and keeps
@@ -1902,6 +1988,21 @@ impl TerminalModel {
         self.setup_echo_filter.is_mid_line()
     }
 
+    /// The latest setup-line marker the shell printed: `(setup token, line index)`.
+    pub fn last_setup_line_marker(&self) -> Option<(u64, usize)> {
+        self.last_setup_line_marker
+    }
+
+    /// How many setup-line markers have arrived (never reset).
+    pub fn setup_line_marker_count(&self) -> u64 {
+        self.setup_line_marker_count
+    }
+
+    /// Forgets the setup-line marker, when a new setup starts.
+    pub fn clear_setup_line_marker(&mut self) {
+        self.last_setup_line_marker = None;
+    }
+
     /// Stops hiding the setup echo.
     pub fn clear_setup_echo(&mut self) {
         self.disarm_setup_echo();
@@ -1910,6 +2011,12 @@ impl TerminalModel {
     /// The ledger of query replies and pty writes, shared with the pty event loop.
     pub fn reply_ledger(&self) -> SharedReplyLedger {
         self.reply_ledger.clone()
+    }
+
+    /// The pty reader's barrier (#1392): the event loop counts the bytes it reads and applies
+    /// into it, the typeahead hand-off's probe asks it whether the hook account is current.
+    pub fn pty_stream_barrier(&self) -> Arc<PtyStreamBarrier> {
+        self.pty_stream_barrier.clone()
     }
 
     /// Whether the shell is at its prompt with no command started, so the typeahead request
@@ -2086,6 +2193,7 @@ impl TerminalModel {
 
     // Starts active block as a background block. Used in Alacritty integration tests to
     // work with the output grid directly.
+    #[cfg(test)]
     pub fn start_active_block_as_background_block(&mut self) {
         self.block_list.active_block_mut().start_background(None);
     }
@@ -2130,6 +2238,85 @@ impl TerminalModel {
         } else {
             self.block_list
                 .selection_to_string(semantic_selection, inverted_blocklist, app)
+        }
+    }
+
+    /// [`Self::selection_to_parts`] whose big selections are left as unsnapshotted ranges, to be
+    /// captured by `SelectionParts::advance` in short lock holds (#1377).
+    pub fn selection_to_parts_sliced(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        defer_over_rows: Option<usize>,
+        app: &AppContext,
+    ) -> Option<SelectionParts> {
+        if self.alt_screen_active {
+            self.selection_to_parts(semantic_selection, inverted_blocklist, defer_over_rows, app)
+        } else {
+            self.block_list.selection_to_parts_sliced(
+                semantic_selection,
+                inverted_blocklist,
+                app,
+                defer_over_rows,
+            )
+        }
+    }
+
+    /// Like [`Self::selection_to_string`], but a selection over `defer_over_rows` rows is
+    /// captured as snapshots (cheap, under the caller's lock) and rendered later with
+    /// `SelectionParts::render`, which can run on a background thread (#1304).
+    pub fn selection_to_parts(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        defer_over_rows: Option<usize>,
+        app: &AppContext,
+    ) -> Option<SelectionParts> {
+        if self.alt_screen_active {
+            // Bounded by the screen size, so always inline.
+            self.alt_screen
+                .selection_to_string(semantic_selection)
+                .map(|text| SelectionParts::new(vec![text.into()]))
+        } else {
+            self.block_list.selection_to_parts(
+                semantic_selection,
+                inverted_blocklist,
+                app,
+                defer_over_rows,
+            )
+        }
+    }
+
+    /// The selection's text only if it spans at most `max_rows` rows; a bigger selection is
+    /// reported as [`BoundedSelection::TooLarge`] without building any of its text, so UI-thread
+    /// callers that only need a preview cost O(`max_rows`) however big the selection is.
+    pub fn selection_to_bounded_string(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+        max_rows: usize,
+        app: &AppContext,
+    ) -> BoundedSelection {
+        BoundedSelection::from_parts(self.selection_to_parts(
+            semantic_selection,
+            inverted_blocklist,
+            Some(max_rows),
+            app,
+        ))
+    }
+
+    /// Whether [`Self::selection_to_string`] would return `Some`, without building the string
+    /// (which grows with the selection; #1304).
+    pub fn has_selection_range(
+        &self,
+        semantic_selection: &SemanticSelection,
+        inverted_blocklist: bool,
+    ) -> bool {
+        if self.alt_screen_active {
+            self.alt_screen.selection_range(semantic_selection).is_some()
+        } else {
+            self.block_list
+                .has_renderable_selection(semantic_selection, inverted_blocklist)
         }
     }
 
@@ -2241,6 +2428,7 @@ impl TerminalModel {
         self.colors = colors;
     }
 
+    #[cfg(test)]
     pub fn raw_grid_for_ref_tests(&self) -> &GridHandler {
         if self.alt_screen_active {
             self.alt_screen.grid_handler()
@@ -2290,17 +2478,6 @@ impl TerminalModel {
             return self.alt_screen().is_mode_set(mode);
         }
         self.block_list().active_block().is_mode_set(mode)
-    }
-
-    pub fn get_shell(&self) -> Option<AvailableShell> {
-        match &self.shell_launch_state {
-            ShellLaunchState::DeterminingShell {
-                available_shell, ..
-            } => available_shell.clone(),
-            ShellLaunchState::ShellSpawned {
-                available_shell, ..
-            } => available_shell.clone(),
-        }
     }
 
     pub fn shared_session_status(&self) -> &SharedSessionStatus {
@@ -2390,6 +2567,13 @@ impl TerminalModel {
             return;
         }
 
+        // A full-screen program owns the terminal: latch the active block as interactive/long
+        // running now, however briefly it has been running (#1373).
+        self.block_list
+            .active_block()
+            .interactive_latch()
+            .latch(super::block::interactive_latch::LatchReason::AltScreen);
+
         // Set alt screen cursor to the current primary screen cursor.
         let block_list_cursor = self
             .block_list
@@ -2426,6 +2610,7 @@ impl TerminalModel {
 
         self.alt_screen_mut().clear_selection();
         self.alt_screen_active = true;
+        self.publish_key_modes();
 
         self.event_proxy
             .send_terminal_event(Event::TerminalModeSwapped(TerminalMode::AltScreen));
@@ -2445,6 +2630,7 @@ impl TerminalModel {
         self.alt_screen_mut().grid_handler_mut().evict_all_images();
 
         self.alt_screen_active = false;
+        self.publish_key_modes();
 
         if restore_cursor {
             self.block_list.active_block_mut().restore_cursor_position();
@@ -2470,38 +2656,6 @@ impl TerminalModel {
         self.obfuscate_secrets = obfuscate_secrets;
         self.alt_screen.set_obfuscate_secrets(obfuscate_secrets);
         self.block_list.set_obfuscate_secrets(obfuscate_secrets);
-    }
-
-    /// Disables secret obfuscation for shared session creators only.
-    /// Specifically, secret obfuscation is disabled starting
-    /// from the `first_scrollback_block_index` onwards.
-    pub fn disable_secret_obfuscation_for_shared_sesson_creator(
-        &mut self,
-        first_scrollback_block_index: BlockIndex,
-    ) {
-        if !self.shared_session_status.is_sharer() {
-            log::warn!(
-                "Tried to disable secret obfuscation without being a shared session creator."
-            );
-            return;
-        }
-
-        let setting = ObfuscateSecrets::No;
-        self.obfuscate_secrets = setting;
-
-        // Disable obfuscation in the alt-screen.
-        self.alt_screen.set_obfuscate_secrets(setting);
-
-        // Ensure that all scrollback blocks and any subsequent blocks don't have their secrets obfuscated.
-        let active_block_index = self.block_list.active_block_index();
-        for block_index in
-            BlockIndex::range_as_iter(first_scrollback_block_index..active_block_index)
-        {
-            self.block_list
-                .set_obfuscate_secrets_for_block(block_index, setting);
-        }
-        self.block_list
-            .set_obfuscate_secrets_for_subsequent_blocks(setting);
     }
 
     fn restored_block_commands(&self) -> Vec<HistoryEntry> {
@@ -2539,6 +2693,7 @@ impl TerminalModel {
         self.event_proxy.send_terminal_event(title_event);
     }
 
+    #[cfg(test)]
     pub fn set_custom_title(&mut self, custom_title: Option<String>) {
         self.custom_title.clone_from(&custom_title);
         // If the custom title set by the user is None, we "reset" to whatever the title was set by
@@ -2660,6 +2815,15 @@ impl TerminalModel {
             return;
         }
 
+        // #1374: the delayed confirmation only means something while a recheck is pending. If a
+        // re-prompt withdrew it (state back to Monitoring), the timer is stale and must not
+        // declare login done.
+        if confirmation_check
+            && ssh_login_state.notification_state
+                != SshLoginNotificationState::SentInitialNotification
+        {
+            return;
+        }
         let is_initial_check = !confirmation_check;
         // Scan only the rows that could have changed since the last check (new rows,
         // plus any still-mutable on-screen rows) instead of re-rendering the whole
@@ -2700,17 +2864,38 @@ impl TerminalModel {
                 }
             }
             SshLoginState::Authenticating => {
-                // False alarm case. If this is the confirmation check and it's detected that
-                // we have NOT completed login, then we should start over and go back to monitoring
-                // each output chunk for lines indicating login completion.
-                if !is_initial_check {
-                    ssh_login_state.notification_state = SshLoginNotificationState::Monitoring;
-                }
+                // False alarm case. A prompt that is back on screen means login is NOT complete,
+                // so go back to monitoring each output chunk for lines indicating completion.
+                // #1374: this is decided by the output event itself, on the initial (per-chunk)
+                // check too, so a re-prompt that arrives at any time after the "NonSshOutput"
+                // line withdraws the pending recheck instead of racing its timer.
+                ssh_login_state.notification_state = SshLoginNotificationState::Monitoring;
             }
         }
 
         // Update the notification state.
         self.notify_on_end_of_ssh_login = Some(ssh_login_state);
+    }
+
+    /// #1374: a shell on the far side of the ssh connection announced itself with its own
+    /// bootstrap DCS (`InitShell` / `Bootstrapped`). That is a positive "login is done" signal, so
+    /// the login is declared complete at once -- no re-check, no 3 s give-up. Hosts that never send
+    /// it still rely on the output heuristic and the logged give-up in the view.
+    /// (The plain precmd DCS is deliberately not used: the LOCAL shell sends one when a failed
+    /// `ssh` returns to its prompt, which must not be read as a finished login.)
+    fn note_remote_shell_bootstrap_signal(&mut self) {
+        let Some(mut ssh_login) = self.notify_on_end_of_ssh_login.clone() else {
+            return;
+        };
+        if &ssh_login.block_id != self.block_list().active_block().id()
+            || ssh_login.notification_state == SshLoginNotificationState::Completed
+        {
+            return;
+        }
+        self.event_proxy
+            .send_terminal_event(Event::DetectedEndOfSshLogin(SshLoginStatus::ReadyToWarpify));
+        ssh_login.notification_state = SshLoginNotificationState::Completed;
+        self.notify_on_end_of_ssh_login = Some(ssh_login);
     }
 
     pub fn is_ssh_block(&self) -> bool {
@@ -2719,10 +2904,6 @@ impl TerminalModel {
 
     pub fn tmux_control_mode_active(&self) -> bool {
         self.tmux_control_mode_context.is_some()
-    }
-
-    pub fn is_pending_warp_initiated_control_mode(&self) -> bool {
-        self.pending_warp_initiated_control_mode.is_some()
     }
 
     pub fn is_warpified_ssh(&self) -> bool {
@@ -2811,6 +2992,12 @@ impl TerminalModel {
         delegate!(self.needs_bracketed_paste())
     }
 
+    /// [`Self::needs_bracketed_paste`] through a shared reference (every callee takes `&self`),
+    /// for the published key snapshot (#1424).
+    pub fn needs_bracketed_paste_shared(&self) -> bool {
+        delegate!(self.needs_bracketed_paste())
+    }
+
     pub fn set_marked_text(&mut self, marked_text: &str, selected_range: &Range<usize>) {
         if !FeatureFlag::ImeMarkedText.is_enabled() {
             return;
@@ -2818,11 +3005,21 @@ impl TerminalModel {
         delegate!(self.set_marked_text(marked_text, selected_range))
     }
 
-    pub fn clear_marked_text(&mut self) {
-        if !FeatureFlag::ImeMarkedText.is_enabled() {
-            return;
+    /// Clears IME marked text on the active grid. Returns whether there was any to clear.
+    ///
+    /// The IME sends a clear before every typed character, so this must be a true no-op (no
+    /// content-generation bump, which forces a grid rebuild) when no composition is in progress.
+    pub fn clear_marked_text(&mut self) -> bool {
+        if !FeatureFlag::ImeMarkedText.is_enabled() || !self.has_marked_text() {
+            return false;
         }
-        delegate!(self.clear_marked_text())
+        delegate!(self.clear_marked_text());
+        true
+    }
+
+    /// Whether IME marked text is currently set on the active grid.
+    pub fn has_marked_text(&self) -> bool {
+        delegate!(self.has_marked_text())
     }
 }
 
@@ -2892,9 +3089,23 @@ impl TerminalModel {
             .ensure_active_block_executing_for_completion();
         let is_for_in_band_command = self.block_list().active_block().is_in_band_command_block();
         let finished_block_bootstrap_stage = self.block_list().active_block().bootstrap_stage();
+        // #1353 phase 6 (PTY-3): a command that became interactive was reading the keys typed
+        // into it, so the Enters written while it ran were consumed by it. Read here, on the same
+        // thread that parses the Precmd that follows, so a stalled main thread cannot reorder it.
+        let finished_block_was_interactive = !is_for_in_band_command
+            && self
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .is_latched();
         let active_block_completion = self.block_list.complete_active_block_and_advance(data);
 
         if active_block_completion == ActiveBlockCompletion::NewlyFinished {
+            if finished_block_was_interactive && FeatureFlag::TypeaheadHandoff.is_enabled() {
+                self.typeahead_handoff
+                    .write()
+                    .note_interactive_command_finished();
+            }
             if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
                 if let Err(e) = tx.try_send(OrderedTerminalEventType::CommandExecutionFinished {
                     next_block_id: block_id.into(),
@@ -2925,19 +3136,56 @@ impl TerminalModel {
         }
     }
 
+    /// #1392: tells the hand-off which shell hook the parser just met, BEFORE the block lifecycle
+    /// decides whether to apply it (an ignored Precmd still means the shell went back to its
+    /// prompt). On this thread, in stream order, so it is applied before the pty reader publishes
+    /// these bytes as applied.
+    fn note_shell_hook_parsed(&mut self, hook: ParsedShellHook) {
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.typeahead_handoff.write().note_shell_hook_parsed(hook);
+        }
+    }
+
+    /// #1614: the pty reader published another slice as applied to the stream barrier (reader
+    /// thread, under this model's lock, right after `publish_applied`). A young hold waiting on
+    /// the barrier is decided again; when that changes the hold, the controller and the view are
+    /// told through the event channel (`YoungHoldReevaluated`).
+    pub fn on_pty_stream_applied(&mut self) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        // A read first: this runs after every parsed slice, and a hold waiting on the barrier is
+        // rare; the write lock is taken only when there is one to decide.
+        if !self.typeahead_handoff.read().young_hold_waits_on_barrier() {
+            return;
+        }
+        let outcome = self.typeahead_handoff.write().on_stream_applied();
+        if outcome != StreamApplied::Nothing {
+            self.event_proxy
+                .send_terminal_event(Event::YoungHoldReevaluated);
+            self.event_proxy.send_wakeup_event();
+        }
+    }
+
     /// Applies prompt metadata through the normal once-per-block path.
     fn apply_precmd_to_fresh_block(&mut self, data: PromptMetadata) {
         self.ignore_bootstrapping_messages = false;
         let session_id = data.session_id;
+        let prompt_seq = data.seq;
         let mut env_vars = HashMap::new();
         if let Some(kube_config) = data.kube_config.clone() {
             env_vars.insert("KUBECONFIG".to_string(), kube_config);
         }
         let handled_after_inband = data.was_sent_after_in_band_command();
         self.block_list.apply_precmd_to_active(data);
+        // The prompt's block is the active one now, with its own grid's modes (a program that
+        // died with DECCKM or kitty flags set left them on the finished block only, #1411).
+        self.publish_key_modes();
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            self.typeahead_handoff.on_precmd();
-            self.typeahead_handoff.note_precmd_pending_view();
+            let mut handoff = self.typeahead_handoff.write();
+            handoff.on_precmd();
+            handoff.on_precmd_seq(session_id, prompt_seq);
+            handoff.note_precmd_pending_view();
         }
 
         self.emit_handler_event(HandlerEvent::Precmd {
@@ -3039,7 +3287,7 @@ impl TerminalModel {
                 && !active_block.started()
                 && !active_block.is_in_band_command_block()
                 && !self.shared_session_status.is_viewer();
-            self.typeahead_handoff.on_preexec(shell_started);
+            self.typeahead_handoff.write().on_preexec(shell_started);
         }
         self.reply_ledger.lock().on_command_start();
         self.block_list.apply_preexec_to_active(data);
@@ -3076,8 +3324,8 @@ impl ansi::Handler for TerminalModel {
     /// The flip was gated on one thing: every emitter of a `requires_registered_session()` hook
     /// must quote an ID this client minted and registered before the emitting process could
     /// write anything back. That now holds for all of them:
-    /// * Local / remote-tty / subshell spawn bake an ID into the launch and register it
-    ///   (`local_tty/terminal_manager.rs`, `remote_tty/event_loop.rs`, `view.rs`).
+    /// * Local / subshell spawn bake an ID into the launch and register it
+    ///   (`local_tty/terminal_manager.rs`, `view.rs`).
     /// * The bootstrap scripts quote `$WARP_SESSION_ID` on `Preexec`, `CommandFinished`,
     ///   `InputBuffer`, `Clear`, `FinishUpdate`, `PreInteractiveSSHSession` and `Bootstrapped`
     ///   (`bash_body.sh` / `zsh_body.sh` / `fish.sh`), matching the pin.
@@ -3358,6 +3606,8 @@ impl ansi::Handler for TerminalModel {
 
         self.alt_screen.reset_state();
         self.block_list.reset_state();
+        // Whatever RIS did to the grids' modes is what a key encodes with from here on (#1411).
+        self.publish_key_modes();
     }
 
     fn reverse_index(&mut self) -> ScrollDelta {
@@ -3380,6 +3630,7 @@ impl ansi::Handler for TerminalModel {
 
         self.alt_screen.set_mode(mode);
         self.block_list.set_mode(mode);
+        self.publish_key_modes();
         self.emit_handler_event(HandlerEvent::SetMode { mode });
     }
 
@@ -3400,6 +3651,7 @@ impl ansi::Handler for TerminalModel {
 
         self.alt_screen.unset_mode(mode);
         self.block_list.unset_mode(mode);
+        self.publish_key_modes();
         self.emit_handler_event(HandlerEvent::UnsetMode { mode });
     }
 
@@ -3508,6 +3760,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn command_finished(&mut self, data: CommandFinishedValue) {
+        self.note_shell_hook_parsed(ParsedShellHook::CommandFinished);
         let disposition = self
             .block_list
             .classify_next_block_id(&data.completion_metadata.next_block_id);
@@ -3543,6 +3796,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        self.note_shell_hook_parsed(ParsedShellHook::Precmd);
         self.reset_stale_in_band_command_output();
         let disposition = self
             .block_list
@@ -3570,6 +3824,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn prompt_only_precmd(&mut self, data: PromptMetadata) {
+        self.note_shell_hook_parsed(ParsedShellHook::Precmd);
         self.reset_stale_in_band_command_output();
         let transition = self.plan_lifecycle_transition(
             LifecycleInput::PromptOnlyPrecmd,
@@ -3584,7 +3839,11 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn preexec(&mut self, data: PreexecValue) {
+        self.note_shell_hook_parsed(ParsedShellHook::Preexec);
         let active_block = self.block_list.active_block();
+        active_block
+            .interactive_latch()
+            .set_probe(self.interactive_probe.clone());
         let observation = if active_block.state() == BlockState::Executing {
             if active_block.command_to_string() == data.command.as_str() {
                 PreexecObservation::RepeatedSameCommand
@@ -3639,6 +3898,12 @@ impl ansi::Handler for TerminalModel {
             .map(|subshell_info| subshell_info.spawning_command.clone())
             .unwrap_or(self.block_list.active_block().command_to_string());
 
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && fully_populated_session_info.subshell_info.is_none()
+        {
+            self.typeahead_handoff.write().on_new_session();
+        }
+
         self.emit_handler_event(HandlerEvent::Bootstrapped(BootstrappedEvent {
             spawning_command,
             session_info: Box::new(fully_populated_session_info),
@@ -3684,6 +3949,43 @@ impl ansi::Handler for TerminalModel {
         }
     }
 
+    fn line_editor_reading(&mut self, data: LineEditorMarkerValue) {
+        if let Some(session_id) = data.session_id {
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                // In stream order with the Precmd / Preexec that frame it, on this thread.
+                self.typeahead_handoff
+                    .write()
+                    .on_line_editor_reading(data.session_id, data.seq);
+            }
+            self.event_proxy
+                .send_terminal_event(Event::LineEditorReading {
+                    session_id: SessionId::from(session_id),
+                    seq: data.seq,
+                });
+        }
+    }
+
+    fn continuation_prompt(&mut self, data: LineEditorMarkerValue) {
+        if let Some(session_id) = data.session_id {
+            if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                self.typeahead_handoff.write().on_continuation_prompt();
+            }
+            self.event_proxy
+                .send_terminal_event(Event::ContinuationPrompt {
+                    session_id: SessionId::from(session_id),
+                    seq: data.seq,
+                });
+        }
+    }
+
+    fn command_file_failed(&mut self, data: CommandFileFailedValue) {
+        // Sent whatever the id says (#1581): the controller owns the outstanding chord.
+        self.event_proxy
+            .send_terminal_event(Event::CommandFileFailed {
+                session_id: SessionId::from(data.session_id.unwrap_or_default()),
+            });
+    }
+
     fn exit_shell(&mut self, data: ExitShellValue) {
         log::info!(
             "Received ExitShell hook from shell for session_id: {:?}",
@@ -3707,6 +4009,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn init_shell(&mut self, data: InitShellValue) {
+        self.note_remote_shell_bootstrap_signal();
         if !self.ignore_bootstrapping_messages {
             // The setup script has been read and run: its echo is over (#1038).
             self.disarm_setup_echo();
@@ -3797,10 +4100,20 @@ impl ansi::Handler for TerminalModel {
     fn input_buffer(&mut self, mut data: InputBufferValue) {
         // Drop the residue of query replies this app wrote that the line editor took for typed
         // text (#921), before the report becomes typeahead.
+        let reported_len = data.buffer.chars().count();
         data.buffer = self
             .reply_ledger
             .lock()
             .filter_report(std::mem::take(&mut data.buffer));
+        // #1162: the shell's report, as the shell sent it and after the reply-residue filter.
+        warpui::input_order::log_hop("input_report", || {
+            format!(
+                "reported_chars={reported_len} kept_chars={} text={}",
+                data.buffer.chars().count(),
+                // #1393: what the shell reported, to compare with what the editor then holds.
+                warpui::input_order::describe_text(&data.buffer)
+            )
+        });
         delegate!(self.input_buffer(data));
     }
 
@@ -3828,6 +4141,11 @@ impl ansi::Handler for TerminalModel {
                     ))
             }
         }
+    }
+
+    fn setup_line_consumed(&mut self, token: u64, index: usize) {
+        self.last_setup_line_marker = Some((token, index));
+        self.setup_line_marker_count += 1;
     }
 
     fn sourced_rc_file(&mut self, data: SourcedRcFileForWarpValue) {
@@ -3961,6 +4279,12 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn on_finish_byte_processing(&mut self, input: &ansi::ProcessorInput<'_>) {
+        // Output while a command executes: ask the pty whether a program is reading input (#1373).
+        self.block_list
+            .active_block()
+            .interactive_latch()
+            .on_output();
+
         if let Some(SshLogin {
             notification_state, ..
         }) = &self.notify_on_end_of_ssh_login
@@ -3977,7 +4301,9 @@ impl ansi::Handler for TerminalModel {
         let bytes = input.bytes();
 
         // Send a copy of the bytes to subscribers.
-        self.event_proxy.send_pty_read_event(bytes);
+        let countable = !self.is_receiving_in_band_command_output()
+            && self.is_active_block_bootstrapped();
+        self.event_proxy.send_pty_read_event(bytes, countable);
 
         // Send a copy of the bytes for the active shared session, if applicable.
         // When processing a synchronized output frame, `on_finish_byte_processing` is called
@@ -4476,14 +4802,17 @@ impl ansi::Handler for TerminalModel {
         apply: KeyboardModesApplyBehavior,
     ) {
         delegate!(self.set_keyboard_enhancement_flags(mode, apply));
+        self.publish_key_modes();
     }
 
     fn push_keyboard_enhancement_flags(&mut self, mode: KeyboardModes) {
         delegate!(self.push_keyboard_enhancement_flags(mode));
+        self.publish_key_modes();
     }
 
     fn pop_keyboard_enhancement_flags(&mut self, count: u16) {
         delegate!(self.pop_keyboard_enhancement_flags(count));
+        self.publish_key_modes();
     }
 
     fn query_keyboard_enhancement_flags<W: std::io::Write>(&mut self, writer: &mut W) {

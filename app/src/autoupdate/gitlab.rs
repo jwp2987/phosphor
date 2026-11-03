@@ -286,7 +286,6 @@ pub fn checksums_from_body(body: &str) -> Checksums {
 /// another host. GitLab's `direct_asset_url` should be the same string; a
 /// difference is logged, because it means the URL shape (or the project path)
 /// has moved under us.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub fn asset_download_url_for(
     cached: Option<&GitlabRelease>,
     version: &str,
@@ -318,7 +317,6 @@ pub fn asset_download_url_for(
 }
 
 /// [`asset_download_url_for`] against the cached release.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub fn oss_asset_download_url(version: &str, asset: &str) -> String {
     asset_download_url_for(cached_release().as_ref(), version, asset)
 }

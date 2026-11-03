@@ -1922,7 +1922,7 @@ fn test_movement_cut() {
 
             model.delete(TextDirection::Forwards, TextUnit::LineBoundary, true, ctx);
             assert_eq!(model.debug_buffer(ctx), "<text><b_s>Fir<b_e>\\nSecond line");
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert_eq!(&clipboard.plain_text, "st line");
             assert_eq!(
                 clipboard.html.as_deref(),
@@ -2013,7 +2013,7 @@ fn test_delete_word_backwards() {
             );
 
             // If cut is false, this should not touch the clipboard.
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert_eq!(&clipboard.plain_text, "");
             assert_eq!(clipboard.html, None);
         });
@@ -2533,7 +2533,11 @@ fn test_cut_text() {
                 model.debug_buffer(ctx),
                 "<ul0>First<ul0>Second <b_s>line<b_e><text>"
             );
-            assert!(ctx.clipboard().read().plain_text.is_empty());
+            assert!(
+                warpui::clipboard::read_full_blocking(ctx.clipboard())
+                    .plain_text
+                    .is_empty()
+            );
         });
 
         // If part of the second list item is cut, we keep its formatting.
@@ -2546,7 +2550,7 @@ fn test_cut_text() {
                 model.debug_buffer(ctx),
                 "<ul0>First<ul0>Seco<b_s>ne<b_e><text>"
             );
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert_eq!(clipboard.plain_text, "nd li");
             assert_eq!(
                 clipboard.html.unwrap(),
@@ -2571,7 +2575,7 @@ fn test_cut_code_block() {
 
             // Since a command is selected, its entire block should be cut.
             assert_eq!(model.debug_buffer(ctx), "<text>Text<ul0>List<text>");
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert_eq!(clipboard.plain_text, "command");
             assert_eq!(
                 clipboard.html.unwrap(),
@@ -2601,7 +2605,7 @@ fn test_cut_mermaid_code_block_uses_fenced_markdown_plain_text() {
             model.cut(ctx);
 
             assert_eq!(model.debug_buffer(ctx), "<text>Text<ul0>List<text>");
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert_eq!(clipboard.plain_text, "```mermaid\ngraph TD\nA --> B\n```");
             assert!(clipboard
                 .html
@@ -2635,7 +2639,7 @@ fn test_copy_mermaid_code_block_adds_html_without_image_clipboard_data() {
 
             model.copy(ctx);
 
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert_eq!(clipboard.plain_text, "```mermaid\ngraph TD\nA --> B\n```");
             assert!(clipboard
                 .html
@@ -2670,7 +2674,7 @@ fn test_copy_selection_with_markdown_image_omits_image_clipboard_data() {
 
             model.copy(ctx);
 
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert!(clipboard.plain_text.contains("![Alt text](diagram.png)"));
             assert!(clipboard
                 .html
@@ -3086,7 +3090,7 @@ fn test_multiselect_delete() {
                 ctx,
             );
             assert_eq!(editor.debug_buffer(ctx), "<text> \\n line\\n line");
-            let clipboard = ctx.clipboard().read();
+            let clipboard = warpui::clipboard::read_full_blocking(ctx.clipboard());
             assert_eq!(&clipboard.plain_text, "Second\nFirst");
             assert_eq!(clipboard.html.as_deref(), Some("<p>Second</p><p>First</p>"));
         });

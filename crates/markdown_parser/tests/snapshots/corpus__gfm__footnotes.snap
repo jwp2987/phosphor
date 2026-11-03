@@ -1,0 +1,41 @@
+---
+source: crates/markdown_parser/tests/corpus.rs
+expression: render(parse_markdown_with_gfm_tables(&text))
+---
+FormattedText {
+    lines: [
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "Text with a footnote[^1] and another[^note].",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        LineBreak,
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[^1]: The first footnote.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "[^note]: A longer",
+                    styles: PlainText,
+                },
+            ],
+        ),
+        Line(
+            [
+                FormattedTextFragment {
+                    text: "    footnote body.",
+                    styles: PlainText,
+                },
+            ],
+        ),
+    ],
+}

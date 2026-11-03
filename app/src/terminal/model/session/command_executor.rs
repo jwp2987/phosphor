@@ -91,6 +91,19 @@ pub trait CommandExecutor: Send + Sync + Debug {
 
     /// Whether the backing executor for the session supports execution of commands in parallel.
     fn supports_parallel_command_execution(&self) -> bool;
+
+    /// Whether this executor's connection is known to be gone, so every command on it will fail
+    /// until the session swaps it for a live one (#1289). Only the remote-server executor,
+    /// which holds a connection of its own, ever reports it.
+    fn connection_lost(&self) -> bool {
+        false
+    }
+
+    /// Whether this is the remote-server (helper) executor. The only executor a session may
+    /// swap for the ControlMaster one when the helper is lost (#1253).
+    fn is_remote_server_executor(&self) -> bool {
+        false
+    }
 }
 
 #[allow(unused_variables)]
@@ -104,42 +117,10 @@ pub fn new_command_executor_for_session(
     cfg_if::cfg_if! {
         if #[cfg(feature = "local_tty")] {
             new_command_executor_for_local_tty_session(session_info, executor_command_tx, in_band_command_output_rx, parent_session_info, ctx)
-        } else if  #[cfg(feature = "remote_tty")]{
-            new_command_executor_for_network_backed_pty(executor_command_tx, in_band_command_output_rx, ctx)
         } else {
             Arc::new(NoOpCommandExecutor::default())
         }
     }
-}
-
-/// Constructs a new command executor when there is a network-backed PTY (indicated by the
-/// `remote_tty` feature).
-#[cfg(feature = "remote_tty")]
-#[cfg_attr(feature = "remote_tty", allow(dead_code))]
-fn new_command_executor_for_network_backed_pty(
-    executor_command_tx: &Sender<ExecutorCommandEvent>,
-    in_band_command_output_rx: Receiver<ExecutedExecutorCommandEvent>,
-    ctx: &mut ModelContext<Sessions>,
-) -> Arc<dyn CommandExecutor> {
-    log::info!("creating an in-band command executor!");
-    let (in_band_command_cancelled_tx, in_band_command_cancelled_rx) = async_channel::unbounded();
-    let executor = Arc::new(InBandCommandExecutor::new(
-        executor_command_tx.clone(),
-        in_band_command_cancelled_tx.clone(),
-    ));
-    let executor_clone = executor.clone();
-    ctx.spawn_stream_local(
-        in_band_command_output_rx,
-        move |_, event, _| executor_clone.handle_executed_command_event(event),
-        |_, _| {}, /* on_done */
-    );
-    let executor_clone = executor.clone();
-    ctx.spawn_stream_local(
-        in_band_command_cancelled_rx,
-        move |_, event, _| executor_clone.handle_cancelled_in_band_command_event(event),
-        |_, _| {}, /* on_done */
-    );
-    executor
 }
 
 #[cfg(feature = "local_tty")]
@@ -434,6 +415,37 @@ pub mod testing {
     use warp_completer::completer::CommandOutput;
 
     use super::*;
+
+    /// A test executor that identifies as the remote-server (helper) executor without holding a
+    /// connected client. Every command fails.
+    #[derive(Debug, Default)]
+    pub struct TestRemoteServerKindExecutor {}
+
+    #[async_trait]
+    impl CommandExecutor for TestRemoteServerKindExecutor {
+        async fn execute_command(
+            &self,
+            _command: &str,
+            _shell: &Shell,
+            _current_directory_path: Option<&str>,
+            _environment_variables: Option<HashMap<String, String>>,
+            _execute_command_options: ExecuteCommandOptions,
+        ) -> Result<CommandOutput> {
+            Err(anyhow!("test remote-server executor does not run commands"))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn supports_parallel_command_execution(&self) -> bool {
+            true
+        }
+
+        fn is_remote_server_executor(&self) -> bool {
+            true
+        }
+    }
 
     /// Implementation of `CommandExecutor` for use in tests. This implementation simply executes
     /// the given command in a bash subprocess.

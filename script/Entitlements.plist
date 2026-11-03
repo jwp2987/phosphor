@@ -16,9 +16,5 @@
 	<true/>
 	<key>com.apple.security.personal-information.photos-library</key>
 	<true/>
-    <key>com.apple.security.application-groups</key>
-    <array>
-    <string>2BBY89MBSN.dev.warp</string>
-    </array>
 </dict>
 </plist>

@@ -19,7 +19,8 @@ fn kill_all_processes_in_process_group(pid: u32) -> Result<(), nix::Error> {
     kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL)
 }
 #[cfg(unix)]
-fn terminate_process_group(process_group_id: u32) {
+fn terminate_process_group(process_group: &ActiveProcessGroup) {
+    let process_group_id = process_group.id;
     // A pgid of 0 targets the caller's own process group, and 1 negates to
     // -1, which SIGKILLs every process this user is allowed to signal.
     // Neither is ever a legitimate target, so refuse them rather than let a
@@ -42,8 +43,22 @@ fn terminate_process_group(process_group_id: u32) {
         }
     }
 }
-#[cfg(not(unix))]
-fn terminate_process_group(_: u32) {}
+
+/// Windows has no process groups, so the spawned child is placed in a kill-on-close Job
+/// Object instead; closing the job terminates the child and everything it spawned.
+#[cfg(windows)]
+fn terminate_process_group(process_group: &ActiveProcessGroup) {
+    match process_group.job.lock().take() {
+        Some(job) => {
+            drop(job);
+            log::info!("Closed job object for process {}", process_group.id);
+        }
+        None => log::info!(
+            "No job object for process {}; relying on kill_on_drop",
+            process_group.id
+        ),
+    }
+}
 
 /// The process groups this executor has spawned and not yet accounted for.
 ///
@@ -58,12 +73,17 @@ struct ActiveProcessGroups {
 #[derive(Debug)]
 struct ActiveProcessGroup {
     id: u32,
+    /// Windows only: the job holding the child, closed to kill it and its descendants.
+    #[cfg(windows)]
+    job: Mutex<Option<command::windows::KillOnCloseJob>>,
 }
 
 impl ActiveProcessGroups {
     fn register(&self, process_group_id: u32) -> Arc<ActiveProcessGroup> {
         let process_group = Arc::new(ActiveProcessGroup {
             id: process_group_id,
+            #[cfg(windows)]
+            job: Mutex::new(None),
         });
         self.process_groups
             .lock()
@@ -85,11 +105,17 @@ impl ActiveProcessGroups {
 
     fn complete(&self, process_group: &Arc<ActiveProcessGroup>) {
         self.remove(process_group);
+        // The command finished on its own: close the job without killing deliberately
+        // detached descendants, matching the unix behaviour of leaving the group alone.
+        #[cfg(windows)]
+        if let Some(job) = process_group.job.lock().take() {
+            job.disarm();
+        }
     }
 
     fn cancel(&self, process_group: &Arc<ActiveProcessGroup>) {
         if self.remove(process_group) {
-            terminate_process_group(process_group.id);
+            terminate_process_group(process_group);
         }
     }
 
@@ -121,6 +147,22 @@ impl SpawnedChildCleanup {
         Self {
             process_group: Some(process_group),
             active_process_groups,
+        }
+    }
+
+    /// Windows only: puts the freshly spawned child in a kill-on-close job so that
+    /// cancelling the command can terminate it and its descendants. Best effort.
+    #[cfg(windows)]
+    fn attach_job(&self, process_handle: isize) {
+        let Some(process_group) = &self.process_group else {
+            return;
+        };
+        match command::windows::KillOnCloseJob::with_process(process_handle) {
+            Ok(job) => *process_group.job.lock() = Some(job),
+            Err(e) => log::warn!(
+                "Could not place process {} in a job object: {e:#}",
+                process_group.id
+            ),
         }
     }
 
@@ -214,6 +256,32 @@ impl CommandBuilder<'_> {
             }
         }
     }
+}
+
+/// The process for a chip command that is a single external program (#1230), resolved against
+/// the session's `PATH` (the executor's `environment_variables` carry it), or `None` when the
+/// program is not found there so the command still goes through the shell.
+fn direct_command(
+    direct: &crate::context_chips::builtins::DirectInvocation,
+    environment_variables: Option<&HashMap<String, String>>,
+) -> Option<Command> {
+    // Windows environment variable names are case-insensitive and the session carries `Path`.
+    let session_path = environment_variables.and_then(|vars| {
+        vars.iter()
+            .find(|(name, _)| {
+                if cfg!(windows) {
+                    name.eq_ignore_ascii_case("PATH")
+                } else {
+                    name.as_str() == "PATH"
+                }
+            })
+            .map(|(_, value)| std::ffi::OsString::from(value))
+    });
+    let path_var = session_path.or_else(|| std::env::var_os("PATH"))?;
+    let program = warp_util::path::resolve_executable_in_path(direct.program, &path_var)?;
+    let mut command = Command::new_with_process_group(program.as_os_str());
+    command.args(direct.args);
+    Some(command)
 }
 
 #[cfg(test)]
@@ -329,10 +397,146 @@ impl LocalCommandExecutor {
         shell_config_flag: &str,
         execute_command_options: ExecuteCommandOptions,
     ) -> Result<CommandOutput> {
+        // A per-prompt chip command that is made of external programs only does not need a
+        // PowerShell process to run it (#1230).
+        // Windows shares this path: `resolve_executable_in_path` applies PATHEXT there, and a
+        // program that cannot be found or started falls back to the shell exactly as on unix.
+        {
+            if self.shell_type == ShellType::PowerShell && shell_config_flag == "-NoProfile" {
+                if let Some(plan) =
+                    crate::context_chips::builtins::direct_powershell_invocation(command)
+                {
+                    if let Some(result) = self
+                        .run_direct_plan(
+                            &plan,
+                            command,
+                            current_directory_path,
+                            environment_variables.as_ref(),
+                        )
+                        .await
+                    {
+                        return result;
+                    }
+                }
+            }
+        }
+
         let command_builder = self.command_builder(execute_command_options);
 
-        let mut command_process = command_builder.build(command, shell_config_flag);
+        let command_process = command_builder.build(command, shell_config_flag);
+        self.run_prepared_command(
+            command_process,
+            command,
+            current_directory_path,
+            environment_variables.as_ref(),
+            &[],
+        )
+        .await
+    }
 
+    /// Runs one step of a [`DirectPlan`]; `None` when its program cannot be found or started,
+    /// so the caller falls back to the shell.
+    async fn run_direct_step(
+        &self,
+        step: &crate::context_chips::builtins::DirectInvocation,
+        command: &str,
+        current_directory_path: Option<&str>,
+        environment_variables: Option<&HashMap<String, String>>,
+    ) -> Option<Result<CommandOutput>> {
+        let process = direct_command(step, environment_variables)?;
+        match self
+            .run_prepared_command(
+                process,
+                command,
+                current_directory_path,
+                environment_variables,
+                step.env,
+            )
+            .await
+        {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                log::info!("Direct run of {} failed to start: {error:#}", step.program);
+                None
+            }
+            result => Some(result),
+        }
+    }
+
+    /// Runs a chip command's programs directly, with the output and success the PowerShell
+    /// command gave. `None` when a program cannot be started (the caller runs the shell).
+    async fn run_direct_plan(
+        &self,
+        plan: &crate::context_chips::builtins::DirectPlan,
+        command: &str,
+        current_directory_path: Option<&str>,
+        environment_variables: Option<&HashMap<String, String>>,
+    ) -> Option<Result<CommandOutput>> {
+        use crate::context_chips::builtins::DirectPlan;
+
+        match plan {
+            DirectPlan::Single(step) => {
+                self.run_direct_step(step, command, current_directory_path, environment_variables)
+                    .await
+            }
+            DirectPlan::FirstSuccess(first, second) => {
+                match self
+                    .run_direct_step(first, command, current_directory_path, environment_variables)
+                    .await?
+                {
+                    Ok(output) if output.success() => Some(Ok(output)),
+                    _ => {
+                        self.run_direct_step(
+                            second,
+                            command,
+                            current_directory_path,
+                            environment_variables,
+                        )
+                        .await
+                    }
+                }
+            }
+            DirectPlan::JoinedWithRecordSeparator(first, second) => {
+                let first_output = match self
+                    .run_direct_step(first, command, current_directory_path, environment_variables)
+                    .await?
+                {
+                    Ok(output) => output,
+                    Err(error) => return Some(Err(error)),
+                };
+                let mut output = match self
+                    .run_direct_step(second, command, current_directory_path, environment_variables)
+                    .await?
+                {
+                    Ok(output) => output,
+                    Err(error) => return Some(Err(error)),
+                };
+                let mut stdout = first_output.stdout;
+                stdout.extend_from_slice(b"\x1e\n");
+                stdout.append(&mut output.stdout);
+                output.stdout = stdout;
+                let mut stderr = first_output.stderr;
+                stderr.append(&mut output.stderr);
+                output.stderr = stderr;
+                Some(Ok(output))
+            }
+        }
+    }
+
+    /// Starts `command_process` with the session's environment and working directory and
+    /// collects its output.
+    async fn run_prepared_command(
+        &self,
+        mut command_process: Command,
+        command: &str,
+        current_directory_path: Option<&str>,
+        environment_variables: Option<&HashMap<String, String>>,
+        // Set after the session's variables, as the shell wrapper this replaces set them.
+        extra_environment: &[(&str, &str)],
+    ) -> Result<CommandOutput> {
         // This sets then environment variables, including the PATH var.
         // We need to run the command with the PATH var set because if the
         // user opened Zap through a parent process that didn't have the PATH var set
@@ -342,8 +546,9 @@ impl LocalCommandExecutor {
         // Note: we don't need to quote/escape the PATH and pwd because
         // they're treated as single words.
         if let Some(environment_variables) = environment_variables {
-            command_process.envs(&environment_variables);
+            command_process.envs(environment_variables);
         }
+        command_process.envs(extra_environment.iter().copied());
 
         // Set the current dir, if any.
         if let Some(current_directory_path) = current_directory_path {
@@ -362,6 +567,11 @@ impl LocalCommandExecutor {
 
         let child_cleanup =
             SpawnedChildCleanup::new(child.id(), self.active_process_groups.clone());
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            child_cleanup.attach_job(child.as_raw_handle() as isize);
+        }
 
         let output = child
             .output()

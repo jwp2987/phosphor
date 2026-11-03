@@ -1,0 +1,1 @@
+{"reused_build": {"job_id": 17667172373, "job_name": "build-macos-arm64", "pipeline_id": "3018144637", "commit": "e01e2afad5f0ec958a271cfe949eed8bdc56fe8b", "this_pipeline": "3018713104", "this_commit": "44f229f3ba84270398d494591a35f69a31222b7b", "fetched": "local cache (/Users/<user>/.cache/phosphor-ci/builds/macos/17667172373)"}}

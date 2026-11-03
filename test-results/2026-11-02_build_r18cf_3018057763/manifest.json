@@ -1,0 +1,923 @@
+{
+ "pipeline": 3018057763,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3018057763",
+ "ref": "build/r18cf",
+ "commit": "7b6e80d304d0c34fea97a60ac0bf7c0a537be321",
+ "created_at": "2026-11-02T14:06:46.336Z",
+ "date": "2026-11-02",
+ "tier": "fix",
+ "pipeline_status": "success",
+ "jobs": {
+  "app-test-windows-reuse": {
+   "status": "failed",
+   "duration": 91.758693,
+   "id": 17666479252,
+   "runner": "phosphor-windows-vm",
+   "note": "no results artifact (job failed)"
+  },
+  "app-test-macos-reuse": {
+   "status": "canceled",
+   "duration": 1590.312355,
+   "id": 17666479251,
+   "runner": "MacBookPro-gitrunner"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479250,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "failed",
+   "duration": 859.426891,
+   "id": 17666479249,
+   "runner": ""
+  },
+  "app-test-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17666479248,
+   "runner": null
+  },
+  "app-test-macos": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17666479247,
+   "runner": null
+  },
+  "app-test-linux-x11": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17666479246,
+   "runner": null
+  },
+  "app-test-linux-wayland": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17666479245,
+   "runner": null
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479244,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479243,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479242,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479241,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479240,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-arm64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479239,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479238,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479237,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479236,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479235,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479234,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479233,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479232,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479231,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479230,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479229,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479228,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479227,
+   "runner": null,
+   "note": "not run"
+  },
+  "insta-snapshots": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479226,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479225,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479224,
+   "runner": null,
+   "note": "not run"
+  },
+  "advisories": {
+   "status": "success",
+   "duration": 10.244055,
+   "id": 17666479223,
+   "runner": ""
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 12.435887,
+   "id": 17666479222,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479221,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479220,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479219,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17666479218,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "success",
+   "duration": 385.96553,
+   "id": 17666479217,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 63.920581,
+   "id": 17666479216,
+   "runner": ""
+  }
+ },
+ "unit": {},
+ "app": {
+  "macos": {
+   "job": "app-test-macos-reuse",
+   "job_id": 17666479251,
+   "status": "canceled",
+   "reuse": true,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Phosphor lost keys the reference keeps with the SAME injection (perline): Phosphor 11/12 bad lines (first char lost 0), Terminal.app (.command via open) 0/12 -- a Phosphor-side drop (#1414); harness d"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "ft25: file has 28/30 lines, exact match False first diff: exp='t59_k36cr6g1ew' got='t59_k36cr6g1ew t60_2bk6kfzrtn'; ft25: shell received 28 commands, not the typed ones (first mismatch: 'echo t59_k36c"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Tab+Enter: completed file has 1/12 expected lines; Tab+Enter ran the UNCOMPLETED line, stray files: ['zzcompl_alpha_u', 'zzcompl_alpha_uecho']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times; Ctrl-C: 219.29 ms over the harness floor exceeds the 20 ms budget; nested bash not entered (SHLVL lines ['L3']): Ctrl-D NOT sent (it would"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T103_6s0r1v never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log); remote shell received 0/1 typ"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "only 15/30 Enter timings captured; Enter to command start: Phosphor overhead 12.31 ms over Terminal.app (.command via open) exceeds the 2 ms budget; Enter to command start: reference measured after Ph"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "only 0 key->frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 6818 input_order keydown"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "fish: 12 typed lines: expected ['t104_wrd82tgo6r', 't105_p0jiqm09d8', 't106_0rr4tr5n5x', 't107_pvll28jd6u', 't108_nu54vhiiqo', 't109_8dlhom6t1u', 't110_btoforvr7y', 't111_hvwihqjcwe', 't112_gtupr7dxbf"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "nu: 12 typed lines: expected ['t125_wqd10ywsv2', 't126_7jdvh6l85v', 't127_b4nylzogpv', 't128_p34x5m12z8', 't129_5rijay0gbe', 't130_3y6sjj7gqb', 't131_zo8za8p1kl', 't132_pe89klyb6n', 't133_pc7m68epz3',"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "ft0: file has 28/30 lines, exact match False first diff: exp='t20_gn1m5gys65' got='t20_gn1m5gys65 t21_uzsbkmuiv1'; ft0: shell received 28 commands, not the typed ones (first mismatch: 'echo t20_gn1m5g"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Tab+Enter: completed file has 1/12 expected lines; Tab+Enter ran the UNCOMPLETED line, stray files: ['zzcompl_alpha_u']"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times; Ctrl-C: 223.64 ms over the harness floor exceeds the 20 ms budget; `cat > cd.txt` never started (its Enter was lost?): Ctrl-D NOT sent (it"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "ssh_connect_typing (gap 0.0 s): T79_1ereql never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log); remote shell received 0/1 type"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "only 22/30 Enter timings captured; Enter to command start: Phosphor overhead 10.00 ms over Terminal.app (.command via open) exceeds the 2 ms budget; Enter to command start: reference measured after Ph"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "only 0 key->frame pairs in the app log (expected ~60); log /Users/<user>/builds/CR7LvsOfu/0/winters-phosphor/phosphor/appci-out/macos/run/home/<user>/Logs/phosphor.log has 6298 input_order keydown"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "pass",
+     "seconds": null,
+     "detail": [
+      ""
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "fail",
+     "seconds": null,
+     "detail": [
+      "fish: 12 typed lines: expected ['t80_u76a7hjuuu', 't81_2r43xyfdid', 't82_qpvxxzt3v8', 't83_bjqoihl0dg', 't84_gnqe7fenl6', 't85_bx5som5p12', 't86_8m4eq0ma8y', 't87_ez61cw3amt', 't88_8ht6u89s70', 't89_t"
+     ],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "macos/reused_build.json"
+   ],
+   "meta": {},
+   "summary": {
+    "pass": 9,
+    "fail": 16,
+    "skip": 0
+   },
+   "from_trace": true,
+   "reused_build": {
+    "reused_build": {
+     "job_id": 17664724430,
+     "job_name": "build-macos-arm64",
+     "pipeline_id": "3017838858",
+     "commit": "18fddcd8088da7ef506568624cc7936eff3a47e2",
+     "this_pipeline": "3018057763",
+     "this_commit": "7b6e80d304d0c34fea97a60ac0bf7c0a537be321",
+     "fetched": "local cache (/Users/<user>/.cache/phosphor-ci/builds/macos/17664724430)"
+    }
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_key_loss_control_FAIL.png",
+    "shots/terminal_fast_typing_FAIL.png",
+    "shots/terminal_tab_enter_FAIL.png",
+    "shots/terminal_ctrl_c_d_FAIL.png",
+    "shots/terminal_ssh_connect_typing_FAIL.png",
+    "shots/terminal_latency_enter_FAIL.png",
+    "shots/terminal_latency_key_log_FAIL.png",
+    "shots/terminal_shell_fish_FAIL.png",
+    "shots/terminal_shell_fish_started.png",
+    "shots/terminal_shell_nu_FAIL.png",
+    "shots/terminal_shell_nu_started.png",
+    "shots/agent_fast_typing_FAIL.png",
+    "shots/agent_tab_enter_FAIL.png",
+    "shots/agent_ctrl_c_d_FAIL.png",
+    "shots/agent_ssh_connect_typing_FAIL.png",
+    "shots/agent_latency_enter_FAIL.png",
+    "shots/agent_latency_key_log_FAIL.png",
+    "shots/agent_shell_fish_FAIL.png",
+    "shots/agent_shell_fish_started.png"
+   ]
+  },
+  "wayland": {
+   "job": "app-test-linux-wayland-reuse",
+   "job_id": 17666479249,
+   "status": "failed",
+   "reuse": true,
+   "cases": [
+    {
+     "mode": "terminal",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "key_loss_control",
+     "status": "pass",
+     "seconds": 42.8,
+     "detail": [
+      "no reference terminal available: loss is reported but no variant can be attributed to Phosphor or the injector",
+      "phosphor / perline-unprimed: first char lost on 12/12 lines, other bad 0, missing 0",
+      "phosphor / perline: first char lost on 0/12 lines, other bad 0, missing 0",
+      "phosphor / oneshot: first char lost on 0/12 lines, other bad 0, missing 0"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 54.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 6.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 17.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 99.8,
+     "detail": [
+      "Ctrl-C: 39.48 ms over the harness floor exceeds the 20 ms budget"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 41.49,
+       "p95": 57.64,
+       "n": 30,
+       "overhead_ms": 39.48,
+       "budget_ms": 20.0,
+       "budget_kind": "absolute",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 20.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_enter",
+     "status": "pass",
+     "seconds": 31.0,
+     "detail": [
+      "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)",
+      "Enter to command start: no reference terminal measured in this session, overhead verdict 'no-reference' (absolute numbers recorded)",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 33.52,
+       "p95": 42.23,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 13.8,
+     "detail": [
+      "only 0 key->frame pairs in the app log (expected ~60); log /home/<user>/builds/r_hQtIdMf/1/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log has 213 input_order keydown lines (213 with ctrl=false) and 16 input_order frame lines (0 keydown = logging off / "
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.6,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 29.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 99.3,
+     "detail": [
+      "nu: 12 typed lines: expected ['t148_x2qddukigh', 't149_pn66zhny7i', 't150_ahmy48orck', 't151_0r0zr5gil9', 't152_3c5nz8vpge', 't153_12ml6m6y7x', 't154_oxevd3cljs', 't155_c6ezfz6tzr', 't156_4d94b1tuj9', 't157_ex0z7bhc7a', 't158_vvx9cxe5f8', 't159_v68akuxnjj'], got ['t148_x2qddukight149_pn66zhny7it150_",
+      "nu: pasted lines + instant Enter: expected ['t160_zu60xvqxce', 't161_pqz9sfekr0', 't162_fis9qpngr4', 't163_d6tn8e9uvs'], got ['t160_zu60xvqxcet161_pqz9sfekr0t162_fis9qpngr4t163_d6tn8e9uvs']",
+      "nu: nested nu, exit to the outer nu, next line: expected ['t164_7ic2xcbu', 't165_0k9c71lm', 't166_ohi6hr3m'], got ['t164_7ic2xcbut165_0k9c71lmt166_ohi6hr3m']",
+      "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "terminal",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 3.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "mode_proof",
+     "status": "pass",
+     "seconds": 1.6,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "cadence",
+     "status": "pass",
+     "seconds": 6.1,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "fast_typing",
+     "status": "pass",
+     "seconds": 56.7,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "paste_instant_enter",
+     "status": "pass",
+     "seconds": 6.3,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "tab_enter",
+     "status": "pass",
+     "seconds": 17.2,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "ctrl_c_d",
+     "status": "fail",
+     "seconds": 99.5,
+     "detail": [
+      "Ctrl-C: 39.34 ms over the harness floor exceeds the 20 ms budget"
+     ],
+     "lat": {
+      "ctrl_c": {
+       "p50": 41.35,
+       "p95": 42.1,
+       "n": 30,
+       "overhead_ms": 39.34,
+       "budget_ms": 20.0,
+       "budget_kind": "absolute",
+       "verdict": "fail"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "ssh_connect_typing",
+     "status": "pass",
+     "seconds": 19.8,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_enter",
+     "status": "pass",
+     "seconds": 31.0,
+     "detail": [
+      "no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)",
+      "Enter to command start: no reference terminal measured in this session, overhead verdict 'no-reference' (absolute numbers recorded)",
+      "Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"
+     ],
+     "lat": {
+      "enter_to_start": {
+       "p50": 35.6,
+       "p95": 40.31,
+       "n": 30,
+       "overhead_ms": null,
+       "budget_ms": 2.0,
+       "budget_kind": "overhead",
+       "verdict": "no-reference"
+      }
+     }
+    },
+    {
+     "mode": "agent",
+     "name": "latency_key_log",
+     "status": "fail",
+     "seconds": 14.1,
+     "detail": [
+      "only 0 key->frame pairs in the app log (expected ~60); log /home/<user>/builds/r_hQtIdMf/1/winters-phosphor/phosphor/appci-out/wayland/run/home/<user>/state/phosphor/phosphor.log has 6553 input_order keydown lines (6551 with ctrl=false) and 449 input_order frame lines (0 keydown = logging off"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "latency_paint",
+     "status": "skip",
+     "seconds": 0.6,
+     "detail": [
+      "kl3 (ScreenCaptureKit) is macOS only"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_fish",
+     "status": "pass",
+     "seconds": 30.4,
+     "detail": [],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "shell_nu",
+     "status": "fail",
+     "seconds": 98.7,
+     "detail": [
+      "nu: 12 typed lines: expected ['t112_iiqof8dlho', 't113_6t1uabtofo', 't114_vr7ybhvwih', 't115_jcwefgtupr', 't116_xbfizxpgvr', 't117_6uhwirzf74', 't118_8ztot9id6h', 't119_pn1r8bq8r7', 't120_4izgxe8x89', 't121_t2ijejn4vx', 't122_kjy2zhjrsa', 't123_iy9g3b11rx'], got ['t112_iiqof8dlhot113_6t1uabtofot114_",
+      "nu: pasted lines + instant Enter: expected ['t124_z3dg4cachi', 't125_76w9rw4ppg', 't126_9wkhcu1wqd', 't127_10ywsv2p7j'], got ['t124_z3dg4cachit125_76w9rw4ppgt126_9wkhcu1wqdt127_10ywsv2p7j']",
+      "nu: nested nu, exit to the outer nu, next line: expected ['t128_dvh6l85v', 't129_hb4nylzo', 't130_gpvvp34x'], got ['t128_dvh6l85vt129_hb4nylzot130_gpvvp34x']",
+      "nu found at /home/<user>/.local/bin/nu (not on the pane's PATH): its directory was added to PATH in the pane"
+     ],
+     "lat": {}
+    },
+    {
+     "mode": "agent",
+     "name": "md_viewer",
+     "status": "pass",
+     "seconds": 3.4,
+     "detail": [],
+     "lat": {}
+    }
+   ],
+   "files": [
+    "wayland/junit.xml",
+    "wayland/results.json",
+    "wayland/summary.md",
+    "wayland/reused_build.json"
+   ],
+   "meta": {
+    "platform": "linux-wayland",
+    "backend": "wayland",
+    "app_display": "wayland",
+    "seed": "1",
+    "commit": "7b6e80d3",
+    "owner_settings": "sha256 a0613b641a27"
+   },
+   "summary": {
+    "pass": 19,
+    "fail": 6,
+    "skip": 2
+   },
+   "reused_build": {
+    "reused_build": {
+     "job_id": 17664724431,
+     "job_name": "build-linux-x86_64",
+     "pipeline_id": "3017838858",
+     "commit": "18fddcd8088da7ef506568624cc7936eff3a47e2",
+     "this_pipeline": "3018057763",
+     "this_commit": "7b6e80d304d0c34fea97a60ac0bf7c0a537be321",
+     "fetched": "local cache (/home/<user>/.cache/phosphor-ci/builds/linux/17664724431)"
+    }
+   },
+   "screenshots_in_ci_artifacts": [
+    "shots/terminal_ctrl_c_d_FAIL.png",
+    "shots/terminal_latency_key_log_FAIL.png",
+    "shots/terminal_shell_nu_FAIL.png",
+    "shots/agent_ctrl_c_d_FAIL.png",
+    "shots/agent_latency_key_log_FAIL.png",
+    "shots/agent_shell_nu_FAIL.png"
+   ]
+  }
+ },
+ "notes": [],
+ "compile": {
+  "warning_count": 46,
+  "warnings_by_crate": {
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 21,
+   "warp (lib test)": 18
+  },
+  "warning_lines_by_kind": {
+   "unused import": 78,
+   "unused imports": 15,
+   "use of deprecated type alias": 8,
+   "function": 8,
+   "method": 4
+  },
+  "errors": 0,
+  "status": "success",
+  "duration": 385.96553
+ }
+}

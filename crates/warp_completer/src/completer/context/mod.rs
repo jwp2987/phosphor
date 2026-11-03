@@ -1,10 +1,3 @@
-cfg_if::cfg_if! {
-    if #[cfg(feature = "v2")] {
-        mod v2;
-        pub use v2::*;
-    }
-}
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -51,12 +44,6 @@ pub trait CompletionContext: Send + Sync {
                 EscapeChar::Backslash
             }
         }
-    }
-
-    #[cfg(feature = "v2")]
-    /// If JS execution is supported, should return an instance of `JsExecutionContext`.
-    fn js_context(&self) -> Option<&dyn JsExecutionContext> {
-        None
     }
 
     /// Returns top-level commands to be suggested when completing on an empty buffer.
@@ -173,13 +160,6 @@ impl PathSeparators {
             all: Self::UNIX_SEPARATORS,
         }
     }
-
-    pub fn for_windows() -> Self {
-        Self {
-            main: '\\',
-            all: Self::WINDOWS_SEPARATORS,
-        }
-    }
 }
 
 #[async_trait]
@@ -223,11 +203,24 @@ pub trait GeneratorContext: Send + Sync {
         _session_env_vars: Option<HashMap<String, String>>,
     ) -> Result<CommandOutput>;
 
+    /// Runs a completion generator or alias lookup from a command signature. These are read-only
+    /// queries whose output depends only on the pwd and the script, so an implementation may
+    /// reuse a recent result or share one in-flight run between callers. Defaults to running the
+    /// command afresh. Never use this for a command that has side effects.
+    async fn execute_generator_at_pwd(
+        &self,
+        shell_command: &str,
+        session_env_vars: Option<HashMap<String, String>>,
+    ) -> Result<CommandOutput> {
+        self.execute_command_at_pwd(shell_command, session_env_vars)
+            .await
+    }
+
     /// Whether the implementation allows execution of generators in parallel.
     fn supports_parallel_execution(&self) -> bool;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -260,7 +253,6 @@ impl CommandOutput {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl From<command::Output> for CommandOutput {
     fn from(other: command::Output) -> CommandOutput {
         let status = if other.status.success() {
@@ -277,7 +269,7 @@ impl From<command::Output> for CommandOutput {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CommandExitStatus {
     Success,
     Failure,

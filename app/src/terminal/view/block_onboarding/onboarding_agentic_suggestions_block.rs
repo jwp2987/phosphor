@@ -3,23 +3,25 @@ use crate::ai::blocklist::{
     BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel,
 };
+use crate::terminal::History;
+use crate::terminal::TerminalView;
 use crate::terminal::event::BlockType;
 use crate::terminal::model::session::SessionId;
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::terminal::shell::ShellType;
-use crate::terminal::History;
-use crate::terminal::TerminalView;
 use crate::ui_components::icons as UIIcon;
 use crate::user_config::themes_dir;
 use lazy_static::lazy_static;
-use markdown_parser::weight::CustomWeight;
 use markdown_parser::FormattedText;
 use markdown_parser::FormattedTextFragment;
 use markdown_parser::FormattedTextLine;
+use markdown_parser::weight::CustomWeight;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
+use warpui::TypedActionView;
+use warpui::WeakViewHandle;
 use warpui::elements::CornerRadius;
 use warpui::elements::CrossAxisAlignment;
 use warpui::elements::FormattedTextElement;
@@ -27,15 +29,13 @@ use warpui::elements::Radius;
 use warpui::keymap::Keystroke;
 use warpui::ui_components::components::UiComponent;
 use warpui::ui_components::components::UiComponentStyles;
-use warpui::TypedActionView;
-use warpui::WeakViewHandle;
 use warpui::{
+    AppContext, Element, Entity, ModelHandle, SingletonEntity, View, ViewContext,
     elements::{
         Border, ConstrainedBox, Container, Flex, Hoverable, MainAxisAlignment, MainAxisSize,
         MouseStateHandle, ParentElement, Text, Wrap,
     },
     platform::Cursor,
-    AppContext, Element, Entity, ModelHandle, SingletonEntity, View, ViewContext,
 };
 
 const ONBOARDING_BOX_WIDTH: f32 = 210.;
@@ -47,7 +47,6 @@ const INTERIOR_BLOCK_SPACING: f32 = 7.;
 const PADDING_INTERIOR: f32 = 16.;
 const PADDING_VERTICAL: f32 = 24.;
 const PADDING_HORIZONTAL: f32 = 18.;
-const TOOL_PATTERNS: [&str; 5] = ["aws", "gcloud", "az", "kubectl", "docker"];
 
 lazy_static! {
     static ref PATH_REGEX: Regex =
@@ -369,31 +368,6 @@ impl OnboardingAgenticSuggestionsBlock {
         .to_string()
     }
 
-    pub fn find_most_used_cloud_tool(
-        session_id: SessionId,
-        ctx: &mut ViewContext<Self>,
-    ) -> Option<String> {
-        History::as_ref(ctx)
-            .commands(session_id)
-            .and_then(|commands| {
-                commands
-                    .iter()
-                    .fold(std::collections::HashMap::new(), |mut counts, entry| {
-                        for tool in TOOL_PATTERNS {
-                            if entry.command.starts_with(format!("{tool} ").as_str())
-                                || entry.command == tool
-                            {
-                                *counts.entry(tool.to_string()).or_insert(0) += 1;
-                            }
-                        }
-                        counts
-                    })
-                    .into_iter()
-                    .max_by_key(|(_, count)| *count)
-                    .map(|(tool, _)| tool)
-            })
-    }
-
     pub fn handle_key_pressed(&mut self, key: i32, ctx: &mut ViewContext<Self>) {
         let key_add_by_one = key - 1;
         if key_add_by_one > self.agent_suggestions.len() as i32 {
@@ -617,7 +591,9 @@ impl OnboardingAgenticSuggestionsBlock {
                     font_color.into(),
                     Default::default(),
                 )
-                .with_heading_to_font_size_multipliers(appearance.heading_font_size_multipliers().clone())
+                .with_heading_to_font_size_multipliers(
+                    appearance.heading_font_size_multipliers().clone(),
+                )
                 .finish(),
             ])
             .finish()

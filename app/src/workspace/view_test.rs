@@ -35,7 +35,6 @@ use std::sync::Arc;
 use watcher::HomeDirectoryWatcher;
 
 use crate::cloud_object::update_manager::UpdateManager;
-use crate::server::experiments::ServerExperiments;
 
 use crate::settings::PrivacySettings;
 use crate::settings_view::DisplayCount;
@@ -67,7 +66,7 @@ use crate::test_util::settings::initialize_settings_for_tests;
 use crate::undo_close::UndoCloseSettings;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use crate::workflows::local_workflows::LocalWorkflows;
-use crate::{GlobalResourceHandlesProvider, experiments, workspace};
+use crate::{GlobalResourceHandlesProvider, workspace};
 
 // Zap (localization, Phase 5): `PreferencesSyncer` was physically removed.
 
@@ -152,10 +151,8 @@ pub(crate) fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_| GPUState::new());
     app.add_singleton_model(|_| RestoredAgentConversations::default());
     app.add_singleton_model(OneTimeModalModel::new);
-    // Register GlobalResourceHandlesProvider before ServerExperiments which depends on it
     let global_resource_handles = GlobalResourceHandles::mock(app);
     app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
-    app.add_singleton_model(|ctx| ServerExperiments::new_from_cache(vec![], ctx));
     app.add_singleton_model(DefaultTerminal::new);
     app.add_singleton_model(|_| IgnoredSuggestionsModel::new(vec![]));
     app.add_singleton_model(|_| crate::code_review::git_status_update::GitStatusUpdateModel::new());
@@ -176,7 +173,6 @@ pub(crate) fn initialize_app(app: &mut App) {
     #[cfg(enable_crash_recovery)]
     crate::crash_recovery::CrashRecovery::register_for_test(app);
 
-    app.update(experiments::init);
 
     app.add_singleton_model(AIRequestUsageModel::new_for_test);
     app.add_singleton_model(
@@ -289,6 +285,42 @@ fn open_worktree_sidecar(workspace: &ViewHandle<Workspace>, app: &mut App) {
                 menu.set_selected_by_index(worktree_index, view_ctx);
             });
     });
+}
+
+/// Opening a worktree lists the repo's branches off the UI thread (#1313) and adds the tab when
+/// that finishes, so the tab count is only right after the background work has landed.
+#[cfg(feature = "local_fs")]
+async fn wait_for_tab_count(workspace: &ViewHandle<Workspace>, app: &mut App, expected: usize) {
+    for _ in 0..1000 {
+        if workspace.read(app, |workspace, _| workspace.tab_count()) == expected {
+            return;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Polls until the active tab holds `expected` code panes (the size guard checks the file off
+/// the UI thread, so the pane opens a few ticks after the call).
+async fn wait_for_code_panes(workspace: &ViewHandle<Workspace>, app: &mut App, expected: usize) {
+    for _ in 0..1000 {
+        let count = workspace.read(app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .code_panes(ctx)
+                .count()
+        });
+        if count == expected {
+            return;
+        }
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// For "nothing should open" assertions there is no condition to poll for; give the off-thread
+/// size check ample time to have (wrongly) opened a pane before the caller asserts none did.
+async fn settle_background_tasks() {
+    warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
 }
 
 #[cfg(feature = "local_fs")]
@@ -460,6 +492,7 @@ fn test_worktree_sidecar_close_via_select_item_executes_from_workspace() {
             workspace.handle_new_session_sidecar_event(&MenuEvent::ItemSelected, ctx);
         });
 
+        wait_for_tab_count(&workspace, &mut app, 2).await;
         workspace.read(&app, |workspace, _| {
             assert_eq!(workspace.tab_count(), 2);
         });
@@ -507,6 +540,8 @@ fn test_open_file_with_target_event_preserves_requested_line() {
             );
         });
 
+        // The size guard checks the file off the UI thread before the pane opens.
+        wait_for_code_panes(&workspace, &mut app, 1).await;
         workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
             let code_panes = pane_group.code_panes(ctx).collect::<Vec<_>>();
@@ -926,6 +961,7 @@ fn test_worktree_sidecar_search_editor_enter_executes_selection() {
                 });
         });
 
+        wait_for_tab_count(&workspace, &mut app, 2).await;
         workspace.read(&app, |workspace, _| {
             assert_eq!(workspace.tab_count(), 2);
             assert!(workspace.show_new_session_dropdown_menu.is_none());
@@ -2255,7 +2291,7 @@ fn test_server_token_compatibility_ignores_unknown_token() {
 
 #[test]
 // This tests the end-to-end behavior to correctly switch focus among panels.
-// (The only panels that can be focused currently are WD, workspace, & AI assistant.)
+// (The only panels that can be focused currently are WD and workspace.)
 fn test_switch_focus_panels() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
@@ -2283,19 +2319,7 @@ fn test_switch_focus_panels() {
             );
         });
 
-        // Shift focus from WD to left panel when AI panel is open
-        workspace.update(&mut app, |view, ctx| {
-            view.current_workspace_state.is_ai_assistant_panel_open = true;
-            view.focus_left_panel(ctx);
-        });
-        workspace.update(&mut app, |view, ctx| {
-            assert!(
-                view.ai_assistant_panel.is_self_or_child_focused(ctx),
-                "Expected AI panel to be focused"
-            );
-        });
-
-        // Shift focus from AI panel to left panel (terminal)
+        // Shift focus from WD to left panel (terminal)
         workspace.update(&mut app, |view, ctx| {
             view.focus_left_panel(ctx);
         });
@@ -2306,15 +2330,14 @@ fn test_switch_focus_panels() {
             );
         });
 
-        // Shift focus from workspace to right panel when AI assistant is open
+        // Shift focus from terminal to right panel: with no right panel open, wraps to WD
         workspace.update(&mut app, |view, ctx| {
-            view.current_workspace_state.is_ai_assistant_panel_open = true;
             view.focus_right_panel(ctx);
         });
         workspace.update(&mut app, |view, ctx| {
             assert!(
-                view.ai_assistant_panel.is_self_or_child_focused(ctx),
-                "Expected AI panel to be focused"
+                view.left_panel_view.is_self_or_child_focused(ctx),
+                "Expected Library panel to be focused"
             );
         });
 
@@ -3483,7 +3506,6 @@ fn test_vertical_tabs_context_menu_does_not_show_hover_only_tab_bar() {
                 );
                 report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
             });
-            workspace.should_show_ai_assistant_warm_welcome = false;
             workspace.vertical_tabs_panel_open = true;
 
             workspace.show_tab_right_click_menu =
@@ -3511,7 +3533,6 @@ fn test_standard_tab_context_menu_shows_hover_only_tab_bar() {
                         .set_value(WorkspaceDecorationVisibility::OnHover, ctx)
                 );
             });
-            workspace.should_show_ai_assistant_warm_welcome = false;
 
             workspace.show_tab_right_click_menu =
                 Some((0, TabContextMenuAnchor::Pointer(Vector2F::zero())));
@@ -5540,7 +5561,10 @@ fn test_copy_current_path_is_a_noop_without_a_focused_path() {
 
             workspace.handle_action(&WorkspaceAction::CopyCurrentPath, ctx);
 
-            assert_eq!(ctx.clipboard().read().plain_text, "sentinel");
+            assert_eq!(
+                warpui::clipboard::read_full_blocking(ctx.clipboard()).plain_text,
+                "sentinel"
+            );
         });
     });
 }
@@ -6469,6 +6493,7 @@ fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
         };
 
         open_it(&workspace, &mut app);
+        wait_for_code_panes(&workspace, &mut app, 1).await;
 
         let code_pane_id = workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
@@ -6487,6 +6512,7 @@ fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
         });
 
         open_it(&workspace, &mut app);
+        wait_for_code_panes(&workspace, &mut app, 1).await;
 
         workspace.read(&app, |workspace, ctx| {
             let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
@@ -7826,6 +7852,443 @@ fn test_restored_terminal_panes_keep_persisted_cwd_until_their_shell_bootstraps(
                 terminal_snapshot(workspace, second_tab, ctx).cwd,
                 None,
                 "after the shell bootstraps, the live (remote) session decides the snapshot"
+            );
+        });
+    });
+}
+
+/// #1329 follow-up: the size guard sits in `open_code`, so every entry point is covered, not
+/// just `/open-file` and the file-tree target. Drives two others (the pane event AI blocks and
+/// links use, and `open_file_with_target`) with a sparse file past the limit, plus a small file
+/// as the control. On the old code the pane event opened the huge file.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_code_editor_entry_points_refuse_a_file_past_the_size_limit() {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(warp_files::FileModel::new);
+        app.add_singleton_model(|_| CodeManager::default());
+        app.add_singleton_model(|_| LocalShellState::NotLoaded);
+        app.add_singleton_model(GlobalBufferModel::new);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let big_path = temp_dir.path().join("huge.log");
+        std::fs::File::create(&big_path)
+            .and_then(|file| {
+                file.set_len(crate::util::file::size_guard::CODE_EDITOR_MAX_FILE_BYTES + 1)
+            })
+            .expect("failed to create sparse file");
+
+        let code_pane_count = |workspace: &ViewHandle<Workspace>, app: &App| {
+            workspace.read(app, |workspace, ctx| {
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .code_panes(ctx)
+                    .count()
+            })
+        };
+
+        // Entry point 1: the pane event behind AI blocks / links / `/open-file`.
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &crate::pane_group::Event::OpenCodeInWarp {
+                    source: CodeSource::Link {
+                        path: big_path.clone(),
+                        range_start: None,
+                        range_end: None,
+                    },
+                    layout: EditorLayout::SplitPane,
+                    line_col: None,
+                },
+                ctx,
+            );
+        });
+        settle_background_tasks().await;
+        assert_eq!(code_pane_count(&workspace, &app), 0);
+
+        // Entry point 2: `open_file_with_target` (file tree, palette, drag-drop).
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_file_with_target(
+                big_path.clone(),
+                FileTarget::CodeEditor(EditorLayout::SplitPane),
+                None,
+                CodeSource::FileTree {
+                    path: big_path.clone(),
+                },
+                ctx,
+            );
+        });
+        settle_background_tasks().await;
+        assert_eq!(code_pane_count(&workspace, &app), 0);
+
+        // Control: a small file still opens.
+        let small_path = temp_dir.path().join("small.rs");
+        std::fs::write(&small_path, "// small\n").expect("failed to write small file");
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &crate::pane_group::Event::OpenCodeInWarp {
+                    source: CodeSource::Link {
+                        path: small_path.clone(),
+                        range_start: None,
+                        range_end: None,
+                    },
+                    layout: EditorLayout::SplitPane,
+                    line_col: None,
+                },
+                ctx,
+            );
+        });
+        wait_for_code_panes(&workspace, &mut app, 1).await;
+        assert_eq!(code_pane_count(&workspace, &app), 1);
+    });
+}
+
+/// Opens a window the way `open_new_from_path` does and reports whether the first tab's
+/// terminal ended up in agent view.
+fn session_window_enters_agent_view(
+    app: &mut App,
+    apply_default_session_mode: bool,
+    default_mode: DefaultSessionMode,
+) -> bool {
+    AISettings::handle(app).update(app, |settings, ctx| {
+        settings
+            .default_session_mode_internal
+            .set_value(default_mode, ctx)
+            .expect("Failed to set default_session_mode");
+        settings
+            .is_any_ai_enabled
+            .set_value(true, ctx)
+            .expect("Failed to enable AI");
+    });
+    let global_resource_handles = GlobalResourceHandles::mock(app);
+    let (_, workspace) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+        Workspace::new(
+            global_resource_handles,
+            None,
+            NewWorkspaceSource::Session {
+                options: Box::new(NewTerminalOptions {
+                    apply_default_session_mode,
+                    ..Default::default()
+                }),
+            },
+            ctx,
+        )
+    });
+    workspace.read(app, |workspace, ctx| {
+        workspace
+            .active_tab_pane_group()
+            .as_ref(ctx)
+            .active_session_view(ctx)
+            .is_some_and(|terminal| {
+                terminal
+                    .as_ref(ctx)
+                    .agent_view_controller()
+                    .as_ref(ctx)
+                    .is_active()
+            })
+    })
+}
+
+// #1325: a first window opened via a path/URL argument must honour `default_session_mode`.
+#[test]
+fn test_session_window_honours_default_session_mode_agent() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        assert!(session_window_enters_agent_view(
+            &mut app,
+            true,
+            DefaultSessionMode::Agent
+        ));
+    });
+}
+
+#[test]
+fn test_session_window_without_opt_in_or_terminal_default_stays_terminal() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        // SDK/headless callers do not opt in.
+        assert!(!session_window_enters_agent_view(
+            &mut app,
+            false,
+            DefaultSessionMode::Agent
+        ));
+        // Opted in, but the default is Terminal.
+        assert!(!session_window_enters_agent_view(
+            &mut app,
+            true,
+            DefaultSessionMode::Terminal
+        ));
+    });
+}
+
+/// #1361: a database notice raised before any window is active is not lost and is not shown by a
+/// window that is not active; it shows the moment that window becomes the active one, with no
+/// timer involved.
+#[test]
+fn database_notice_pending_before_activation_shows_on_activation() {
+    crate::i18n::init(Some("en"));
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        // Drain anything an earlier test in this process left pending.
+        while crate::persistence::take_database_problem_notice().is_some() {}
+        crate::persistence::record_partial_restore(std::path::Path::new("/tmp/warp.sqlite"), 2);
+
+        // `NotStealFocus`: no window is active while the workspace is built.
+        let workspace = mock_workspace(&mut app);
+        let window_id = app.read(|ctx| {
+            assert_eq!(ctx.windows().active_window(), None);
+            workspace.window_id(ctx)
+        });
+        let has_toasts = |app: &App| {
+            workspace.read(app, |workspace, ctx| {
+                workspace.toast_stack.as_ref(ctx).has_toasts()
+            })
+        };
+        assert!(
+            !has_toasts(&app),
+            "an inactive window must not take the notice"
+        );
+
+        app.update(|ctx| {
+            WindowManager::handle(ctx).update(ctx, |manager, ctx| {
+                manager.set_active_window_for_test(Some(window_id), ctx);
+            });
+        });
+        assert!(
+            has_toasts(&app),
+            "the pending notice shows when the window activates"
+        );
+    });
+}
+
+/// #1370 F6: opening a conversation that is already shown in a pane of this window, without
+/// pane navigation data, focuses that pane; it does not restore a second copy into a new tab.
+#[test]
+fn test_open_conversation_already_live_in_a_pane_does_not_restore_again() {
+    crate::i18n::init(Some("en"));
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        // Focusing the live pane reaches the terminal view's queued-prompt handling, which reads
+        // this singleton (lib.rs registers it in production; `initialize_app` does not).
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let terminal_view_id = workspace
+                .active_session_view(ctx)
+                .expect("a session view")
+                .as_ref(ctx)
+                .view_id();
+            let conversation = crate::ai::agent::conversation::AIConversation::new(false);
+            let conversation_id = conversation.id();
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            });
+            let tabs_before = workspace.tab_count();
+
+            workspace.restore_or_navigate_to_conversation(
+                conversation_id,
+                None,
+                None,
+                None,
+                Some(RestoreConversationLayout::NewTab),
+                ctx,
+            );
+
+            assert_eq!(workspace.tab_count(), tabs_before, "no second restore tab");
+            assert!(workspace.conversation_opens_in_flight.is_empty());
+        });
+    });
+}
+
+/// #1370 F6: a second open while the first restore of the same conversation is still loading is
+/// dropped; the first restore will show it.
+#[test]
+fn test_open_conversation_while_its_restore_is_in_flight_is_dropped() {
+    crate::i18n::init(Some("en"));
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let conversation_id = crate::ai::agent::conversation::AIConversationId::new();
+            workspace
+                .conversation_opens_in_flight
+                .insert(conversation_id);
+            let tabs_before = workspace.tab_count();
+
+            workspace.restore_or_navigate_to_conversation(
+                conversation_id,
+                None,
+                None,
+                None,
+                Some(RestoreConversationLayout::NewTab),
+                ctx,
+            );
+
+            assert_eq!(workspace.tab_count(), tabs_before);
+        });
+    });
+}
+
+/// Opens `contents` as a code pane next to the mock workspace's terminal pane and returns the pane
+/// group, the pane id and the pane's code view (#1407 tests).
+#[cfg(feature = "local_fs")]
+async fn open_code_pane_for_memory_test(
+    app: &mut App,
+    workspace: &ViewHandle<Workspace>,
+    contents: &str,
+) -> (
+    ViewHandle<crate::pane_group::PaneGroup>,
+    PaneId,
+    ViewHandle<crate::code::view::CodeView>,
+    tempfile::TempDir,
+) {
+    let temp_dir = TempDir::new().expect("failed to create temp dir");
+    let code_path = temp_dir.path().join("big.rs");
+    std::fs::write(&code_path, contents).expect("failed to write code file");
+
+    workspace.update(app, |workspace, ctx| {
+        let pane_group = workspace.active_tab_pane_group().clone();
+        workspace.handle_file_tree_event(
+            pane_group,
+            &crate::pane_group::Event::OpenFileWithTarget {
+                path: code_path.clone(),
+                target: FileTarget::CodeEditor(EditorLayout::SplitPane),
+                line_col: None,
+            },
+            ctx,
+        );
+    });
+    wait_for_code_panes(workspace, app, 1).await;
+    let pane_group = workspace.read(app, |workspace, _| {
+        workspace.active_tab_pane_group().clone()
+    });
+    let (pane_id, code_view) = pane_group.read(app, |panes, ctx| {
+        panes
+            .code_panes(ctx)
+            .next()
+            .expect("the code pane should exist")
+    });
+    (pane_group, pane_id, code_view, temp_dir)
+}
+
+/// #1407: closing a code pane must leave nothing holding the editor: the editor model and the
+/// shared buffer are dropped once the close has settled (the closed pane sits hidden in the
+/// undo-close stack, but its tabs hold no editors). Fails if any owner (undo stack, subscription,
+/// cache) keeps the closed editor alive.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_closing_a_code_pane_drops_its_editor_and_buffer() {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(warp_files::FileModel::new);
+        app.add_singleton_model(|_| CodeManager::default());
+        app.add_singleton_model(|_| LocalShellState::NotLoaded);
+        app.add_singleton_model(GlobalBufferModel::new);
+        let workspace = mock_workspace(&mut app);
+        let contents: String = (1..=200).map(|line| format!("// line {line}\n")).collect();
+        let (pane_group, pane_id, code_view, _dir) =
+            open_code_pane_for_memory_test(&mut app, &workspace, &contents).await;
+
+        let handles = code_view.read(&app, |view, ctx| view.editor_handles_for_test(ctx));
+        assert_eq!(handles.len(), 1);
+        app.read(|ctx| {
+            assert!(handles[0].0.upgrade(ctx).is_some());
+            assert!(handles[0].1.upgrade(ctx).is_some());
+        });
+
+        pane_group.update(&mut app, |panes, ctx| panes.close_pane(pane_id, ctx));
+        assert!(pane_group.read(&app, |panes, _| panes.is_pane_hidden_for_close(pane_id)));
+
+        // The drop happens when the close's effects flush; the buffer registry sweeps on the next
+        // idle turn. Wait for the sweep (an event), not a fixed time.
+        for _ in 0..1000 {
+            let dropped = app.read(|ctx| {
+                handles[0].0.upgrade(ctx).is_none()
+                    && handles[0].1.upgrade(ctx).is_none()
+                    && GlobalBufferModel::as_ref(ctx).buffer_count() == 0
+            });
+            if dropped {
+                break;
+            }
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(10)).await;
+        }
+        app.read(|ctx| {
+            assert!(
+                handles[0].0.upgrade(ctx).is_none(),
+                "the closed pane's editor model is still alive"
+            );
+            assert!(
+                handles[0].1.upgrade(ctx).is_none(),
+                "the closed pane's buffer is still alive"
+            );
+            assert_eq!(
+                GlobalBufferModel::as_ref(ctx).buffer_count(),
+                0,
+                "GlobalBufferModel still registers the closed file"
+            );
+        });
+    });
+}
+
+/// #1407: even when something still holds the editor model (the leak this issue is about), closing
+/// the pane drops the heavy state (layout, syntax trees) at once and the zombie model no longer
+/// follows its shared buffer.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_closing_a_code_pane_releases_a_retained_editors_heavy_state() {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(warp_files::FileModel::new);
+        app.add_singleton_model(|_| CodeManager::default());
+        app.add_singleton_model(|_| LocalShellState::NotLoaded);
+        app.add_singleton_model(GlobalBufferModel::new);
+        let workspace = mock_workspace(&mut app);
+        let contents: String = (1..=200).map(|line| format!("// line {line}\n")).collect();
+        let (pane_group, pane_id, code_view, _dir) =
+            open_code_pane_for_memory_test(&mut app, &workspace, &contents).await;
+
+        // A stray owner: a strong handle to the editor model that outlives the pane.
+        let retained = code_view.read(&app, |view, ctx| {
+            view.retained_editor_model_for_test(ctx)
+                .expect("the code view has one tab")
+        });
+        app.read(|ctx| assert!(!retained.as_ref(ctx).is_released()));
+
+        pane_group.update(&mut app, |panes, ctx| panes.close_pane(pane_id, ctx));
+
+        app.read(|ctx| {
+            let model = retained.as_ref(ctx);
+            assert!(
+                model.is_released(),
+                "closing must release the retained editor"
+            );
+            assert_eq!(
+                model.syntax_tree_count(ctx),
+                0,
+                "syntax trees must be dropped on close"
             );
         });
     });

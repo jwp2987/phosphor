@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Guard: bytes reach the pty only through the pane queue, or through a DOOR on the allowlist below
+# (#1429-#1436, the Fable "open doors" review).
+#
+# The pane's one input queue (`write_user_bytes_to_pty`, with the hand-over gates behind it) orders
+# every user-originated or user-visible byte. A raw `write_to_pty(` / `clear_line_editor_and_write_to_pty(`
+# / `write_end_of_transmission_char` / `emit(Event::WriteBytesToPty` bypasses it: the bytes overtake
+# keys the queue holds and land in an ssh connect, a subshell bootstrap or a remote shell. Eight such
+# doors were found at once; this guard keeps the next one from arriving silently.
+#
+# Commands go through `execute_command_or_set_pending` / `PtyIntent::ExecuteCommand`; the agent's
+# writes through `write_agent_bytes_to_pty` (refused while a setup gate is open); synced input through
+# `write_to_pty_for_syncing_long_running_commands`; CLI-agent text through `write_user_bytes_to_pty`.
+#
+# The allowlist is keyed `file:enclosing fn` and EVERY entry carries a reason. Adding an entry is a
+# design decision: say why the byte cannot wait behind the queue, and mirror the entry in
+# docs/testing.md 2.3. Test files are exempt.
+#
+# Exit 0: clean. Exit 1: prints each offending call.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+# file:fn -> reason
+ALLOW=$(cat <<'LIST'
+app/src/terminal/view.rs:maybe_report_focus_in	FOCUS_IN report: a terminal protocol answer the program asked for, never user text
+app/src/terminal/view.rs:maybe_report_focus_out	FOCUS_OUT report: same, must not queue behind typed keys
+app/src/terminal/view.rs:write_to_pty	the raw emit itself (the door's definition)
+app/src/terminal/view.rs:clear_line_editor_and_write_to_pty	wrapper over the raw write; its callers are checked individually
+app/src/terminal/view.rs:write_user_bytes_to_pty_after_paste_stage	THE sink: what the pane queue delivers into
+app/src/terminal/view.rs:release_held_keys	releases keys the hand-off held, in typed order, after their gate closed
+app/src/terminal/view.rs:handle_terminal_event	OSC 52 clipboard-read reply: the terminal's answer to a program query
+app/src/terminal/view.rs:write_init_subshell_bytes_to_pty	subshell bootstrap first line: the setup that opens the SubshellSetup gate
+app/src/terminal/view.rs:write_subshell_bootstrap_line	subshell bootstrap lines, paced under the SubshellBootstrapWrite gate
+app/src/terminal/view.rs:hand_held_ssh_typeahead_to_unbootstrapped_remote	ssh bootstrap failed (#1494): ' stty sane' restores the remote line discipline the lost bootstrap left raw; a setup line that must reach the remote ahead of the held typeahead, which then drains through the queue
+app/src/terminal/view.rs:ctrl_c_during_powershell_setup	PowerShell StopProfiles ^C: must reach the console ahead of the PowerShell gate's held keys
+app/src/terminal/writeable_pty/terminal_manager_util.rs:*	the PtyIntent dispatcher: PtyIntent::CtrlD from the queue-aware view
+app/src/terminal/writeable_pty/pty_controller.rs:*	the controller owns the pty writer (the door's definition)
+LIST
+)
+
+pattern='(^|[^A-Za-z0-9_])write_to_pty\(|clear_line_editor_and_write_to_pty\(|write_end_of_transmission_char|emit\(Event::WriteBytesToPty'
+
+status=0
+while IFS= read -r file; do
+    case "$file" in
+        */tests.rs|*_test.rs|*_tests.rs|*/tests/*) continue ;;
+    esac
+    hits="$(ALLOW="$ALLOW" FILE="$file" PATTERN="$pattern" perl -ne '
+        BEGIN {
+            %ok = ();
+            for my $l (split /\n/, $ENV{ALLOW}) { my ($k) = split /\t/, $l; $ok{$k} = 1; }
+            $re = qr/$ENV{PATTERN}/; $cur = "";
+        }
+        if (/^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)/) { $cur = $1; }
+        next if /^\s*\/\//;
+        if ($_ =~ $re) {
+            next if $ok{"$ENV{FILE}:$cur"} || $ok{"$ENV{FILE}:*"};
+            print "$ENV{FILE}:$.: in fn $cur: $_";
+        }' "$file")"
+    if [[ -n "$hits" ]]; then
+        printf '%s\n' "$hits" >&2
+        status=1
+    fi
+done < <(git ls-files 'app/src/*.rs' 2>/dev/null)
+
+if ((status != 0)); then
+    cat >&2 <<'MSG'
+check_pty_doors: a raw pty write outside the allowlist. Route the bytes through
+write_user_bytes_to_pty (user-visible input), execute_command_or_set_pending (commands) or
+write_agent_bytes_to_pty (agent), or -- if it truly cannot wait behind the pane queue -- add a
+reasoned entry to the allowlist in script/check_pty_doors and docs/testing.md 2.3.
+MSG
+else
+    echo "check_pty_doors: ok"
+fi
+exit "$status"

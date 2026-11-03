@@ -1,0 +1,295 @@
+{
+ "pipeline": 3020764578,
+ "web_url": "https://gitlab.com/winters-phosphor/phosphor/-/pipelines/3020764578",
+ "ref": "build/r18d7",
+ "commit": "7fb64c8416c084675c55b0b625856fbdc149074d",
+ "created_at": "2026-11-03T04:58:32.106Z",
+ "date": "2026-11-03",
+ "tier": "fix",
+ "pipeline_status": "manual",
+ "jobs": {
+  "advisories": {
+   "status": "failed",
+   "duration": 5.04224,
+   "id": 17686654354,
+   "runner": ""
+  },
+  "app-test-windows-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558955,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-macos-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558954,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-x11-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558953,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-linux-wayland-reuse": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558952,
+   "runner": null,
+   "note": "not run"
+  },
+  "app-test-windows": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17686558951,
+   "runner": null
+  },
+  "app-test-macos": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17686558950,
+   "runner": null
+  },
+  "app-test-linux-x11": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17686558949,
+   "runner": null
+  },
+  "app-test-linux-wayland": {
+   "status": "skipped",
+   "duration": null,
+   "id": 17686558948,
+   "runner": null
+  },
+  "build-windows-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558947,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558946,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-profiling": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558945,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-windows-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558944,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-linux-x86_64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558943,
+   "runner": null,
+   "note": "not run"
+  },
+  "build-macos-arm64": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558942,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558941,
+   "runner": null,
+   "note": "not run"
+  },
+  "usage-test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558940,
+   "runner": null,
+   "note": "not run"
+  },
+  "bench": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558939,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558938,
+   "runner": null,
+   "note": "not run"
+  },
+  "mutants": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558937,
+   "runner": null,
+   "note": "not run"
+  },
+  "fuzz-smoke": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558936,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-shuttle-loom": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558935,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux-pwsh": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558934,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [3]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558933,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [2]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558932,
+   "runner": null,
+   "note": "not run"
+  },
+  "integration-linux: [1]": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558931,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-workspace-rest": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558930,
+   "runner": null,
+   "note": "not run"
+  },
+  "insta-snapshots": {
+   "status": "failed",
+   "duration": 274.534158,
+   "id": 17686558929,
+   "runner": ""
+  },
+  "test-warpui-core": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558928,
+   "runner": null,
+   "note": "not run"
+  },
+  "test-linux": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558927,
+   "runner": null,
+   "note": "not run"
+  },
+  "licenses": {
+   "status": "success",
+   "duration": 13.374614,
+   "id": 17686558925,
+   "runner": ""
+  },
+  "check-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558924,
+   "runner": null,
+   "note": "not run"
+  },
+  "guards-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558923,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-windows": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558922,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-macos": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558921,
+   "runner": null,
+   "note": "not run"
+  },
+  "diag-mac": {
+   "status": "manual",
+   "duration": null,
+   "id": 17686558920,
+   "runner": null,
+   "note": "not run"
+  },
+  "check-linux": {
+   "status": "failed",
+   "duration": 189.745997,
+   "id": 17686558919,
+   "runner": ""
+  },
+  "guards": {
+   "status": "success",
+   "duration": 100.341889,
+   "id": 17686558918,
+   "runner": ""
+  }
+ },
+ "unit": {},
+ "app": {},
+ "notes": [],
+ "compile": {
+  "warning_count": 52,
+  "warnings_by_crate": {
+   "markdown_parser (lib)": 1,
+   "arboard (lib)": 2,
+   "settings (lib)": 1,
+   "warp_editor (lib)": 2,
+   "ai (lib)": 2,
+   "warp (lib)": 24,
+   "warp (lib test)": 20
+  },
+  "warning_lines_by_kind": {
+   "unused import": 22,
+   "unused imports": 7,
+   "function": 3,
+   "use of deprecated type alias": 2,
+   "method": 1,
+   "build failed, waiting for other jobs to finish...": 1
+  },
+  "errors": 9,
+  "status": "failed",
+  "duration": 189.745997
+ }
+}

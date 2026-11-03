@@ -1,6 +1,3 @@
-#![cfg_attr(target_family = "wasm", allow(dead_code, unused_imports))]
-// Adding this file level gate as some of the code around editability is not used in WASM yet.
-
 use crate::code::editor::line_iterator::LineIterator;
 use crate::code_review::CodeReviewTelemetryEvent;
 use num_traits::SaturatingSub;
@@ -329,6 +326,9 @@ pub struct CodeEditorModel {
     lazy_layout_initialized: bool,
     /// Whether syntax parsing should be bootstrapped from the latest full buffer content.
     pending_syntax_tree_bootstrap: bool,
+    /// Set by [`Self::release_memory`]: the editor is closed, so edits to a shared buffer made
+    /// elsewhere must not be laid out or parsed here again (#1407).
+    released: bool,
 }
 
 impl CodeEditorModel {
@@ -416,6 +416,7 @@ impl CodeEditorModel {
             lazy_layout_enabled: lazy_layout,
             lazy_layout_initialized: false,
             pending_syntax_tree_bootstrap: false,
+            released: false,
         }
     }
 
@@ -497,6 +498,7 @@ impl CodeEditorModel {
             lazy_layout_enabled: false,
             lazy_layout_initialized: true,
             pending_syntax_tree_bootstrap: false,
+            released: false,
         }
     }
 
@@ -1127,6 +1129,19 @@ impl CodeEditorModel {
 
                     (char_offset, Some(temp_index), intra_line_offset)
                 }
+                BlockItem::ParkedLines(chunk) => {
+                    // A chunk of dehydrated lines (far from the viewport): pick the line under
+                    // `offset` by its stride so the anchor lands on that line, not the chunk start.
+                    let stride = chunk.stride().as_f32().max(f32::EPSILON);
+                    let into_chunk = intra_line_offset.as_f32();
+                    let index = ((into_chunk / stride).floor().max(0.) as usize)
+                        .min(chunk.len().saturating_sub(1));
+                    (
+                        positioned_block.start_char_offset + chunk.line_start(index),
+                        None,
+                        Pixels::new((into_chunk - index as f32 * stride).max(0.)),
+                    )
+                }
                 BlockItem::Paragraph(_)
                 | BlockItem::TextBlock { .. }
                 | BlockItem::RunnableCodeBlock { .. }
@@ -1691,6 +1706,9 @@ impl CodeEditorModel {
     }
 
     fn handle_content_model_event(&mut self, event: &BufferEvent, ctx: &mut ModelContext<Self>) {
+        if self.released {
+            return;
+        }
         match event {
             BufferEvent::ContentChanged {
                 delta,
@@ -1700,7 +1718,6 @@ impl CodeEditorModel {
                 selection_model_id,
             } => {
                 let buffer = self.content().as_ref(ctx);
-                let content = buffer.text();
                 if self.should_defer_syntax_tree_parsing() {
                     self.pending_syntax_tree_bootstrap = true;
                 } else {
@@ -1749,9 +1766,14 @@ impl CodeEditorModel {
                     }
                 }
 
-                self.diff.update(ctx, move |diff, ctx| {
-                    diff.compute_diff(content, *buffer_version, ctx)
-                });
+                // The diff needs the whole text; copying a large file's text on every edit for a
+                // model with nothing to diff against is pure waste (#1340).
+                if self.diff.as_ref(ctx).has_base() {
+                    let content = self.content().as_ref(ctx).text();
+                    self.diff.update(ctx, move |diff, ctx| {
+                        diff.compute_diff(content, *buffer_version, ctx)
+                    });
+                }
 
                 // If we are delaying rendering, push these updates to the delay rendering state. Otherwise, flush them to diff and rendering model.
                 if let Some(delay_rendering) = &mut self.delay_rendering {
@@ -2052,6 +2074,33 @@ impl CodeEditorModel {
         self.backspace(ctx);
     }
 
+    /// Drops this editor's own heavy state: the laid-out paragraphs, syntax trees, highlight
+    /// cache and decorations (hundreds of MB for a 7 MB file). The shared buffer is left alone
+    /// (another pane may show it). Called when the editor is closed so the memory goes now, not
+    /// only once every handle to this model happens to be dropped (#1407). The editor is not
+    /// usable for display afterwards.
+    pub fn release_memory(&mut self, ctx: &mut ModelContext<Self>) {
+        self.released = true;
+        self.delay_rendering = None;
+        self.pending_syntax_tree_bootstrap = false;
+        self.syntax_tree
+            .update(ctx, |syntax_tree, _| syntax_tree.release());
+        self.render_state
+            .update(ctx, |render_state, _| render_state.release_layout());
+    }
+
+    /// Number of syntax trees held (for tests).
+    #[cfg(test)]
+    pub(crate) fn syntax_tree_count(&self, ctx: &AppContext) -> usize {
+        self.syntax_tree.as_ref(ctx).tree_count()
+    }
+
+    /// Whether [`Self::release_memory`] ran.
+    #[cfg(test)]
+    pub fn is_released(&self) -> bool {
+        self.released
+    }
+
     pub fn reset_content(&mut self, state: InitialBufferState, ctx: &mut ModelContext<Self>) {
         self.set_base(state.text, false, ctx);
         // Line ending is now inferred automatically by Buffer::reset.
@@ -2137,10 +2186,10 @@ impl CodeEditorModel {
         render_state.styles().base_line_height().as_f32()
     }
 
-    pub fn paste(&mut self, ctx: &mut ModelContext<Self>) {
-        // We only want to read the plain text contents for code editor.
-        let content = ctx.clipboard().read();
-        self.insert(content.plain_text.as_str(), EditOrigin::UserInitiated, ctx);
+    /// Inserts pasted plain text at the cursor. The clipboard is read by the view, off the UI
+    /// thread, which also orders the keys typed meanwhile (#1380).
+    pub fn paste_text(&mut self, text: &str, ctx: &mut ModelContext<Self>) {
+        self.insert(text, EditOrigin::UserInitiated, ctx);
     }
 
     /// Append text to the end of the buffer regardless of cursor position.

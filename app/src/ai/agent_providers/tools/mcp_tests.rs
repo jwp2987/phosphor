@@ -210,3 +210,137 @@ fn read_resource_description_is_stable_and_sorted() {
     let pos_z = last.1.find("z.txt").expect("should contain z.txt");
     assert!(pos_a < pos_z, "available_uris must be sorted lexicographically");
 }
+
+mod result_rendering {
+    use super::super::serialize_result;
+    use serde_json::json;
+    use warp_multi_agent_api as api;
+
+    use api::call_mcp_tool_result::success::result::Result as Part;
+
+    fn call_result(parts: Vec<Part>) -> api::message::tool_call_result::Result {
+        api::message::tool_call_result::Result::CallMcpTool(api::CallMcpToolResult {
+            result: Some(api::call_mcp_tool_result::Result::Success(
+                api::call_mcp_tool_result::Success {
+                    results: parts
+                        .into_iter()
+                        .map(|p| api::call_mcp_tool_result::success::Result { result: Some(p) })
+                        .collect(),
+                },
+            )),
+        })
+    }
+
+    /// Old code rendered `format!("{:?}", s)`: a string full of `Success { results: [Result {
+    /// result: Some(Text(Text { text: "..." })) }] }` with the text re-escaped.
+    #[test]
+    fn text_is_plain_text_not_a_debug_dump() {
+        let value = serialize_result(&call_result(vec![Part::Text(
+            api::call_mcp_tool_result::success::result::Text {
+                text: "line one\n\"quoted\"".to_owned(),
+            },
+        )]))
+        .unwrap();
+        assert_eq!(
+            value,
+            json!({"status": "ok", "content": [{"type": "text", "text": "line one\n\"quoted\""}]})
+        );
+    }
+
+    #[test]
+    fn images_are_noted_not_inlined() {
+        let value = serialize_result(&call_result(vec![Part::Image(
+            api::call_mcp_tool_result::success::result::Image {
+                data: b"AAAABBBB".to_vec(),
+                mime_type: "image/png".to_owned(),
+            },
+        )]))
+        .unwrap();
+        let part = &value["content"][0];
+        assert_eq!(part["type"], "image");
+        assert_eq!(part["mime_type"], "image/png");
+        assert!(!part.to_string().contains("AAAABBBB"));
+        assert!(part["omitted"].as_str().unwrap().contains("8 bytes"));
+    }
+
+    #[test]
+    fn read_resource_text_and_binary() {
+        let result =
+            api::message::tool_call_result::Result::ReadMcpResource(api::ReadMcpResourceResult {
+                result: Some(api::read_mcp_resource_result::Result::Success(
+                    api::read_mcp_resource_result::Success {
+                        contents: vec![
+                            api::McpResourceContent {
+                                uri: "file:///a.txt".to_owned(),
+                                content_type: Some(api::mcp_resource_content::ContentType::Text(
+                                    api::mcp_resource_content::Text {
+                                        content: "hello".to_owned(),
+                                        mime_type: "text/plain".to_owned(),
+                                    },
+                                )),
+                            },
+                            api::McpResourceContent {
+                                uri: "file:///b.bin".to_owned(),
+                                content_type: Some(api::mcp_resource_content::ContentType::Binary(
+                                    api::mcp_resource_content::Binary {
+                                        data: b"ZZZZ".to_vec(),
+                                        mime_type: "application/octet-stream".to_owned(),
+                                    },
+                                )),
+                            },
+                        ],
+                    },
+                )),
+            });
+        let value = serialize_result(&result).unwrap();
+        assert_eq!(value["contents"][0]["text"], "hello");
+        assert_eq!(value["contents"][0]["uri"], "file:///a.txt");
+        assert!(!value["contents"][1].to_string().contains("ZZZZ"));
+        assert!(value["contents"][1]["omitted"].is_string());
+    }
+}
+
+/// #1278: an MCP call whose arguments stringify a value against the tool's own input schema
+/// is corrected before it reaches the server; matching arguments pass through untouched.
+#[test]
+fn mcp_call_arguments_are_coerced_against_the_tool_schema() {
+    let schema: serde_json::Map<String, serde_json::Value> = json!({
+        "type": "object",
+        "properties": {
+            "n": { "type": "integer" },
+            "label": { "type": "string" }
+        }
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let server = mk_server(
+        "id-a",
+        "server-a",
+        vec![Tool::new("count", "counts", Arc::new(schema))],
+        vec![],
+    );
+    let name = function_name(&server, "count");
+    let ctx = MCPContext {
+        #[allow(deprecated)]
+        resources: vec![],
+        #[allow(deprecated)]
+        tools: vec![],
+        servers: vec![server],
+    };
+    let args_of = |arguments: &str| {
+        let tool = super::parse_mcp_tool_call(&name, arguments, Some(&ctx)).unwrap();
+        let warp_multi_agent_api::message::tool_call::Tool::CallMcpTool(call) = tool else {
+            panic!("expected CallMcpTool");
+        };
+        serde_json::Value::Object(super::prost_struct_to_json(&call.args.unwrap()))
+    };
+    assert_eq!(
+        args_of(r#"{"n":"42","label":"x"}"#),
+        json!({"n": 42.0, "label": "x"})
+    );
+    assert_eq!(
+        args_of(r#"{"n":7,"label":"y"}"#),
+        json!({"n": 7.0, "label": "y"})
+    );
+}

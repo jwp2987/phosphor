@@ -2,6 +2,7 @@ mod element;
 mod figma_utils;
 mod model;
 mod movement;
+mod paste_hold;
 mod snapshot;
 #[cfg(feature = "voice_input")]
 mod voice;
@@ -16,6 +17,7 @@ pub use {
         LocalDrawableSelectionData, PeerSelectionData, RemoteDrawableSelectionData, ReplicaId,
         SelectAction, TextRun, TextStyleOperation,
     },
+    paste_hold::{DisplayMapStep, EditorPasteHold, HeldPasteKey},
 };
 
 use self::model::{LocalSelections, Selection, UpdateBufferOption};
@@ -150,6 +152,14 @@ const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 /// renderer keeps an idle focused window busy (#1108). Any edit, cursor move or
 /// focus change restarts the blinking.
 const MAX_IDLE_CURSOR_BLINKS: u32 = 20;
+
+/// `PHOSPHOR_BLINK_FULL_RENDER=1` makes a blink tick re-render the view (and relayout the
+/// window) again instead of requesting a paint-only frame.
+fn blink_full_render() -> bool {
+    static FULL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FULL
+        .get_or_init(|| std::env::var("PHOSPHOR_BLINK_FULL_RENDER").is_ok_and(|value| value == "1"))
+}
 const DEFAULT_TAB_SIZE: usize = 4;
 
 pub const ACCEPT_AUTOSUGGESTION_KEYBINDING_NAME: &str = "editor_view:insert_autosuggestion";
@@ -1049,6 +1059,8 @@ pub enum EditorAction {
         selected_range: Range<usize>,
     },
     ClearMarkedText,
+    /// Internal (#1389): the deferred step that applies replayed keys waiting for the display map.
+    ReplayHeldKeys,
     ImeCommit(UserInput<String>),
     Tab,
     ShiftTab,
@@ -1821,9 +1833,16 @@ pub struct EditorView {
     focused: bool,
     get_cursor_colors_fn: CursorColorsFn,
     cursors_visible: bool,
+    /// Mirror of `cursors_visible` that the element reads at paint time, so a blink tick only
+    /// requests a paint-only frame. Always written through `set_cursors_visible`.
+    cursors_visible_shared: Arc<std::sync::atomic::AtomicBool>,
     blink_epoch: usize,
     /// Blink toggles since the last cursor activity; see `MAX_IDLE_CURSOR_BLINKS`.
     blinks_since_activity: u32,
+    /// How many times the buffer reported a style update; tests read it to prove that an
+    /// operation which changes no style does not make the editor relayout and request a frame.
+    #[cfg(test)]
+    styles_updated_count: usize,
     single_line: bool,
     /// A cache for text that is cut within the input using ctrl-k/u. This text is not copied to clipboard.
     internal_clipboard: String,
@@ -1842,12 +1861,26 @@ pub struct EditorView {
     autocomplete_symbols_setting: bool,
     /// When it returns true, typed symbols are inserted literally even if auto-pairing is on.
     autocomplete_symbols_veto: Option<Box<dyn Fn() -> bool>>,
+    /// This is the terminal input's editor, whose typed text and IME composition arrive from the
+    /// pane's key sink (#1404) while the sink is on, not from its element.
+    keys_from_pane_sink: bool,
     /// A cached copy of cursor_display_type from Settings (to avoid performing
     /// a settings read on every typed character).
     /// If `None`, we do not wish to respect the user's cursor display preference.
     cursor_display_override: Option<CursorDisplayType>,
     window_id: WindowId,
     autosuggestion_state: Option<Arc<AutosuggestionState>>,
+    /// An accept keypress that arrived at the end of the buffer before the ghost for that
+    /// buffer was ready: the buffer text at the time. Applied by `set_autosuggestion` when the
+    /// ghost lands for exactly that buffer with the cursor still at its end, however long that
+    /// takes (#1355: no time window). Discarded when the buffer is edited, or when the request
+    /// for that buffer completes with no suggestion
+    /// ([`Self::discard_pending_autosuggestion_accept`]).
+    pending_autosuggestion_accept: Option<String>,
+    /// Set on the input's editor by the terminal view: while active, editing keys are queued
+    /// there instead of applied, so keys typed during an ssh connect keep their order (#1292).
+    /// Keys typed while a paste is being read off the UI thread; replayed behind it (#1300).
+    paste_hold: Rc<EditorPasteHold>,
     next_command_model: Option<ModelHandle<NextCommandModel>>,
 
     /// The height of the editor at the last render.
@@ -2604,104 +2637,10 @@ impl VimHandler for EditorView {
         register_name: char,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(RegisterContent { text, motion_type }) = VimRegisters::handle(ctx)
-            .update(ctx, |registers, ctx| {
-                registers.read_from_register(register_name, ctx)
-            })
-        else {
-            return;
-        };
-        match motion_type {
-            MotionType::Charwise => {
-                self.edit(
-                    ctx,
-                    Edits::new()
-                        .with_update_buffer(
-                            PlainTextEditorViewAction::Paste,
-                            EditOrigin::UserInitiated,
-                            |editor_model, ctx| {
-                                for _ in 0..count {
-                                    editor_model.insert(&text, None, ctx);
-                                }
-                            },
-                        )
-                        .with_change_selections(|editor_model, ctx| {
-                            if *direction == Direction::Forward {
-                                editor_model.move_cursors_by_offset(
-                                    1,
-                                    &Direction::Forward,
-                                    /* keep_selection */ false,
-                                    /* stop_at_line_boundary */ false,
-                                    ctx,
-                                );
-                            }
-                        })
-                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
-                            editor_model.move_cursors_by_offset(
-                                1,
-                                &Direction::Backward,
-                                /* keep_selection */ false,
-                                /* stop_at_line_boundary */ false,
-                                ctx,
-                            );
-                        }),
-                );
-            }
-            MotionType::Linewise => {
-                self.edit(
-                    ctx,
-                    Edits::new()
-                        .with_update_buffer(
-                            PlainTextEditorViewAction::Paste,
-                            EditOrigin::UserInitiated,
-                            |editor_model, ctx| {
-                                let text_to_insert = match direction {
-                                    Direction::Backward => text.clone(),
-                                    Direction::Forward => {
-                                        "\n".to_owned()
-                                            + if text.ends_with('\n') {
-                                                &text[..text.len() - 1]
-                                            } else {
-                                                &text
-                                            }
-                                    }
-                                };
-                                for _ in 0..count {
-                                    editor_model.insert(&text_to_insert, None, ctx);
-                                }
-                            },
-                        )
-                        .with_change_selections(|editor_model, ctx| match direction {
-                            Direction::Backward => {
-                                editor_model.cursor_line_start(/* keep_selection */ false, ctx)
-                            }
-                            Direction::Forward => {
-                                editor_model.cursor_line_end(/* keep_selection */ false, ctx)
-                            }
-                        })
-                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
-                            match direction {
-                                Direction::Backward => {
-                                    for _ in 0..(text.len() * (count as usize)) {
-                                        editor_model.move_cursors_by_offset(
-                                            1,
-                                            &Direction::Backward,
-                                            /* keep_selection */ false,
-                                            /* stop_at_line_boundary */ false,
-                                            ctx,
-                                        );
-                                    }
-                                }
-                                Direction::Forward => {
-                                    editor_model.cursor_line_start_non_whitespace(
-                                        /* keep_selection */ false, ctx,
-                                    );
-                                }
-                            };
-                        }),
-                );
-            }
-        }
+        let direction = direction.clone();
+        self.read_register_then(register_name, ctx, move |me, content, ctx| {
+            me.paste_register_content(count, &direction, content, ctx)
+        });
     }
 
     /// Join the current line with the following one(s).
@@ -2860,45 +2799,9 @@ impl VimHandler for EditorView {
         write_register_name: char,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(RegisterContent {
-            text,
-            motion_type: yanked_motion_type,
-        }) = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
-            registers.read_from_register(read_register_name, ctx)
-        })
-        else {
-            return;
-        };
-        self.edit(
-            ctx,
-            Edits::new()
-                .with_update_buffer(
-                    PlainTextEditorViewAction::Paste,
-                    EditOrigin::UserInitiated,
-                    |editor_model, ctx| {
-                        editor_model.insert(&text, None, ctx);
-                    },
-                )
-                .with_change_selections(
-                    |editor_model: &mut EditorModel, ctx: &mut ModelContext<EditorModel>| {
-                        let include_newline = motion_type == MotionType::Linewise
-                            && yanked_motion_type == MotionType::Linewise;
-                        editor_model.vim_visual_selection_range(motion_type, include_newline, ctx);
-                    },
-                )
-                .with_before_buffer_edit(|editor_model, ctx| {
-                    editor_model.copy_selection_to_vim_register(
-                        write_register_name,
-                        motion_type,
-                        ctx,
-                    );
-                })
-                .with_post_buffer_edit_change_selections(|editor_model, ctx| {
-                    if motion_type == MotionType::Linewise {
-                        editor_model.cursor_line_start(false, ctx);
-                    }
-                }),
-        );
+        self.read_register_then(read_register_name, ctx, move |me, content, ctx| {
+            me.visual_paste_register_content(motion_type, write_register_name, content, ctx)
+        });
     }
 
     fn visual_text_object(&mut self, text_object: &VimTextObject, ctx: &mut ViewContext<Self>) {
@@ -2989,12 +2892,593 @@ impl VimHandler for EditorView {
 }
 
 impl EditorView {
+    /// Reads vim register `register_name` without blocking the UI thread and completes the vim
+    /// action with its content (#1405). The editor's own registers answer at once; one that
+    /// points to the system clipboard waits for the clipboard, and the keys typed meanwhile are
+    /// held behind that read (the editor's paste hold) and applied right after the action, in
+    /// typed order.
+    fn read_register_then(
+        &mut self,
+        register_name: char,
+        ctx: &mut ViewContext<Self>,
+        done: impl FnOnce(&mut Self, Option<RegisterContent>, &mut ViewContext<Self>) + 'static,
+    ) {
+        let read = VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
+            registers.request_register_read(register_name, ctx)
+        });
+        match read {
+            crate::vim_registers::RegisterRead::Ready(content) => done(self, content, ctx),
+            crate::vim_registers::RegisterRead::Pending(pending) => {
+                let id = self.paste_hold.begin();
+                ctx.spawn(pending, move |me, content, ctx| {
+                    // Cancelled by an interrupt: the action is dropped.
+                    let Some(held) = me.paste_hold.complete(id) else {
+                        return;
+                    };
+                    done(me, content, ctx);
+                    for key in held {
+                        me.apply_held_paste_key(key, ctx);
+                    }
+                });
+            }
+        }
+    }
+
+    fn paste_register_content(
+        &mut self,
+        count: u32,
+        direction: &Direction,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(RegisterContent { text, motion_type }) = content else {
+            return;
+        };
+        match motion_type {
+            MotionType::Charwise => {
+                self.edit(
+                    ctx,
+                    Edits::new()
+                        .with_update_buffer(
+                            PlainTextEditorViewAction::Paste,
+                            EditOrigin::UserInitiated,
+                            |editor_model, ctx| {
+                                for _ in 0..count {
+                                    editor_model.insert(&text, None, ctx);
+                                }
+                            },
+                        )
+                        .with_change_selections(|editor_model, ctx| {
+                            if *direction == Direction::Forward {
+                                editor_model.move_cursors_by_offset(
+                                    1,
+                                    &Direction::Forward,
+                                    /* keep_selection */ false,
+                                    /* stop_at_line_boundary */ false,
+                                    ctx,
+                                );
+                            }
+                        })
+                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
+                            editor_model.move_cursors_by_offset(
+                                1,
+                                &Direction::Backward,
+                                /* keep_selection */ false,
+                                /* stop_at_line_boundary */ false,
+                                ctx,
+                            );
+                        }),
+                );
+            }
+            MotionType::Linewise => {
+                self.edit(
+                    ctx,
+                    Edits::new()
+                        .with_update_buffer(
+                            PlainTextEditorViewAction::Paste,
+                            EditOrigin::UserInitiated,
+                            |editor_model, ctx| {
+                                let text_to_insert = match direction {
+                                    Direction::Backward => text.clone(),
+                                    Direction::Forward => {
+                                        "\n".to_owned()
+                                            + if text.ends_with('\n') {
+                                                &text[..text.len() - 1]
+                                            } else {
+                                                &text
+                                            }
+                                    }
+                                };
+                                for _ in 0..count {
+                                    editor_model.insert(&text_to_insert, None, ctx);
+                                }
+                            },
+                        )
+                        .with_change_selections(|editor_model, ctx| match direction {
+                            Direction::Backward => {
+                                editor_model.cursor_line_start(/* keep_selection */ false, ctx)
+                            }
+                            Direction::Forward => {
+                                editor_model.cursor_line_end(/* keep_selection */ false, ctx)
+                            }
+                        })
+                        .with_post_buffer_edit_change_selections(|editor_model, ctx| {
+                            match direction {
+                                Direction::Backward => {
+                                    for _ in 0..(text.len() * (count as usize)) {
+                                        editor_model.move_cursors_by_offset(
+                                            1,
+                                            &Direction::Backward,
+                                            /* keep_selection */ false,
+                                            /* stop_at_line_boundary */ false,
+                                            ctx,
+                                        );
+                                    }
+                                }
+                                Direction::Forward => {
+                                    editor_model.cursor_line_start_non_whitespace(
+                                        /* keep_selection */ false, ctx,
+                                    );
+                                }
+                            };
+                        }),
+                );
+            }
+        }
+    }
+
+    fn visual_paste_register_content(
+        &mut self,
+        motion_type: MotionType,
+        write_register_name: char,
+        content: Option<RegisterContent>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(RegisterContent {
+            text,
+            motion_type: yanked_motion_type,
+        }) = content
+        else {
+            return;
+        };
+        self.edit(
+            ctx,
+            Edits::new()
+                .with_update_buffer(
+                    PlainTextEditorViewAction::Paste,
+                    EditOrigin::UserInitiated,
+                    |editor_model, ctx| {
+                        editor_model.insert(&text, None, ctx);
+                    },
+                )
+                .with_change_selections(
+                    |editor_model: &mut EditorModel, ctx: &mut ModelContext<EditorModel>| {
+                        let include_newline = motion_type == MotionType::Linewise
+                            && yanked_motion_type == MotionType::Linewise;
+                        editor_model.vim_visual_selection_range(motion_type, include_newline, ctx);
+                    },
+                )
+                .with_before_buffer_edit(|editor_model, ctx| {
+                    editor_model.copy_selection_to_vim_register(
+                        write_register_name,
+                        motion_type,
+                        ctx,
+                    );
+                })
+                .with_post_buffer_edit_change_selections(|editor_model, ctx| {
+                    if motion_type == MotionType::Linewise {
+                        editor_model.cursor_line_start(false, ctx);
+                    }
+                }),
+        );
+    }
+
+    /// The hold that queues keys typed while a paste is read off the UI thread (#1300).
+    pub fn paste_hold(&self) -> Rc<EditorPasteHold> {
+        Rc::clone(&self.paste_hold)
+    }
+
+    /// The soft-wrap layout state of the last rendered frame (its generation counts layouts).
+    pub fn soft_wrap_state(&self, ctx: &AppContext) -> crate::editor::soft_wrap::SoftWrapState {
+        self.model().as_ref(ctx).display_map(ctx).soft_wrap_state()
+    }
+
+    /// Applies a key that was held behind a paste, exactly as if it had just been typed.
+    pub fn apply_held_paste_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        // #1389: the display map follows buffer edits only when effects flush, so a cursor-motion
+        // key applied in the same update as the edits before it would read a stale map. Such a key
+        // (and every key behind it, to keep the order) is applied by a deferred step, which runs
+        // after the effects of the keys before it.
+        let hold = Rc::clone(&self.paste_hold);
+        if !hold.is_replaying()
+            && (hold.replay_pending() || paste_hold::needs_fresh_display_map(&key))
+        {
+            hold.replay_push(key);
+            self.schedule_held_replay(ctx);
+            return;
+        }
+        self.apply_held_paste_key_now(key, ctx);
+    }
+
+    /// Applies a key the input queue delivers. On the pane's shared queue the display-map wait is
+    /// the queue's own `EditorDisplayMap` gate (the delivering host asked `display_map_step` and
+    /// only calls this when the key may apply), so there is no replay list to join; elsewhere it is
+    /// [`Self::apply_held_paste_key`] with its replay list.
+    pub fn apply_queued_key(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        if self.paste_hold.display_gate_enabled() {
+            self.apply_held_paste_key_now(key, ctx);
+        } else {
+            self.apply_held_paste_key(key, ctx);
+        }
+    }
+
+    fn schedule_held_replay(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.paste_hold.replay_mark_scheduled() {
+            ctx.dispatch_typed_action_deferred(EditorAction::ReplayHeldKeys);
+        }
+    }
+
+    /// One deferred replay step: applies the waiting keys up to the next one that needs the map to
+    /// have caught up with what this step applied, and queues another step for that one.
+    fn replay_held_keys_step(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = Rc::clone(&self.paste_hold);
+        hold.replay_clear_scheduled();
+        let mut first = true;
+        while first || (hold.replay_pending() && !hold.replay_next_needs_fresh_map()) {
+            let Some(key) = hold.replay_pop() else {
+                return;
+            };
+            self.apply_held_paste_key_now(key, ctx);
+            first = false;
+        }
+        if hold.replay_pending() {
+            self.schedule_held_replay(ctx);
+        }
+    }
+
+    /// Applies every waiting replayed key now, in order. For a key that acts at once (Ctrl-C), which
+    /// must see everything typed before it.
+    fn flush_held_replay_now(&mut self, ctx: &mut ViewContext<Self>) {
+        let hold = Rc::clone(&self.paste_hold);
+        while let Some(key) = hold.replay_pop() {
+            self.apply_held_paste_key_now(key, ctx);
+        }
+    }
+
+    fn apply_held_paste_key_now(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        let was_replaying = self.paste_hold.set_replaying(true);
+        self.apply_held_paste_key_inner(key, ctx);
+        self.paste_hold.set_replaying(was_replaying);
+    }
+
+    fn apply_held_paste_key_inner(&mut self, key: HeldPasteKey, ctx: &mut ViewContext<Self>) {
+        match key {
+            HeldPasteKey::Text(text) => {
+                self.handle_action(&EditorAction::UserInsert(UserInput::new(text)), ctx)
+            }
+            HeldPasteKey::Action(action) => self.handle_action(&action, ctx),
+        }
+    }
+
+    /// While a paste is being read, queues the editing keys behind it so they apply after the
+    /// pasted text, in order (#1300). Ctrl-C cancels the paste: what was typed before it is
+    /// applied first and the Ctrl-C then acts normally.
+    fn hold_key_for_paste(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) -> bool {
+        // Replayed keys still waiting for the display map (#1389): a key typed now goes behind
+        // them; one that acts at once (Ctrl-C, scrolling) sees them applied first.
+        if self.paste_hold.replay_pending()
+            && !self.paste_hold.is_replaying()
+            && !matches!(action, EditorAction::ReplayHeldKeys)
+        {
+            if let Some(key) = paste_hold::held_form(action) {
+                self.paste_hold.replay_push(key);
+                self.schedule_held_replay(ctx);
+                return true;
+            }
+            self.flush_held_replay_now(ctx);
+        }
+        if !self.paste_hold.sequencer_pending() {
+            return self.hold_key_for_paste_on_queue(action, ctx);
+        }
+        if matches!(action, EditorAction::CtrlC) {
+            for key in self.paste_hold.cancel() {
+                self.apply_held_paste_key(key, ctx);
+            }
+            self.flush_held_replay_now(ctx);
+            return false;
+        }
+        match paste_hold::held_form(action) {
+            Some(key) => self.paste_hold.hold(key),
+            None => false,
+        }
+    }
+
+    /// #1389: a key typed live, on an idle queue, that reads the soft-wrap layout (End, Up, Down)
+    /// while the last rendered layout predates an edit (a large paste just applied, no frame laid
+    /// out since) is offered to the queue instead of applied: its delivery opens the display-map
+    /// gate, which waits for a layout newer than the edit. Without this the key computed the
+    /// visual line from the old layout and the cursor landed in the wrong place. Returns whether
+    /// the key was taken. Only on the pane's shared queue (the display gate is on).
+    fn offer_layout_key_behind_stale_layout(
+        &mut self,
+        action: &EditorAction,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        use crate::terminal::input_queue::{EditorKeyPayload, EntryKind};
+        if !self.paste_hold.display_gate_enabled() || self.paste_hold.is_replaying() {
+            return false;
+        }
+        let Some(key) = paste_hold::held_form(action).filter(HeldPasteKey::reads_soft_wrap_layout)
+        else {
+            return false;
+        };
+        if !self.soft_wrap_state(ctx).is_stale() {
+            return false;
+        }
+        let queue = self.paste_hold.queue();
+        let kind = EntryKind::EditorKey(EditorKeyPayload::new(key));
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                guard.offer(&mut host, kind);
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            }),
+        }
+        true
+    }
+
+    /// The input-queue form of [`Self::hold_key_for_paste`] (#1353 phase 1). Idle (the common
+    /// case) this is one borrow-flag read: no lock, no allocation. While the queue holds input
+    /// the key is offered to it, which is the single entry point for keys behind a paste: it
+    /// queues the key, or (Ctrl-C) cancels the paste and applies what was typed before it.
+    fn hold_key_for_paste_on_queue(
+        &mut self,
+        action: &EditorAction,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        use crate::terminal::input_queue::{EditorKeyPayload, EntryKind, SignalKind};
+        if !self.paste_hold.queue_is_busy() {
+            return self.offer_layout_key_behind_stale_layout(action, ctx);
+        }
+        let queue = self.paste_hold.queue();
+        if matches!(action, EditorAction::CtrlC) {
+            // The signal rules concern the gates that wait on the editor's own input (a paste it
+            // reads, an Enter waiting for its verdict or report, the display map). Other gates
+            // (an ssh connect, a subshell setup, ...) are ended by their own events and the
+            // terminal's interrupt handling, not by an interrupt typed in the editor.
+            if editor_interrupt_meets_gate(&queue) {
+                let kind = EntryKind::Signal(SignalKind::Interrupt);
+                match queue.try_lock_ordered() {
+                    Some(mut guard) => {
+                        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                        guard.offer(&mut host, kind);
+                    }
+                    None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                        kind,
+                        origin: crate::terminal::input_queue::Origin::Keyboard,
+                        stamp: queue.stamp_now(),
+                    }),
+                }
+                self.flush_held_replay_now(ctx);
+            }
+            return false;
+        }
+        // A paste typed behind a paste is not held: it acts at once and queues its own entry
+        // behind this one's gate, so arrival order is kept without replaying it later.
+        if matches!(action, EditorAction::Paste | EditorAction::MiddleClickPaste) {
+            return false;
+        }
+        // An ssh connect holds the pane's keys as content to route at the hand-over (#1292).
+        if queue
+            .try_peek()
+            .is_some_and(|held| {
+                held.has_gate_kind(crate::terminal::input_queue::GateKind::SshConnect)
+            })
+        {
+            return self.offer_ssh_held_key(action, &queue, ctx);
+        }
+        // #1353 phase 3: an Enter waits for its verdict (or for the route it submitted to to
+        // settle). What is typed behind it is held as plain Text / Enter entries, never put into
+        // the buffer, and the terminal input releases them in order once that Enter has run. Any
+        // other key acts at once: it edits the waiting line, which voids the Enter as before.
+        // (While a paste is read, the paste's gate is the one that matters and the keys behind
+        // it are the editor keys below.)
+        {
+            use crate::terminal::input_queue::GateKind;
+            let (behind_enter, behind_unready_enter) =
+                queue.try_peek().map_or((false, false), |held| {
+                    let behind = (held.has_gate_kind(GateKind::EnterVerdict)
+                        || held.has_gate_kind(GateKind::TabCompletion))
+                        && !held.has_editor_paste_reading();
+                    (behind, behind && held.has_unready_enter_gate())
+                });
+            if behind_enter {
+                let kind = match action {
+                    EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
+                    EditorAction::Enter => EntryKind::Enter,
+                    // #1571: behind an Enter the shell could not take yet, the line it holds was
+                    // submitted: an editing key belongs to the NEXT line, as on a tty. It waits in
+                    // the queue in its `Held` form and is routed with the text around it when the
+                    // gate opens (into the editor, or to the pty with that text), so it never
+                    // edits the held line. A key with no such form acts at once, as before.
+                    _ if behind_unready_enter => match held_form_of_editor_key(action) {
+                        Some((class, text)) => EntryKind::Held { class, text },
+                        // #1586: navigation and editing keys with no tty form carry no text; the
+                        // held line must not change, so they are swallowed.
+                        None if matches!(
+                            action,
+                            EditorAction::ShiftTab
+                                | EditorAction::DeleteWordRight
+                                | EditorAction::MoveToBufferStart
+                                | EditorAction::MoveToBufferEnd
+                                | EditorAction::MoveToParagraphStart
+                                | EditorAction::MoveToParagraphEnd
+                                | EditorAction::MoveToVisualLineStart
+                                | EditorAction::MoveToVisualLineEnd
+                                | EditorAction::SelectToLineStart
+                                | EditorAction::ClearLines
+                                | EditorAction::ClearAndCopyLines
+                                | EditorAction::Escape
+                                | EditorAction::VimEscape
+                        ) =>
+                        {
+                            log::info!(
+                                "editor: {action:?} typed behind an Enter held for an unready shell was ignored (#1586)"
+                            );
+                            warpui::input_order::log_key_hop(
+                                "kh_editor_ignored_behind_held_enter",
+                                String::new,
+                            );
+                            return true;
+                        }
+                        None => return false,
+                    },
+                    _ => return false,
+                };
+                match queue.try_lock_ordered() {
+                    Some(mut guard) => {
+                        let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                        guard.offer(&mut host, kind);
+                    }
+                    None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                        kind,
+                        origin: crate::terminal::input_queue::Origin::Keyboard,
+                        stamp: queue.stamp_now(),
+                    }),
+                }
+                return true;
+            }
+        }
+        let Some(key) = paste_hold::held_form(action) else {
+            return false;
+        };
+        // #1423: behind a pty setup gate alone (a subshell or PowerShell warpify setup) nothing
+        // governs the editor's buffer, so an editing key acts at once and the text shows as it
+        // is typed. Keys that submit or complete stay held (they reach the pty or the shell),
+        // and so does every key once an editor-bound entry is queued (order).
+        // The destination table's H8 matrix (#1424) states this once, with a class column: in
+        // `table` mode it decides, in `shadow` mode it is compared with the legacy answer.
+        let key_class = paste_hold::editor_key_class(action);
+        // #1425: `try_peek`, never `peek`: mid-drain the queue is held (a `peek` would panic on
+        // the borrow). A busy queue means the key waits: it is offered (or deferred) below, in
+        // order, like any key behind a gate.
+        let legacy_passes = !paste_hold::key_submits_or_completes(action)
+            && queue
+                .try_peek()
+                .is_some_and(|held| held.editor_keys_pass_gates());
+        let passes_gates = {
+            use crate::terminal::input_queue::{DestinationMode, destination_mode, shadow};
+            match destination_mode() {
+                DestinationMode::Legacy => legacy_passes,
+                DestinationMode::Table => queue
+                    .try_peek()
+                    .is_some_and(|held| held.editor_key_passes_gates_by_table(key_class)),
+                DestinationMode::Shadow => {
+                    if shadow::wanted()
+                        && let Some(held) = queue.try_peek()
+                    {
+                        let table_passes = held.editor_key_passes_gates_by_table(key_class);
+                        let _ = shadow::check_editor_matrix(
+                            key_class,
+                            held.queue_facts().gates,
+                            legacy_passes,
+                            table_passes,
+                        );
+                    }
+                    legacy_passes
+                }
+            }
+        };
+        if passes_gates {
+            return false;
+        }
+        let kind = EntryKind::EditorKey(EditorKeyPayload::new(key));
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                guard.offer(&mut host, kind);
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            }),
+        }
+        true
+    }
+
+    /// #1345: one `input_order` hop for a typing key reaching the terminal input's editor, with
+    /// flags and counts only: whether the editor believes it is focused, whether the ssh key hold
+    /// is active or still settling, and how long the buffer is BEFORE the key is applied (the next
+    /// key's count shows whether this one stuck).
+    fn trace_key_action(&self, action: &EditorAction, ctx: &AppContext) {
+        // Only the terminal input's editor (the one on the pane's shared queue) is traced.
+        if !self.paste_hold.display_gate_enabled() || !warpui::input_order::enabled() {
+            return;
+        }
+        let kind = match action {
+            EditorAction::UserInsert(_) => "insert",
+            EditorAction::Enter => "enter",
+            EditorAction::Backspace => "backspace",
+            _ => return,
+        };
+        warpui::input_order::log_key_hop("kh_editor_action", || {
+            format!(
+                "kind={kind} focused={} hold_active={} buffer_chars={} buffer={}",
+                self.is_focused(),
+                self.paste_hold.queue().ssh_hold_active(),
+                self.buffer_text(ctx).chars().count(),
+                // #1393: the editor's text before this key, so a reordered line is visible in
+                // the log (redacted unless WARP_INPUT_ORDER_LOG_TEXT=1, like every key).
+                warpui::input_order::describe_text(&self.buffer_text(ctx))
+            )
+        });
+    }
+
+    /// An ssh connect is in flight (#1292) and its gate holds the pane's keys: the editor key joins
+    /// the ONE ordered hold as an entry of the pane queue (origin: the editor), carrying what was
+    /// typed. Where it goes is decided when the hand-over drains it, with the facts of that moment,
+    /// exactly as for a key typed on the terminal. Editing keys the hold can replay are taken;
+    /// everything else (Ctrl-C, Escape, Tab, ...) acts normally. Returns whether the key was taken.
+    fn offer_ssh_held_key(
+        &mut self,
+        action: &EditorAction,
+        queue: &crate::terminal::input_queue::PaneQueue,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        use crate::terminal::input_queue::{EntryKind, Origin};
+        let Some((class, text)) = held_form_of_editor_key(action) else {
+            return false;
+        };
+        let kind = EntryKind::Held { class, text };
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                guard.offer_with_origin(&mut host, kind, Origin::Editor);
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: Origin::Editor,
+                stamp: queue.stamp_now(),
+            }),
+        }
+        warpui::input_order::log_key_hop("kh_editor_held", || {
+            "queued_for_terminal=true".to_owned()
+        });
+        true
+    }
+
     fn snapshot(&self, ctx: &AppContext) -> ViewSnapshot {
         let font_cache = ctx.font_cache();
         let appearance = Appearance::as_ref(ctx);
         ViewSnapshot {
             view_id: self.view_id,
             is_focused: self.is_focused(),
+            keys_from_pane_sink: self.keys_from_pane_sink,
             editor_model: self.editor_model.clone(),
 
             can_select: self.can_select(ctx),
@@ -3026,6 +3510,7 @@ impl EditorView {
         }
     }
 
+    #[cfg(test)]
     pub fn set_shell_family(&mut self, shell_family: ShellFamily) {
         self.shell_dialect = Some(shell_family.into());
     }
@@ -3046,9 +3531,15 @@ impl EditorView {
         self.drag_drop_path_transformer = transformer;
     }
 
+    #[cfg(test)]
     fn clipboard_content(&mut self, ctx: &mut ViewContext<Self>) -> String {
-        let content = ctx.clipboard().read();
-        self.clipboard_text_content(content)
+        // The test clipboard reads inline, so the request is answered already.
+        let request =
+            warpui::clipboard::request_read(ctx.clipboard(), warpui::clipboard::ReadKind::Full);
+        let warpui::clipboard::ReadStart::Ready(outcome) = request.start else {
+            panic!("the test clipboard reads inline");
+        };
+        self.clipboard_text_content(outcome.into_content())
     }
 
     pub fn clipboard_text_content(&self, content: ClipboardContent) -> String {
@@ -3057,13 +3548,6 @@ impl EditorView {
             self.shell_dialect,
             self.convert_newline_to_space,
         )
-    }
-
-    fn middle_click_paste_content(&mut self, ctx: &mut ViewContext<Self>) -> Option<String> {
-        let content = SelectionSettings::handle(ctx).update(ctx, |selection, ctx| {
-            selection.read_for_middle_click_paste(ctx)
-        });
-        content.map(|content| self.clipboard_text_content(content))
     }
 
     /// Creates a single-line [`EditorView`] with an empty buffer
@@ -3265,8 +3749,11 @@ impl EditorView {
             windowing_state_handle,
             focused: false,
             cursors_visible: false,
+            cursors_visible_shared: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blink_epoch: 0,
             blinks_since_activity: 0,
+            #[cfg(test)]
+            styles_updated_count: 0,
             single_line: options.single_line,
             internal_clipboard: "".to_string(),
             propagate_vertical_navigation_keys: options
@@ -3278,8 +3765,11 @@ impl EditorView {
             autocomplete_symbols_allowed: options.autocomplete_symbols,
             autocomplete_symbols_setting: *editor_settings_handle.as_ref(ctx).autocomplete_symbols,
             autocomplete_symbols_veto: None,
+            keys_from_pane_sink: false,
             cursor_display_override,
             autosuggestion_state: None,
+            pending_autosuggestion_accept: None,
+            paste_hold: Rc::default(),
             next_command_model: None,
             editor_height_shrink_delay: Arc::new(Mutex::new(EditorHeightShrinkDelay {
                 editor_height_before_shrink: 0.,
@@ -3582,6 +4072,17 @@ impl EditorView {
 
         if let Some(buffer_text) = buffer_snapshot {
             let text = text.into();
+            // #1398: a huge suggestion (a pasted megabyte in the history) froze the UI in text
+            // layout. Not offered at all; a ghost from an earlier buffer must not linger either.
+            if text.len() > snapshot::MAX_GHOST_TEXT_BYTES {
+                log::debug!(
+                    "autosuggestion of {} bytes not offered (limit {})",
+                    text.len(),
+                    snapshot::MAX_GHOST_TEXT_BYTES
+                );
+                self.clear_autosuggestion(ctx);
+                return;
+            }
             let full_suggestion = format!("{buffer_text}{text}");
 
             self.autosuggestion_state = Some(Arc::new(AutosuggestionState {
@@ -3596,8 +4097,44 @@ impl EditorView {
                 view.set_current_autosuggestion(Some(full_suggestion));
             });
 
+            // #1279: name the async notify behind a second frame after a key.
+            log::debug!(target: "warpui::notify_cause", "editor: autosuggestion set");
             ctx.notify();
+
+            if matches!(location, AutosuggestionLocation::EndOfBuffer)
+                && self.take_matching_pending_autosuggestion_accept(ctx)
+            {
+                self.insert_full_autosuggestion(ctx);
+            }
         }
+    }
+
+    /// Remembers an accept keypress that found no ghost, when the cursor is at the end of a
+    /// non-empty buffer (where Right/End would otherwise do nothing), so the ghost can be
+    /// accepted if it lands for this same buffer a moment later (#1186).
+    fn note_pending_autosuggestion_accept(&mut self, ctx: &AppContext) {
+        self.pending_autosuggestion_accept = None;
+        if self.autosuggestion_state.is_some() || !self.single_cursor_at_buffer_end(true, ctx) {
+            return;
+        }
+        let buffer_text = self.buffer_text(ctx);
+        if !buffer_text.is_empty() {
+            self.pending_autosuggestion_accept = Some(buffer_text);
+        }
+    }
+
+    /// Consumes the pending accept; true if it is still valid for the current buffer.
+    fn take_matching_pending_autosuggestion_accept(&mut self, ctx: &AppContext) -> bool {
+        let Some(buffer_text) = self.pending_autosuggestion_accept.take() else {
+            return false;
+        };
+        self.single_cursor_at_buffer_end(true, ctx) && self.buffer_text(ctx) == buffer_text
+    }
+
+    /// Drops a remembered accept keypress: the request for the ghost completed with no
+    /// suggestion for the buffer (#1355), so the accept must not fire on a later ghost.
+    pub fn discard_pending_autosuggestion_accept(&mut self) {
+        self.pending_autosuggestion_accept = None;
     }
 
     /// Clears any existing autosuggestions (intelligent or not) that weren't for the current input_type.
@@ -3743,10 +4280,6 @@ impl EditorView {
         self.placeholder_texts = Arc::new(HashMap::new());
     }
 
-    pub fn is_single_line(&self) -> bool {
-        self.single_line
-    }
-
     pub fn is_focused(&self) -> bool {
         self.focused
     }
@@ -3783,13 +4316,6 @@ impl EditorView {
         propagate_vertical_navigation_keys: PropagateAndNoOpNavigationKeys,
     ) {
         self.propagate_vertical_navigation_keys = propagate_vertical_navigation_keys;
-    }
-
-    pub fn set_propagate_horizontal_navigation_keys(
-        &mut self,
-        propagate_horizontal_navigation_keys: PropagateHorizontalNavigationKeys,
-    ) {
-        self.propagate_horizontal_navigation_keys = propagate_horizontal_navigation_keys;
     }
 
     pub fn can_edit<C: ModelAsRef>(&self, ctx: &C) -> bool {
@@ -3835,6 +4361,46 @@ impl EditorView {
         self
     }
 
+    /// Marks this as the editor of a terminal pane: while the pane's key sink is on, the sink
+    /// delivers its typed text and composition (`pane_typed` and friends) and the element leaves
+    /// those events alone (#1404).
+    pub fn set_keys_from_pane_sink(&mut self, on: bool) {
+        self.keys_from_pane_sink = on;
+    }
+
+    /// Typed text delivered by the pane's key sink: the same edit pipeline the element's
+    /// typed-characters event ran, held keys and vim mode included (#1404).
+    pub fn pane_typed(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        let action = if self.vim_mode(ctx).is_some() {
+            EditorAction::VimUserInsert(UserInput::new(text))
+        } else {
+            EditorAction::UserInsert(UserInput::new(text))
+        };
+        self.handle_action(&action, ctx);
+    }
+
+    /// IME composition text delivered by the pane's key sink (#1404).
+    pub fn pane_set_marked_text(
+        &mut self,
+        marked_text: &str,
+        selected_range: &Range<usize>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.handle_action(
+            &EditorAction::SetMarkedText {
+                marked_text: UserInput::new(marked_text),
+                selected_range: selected_range.clone(),
+            },
+            ctx,
+        );
+    }
+
+    /// The end of an IME composition, delivered by the pane's key sink (#1404).
+    pub fn pane_clear_marked_text(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_action(&EditorAction::ClearMarkedText, ctx);
+    }
+
+    #[cfg(test)]
     pub fn set_autocomplete_symbols_allowed(&mut self, enable: bool) {
         self.autocomplete_symbols_allowed = enable;
     }
@@ -3844,6 +4410,11 @@ impl EditorView {
     /// should interface through the [`EditorView`]`.
     fn model(&self) -> &ModelHandle<EditorModel> {
         &self.editor_model
+    }
+
+    #[cfg(test)]
+    pub fn styles_updated_count(&self) -> usize {
+        self.styles_updated_count
     }
 
     #[cfg(test)]
@@ -4344,18 +4915,84 @@ impl EditorView {
         // When paste handling is delegated, the parent view (e.g. the terminal input) is
         // responsible for processing the paste.
         if !self.delegate_paste_handling {
-            // Read clipboard contents
-            let content = ctx.clipboard().read();
-
-            let clipboard_content_str = self.clipboard_text_content(content);
-            self.user_initiated_insert(
-                &clipboard_content_str,
-                PlainTextEditorViewAction::Paste,
-                ctx,
-            );
+            // Read the clipboard off the UI thread (#1380). Keys typed meanwhile are held behind
+            // the paste and applied after it, in order, like the terminal input's paste (#1300).
+            self.start_plain_read(warpui::clipboard::ReadKind::TextAndPaths, false, ctx);
+            return;
         }
 
         ctx.emit(Event::Paste);
+    }
+
+    /// Starts the off-thread read of a plain editor's paste (`middle_click`: a middle-click paste
+    /// of the primary selection) and holds the keys typed behind it (#1380).
+    fn start_plain_read(
+        &mut self,
+        kind: warpui::clipboard::ReadKind,
+        middle_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // A paste asked for while another is being read waits behind it (superseding would drop
+        // the first one's text).
+        if self.paste_hold.sequencer_pending() {
+            let action = if middle_click {
+                EditorAction::MiddleClickPaste
+            } else {
+                EditorAction::Paste
+            };
+            self.paste_hold.hold(HeldPasteKey::Action(action));
+            return;
+        }
+        let id = self.paste_hold.begin();
+        match warpui::clipboard::read_in_background(ctx.clipboard(), kind) {
+            warpui::clipboard::StartedRead::Ready(read) => {
+                self.finish_plain_paste(id, read, middle_click, ctx)
+            }
+            warpui::clipboard::StartedRead::Pending(pending) => {
+                ctx.spawn(pending, move |me, read, ctx| {
+                    me.finish_plain_paste(id, read, middle_click, ctx)
+                });
+            }
+        }
+    }
+
+    /// The plain editor's paste `id` was read: insert it, announce it, then apply the keys typed
+    /// behind it in order. A paste cancelled by Ctrl-C or superseded does nothing.
+    fn finish_plain_paste(
+        &mut self,
+        id: u64,
+        read: warpui::clipboard::BackgroundTextRead,
+        middle_click: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(held) = self.paste_hold.complete(id) else {
+            return;
+        };
+        match read {
+            // An empty middle-click selection pastes nothing (as the synchronous read it replaced did).
+            warpui::clipboard::BackgroundTextRead::Content(content)
+                if middle_click && content.is_empty() => {}
+            warpui::clipboard::BackgroundTextRead::Content(content) if middle_click => {
+                self.insert_middle_click_content(content, ctx);
+            }
+            warpui::clipboard::BackgroundTextRead::Content(content) => {
+                let text = self.clipboard_text_content(content);
+                self.user_initiated_insert(&text, PlainTextEditorViewAction::Paste, ctx);
+                // Announced once the insert has landed (#1380), not by a read at action time.
+                crate::util::clipboard::announce_pasted_text(&text, ctx);
+            }
+            failed => {
+                if let Some(message) = crate::util::clipboard::read_failure_message(&failed) {
+                    crate::util::clipboard::show_read_failure_toast(message, ctx);
+                }
+            }
+        }
+        if !middle_click {
+            ctx.emit(Event::Paste);
+        }
+        for key in held {
+            self.apply_held_paste_key(key, ctx);
+        }
     }
 
     fn middle_click_paste(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4363,12 +5000,38 @@ impl EditorView {
             return;
         }
 
-        let clipboard_content = self.middle_click_paste_content(ctx);
-        if let Some(clipboard_content) = clipboard_content {
-            self.user_initiated_insert(&clipboard_content, PlainTextEditorViewAction::Paste, ctx);
-            ctx.emit(Event::MiddleClickPaste);
+        // The primary selection's owner can stall a read for seconds, so an editor whose owner
+        // reads the clipboard off the UI thread (the terminal input) gets a request, not a read.
+        if self.delegate_paste_handling {
+            ctx.emit(Event::MiddleClickPasteRequested);
+            ctx.focus_self();
+            return;
+        }
+
+        // Off the UI thread (#1380): the selection owner can stall a read; keys typed meanwhile are
+        // held behind it. The kind is `None` when the setting disables middle-click paste.
+        let kind = SelectionSettings::handle(ctx)
+            .update(ctx, |selection, _| selection.middle_click_read_kind());
+        if let Some(kind) = kind {
+            self.start_plain_read(kind, true, ctx);
         }
         ctx.focus_self();
+    }
+
+    fn insert_middle_click_text(&mut self, text: &str, ctx: &mut ViewContext<Self>) {
+        self.user_initiated_insert(text, PlainTextEditorViewAction::Paste, ctx);
+        ctx.emit(Event::MiddleClickPaste);
+    }
+
+    /// Inserts what a middle-click read of the primary selection returned, exactly as the
+    /// synchronous path would have (#1331).
+    pub fn insert_middle_click_content(
+        &mut self,
+        content: ClipboardContent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let text = self.clipboard_text_content(content);
+        self.insert_middle_click_text(&text, ctx);
     }
 
     // Pastes the most recently cut text within the shell.
@@ -5695,7 +6358,9 @@ impl EditorView {
     }
 
     pub fn backspace(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.buffer_text(ctx).is_empty() {
+        // The cached length, not a copy of the buffer (#1604: a Backspace after a 10 MB paste
+        // copied all of it to ask whether it was empty).
+        if self.is_empty(ctx) {
             ctx.emit(Event::BackspaceOnEmptyBuffer);
         } else if self.single_cursor_at_buffer_start(ctx) {
             ctx.emit(Event::BackspaceAtBeginningOfBuffer);
@@ -5981,6 +6646,7 @@ impl EditorView {
         if self.single_cursor_at_autosuggestion_beginning(ctx) {
             self.insert_full_autosuggestion(ctx);
         } else {
+            self.note_pending_autosuggestion_accept(ctx);
             self.change_selections(ctx, |editor_model, ctx| {
                 editor_model.cursor_line_end(false, ctx);
             });
@@ -6209,6 +6875,7 @@ impl EditorView {
         if self.single_cursor_at_autosuggestion_beginning(ctx) {
             self.insert_full_autosuggestion(ctx);
         } else {
+            self.note_pending_autosuggestion_accept(ctx);
             self.change_selections(ctx, |editor_model, ctx| {
                 let map = editor_model.display_map(ctx);
                 let mut new_selections = editor_model.selections(ctx).clone();
@@ -6883,25 +7550,6 @@ impl EditorView {
             }
         } else {
             false
-        }
-    }
-
-    /// Returns the line number where the single cursor exists. If there's more than one selection
-    /// or the selection is more than just a cursor, returns None.
-    pub fn single_cursor_line_index(&self, ctx: &AppContext) -> Option<u32> {
-        let model = self.editor_model.as_ref(ctx);
-        if model.selections(ctx).len() == 1 {
-            let selection = model.first_selection(ctx);
-            let buffer = model.buffer(ctx);
-            selection.is_cursor_only(buffer).then(|| {
-                let cursor = selection.end();
-                cursor
-                    .to_point(buffer)
-                    .expect("cursor should convert to point")
-                    .row
-            })
-        } else {
-            None
         }
     }
 
@@ -7604,6 +8252,35 @@ impl EditorView {
             .map(|state| state.location)
     }
 
+    /// The shared blink phase for the element to apply at paint time; `None` while voice input
+    /// is active, which always draws the cursor.
+    fn blink_visible_for_paint(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        #[cfg(feature = "voice_input")]
+        if self.voice_input_state.is_active() {
+            return None;
+        }
+        Some(self.cursors_visible_shared.clone())
+    }
+
+    fn set_cursors_visible(&mut self, visible: bool) {
+        self.cursors_visible = visible;
+        self.cursors_visible_shared
+            .store(visible, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Shows a blink phase change. The element reads the phase at paint time, so nothing about
+    /// the view's layout changed: ask for a paint-only frame instead of `notify()` (which
+    /// re-renders the view and re-lays out the whole window every 500 ms).
+    /// `PHOSPHOR_BLINK_FULL_RENDER=1` restores the full re-render.
+    fn request_blink_repaint(&self, ctx: &mut ViewContext<Self>) {
+        if blink_full_render() {
+            ctx.notify();
+        } else {
+            let window_id = ctx.window_id();
+            ctx.request_paint_only_redraw(window_id);
+        }
+    }
+
     fn next_blink_epoch(&mut self) -> usize {
         self.blink_epoch += 1;
         self.blink_epoch
@@ -7611,7 +8288,7 @@ impl EditorView {
 
     /// Mark the cursor as visible and schedule the next cursor blink at the right interval.
     fn reset_cursor_blink_timer(&mut self, ctx: &mut ViewContext<Self>) {
-        self.cursors_visible = true;
+        self.set_cursors_visible(true);
         self.blinks_since_activity = 0;
         ctx.notify();
 
@@ -7648,14 +8325,14 @@ impl EditorView {
                 // Idle for a while: leave the cursor solid and stop the timer chain.
                 // Activity (`reset_cursor_blink_timer`) starts it again.
                 if !self.cursors_visible {
-                    self.cursors_visible = true;
-                    ctx.notify();
+                    self.set_cursors_visible(true);
+                    self.request_blink_repaint(ctx);
                 }
                 return;
             }
             self.blinks_since_activity += 1;
-            self.cursors_visible = !self.cursors_visible;
-            ctx.notify();
+            self.set_cursors_visible(!self.cursors_visible);
+            self.request_blink_repaint(ctx);
 
             let epoch = self.next_blink_epoch();
             let _ = ctx.spawn(
@@ -7684,7 +8361,8 @@ impl EditorView {
             return true;
         }
 
-        self.cursors_visible && self.focused_in_active_window(ctx) && self.can_edit(ctx)
+        // The blink phase is applied at paint time (`cursors_visible_shared`).
+        self.focused_in_active_window(ctx) && self.can_edit(ctx)
     }
 
     fn handle_model_event(
@@ -7695,6 +8373,11 @@ impl EditorView {
     ) {
         match event {
             EditorModelEvent::Edited { edit_origin } => {
+                // The last rendered layout describes the text before this edit (#1389): a key that
+                // reads it waits for the next frame.
+                self.soft_wrap_state(ctx).mark_stale();
+                // An edit invalidates a remembered accept (it was for the old buffer).
+                self.pending_autosuggestion_accept = None;
                 // Update the autosuggestion state after an edit.
                 self.update_autosuggestion_state(ctx);
                 self.vim_maybe_enforce_cursor_line_cap(ctx);
@@ -7702,7 +8385,10 @@ impl EditorView {
                     .update(ctx, |view, ctx| view.close_menu(ctx));
                 ctx.emit(Event::Edited(*edit_origin))
             }
-            EditorModelEvent::BufferReplaced => ctx.emit(Event::BufferReplaced),
+            EditorModelEvent::BufferReplaced => {
+                self.soft_wrap_state(ctx).mark_stale();
+                ctx.emit(Event::BufferReplaced)
+            }
             EditorModelEvent::SelectionsChanged => {
                 self.vim_maybe_enforce_cursor_line_cap(ctx);
                 ctx.emit(Event::SelectionChanged);
@@ -7721,7 +8407,13 @@ impl EditorView {
             }
             // In these cases, we just need to re-render, which is handled
             // by the invalidation below.
-            EditorModelEvent::DisplayMapUpdated | EditorModelEvent::StylesUpdated => {}
+            EditorModelEvent::DisplayMapUpdated => {}
+            EditorModelEvent::StylesUpdated => {
+                #[cfg(test)]
+                {
+                    self.styles_updated_count += 1;
+                }
+            }
         }
 
         // The editor model can change even when we aren't focused, so we only want to reset the
@@ -8063,6 +8755,7 @@ impl EditorView {
         let local_selection_data = LocalDrawableSelectionData {
             colors: (self.get_cursor_colors_fn)(ctx),
             should_draw_cursors: self.should_draw_cursors(ctx),
+            blink_visible: self.blink_visible_for_paint(),
         };
 
         // Convert a remote peer's selection data into an avatar component
@@ -8541,6 +9234,10 @@ pub enum Event {
     /// Signifies that something has been pasted into the view
     Paste,
     MiddleClickPaste,
+    /// A middle click asked to paste the primary selection into an editor that delegates paste
+    /// handling: the owner reads it off the UI thread and calls
+    /// [`EditorView::insert_middle_click_content`] (#1331).
+    MiddleClickPasteRequested,
     /// Emitted when the 'delete all left' keybinding is triggered (cmd-delete on mac, ctrl-y on
     /// linux).
     DeleteAllLeft,
@@ -8574,7 +9271,7 @@ impl TypedActionView for EditorView {
     fn action_accessibility_contents(
         &mut self,
         action: &EditorAction,
-        ctx: &mut ViewContext<Self>,
+        _ctx: &mut ViewContext<Self>,
     ) -> ActionAccessibilityContent {
         match action {
             EditorAction::UserInsert(text) => ActionAccessibilityContent::Custom(
@@ -8610,18 +9307,26 @@ impl TypedActionView for EditorView {
             | EditorAction::MoveBackwardOneSubword
             | EditorAction::Delete
             | EditorAction::Backspace => ActionAccessibilityContent::Empty,
-            EditorAction::Paste => {
+            // A plain editor announces the pasted text once it has landed (`finish_plain_paste`);
+            // no clipboard read here, this runs on the UI thread (#1380). When the owner handles
+            // the paste (the terminal input) only the fact is announced.
+            EditorAction::Paste if self.delegate_paste_handling => {
                 ActionAccessibilityContent::Custom(AccessibilityContent::new_without_help(
-                    format!("Pasting: {}", self.clipboard_content(ctx)),
+                    "Pasting from the clipboard".to_string(),
                     WarpA11yRole::UserAction,
                 ))
             }
+            EditorAction::Paste => ActionAccessibilityContent::Empty,
             _ => ActionAccessibilityContent::from_debug(),
         }
     }
 
     fn handle_action(&mut self, action: &EditorAction, ctx: &mut ViewContext<Self>) {
         use EditorAction::*;
+        self.trace_key_action(action, ctx);
+        if self.hold_key_for_paste(action, ctx) {
+            return;
+        }
         match action {
             Scroll(position) => self.scroll(*position, ctx),
             Select(action) => self.select(action, ctx),
@@ -8790,6 +9495,7 @@ impl TypedActionView for EditorView {
                 selected_range,
             } => self.set_marked_text(marked_text, selected_range, ctx),
             ClearMarkedText => self.clear_marked_text(ctx),
+            ReplayHeldKeys => self.replay_held_keys_step(ctx),
         }
 
         if self.is_focused() {
@@ -8811,6 +9517,10 @@ impl TypedActionView for EditorView {
 impl View for EditorView {
     fn ui_name() -> &'static str {
         "EditorView"
+    }
+
+    fn takes_typed_text(&self) -> bool {
+        true
     }
 
     fn render(&self, ctx: &AppContext) -> Box<dyn Element> {
@@ -8924,6 +9634,12 @@ impl View for EditorView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        if self.paste_hold.display_gate_enabled() {
+            // #1345: the terminal input's editor gaining focus.
+            warpui::input_order::log_key_hop("kh_focus_editor", || {
+                format!("self_focused={}", focus_ctx.is_self_focused())
+            });
+        }
         if focus_ctx.is_self_focused() {
             self.focused = true;
             self.blinks_since_activity = 0;
@@ -8939,7 +9655,7 @@ impl View for EditorView {
     fn on_blur(&mut self, blur_ctx: &BlurContext, ctx: &mut ViewContext<Self>) {
         if blur_ctx.is_self_blurred() {
             self.focused = false;
-            self.cursors_visible = false;
+            self.set_cursors_visible(false);
             if self.clear_selections_on_blur {
                 self.clear_selections(ctx);
             }
@@ -8977,6 +9693,49 @@ pub fn position_id_for_cursor(editor_view_id: EntityId) -> String {
 /// last cursor position, when there are multiple.
 pub fn position_id_for_first_cursor(editor_view_id: EntityId) -> String {
     format!("editor:first_cursor_{editor_view_id}")
+}
+
+/// The `Held` form (class, text) of an editor key that the ssh hold (#1292) and the gate of an
+/// Enter the shell could not take yet (#1571) keep for the terminal view to route: typed text,
+/// Enter, and the editing / cursor keys a tty line understands. `None`: the key has no such form.
+fn held_form_of_editor_key(action: &EditorAction) -> Option<(u8, String)> {
+    use crate::terminal::input_queue::{HELD_KEY, HELD_SEQ, HELD_TYPED};
+    Some(match action {
+        // The pane's key sink delivers each typed key once (#1404): there is no second copy of
+        // the event to drop.
+        EditorAction::UserInsert(text) => (HELD_TYPED, String::clone(text)),
+        EditorAction::Enter => (HELD_KEY, "\r".to_owned()),
+        EditorAction::Backspace => (HELD_KEY, "\u{7f}".to_owned()),
+        EditorAction::DeleteAllLeft => (HELD_KEY, "\u{15}".to_owned()),
+        EditorAction::DeleteWordLeft => (HELD_KEY, "\u{17}".to_owned()),
+        EditorAction::Up => (HELD_SEQ, "\u{1b}[A".to_owned()),
+        EditorAction::Down => (HELD_SEQ, "\u{1b}[B".to_owned()),
+        EditorAction::Right => (HELD_SEQ, "\u{1b}[C".to_owned()),
+        EditorAction::Left => (HELD_SEQ, "\u{1b}[D".to_owned()),
+        // #1586: the bytes a tty gets for these.
+        EditorAction::Delete => (HELD_SEQ, "\u{1b}[3~".to_owned()),
+        EditorAction::MoveToLineStart => (HELD_SEQ, "\u{1b}[H".to_owned()),
+        EditorAction::MoveToLineEnd => (HELD_SEQ, "\u{1b}[F".to_owned()),
+        EditorAction::DeleteAllRight => (HELD_KEY, "\u{b}".to_owned()),
+        EditorAction::Tab => (HELD_SEQ, "\t".to_owned()),
+        _ => return None,
+    })
+}
+
+/// Whether an interrupt typed in the editor meets a gate that waits on the editor's own input.
+fn editor_interrupt_meets_gate(queue: &crate::terminal::input_queue::PaneQueue) -> bool {
+    use crate::terminal::input_queue::{GateKind, is_editor_paste_id};
+    queue.try_peek().is_some_and(|held| {
+        held.gates().iter().any(|gate| match gate.kind {
+            GateKind::PasteReading => is_editor_paste_id(gate.key),
+            GateKind::EnterVerdict | GateKind::TabCompletion | GateKind::EditorDisplayMap => true,
+            // Not `HandoffReport`: an interrupt meeting an Enter deferred for the shell's report
+            // cancels that Enter and voids the keys behind its gate (`TerminalView::ctrl_c`,
+            // through the editor's own event), which a signal offered to the queue would flush
+            // to the pty.
+            _ => false,
+        })
+    })
 }
 
 #[cfg(test)]

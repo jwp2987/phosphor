@@ -1,5 +1,6 @@
 pub mod active_session;
 pub mod command_executor;
+mod git_branch_cache;
 
 use async_channel::Sender;
 pub use command_executor::*;
@@ -39,6 +40,8 @@ use crate::server::telemetry::{BootstrappingInfo, TelemetryEvent};
 use crate::terminal::event::ExecutedExecutorCommandEvent;
 use crate::terminal::ShellHost;
 use crate::terminal::ShellLaunchData;
+#[cfg(feature = "local_tty")]
+use crate::remote_server::client::RemoteServerClient;
 #[cfg(feature = "local_tty")]
 use command_executor::remote_server_executor::RemoteServerCommandExecutor;
 use parking_lot::{Mutex, RwLock};
@@ -169,6 +172,10 @@ pub enum SessionsEvent {
     SessionBootstrapped(Box<SessionBootstrappedEvent>),
     /// The environment variables were updated.
     EnvironmentVariablesUpdated { session_id: SessionId },
+    /// The remote-server setup state of the session changed (checking, installing, connected,
+    /// failed ...): an edge of the ssh connect typeahead's phase (#1424 step 7). Emitted after
+    /// the state is stored, so a subscriber that reads it sees the new one.
+    RemoteServerSetupStateChanged { session_id: SessionId },
     /// A legacy SSH session's command executor was just constructed without
     /// ever reaching a connected remote-server client, and without an
     /// explicit `RemoteServerSetupState::Failed`/`Unsupported` state existing
@@ -184,6 +191,12 @@ pub enum SessionsEvent {
 impl Entity for Sessions {
     type Event = SessionsEvent;
 }
+
+/// Waits between attempts to enumerate deferred function/builtin names after a transport error.
+const DEFERRED_NAME_RETRY_DELAYS: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(500),
+    std::time::Duration::from_secs(3),
+];
 
 impl Sessions {
     pub fn new(
@@ -205,20 +218,49 @@ impl Sessions {
                 } => {
                     if let Some(session) = sessions.sessions.get(sid) {
                         session.set_remote_host_id(Some(host_id.clone()));
+                        // #1172: the connect landed after the session was initialized (the
+                        // bootstrap no longer waits for it): move it off the ControlMaster.
+                        let client = RemoteServerManager::handle(ctx)
+                            .read(ctx, |mgr, _| mgr.client_for_session(*sid).cloned());
+                        if let Some(client) = client {
+                            session.adopt_remote_server_client(client);
+                        }
                     }
+                    sessions.set_remote_host_id_for_descendants(*sid, Some(host_id.clone()));
                 }
                 RemoteServerManagerEvent::SessionDisconnected {
                     session_id: sid, ..
                 } => {
                     if let Some(session) = sessions.sessions.get(sid) {
                         session.set_remote_host_id(None);
+                        // The client is gone for good (or the ssh session is
+                        // ending): never keep handing completions to it.
+                        session.fall_back_to_control_master_executor();
                     }
+                    sessions.set_remote_host_id_for_descendants(*sid, None);
+                }
+                RemoteServerManagerEvent::SessionConnectionLost {
+                    session_id: sid, ..
+                } => {
+                    // The proxy died but the ssh session lives: keep
+                    // completions/suggestions working over the ControlMaster
+                    // while the manager reconnects in the background; the
+                    // `SessionReconnected` arm below swaps back.
+                    if let Some(session) = sessions.sessions.get(sid) {
+                        session.set_remote_host_id(None);
+                        session.fall_back_to_control_master_executor();
+                    }
+                    sessions.set_remote_host_id_for_descendants(*sid, None);
                 }
                 RemoteServerManagerEvent::SetupStateChanged { session_id, state } => {
                     sessions.set_remote_server_setup_state(*session_id, state.clone());
+                    ctx.emit(SessionsEvent::RemoteServerSetupStateChanged {
+                        session_id: *session_id,
+                    });
                     ctx.notify();
                 }
                 RemoteServerManagerEvent::SessionConnecting { .. }
+                | RemoteServerManagerEvent::SessionSpeculativeConnectFailed { .. }
                 | RemoteServerManagerEvent::SessionDeregistered { .. }
                 | RemoteServerManagerEvent::SessionConnectionFailed { .. }
                 | RemoteServerManagerEvent::HostConnected { .. }
@@ -269,17 +311,6 @@ impl Sessions {
             env_vars: Default::default(),
             remote_server_setup_states: Default::default(),
         }
-    }
-
-    pub fn is_any_session_remote(&self) -> bool {
-        self.sessions.values().any(|session| !session.is_local())
-    }
-
-    pub fn is_session_remote(&self, session_id: SessionId) -> bool {
-        self.sessions
-            .get(&session_id)
-            .map(|session| !session.is_local())
-            .unwrap_or(false)
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -423,9 +454,16 @@ impl Sessions {
                 BootstrapSessionType::WarpifiedRemote
             )
         {
-            if let Some(host_id) = RemoteServerManager::as_ref(ctx).host_id_for_session(session_id)
-            {
-                session.set_remote_host_id(Some(host_id.clone()));
+            // #1239: the manager only knows the ssh session itself. A subshell bootstrapped
+            // inside it (`sudo -s`, `ksu`, then Phosphorize) runs on the same host, so it takes
+            // the host id of the nearest ancestor that has one; without it the agent's file
+            // tools refuse ("extension not installed") and path completions are withheld.
+            let host_id = RemoteServerManager::as_ref(ctx)
+                .host_id_for_session(session_id)
+                .cloned()
+                .or_else(|| self.inherited_remote_host_id(session.spawning_session_id()));
+            if let Some(host_id) = host_id {
+                session.set_remote_host_id(Some(host_id));
             }
         }
 
@@ -492,6 +530,57 @@ impl Sessions {
 
     pub fn get(&self, session_id: SessionId) -> Option<Arc<Session>> {
         self.sessions.get(&session_id).map(Clone::clone)
+    }
+
+    /// The longest spawning chain followed when resolving a subshell's host (#1239). Real chains
+    /// are two or three deep (ssh -> sudo -> su); the bound only guards against a cycle in
+    /// `spawning_session_id`, which nothing prevents.
+    const MAX_SPAWNING_CHAIN: usize = 8;
+
+    /// The remote host id of the nearest ancestor of a session spawned from `spawning_session_id`
+    /// that has one (#1239): a subshell inside an ssh session is on that session's host.
+    pub fn inherited_remote_host_id(
+        &self,
+        spawning_session_id: Option<SessionId>,
+    ) -> Option<warp_core::HostId> {
+        let mut next = spawning_session_id;
+        for _ in 0..Self::MAX_SPAWNING_CHAIN {
+            let ancestor = self.sessions.get(&next?)?;
+            if let Some(host_id) = ancestor.remote_host_id() {
+                return Some(host_id);
+            }
+            next = ancestor.spawning_session_id();
+        }
+        None
+    }
+
+    /// Sets the remote host id of every session spawned, directly or through other subshells,
+    /// from `root` (#1239). `root` itself is left alone; the caller handles it.
+    pub fn set_remote_host_id_for_descendants(
+        &self,
+        root: SessionId,
+        host_id: Option<warp_core::HostId>,
+    ) {
+        for session in self.sessions.values() {
+            if session.id() != root && self.is_spawned_from(session, root) {
+                session.set_remote_host_id(host_id.clone());
+            }
+        }
+    }
+
+    /// Whether `session`'s spawning chain reaches `root` within [`Self::MAX_SPAWNING_CHAIN`] hops.
+    fn is_spawned_from(&self, session: &Session, root: SessionId) -> bool {
+        let mut next = session.spawning_session_id();
+        for _ in 0..Self::MAX_SPAWNING_CHAIN {
+            let Some(id) = next else {
+                return false;
+            };
+            if id == root {
+                return true;
+            }
+            next = self.sessions.get(&id).and_then(|s| s.spawning_session_id());
+        }
+        false
     }
 
     pub fn is_empty(&self) -> bool {
@@ -565,6 +654,32 @@ impl Sessions {
     }
 }
 
+/// How many of the newest history lines a remote session reads at start (#1242). The whole file
+/// used to be `cat` through the shared ssh connection: a multi-MB history (unlimited
+/// `HISTFILESIZE`, zsh `SAVEHIST=100000`) was one bulk response queued ahead of the first
+/// completions, and on a slow link ahead of keystroke echo (#985). Large enough that an ordinary
+/// history is read whole; `PHOSPHOR_SSH_HISTORY_MAX_LINES` overrides it (0 = the whole file).
+const DEFAULT_REMOTE_HISTORY_MAX_LINES: usize = 50_000;
+
+/// `PHOSPHOR_SSH_HISTORY_MAX_LINES`: unset or unparsable is the default, `0` is unbounded.
+fn remote_history_max_lines_from_env(value: Option<&str>) -> Option<usize> {
+    match value.map(str::trim).and_then(|v| v.parse::<usize>().ok()) {
+        Some(0) => None,
+        Some(n) => Some(n),
+        None => Some(DEFAULT_REMOTE_HISTORY_MAX_LINES),
+    }
+}
+
+/// The remote command that reads a (shell-quoted) history file: its newest `max_lines` lines, or
+/// all of it. `tail -n` is POSIX and line-based, so an entry is never cut mid-line; the parsers
+/// drop a leading partial multi-line entry's continuation on their own.
+fn remote_history_read_command(quoted_history_file: &str, max_lines: Option<usize>) -> String {
+    match max_lines {
+        Some(max_lines) => format!("tail -n {max_lines} {quoted_history_file}"),
+        None => format!("cat {quoted_history_file}"),
+    }
+}
+
 impl From<SessionType> for command_corrections::SessionType {
     fn from(session_type: SessionType) -> Self {
         match session_type {
@@ -592,6 +707,9 @@ pub enum IsLegacySSHSession {
         /// creating a Warp-owned one). Warp must not tear down such a
         /// master on session exit.
         external_control_master: bool,
+        /// The remote reported it can take the bootstrap as a counted raw read (#1172); see
+        /// `SSHValue::raw_bootstrap`.
+        raw_bootstrap: bool,
     },
     No,
 }
@@ -634,6 +752,8 @@ pub struct SessionInfo {
     pub shell: Shell,
     pub launch_data: Option<ShellLaunchData>,
     pub histfile: Option<String>,
+    /// Nushell's sqlite history file, when its history is not a plaintext file (#1203).
+    pub history_sqlite: Option<String>,
     pub user: String,
     pub hostname: String,
     pub subshell_info: Option<SubshellInitializationInfo>,
@@ -684,6 +804,7 @@ impl SessionInfo {
             Some(ssh_value) => IsLegacySSHSession::Yes {
                 socket_path: ssh_value.socket_path,
                 external_control_master: ssh_value.external_control_master,
+                raw_bootstrap: ssh_value.raw_bootstrap,
             },
             None => IsLegacySSHSession::No,
         };
@@ -722,6 +843,7 @@ impl SessionInfo {
             home_dir: None,
             editor: None,
             histfile: None,
+            history_sqlite: None,
             aliases: Default::default(),
             abbreviations: Default::default(),
             function_names: Default::default(),
@@ -736,7 +858,6 @@ impl SessionInfo {
         }
     }
 
-    #[cfg(not(feature = "remote_tty"))]
     fn determine_session_type(
         init_shell_value: &InitShellValue,
         is_warpified_ssh_session: bool,
@@ -758,15 +879,6 @@ impl SessionInfo {
                 BootstrapSessionType::Local
             }
         }
-    }
-
-    #[cfg(feature = "remote_tty")]
-    fn determine_session_type(
-        _init_shell_value: &InitShellValue,
-        _is_warpified_ssh_session: bool,
-    ) -> BootstrapSessionType {
-        // When the `remote_tty` feature is enabled--the session is always considered remote.
-        BootstrapSessionType::WarpifiedRemote
     }
 
     /// Returns a fully populated [`SessionInfo`] containing data derived from the given
@@ -848,6 +960,7 @@ impl SessionInfo {
             ),
             launch_data: self.launch_data.take(),
             histfile: bootstrapped_value.histfile,
+            history_sqlite: bootstrapped_value.history_sqlite,
             user: self.user,
             hostname: self.hostname,
             session_type: self.session_type,
@@ -1050,6 +1163,15 @@ impl Session {
         self.info.ssh_spawning_local_pwd.as_deref()
     }
 
+    /// The connected remote-server host of a `WarpifiedRemote` session, once the handshake has
+    /// completed (or an ancestor's has, #1239); `None` for a local session.
+    pub fn remote_host_id(&self) -> Option<warp_core::HostId> {
+        match &*self.session_type.lock() {
+            SessionType::WarpifiedRemote { host_id } => host_id.clone(),
+            SessionType::Local => None,
+        }
+    }
+
     /// Updates the `host_id` on a `WarpifiedRemote` session type after the
     /// remote server handshake completes (or clears it on disconnect).
     pub fn set_remote_host_id(&self, host_id: Option<warp_core::HostId>) {
@@ -1199,14 +1321,65 @@ impl Session {
         *self.command_executor.write() = executor;
     }
 
-    /// Returns true if the session is employing in-band command execution to run generators.
-    pub fn is_using_in_band_command_execution(&self) -> bool {
-        self.command_executor
-            .read()
+    /// Swaps this legacy-ssh session's command executor back to the
+    /// ControlMaster-based [`RemoteCommandExecutor`], e.g. after the
+    /// remote-server proxy died (#1171). Returns `true` if the executor was
+    /// replaced; `false` for a non-ssh session or when the current executor is
+    /// not the remote-server one (so repeated events log and swap only once).
+    #[cfg(feature = "local_tty")]
+    pub fn fall_back_to_control_master_executor(&self) -> bool {
+        let IsLegacySSHSession::Yes { socket_path, .. } = &self.info.is_legacy_ssh_session else {
+            return false;
+        };
+        let mut executor = self.command_executor.write();
+        // Only the remote-server (helper) executor is swapped; any other executor (the
+        // ControlMaster one already, tmux, test doubles, ...) is left alone (#1253).
+        if !executor.as_ref().is_remote_server_executor() {
+            return false;
+        }
+        let wsl_distro = self.info.wsl_name().map(ToOwned::to_owned);
+        *executor = Arc::new(RemoteCommandExecutor::new(socket_path.clone(), wsl_distro));
+        log::info!(
+            "Remote-server client lost for ssh session {:?}; \
+             command executor fell back to the ControlMaster",
+            self.info.session_id
+        );
+        true
+    }
+
+    /// #1172: the shell bootstrap of a legacy ssh session is written as soon as the remote-server
+    /// binary check passes, overlapping the connect and handshake, so on a slow link the session
+    /// can be initialized (and given the ControlMaster executor) before the connect lands. When it
+    /// does, this swaps the ControlMaster executor for one backed by `client`, as a reconnect
+    /// does. Returns `true` if the executor was replaced; `false` for a non-ssh session or one
+    /// whose executor is not the ControlMaster one (already remote-server backed, tmux, ...).
+    #[cfg(feature = "local_tty")]
+    pub fn adopt_remote_server_client(&self, client: Arc<RemoteServerClient>) -> bool {
+        if !matches!(
+            self.info.is_legacy_ssh_session,
+            IsLegacySSHSession::Yes { .. }
+        ) {
+            return false;
+        }
+        let mut executor = self.command_executor.write();
+        if executor
             .as_ref()
             .as_any()
-            .downcast_ref::<InBandCommandExecutor>()
-            .is_some()
+            .downcast_ref::<RemoteCommandExecutor>()
+            .is_none()
+        {
+            return false;
+        }
+        *executor = Arc::new(RemoteServerCommandExecutor::new(
+            self.info.session_id,
+            client,
+        ));
+        log::info!(
+            "Remote-server client connected after session init for ssh session {:?}; \
+             command executor swapped from the ControlMaster",
+            self.info.session_id
+        );
+        true
     }
 
     /// Returns `true` if already attempted to load external commands for the `Session`.
@@ -1227,6 +1400,26 @@ impl Session {
     /// produced anything. Safe to wait on; `has_loaded_external_commands` is not.
     pub fn has_finished_loading_external_commands(&self) -> bool {
         self.external_commands_load_finished.load(Ordering::Acquire)
+    }
+
+    /// Whether the post-bootstrap function and builtin enumeration
+    /// ([`Self::load_all_function_names`], [`Self::load_all_builtins`]) can be skipped because it
+    /// would only repeat what the Bootstrapped hook already carried (#1230).
+    ///
+    /// A local PowerShell session runs those commands in two fresh `pwsh -NoProfile` processes,
+    /// each a 140-250 ms (Linux) to multi-second (Windows) start with a cold module scan, started
+    /// together with the chip commands right after bootstrap. What they could add is names
+    /// the bootstrapped shell did not report, and the bootstrap's own `Get-Command` listings in
+    /// the live session see everything a `-NoProfile` process does and the profile's additions.
+    pub fn deferred_name_enumeration_is_redundant(&self) -> bool {
+        self.info.shell.shell_type() == ShellType::PowerShell
+            && self
+                .command_executor
+                .read()
+                .as_ref()
+                .as_any()
+                .downcast_ref::<command_executor::LocalCommandExecutor>()
+                .is_some()
     }
 
     /// Asynchronously collects all function names via an in-band shell command.
@@ -1307,9 +1500,26 @@ impl Session {
         label: &'static str,
     ) {
         let (load_future, receiver) = (async {
-            let result = self
+            // A transport error (the remote connection dropped under the command) says nothing
+            // about the names, so it is retried after a short backoff and, if it never
+            // succeeds, nothing is stored; storing an empty set made the failure permanent for
+            // the session (#1289).
+            let mut result = self
                 .execute_command(command, None, None, ExecuteCommandOptions::default())
                 .await;
+            for delay in DEFERRED_NAME_RETRY_DELAYS {
+                if result.is_ok() {
+                    break;
+                }
+                warpui::r#async::Timer::after(delay).await;
+                result = self
+                    .execute_command(command, None, None, ExecuteCommandOptions::default())
+                    .await;
+            }
+            if let Err(e) = &result {
+                log::warn!("Failed to load {label} names, will not store an empty set: {e:#}");
+                return;
+            }
 
             let new_names: HashSet<SmolStr> = match result {
                 Ok(output) if output.status == CommandExitStatus::Success => {
@@ -1329,10 +1539,7 @@ impl Session {
                     log::warn!("In-band command for {label} names returned non-success status");
                     HashSet::new()
                 }
-                Err(e) => {
-                    log::warn!("Failed to load {label} names: {e:#}");
-                    HashSet::new()
-                }
+                Err(_) => return,
             };
 
             if storage.set(new_names).is_err() {
@@ -1345,6 +1552,39 @@ impl Session {
             Ok(_) => load_future.await,
             Err((existing_receiver, _)) => existing_receiver.clone().await,
         };
+    }
+
+    /// The output `shell_command_to_get_executables` gives for a local PowerShell session,
+    /// produced by scanning the session's `PATH` directories in this process (see
+    /// [`warp_util::path::executable_file_names_in_path`]); `None` for any other session, which
+    /// runs the shell command.
+    async fn native_powershell_executables(&self) -> Option<CommandOutput> {
+        let is_msys2 = self
+            .info
+            .launch_data
+            .as_ref()
+            .is_some_and(|launch_data| matches!(launch_data, ShellLaunchData::MSYS2 { .. }));
+        if is_msys2 || !self.deferred_name_enumeration_is_redundant() {
+            // Not a local PowerShell session.
+            return None;
+        }
+        let path_env = self
+            .info
+            .path
+            .as_deref()
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("PATH"))?;
+        let pathext = std::env::var_os("PATHEXT");
+        let names = blocking::unblock(move || {
+            warp_util::path::executable_file_names_in_path(&path_env, pathext.as_deref())
+        })
+        .await;
+        Some(CommandOutput {
+            stdout: names.join("\n").into_bytes(),
+            stderr: Vec::new(),
+            status: CommandExitStatus::Success,
+            exit_code: None,
+        })
     }
 
     /// Asynchronously loads the external commands.
@@ -1386,14 +1626,21 @@ impl Session {
                 .as_deref()
                 .map(|path| HashMap::from_iter([("PATH".to_string(), path.to_string())]));
 
-            let result = self
-                .execute_command(
-                    shell_command_to_get_executables,
-                    None,
-                    env_vars,
-                    ExecuteCommandOptions::default(),
-                )
-                .await;
+            // A local PowerShell session lists the executables itself (#1230) instead of
+            // starting `pwsh -NoProfile` for `Get-Command -CommandType Application`.
+            let native_result = self.native_powershell_executables().await;
+            let result = match native_result {
+                Some(output) => Ok(output),
+                None => {
+                    self.execute_command(
+                        shell_command_to_get_executables,
+                        None,
+                        env_vars,
+                        ExecuteCommandOptions::default(),
+                    )
+                    .await
+                }
+            };
 
             let is_msys2 =
                 self.info.launch_data.as_ref().is_some_and(|launch_data| {
@@ -1503,16 +1750,26 @@ impl Session {
     /// Cheap and bounded: only local Unix sessions (a remote or WSL `$PATH` is not ours to stat),
     /// only a bare command-name word (never a path or arbitrary typed text, #1007), only once the
     /// bootstrap scan has landed and only if the word is not already known. The probe is a
-    /// `stat` per `$PATH` directory, and a miss is remembered for [`LATE_COMMAND_MISS_TTL`], so
-    /// re-typing the same unknown word costs nothing.
+    /// `stat` per `$PATH` directory, and a miss is remembered until the next command completes
+    /// ([`Self::note_user_command`]), so re-typing the same unknown word costs nothing.
     pub fn discover_command_word(&self, word: &str) {
+        if self.command_word_needs_probe(word) {
+            self.probe_command_word(word);
+        }
+    }
+
+    /// Whether [`Self::discover_command_word`] would stat `$PATH` for `word` right now: the word
+    /// is a candidate, is not already known, and has no fresh negative-cache entry. Does no
+    /// filesystem access, so the Enter path can ask this on the main thread and push the stat to a
+    /// background task ([`Self::probe_command_word`]) instead of waiting on it.
+    pub fn command_word_needs_probe(&self, word: &str) -> bool {
         if !cfg!(unix)
             || !self.is_local()
             || self.is_wsl()
             || !self.has_loaded_external_commands()
             || !is_bare_command_name(word)
         {
-            return;
+            return false;
         }
         let case_insensitive = matches!(
             self.command_case_sensitivity,
@@ -1525,21 +1782,27 @@ impl Session {
                 name == word
             }
         }) {
-            return;
+            return false;
         }
-        let now = Instant::now();
+        !self
+            .late_commands
+            .missing
+            .lock()
+            .contains(word)
+    }
+
+    /// The `stat`-per-`$PATH`-directory half of [`Self::discover_command_word`]; records a miss
+    /// in the negative cache. Blocks on the filesystem: call off the main thread.
+    pub fn probe_command_word(&self, word: &str) {
         {
             let mut missing = self.late_commands.missing.lock();
-            if missing
-                .get(word)
-                .is_some_and(|at| now.duration_since(*at) < LATE_COMMAND_MISS_TTL)
-            {
+            if missing.contains(word) {
                 return;
             }
             if missing.len() >= MAX_MISSING_COMMAND_WORDS {
                 missing.clear();
             }
-            missing.insert(word.to_owned(), now);
+            missing.insert(word.to_owned());
         }
         let mut dirs: Vec<PathBuf> = self
             .info
@@ -1623,10 +1886,13 @@ impl Session {
     /// `a && pip install y` both count. There is no re-scan: the simplest correct choice is to
     /// stop answering, which keeps the line in the shell.
     pub fn note_user_command(&self, command: &str) {
+        // #1019/#1381: a word found missing on `$PATH` is missing until something runs that could
+        // have created it, and any command can (a build, `./install.sh`, `cp`). The completed
+        // command is the event that ends the miss, not a clock; there is no event for installs
+        // done outside this session, which are picked up when the next command here completes.
+        self.late_commands.missing.lock().clear();
         if command_may_change_known_commands(command) {
             self.command_data_stale.store(true, Ordering::Release);
-            // #1019: words recently found missing on `$PATH` may exist now; look again.
-            self.late_commands.missing.lock().clear();
         }
         // #1019: remember directories the user added to `$PATH`, so a tool put there is found.
         if self.is_local() && command.contains("PATH=") {
@@ -1661,6 +1927,12 @@ impl Session {
     async fn read_history_for_local_session(&self, is_kaspersky_running: bool) -> Vec<String> {
         let histfile = &self.info.histfile;
         let shell_type = &self.info.shell.shell_type();
+        if *shell_type == ShellType::Nu
+            && let Some(database) = self.info.history_sqlite.as_deref()
+            && let Some(history) = read_nu_sqlite_history(database)
+        {
+            return history;
+        }
         let history_files = histfile.as_ref().map_or_else(
             || shell_type.history_files(),
             |histfile| vec![histfile.to_string()],
@@ -1825,13 +2097,16 @@ impl Session {
         // be typed into the PTY raw (#867).
         let quoted_history_file =
             shell_quote_arg(history_file, self.info.shell.shell_type().executor_syntax());
+        let command = remote_history_read_command(
+            &quoted_history_file,
+            remote_history_max_lines_from_env(
+                std::env::var("PHOSPHOR_SSH_HISTORY_MAX_LINES")
+                    .ok()
+                    .as_deref(),
+            ),
+        );
         let output_in_bytes = self
-            .execute_command(
-                format!("cat {quoted_history_file}").as_str(),
-                None,
-                env_vars,
-                ExecuteCommandOptions::default(),
-            )
+            .execute_command(&command, None, env_vars, ExecuteCommandOptions::default())
             .await
             .ok()?;
 
@@ -1881,7 +2156,41 @@ impl Session {
         // Clone the Arc out of the lock so we don't hold the read guard
         // across the await point.
         let executor = self.command_executor.read().clone();
-        executor
+        // Kept for one retry (#1289); only a command that can be caught by an executor swap needs
+        // them, which is a remote session's.
+        let retry_args = (!self.is_local()).then(|| environment_variables.clone());
+        let result = executor
+            .execute_command(
+                command,
+                &self.info.shell,
+                current_dir_path,
+                environment_variables,
+                execute_command_options,
+            )
+            .await;
+        if result.is_ok() {
+            return result;
+        }
+        let Some(environment_variables) = retry_args else {
+            return result;
+        };
+
+        // The remote-server connection can drop under a request in flight (the proxy was killed,
+        // #1171) and the session swaps its executor for the ControlMaster one, and back after the
+        // reconnect. A request caught by that fails once, and every caller (completions, history,
+        // chips, command validity) used to read the error as an empty answer. Move off a dead
+        // connection right away rather than waiting for the manager's event, and run the
+        // command once on the executor the session has now.
+        #[cfg(feature = "local_tty")]
+        if executor.connection_lost() {
+            self.fall_back_to_control_master_executor();
+        }
+        let current = self.command_executor.read().clone();
+        if Arc::ptr_eq(&executor, &current) {
+            return result;
+        }
+        log::info!("Retrying a failed session command on the session's new command executor");
+        current
             .execute_command(
                 command,
                 &self.info.shell,
@@ -1904,6 +2213,20 @@ impl Session {
     }
 
     pub async fn git_branches_for_command_corrections(&self, working_dir: &str) -> Vec<String> {
+        // Reuse the last list while the repository's HEAD and branch refs are unchanged (#1342).
+        let stamp = (self.is_local() && std::env::var_os(git_branch_cache::DISABLE_ENV).is_none())
+            .then(|| git_branch_cache::branch_stamp(working_dir))
+            .flatten();
+        if let Some(stamp) = &stamp {
+            if let Some(branches) = git_branch_cache::lookup(self.id(), working_dir, stamp) {
+                return branches;
+            }
+        }
+        // Running `git branch` outside a repository always fails; skip the process spawn
+        // (and the log noise) when we can cheaply tell the local directory isn't in a repo.
+        if self.is_local() && local_dir_is_outside_git_repo(Path::new(working_dir)) {
+            return vec![];
+        }
         let env_vars = self
             .info
             .path
@@ -1912,7 +2235,7 @@ impl Session {
 
         let output = self
             .execute_command(
-                "git --no-optional-locks branch --no-color",
+                crate::context_chips::builtins::GIT_BRANCHES_FOR_CORRECTIONS_COMMAND,
                 Some(working_dir),
                 env_vars,
                 ExecuteCommandOptions::default(),
@@ -1927,14 +2250,19 @@ impl Session {
                     );
                     return vec![];
                 };
-                let res = output_string
+                let res: Vec<String> = output_string
                     .lines()
                     .map(|s| s.trim().to_string())
                     .collect();
+                if let Some(stamp) = stamp {
+                    git_branch_cache::store(self.id(), working_dir, stamp, res.clone());
+                }
                 res
             }
             _ => {
-                log::warn!("failed to get git_branches_for_command_corrections");
+                // Expected whenever the directory isn't a git repository (or git is missing),
+                // so this must not WARN once per command.
+                log::debug!("failed to get git_branches_for_command_corrections");
                 vec![]
             }
         }
@@ -2027,6 +2355,7 @@ pub mod testing {
                 shell: Shell::new(shell_type, None, None, Default::default(), None),
                 launch_data: None,
                 histfile: None,
+                history_sqlite: None,
                 user: "local:user".to_owned(),
                 hostname: "local:host".to_owned(),
                 session_type: BootstrapSessionType::Local,
@@ -2085,6 +2414,22 @@ pub mod testing {
             self
         }
 
+        pub fn with_spawning_session_id(mut self, spawning_session_id: SessionId) -> Self {
+            self.spawning_session_id = Some(spawning_session_id);
+            self
+        }
+
+        /// A subshell bootstrapped from `spawning_command` (`sudo -s`, `ksu`, ...).
+        pub fn with_subshell_spawned_by(mut self, spawning_command: &str) -> Self {
+            self.subshell_info = Some(SubshellInitializationInfo {
+                spawning_command: spawning_command.to_owned(),
+                was_triggered_by_rc_file_snippet: false,
+                env_var_collection_name: None,
+                ssh_connection_info: None,
+            });
+            self
+        }
+
         pub fn with_hostname(mut self, hostname: String) -> Self {
             self.hostname = hostname;
             self
@@ -2107,7 +2452,21 @@ pub mod testing {
             self.is_legacy_ssh_session = IsLegacySSHSession::Yes {
                 socket_path,
                 external_control_master: false,
+                raw_bootstrap: false,
             };
+            self
+        }
+
+        /// Marks an ssh session (see [`Self::with_ssh_socket_path`]) as one whose remote reported
+        /// it can take the bootstrap as a counted raw read (#1172).
+        pub fn with_raw_bootstrap(mut self, raw_bootstrap_value: bool) -> Self {
+            if let IsLegacySSHSession::Yes {
+                ref mut raw_bootstrap,
+                ..
+            } = self.is_legacy_ssh_session
+            {
+                *raw_bootstrap = raw_bootstrap_value;
+            }
             self
         }
 
@@ -2195,16 +2554,6 @@ pub mod testing {
             }
         }
 
-        pub fn set_shell_options(&mut self, options: Option<HashSet<String>>) {
-            self.info.shell = Shell::new(
-                self.info.shell.shell_type(),
-                self.info.shell.version().clone(),
-                options,
-                self.info.shell.plugins().clone(),
-                self.info.shell.shell_path().clone(),
-            );
-        }
-
         pub fn set_external_commands(&self, commands: impl IntoIterator<Item = impl AsRef<str>>) {
             if self
                 .external_commands
@@ -2213,14 +2562,6 @@ pub mod testing {
             {
                 log::warn!("Ignored call to set_external_commands, as external commands had already been set!");
             };
-        }
-
-        pub fn set_environment_variables(
-            &mut self,
-            env_vars: impl IntoIterator<Item = impl Into<SmolStr>>,
-        ) {
-            self.info.environment_variable_names =
-                HashSet::from_iter(env_vars.into_iter().map(Into::into));
         }
 
         pub fn with_shell_launch_data(mut self, launch_data: ShellLaunchData) -> Self {
@@ -2252,8 +2593,6 @@ const COMMAND_SET_CHANGING_WORDS: &[&str] = &[
     "docker", "podman", "sudo", "su", "bash", "zsh", "fish", "sh", "exec",
 ];
 
-/// How long a word found on no `$PATH` directory is remembered as missing (#1019).
-const LATE_COMMAND_MISS_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 const MAX_LATE_COMMANDS: usize = 64;
 const MAX_MISSING_COMMAND_WORDS: usize = 128;
 const MAX_EXTRA_PATH_DIRS: usize = 16;
@@ -2263,8 +2602,8 @@ const MAX_EXTRA_PATH_DIRS: usize = 16;
 #[derive(Debug, Default)]
 struct LateCommands {
     found: Mutex<Vec<&'static str>>,
-    /// Words not found on `$PATH`, with when that was checked.
-    missing: Mutex<HashMap<String, Instant>>,
+    /// Words not found on `$PATH`; cleared when a command completes.
+    missing: Mutex<HashSet<String>>,
     /// Directories the user has put on `$PATH` since the bootstrap, parsed from `PATH=` commands.
     extra_dirs: Mutex<Vec<PathBuf>>,
 }
@@ -2350,6 +2689,49 @@ fn command_may_change_known_commands(command: &str) -> bool {
                         COMMAND_SET_CHANGING_WORDS.contains(&base) || base.starts_with("activate")
                     })
             })
+}
+
+/// Whether `dir` is an existing local directory with no `.git` (directory or file) in it or any
+/// ancestor, i.e. `git branch` there is certain to fail. Anything uncertain -- a missing path, or
+/// `GIT_DIR` set in our environment -- returns `false` so git is still consulted.
+fn local_dir_is_outside_git_repo(dir: &Path) -> bool {
+    if std::env::var_os("GIT_DIR").is_some() || !dir.is_dir() {
+        return false;
+    }
+    !dir.ancestors().any(|ancestor| ancestor.join(".git").exists())
+}
+
+/// The commands in nushell's sqlite history (`history.file_format = sqlite`, its default), oldest
+/// first (#1203): the `history` table's `command_line`, read read-only. `None` when the file
+/// cannot be opened or read (locked, an unknown schema), so the session starts from Phosphor's own
+/// records instead. A plain `SELECT` over a few thousand rows, on the thread that reads the
+/// history file.
+pub(crate) fn read_nu_sqlite_history(database: &str) -> Option<Vec<String>> {
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        command_line: String,
+    }
+    let url = format!("file:{database}?mode=ro");
+    let mut connection =
+        match <diesel::sqlite::SqliteConnection as diesel::Connection>::establish(&url) {
+            Ok(connection) => connection,
+            Err(error) => {
+                log::warn!("Could not open nushell's sqlite history {database}: {error:#}");
+                return None;
+            }
+        };
+    let rows: Vec<Row> = match diesel::RunQueryDsl::load(
+        diesel::sql_query("SELECT command_line FROM history ORDER BY id"),
+        &mut connection,
+    ) {
+        Ok(rows) => rows,
+        Err(error) => {
+            log::warn!("Could not read nushell's sqlite history {database}: {error:#}");
+            return None;
+        }
+    };
+    Some(rows.into_iter().map(|row| row.command_line).collect())
 }
 
 #[cfg(test)]

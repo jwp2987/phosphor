@@ -1,4 +1,3 @@
-use std::path::Path;
 
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -68,6 +67,9 @@ pub fn check_ssh_login_state(block_output: &str) -> SshLoginState {
             || line.contains("Confirm user presence")
             || line.starts_with("Enter ")
             || line.starts_with("Allow ")
+            // #1374: ssh prints this and then re-prompts (possibly many seconds later, while the
+            // server delays its reply). It is a mid-authentication line, never "login done".
+            || line.contains("Permission denied, please try again")
         {
             SshLoginState::Authenticating
         } else if PROMPT_REGEX.is_match(line) {
@@ -100,7 +102,9 @@ impl InteractiveSshCommand {
         };
         // A glued or separate shell operator (`ssh host&`, `ssh host;`, a pipe) is not an
         // interactive session on the pty.
-        if command.contains(['&', ';', '|']) {
+        // Only an UNQUOTED operator counts: `-o ProxyCommand='sleep 3; false'` is one ssh command
+        // and must arm the connect gate (#1395).
+        if has_unquoted_shell_operator(command) {
             return None;
         }
         let tokens = parse_ssh_command_tokens(command)?;
@@ -247,6 +251,25 @@ pub fn parse_interactive_ssh_command(command: &str) -> Option<InteractiveSshComm
     }
 }
 
+/// Whether `command` has a shell control operator (`&`, `;`, `|`) outside single quotes, double
+/// quotes and backslash escapes.
+fn has_unquoted_shell_operator(command: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, '\\') | (Some('"'), '\\') => {
+                chars.next();
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '&' | ';' | '|') => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn parse_ssh_command_tokens(command: &str) -> Option<Vec<String>> {
     let Ok(tokens) = shell_words::split(command) else {
         return None;
@@ -260,8 +283,11 @@ fn parse_ssh_command_tokens(command: &str) -> Option<Vec<String>> {
 }
 
 /// Creates an sftp command that copies a given local file into the pwd in the warpified ssh session.
+/// `is_dir` (whether the local path is a directory, which adds `-r`) is probed by the caller off
+/// the UI thread; this function never touches the filesystem.
 pub fn transfer_file_sftp_command(
     local_file_path: String,
+    is_dir: bool,
     ssh_host: String,
     ssh_port: Option<String>,
     pwd: Option<String>,
@@ -279,9 +305,6 @@ pub fn transfer_file_sftp_command(
     command += " <<< \"put ";
 
     // "sftp -P 2222 sshuser@127.0.0.1 <<< "put -r"
-    let is_dir = Path::new(&local_file_path)
-        .metadata()
-        .is_ok_and(|m| m.is_dir());
     if is_dir {
         command += "-r "
     }
@@ -304,6 +327,18 @@ pub fn transfer_file_sftp_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_operators_do_not_make_ssh_non_interactive() {
+        for cmd in [
+            "ssh -o ProxyCommand='sleep 3; false' host",
+            "ssh -o 'ProxyCommand=ssh -W %h:%p j | cat' host",
+            "ssh -o \"ProxyCommand=a & b\" host",
+        ] {
+            assert!(parse_interactive_ssh_command(cmd).is_some(), "{cmd}");
+        }
+        assert!(parse_interactive_ssh_command("ssh -o X='a' host; ls").is_none());
+    }
 
     #[test]
     fn ssh_non_interactive_forms_are_not_interactive() {

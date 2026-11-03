@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="5" failures="4" skipped="0">
+<testcase classname="terminal" name="harness_crash" time="0.00">
+<failure message="the terminal pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')">the terminal pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="harness_crash" time="0.00">
+<failure message="the terminal@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')">the terminal@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')</failure>
+</testcase>
+<testcase classname="agent" name="harness_crash" time="0.00">
+<failure message="the agent pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')">the agent pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="harness_crash" time="0.00">
+<failure message="the agent@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')">the agent@gitbash pass crashed outside a case: FileNotFoundError(2, 'No such file or directory')</failure>
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>
