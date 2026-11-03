@@ -72,7 +72,7 @@ def lat_checks(r, rec, label):
     """turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
     if rec["budget_verdict"] == "fail":
         if rec["budget_kind"] == "overhead":
-            r.check(False, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["reference_name"], rec["budget_ms"]))
+            r.check(False, "%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget (overhead - 2 SE > budget)" % (label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
         else:
             r.check(False, "%s: %.2f ms over the harness floor exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["budget_ms"]))
     for tag in ("prev", "baseline"):
@@ -85,10 +85,55 @@ def lat_checks(r, rec, label):
                 r.check(False, "REGRESSION " + msg)
             else:
                 r.note("WARN " + msg)
+    if rec["verdict"] in ("inconclusive", "no-compare") or rec.get("budget_verdict") in ("inconclusive", "no-compare"):
+        why = "overhead %s +/- %s ms (SE) vs budget %g ms is within noise" % (rec.get("overhead_ms"), rec.get("overhead_se_ms"), rec["budget_ms"])
+        if rec.get("budget_verdict") == "no-compare":
+            why = "pane shell %s != reference shell %s" % (rec.get("pane_shell"), rec.get("reference_shell"))
+        r.no_reference("%s: %s: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)" % (label, why))
     if rec["verdict"] == "no-reference":
         r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
     for n_ in rec.get("notes", []):
         r.note("%s: %s" % (label, n_))
+
+
+def enter_segments(lines, t0):
+    """app log lines -> the split of Enter->command-start the APP can see, medians in ms (#1583 W3):
+      enter_to_write_ms        `hop=enter_begin` -> the `pty_write` of the line (> 10 bytes; handoff writes excluded)
+      write_to_first_read_ms   that write -> the first `pty_read` after it (the shell's first answer: echo/Preexec OSC); the app logs this as
+                               `since_write_ms` on the pty_read line
+      write_to_preexec_ms      only if the log has a preexec hop line (`hop=preexec_received`); the app does NOT log one today (it stamps
+                               ShellSignal::Preexec into an atomic that pty_write lines print as since_preexec_ms, which is the age at the
+                               NEXT write), so this key is absent and the report says an app log hop is needed.
+    Lines before wall time t0 are ignored."""
+    seg = {"enter_to_write_ms": [], "write_to_first_read_ms": [], "write_to_preexec_ms": []}
+    pending, wrote, read_seen = None, None, True
+    for l in lines:
+        m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+        if not m:
+            continue
+        t = float(m.group(1))
+        if t / 1000.0 < t0:
+            continue
+        if "hop=enter_begin" in l:
+            pending = t
+        elif "hop=preexec_received" in l and wrote is not None:
+            seg["write_to_preexec_ms"].append(t - wrote)
+            wrote = None
+        elif "pty_write bytes=" in l and "handoff" not in l:
+            nb = re.search(r"pty_write bytes=(\d+)", l)
+            if nb and int(nb.group(1)) > 10 and pending is not None:
+                seg["enter_to_write_ms"].append(t - pending)
+                wrote, pending, read_seen = t, None, False
+        elif wrote is not None and not read_seen and " pty_read bytes=" in l:
+            sw = re.search(r"since_write_ms=(\d+(?:\.\d+)?)", l)
+            seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
+            read_seen = True          # only the FIRST read after a write counts; `wrote` stays for a later preexec hop
+    out = {}
+    for k, v in seg.items():
+        if isinstance(v, list) and v:
+            out[k] = round(statistics.median(v), 2)
+            out[k.replace("_ms", "_n")] = len(v)
+    return out
 
 
 class Ctx:
@@ -351,32 +396,23 @@ class Ctx:
     def app_enter_to_write_ms(self, t0):
         """median ms from the app's `enter_begin` hop to the `pty_write` that carries the line (>10 bytes) since wall time t0: the APP's own share
         of Enter->command-start, read from its input_order log (None without a trace). The rest is the shell/ConPTY side."""
+        return self.app_enter_segments(t0).get("enter_to_write_ms")
+
+    def app_enter_segments(self, t0):
+        """the app-log split of one Enter (#1583 W3) since wall time t0: {enter_to_write_ms, write_to_first_read_ms, write_to_preexec_ms?}, medians
+        (+ n). Empty without a trace. See enter_segments for the rules."""
         import glob
         src = self.log_path
         if not src:
-            return None
+            return {}
         parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
-        ds, pending = [], None
+        lines = []
         for f in parts:
             try:
-                lines = open(f, errors="replace").read().splitlines()
+                lines += open(f, errors="replace").read().splitlines()
             except OSError:
                 continue
-            for l in lines:
-                m = re.search(r" t=(\d+(?:\.\d+)?)", l)
-                if not m:
-                    continue
-                t = float(m.group(1))
-                if t / 1000.0 < t0:
-                    continue
-                if "hop=enter_begin" in l:
-                    pending = t
-                elif pending is not None and "pty_write bytes=" in l and "handoff" not in l:
-                    nb = re.search(r"pty_write bytes=(\d+)", l)
-                    if nb and int(nb.group(1)) > 10:
-                        ds.append(t - pending)
-                        pending = None
-        return round(statistics.median(ds), 2) if ds else None
+        return enter_segments(lines, t0)
 
     def app_saw_line(self, want, t0):
         """True: every character of `want` is in the app's own typed-character log, in order and contiguous (the key ARRIVED and was routed);
@@ -1291,6 +1327,7 @@ def ref_terminal_windows(ctx):
     before = {w[0] for w in winapi.top_windows(None)}
     proc = subprocess.Popen(argv, cwd=ctx.W, env=env, creationflags=flags, stdin=subprocess.DEVNULL if want_wt else None)
     ctx.ref_proc = proc
+    ctx.ref_shell = shname
     hwnd, wpid = None, None
     for _ in range(60):
         time.sleep(0.4)
@@ -1343,10 +1380,21 @@ def pane_shell(ctx):
     return path or None
 
 
+def pane_shell_id(ctx):
+    """The shell in Phosphor's pane for the verdict's shell-identity check: Windows by pane kind, elsewhere asked of the pane (pane_shell). None = unknown."""
+    if ctx.win:
+        return {"powershell": "powershell", "gitbash": "bash"}.get(ctx.pane)
+    try:
+        return pane_shell(ctx)
+    except Exception:
+        return None
+
+
 def ref_terminal(ctx):
     """Linux: foot (Wayland) when installed, else xterm (via XWayland under the Wayland session, native under X11).
     macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
     home = ctx.prof.home
+    ctx.ref_shell = None        # set by whichever path launches a reference: the shell it runs (recorded in the latency metrics, #1583)
     if ctx.win:
         return ref_terminal_windows(ctx)
     if ctx.be.name == "mac":
@@ -1415,6 +1463,7 @@ def ref_terminal(ctx):
     else:
         return None
     proc = subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ctx.ref_shell = "bash"
     ctx.prof.ref_active = True
     ctx.be.guard_override = dict(pids={proc.pid}, names=names)
 
@@ -1600,7 +1649,22 @@ def c_enter_loss(ctx, r):
         r.note("the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug")
 
 
-def enter_to_start(ctx, n, budget_s=None):
+def stamp_line(ctx):
+    """The timestamp command typed in BOTH terminals (a '%d' for the sample index). macOS: BSD date has no %N. When the pane shell is zsh (r18cz: it
+    was, not bash 3.2) the stamp is the shell's own builtin, `$EPOCHREALTIME` (no fork/exec, no 50 ms perl start-up inside the measurement; the
+    `zmodload` is a no-op after the first line and is typed before the stamp, so it is outside the stamped interval's tail; it also keeps the
+    line structured so agent-mode autodetect does not send it to the AI). Only bash 3.2 (no $EPOCHREALTIME) keeps perl, which is in the base
+    system. The reference terminal runs the same shell (pane_shell) and so the same line. Linux: `date +%s.%N`. PowerShell: UTC ms."""
+    if ctx.pane == "powershell":
+        return "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
+    if ctx.be.name == "mac":
+        if lat.shell_base(pane_shell(ctx)) == "zsh":
+            return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME > lat_%d"
+        return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d"
+    return "date +%%s.%%N > lat_%d"
+
+
+def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12):
     ds = []
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
@@ -1609,14 +1673,9 @@ def enter_to_start(ctx, n, budget_s=None):
         f = os.path.join(ctx.W, "lat_%d" % i)
         if os.path.exists(f):
             os.remove(f)
-        # macOS: BSD date has no %N, and the pane runs /bin/bash 3.2 (no $EPOCHREALTIME; zsh's `print` is "command not found" there and,
-        # in agent mode, autodetect rightly sends it to the AI: r18ct queued 31 prompts). perl is in the base system; its start-up is
-        # paid identically by the reference terminal, which types the same line.
-        stamp = "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d" if ctx.be.name == "mac" else "date +%%s.%%N > lat_%d"
-        if ctx.pane == "powershell":
-            stamp = "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
+        stamp = stamp_line(ctx)
         ctx.be.guard_ref()
-        ctx.be.type(stamp % i, 12)
+        ctx.be.type(stamp % i, key_delay_ms)
         time.sleep(0.3)
         t0 = time.time()
         ctx.be.key("Return")
@@ -1640,17 +1699,27 @@ def c_lat_enter(ctx, r):
     """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
     Verdict is on OVERHEAD (Phosphor median - reference median) against the owner's 2 ms budget; both include one input-tool spawn,
     which cancels. No reference terminal -> verdict 'no-reference' (absolute numbers only). Also checked build-to-build (lat.py)."""
-    n, warm = ctx.count(30), lat.warmup()
+    n, warm = ctx.count(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
+    pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
+    r.metric("pane_shell", pane_sh or "unknown")
     t_lat0 = time.time()
     ds = enter_to_start(ctx, n + warm)[warm:]
     r.metric("enter_to_start_ms", stats(ds))
-    share = ctx.app_enter_to_write_ms(t_lat0)
+    segs = ctx.app_enter_segments(t_lat0)
+    share = segs.get("enter_to_write_ms")
     if share is not None:
         # r18cj (Windows Git Bash): Phosphor 95-100 ms vs the conhost reference 69 ms for the SAME bash.exe/rc/`date +%s.%N`/injector. The app's own part is this number
         # (Enter -> the pty write of the whole line); the rest of the overhead is after the write: the shell reading the line (the reference's keys were echoed as typed)
         # plus the shell hooks Phosphor's bootstrap adds. Reported so the overhead can be split instead of argued.
         r.metric("app_enter_to_pty_write_ms", share)
         r.note("app share of Enter->start: enter_begin -> pty_write median %.2f ms (from the app's input_order log); the remaining overhead is shell/ConPTY side" % share)
+    if segs:
+        # #1583 W3: the three segments per platform, as metrics (enter_begin->write, write->first pty_read, write->preexec)
+        r.metric("app_segments_ms", dict(segs, platform=plat()))
+        if "write_to_first_read_ms" in segs:
+            r.note("shell side: pty_write -> first pty_read median %.2f ms (n=%s)" % (segs["write_to_first_read_ms"], segs.get("write_to_first_read_n")))
+        if "write_to_preexec_ms" not in segs:
+            r.note("write -> preexec NOT measurable: the app log has no preexec hop; needs an app log line `hop=preexec_received` (note_shell_signal(Preexec) only stamps an atomic)")
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))
     ctx.reset()
@@ -1662,16 +1731,35 @@ def c_lat_enter(ctx, r):
             time.sleep(2.5)
             rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5))[warm:]      # overall cap: a dead reference cannot hang the case
             ctx.reset()
+            if ctx.win and rs:
+                # #1583 W1: the SAME stamp line delivered to the reference as ONE burst (0 ms between characters), then Enter. Phosphor writes the whole
+                # line in one pty write; the per-key reference had the line echoed and parsed already. If the burst reference is much slower than the
+                # per-key one, the Windows gap is the shell ingesting a burst (conhost/PSReadLine/bash), not Phosphor's work.
+                nb = max(10, n // 2)
+                bs = enter_to_start(ctx, nb + warm, budget_s=max(45, (nb + warm) * 2.5), key_delay_ms=0)[warm:]
+                ctx.reset()
+                if bs:
+                    r.metric("reference_burst_enter_to_start_ms", stats(bs))
+                    mb, mk = statistics.median(bs), statistics.median(rs)
+                    r.metric("reference_burst_minus_per_key_ms", round(mb - mk, 2))
+                    if mb - mk > 5:
+                        r.note("W1: reference burst %.1f ms vs reference per-key %.1f ms (+%.1f ms): the gap is shell ingestion of a burst, not Phosphor-specific" % (mb, mk, mb - mk))
+                    else:
+                        r.note("W1: reference burst %.1f ms vs per-key %.1f ms (%+.1f ms): burst ingestion does not explain the gap" % (mb, mk, mb - mk))
         finally:
             ref.close()
         time.sleep(1.0)   # focus returns to Phosphor before any re-measure
         r.metric("reference_enter_to_start_ms", stats(rs))
         r.metric("reference", ref.name)
+        r.metric("reference_shell", getattr(ctx, "ref_shell", None) or "unknown")
+        if lat.shell_base(pane_sh) and lat.shell_base(getattr(ctx, "ref_shell", None)) and lat.shell_base(pane_sh) != lat.shell_base(ctx.ref_shell):
+            r.note("NO-COMPARE: pane shell %s != reference shell %s; the overhead is not judged" % (pane_sh, ctx.ref_shell))
     else:
         r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
+                           pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
                            notes=["reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
         r.metrics.setdefault("lat", {})["enter_to_start"] = rec
         lat_checks(r, rec, "Enter to command start")

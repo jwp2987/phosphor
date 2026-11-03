@@ -194,6 +194,55 @@ def ci_seq_verdicts():
 
 
 @check
+def overhead_se_and_no_compare():
+    import lat, random
+    rng = random.Random(7)
+    a = [10 + rng.gauss(0, 4) for _ in range(30)]
+    b = [8 + rng.gauss(0, 4) for _ in range(30)]
+    se = lat.median_diff_se(a, b)
+    assert 0.8 < se < 3.5, se                       # ~1.25*sd*sqrt(2/n) = 1.3 for sd 4
+    assert lat.median_diff_se(a, b) == se           # deterministic
+    assert lat.median_diff_se([1.0], b) is None
+    # fail only when overhead - 2*SE > budget; pass only when overhead + 2*SE <= budget; otherwise inconclusive (never pass)
+    assert lat.overhead_verdict(10.0, 2.0, 2.0) == "fail"
+    assert lat.overhead_verdict(6.0, 2.0, 2.0) == "inconclusive"      # 6 - 4 = 2, not > 2
+    assert lat.overhead_verdict(6.1, 2.0, 2.0) == "fail"
+    assert lat.overhead_verdict(5.0, 2.0, 2.0) == "inconclusive"
+    assert lat.overhead_verdict(-3.0, 0.5, 2.0) == "pass"
+    assert lat.overhead_verdict(3.0, None, 2.0) == "fail" and lat.overhead_verdict(1.0, None, 2.0) == "pass"
+    # shells that differ: no verdict at all, whatever the numbers
+    assert lat.overhead_verdict(50.0, 0.1, 2.0, "/bin/zsh", "bash") == "no-compare"
+    assert lat.overhead_verdict(0.0, 0.1, 2.0, "/bin/zsh", "/usr/bin/zsh") == "pass"
+    assert lat.overhead_verdict(50.0, 0.1, 2.0, "powershell", "powershell.exe") == "fail"
+    assert lat.overhead_verdict(50.0, 0.1, 2.0, None, "bash") == "fail"          # unknown pane shell: not claimed to differ
+    rec = lat.evaluate("x", [20.0] * 40, [10.0] * 40, 2.0, "overhead", "linux", pane_shell="zsh", ref_shell="bash")
+    assert rec["budget_verdict"] == "no-compare" and rec["verdict"] == "no-compare" and lat.RANK["no-compare"] == 1
+    rec = lat.evaluate("x", [20.0] * 40, [10.0] * 40, 2.0, "overhead", "linux", pane_shell="bash", ref_shell="bash")
+    assert rec["budget_verdict"] == "fail" and rec["overhead_se_ms"] == 0.0
+    # the record keeps both shells (metrics), and a reference-less record has no shell verdict
+    rec = lat.evaluate("x", [20.0] * 40, [], 2.0, "overhead", "linux", pane_shell="zsh", ref_shell=None)
+    assert rec["verdict"] == "no-reference"
+    noisy_a = [10 + (i % 7) * 4 for i in range(30)]
+    noisy_b = [8 + (i % 5) * 5 for i in range(30)]
+    rec = lat.evaluate("x", noisy_a, noisy_b, 2.0, "overhead", "linux", pane_shell="bash", ref_shell="bash")
+    assert rec["budget_verdict"] in ("inconclusive", "pass", "fail") and rec["overhead_se_ms"] > 0
+
+
+@check
+def enter_segment_split():
+    L = ["input_order hop=enter_begin t=1000.0", "input_order pty_write bytes=73 t=1000.5", "input_order pty_read bytes=434 since_write_ms=1.3 t=1001.8",
+         "input_order pty_read bytes=5 since_write_ms=9.0 t=1009.5", "input_order hop=enter_begin t=2000.0", "input_order pty_write bytes=3 t=2000.2",
+         "input_order pty_write bytes=73 t=2001.5", "input_order pty_read bytes=10 since_write_ms=2.1 t=2003.6"]
+    s = cases.enter_segments(L, 0)
+    assert s["enter_to_write_ms"] == 1.0 and s["enter_to_write_n"] == 2, s          # (0.5, 1.5) -> median 1.0
+    assert s["write_to_first_read_ms"] == 1.7 and s["write_to_first_read_n"] == 2, s   # only the FIRST read per write: 1.3, 2.1
+    assert "write_to_preexec_ms" not in s                                              # no hop in the log: absent, not zero
+    s = cases.enter_segments(L[:2] + ["input_order hop=preexec_received t=1004.5"], 0)
+    assert s["write_to_preexec_ms"] == 4.0, s
+    assert cases.enter_segments(L, 5000.0) == {}                                       # t0 is wall seconds: older lines ignored
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])

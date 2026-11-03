@@ -9,7 +9,7 @@
 #     re-measure downgrades it to WARN, not pass.
 import json, os, statistics
 
-RANK = {"pass": 0, "no-reference": 1, "pending": 1, "none": 0, "warn": 2, "fail": 3}
+RANK = {"pass": 0, "no-reference": 1, "no-compare": 1, "inconclusive": 1, "pending": 1, "none": 0, "warn": 2, "fail": 3}
 
 
 def pct(xs, p):
@@ -22,6 +22,45 @@ def summarize(samples):
     if not xs:
         return {"n": 0, "p50": None, "p95": None, "max": None}
     return {"n": len(xs), "p50": round(statistics.median(xs), 2), "p95": round(pct(xs, 0.95), 2), "max": round(max(xs), 2)}
+
+
+def median_diff_se(a, b, boot=400, seed=1):
+    """standard error of median(a) - median(b), by bootstrap (deterministic: fixed seed). None when either side has < 2 samples.
+    n=30 medians with a 12 ms p95-p50 spread have a ~2.3 ms SE on the difference (Fable report 2026-11-02): a 2 ms budget cannot be
+    judged by a point estimate at that n."""
+    import random
+    a, b = list(a), list(b)
+    if len(a) < 2 or len(b) < 2:
+        return None
+    rng = random.Random(seed)
+    ds = []
+    for _ in range(boot):
+        ds.append(statistics.median(rng.choices(a, k=len(a))) - statistics.median(rng.choices(b, k=len(b))))
+    return statistics.pstdev(ds)
+
+
+def shell_base(s):
+    """'/bin/zsh' -> 'zsh', 'powershell.exe' -> 'powershell', 'C:\\...\\bash.exe' -> 'bash'; None/'' -> None"""
+    if not s:
+        return None
+    s = str(s).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return (s[:-4] if s.endswith(".exe") else s).lstrip("-") or None
+
+
+def overhead_verdict(overhead, se, budget, pane_shell=None, ref_shell=None, z=2.0):
+    """-> 'no-compare' (pane and reference shells differ: the difference measures the shells), 'fail' (overhead - z*SE > budget: the
+    budget is exceeded even at the low end), 'pass' (overhead + z*SE <= budget: within budget even at the high end), else 'inconclusive'
+    (never a pass; the numbers are in the record). Without an SE (too few samples) the point estimate decides, as before."""
+    ps, rs = shell_base(pane_shell), shell_base(ref_shell)
+    if ps and rs and ps != rs:
+        return "no-compare"
+    if se is None:
+        return "pass" if overhead <= budget else "fail"
+    if overhead - z * se > budget:
+        return "fail"
+    if overhead + z * se <= budget:
+        return "pass"
+    return "inconclusive"
 
 
 def warmup():
@@ -89,7 +128,7 @@ def load_prev():
     return flat_lat(d) if d else {}
 
 
-def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None):
+def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None, pane_shell=None, ref_shell=None):
     """phos/ref: sample lists (warm-up already dropped). remeasure: callable returning a fresh phos sample list, or None.
     Returns the latency record (see header)."""
     ps = summarize(phos)
@@ -101,7 +140,14 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
     if kind == "overhead":
         if ref and ps["p50"] is not None:
             rec["overhead_ms"] = round(ps["p50"] - statistics.median(ref), 2)
-            bv = "pass" if rec["overhead_ms"] <= budget_ms else "fail"
+            se = median_diff_se(phos, ref)
+            rec["overhead_se_ms"] = round(se, 2) if se is not None else None
+            rec["pane_shell"], rec["reference_shell"] = pane_shell, ref_shell
+            bv = overhead_verdict(rec["overhead_ms"], se, budget_ms, pane_shell, ref_shell)
+            if bv == "inconclusive":
+                rec["notes"].append("overhead %.2f +/- %.2f ms (SE of the median difference) vs budget %g ms: neither within nor over budget at 2 SE; more samples needed" % (rec["overhead_ms"], se, budget_ms))
+            elif bv == "no-compare":
+                rec["notes"].append("pane shell %s != reference shell %s: overhead %.2f ms is NOT a Phosphor figure; no verdict" % (pane_shell, ref_shell, rec["overhead_ms"]))
         else:
             rec["overhead_ms"] = None
             bv = "no-reference"

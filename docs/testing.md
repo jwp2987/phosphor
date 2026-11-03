@@ -512,6 +512,20 @@ budget, previous build, baseline, verdict, n).
   (`ctrl_c_ms`, `key_to_paint_ms`) and includes the input-tool spawn. With no reference the case notes `no reference: absolute only`
   and the verdict is `NO-REFERENCE`, never pass: the CASE status is `noref` (its own count in `results.json`/`summary.md`/the collected INDEX as `+N no-ref`, a JUnit `<skipped message="NO-REFERENCE ...">`, never a pass; it does not fail the job, but no latency budget was judged). The CI sanity bounds (Enter 80 ms, paint 120 ms) still FAIL independently. A real failed check wins over `noref`. UI work: the app's slow-op log (#1146) only emits >= 8 ms, so `PASS` means no item >= 8 ms
   while typing and `WARN` means >= 16 ms (a dropped frame); the 4 ms line itself cannot be seen from the log.
+- **Overhead verdicts are noise-aware (#1583).** The record carries `overhead_ms` and `overhead_se_ms`, the bootstrap standard error of the median
+  difference (fixed seed). `FAIL` only when `overhead - 2*SE > budget`; `PASS` only when `overhead + 2*SE <= budget`; anything between is
+  `INCONCLUSIVE` (reported with the numbers; the case status is `noref`, never a pass; take more samples). n=30 medians with a 12 ms spread
+  have a ~2.3 ms SE, larger than the 2 ms Enter budget, so `latency_enter` now takes 60 samples (`ctx.count(60)`). Pane and reference shells
+  are recorded as case metrics (`pane_shell`, `reference_shell`) and in the latency record (`pane_shell`, `reference_shell`); when they differ the verdict is `NO-COMPARE` (never PASS/FAIL).
+  macOS `latency_enter` stamps with the pane shell's builtin when it is zsh (`zmodload zsh/datetime; print -r -- $EPOCHREALTIME`), the same line in
+  Terminal.app; only bash 3.2 keeps the perl stamp.
+- **Where the Enter time goes (#1583 W3).** From the app's own `input_order` log `latency_enter` records `metrics.app_segments_ms`
+  (per platform): `enter_to_write_ms` (`hop=enter_begin` to the `pty_write` of the line), `write_to_first_read_ms` (that write to the first
+  `pty_read`, the app's `since_write_ms`), and `write_to_preexec_ms` only if the log carries a `hop=preexec_received` line. The app does not
+  log one today (Preexec is only stamped into an atomic), so that segment is absent and the case says an app log hop is needed.
+- **Burst reference (Windows, #1583 W1).** After the per-key reference samples, `latency_enter` measures the conhost reference again with the stamp
+  line delivered as one 0 ms burst then Enter (`reference_burst_enter_to_start_ms`, `reference_burst_minus_per_key_ms`). A burst median more than 5 ms above the
+  per-key one is noted as "the gap is shell ingestion of a burst" (Phosphor also writes the line in one pty write). It does not change the verdict.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
   reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.
