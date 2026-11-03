@@ -4,6 +4,7 @@ mod classic;
 mod cli_agent;
 mod common;
 mod enter_queue;
+pub(crate) use enter_queue::text_of_entries_typed_after;
 pub mod conversations;
 pub mod decorations;
 pub mod inline_history;
@@ -2221,6 +2222,10 @@ pub struct Input {
     /// we snapshot the current input contents here so we can restore them after the command
     /// completes and the buffer would normally be cleared.
     input_contents_before_prompt_chip_command: Option<String>,
+    /// Text the ssh hand-back could not put into the editor because a command was running
+    /// (`TerminalView::hand_back_unexecuted_ssh_text`): restored, never run, when a block completes
+    /// ([`Self::restore_handed_back_text`]).
+    handed_back_text: Option<String>,
 
     /// The multi-prompt queued-prompts panel, present only when
     /// [`FeatureFlag::QueueSlashCommand`] is enabled. Rendered between the warping indicator
@@ -3967,6 +3972,7 @@ impl Input {
             slash_command_data_source,
             ephemeral_message_model,
             input_contents_before_prompt_chip_command: None,
+            handed_back_text: None,
             queued_prompts_panel,
         };
 
@@ -6613,13 +6619,33 @@ impl Input {
         }
     }
 
-    /// Whether the session would refuse a command only because it has not processed the Precmd of
-    /// its first prompt yet: bootstrapped, nothing running, history not appendable (#1332).
-    pub(crate) fn shell_awaiting_first_precmd(&self, ctx: &AppContext) -> bool {
-        matches!(
-            self.can_execute_command(ctx),
-            CanExecuteCommand::No(DenyExecutionReason::HistoryNotAppendable)
-        )
+    /// #1572: THE readiness predicate (it replaces `shell_awaiting_first_precmd`, #1332, which
+    /// covered only the unregistered history): whether this session cannot take a command YET,
+    /// i.e. it would refuse one only because it is not ready (not bootstrapped, its history not
+    /// appendable because the session is not registered, no Precmd on the active block, no
+    /// session id) and not because a program owns the pty (a running command is "ready" for this
+    /// purpose: the pty, not the editor, owns typing then). Everything that decides whether the
+    /// editor may own typing AND submit uses it: an Enter refused while it holds is gated
+    /// ([`Self::hold_refused_unready_enter`]), and the ssh connect hold hands over only once it is
+    /// false (`TerminalView::deliver_ssh_typeahead_if_ready`). For a Phosphor-managed remote that
+    /// moment is the session's registration (`SessionBootstrapped`), not its first Precmd; an
+    /// unmanaged inner shell runs inside the ssh block (a running command), so this is false and
+    /// its own #1561 shell-prompt rule hands over.
+    pub(crate) fn shell_unready_for_submit(&self, ctx: &AppContext) -> bool {
+        match self.can_execute_command(ctx) {
+            CanExecuteCommand::No(DenyExecutionReason::ExistingActiveCommand) => false,
+            CanExecuteCommand::No(_) => true,
+            // `try_execute_command_from_source` refuses these too (silently, or with a log).
+            CanExecuteCommand::Yes => {
+                self.command_session_id().is_none()
+                    || !self
+                        .model
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .has_received_precmd()
+            }
+        }
     }
 
     /// #1558: an Enter that waited behind a gate (verdict, completion) and then found the shell
@@ -6630,19 +6656,20 @@ impl Input {
     /// before its first Precmd, kept its text and merged with the next typing). The "still
     /// starting" toast `try_execute_command` shows stays as a non-blocking notice. A running
     /// program or a shared-session participant still refuses. Every decline is logged.
+    ///
+    /// #1571: the held Enter is a GATE, not only a flag: everything typed after it queues behind
+    /// it in order ([`Self::gate_unready_enter`]), so nothing merges into the held line and a
+    /// second Enter is its own entry. The readiness event runs the line once and releases them.
     fn hold_refused_unready_enter(&mut self, ctx: &mut ViewContext<Self>) {
         let shared = self
             .model
             .lock()
             .shared_session_status()
             .is_sharer_or_viewer();
-        let not_ready = match self.can_execute_command(ctx) {
-            CanExecuteCommand::No(DenyExecutionReason::ExistingActiveCommand) => false,
-            CanExecuteCommand::No(_) => true,
-            // Refused for another reason although the session could take it: only the
-            // deferred Enter (#1558) is held then; a direct Enter keeps its refusal.
-            CanExecuteCommand::Yes => self.running_deferred_enter,
-        };
+        // #1572: the one readiness predicate. A deferred Enter refused although the session
+        // could take it (#1558) is held as before.
+        let not_ready = self.shell_unready_for_submit(ctx)
+            || (self.running_deferred_enter && !self.can_execute_command(ctx).is_no());
         let hold = not_ready && !shared;
         warpui::input_order::log_hop("enter_declined", || {
             format!(
@@ -6659,6 +6686,7 @@ impl Input {
         self.pending_command_text = Some(self.editor.as_ref(ctx).buffer_text(ctx));
         self.has_pending_command = true;
         self.held_unready_enter = true;
+        self.gate_unready_enter(ctx);
     }
 
     /// #1558: an Enter is held as the pending command because the shell was not ready for it.
@@ -6670,13 +6698,16 @@ impl Input {
         if !self.has_pending_command {
             return;
         }
+        // #1571: the gate of an Enter held for an unready shell is this pending command's own:
+        // what waits behind it (keys, deferred edits) was typed AFTER it and follows it.
+        let own_gate = self.held_unready_enter && self.unready_enter_gate_open();
         // #1435: a command must not overtake input the pane queue still holds for the editor or
         // the pty: an Enter waiting for its verdict (its gate's release re-enters here, after
         // applying the edits deferred behind it) or a paste being read (its result re-enters).
-        if self.pending_command_must_wait_for_queue(ctx) {
+        if !own_gate && self.pending_command_must_wait_for_queue(ctx) {
             return;
         }
-        if !self.deferred_programmatic_edits.is_empty() {
+        if !own_gate && !self.deferred_programmatic_edits.is_empty() {
             self.flush_deferred_programmatic_edits(ctx);
             return;
         }
@@ -6726,6 +6757,10 @@ impl Input {
         self.editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(InteractionState::Editable, ctx);
         });
+        if executed && own_gate {
+            // #1571: the held line ran: what was typed after it follows, in order.
+            self.release_unready_enter_gate_after_run(ctx);
+        }
     }
 
     /// Try to execute a command in the local session that was
@@ -10708,6 +10743,8 @@ impl Input {
             EditorEvent::CtrlEnter => self.input_ctrl_enter(ctx),
             EditorEvent::Escape => self.editor_escape(ctx),
             EditorEvent::CtrlC { cleared_buffer_len } => {
+                // #1571: ^C voids an Enter held for an unready shell (never run later).
+                self.cancel_unready_enter("editor_interrupt", ctx);
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
 
                 self.ai_input_model.update(ctx, |ai_input_model, ctx| {
@@ -13454,6 +13491,24 @@ impl Input {
         if self.hold_back_enter_after_ssh_handover(ctx) {
             return;
         }
+        // #1571: an Enter is held because the shell was not ready, and the buffer still shows its
+        // line: this Enter belongs to the line typed AFTER it. It never submits the buffer (that
+        // ran `ssh fakeecho ...`); it queues behind the held one, in order.
+        if !self.running_deferred_enter && self.unready_enter_gate_open() {
+            if self.queue_behind_enter(AfterEnterInput::Enter, ctx) {
+                warpui::input_order::log_hop("enter_queued_behind_held", String::new);
+            } else if self.enter_queue_handle_is_draining(ctx) {
+                log::error!(
+                    "input queue: an Enter delivered by a drain met the gate of an Enter held for \
+                     an unready shell; not submitted (#1571)"
+                );
+            } else {
+                // The gate is gone from the queue (nothing can release it): hand the held line
+                // back rather than leave it pending, and do not submit it here.
+                self.give_up_unready_enter("gate_gone", ctx);
+            }
+            return;
+        }
         self.drop_stale_completion_menu(ctx);
         self.flush_pending_suggestion_refilter(ctx);
         warpui::input_order::log_hop("enter_begin", || {
@@ -14662,6 +14717,42 @@ impl Input {
     /// to this editor, unexecuted, because the ssh connect ended without a remote shell.
     /// `baseline` is the editor text the hand-back left; the guard only applies while the line
     /// still starts with it.
+    /// Keeps handed-back ssh text that could not go into the editor (a command runs) until a block
+    /// completes. Several hand-backs are kept, each on its own line.
+    pub(crate) fn stash_handed_back_text(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        self.handed_back_text = Some(match self.handed_back_text.take() {
+            Some(earlier) => format!("{earlier}\n{text}"),
+            None => text,
+        });
+    }
+
+    /// Puts the stashed handed-back text into the editor, after whatever it holds on a line of
+    /// its own, with the hand-back's Enter guard armed over the whole buffer: it is shown, never
+    /// run, and the first Enter on it is held.
+    fn restore_handed_back_text(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(text) = self.handed_back_text.take() else {
+            return;
+        };
+        let existing = self.editor.as_ref(ctx).buffer_text(ctx);
+        let restored = if existing.is_empty() {
+            text
+        } else {
+            format!("{existing}\n{text}")
+        };
+        self.editor
+            .update(ctx, |editor, ctx| editor.set_buffer_text(&restored, ctx));
+        self.is_editor_empty_on_last_edit = false;
+        self.arm_ssh_handover_enter_guard(restored);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handed_back_text_for_test(&self) -> Option<&str> {
+        self.handed_back_text.as_deref()
+    }
+
     pub(crate) fn arm_ssh_handover_enter_guard(&mut self, baseline: String) {
         // #1456: nothing handed back means nothing to protect; an empty baseline would match every
         // later line (`starts_with("")`) and swallow the first Enter of whatever is typed next.
@@ -16172,6 +16263,9 @@ impl Input {
                     self.deferred_remote_operations.latest_block_id = latest_block_id;
                 }
             }
+            // Text an ssh hand-back kept while this command ran comes back now, after the text the
+            // user typed meanwhile, not run.
+            self.restore_handed_back_text(ctx);
 
             // Make sure the viewer's interaction state is correct based on their role.
             // We may have locked up their input if they tried to execute a command.

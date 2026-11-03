@@ -14200,16 +14200,13 @@ fn deferred_enter_on_unready_shell(
             assert_eq!(input.pending_command_text_for_test(), Some("ssh fake"));
         });
         assert!(executed.borrow().is_empty(), "{:?}", executed.borrow());
-
-        // What was typed behind the Enter is released in order, never into the Enter's line.
-        let want = typed_behind.chars().count();
-        let released_sink = released.clone();
-        wait_until(&app, |_| released_sink.borrow().len() >= want).await;
-        let released_text: Vec<String> = released
-            .borrow()
-            .iter()
-            .map(|entry| format!("{entry:?}"))
-            .collect();
+        // #1571: what was typed behind the Enter waits behind it (the held Enter is a gate) until
+        // the shell is ready; nothing of it is released into the held line.
+        assert!(
+            released.borrow().is_empty(),
+            "released before the shell was ready: {:?}",
+            released.borrow()
+        );
 
         // The session's Precmd arrives: the held Enter runs exactly the line that was typed.
         terminal.update(&mut app, |terminal, _| {
@@ -14223,6 +14220,16 @@ fn deferred_enter_on_unready_shell(
         });
         input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
         let still_pending = input.read(&app, |input, _| input.has_pending_command());
+
+        // What was typed behind the Enter is released after it, in order, never into its line.
+        let want = typed_behind.chars().count();
+        let released_sink = released.clone();
+        wait_until(&app, |_| released_sink.borrow().len() >= want).await;
+        let released_text: Vec<String> = released
+            .borrow()
+            .iter()
+            .map(|entry| format!("{entry:?}"))
+            .collect();
         *sink.borrow_mut() = Some((executed.borrow().clone(), released_text, still_pending));
     });
     let outcome = result.borrow_mut().take();
@@ -14395,4 +14402,504 @@ fn test_refused_enter_while_a_program_runs_is_not_held() {
         *sink.borrow_mut() = Some(held);
     });
     assert_eq!(result.borrow_mut().take(), Some(false));
+}
+
+// ---- #1571: an Enter the shell cannot take yet is a GATE: what is typed after it is the next line --
+
+/// What [`unready_enter_then_the_next_line`] observed.
+struct UnreadyEnterRun {
+    /// The buffer once the second line and its Enter were typed, before the shell was ready.
+    buffer_before_ready: String,
+    /// The commands executed before the shell was ready (must be none).
+    executed_before_ready: Vec<String>,
+    /// What waited behind the held Enter before the shell was ready, adjacent text merged.
+    held_before_ready: Vec<AfterEnterInput>,
+    /// The commands executed, in order, once the shell was ready.
+    executed: Vec<String>,
+    /// What the gate released after the held line ran, in order, one entry per key.
+    released: Vec<AfterEnterInput>,
+}
+
+/// Runs the #1564 shape with the readiness event delayed past the user's SECOND Enter, in `mode`:
+/// a shell that cannot take a command yet (its session has no history), `ssh fake` + Enter
+/// (direct, or `deferred` behind its verdict gate with `echo T` + Enter typed during that wait),
+/// then the next line typed (`echo T` + Enter for a direct Enter, `ls` + Enter after a deferred
+/// one), then the shell becomes ready and the command the held line starts takes the pty.
+fn unready_enter_then_the_next_line(
+    mode: crate::terminal::input_queue::facts::DestinationMode,
+    deferred: bool,
+) -> UnreadyEnterRun {
+    use crate::ai::blocklist::InputConfig;
+    let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let released = record_released_enter_entries(&mut app, &input);
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
+                });
+            });
+        }
+
+        // The shell is not ready: the session the block belongs to has no history yet.
+        let real_session = terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            let block = model.block_list_mut().active_block_for_test();
+            let real = block.session_id();
+            block.set_session_id(SessionId::from(1571));
+            real
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ssh fake", ctx);
+        });
+        let next_line = if deferred {
+            input.update(&mut app, |input, ctx| {
+                let wait_id = input.start_verdict_wait(
+                    "ssh fake".to_string(),
+                    EnterHold::Verdict {
+                        since: Instant::now(),
+                    },
+                    ctx,
+                );
+                input.open_enter_gate(
+                    wait_id,
+                    crate::terminal::input_queue::GateKind::EnterVerdict,
+                    ctx,
+                );
+            });
+            // Typed while the Enter waits for its verdict: the next line, with its own Enter.
+            for ch in "echo T".chars() {
+                type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+            }
+            type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+            // The verdict lands: the Enter runs, and the shell refuses it (not ready).
+            input.update(&mut app, |input, ctx| {
+                input.wait_for_verdict_then_enter("ssh fake".to_string(), ctx);
+            });
+            "ls"
+        } else {
+            // A direct Enter: the shell refuses it (not ready).
+            input.update(&mut app, |input, ctx| input.input_enter(ctx));
+            "echo T"
+        };
+        input.read(&app, |input, _| {
+            assert!(input.has_held_unready_enter(), "the refused Enter is held");
+            assert!(
+                input.unready_enter_gate_open(),
+                "#1571: and it gates the queue"
+            );
+        });
+        // The next line and its Enter, typed before the shell is ready.
+        for ch in next_line.chars() {
+            type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+        }
+        type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+
+        let buffer_before_ready = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        let held_before_ready = input.read(&app, |input, ctx| input.enter_gate_held_for_test(ctx));
+        let executed_before_ready = executed.borrow().clone();
+        assert!(
+            released.borrow().is_empty(),
+            "nothing is released before the shell is ready: {:?}",
+            released.borrow()
+        );
+
+        // The readiness event: the session is registered and its Precmd is in.
+        terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            if let Some(real) = real_session {
+                model
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(real);
+            }
+        });
+        input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+        // The held line's command starts and takes the pty; what was typed after it follows.
+        terminal.update(&mut app, |terminal, _| {
+            terminal
+                .model
+                .lock()
+                .simulate_long_running_block("ssh fake", "");
+        });
+        let want = held_before_ready
+            .iter()
+            .map(|held| match held {
+                AfterEnterInput::Text(text) => text.chars().count(),
+                AfterEnterInput::Enter => 1,
+            })
+            .sum::<usize>();
+        let released_sink = released.clone();
+        wait_until(&app, |_| released_sink.borrow().len() >= want).await;
+        *sink.borrow_mut() = Some(UnreadyEnterRun {
+            buffer_before_ready,
+            executed_before_ready,
+            held_before_ready,
+            executed: executed.borrow().clone(),
+            released: released.borrow().clone(),
+        });
+    });
+    let outcome = result.borrow_mut().take();
+    outcome.expect("the test body ran")
+}
+
+/// Per-key entries of `lines`, each followed by its Enter: what the gate releases.
+fn per_key_lines(lines: &[&str]) -> Vec<AfterEnterInput> {
+    let mut keys = Vec::new();
+    for line in lines {
+        keys.extend(line.chars().map(|ch| AfterEnterInput::Text(ch.to_string())));
+        keys.push(AfterEnterInput::Enter);
+    }
+    keys
+}
+
+/// #1571, both destination modes: a DIRECT Enter refused by a shell that is not ready, then the
+/// next line and its Enter typed before the readiness event. The second Enter used to reach
+/// `input_enter`, be refused too, and re-hold the MERGED buffer, so the readiness event ran
+/// `ssh fakeecho T` (the #1564 shape, timing-dependent). Now the held Enter is a gate: the buffer
+/// keeps exactly its line, the next line waits behind it as its own entries, the held line runs
+/// once, alone, and the next line follows it in order.
+#[test]
+fn test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands() {
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let run = unready_enter_then_the_next_line(mode, false);
+        assert_eq!(
+            run.buffer_before_ready, "ssh fake",
+            "{mode:?}: nothing merged"
+        );
+        assert!(run.executed_before_ready.is_empty(), "{mode:?}");
+        assert_eq!(
+            run.held_before_ready,
+            vec![
+                AfterEnterInput::Text("echo T".to_owned()),
+                AfterEnterInput::Enter
+            ],
+            "{mode:?}: the next line waits behind the held Enter, its Enter its own entry"
+        );
+        assert_eq!(
+            run.executed,
+            ["ssh fake".to_owned()],
+            "{mode:?}: the held line runs once, alone (never `ssh fakeecho T`)"
+        );
+        assert_eq!(
+            run.released,
+            per_key_lines(&["echo T"]),
+            "{mode:?}: the next line follows, in order"
+        );
+    }
+}
+
+/// #1571, both destination modes: the same with a DEFERRED Enter (it waited for its verdict with
+/// `echo T` + Enter typed meanwhile, then met the unready shell), and `ls` + Enter typed after the
+/// refusal. The verdict gate used to be released when the deferred Enter's submit returned, so
+/// `echo T` merged into the held line and its Enter re-held `ssh fakeecho T`. Now the verdict gate
+/// becomes the held Enter's gate in place: both later lines stay behind it, in order.
+#[test]
+fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let run = unready_enter_then_the_next_line(mode, true);
+        assert_eq!(
+            run.buffer_before_ready, "ssh fake",
+            "{mode:?}: nothing merged"
+        );
+        assert!(run.executed_before_ready.is_empty(), "{mode:?}");
+        assert_eq!(
+            run.held_before_ready,
+            vec![
+                AfterEnterInput::Text("echo T".to_owned()),
+                AfterEnterInput::Enter,
+                AfterEnterInput::Text("ls".to_owned()),
+                AfterEnterInput::Enter,
+            ],
+            "{mode:?}"
+        );
+        assert_eq!(run.executed, ["ssh fake".to_owned()], "{mode:?}");
+        assert_eq!(
+            run.released,
+            per_key_lines(&["echo T", "ls"]),
+            "{mode:?}: released after the held line, in typed order"
+        );
+    }
+}
+
+/// #1571, both destination modes: the held Enter's give-up never runs anything. The line and what
+/// was typed after it go back to the editor as text (one line each), the pending command is gone,
+/// and the readiness event that comes later runs nothing.
+#[test]
+fn test_unready_enter_give_up_hands_the_lines_back_and_runs_nothing() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+        let result = Rc::new(RefCell::new(None));
+        let sink = result.clone();
+        App::test((), move |mut app| async move {
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+            {
+                let executed = executed.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                        if let super::Event::ExecuteCommand(event) = event {
+                            executed.borrow_mut().push(event.command.clone());
+                        }
+                    });
+                });
+            }
+            let real_session = terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                let block = model.block_list_mut().active_block_for_test();
+                let real = block.session_id();
+                block.set_session_id(SessionId::from(1571));
+                real
+            });
+            input.update(&mut app, |input, ctx| {
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::Shell,
+                            is_locked: true,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("ssh fake", ctx);
+                input.input_enter(ctx);
+            });
+            for ch in "echo T".chars() {
+                type_into_editor(&mut app, &editor, HeldPasteKey::Text(ch.to_string()));
+            }
+            type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
+            // The net fires (no readiness event came).
+            input.update(&mut app, |input, ctx| {
+                input.give_up_unready_enter("test", ctx)
+            });
+            let after_give_up = input.read(&app, |input, ctx| {
+                (
+                    input.buffer_text(ctx),
+                    input.has_pending_command(),
+                    input.unready_enter_gate_open(),
+                    input.enter_queue_holds_keys(ctx),
+                )
+            });
+            // The shell becomes ready later: nothing is pending, so nothing runs.
+            terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                if let Some(real) = real_session {
+                    model
+                        .block_list_mut()
+                        .active_block_for_test()
+                        .set_session_id(real);
+                }
+            });
+            input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+            *sink.borrow_mut() = Some((after_give_up, executed.borrow().clone()));
+        });
+        let ((buffer, pending, gated, holds), executed) =
+            result.borrow_mut().take().expect("the test body ran");
+        assert_eq!(
+            buffer, "ssh fake\necho T",
+            "{mode:?}: handed back, one line each"
+        );
+        assert!(!pending, "{mode:?}: the held line is no longer pending");
+        assert!(!gated, "{mode:?}: the gate is closed");
+        assert!(!holds, "{mode:?}: nothing is held");
+        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+    }
+}
+
+/// Runs a refused (unready) direct `ssh fake` Enter in `mode`, then `typed_after` runs against the
+/// input and editor (the keys typed behind the gate), then `then` against the input. Returns the
+/// buffer, whether the input still holds a pending command or a gate, and the commands executed
+/// (the shell is made ready before `then`, so anything still pending would run there).
+fn unready_enter_then(
+    mode: crate::terminal::input_queue::facts::DestinationMode,
+    typed_after: fn(&mut App, &ViewHandle<Input>, &ViewHandle<EditorView>),
+    then: fn(&mut Input, &mut ViewContext<Input>),
+) -> (String, bool, bool, Vec<String>) {
+    use crate::ai::blocklist::InputConfig;
+    let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
+                });
+            });
+        }
+        let real_session = terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            let block = model.block_list_mut().active_block_for_test();
+            let real = block.session_id();
+            block.set_session_id(SessionId::from(1571));
+            real
+        });
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("ssh fake", ctx);
+            input.input_enter(ctx);
+        });
+        typed_after(&mut app, &input, &editor);
+        // The shell becomes ready; `then` acts on the input that the readiness found.
+        terminal.update(&mut app, |terminal, _| {
+            let mut model = terminal.model.lock();
+            if let Some(real) = real_session {
+                model
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(real);
+            }
+        });
+        input.update(&mut app, |input, ctx| then(input, ctx));
+        let state = input.read(&app, |input, ctx| {
+            (
+                input.buffer_text(ctx),
+                input.has_pending_command(),
+                input.unready_enter_gate_open() || input.enter_queue_holds_keys(ctx),
+            )
+        });
+        *sink.borrow_mut() = Some((state.0, state.1, state.2, executed.borrow().clone()));
+    });
+    let outcome = result.borrow_mut().take();
+    outcome.expect("the test body ran")
+}
+
+/// #1571 review, both destination modes: a paste queued behind the held Enter is part of what the
+/// give-up hands back (it used to be dropped: only text entries were kept). Its content waits in
+/// the input's paste map, not in the entry.
+#[test]
+fn test_unready_enter_give_up_keeps_a_paste_typed_behind_it() {
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let (buffer, pending, gated, executed) = unready_enter_then(
+            mode,
+            |app, input, editor| {
+                for ch in "echo ".chars() {
+                    type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
+                }
+                input.update(app, |input, ctx| {
+                    input.offer_ready_paste(
+                        warpui::clipboard::ClipboardContent::plain_text("PASTED".to_owned()),
+                        PasteSource::PlainTextPaste,
+                        ctx,
+                    )
+                });
+                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
+                input.update(app, |input, ctx| input.give_up_unready_enter("test", ctx));
+            },
+            |input, ctx| input.execute_pending_command(ctx),
+        );
+        assert_eq!(
+            buffer, "ssh fake\necho PASTED",
+            "{mode:?}: the paste was kept"
+        );
+        assert!(!pending && !gated, "{mode:?}");
+        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+    }
+}
+
+/// #1571 review, both destination modes: the handed-back lines are ONE buffer, which an Enter
+/// would submit as one command. The first Enter on it is held by the hand-back guard (with the
+/// "check the line" toast): nothing runs, the text stays.
+#[test]
+fn test_blind_enter_after_an_unready_give_up_is_held_by_the_guard() {
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let (buffer, pending, gated, executed) = unready_enter_then(
+            mode,
+            |app, input, editor| {
+                for ch in "echo T".chars() {
+                    type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
+                }
+                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
+                input.update(app, |input, ctx| input.give_up_unready_enter("test", ctx));
+                input.read(app, |input, _| {
+                    assert!(input.ssh_handover_enter_guard_armed(), "the guard is armed")
+                });
+            },
+            // The user presses Enter at once, the shell now ready.
+            |input, ctx| input.input_enter(ctx),
+        );
+        assert_eq!(buffer, "ssh fake\necho T", "{mode:?}: the text stays");
+        assert!(!pending && !gated, "{mode:?}");
+        assert!(
+            executed.is_empty(),
+            "{mode:?}: no merged command ran: {executed:?}"
+        );
+    }
+}
+
+/// #1571 review, both destination modes: ^C on the held Enter voids it and what was typed behind
+/// it; the readiness event runs nothing.
+#[test]
+fn test_ctrl_c_voids_an_unready_enter_and_its_gate() {
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let (_, pending, gated, executed) = unready_enter_then(
+            mode,
+            |app, _input, editor| {
+                for ch in "echo T".chars() {
+                    type_into_editor(app, editor, HeldPasteKey::Text(ch.to_string()));
+                }
+                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::Enter));
+                type_into_editor(app, editor, HeldPasteKey::Action(EditorAction::CtrlC));
+            },
+            |input, ctx| input.execute_pending_command(ctx),
+        );
+        assert!(!pending, "{mode:?}: the held line is void");
+        assert!(!gated, "{mode:?}: the gate is closed");
+        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+    }
 }

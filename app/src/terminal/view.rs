@@ -3148,6 +3148,14 @@ pub struct TerminalView {
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
+    /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
+    /// own submit), until the block it started is seen starting.
+    ssh_submit_user_origin: Option<bool>,
+    /// #1579: the running block was started by the user's own submit. A connect gate armed at
+    /// preexec for it (an ssh the submit's text did not show, e.g. an alias) inherits it as
+    /// `user_submitted`, so keys typed in the focused editor are held for the remote (#1565) in
+    /// legacy mode too.
+    running_block_user_submitted: bool,
     /// #1181: whether the young line's deferred Enter has been released (or none waits). The
     /// verdict observer and the backstop timer both release it; whichever runs first sets this
     /// and the other finds nothing to do.
@@ -5012,6 +5020,8 @@ impl TerminalView {
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
+            ssh_submit_user_origin: None,
+            running_block_user_submitted: false,
             young_enter_released: true,
             young_enter_wait_id: 0,
             ssh_remote_prompt_seen: false,
@@ -11271,10 +11281,15 @@ impl TerminalView {
         // given it its history; an Enter delivered earlier would be refused. Normally that Precmd
         // IS the signal this runs on, so the wait is over; if the session registers later, its
         // event (or the give-up cap) delivers.
-        let held = !self.ssh_held_is_empty();
-        let awaiting_first_precmd = self.ssh_remote_prompt_seen
-            && held
-            && self.input.as_ref(ctx).shell_awaiting_first_precmd(ctx);
+        // #1572: the hand-over waits on the ONE readiness predicate the editor's Enter uses
+        // (`Input::shell_unready_for_submit`), whether or not keys are held yet: for a managed
+        // remote the hold ends at the event that makes the session able to take a command
+        // (`SessionBootstrapped`, which makes its history appendable, or its first Precmd,
+        // whichever is last), never in a window where the editor would own typing but refuse
+        // the Enter. An unmanaged inner shell runs inside the ssh block (a running command, so
+        // the predicate is false): its #1561 shell-prompt rule is unchanged.
+        let awaiting_first_precmd =
+            self.ssh_remote_prompt_seen && self.input.as_ref(ctx).shell_unready_for_submit(ctx);
         let now = Instant::now();
         let waited = if awaiting_first_precmd {
             now.saturating_duration_since(*self.ssh_typeahead_precmd_wait_since.get_or_insert(now))
@@ -11284,8 +11299,26 @@ impl TerminalView {
         };
         if awaiting_first_precmd && !delivery_waits_for_first_precmd(awaiting_first_precmd, waited)
         {
-            // The registration the held Enter waits for never came: the keys are delivered anyway.
+            // The registration the held keys wait for never came. A timer never delivers (it
+            // wrote the held line, Enter included, into a session that could not take it): the
+            // keys are handed back to the editor as text, not run, with the Enter guard (#1571
+            // review).
             self.note_ssh_give_up("first_precmd_wait_cap");
+            warpui::input_order::log_key_hop("kh_finish_begin", || {
+                format!(
+                    "source={source} give_up=first_precmd_wait_cap held_bytes={}",
+                    self.ssh_held_bytes()
+                )
+            });
+            self.set_ssh_typeahead_holding(false);
+            self.ssh_paste_to_hold = false;
+            self.ssh_typeahead_precmd_wait_since = None;
+            if self.ssh_held_is_empty() {
+                self.ssh_hold_clear();
+            } else {
+                self.ssh_hold_hand_back_unexecuted_text(ctx);
+            }
+            return true;
         }
         if delivery_waits_for_first_precmd(awaiting_first_precmd, waited) {
             warpui::input_order::log_key_hop("kh_handover_waits", || {
@@ -11439,32 +11472,37 @@ impl TerminalView {
         }
         // The ssh hand-back ends the line the held text belonged to.
         self.request_queue_pin_clear();
-        // Whatever happens to the text below, an Enter typed in the same burst must not run what
-        // the user meant for the remote machine on this one.
-        let existing = self.input.as_ref(ctx).buffer_text(ctx);
-        let handed_back_into_editor = !self.is_long_running() && existing.is_empty();
-        let baseline = if handed_back_into_editor {
-            text.clone()
-        } else {
-            existing
-        };
-        self.input
-            .update(ctx, |input, _| input.arm_ssh_handover_enter_guard(baseline));
-        // Never concatenated with anything: only into an EMPTY editor that is showing.
-        if self.is_long_running() || !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
-            log::warn!(
-                "ssh typeahead: {} handed-back char(s) cannot go into the editor (busy or not \
-                 empty); discarded with a toast (#1566)",
+        // Never discarded, never concatenated into a line (#1566 discarded here; the Fable review
+        // of #1571 asked for no loss). Whatever happens below, an Enter typed in the same burst
+        // must not run what the user meant for the remote machine on this one: the hand-back's
+        // Enter guard covers the text wherever it lands.
+        if self.is_long_running() {
+            // A command owns the pty: the text waits on the input and comes back into the editor
+            // when that block completes (`Input::restore_handed_back_text`), guard armed then.
+            log::info!(
+                "ssh typeahead: {} handed-back char(s) kept until the running block ends",
                 text.chars().count()
             );
+            self.input
+                .update(ctx, |input, _| input.stash_handed_back_text(text));
             self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was discarded, not run",
+                "Text typed while the SSH session connected was kept, not run; it will be in the \
+                 input when the running command ends",
                 ctx,
             );
             return;
         }
-        self.input
-            .update(ctx, |input, ctx| input.replace_buffer_content(&text, ctx));
+        let existing = self.input.as_ref(ctx).buffer_text(ctx);
+        let restored = if existing.is_empty() {
+            text
+        } else {
+            // Something is in the editor already: the text goes on a line of its own after it.
+            format!("{existing}\n{text}")
+        };
+        self.input.update(ctx, |input, ctx| {
+            input.replace_buffer_content(&restored, ctx);
+            input.arm_ssh_handover_enter_guard(restored.clone());
+        });
         self.show_ssh_typing_toast(
             "Text typed while the SSH session connected is in the input, not run; press Enter to run it",
             ctx,
@@ -11511,6 +11549,8 @@ impl TerminalView {
     /// submitted (#983). Runs at submission, so the window before the shell's preexec hook (and
     /// the 50 ms before the block counts as long running) is covered too.
     fn note_command_submitted_for_ssh_gate(&mut self, command: &str, user_submitted: bool) {
+        // #1579: the block this submit starts inherits its origin (`note_block_started_for_ssh`).
+        self.ssh_submit_user_origin = Some(user_submitted);
         self.reset_ssh_typeahead();
         self.ssh_remote_prompt_seen = false;
         self.ssh_interrupt_held_gate_notified = false;
@@ -11527,6 +11567,24 @@ impl TerminalView {
         self.ssh_edge(input_queue::SshEdge::Submitted {
             ssh: self.ssh_connect_gate.is_some(),
         });
+    }
+
+    /// #1579: a block started (its preexec): it is the user's when the submit that preceded it was
+    /// the user's own. Consumed here, so a later block nothing submitted (typed into a program,
+    /// run by a script) never inherits it.
+    fn note_block_started_for_ssh(&mut self) {
+        self.running_block_user_submitted = self.ssh_submit_user_origin.take().unwrap_or(false);
+    }
+
+    /// The event that shows an ssh running (preexec, the pending ssh host just set) arms the
+    /// connect window: by the edge machine in `table` mode, and in `legacy` here too, by the event
+    /// rather than the first terminal-routed key (#1565, #1424 step 7).
+    fn arm_ssh_connect_gate_at_preexec(&mut self, ctx: &mut ViewContext<Self>) {
+        if Self::ssh_events_own_the_gate() {
+            self.ssh_arm_gate_at_event(ctx);
+        } else {
+            self.refresh_ssh_connect_gate();
+        }
     }
 
     /// Makes the gate consistent with the model and says whether it is still armed. Lazily arms
@@ -11553,6 +11611,9 @@ impl TerminalView {
                 // The id is cloned only when a gate is armed (once per ssh connect), which is why
                 // this one read keeps the model's lock.
                 gate.block_id = Some(self.model.lock().active_block_id().clone());
+                // #1579: armed at preexec for a command the user submitted (an ssh its text did
+                // not show): the hold owns the editor's keys as for an ssh armed at the submit.
+                gate.user_submitted = self.running_block_user_submitted;
                 self.ssh_connect_gate = Some(gate);
                 self.ssh_edge(input_queue::SshEdge::ConnectStart);
             }
@@ -12245,6 +12306,14 @@ impl TerminalView {
                 // #1424: the shadow comparison for the replayed Enter (class Enter, origin Replay).
                 let shadow = self.shadow_begin(Class::Enter, ctx);
                 if self.replayed_enter_goes_to_pty(ctx) {
+                    // #1571: the text before this Enter went through `typed_characters_on_terminal`,
+                    // which holds it while an ssh connects (the command the held line started);
+                    // the Enter joins it there, in order, instead of reaching the tty first.
+                    if self.swallow_input_during_ssh_setup(Some("\r"), ctx) {
+                        note_shadow_leaf(DestClass::Held);
+                        self.shadow_end(shadow);
+                        return;
+                    }
                     note_shadow_leaf(DestClass::Pty);
                     self.report_possible_typeahead("\r");
                     self.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
@@ -13094,6 +13163,8 @@ impl TerminalView {
             SessionsEvent::SessionInitialized { .. } => {
                 self.ssh_observe_for_wakeup(ctx);
                 self.handle_session_initialized(ctx);
+                // #1571: an Enter held for an unready shell retries on every readiness event.
+                self.retry_held_unready_enter("session_initialized", ctx);
             }
             SessionsEvent::SessionBootstrapped(event) => {
                 // The remote session is registered: the machine sees the pending session gone.
@@ -17037,6 +17108,9 @@ impl TerminalView {
                     self.update_focused_terminal_info(ctx);
                 }
 
+                // #1579: before the in-band early return, so the origin of a submit whose block
+                // is in-band is consumed by that block and never leaks to a later one.
+                self.note_block_started_for_ssh();
                 if *is_for_in_band_command {
                     return;
                 }
@@ -17172,14 +17246,10 @@ impl TerminalView {
                                 }
                                 self.model.lock().start_notify_on_end_of_ssh_login();
                                 // #1424 step 7: the event that shows ssh running arms the window
-                                // (and its give-up deadline) in `table` mode, not the next key.
-                                if Self::ssh_events_own_the_gate() {
-                                    self.ssh_arm_gate_at_event(ctx);
-                                } else {
-                                    // #1565: `legacy` arms it here too, by the event, not on the
-                                    // first terminal-routed key (the agent-view editor has none).
-                                    self.refresh_ssh_connect_gate();
-                                }
+                                // (and its give-up deadline) in `table` mode, not the next key;
+                                // #1565: `legacy` arms it here too, by the event, not on the
+                                // first terminal-routed key (the agent-view editor has none).
+                                self.arm_ssh_connect_gate_at_preexec(ctx);
                                 ctx.emit(Event::TerminalViewStateChanged);
                                 // A pending SSH target just appeared (host resolved
                                 // or not) -- the other half of
@@ -17422,7 +17492,7 @@ impl TerminalView {
                             async move {
                                 warpui::r#async::Timer::after(EXECUTE_PENDING_COMMAND_DELAY).await;
                             },
-                            Self::execute_pending_command,
+                            Self::execute_pending_command_after_timer,
                         );
                     } else {
                         // #1354: the command is released by the prompt this completion is
@@ -17442,7 +17512,7 @@ impl TerminalView {
                                          command anyway"
                                     );
                                     me.pending_command_awaits_precmd = false;
-                                    me.execute_pending_command((), ctx);
+                                    me.execute_pending_command_after_timer((), ctx);
                                 }
                             },
                         );
@@ -22017,6 +22087,20 @@ impl TerminalView {
             }
             _ => {}
         }
+    }
+
+    /// [`Self::execute_pending_command`] from a timer (a settling delay or a give-up net). An Enter
+    /// held because the shell was not ready (#1571) is never run by a timer: only the readiness
+    /// events run it (`retry_held_unready_enter`), and its own net hands it back instead.
+    fn execute_pending_command_after_timer(&mut self, _: (), ctx: &mut ViewContext<Self>) {
+        if self
+            .input
+            .read(ctx, |input, _| input.has_held_unready_enter())
+        {
+            log::info!("a timer found a held unready Enter; left for the readiness event (#1571)");
+            return;
+        }
+        self.execute_pending_command((), ctx);
     }
 
     /// Executes a command that was submitted by the user and not yet sent to the shell.

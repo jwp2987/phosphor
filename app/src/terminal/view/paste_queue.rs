@@ -453,6 +453,17 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
                     super::dest_table::note_legacy_chain_delivery();
                     self.view.deliver_ssh_held(*class, text, self.ctx);
                 }
+                // #1571: a held Enter that reached a shell not ready yet opened the gate of that
+                // Enter while this drain delivered it: what is still queued behind it waits for
+                // that gate, in order, instead of being delivered into the held line.
+                if self.view.paste_queue.requeue_request.is_none()
+                    && let Some(spec) = self
+                        .view
+                        .input
+                        .update(self.ctx, |input, _| input.take_stashed_gate())
+                {
+                    return DeliverOutcome::OpensGate(spec);
+                }
             }
             other => log::warn!(
                 "input queue: pty paste queue was handed an entry it does not deliver: {other:?}"
@@ -2426,18 +2437,33 @@ impl TerminalView {
                     return Err(Deferred::VoidEnterGate { kind, key });
                 };
                 let mut host = PtyQueueHost::new(self, ctx);
-                let text: String = guard
-                    .close_gate_taking(&mut host, kind, key)
-                    .into_iter()
-                    .filter_map(|entry| match entry.kind {
-                        EntryKind::Text(text) => Some(text),
-                        _ => None,
-                    })
-                    .collect();
+                let taken = guard.close_gate_taking(&mut host, kind, key);
                 drop(guard);
+                // #1571 / #1446: everything typed behind the void Enter comes back as text: its
+                // Enters as line breaks, the editing keys' effect, pastes (never only the text
+                // entries, which lost the rest).
+                let text = crate::terminal::input::text_of_entries_typed_after(&taken, |id| {
+                    self.paste_queue.routed_pastes.remove(&id);
+                    self.paste_queue.ssh_pastes.remove(&id);
+                    self.paste_queue
+                        .payloads
+                        .remove(&id)
+                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                        .or_else(|| {
+                            self.input
+                                .update(ctx, |input, _| input.take_paste_payload_text(id))
+                        })
+                });
                 if !text.is_empty() {
-                    self.input
-                        .update(ctx, |input, ctx| input.system_insert(&text, ctx));
+                    self.input.update(ctx, |input, ctx| {
+                        input.system_insert(&text, ctx);
+                        if text.contains('\n') {
+                            // Several lines in one buffer submit as one command: the first Enter
+                            // on them is held with the "check the line" toast.
+                            let buffer = input.buffer_text(ctx);
+                            input.arm_ssh_handover_enter_guard(buffer);
+                        }
+                    });
                 }
             }
             Deferred::DropSshGate {

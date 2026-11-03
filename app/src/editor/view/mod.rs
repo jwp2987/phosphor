@@ -3251,15 +3251,26 @@ impl EditorView {
         // it are the editor keys below.)
         {
             use crate::terminal::input_queue::GateKind;
-            let behind_enter = queue.try_peek().is_some_and(|held| {
-                (held.has_gate_kind(GateKind::EnterVerdict)
-                    || held.has_gate_kind(GateKind::TabCompletion))
-                    && !held.has_editor_paste_reading()
-            });
+            let (behind_enter, behind_unready_enter) =
+                queue.try_peek().map_or((false, false), |held| {
+                    let behind = (held.has_gate_kind(GateKind::EnterVerdict)
+                        || held.has_gate_kind(GateKind::TabCompletion))
+                        && !held.has_editor_paste_reading();
+                    (behind, behind && held.has_unready_enter_gate())
+                });
             if behind_enter {
                 let kind = match action {
                     EditorAction::UserInsert(text) => EntryKind::Text(String::clone(text)),
                     EditorAction::Enter => EntryKind::Enter,
+                    // #1571: behind an Enter the shell could not take yet, the line it holds was
+                    // submitted: an editing key belongs to the NEXT line, as on a tty. It waits in
+                    // the queue in its `Held` form and is routed with the text around it when the
+                    // gate opens (into the editor, or to the pty with that text), so it never
+                    // edits the held line. A key with no such form acts at once, as before.
+                    _ if behind_unready_enter => match held_form_of_editor_key(action) {
+                        Some((class, text)) => EntryKind::Held { class, text },
+                        None => return false,
+                    },
                     _ => return false,
                 };
                 match queue.try_lock_ordered() {
@@ -3365,20 +3376,9 @@ impl EditorView {
         queue: &crate::terminal::input_queue::PaneQueue,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        use crate::terminal::input_queue::{EntryKind, HELD_KEY, HELD_SEQ, HELD_TYPED, Origin};
-        let (class, text) = match action {
-            // The pane's key sink delivers each typed key once (#1404): there is no second copy of
-            // the event to drop.
-            EditorAction::UserInsert(text) => (HELD_TYPED, String::clone(text)),
-            EditorAction::Enter => (HELD_KEY, "\r".to_owned()),
-            EditorAction::Backspace => (HELD_KEY, "\u{7f}".to_owned()),
-            EditorAction::DeleteAllLeft => (HELD_KEY, "\u{15}".to_owned()),
-            EditorAction::DeleteWordLeft => (HELD_KEY, "\u{17}".to_owned()),
-            EditorAction::Up => (HELD_SEQ, "\u{1b}[A".to_owned()),
-            EditorAction::Down => (HELD_SEQ, "\u{1b}[B".to_owned()),
-            EditorAction::Right => (HELD_SEQ, "\u{1b}[C".to_owned()),
-            EditorAction::Left => (HELD_SEQ, "\u{1b}[D".to_owned()),
-            _ => return false,
+        use crate::terminal::input_queue::{EntryKind, Origin};
+        let Some((class, text)) = held_form_of_editor_key(action) else {
+            return false;
         };
         let kind = EntryKind::Held { class, text };
         match queue.try_lock_ordered() {
@@ -9611,6 +9611,27 @@ pub fn position_id_for_cursor(editor_view_id: EntityId) -> String {
 /// last cursor position, when there are multiple.
 pub fn position_id_for_first_cursor(editor_view_id: EntityId) -> String {
     format!("editor:first_cursor_{editor_view_id}")
+}
+
+/// The `Held` form (class, text) of an editor key that the ssh hold (#1292) and the gate of an
+/// Enter the shell could not take yet (#1571) keep for the terminal view to route: typed text,
+/// Enter, and the editing / cursor keys a tty line understands. `None`: the key has no such form.
+fn held_form_of_editor_key(action: &EditorAction) -> Option<(u8, String)> {
+    use crate::terminal::input_queue::{HELD_KEY, HELD_SEQ, HELD_TYPED};
+    Some(match action {
+        // The pane's key sink delivers each typed key once (#1404): there is no second copy of
+        // the event to drop.
+        EditorAction::UserInsert(text) => (HELD_TYPED, String::clone(text)),
+        EditorAction::Enter => (HELD_KEY, "\r".to_owned()),
+        EditorAction::Backspace => (HELD_KEY, "\u{7f}".to_owned()),
+        EditorAction::DeleteAllLeft => (HELD_KEY, "\u{15}".to_owned()),
+        EditorAction::DeleteWordLeft => (HELD_KEY, "\u{17}".to_owned()),
+        EditorAction::Up => (HELD_SEQ, "\u{1b}[A".to_owned()),
+        EditorAction::Down => (HELD_SEQ, "\u{1b}[B".to_owned()),
+        EditorAction::Right => (HELD_SEQ, "\u{1b}[C".to_owned()),
+        EditorAction::Left => (HELD_SEQ, "\u{1b}[D".to_owned()),
+        _ => return None,
+    })
 }
 
 /// Whether an interrupt typed in the editor meets a gate that waits on the editor's own input.

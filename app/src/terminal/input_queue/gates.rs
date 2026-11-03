@@ -48,6 +48,18 @@ pub enum GateKind {
     EditorDisplayMap,
 }
 
+/// #1571: the key flag of an `EnterVerdict` gate that holds the keys typed behind an Enter the
+/// shell could not take yet (`Input::hold_refused_unready_enter`). It is an Enter gate in every
+/// other respect (the table's H5 row, the editor's behind-Enter queueing, the after-Enter release),
+/// so it reuses that kind; the flag tells the editor to hold its editing keys behind it as well
+/// (they edit the NEXT line, never the held one) and is never set on a verdict wait's id.
+pub const UNREADY_ENTER_KEY_FLAG: u64 = 1 << 62;
+
+/// Whether `key` names the gate of an Enter held because the shell was not ready (#1571).
+pub fn is_unready_enter_key(key: u64) -> bool {
+    key & UNREADY_ENTER_KEY_FLAG != 0
+}
+
 /// What a signal (^C, ^D, ^Z, ^\) does to the entries held behind the gate it meets (design 2.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignalPlan {
