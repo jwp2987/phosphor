@@ -674,8 +674,8 @@ impl InputQueue {
         self.foreign_waker = waker;
     }
 
-    /// The id the next arrival will get.
-    #[cfg(any(test, feature = "dev-support"))]
+    /// The id the next arrival will get (also used in production: a ^C voids only the held keys
+    /// before it, #1584).
     pub fn peek_next_id(&self) -> EntryId {
         EntryId(self.next_id)
     }
