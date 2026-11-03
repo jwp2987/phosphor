@@ -146,9 +146,40 @@ pub fn note_shell_signal(signal: ShellSignal) {
 }
 
 /// `input_order hop=preexec_received signal=preexec t=...` (#1583 W3; parsed by the appci
-/// harness's `enter_segments`).
+/// harness's `enter_segments`). On Windows the line ends with the performance counter
+/// (` qpc=<ticks> qpf=<ticks per second>`, after `t=`), the clock PowerShell's hook timing marks
+/// use (#1401), so the shell's own marks can be placed on the app's timeline.
 fn preexec_line() -> String {
-    hop_line("preexec_received", "signal=preexec")
+    format!(
+        "{}{}",
+        hop_line("preexec_received", "signal=preexec"),
+        qpc_suffix()
+    )
+}
+
+/// ` qpc=<ticks> qpf=<ticks per second>`: the Windows performance counter now (#1401). The
+/// PowerShell bootstrap's hook timing marks (`PHOSPHOR_PWSH_HOOK_TIMING`) are taken with
+/// `Stopwatch.GetTimestamp()`, which reads the same counter, so a log line that carries both
+/// `t=` and this calibrates them onto the app's epoch timeline. Empty elsewhere.
+pub fn qpc_suffix() -> String {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(count: *mut i64) -> i32;
+            fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+        }
+        let (mut count, mut frequency) = (0i64, 0i64);
+        // SAFETY: each call writes one i64 through a pointer to a live local.
+        let ok = unsafe {
+            QueryPerformanceCounter(&mut count) != 0
+                && QueryPerformanceFrequency(&mut frequency) != 0
+        };
+        if ok {
+            return format!(" qpc={count} qpf={frequency}");
+        }
+    }
+    String::new()
 }
 
 /// `since_precmd_ms=12 since_preexec_ms=none ...`: how long ago each shell-ready signal was last
@@ -437,6 +468,11 @@ mod tests {
             line.starts_with("input_order hop=preexec_received signal=preexec t="),
             "{line}"
         );
+        // #1401: the performance counter follows `t=` on Windows only (pwsh_timing.py parses it).
+        assert_eq!(line.contains(" qpc="), cfg!(windows), "{line}");
+        if cfg!(windows) {
+            assert!(line.contains(" qpf="), "{line}");
+        }
     }
 
     #[test]

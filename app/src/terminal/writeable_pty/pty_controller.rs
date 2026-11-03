@@ -2260,8 +2260,13 @@ impl<T: EventLoopSender> PtyController<T> {
             // The pipe exists before the chord is written, so the shell cannot connect early.
             if let Some(pipe) = self.serve_on_pipe(session_id, &command, false) {
                 self.command_pipe = Some(pipe);
+                // `qpc=`: the clock of PowerShell's hook timing marks (#1401, pwsh_timing.py).
                 warpui::input_order::log_hop("pwsh_command_via_pipe", || {
-                    format!("bytes={}", command.len())
+                    format!(
+                        "bytes={}{}",
+                        command.len(),
+                        warpui::input_order::qpc_suffix()
+                    )
                 });
                 self.file_insert_pending = Some(command);
                 self.file_insert_block = Some(

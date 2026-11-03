@@ -136,7 +136,7 @@ def enter_segments(lines, t0):
                                the report says so.
     Lines before wall time t0 are ignored."""
     seg = {"enter_to_write_ms": [], "write_to_first_read_ms": [], "write_to_preexec_ms": []}
-    pending, wrote, read_seen = None, None, True
+    pending, wrote, read_seen, chord = None, None, True, False
     for l in lines:
         m = re.search(r" t=(\d+(?:\.\d+)?)", l)
         if not m:
@@ -145,15 +145,19 @@ def enter_segments(lines, t0):
         if t / 1000.0 < t0:
             continue
         if "hop=enter_begin" in l:
-            pending = t
+            pending, chord = t, False
+        elif "hop=pwsh_command_via_pipe" in l and pending is not None:
+            # #1581: a PowerShell line goes on the session's pipe and only the 2-byte insert chord is written, so the "> 10 bytes" rule below
+            # never matched and r18e4 had no app segment metric for the PowerShell pane at all (#1401)
+            chord = True
         elif "hop=preexec_received" in l and wrote is not None:
             seg["write_to_preexec_ms"].append(t - wrote)
             wrote = None
         elif "pty_write bytes=" in l and "handoff" not in l:
             nb = re.search(r"pty_write bytes=(\d+)", l)
-            if nb and int(nb.group(1)) > 10 and pending is not None:
+            if nb and (int(nb.group(1)) > 10 or chord) and pending is not None:
                 seg["enter_to_write_ms"].append(t - pending)
-                wrote, pending, read_seen = t, None, False
+                wrote, pending, read_seen, chord = t, None, False, False
         elif wrote is not None and not read_seen and " pty_read bytes=" in l:
             sw = re.search(r"since_write_ms=(\d+(?:\.\d+)?)", l)
             seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
@@ -455,6 +459,45 @@ class Ctx:
             except OSError:
                 continue
         return enter_segments(lines, t0)
+
+    def app_log_all_lines(self):
+        """every line of the app log (rotated chunks first, oldest first); [] without a trace"""
+        import glob
+        src = self.log_path
+        if not src:
+            return []
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        lines = []
+        for f in parts:
+            try:
+                lines += open(f, errors="replace").read().splitlines()
+            except OSError:
+                continue
+        return lines
+
+    def pwsh_hook_timing(self, on):
+        """#1401: turn pwsh.ps1's hook timing marks on/off (the shell checks `<file>.on` once per prompt, so the first command after a switch
+        may be on either side). -> the marks file path, or None when this pane has none (not Windows PowerShell, an app without the env)"""
+        path = getattr(self.app, "hook_timing_path", None) if self.win and self.pane == "powershell" else None
+        if not path:
+            return None
+        try:
+            if on:
+                open(path + ".on", "w").close()
+            elif os.path.exists(path + ".on"):
+                os.remove(path + ".on")
+        except OSError:
+            return None
+        return path
+
+    def pwsh_hook_segments(self, path, t0, stamps_ms=()):
+        """#1401: the per-hop split of PowerShell's own work for the commands since wall time t0 (pwsh_timing.segments), {} without marks"""
+        import pwsh_timing
+        try:
+            text = open(path, errors="replace").read()
+        except (OSError, TypeError):
+            return {}
+        return pwsh_timing.segments(text, self.app_log_all_lines(), stamps_ms, t0 * 1000.0)
 
     def app_saw_line(self, want, t0):
         """True: every character of `want` is in the app's own typed-character log, in order and contiguous (the key ARRIVED and was routed);
@@ -1281,8 +1324,27 @@ def ctrlc_flood(ctx, r, n, warm):
 def c_ctrl(ctx, r):
     ctx.rm("cd.txt", "cd2.txt")
     n, warm = ctx.count_lat(30), lat.warmup()
-    lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
+    t_cc0 = time.time()
+    hook_marks = ctx.pwsh_hook_timing(True)          # #1401: Windows PowerShell pane only
+    try:
+        lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
+    finally:
+        if hook_marks:
+            ctx.pwsh_hook_timing(False)
     lat_ms = lat_ms[warm:]
+    if ctx.win and ctx.pane == "powershell":
+        import pwsh_timing
+        try:
+            marks_text = open(hook_marks, errors="replace").read() if hook_marks else ""
+        except OSError:
+            marks_text = ""
+        cs = pwsh_timing.ctrl_c_segments(marks_text, ctx.app_log_all_lines(), t_cc0 * 1000.0)
+        r.metric("ctrl_c_segments_ms", cs or dict(unavailable=True))
+        if cs:
+            r.note("^C split (#1401, medians ms): ^C write -> PowerShell prompt %s, -> LineEditorReading %s; app: line editor ready %s, active %s, "
+                   "next command written %s, its Preexec %s"
+                   % tuple(cs.get(k, "-") for k in ("ctrl_c_to_prompt", "ctrl_c_to_reading", "line_editor_ready_after_ctrl_c",
+                                                     "line_editor_active_after_ctrl_c", "command_written_after_ctrl_c", "preexec_after_ctrl_c")))
     r.metric("ctrl_c_ms", stats(lat_ms))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     if ctx.win:
@@ -1732,6 +1794,7 @@ def ref_terminal_windows(ctx):
     home = ctx.prof.home
     env = dict(ctx.app.env()) if hasattr(ctx.app, "env") else dict(os.environ)
     env["HOME"] = home
+    env.pop("PHOSPHOR_PWSH_HOOK_TIMING", None)          # the app's pane only (#1401)
     if ctx.pane == "gitbash":
         sh, shname = [winapi.git_bash(), "--rcfile", home + "/.bashrc", "-i"], "bash"
     else:
@@ -2281,7 +2344,29 @@ def c_lat_enter(ctx, r):
             except RuntimeError:
                 pass
     if ds is None:
-        ds = enter_to_start(ctx, n + warm)[warm:]
+        hook_marks = ctx.pwsh_hook_timing(True)          # #1401: Windows PowerShell pane only; off again right after the Phosphor samples
+        try:
+            ds = enter_to_start(ctx, n + warm)[warm:]
+        finally:
+            if hook_marks:
+                ctx.pwsh_hook_timing(False)
+        if hook_marks:
+            time.sleep(0.5)                              # the last command's marks are written out at its next prompt
+            stamps = []
+            for i in range(n + warm):
+                try:
+                    v = float(open(os.path.join(ctx.W, "lat_%d" % i), errors="replace").read().replace("\x00", "").strip())
+                    stamps.append(v if v > 1e11 else v * 1000.0)
+                except (OSError, ValueError):
+                    pass
+            hs = ctx.pwsh_hook_segments(hook_marks, t_lat0, stamps)
+            r.metric("pwsh_hook_segments_ms", hs or dict(unavailable=True, marks_file=hook_marks))
+            if hs:
+                r.note("PowerShell side of Enter->start (#1401, medians ms): app write->chord handler %s, pipe read %s, insert %s, AcceptLine %s, "
+                       "line->Preexec OSC %s, OSC->app %s, Preexec tail %s, hook->command start %s; next prompt: precmd %s, render %s, maintenance+marker %s"
+                       % tuple(hs.get(k, "-") for k in ("app_write_to_handler", "handler_pipe_read", "handler_insert", "accept_line", "readline_to_preexec",
+                                                         "preexec_osc_to_app", "preexec_tail", "hook_to_command_start", "prompt_precmd", "prompt_render",
+                                                         "readline_maintenance")))
     record_interleave(r, mode, blocks, fallback)
     r.metric("enter_to_start_ms", stats(ds))
     segs = ctx.app_enter_segments(t_lat0)
