@@ -12309,6 +12309,12 @@ impl TerminalView {
     /// it makes passes through the paste stage (the queue is mid-drain) and the Enter it replays
     /// that waits again hands its gate back to the drain ([`Input::take_stashed_gate`]).
     fn route_after_enter_input(&mut self, input: &AfterEnterInput, ctx: &mut ViewContext<Self>) {
+        // Legacy-only (#1587): `PtyQueueHost::deliver_entry` (view/paste_queue.rs) reaches this only
+        // when the destination mode is not Table; Table uses `deliver_replayed_entry_table`.
+        debug_assert!(
+            input_queue::destination_mode() != input_queue::DestinationMode::Table,
+            "legacy-only path (#1587)"
+        );
         match input {
             AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
             AfterEnterInput::Enter => {
