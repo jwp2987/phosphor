@@ -347,6 +347,9 @@ pub enum TerminalAction {
     },
     ToggleBlockFilterOnSelectedOrLastBlock(ToggleBlockFilterSource),
     VimModeBanner(VimModeBannerAction),
+    /// The "Restart shell" button on the shell-terminated banner of a pane whose shell Windows
+    /// ended for a session end that was then cancelled (jwp2987/phosphor#1103).
+    RestartExitedShell,
     ToggleSnackbarInActivePane,
     /// User selected a block inside an AI block's attached block menu so we jump to it and select
     /// it if possible.
@@ -663,6 +666,7 @@ impl fmt::Debug for TerminalAction {
                 f.write_str("ToggleBlockFilterOnSelectedOrLastBlock")
             }
             VimModeBanner(action) => write!(f, "VimModeBanner({action:?})"),
+            RestartExitedShell => write!(f, "RestartExitedShell"),
             ToggleSnackbarInActivePane => write!(f, "ToggleSnackbarInActivePane"),
             MiddleClickOnGrid { position } => {
                 write!(f, "MiddleClickonGrid {{ position: {position:?} }}")

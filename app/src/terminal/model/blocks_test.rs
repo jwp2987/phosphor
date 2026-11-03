@@ -4166,3 +4166,48 @@ fn test_output_row_content_anchor_keeps_the_same_line_across_repeated_column_cha
         assert_eq!(grid.row_content_anchor(row), Some((anchored_line, 0)));
     }
 }
+
+/// #1103: a shell restarted in place carries over the restored blocks and every command run in
+/// the session, including the one still running when the shell died; the bootstrap blocks and an
+/// empty prompt are left out.
+#[test]
+fn test_serialized_blocks_for_shell_restart_keeps_restored_and_run_commands() {
+    let restored: SerializedBlockListItem =
+        SerializedBlock::new_for_test("restored-cmd".into(), "restored-out".into()).into();
+    let restored_blocks = [restored];
+    let mut block_list = TestBlockListBuilder::new()
+        .with_channel_event_proxy(ChannelEventListener::new_for_test())
+        .with_restored_blocks(&restored_blocks)
+        .build();
+    advance_to_bootstrapped(&mut block_list, Default::default());
+    insert_block(&mut block_list, "echo finished", "finished");
+
+    let commands = |block_list: &BlockList| {
+        block_list
+            .serialized_blocks_for_shell_restart()
+            .into_iter()
+            .map(|item| match item {
+                SerializedBlockListItem::Command { block } => {
+                    String::from_utf8_lossy(&block.stylized_command).into_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // The empty prompt after the finished command is not carried over.
+    let carried = commands(&block_list);
+    assert_eq!(carried.len(), 2, "{carried:?}");
+    assert!(carried[0].contains("restored-cmd"), "{carried:?}");
+    assert!(carried[1].contains("echo finished"), "{carried:?}");
+
+    // A command still running when the shell died (`TerminalModel::exit` finishes it).
+    block_list.start_active_block();
+    input_string(&mut block_list, "ping example.com");
+    block_list.preexec(Default::default());
+    input_string(&mut block_list, "64 bytes from example.com");
+    block_list.active_block_mut().finish(0);
+
+    let carried = commands(&block_list);
+    assert_eq!(carried.len(), 3, "{carried:?}");
+    assert!(carried[2].contains("ping example.com"), "{carried:?}");
+}

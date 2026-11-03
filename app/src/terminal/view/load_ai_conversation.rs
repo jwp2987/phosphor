@@ -1259,6 +1259,30 @@ impl TerminalView {
         });
     }
 
+    /// Tells the user that restarting this pane's shell in place (#1103) stopped agent work that
+    /// was still running in the dead pane: a streaming reply or a pending action was cancelled,
+    /// and the conversation continues only when they send it something.
+    pub(crate) fn show_shell_restart_stopped_agent_message(
+        &mut self,
+        stopped: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let text = if stopped == 1 {
+            "restarting the shell stopped the agent reply that was still running; send a message to continue".to_owned()
+        } else {
+            format!(
+                "restarting the shell stopped {stopped} agent conversations that were still running; send a message to continue"
+            )
+        };
+        let message = InputMessage::new(vec![MessageItem::text(text)]);
+        self.ephemeral_message_model.update(ctx, |model, ctx| {
+            model.show_ephemeral_message(
+                EphemeralMessage::new(message, DismissalStrategy::UntilExplicitlyDismissed),
+                ctx,
+            );
+        });
+    }
+
     /// Show a contextual ephemeral hint when the restored conversation's
     /// directory doesn't match the current terminal state.
     pub(crate) fn maybe_show_restore_context_hint(

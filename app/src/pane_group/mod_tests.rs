@@ -1139,6 +1139,227 @@ fn test_pane_group_restore_loop_keeps_orchestration_topology_and_materializes_ch
     });
 }
 
+/// #1103: "Restart shell" replaces a pane whose shell exited with the pane session restoration
+/// builds from its snapshot, in its place: the same session uuid, a live model, focus on the new
+/// pane, and the text left in the dead pane's editor handed back to the new editor (never
+/// written to the new shell). A pane whose shell is still alive is left alone. (Which blocks are
+/// carried over is `blocks_test::test_serialized_blocks_for_shell_restart_*`.)
+#[test]
+fn test_restart_exited_shell_replaces_the_pane_in_place() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let terminal_pane_id = pane_id.as_terminal_pane_id().expect("terminal pane");
+            let old_uuid = panes
+                .terminal_session_by_id(pane_id)
+                .expect("terminal pane")
+                .session_uuid();
+            let old_view = panes
+                .terminal_view_from_pane_id(pane_id, ctx)
+                .expect("terminal view");
+
+            // A live shell is never restarted.
+            assert!(!panes.restart_exited_shell(terminal_pane_id, ctx));
+            assert!(panes.has_pane_id(pane_id));
+
+            old_view.update(ctx, |view, ctx| {
+                view.input().update(ctx, |input, ctx| {
+                    input.replace_buffer_content("typed before the shell died", ctx);
+                });
+                view.model
+                    .lock()
+                    .exit(crate::terminal::model::terminal_model::ExitReason::ShellProcessExited);
+            });
+
+            assert!(panes.restart_exited_shell(terminal_pane_id, ctx));
+            assert!(!panes.has_pane_id(pane_id));
+
+            let new_pane_id = panes.focused_pane_id(ctx);
+            assert_ne!(new_pane_id, pane_id);
+            let new_pane = panes
+                .terminal_session_by_id(new_pane_id)
+                .expect("the replacement is a terminal pane");
+            assert_eq!(new_pane.session_uuid(), old_uuid);
+            let new_view = new_pane.terminal_view(ctx);
+            assert_ne!(new_view.id(), old_view.id());
+            let new_view = new_view.as_ref(ctx);
+            assert!(!new_view.model.lock().has_exited());
+            assert_eq!(
+                new_view.input().as_ref(ctx).buffer_text(ctx),
+                "typed before the shell died"
+            );
+
+            // The new pane's shell is alive: asking again does nothing.
+            let new_terminal_pane_id = new_pane_id.as_terminal_pane_id().expect("terminal pane");
+            assert!(!panes.restart_exited_shell(new_terminal_pane_id, ctx));
+            assert!(panes.has_pane_id(new_pane_id));
+        });
+    });
+}
+
+/// Kills the shell of `pane_id` the way the model sees a dead shell, and returns its view (#1103).
+fn exit_shell_of_pane(
+    panes: &PaneGroup,
+    pane_id: PaneId,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> ViewHandle<TerminalView> {
+    let view = panes
+        .terminal_view_from_pane_id(pane_id, ctx)
+        .expect("terminal view");
+    view.update(ctx, |view, _| {
+        view.model
+            .lock()
+            .exit(crate::terminal::model::terminal_model::ExitReason::ShellProcessExited);
+    });
+    view
+}
+
+/// #1103 review: a reply still streaming in the dead pane is stopped BEFORE the conversation is
+/// copied into the replacement, so the copy the new pane owns is not "in progress" with nothing
+/// behind it, and the dead view no longer owns anything.
+#[test]
+fn test_restart_exited_shell_stops_a_streaming_reply_before_copying_it() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let conversation_id = start_running_conversation_in_pane(panes, pane_id, ctx);
+            let old_view = exit_shell_of_pane(panes, pane_id, ctx);
+            let terminal_pane_id = pane_id.as_terminal_pane_id().expect("terminal pane");
+
+            assert!(panes.restart_exited_shell(terminal_pane_id, ctx));
+
+            let new_view_id = panes
+                .terminal_view_from_pane_id(panes.focused_pane_id(ctx), ctx)
+                .expect("replacement terminal view")
+                .id();
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let carried = history
+                .all_live_conversations_for_terminal_view(new_view_id)
+                .find(|conversation| conversation.id() == conversation_id)
+                .expect("the replacement owns the conversation");
+            assert!(
+                !carried.status().is_in_progress(),
+                "the carried conversation must not be left streaming"
+            );
+            assert!(
+                history
+                    .all_live_conversations_for_terminal_view(old_view.id())
+                    .next()
+                    .is_none(),
+                "the dead view owns nothing after the restart"
+            );
+        });
+    });
+}
+
+/// #1103 review: a queued command that was running when the shell died, and the prompt queued
+/// behind it, do not fire on their own in the restarted pane: the in-flight marker is cleared,
+/// the first command that finishes in the new shell does not drain the queue, and the row is
+/// neither fired nor dropped by the dead pane's close. It waits for the user.
+#[test]
+fn test_restart_exited_shell_keeps_queued_rows_waiting_for_the_user() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            use crate::ai::blocklist::{QueuedQuery, QueuedQueryModel, QueuedQueryOrigin};
+
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let conversation_id = start_running_conversation_in_pane(panes, pane_id, ctx);
+            QueuedQueryModel::handle(ctx).update(ctx, |queued, ctx| {
+                queued.append(
+                    conversation_id,
+                    QueuedQuery::new_command(
+                        "echo queued-1103".to_owned(),
+                        QueuedQueryOrigin::QueueSlashCommand,
+                    ),
+                    ctx,
+                );
+                queued.arm_command_in_flight(conversation_id);
+            });
+            exit_shell_of_pane(panes, pane_id, ctx);
+            let terminal_pane_id = pane_id.as_terminal_pane_id().expect("terminal pane");
+
+            assert!(panes.restart_exited_shell(terminal_pane_id, ctx));
+
+            assert!(!QueuedQueryModel::as_ref(ctx).has_command_in_flight(conversation_id));
+            assert_eq!(
+                QueuedQueryModel::as_ref(ctx).queue(conversation_id).len(),
+                1
+            );
+
+            // The first command to finish in the new shell does not advance the queue.
+            let new_view = panes
+                .terminal_view_from_pane_id(panes.focused_pane_id(ctx), ctx)
+                .expect("replacement terminal view");
+            new_view.update(ctx, |view, ctx| view.on_queued_command_finished(ctx));
+            assert_eq!(
+                QueuedQueryModel::as_ref(ctx).queue(conversation_id).len(),
+                1,
+                "the queued row waits for the user"
+            );
+        });
+    });
+}
+
+/// #1103 review: the replacement takes over the session uuid, so the restart itself sends no
+/// `DeleteBlocks` for it; closing the restarted pane for good later sends exactly one.
+#[test]
+fn test_restart_exited_shell_keeps_saved_blocks_until_the_new_pane_closes() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<ModelEvent>(100_000);
+        pane_group.update(&mut app, |panes, ctx| {
+            // The harness builds its first pane with no persistence sender; a pane added after
+            // the group has one gets it, as in the app.
+            panes.model_event_sender = Some(sender);
+            let existing: Vec<PaneId> = panes.pane_ids().collect();
+            panes.add_terminal_pane(Direction::Right, None, ctx);
+            let pane_id = get_newly_created_pane_id(panes, &existing);
+            let uuid = panes
+                .terminal_session_by_id(pane_id)
+                .expect("terminal pane")
+                .session_uuid();
+            exit_shell_of_pane(panes, pane_id, ctx);
+            let terminal_pane_id = pane_id.as_terminal_pane_id().expect("terminal pane");
+
+            let delete_blocks_count = |receiver: &std::sync::mpsc::Receiver<ModelEvent>| {
+                receiver
+                    .try_iter()
+                    .filter(|event| matches!(event, ModelEvent::DeleteBlocks(id) if *id == uuid))
+                    .count()
+            };
+
+            assert!(panes.restart_exited_shell(terminal_pane_id, ctx));
+            assert_eq!(
+                delete_blocks_count(&receiver),
+                0,
+                "the restart must not delete the blocks saved under the uuid it hands over"
+            );
+
+            panes.clean_up_panes(ctx);
+            assert_eq!(
+                delete_blocks_count(&receiver),
+                1,
+                "closing the restarted pane for good deletes them once"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_active_session_id_reset_on_last_pane_close() {
     App::test((), |mut app| async move {

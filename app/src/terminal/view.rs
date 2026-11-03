@@ -1308,6 +1308,10 @@ pub enum NotificationsDiscoveryBanner {
 struct ShellProcessTerminatedBanner {
     banner_id: InlineBannerId,
     was_premature_termination: bool,
+    /// The "Restart shell" button, offered only when Windows ended this shell for a session end
+    /// that was then cancelled (jwp2987/phosphor#1103; see [`TerminalView::offer_shell_restart`]).
+    /// Taken on the first click so one click restarts the shell once.
+    restart_shell_button: Option<MouseStateHandle>,
 }
 
 #[derive(Debug, Clone)]
@@ -1365,6 +1369,9 @@ pub enum InlineBannerType {
     SharedSessionStart,
     SharedSessionEnd,
     ShellProcessTerminated,
+    /// The shell-exited banner once it offers "Restart shell" (#1103). Unlike the plain one it
+    /// shows in the agent view too, since a dead pane in the agent view has no other way back.
+    ShellProcessTerminatedWithRestart,
     OpenInWarp,
     VimMode,
     AwsBedrockLogin,
@@ -1378,6 +1385,8 @@ impl InlineBannerType {
         match self {
             // Agent-related banners: visible in agent view
             Self::AwsBedrockLogin | Self::AwsCliNotInstalled => true,
+            // The only way forward from a pane whose shell Windows ended (#1103).
+            Self::ShellProcessTerminatedWithRestart => true,
             // Terminal-context banners: hidden in agent view
             Self::NotificationsDiscovery
             | Self::NotificationsError
@@ -1951,6 +1960,9 @@ pub enum Event {
     AppStateChanged,
     Escape,
     Exited,
+    /// The user clicked "Restart shell" on the banner of a pane whose shell Windows ended for a
+    /// cancelled session end: the pane group restarts the shell in place (jwp2987/phosphor#1103).
+    RestartExitedShellRequested,
     BlockListCleared,
     SendNotification(BlockNotification),
     BlockCompleted {
@@ -9867,7 +9879,9 @@ impl TerminalView {
     /// cancelled with every queued row still there to send or delete, and nothing resumes on
     /// its own. If the close is never undone, discarding the pane clears the conversations,
     /// which drops their queues (`QueuedQueryModel::handle_history_event`).
-    pub(crate) fn suspend_agent_work_for_close(&mut self, ctx: &mut ViewContext<Self>) {
+    ///
+    /// Returns how many running conversations it stopped (#1103 logs and reports them).
+    pub(crate) fn suspend_agent_work_for_close(&mut self, ctx: &mut ViewContext<Self>) -> usize {
         self.suspended_for_close = true;
         // The controller refuses every request from here on -- an action follow-up triggered
         // by the cancellations below, a resume, a passive suggestion -- until the undo.
@@ -9892,6 +9906,7 @@ impl TerminalView {
             })
             .map(|conversation| conversation.id())
             .collect();
+        let stopped = running_conversation_ids.len();
 
         for conversation_id in running_conversation_ids {
             // Before the stop: with the batch's earlier results gone, the actions it cancels
@@ -9906,6 +9921,7 @@ impl TerminalView {
                 ctx,
             );
         }
+        stopped
     }
 
     /// Lifts [`Self::suspend_agent_work_for_close`]'s suspension when a closed pane is restored.
@@ -16518,6 +16534,79 @@ impl TerminalView {
         ctx.notify();
     }
 
+    /// Offers a "Restart shell" button on this pane's shell-terminated banner. The pane group
+    /// calls this when it kept the pane open because Windows ended the shell for a session end
+    /// (jwp2987/phosphor#1103). Only the user's click acts on it: nothing restarts on its own.
+    pub fn offer_shell_restart(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.model.lock().has_exited() {
+            return;
+        }
+        match self
+            .inline_banners_state
+            .shell_process_terminated_banner
+            .as_mut()
+        {
+            Some(banner) if !banner.was_premature_termination => {
+                if banner.restart_shell_button.is_none() {
+                    banner.restart_shell_button = Some(MouseStateHandle::default());
+                    // Re-insert the banner, at the same place, as the kind the agent view shows
+                    // too: the plain shell-exited banner is hidden there.
+                    let banner_id = banner.banner_id;
+                    let mut model = self.model.lock();
+                    let block_list = model.block_list_mut();
+                    block_list.remove_inline_banner(banner_id);
+                    let active_block_index = block_list.active_block_index();
+                    block_list.insert_inline_banner_after_block(
+                        active_block_index,
+                        InlineBannerItem::new(
+                            banner_id,
+                            InlineBannerType::ShellProcessTerminatedWithRestart,
+                        ),
+                    );
+                    drop(model);
+                    ctx.notify();
+                }
+            }
+            _ => log::debug!("No shell-exited banner to offer a shell restart on"),
+        }
+    }
+
+    /// Whether the shell-terminated banner currently offers "Restart shell" (#1103).
+    pub fn is_shell_restart_offered(&self) -> bool {
+        self.inline_banners_state
+            .shell_process_terminated_banner
+            .as_ref()
+            .is_some_and(|banner| banner.restart_shell_button.is_some())
+    }
+
+    /// The "Restart shell" click (#1103). The button is taken first, so a second click (or one
+    /// queued behind the first) cannot ask twice; the pane group offers it again if the restart
+    /// could not be done.
+    fn request_exited_shell_restart(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.model.lock().has_exited() {
+            return;
+        }
+        let Some(banner) = self
+            .inline_banners_state
+            .shell_process_terminated_banner
+            .as_mut()
+        else {
+            return;
+        };
+        if banner.restart_shell_button.take().is_none() {
+            return;
+        }
+        log::info!("Restart shell requested for a pane whose shell Windows ended (#1103)");
+        ctx.notify();
+        ctx.emit(Event::RestartExitedShellRequested);
+    }
+
+    /// The text in the input editor, which a shell restarted in place hands to the new pane's
+    /// editor so nothing typed before the shell died is lost (#1103). Never sent to a shell.
+    pub fn input_buffer_text_for_shell_restart(&self, ctx: &AppContext) -> String {
+        self.input.as_ref(ctx).buffer_text(ctx)
+    }
+
     /// Inserts a banner notifying the user that the shell process has terminated.
     fn insert_shell_process_terminated_banner(
         &mut self,
@@ -16531,6 +16620,7 @@ impl TerminalView {
                 Some(ShellProcessTerminatedBanner {
                     banner_id,
                     was_premature_termination: !self.is_login_shell_bootstrapped,
+                    restart_shell_button: None,
                 });
             // In this case, the active block is actually the last block that was run
             // before exiting; it's not a special hidden block. In other words, the "active" block
@@ -32451,11 +32541,16 @@ impl TerminalView {
         if let Some(ShellProcessTerminatedBanner {
             banner_id,
             was_premature_termination,
-        }) = self.inline_banners_state.shell_process_terminated_banner
+            restart_shell_button,
+        }) = &self.inline_banners_state.shell_process_terminated_banner
         {
             inline_banners.insert(
-                banner_id,
-                render_shell_process_terminated_banner(appearance, was_premature_termination),
+                *banner_id,
+                render_shell_process_terminated_banner(
+                    appearance,
+                    *was_premature_termination,
+                    restart_shell_button.as_ref(),
+                ),
             );
         }
 
@@ -35659,6 +35754,7 @@ impl TypedActionView for TerminalView {
             | OpenBlockListContextMenu
             | AliasExpansionBanner(_)
             | VimModeBanner(_)
+            | RestartExitedShell
             | InsertMostRecentCommandCorrection
             | StopSharingCurrentSession { .. }
             | OnboardingFlow(_)
@@ -36192,6 +36288,7 @@ impl TypedActionView for TerminalView {
                 }
             }
             VimModeBanner(action) => self.handle_vim_banner_action(*action, ctx),
+            RestartExitedShell => self.request_exited_shell_restart(ctx),
             OnboardingFlow(version) => {
                 // Don't show onboarding if it's already active or if this is a shared session or if user is anonymous
                 if self

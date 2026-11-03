@@ -1596,29 +1596,6 @@ impl PaneGroup {
                 let uuid = PaneUuid(terminal_snapshot.uuid.clone());
                 let block_list = block_lists.get(&uuid);
 
-                let chosen_shell = terminal_snapshot
-                    .shell_launch_data
-                    .as_ref()
-                    .and_then(|shell| {
-                        if FeatureFlag::ShellSelector.is_enabled() {
-                            AvailableShells::as_ref(ctx).get_from_shell_launch_data(shell)
-                        } else {
-                            None
-                        }
-                    });
-
-                // #1096: what the shell reports back once it bootstraps. A snapshot
-                // taken before then re-writes these instead of `None`.
-                let restored_state = pane::terminal_pane::RestoredTerminalState {
-                    cwd: terminal_snapshot.cwd.clone(),
-                    shell_launch_data: terminal_snapshot.shell_launch_data.clone(),
-                };
-
-                let startup_directory = terminal_snapshot
-                    .cwd
-                    .map(PathBuf::from)
-                    .filter(|path| path.is_dir());
-
                 // Filter conversation IDs to only include those that have task messages
                 // and are not entirely passive (ignored suggestions).
                 // This prevents showing the "Previous session" banner when there's nothing to restore
@@ -1661,75 +1638,20 @@ impl PaneGroup {
                         },
                     )
                 };
-                let (terminal_view, terminal_manager) = PaneGroup::create_session(
-                    startup_directory,
-                    HashMap::new(),
-                    &uuid.0,
-                    IsSharedSessionCreator::No,
-                    resources,
+                let pane_data = PaneGroup::terminal_pane_from_snapshot(
+                    &terminal_snapshot,
                     block_list,
                     conversation_restoration,
+                    resources,
                     user_default_shell_unsupported_banner_model_handle,
                     view_size,
-                    model_event_sender.clone(),
-                    chosen_shell,
-                    terminal_snapshot.input_config,
-                    ctx,
-                );
-
-                let terminal_view_id = terminal_view.id();
-
-                let mut pane_data = TerminalPane::new(
-                    uuid.0,
-                    terminal_manager,
-                    terminal_view,
                     model_event_sender,
                     ctx,
                 );
-                pane_data.set_restored_state(restored_state);
 
                 let terminal_pane_id = pane_data.terminal_pane_id();
                 let pane_id = terminal_pane_id.into();
                 pane_contents.insert(pane_id, Box::new(pane_data));
-
-                if let Some(llm_override) = &terminal_snapshot.llm_model_override {
-                    if let Ok(llm_id) = serde_json::from_str::<LLMId>(llm_override) {
-                        log::info!("Selecting base agent model {llm_id} (from terminal snapshot)");
-                        crate::ai::llms::LLMPreferences::handle(ctx).update(
-                            ctx,
-                            |llm_prefs, ctx| {
-                                llm_prefs.update_preferred_agent_mode_llm(
-                                    &llm_id,
-                                    terminal_view_id,
-                                    ctx,
-                                );
-                            },
-                        );
-                    }
-                }
-
-                if let Some(active_profile_sync_id) = &terminal_snapshot.active_profile_id {
-                    log::info!(
-                        "Attempting to restore active_profile '{active_profile_sync_id}' for terminal {terminal_view_id:?}"
-                    );
-
-                    let profiles_model = AIExecutionProfilesModel::as_ref(ctx);
-
-                    if let Some(profile_id) =
-                        profiles_model.get_profile_id_by_sync_id(active_profile_sync_id)
-                    {
-                        AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles_model, ctx| {
-                            profiles_model.set_active_profile(terminal_view_id, profile_id, ctx);
-                        });
-                        log::info!(
-                            "Restored active profile {profile_id:?} for terminal {terminal_view_id:?}"
-                        );
-                    } else {
-                        log::warn!(
-                            "Failed to restore active profile for terminal {terminal_view_id:?}"
-                        );
-                    }
-                }
 
                 let focus = InitialFocus {
                     focused_pane: leaf.is_focused.then_some(pane_id),
@@ -4477,31 +4399,45 @@ impl PaneGroup {
     /// pane should call this first.
     fn forget_llm_overrides_for_pane(&self, pane_id: PaneId, ctx: &mut ViewContext<Self>) {
         if let Some(terminal_view) = self.terminal_view_from_pane_id(pane_id, ctx) {
-            let terminal_view_id = terminal_view.id();
-            LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
-                prefs.forget_terminal_view(terminal_view_id, ctx);
-            });
-            // Same teardown point (#843): the AI history model's per-view maps (and,
-            // when reloadable from SQLite, the full conversations) and the per-view
-            // active execution profile.
-            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
-                history_model.forget_terminal_view(terminal_view_id, ctx);
-            });
-            crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::handle(ctx)
-                .update(ctx, |profiles, _| {
-                    profiles.forget_terminal_view(terminal_view_id);
-                });
-            // Same teardown point, same reason (#843): the shell session's `History`
-            // bookkeeping is otherwise never released.
-            let session_id = terminal_view
-                .as_ref(ctx)
-                .active_session()
-                .as_ref(ctx)
-                .session_id(ctx);
-            if let Some(session_id) = session_id {
-                crate::terminal::history::History::handle(ctx)
-                    .update(ctx, |history, _| history.forget_session(session_id));
-            }
+            self.forget_terminal_view_state(&terminal_view, ctx);
+        }
+    }
+
+    /// Releases the per-view state a terminal view leaves in app-wide models (#801/#843): its
+    /// LLM override, the AI history model's per-view maps, its active execution profile, and its
+    /// shell session's `History` bookkeeping. Called when the view is gone for good: a pane
+    /// closed for good, or the dead pane a shell restarted in place replaced (#1103).
+    fn forget_terminal_view_state(
+        &self,
+        terminal_view: &ViewHandle<TerminalView>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let terminal_view_id = terminal_view.id();
+        LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+            prefs.forget_terminal_view(terminal_view_id, ctx);
+        });
+        // Same teardown point (#843): the AI history model's per-view maps (and,
+        // when reloadable from SQLite, the full conversations) and the per-view
+        // active execution profile.
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+            history_model.forget_terminal_view(terminal_view_id, ctx);
+        });
+        crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::handle(ctx).update(
+            ctx,
+            |profiles, _| {
+                profiles.forget_terminal_view(terminal_view_id);
+            },
+        );
+        // Same teardown point, same reason (#843): the shell session's `History`
+        // bookkeeping is otherwise never released.
+        let session_id = terminal_view
+            .as_ref(ctx)
+            .active_session()
+            .as_ref(ctx)
+            .session_id(ctx);
+        if let Some(session_id) = session_id {
+            crate::terminal::history::History::handle(ctx)
+                .update(ctx, |history, _| history.forget_session(session_id));
         }
     }
 
@@ -5716,6 +5652,294 @@ impl PaneGroup {
         self.focus_state.update(ctx, |focus_state, ctx| {
             focus_state.set_in_split_pane(in_split_pane, ctx);
         });
+    }
+
+    /// Builds the terminal pane a [`TerminalPaneSnapshot`] describes -- its shell, working
+    /// directory, input config, model override and execution profile -- with `restored_blocks`
+    /// and `conversation_restoration` in its block list. This is the session-restoration path,
+    /// shared by the restore at startup and by restarting an exited shell in place (#1103).
+    #[allow(clippy::too_many_arguments)]
+    fn terminal_pane_from_snapshot(
+        terminal_snapshot: &TerminalPaneSnapshot,
+        restored_blocks: Option<&Vec<SerializedBlockListItem>>,
+        conversation_restoration: Option<ConversationRestorationInNewPaneType>,
+        resources: TerminalViewResources,
+        user_default_shell_unsupported_banner_model_handle: ModelHandle<BannerState>,
+        view_size: Vector2F,
+        model_event_sender: Option<SyncSender<ModelEvent>>,
+        ctx: &mut ViewContext<PaneGroup>,
+    ) -> TerminalPane {
+        let chosen_shell = terminal_snapshot
+            .shell_launch_data
+            .as_ref()
+            .and_then(|shell| {
+                if FeatureFlag::ShellSelector.is_enabled() {
+                    AvailableShells::as_ref(ctx).get_from_shell_launch_data(shell)
+                } else {
+                    None
+                }
+            });
+
+        // #1096: what the shell reports back once it bootstraps. A snapshot
+        // taken before then re-writes these instead of `None`.
+        let restored_state = pane::terminal_pane::RestoredTerminalState {
+            cwd: terminal_snapshot.cwd.clone(),
+            shell_launch_data: terminal_snapshot.shell_launch_data.clone(),
+        };
+
+        let startup_directory = terminal_snapshot
+            .cwd
+            .as_ref()
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir());
+
+        let (terminal_view, terminal_manager) = PaneGroup::create_session(
+            startup_directory,
+            HashMap::new(),
+            &terminal_snapshot.uuid,
+            IsSharedSessionCreator::No,
+            resources,
+            restored_blocks,
+            conversation_restoration,
+            user_default_shell_unsupported_banner_model_handle,
+            view_size,
+            model_event_sender.clone(),
+            chosen_shell,
+            terminal_snapshot.input_config,
+            ctx,
+        );
+
+        let terminal_view_id = terminal_view.id();
+
+        let mut pane_data = TerminalPane::new(
+            terminal_snapshot.uuid.clone(),
+            terminal_manager,
+            terminal_view,
+            model_event_sender,
+            ctx,
+        );
+        pane_data.set_restored_state(restored_state);
+
+        if let Some(llm_override) = &terminal_snapshot.llm_model_override {
+            if let Ok(llm_id) = serde_json::from_str::<LLMId>(llm_override) {
+                log::info!("Selecting base agent model {llm_id} (from terminal snapshot)");
+                crate::ai::llms::LLMPreferences::handle(ctx).update(ctx, |llm_prefs, ctx| {
+                    llm_prefs.update_preferred_agent_mode_llm(&llm_id, terminal_view_id, ctx);
+                });
+            }
+        }
+
+        if let Some(active_profile_sync_id) = &terminal_snapshot.active_profile_id {
+            log::info!(
+                "Attempting to restore active_profile '{active_profile_sync_id}' for terminal {terminal_view_id:?}"
+            );
+
+            let profiles_model = AIExecutionProfilesModel::as_ref(ctx);
+
+            if let Some(profile_id) =
+                profiles_model.get_profile_id_by_sync_id(active_profile_sync_id)
+            {
+                AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles_model, ctx| {
+                    profiles_model.set_active_profile(terminal_view_id, profile_id, ctx);
+                });
+                log::info!(
+                    "Restored active profile {profile_id:?} for terminal {terminal_view_id:?}"
+                );
+            } else {
+                log::warn!("Failed to restore active profile for terminal {terminal_view_id:?}");
+            }
+        }
+
+        pane_data
+    }
+
+    /// Restarts, in place, the shell of a terminal pane whose shell has exited
+    /// (jwp2987/phosphor#1103): Windows kills the console shells as soon as a restart or sign-out
+    /// is requested, and when the user then cancels it the panes are left with dead shells. Only
+    /// the "Restart shell" click on such a pane's banner calls this.
+    ///
+    /// It reuses session restoration rather than a second spawn path: the pane is replaced by
+    /// the pane [`Self::terminal_pane_from_snapshot`] builds from the dead pane's own snapshot
+    /// (the same shell and working directory, input config, model and profile), with the dead
+    /// pane's blocks and live agent conversations restored into it, under the same session uuid
+    /// so the blocks already saved for it stay saved. Text left in the dead pane's input editor
+    /// is put back into the new editor, never sent to the new shell.
+    ///
+    /// Returns false, changing nothing, when the pane is not a terminal pane whose local shell
+    /// has exited, or the replacement could not be attached.
+    pub(crate) fn restart_exited_shell(
+        &mut self,
+        terminal_pane_id: TerminalPaneId,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let pane_id: PaneId = terminal_pane_id.into();
+        let Some(pane) = self.terminal_session_by_id(pane_id) else {
+            log::warn!("Restart shell: pane {pane_id:?} is not a terminal pane");
+            return false;
+        };
+        let old_view = pane.terminal_view(ctx);
+        let (has_exited, is_viewer) = {
+            let model = old_view.as_ref(ctx).model.lock();
+            (
+                model.has_exited(),
+                model.shared_session_status().is_viewer()
+                    || model.is_conversation_transcript_viewer(),
+            )
+        };
+        if !has_exited || is_viewer {
+            log::warn!(
+                "Restart shell: pane {pane_id:?} has no exited local shell (exited={has_exited}, viewer={is_viewer})"
+            );
+            return false;
+        }
+        // `replace_pane` fails after detaching the replacement when the pane holds no tree slot,
+        // which would clear the conversations handed to it (and drop their queues). Refuse first.
+        if !self.panes.is_pane_in_tree(pane_id) {
+            log::warn!("Restart shell: pane {pane_id:?} is not in the pane tree");
+            return false;
+        }
+        let LeafContents::Terminal(terminal_snapshot) = pane.snapshot(ctx) else {
+            log::warn!("Restart shell: pane {pane_id:?} did not snapshot as a terminal");
+            return false;
+        };
+
+        // Stop the dead pane's agent work before its conversations are copied: a reply still
+        // streaming there would otherwise be copied mid-stream and then cancelled behind the
+        // copy by the close below. Undone if the swap fails.
+        let stopped_conversations =
+            old_view.update(ctx, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
+        let old_view_id = old_view.id();
+        let restored_blocks = old_view
+            .as_ref(ctx)
+            .model
+            .lock()
+            .block_list()
+            .serialized_blocks_for_shell_restart();
+        let pending_input = old_view
+            .as_ref(ctx)
+            .input_buffer_text_for_shell_restart(ctx);
+        // The conversations the startup restore would bring back for this pane, from memory
+        // instead of the database, with the same filter as `restore_pane_leaf`.
+        let conversations: Vec<AIConversation> = BlocklistAIHistoryModel::as_ref(ctx)
+            .all_live_conversations_for_terminal_view(old_view_id)
+            .filter(|conversation| {
+                conversation.all_tasks().next().is_some() && !conversation.is_entirely_passive()
+            })
+            .cloned()
+            .collect();
+        let conversation_count = conversations.len();
+        let carried_conversation_ids: Vec<AIConversationId> = conversations
+            .iter()
+            .map(|conversation| conversation.id())
+            .collect();
+        // A queued command that was running in the dead shell never finishes; left marked in
+        // flight, the first command to finish in the new shell would drain the queue and fire
+        // its next row on its own. The rows stay queued for the user.
+        if ctx.has_singleton_model::<crate::ai::blocklist::QueuedQueryModel>() {
+            crate::ai::blocklist::QueuedQueryModel::handle(ctx).update(ctx, |queued, _| {
+                for conversation_id in &carried_conversation_ids {
+                    queued.clear_command_in_flight(*conversation_id);
+                }
+            });
+        }
+        let active_conversation_id = terminal_snapshot.active_conversation_id;
+        let conversation_restoration = match vec1::Vec1::try_from_vec(conversations) {
+            Ok(conversations) => Some(ConversationRestorationInNewPaneType::Startup {
+                conversations,
+                active_conversation_id,
+            }),
+            Err(_) => None,
+        };
+
+        log::info!(
+            "Restarting the exited shell of pane {pane_id:?} in place: {} blocks, {conversation_count} conversations ({stopped_conversations} running ones stopped), cwd {:?} (#1103)",
+            restored_blocks.len(),
+            terminal_snapshot.cwd,
+        );
+
+        let resources = TerminalViewResources {
+            tips_completed: self.tips_completed.clone(),
+            model_event_sender: self.model_event_sender.clone(),
+        };
+        let view_size = Self::estimated_view_bounds(ctx).size();
+        let pane_data = Self::terminal_pane_from_snapshot(
+            &terminal_snapshot,
+            Some(&restored_blocks),
+            conversation_restoration,
+            resources,
+            self.user_default_shell_unsupported_banner_model_handle
+                .clone(),
+            view_size,
+            self.model_event_sender.clone(),
+            ctx,
+        );
+        let new_pane_id = pane_data.id();
+        let new_view = pane_data.terminal_view(ctx);
+        // The replacement restored the carried conversations; it owns them from here, so the
+        // dead pane's close neither clears them nor drops their queued prompts.
+        let new_view_id = new_view.id();
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _| {
+            history.move_live_conversations_to_terminal_view(
+                old_view_id,
+                new_view_id,
+                &carried_conversation_ids,
+            );
+        });
+
+        // Both panes carry the session uuid until the swap is done, and whichever one is closed
+        // by it (the dead pane, or the replacement if it cannot be attached) must not delete the
+        // blocks saved under that uuid.
+        if let Some(pane) = self.terminal_session_by_id(pane_id) {
+            pane.set_keep_persisted_blocks_on_close(true);
+        }
+        pane_data.set_keep_persisted_blocks_on_close(true);
+
+        let replaced = self.replace_pane(pane_id, pane_data, false, ctx);
+        if !replaced {
+            log::error!("Restart shell: could not replace pane {pane_id:?}");
+            if let Some(pane) = self.terminal_session_by_id(pane_id) {
+                pane.set_keep_persisted_blocks_on_close(false);
+            }
+            // The dead pane stays: give its conversations back and lift the suspension (the
+            // stopped ones stay cancelled, as after an undone close).
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _| {
+                history.move_live_conversations_to_terminal_view(
+                    new_view_id,
+                    old_view_id,
+                    &carried_conversation_ids,
+                );
+            });
+            old_view.update(ctx, |view, ctx| view.resume_after_close_undone(ctx));
+            return false;
+        }
+        // The dead view is gone for good: release its per-view state, as closing a pane does
+        // (#801/#843). `replace_pane` itself does not.
+        self.forget_terminal_view_state(&old_view, ctx);
+        if let Some(pane) = self.terminal_session_by_id(new_pane_id) {
+            pane.set_keep_persisted_blocks_on_close(false);
+        }
+
+        if stopped_conversations > 0 {
+            new_view.update(ctx, |view, ctx| {
+                view.show_shell_restart_stopped_agent_message(stopped_conversations, ctx);
+            });
+            ctx.emit(Event::ShowToast {
+                message: "Restarting the shell stopped the agent work that was still running"
+                    .to_owned(),
+                flavor: ToastFlavor::Default,
+                pane_id: Some(new_pane_id),
+            });
+        }
+
+        if !pending_input.is_empty() {
+            new_view.update(ctx, |view, ctx| {
+                view.input().update(ctx, |input, ctx| {
+                    input.replace_buffer_content(&pending_input, ctx);
+                });
+            });
+        }
+        true
     }
 
     // Instantiate the terminal view with the given parameters. Note that the active

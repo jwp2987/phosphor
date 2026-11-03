@@ -1605,6 +1605,11 @@ impl TerminalModel {
         self.commit_lifecycle_transition(&transition);
     }
 
+    /// Whether the shell (or its event loop) has exited and [`Self::exit`] has run.
+    pub fn has_exited(&self) -> bool {
+        self.handled_exit
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.handled_exit
             || self.is_conversation_transcript_viewer()
