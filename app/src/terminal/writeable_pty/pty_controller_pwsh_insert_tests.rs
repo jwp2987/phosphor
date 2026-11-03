@@ -129,7 +129,6 @@ fn a_single_line_powershell_command_is_one_chord_write_and_a_pipe() {
 fn multi_line_long_and_control_character_commands_keep_the_typed_path() {
     App::test((), |mut app| async move {
         let rig = rig(&mut app, 9_100_002, true);
-        let long = format!("echo '{}'", "a".repeat(long_command_file::MAX_TYPED_BYTES));
         let cases = [
             "echo a\necho b",
             "echo a\r\necho b",
@@ -148,17 +147,114 @@ fn multi_line_long_and_control_character_commands_keep_the_typed_path() {
             let expected = typed_bytes(text);
             assert_eq!(payload(&messages[1]), expected[2..].to_vec());
         }
-        // Past the typed limit the #1106 launcher path still applies (a typed launcher line).
-        rig.sender.messages.lock().clear();
+    });
+}
+
+/// Files this process's tests could have left in the temp dir for a command (the old #1106 path).
+fn command_temp_files() -> usize {
+    std::fs::read_dir(std::env::temp_dir())
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".phosphor-cmd-")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_long_command_is_served_on_the_pipe_behind_a_text_free_launcher_and_never_hits_the_disk() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_020, true);
+        let secret = "s3cr3t-token-9f2c";
+        for len in [long_command_file::MAX_TYPED_BYTES + 1, 8_000, 100_000] {
+            let long = format!("echo '{secret}{}'", "a".repeat(len));
+            let before = command_temp_files();
+            rig.sender.messages.lock().clear();
+            rig.controller.update(&mut app, |controller, ctx| {
+                controller.send_write_to_event_loop(command(&long, None), ctx)
+            });
+            {
+                let messages = rig.sender.messages.lock();
+                assert_eq!(messages.len(), 2, "ESC 2 and the launcher line");
+                assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
+                let typed = payload(&messages[1]);
+                assert_eq!(
+                    typed,
+                    typed_bytes(long_command_file::LAUNCHER_LINE)[2..].to_vec()
+                );
+                assert!(!String::from_utf8_lossy(&typed).contains(secret));
+            }
+            assert_eq!(command_temp_files(), before, "no file is written");
+            rig.controller.read(&app, |controller, _| {
+                assert!(controller.long_command_pipe.is_some());
+                assert!(controller.command_pipe.is_none());
+                // The launcher is not the insert chord: no retype bookkeeping.
+                assert!(controller.file_insert_pending.is_none());
+            });
+        }
+    });
+}
+
+#[test]
+fn the_launcher_pipe_survives_the_preexec_that_precedes_the_launcher_reading_it() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_021, true);
+        let long = "a".repeat(long_command_file::MAX_TYPED_BYTES + 1);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command(&long, None), ctx);
+            controller.clear_file_insert(); // what the Preexec subscription does
+        });
+        rig.controller.read(&app, |controller, _| {
+            assert!(controller.long_command_pipe.is_some());
+        });
+    });
+}
+
+#[test]
+fn with_the_kill_switch_off_a_long_command_is_typed_and_nothing_is_written() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_022, true);
+        rig.controller.update(&mut app, |controller, _| {
+            controller.fast_insert_off_for_test = true;
+        });
+        let long = format!("echo '{}'", "a".repeat(long_command_file::MAX_TYPED_BYTES));
+        let before = command_temp_files();
         rig.controller.update(&mut app, |controller, ctx| {
             controller.send_write_to_event_loop(command(&long, None), ctx)
         });
         let messages = rig.sender.messages.lock();
         assert_eq!(messages.len(), 2);
-        assert!(payload(&messages[1]).starts_with(b". (Warp-Run-LongCommand '"));
+        assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
+        assert_eq!(payload(&messages[1]), typed_bytes(&long)[2..].to_vec());
+        assert_eq!(command_temp_files(), before);
+        drop(messages);
         rig.controller.read(&app, |controller, _| {
-            assert!(controller.file_insert_pending.is_none());
+            assert!(controller.long_command_pipe.is_none());
+            assert!(controller.command_pipe.is_none());
         });
+    });
+}
+
+#[test]
+fn a_long_command_without_a_session_pipe_is_typed() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_023, false);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.runs_long_commands_from_file = true;
+            controller.send_write_to_event_loop(
+                command(&"a".repeat(long_command_file::MAX_TYPED_BYTES + 1), None),
+                ctx,
+            );
+        });
+        let messages = rig.sender.messages.lock();
+        assert_eq!(messages.len(), 2);
+        assert!(!payload(&messages[1]).starts_with(b". (Warp-Run-LongCommand"));
     });
 }
 

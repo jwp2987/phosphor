@@ -221,9 +221,14 @@ pub struct PtyController<T: EventLoopSender> {
     /// rather than being typed into PSReadLine (#1106). Set when the shell is initialised.
     #[cfg(not(target_family = "wasm"))]
     runs_long_commands_from_file: bool,
-    /// The temp file of the last such command; replaced by the next one, removed on drop.
+    /// The pipe serving the last such command to its launcher line (#1592); it must outlive the
+    /// Preexec (which runs before the launcher reads it), so it is not `command_pipe`. Replaced by
+    /// the next served command, closed on drop. In memory only: no command is written to disk.
     #[cfg(not(target_family = "wasm"))]
-    long_command_file: Option<tempfile::TempPath>,
+    long_command_pipe: Option<command_pipe::CommandPipe>,
+    /// The sessions this controller's shells minted pipe names for; forgotten when it drops.
+    #[cfg(not(target_family = "wasm"))]
+    pipe_sessions: command_pipe::SessionPipeNames,
     /// The command being served on the session's named pipe for the PowerShell insert chord
     /// (#1581); in memory only, closed when dropped. Set exactly while `file_insert_pending` is.
     command_pipe: Option<command_pipe::CommandPipe>,
@@ -232,6 +237,8 @@ pub struct PtyController<T: EventLoopSender> {
     /// nothing and the command is typed instead). At most one: a second command is typed while it
     /// is set.
     file_insert_pending: Option<String>,
+    #[cfg(test)]
+    fast_insert_off_for_test: bool,
     /// One-shot: the retype after `CommandFileFailed` must be typed, not sent as the chord again.
     force_typed_command: bool,
     tmux_control_mode: Option<TmuxControlMode>,
@@ -600,10 +607,13 @@ impl<T: EventLoopSender> PtyController<T> {
             #[cfg(not(target_family = "wasm"))]
             runs_long_commands_from_file: false,
             #[cfg(not(target_family = "wasm"))]
-            long_command_file: None,
+            long_command_pipe: None,
+            pipe_sessions: Default::default(),
             command_pipe: None,
             file_insert_pending: None,
             force_typed_command: false,
+            #[cfg(test)]
+            fast_insert_off_for_test: false,
             tmux_control_mode: None,
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
@@ -1293,6 +1303,10 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             self.runs_long_commands_from_file = shell_type == ShellType::PowerShell
                 && pending_session_info.session_type == BootstrapSessionType::Local;
+            if shell_type == ShellType::PowerShell {
+                self.pipe_sessions
+                    .track(pending_session_info.session_id.as_u64());
+            }
         }
 
         #[cfg(feature = "local_fs")]
@@ -2102,8 +2116,9 @@ impl<T: EventLoopSender> PtyController<T> {
 
     /// What to send to the shell for `command`: the line to type into the line editor, or, for a
     /// PowerShell command that can be inserted in one operation, the insert chord (#1581). A
-    /// command too long for PSReadLine to render (#1106) becomes a short line that dot-sources it
-    /// from a temp file.
+    /// command too long for PSReadLine to render (#1106) becomes a short launcher line that reads
+    /// it from the pipe (#1592). Nothing is ever written to disk; if the pipe is unavailable (or
+    /// the kill switch is off) the command is typed.
     fn command_to_type(
         &mut self,
         command: String,
@@ -2111,20 +2126,18 @@ impl<T: EventLoopSender> PtyController<T> {
         is_user_command: bool,
         session_id: Option<u64>,
     ) -> TypedCommand {
+        let force_typed = std::mem::take(&mut self.force_typed_command);
         #[cfg(not(target_family = "wasm"))]
         if shell_type == ShellType::PowerShell
             && self.runs_long_commands_from_file
             && is_user_command
-            && !std::mem::take(&mut self.force_typed_command)
+            && !force_typed
             && self.file_insert_pending.is_none()
-            && long_command_file::fast_insert_enabled()
+            && self.fast_insert_on()
             && long_command_file::can_insert_via_pipe(&command)
         {
             // The pipe exists before the chord is written, so the shell cannot connect early.
-            if let Some(pipe) = session_id
-                .and_then(command_pipe::lookup_pipe_name)
-                .and_then(|name| command_pipe::CommandPipe::serve(&name, &command))
-            {
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command) {
                 self.command_pipe = Some(pipe);
                 warpui::input_order::log_hop("pwsh_command_via_pipe", || {
                     format!("bytes={}", command.len())
@@ -2133,14 +2146,21 @@ impl<T: EventLoopSender> PtyController<T> {
                 return TypedCommand::FileChord;
             }
         }
-        let _ = (is_user_command, session_id);
+        // A command too long for PSReadLine to render (#1106) is served on the pipe and a short
+        // launcher line is typed (#1592). With the kill switch off, or if the pipe cannot be made,
+        // it is typed as is: never written to disk.
         #[cfg(not(target_family = "wasm"))]
         if shell_type == ShellType::PowerShell
             && self.runs_long_commands_from_file
-            && long_command_file::needs_file(&command)
+            && is_user_command
+            && !force_typed
+            && self.file_insert_pending.is_none()
+            && self.fast_insert_on()
+            && long_command_file::needs_launcher(&command)
         {
-            if let Some((file, launcher)) = long_command_file::write_command_file(&command) {
-                self.long_command_file = Some(file);
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command) {
+                self.long_command_pipe = Some(pipe);
+                let launcher = long_command_file::LAUNCHER_LINE.to_owned();
                 // The shell echoes and reports the launcher; the block header, tab title and
                 // suggestion context must show the command the user submitted (#1117).
                 self.terminal_model
@@ -2149,6 +2169,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 return TypedCommand::Line(launcher);
             }
         }
+        let _ = (is_user_command, session_id, force_typed);
         let _ = shell_type;
         // A bash with no bracketed paste is typed the command key by key, which stalls for a
         // huge one (#1129); the shell decodes it from one short line instead. With bracketed paste
@@ -2164,6 +2185,31 @@ impl<T: EventLoopSender> PtyController<T> {
             return TypedCommand::Line(line);
         }
         TypedCommand::Line(command)
+    }
+
+    /// The kill switch (`PHOSPHOR_PWSH_FAST_INSERT=0`); tests flip it per controller instead of
+    /// through the process environment.
+    #[cfg(not(target_family = "wasm"))]
+    fn fast_insert_on(&self) -> bool {
+        #[cfg(test)]
+        if self.fast_insert_off_for_test {
+            return false;
+        }
+        long_command_file::fast_insert_enabled()
+    }
+
+    /// Closes the pipes of earlier commands (the name is a first-instance create, so it has to be
+    /// free) and serves `command` on the session's pipe. `None`: type it instead.
+    #[cfg(not(target_family = "wasm"))]
+    fn serve_on_pipe(
+        &mut self,
+        session_id: Option<u64>,
+        command: &str,
+    ) -> Option<command_pipe::CommandPipe> {
+        let name = session_id.and_then(command_pipe::lookup_pipe_name)?;
+        self.command_pipe = None;
+        self.long_command_pipe = None;
+        command_pipe::CommandPipe::serve(&name, command)
     }
 
     /// The insert chord found no command file and inserted nothing (#1581): type the command the
