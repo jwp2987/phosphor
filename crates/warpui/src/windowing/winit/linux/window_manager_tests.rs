@@ -58,3 +58,31 @@ fn missing_proc_root_is_none() {
         None
     );
 }
+
+#[test]
+fn uid_comes_from_status_not_directory_owner() {
+    // A non-dumpable process has a root-owned /proc dir; `status` still names the real user.
+    let dir = fake_proc(&[("200", "sway")]);
+    let uid = my_uid(&dir);
+    fs::write(
+        dir.path().join("200").join("status"),
+        format!("Name:\tsway\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        find_compositor_in_proc(dir.path(), uid).as_deref(),
+        Some("sway")
+    );
+    assert_eq!(find_compositor_in_proc(dir.path(), uid + 1), None);
+
+    // The effective uid (second field) decides, as with `ps -u`.
+    fs::write(
+        dir.path().join("200").join("status"),
+        format!("Uid:\t0\t{uid}\t0\t{uid}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        find_compositor_in_proc(dir.path(), uid).as_deref(),
+        Some("sway")
+    );
+}

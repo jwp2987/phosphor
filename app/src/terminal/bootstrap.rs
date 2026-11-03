@@ -168,6 +168,15 @@ const BASH_BOOTSTRAP_AFTER_READ: [&str; 2] = [
 const BASH_COUNTED_READ_RUN: &[u8] =
     b"; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR";
 
+/// Known residual (#1253): a ^C that reaches the tty while `head -c N` is still reading kills
+/// `head`, and the rest of the raw body is then read by the shell as ordinary input lines (the
+/// same exposure the here-document form has). It is not fixable from the command line: `head`
+/// has no way to be told to survive SIGINT without a `trap`, and a `trap '' INT` would also make
+/// the wait for a wedged remote uninterruptible, which is worse (the owner rule is that keys typed
+/// while ssh connects are held, so only an explicit abort key can reach this window). The body
+/// has no tty-special bytes and no line over 999 bytes, so a stray read is inert text, and
+/// `stty -echo` keeps it from being echoed.
+///
 /// #1226: [`bash_counted_read_bootstrap`] for either shell, also returning how many leading bytes
 /// of the result end with the counted-read command line (its CR): everything after that is the
 /// raw body and nothing else (#1549), which the shell does not see until `head`
@@ -255,6 +264,46 @@ pub(crate) fn counted_read_bootstrap_enabled_from_env(value: Option<&str>) -> bo
     !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
 }
 
+/// Marks the start and end of the part of `bash_body.sh` that only a local shell runs (the ssh
+/// wrapper, guarded by `WARP_IS_LOCAL_SHELL_SESSION=1`). Each is a `:` command on a line of its own.
+const LOCAL_ONLY_BEGIN: &str = ": __warp_local_only_begin";
+const LOCAL_ONLY_END: &str = ": __warp_local_only_end";
+
+/// #1164: `script` without the lines from [`LOCAL_ONLY_BEGIN`] to [`LOCAL_ONLY_END`] (both
+/// included), for a shell reached over ssh, where `WARP_IS_LOCAL_SHELL_SESSION` is not set and that
+/// block is dead code (about 12 KB of function definitions). Returns `script` unchanged unless
+/// there is exactly one begin line followed by one end line, so a malformed script is never cut.
+pub(crate) fn strip_local_only_block(script: Cow<'static, [u8]>) -> Cow<'static, [u8]> {
+    let Ok(text) = std::str::from_utf8(&script) else {
+        return script;
+    };
+    let is_marker = |line: &str, marker: &str| line.trim() == marker;
+    let mut begin = None;
+    let mut end = None;
+    for (index, line) in text.split('\n').enumerate() {
+        if is_marker(line, LOCAL_ONLY_BEGIN) {
+            if begin.replace(index).is_some() {
+                return script;
+            }
+        } else if is_marker(line, LOCAL_ONLY_END) && end.replace(index).is_some() {
+            return script;
+        }
+    }
+    let (Some(begin), Some(end)) = (begin, end) else {
+        return script;
+    };
+    if begin >= end {
+        return script;
+    }
+    let kept: Vec<&str> = text
+        .split('\n')
+        .enumerate()
+        .filter(|(index, _)| *index < begin || *index > end)
+        .map(|(_, line)| line)
+        .collect();
+    Cow::Owned(kept.join("\n").into_bytes())
+}
+
 /// The bootstrap to write into the shell: the counted-read form of the bash script
 /// ([`bash_counted_read_bootstrap`]) for an ssh session whose remote reported `raw_bootstrap`,
 /// otherwise `script` unchanged.
@@ -263,6 +312,16 @@ pub fn bootstrap_for_session(
     shell_type: ShellType,
     session_info: &SessionInfo,
 ) -> Cow<'static, [u8]> {
+    // #1164: the ssh wrapper only runs in a local shell, so a bash reached over ssh does not get it.
+    let script = if shell_type == ShellType::Bash
+        && matches!(
+            session_info.is_legacy_ssh_session,
+            IsLegacySSHSession::Yes { .. }
+        ) {
+        strip_local_only_block(script)
+    } else {
+        script
+    };
     if shell_type != ShellType::Bash
         || !matches!(
             session_info.is_legacy_ssh_session,

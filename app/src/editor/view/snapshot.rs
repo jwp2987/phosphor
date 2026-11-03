@@ -539,7 +539,7 @@ impl ViewSnapshot {
                 row_is_laid_out(Some(window), rows.start + index as u32) && frame.lines().len() != 1
             });
             if a_real_row_wrapped {
-                log::warn!("a row wrapped in a windowed editor layout; laying out every row");
+                warn_windowed_layout_wrapped();
                 return self.layout_text_frames_inner(
                     rows,
                     None,
@@ -1012,4 +1012,26 @@ pub(super) fn bounded_ghost_text(text: &str) -> Cow<'_, str> {
         end -= 1;
     }
     Cow::Owned(format!("{}\u{2026}", &text[..end]))
+}
+
+/// Logs that a windowed layout fell back, at most once per [`WINDOWED_LAYOUT_WARN_INTERVAL`]: if
+/// the proof fails persistently this runs every frame.
+fn warn_windowed_layout_wrapped() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+    const WINDOWED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(30);
+    static START: OnceLock<Instant> = OnceLock::new();
+    // Milliseconds since START + 1 of the last warning; 0 means never warned.
+    static LAST_WARN_MS: AtomicU64 = AtomicU64::new(0);
+    let now_ms = START.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1;
+    let last = LAST_WARN_MS.load(Ordering::Relaxed);
+    if (last == 0
+        || now_ms.saturating_sub(last) >= WINDOWED_LAYOUT_WARN_INTERVAL.as_millis() as u64)
+        && LAST_WARN_MS
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        log::warn!("a row wrapped in a windowed editor layout; laying out every row");
+    }
 }

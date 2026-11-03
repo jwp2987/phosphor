@@ -841,6 +841,12 @@ impl GeneratorContext for SessionContext {
             // The run was killed for a keystroke that is gone (`cancel_active_commands` kills
             // every generator of the session); this caller is still waiting, so run it again.
             result = self.shared_generator_run(&handle, &key, &env_vars).await;
+            if generator_cache::is_cancelled_run(&result) {
+                // Cancelled again: that output belongs to a keystroke that is gone, so report
+                // the run as failed instead of handing it back as the generator's result (it
+                // would read as a successful empty suggestion).
+                return Err(anyhow::anyhow!("the generator run was cancelled"));
+            }
         }
         match result.as_ref() {
             Ok(output) => Ok(output.clone()),

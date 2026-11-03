@@ -3600,6 +3600,40 @@ fn bash_counted_read_bootstrap_applies_to_the_bundled_bash_script() {
 }
 
 #[test]
+fn strip_local_only_block_drops_exactly_the_marked_lines() {
+    let script: Cow<'static, [u8]> = Cow::Borrowed(
+        b" a\n : __warp_local_only_begin\n ssh()\n : __warp_local_only_end\n b\n",
+    );
+    assert_eq!(strip_local_only_block(script).as_ref(), b" a\n b\n");
+    // A missing, doubled or reversed marker leaves the script alone.
+    for bad in [
+        &b" a\n : __warp_local_only_begin\n b\n"[..],
+        b" a\n : __warp_local_only_end\n b\n",
+        b" : __warp_local_only_end\n x\n : __warp_local_only_begin\n",
+        b" : __warp_local_only_begin\n : __warp_local_only_begin\n : __warp_local_only_end\n",
+        b" plain\n",
+    ] {
+        let input: Cow<'static, [u8]> = Cow::Owned(bad.to_vec());
+        assert_eq!(strip_local_only_block(input).as_ref(), bad);
+    }
+}
+
+#[test]
+fn bundled_bash_body_has_one_local_only_block_holding_the_ssh_wrapper() {
+    // #1164: the markers must stay in bash_body.sh, the stripped body must not define the ssh
+    // wrapper, and the unstripped one must.
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/bundled/bootstrap/");
+    let body = std::fs::read_to_string(format!("{dir}bash_body.sh")).expect("bash_body.sh");
+    let stripped = strip_local_only_block(Cow::Owned(body.clone().into_bytes()));
+    let stripped = String::from_utf8(stripped.into_owned()).unwrap();
+    assert!(body.contains("function warp_ssh_helper()"));
+    assert!(!stripped.contains("warp_ssh_helper"));
+    assert!(!stripped.contains("__warp_ssh_impl"));
+    assert!(stripped.len() < body.len());
+    assert!(stripped.contains("function warp_bootstrapped"));
+}
+
+#[test]
 fn counted_read_rewrite_ends_exactly_with_the_body_for_every_shell() {
     // #1549: macOS `head` over-reads a tty and swallows whatever is queued after the counted
     // bytes, so nothing may follow the body.
