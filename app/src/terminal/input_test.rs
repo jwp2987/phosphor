@@ -13541,8 +13541,12 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
 
 /// One padded-paste run of #1590 with a gated classifier, so the verdict's timing is the test's,
 /// not the clock's: `late` leaves the verdict outstanding and spends the Enter's compute budget
-/// (the cap fires), otherwise the verdict lands right after the Enter. Returns what ran, the agent
-/// queries and the buffer.
+/// (the cap fires), otherwise a Shell verdict for the pasted text lands right after the Enter
+/// (delivered the way the classifier's result is, so the route is the verdict's, not the
+/// heuristic's). The text must be one the Enter-time rules leave undecided (prose evidence, no
+/// unambiguous shell syntax): a line like `echo a; echo b` is settled to Shell at the Enter and
+/// never waits, so it cannot show the verdict's timing. Returns what ran, the agent queries and
+/// the buffer.
 fn padded_ready_paste_run(text: String, late: bool) -> (Vec<String>, usize, String) {
     use crate::ai::blocklist::InputConfig;
     use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
@@ -13594,6 +13598,7 @@ fn padded_ready_paste_run(text: String, late: bool) -> (Vec<String>, usize, Stri
         });
         warpui::r#async::Timer::after(Duration::from_millis(400)).await;
         let pasted = text.clone();
+        let pasted_text = text.clone();
         input.update(&mut app, |input, ctx| {
             input.offer_ready_paste(
                 ClipboardContent::plain_text(pasted),
@@ -13601,18 +13606,24 @@ fn padded_ready_paste_run(text: String, late: bool) -> (Vec<String>, usize, Stri
                 ctx,
             );
             input.input_enter(ctx);
+            // Both runs: the Enter must be waiting for the verdict, not decided at the Enter.
+            let id = input
+                .verdict_wait_id()
+                .expect("the pasted line's Enter waits for its verdict");
             if late {
-                let id = input
-                    .verdict_wait_id()
-                    .expect("the pasted line's Enter waits for its verdict");
                 input.verdict_wait.as_mut().unwrap().compute =
                     ComputeClock::with_spent_for_test(ENTER_VERDICT_BUDGET * 2);
                 input.compute_cap_fired(id, ctx);
             }
         });
         if !late {
-            gate.close();
+            input.update(&mut app, |input, ctx| {
+                input.ai_input_model().update(ctx, |model, ctx| {
+                    model.deliver_verdict_for_test(InputType::Shell, &pasted_text, ctx)
+                });
+            });
         }
+        gate.close();
         warpui::r#async::Timer::after(Duration::from_millis(500)).await;
         let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
         *sink.borrow_mut() = Some((executed.borrow().clone(), *ai_queries.borrow(), buffer));
@@ -13621,14 +13632,18 @@ fn padded_ready_paste_run(text: String, late: bool) -> (Vec<String>, usize, Stri
     outcome.expect("the test body ran")
 }
 
-/// #1590 + #1577 A5, padded pastes (500 and 5000 bytes under the #968 limit): the verdict on time
-/// runs the line in the shell with no agent request; a verdict that misses the Enter's compute
-/// budget hands the line back intact (nothing runs, nothing goes to the agent). Deterministic:
-/// the classifier is gated.
+/// #1590 + #1577 A5, padded pastes (500 and 3500 bytes: under the 4096-char background-job cap
+/// (#1036), above which no verdict is ever requested and the Enter never waits for one): the
+/// verdict on time runs the line in the shell with no agent request; a verdict that misses the
+/// Enter's compute budget hands the line back intact (nothing runs, nothing goes to the agent).
+/// Deterministic: the classifier is gated and the on-time verdict is delivered by the test. The
+/// line is prose-shaped so the Enter-time rules leave it undecided (an `echo a; echo b` line is
+/// settled to Shell at the Enter and never waits; the setup used to paste that, so the wait the
+/// test expected never existed).
 #[test]
 fn test_padded_ready_paste_then_immediate_enter_runs_on_time_and_hands_back_when_late() {
-    for pad in [500usize, 5000] {
-        let text = format!("echo PASTE-G1; echo PASTE-H1 #{}", "x".repeat(pad));
+    for pad in [500usize, 3500] {
+        let text = format!("is it true #{}", "x".repeat(pad));
         let (executed, queries, _) = padded_ready_paste_run(text.clone(), false);
         assert_eq!(executed, [text.clone()], "on time, pad {pad}: runs in the shell");
         assert_eq!(queries, 0, "on time, pad {pad}");
