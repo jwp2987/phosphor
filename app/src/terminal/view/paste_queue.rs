@@ -988,17 +988,55 @@ impl TerminalView {
             self.give_up_queued_young_hold(key, ctx);
             return;
         }
-        if kind == Some(GateKind::PasteReading) {
-            // #1353 phase 6 (INP-A4): the paste gave up on its clipboard read, so the reader's
-            // cancel flag is signalled and the blocked-reader count / log reflect it.
-            #[cfg(not(target_family = "wasm"))]
-            warpui::clipboard::abandon_pending_reads();
-        }
-        if kind == Some(GateKind::PowershellSetup) {
-            // Nothing closed the PowerShell gate: the setup is treated as over and its keys go.
-            log::warn!("input queue: PowerShell setup gate never closed; releasing the held keys");
-            self.release_subshell_setup_held_bytes(ctx);
-            return;
+        // #1577: a cap is a give-up, and a timer never writes user bytes to a pty. For every gate
+        // kind below, what waited behind the gate goes back to the editor as visible text (the
+        // Enter a newline, the next Enter consumed once with a toast) instead of being delivered
+        // through the stages, which wrote it to the pty.
+        let gate_key = queue
+            .try_peek()
+            .and_then(|queue| {
+                queue
+                    .gates()
+                    .iter()
+                    .find(|gate| gate.token == token)
+                    .map(|gate| gate.key)
+            })
+            .unwrap_or_default();
+        match kind {
+            Some(kind @ (GateKind::EnterVerdict | GateKind::TabCompletion)) => {
+                // The Input owns these gates: its own hand-back also voids the held Enter.
+                let handled = self.input.update(ctx, |input, ctx| {
+                    input.give_up_enter_gate_by_key(kind, gate_key, "leak_net", ctx)
+                });
+                if !handled {
+                    self.hand_back_gate_keys(kind, gate_key, "leak_net", ctx);
+                }
+                return;
+            }
+            Some(GateKind::PasteReading) => {
+                // #1353 phase 6 (INP-A4): the paste gave up on its clipboard read, so the reader's
+                // cancel flag is signalled and the blocked-reader count / log reflect it.
+                #[cfg(not(target_family = "wasm"))]
+                warpui::clipboard::abandon_pending_reads();
+                self.hand_back_gate_keys(GateKind::PasteReading, gate_key, "paste_cap", ctx);
+                return;
+            }
+            Some(GateKind::CliSubmit) => {
+                // The paced submit's own gate: its pieces are protocol writes and are not held
+                // here; the keys typed behind it come back.
+                self.hand_back_gate_keys(GateKind::CliSubmit, gate_key, "cli_submit_cap", ctx);
+                return;
+            }
+            Some(GateKind::PowershellSetup) => {
+                // Nothing closed the PowerShell gate: the setup is treated as over and its keys
+                // go back to the editor.
+                log::warn!(
+                    "input queue: PowerShell setup gate never closed; handing the held keys back"
+                );
+                self.give_up_setup_gates_to_editor("powershell_setup_cap", ctx);
+                return;
+            }
+            _ => {}
         }
         if kind == Some(GateKind::SubshellBootstrapWrite)
             && self.subshell_bootstrap_in_flight.is_some()
@@ -1023,9 +1061,21 @@ impl TerminalView {
         }
         if kind == Some(GateKind::SubshellSetup) {
             // Setup is treated as over (what the legacy hold-limit timer does), before the held
-            // keys are delivered, so none of them is held a second time.
-            self.subshell_bootstrap_announced = None;
-            self.dismiss_subshell_setup_waiting_toast(ctx);
+            // keys are handed back, so none of them is held a second time.
+            self.give_up_setup_gates_to_editor("subshell_setup_cap", ctx);
+            return;
+        }
+        if kind == Some(GateKind::SubshellBootstrapWrite) {
+            // The paced lines are out: the aborts typed meanwhile go first (protocol), then the
+            // keys typed behind the write come back to the editor.
+            self.send_pending_subshell_aborts(ctx);
+            self.hand_back_gate_keys(
+                GateKind::SubshellBootstrapWrite,
+                gate_key,
+                "bootstrap_write_cap",
+                ctx,
+            );
+            return;
         }
         {
             let Some(mut guard) = queue.try_lock() else {
@@ -1035,8 +1085,29 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.give_up(&mut host, token);
         }
-        if kind == Some(GateKind::SubshellBootstrapWrite) {
-            self.send_pending_subshell_aborts(ctx);
+    }
+
+    /// #1577: a setup hold (PowerShell or subshell) gave up on a timer: setup is treated as over
+    /// and the keys held behind its gates come back to the editor as text, never written.
+    pub(super) fn give_up_setup_gates_to_editor(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.powershell_setup_hold = super::PowerShellSetupHold::Off;
+        self.subshell_bootstrap_announced = None;
+        self.dismiss_subshell_setup_waiting_toast(ctx);
+        for kind in [GateKind::PowershellSetup, GateKind::SubshellSetup] {
+            let key = self.paste_queue.queue.try_peek().and_then(|queue| {
+                queue
+                    .gates()
+                    .iter()
+                    .find(|gate| gate.kind == kind)
+                    .map(|gate| gate.key)
+            });
+            if let Some(key) = key {
+                self.hand_back_gate_keys(kind, key, why, ctx);
+            }
         }
     }
 
@@ -1807,6 +1878,13 @@ impl TerminalView {
         let (mut chunks, mut bytes, mut chars) = (0usize, 0usize, 0usize);
         let mut inserted = false;
         for entry in entries {
+            if matches!(entry.kind, EntryKind::Paste { payload: None, .. }) {
+                // A paste whose read never finished: it is discarded with its toast (as the
+                // queue's own give-up does); what was typed behind it comes back below.
+                let mut host = PtyQueueHost::new(self, ctx);
+                host.discarded(&entry, DiscardReason::PasteNotReady);
+                continue;
+            }
             if !is_pty_entry(&entry.kind) {
                 self.insert_handed_back_run(&mut run, &mut chars, &mut inserted, ctx);
             }
@@ -1842,15 +1920,8 @@ impl TerminalView {
                  chars={chars} gone={gone} committed={committed}"
             )
         });
-        if !prompt_hold && inserted && ctx.has_singleton_model::<crate::workspace::ToastStack>() {
-            let window_id = ctx.window_id();
-            crate::workspace::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                toast_stack.add_ephemeral_toast(
-                    crate::view_components::DismissibleToast::error(GATE_GIVE_UP_TOAST.to_string()),
-                    window_id,
-                    ctx,
-                );
-            });
+        if !prompt_hold && (inserted || chunks > 0) {
+            self.show_error_toast(GATE_GIVE_UP_TOAST.to_string(), ctx);
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);

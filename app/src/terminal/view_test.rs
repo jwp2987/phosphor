@@ -15695,12 +15695,14 @@ fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys() {
     })
 }
 
-/// #1353 phase 2: the gates' give-up caps are safety nets that log and then behave like the
-/// event. The setup gate's cap treats setup as over and delivers the held keys; the bootstrap
-/// gate's cap lets the queue go, but keys it drains while the bootstrap is still being written
-/// wait for the last line instead of landing among its lines.
+/// #1353 phase 2 / #1577: the gates' give-up caps are safety nets that log and then HAND BACK. The
+/// setup gate's cap treats setup as over and returns the held keys to the editor as visible text
+/// (owner rule 2026-11-01: a timer may close a segment and hand text back, never write to a pty);
+/// the old expectation (the cap delivered them to the pty) encoded exactly what the rule forbids.
+/// The bootstrap gate's cap, while the paced lines are still being written, still waits: the keys
+/// are released by the last line's event, in order, never among the setup lines.
 #[test]
-fn subshell_gate_give_ups_deliver_without_losing_or_reordering() {
+fn subshell_gate_give_ups_hand_back_without_losing_or_reordering() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -15725,12 +15727,26 @@ fn subshell_gate_give_ups_deliver_without_losing_or_reordering() {
             assert!(view.subshell_bootstrap_announced.is_none());
             token
         });
-        assert_eq!(*written.borrow(), b"l".to_vec());
+        assert!(
+            written.borrow().is_empty(),
+            "the cap wrote to the pty: {:?}",
+            written.borrow()
+        );
+        terminal.read(&app, |view, ctx| {
+            view.input.read(ctx, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "l", "handed back to the editor");
+                assert!(input.ssh_handover_enter_guard_armed());
+            });
+        });
         // A second, late cap for the same gate does nothing.
         terminal.update(&mut app, |view, ctx| {
             view.on_paste_queue_give_up(setup_token, ctx)
         });
-        assert_eq!(*written.borrow(), b"l".to_vec());
+        assert!(written.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            view.input
+                .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), "l"));
+        });
 
         written.borrow_mut().clear();
         terminal.update(&mut app, |view, ctx| {

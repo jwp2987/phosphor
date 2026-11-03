@@ -14621,6 +14621,24 @@ impl Input {
         }
     }
 
+    /// #1577: the Enter held for its verdict / Tab completion is given up by a timer: the wait is
+    /// dropped (nothing will submit it) and its completion is cancelled. The caller hands the line
+    /// back to the editor.
+    fn void_verdict_wait_for_give_up(&mut self) {
+        let wait = self.verdict_wait.take();
+        if let Some(wait) = wait.as_ref() {
+            wait.compute.stop_notifying();
+        }
+        if wait
+            .as_ref()
+            .is_some_and(VerdictWait::holds_for_tab_completion)
+        {
+            self.tab_completion_request = None;
+            self.cancel_pending_completions_for_deferred_enter();
+        }
+        self.end_deferred_enter_activity();
+    }
+
     /// Runs the Enter that waited (verdict or completion hold): opens the replay for what was
     /// typed behind it (#1016), submits, and hands the replay to the view.
     fn submit_held_enter(&mut self, ctx: &mut ViewContext<Self>) {

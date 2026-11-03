@@ -315,6 +315,20 @@ impl Input {
                 return;
             }
         }
+        // #1577: the leak net of an Enter's verdict / completion gate is a give-up, and a timer
+        // never routes what waited behind the Enter (the queue's own give-up delivers it through
+        // the stages, which can write it to the pty): it is handed back to the editor as text.
+        if let Some(gate) = self.enter_gate.filter(|gate| !gate.held_unready) {
+            let ours = queue.try_peek().is_some_and(|queue| {
+                queue.gates().iter().any(|open| {
+                    open.token == token && open.kind == gate.kind && open.key == gate.key
+                })
+            });
+            if ours {
+                self.give_up_enter_gate_to_editor("leak_net", ctx);
+                return;
+            }
+        }
         // #1353 phase 6 (INP-A4): a paste that gives up on its clipboard read signals the reader's
         // cancel flag, so the blocked-reader count and the log reflect an abandoned read.
         #[cfg(not(target_family = "wasm"))]

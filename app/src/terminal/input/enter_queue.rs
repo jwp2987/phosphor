@@ -504,6 +504,11 @@ impl Input {
             return;
         }
         let held_behind = self.enter_gate_held_len(ctx);
+        if !gate.submitted {
+            // The Enter is still waiting for its verdict / completion: it is void now, so a late
+            // result cannot submit a buffer that holds the handed-back text.
+            self.void_verdict_wait_for_give_up();
+        }
         log::warn!(
             "input: the Enter gate gave up ({why}) with {held_behind} entr(ies) behind it; they \
              are handed back to the input, nothing is routed (#1577)"
@@ -512,6 +517,25 @@ impl Input {
             format!("by={why} behind={held_behind} submitted={}", gate.submitted)
         });
         self.hand_back_enter_gate(gate, ENTER_GATE_GIVE_UP_TOAST, ctx);
+    }
+
+    /// [`Self::give_up_enter_gate_to_editor`] for the gate `(kind, key)` a cap named: only when it
+    /// is this input's own Enter gate. Returns whether it was.
+    pub(crate) fn give_up_enter_gate_by_key(
+        &mut self,
+        kind: GateKind,
+        key: u64,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self
+            .enter_gate
+            .is_some_and(|gate| gate.kind == kind && gate.key == key)
+        {
+            return false;
+        }
+        self.give_up_enter_gate_to_editor(why, ctx);
+        true
     }
 
     /// The shared body of the Enter-gate give-ups: the gate is closed taking what waited behind
