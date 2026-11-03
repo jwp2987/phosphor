@@ -61,6 +61,22 @@ use crate::terminal::paste_sequencer::PasteFailure;
 const GATE_GIVE_UP_TOAST: &str = "Input was waiting too long, so it was not sent; what you typed is in the input. Check it, \
      then press Enter.";
 
+/// #1119: the notice shown when the stall ceiling abandons a subshell bootstrap. It is shown
+/// whether or not keys were held through the setup, so a failed Phosphorize is never silent; it
+/// also covers the held keys, which is why the hand-back itself shows no second toast for it.
+pub(super) const SUBSHELL_BOOTSTRAP_ABANDONED_TOAST: &str = "Phosphorize failed: the shell setup \
+     stalled, so this tab continues as a plain shell. Anything typed during the setup is in the \
+     input, not run.";
+
+/// The toast for keys a timer handed back from a gate (#1577), by the give-up's `why`. `None`
+/// when the caller shows its own notice: the stall ceiling's abandon notice (#1119).
+pub(super) fn gate_give_up_toast(why: &str) -> Option<&'static str> {
+    match why {
+        "stall_ceiling" => None,
+        _ => Some(GATE_GIVE_UP_TOAST),
+    }
+}
+
 /// A warning line for a pane closed while it still held input (#1441): entries and bytes queued
 /// or held (typed keys, ssh-held typeahead, pastes), pastes still being read from the clipboard
 /// and pastes read but not delivered. Counts only, never content. `None` when nothing was lost.
@@ -1969,11 +1985,9 @@ impl TerminalView {
             )
         });
         if !prompt_hold && (inserted || chunks > 0) {
-            let toast = match why {
-                "stall_ceiling" => "Shell setup stalled; what you typed is in the input",
-                _ => GATE_GIVE_UP_TOAST,
-            };
-            self.show_error_toast(toast.to_string(), ctx);
+            if let Some(toast) = gate_give_up_toast(why) {
+                self.show_error_toast(toast.to_string(), ctx);
+            }
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);

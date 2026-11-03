@@ -450,3 +450,16 @@ fn stall_ceiling_hands_the_keys_held_through_the_setup_back() {
         });
     }
 }
+
+/// #1119: an abandoned subshell bootstrap is never silent. The abandon path shows its own
+/// "Phosphorize failed" notice (held keys or not), so the stall ceiling's hand-back adds no
+/// second toast; every other give-up keeps the generic one.
+#[test]
+fn stall_ceiling_hand_back_defers_to_the_abandon_notice() {
+    assert_eq!(paste_queue::gate_give_up_toast("stall_ceiling"), None);
+    assert!(paste_queue::gate_give_up_toast("subshell_setup_cap").is_some());
+    assert!(paste_queue::gate_give_up_toast("bootstrap_write_cap").is_some());
+    let notice = paste_queue::SUBSHELL_BOOTSTRAP_ABANDONED_TOAST;
+    assert!(notice.contains("Phosphorize failed"));
+    assert!(notice.contains("in the input, not run"));
+}

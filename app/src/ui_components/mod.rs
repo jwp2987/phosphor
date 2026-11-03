@@ -12,6 +12,7 @@ pub(crate) mod dialog;
 pub(crate) mod icon_with_status;
 pub(crate) mod item_highlight;
 pub mod json_tree;
+pub mod live_duration;
 pub(crate) mod menu_button;
 pub(crate) mod red_notification_dot;
 pub(crate) mod render_file_search_row;
