@@ -342,9 +342,25 @@ def main():
                 r = cases.Result(c["name"], mode)
                 t0 = time.time()
                 ctx.t_case0 = t0
+                ctx.extra_logs = []
                 k_start = len(be.calls) if getattr(be, "calls", None) is not None else None     # injector accounting (#1509)
+                if win and not os.environ.get("APPCI_APP_LOG"):
+                    # r18e9: ctx.log_path was resolved ONCE, at the first launch. After a relaunch (the death / pane_not_local / left-agent-mode branches) the new instance
+                    # writes a different file, so every later case read a stale or 0-byte log: no app_segments_ms metric on latency_enter, no kh_hold_entry for
+                    # ssh_failing_not_local (UNVERIFIABLE), no case log. Re-resolve it before each case and say when it moved.
+                    try:
+                        nl = app.find_log()
+                        if nl and nl != ctx.log_path:
+                            print("[appci] app log moved: %s -> %s (relaunched instance)" % (ctx.log_path, nl), flush=True)
+                            ctx.log_path = nl
+                    except Exception as e:
+                        print("[appci] app log re-resolve failed: %r" % (e,), flush=True)
                 log_off = ctx.log_size() if (ctx.log_path and not sim) else None      # job-log evidence: the app-side Enter destinations of THIS case
                 status = "pass"
+                try:       # r18e9: the app instance this case started on (a case that relaunches the app itself ends in a fresh TERMINAL session)
+                    pid_start = app.pid() if app is not None and hasattr(app, "pid") else None
+                except Exception:
+                    pid_start = None
                 # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
                 disarm = arm_case_timeout(max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if c["name"] == "soak" else case_timeout)
                 try:
@@ -370,12 +386,35 @@ def main():
                     disarm()
                 if k_start is not None and a.backend in ("wayland", "x11", "mac") and not sim:
                     try:       # informational (#1509): injector sent N; app saw M; lost-before-app K
-                        txt, acct = injacct.account(be.calls[k_start:], log_path, c["name"])
+                        txt, acct = injacct.account(be.calls[k_start:], list(ctx.extra_logs) + [log_path] if ctx.extra_logs else log_path, c["name"])
                         if txt:
                             r.note("injector accounting: " + txt)
                             r.metrics["injector"] = acct
                     except Exception as e:
                         r.note("injector accounting failed: %r" % e)
+                if log_off is not None:       # r18e9: did the pty write carry '\r'? (an Enter the editor accepted whose write lacked the CR = dropped/held Enter, ssh_* on Windows)
+                    try:
+                        pw = pty_write_cr(ctx.log_since(log_off))
+                        if pw["enters"] or pw["writes"]:
+                            r.metrics["pty_write_cr"] = pw
+                            if pw["enters"] > pw["with_cr"]:
+                                r.note("pty writes: %(writes)d, of which carrying a CR (\\r): %(with_cr)d; Enter(s) the input editor started: %(enters)d (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)" % pw)
+                    except Exception as e:
+                        r.note("pty write CR count failed: %r" % (e,))
+                tainted = False
+                if a.backend == "mac" and not sim:       # r18e9: Returns macOS targeted at the app that its NSApplication never logged taint THIS case's row
+                    import taint
+                    try:
+                        pids = {app.pid()} - {None}
+                    except Exception:
+                        pids = set()
+                    tn, tm = taint.case_taint(run, c["name"], label, t0, time.time(), pids,
+                                              ctx.log_since(log_off) if log_off is not None else "", alive=bool(app.alive()) if hasattr(app, "alive") else None)
+                    if tm:
+                        r.metrics["enter_taint"] = tm
+                    if tn:
+                        r.note(tn)
+                        tainted = True
                 for ev in (be.drain_health() if hasattr(be, "drain_health") else []):
                     r.note(ev + " (key loss in this case is the INJECTOR's, not the app's)")
                 shot = None if sim else ctx.shot(c["name"] + ("_FAIL" if status == "fail" else ""))
@@ -383,8 +422,9 @@ def main():
                 dead = app.death() if hasattr(app, "death") else (None if app is None or app.alive() else "APP DIED during/after this case (crash): see logs/app.stdout")
                 if dead:
                     status = "fail"
+                    dead = classify_death(dead, ctx, t0, log_off)
                     r.fails.append(dead)
-                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence,
+                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
                     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)   # the relaunch overwrites phosphor.log (#1457)
@@ -397,11 +437,13 @@ def main():
                         be.guard()
                         proved = False       # a relaunched Windows pane needs its keys proven again (and its cwd set)
                     continue
+                if status != "fail" and win:       # r18e9: a PASSING case's app-log slice too (capped), so a validator can check a pass against the app's own hops
+                    save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=3_000_000)
                 if status == "fail":
                     exit_fail = True
                     if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
                         save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
-                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence,
+                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
                 if c["name"].startswith(("ssh_", "remote_")):
                     # r18ct: a failed nested-ssh case left the pane inside the remote shell, and the next case (latency_enter) typed a zsh-only
@@ -426,6 +468,28 @@ def main():
                     # every agent-pass case must END in agent mode, or the cases after it measure a terminal session under the agent label
                     # (r18cx macOS: mode_proof's Escape left agent view; nothing noticed). Unreadable screen: no verdict, no row.
                     seen = ctx.mode_now("mode_after_" + c["name"])
+                    try:
+                        pid_now = app.pid() if app is not None and hasattr(app, "pid") else None
+                    except Exception:
+                        pid_now = None
+                    if seen == "terminal" and pid_start and pid_now and pid_now != pid_start:
+                        # r18e9 (macOS ui_startup_time, remote_session_ext): the CASE relaunched the app itself (pid %s -> %s) and a relaunch starts in a terminal session,
+                        # so "left agent mode" blamed the app for the case's own restart. Visible row, not a failure; the app is relaunched so the next cases run in agent mode.
+                        emit(dict(name="agent_view_not_restored_after_" + c["name"], mode=label, status="pass", seconds=0,
+                                  shots=[os.path.relpath(p, run) for p in [ctx.shot("left_agent_after_" + c["name"])] if p],
+                                  detail=["%s relaunched the app itself (pid %s -> %s); a relaunched app starts in a terminal session, so this is not an app finding. "
+                                          "The app is relaunched again (fresh agent session) so the cases after it run in agent mode." % (c["name"], pid_start, pid_now)]))
+                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+                        instance += 1
+                        app.stop()
+                        nb = prof.prompts()
+                        app.start()
+                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                            time.sleep(4)
+                        if win:
+                            be.guard()
+                            proved = False
+                        continue
                     if seen == "terminal" and ctx.double_ctrlc_since(t0):
                         # r18d2: two Ctrl-C within the 1 s confirmation window of an empty agent conversation leave agent view BY DESIGN
                         # (view.rs should_ctrl_c_exit_agent_view -> exit_agent_view_with_required_confirmation). A visible row, not a failure; the app is
@@ -564,7 +628,51 @@ def main():
     return finish(run, a, 1 if exit_fail else 0)
 
 
-def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None):
+PTY_WRITE_RX = re.compile(r'hop=pty_write_bytes .*?bytes="((?:[^"\\]|\\.)*)"')
+
+
+def pty_write_cr(text):
+    """r18e9: {writes, with_cr, enters} from a case's app-log slice: hop=pty_write_bytes lines, how many carried a CR (`\\r` in the logged bytes), and the fresh
+    (not deferred) hop=enter_begin count. Both reports asked for it: an Enter the editor accepted but no pty write carried a CR."""
+    writes = with_cr = enters = 0
+    for l in text.splitlines():
+        m = PTY_WRITE_RX.search(l)
+        if m:
+            writes += 1
+            if "\\r" in m.group(1):
+                with_cr += 1
+        elif "hop=enter_begin deferred=false" in l:
+            enters += 1
+    return dict(writes=writes, with_cr=with_cr, enters=enters)
+
+
+CRASH_RX = re.compile(r"panicked at|\bSIGSEGV\b|\bSIGABRT\b|\bSIGBUS\b|fatal runtime error|stack overflow|Segmentation fault|EXC_BAD_ACCESS", re.I)
+
+
+def classify_death(dead, ctx, t0, log_off):
+    """r18e9 (macOS remote_session_*, shell_zsh): the case's trailing `exit` ran in the pane's own shell, the pane closed, the app quit, and the harness reported
+    "APP DIED". Name a pane closed by the case's own `exit` (no panic/signal/crash report in the case's app-log slice, window-close line present) as that, a
+    HARNESS defect of the case, never a crash; keep the crash wording otherwise and say what was checked."""
+    try:
+        sl = ctx.log_since(log_off) if log_off is not None else ""
+        crash = [l for l in sl.splitlines() if CRASH_RX.search(l)][:3]
+        reports = []
+        if sys.platform == "darwin":       # a real crash leaves a report; a clean quit does not
+            import glob
+            reports = [p for p in glob.glob(os.path.expanduser("~/Library/Logs/DiagnosticReports/*hosphor*")) if os.path.getmtime(p) >= t0 - 5]
+        closing = [l for l in sl.splitlines() if re.search(r"will close|window.*clos|all windows closed", l, re.I)][:1]
+        if crash or reports:
+            return "%s; crash evidence: %s" % (dead, "; ".join([c[:160] for c in crash] + reports))
+        if ctx.last_typed_exit_since(t0) and closing:
+            return ("PANE CLOSED BY THE CASE'S OWN `exit` (harness defect, NOT an app crash): the last text the case typed was `exit`, the app logged %r, and the case's app-log slice "
+                    "has no panic/SIGSEGV/SIGABRT/crash report. Underlying: %s" % (closing[0][:160], dead))
+        return "%s; no panic/signal/crash report found in the case's app-log slice (%d chars) or DiagnosticReports%s" % (
+            dead, len(sl), "; the case's last typed text was `exit` but no window-close line was logged" if ctx.last_typed_exit_since(t0) else "")
+    except Exception as e:
+        return "%s (death classification failed: %r)" % (dead, e)
+
+
+def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None, cap=12_000_000):
     """Windows: after a FAILED case, write the app-log lines since the case began (the log rotates and keeps only its newest part, so the
     failing case's key trace was gone by the end of the pass), plus the ssh server's log, to logs/<label>/case_<case>.log (#1488, r18cj)."""
     import ci_env
@@ -576,15 +684,17 @@ def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None):
             for l in app_log_text(src).splitlines():
                 if l[:20] >= cut or not l[:2] == "20":       # non-timestamped continuation lines ride with their neighbour
                     keep.append(l)
-        txt = "\n".join(keep)[:12_000_000]
+        txt = "\n".join(keep)
+        txt = txt[:cap] if cap >= 12_000_000 else txt[-cap:]       # a failing case keeps its start; a passing one its newest part
         sl = os.path.join(run, "ssh", "sshd.log")
-        if os.path.exists(sl):
+        if os.path.exists(sl) and cap >= 12_000_000:        # the ssh server log rides with FAILING cases only
             txt += "\n=== ssh/sshd.log ===\n" + open(sl, errors="replace").read()[-200_000:]
         logs = os.path.join(run, "logs", label)
         os.makedirs(logs, exist_ok=True)
-        open(os.path.join(logs, "case_%s.log" % case), "w").write(ci_env.redact(txt, ollama_url))
+        with open(os.path.join(logs, "case_%s.log" % case), "w", encoding="utf-8", errors="replace") as fh:      # r18e9: the cp1252 default crashed the whole run on U+FFFD
+            fh.write(ci_env.redact(txt, ollama_url))
     except Exception as e:          # evidence capture must never fail the run
-        print("save_case_log: %r" % (e,), flush=True)
+        print(("save_case_log: %r" % (e,)).encode("ascii", "backslashreplace").decode("ascii"), flush=True)
 
 
 def app_log_text(src):
@@ -721,9 +831,56 @@ def row_log_line(row):
     return line
 
 
+SSH_CM_RX = re.compile(r"ControlPath=(\S+)")
+
+
+def stop_ssh_controlmasters(label, run):
+    """r18e9 (macOS): 12 ssh ControlMaster clients naming the run dir outlived the pass (listed by the audit, never stopped; teardown said nothing was left). The app's ssh
+    wrapper starts `ssh -o ControlMaster=yes -o ControlPath=<p> ...` per connection. Ask each master to exit through ITS OWN control socket (`ssh -O exit`), and only when
+    that fails signal that exact PID, re-verified to still name the run dir. Never by process name. One line per client; never raises."""
+    if os.name == "nt":
+        return
+    try:
+        import signal
+        out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=30).stdout
+        for l in out.splitlines():
+            l = l.strip()
+            if not l or run not in l or "run.py" in l or l.startswith("%d " % os.getpid()):
+                continue
+            pid, _, cmd = l.partition(" ")
+            if not pid.isdigit() or not re.match(r"(\S*/)?ssh\s", cmd) or "ControlMaster" not in cmd:
+                continue
+            m = SSH_CM_RX.search(cmd)
+            how = "no ControlPath in its command line"
+            if m:
+                try:
+                    p = subprocess.run(["ssh", "-O", "exit", "-o", "ControlPath=" + m.group(1), "-o", "BatchMode=yes", "stopcm"], capture_output=True, text=True, timeout=15)
+                    how = "ssh -O exit via %s: rc=%d %s" % (m.group(1), p.returncode, (p.stderr or p.stdout).strip()[:80])
+                except Exception as e:
+                    how = "ssh -O exit failed to run: %r" % (e,)
+            time.sleep(0.5)
+            alive = subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout
+            if not alive.strip():
+                print("teardown[%s]: ssh ControlMaster pid %s stopped (%s)" % (label, pid, how), flush=True)
+                continue
+            if run in alive:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    time.sleep(1.0)
+                except Exception:
+                    pass
+                gone = not subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout.strip()
+                print("teardown[%s]: ssh ControlMaster pid %s %s (%s; then SIGTERM to that pid)" % (label, pid, "stopped" if gone else "STILL RUNNING", how), flush=True)
+            else:
+                print("teardown[%s]: ssh pid %s no longer names the run dir: left alone" % (label, pid), flush=True)
+    except Exception as e:
+        print("teardown[%s]: ssh ControlMaster cleanup failed: %r" % (label, e), flush=True)
+
+
 def cleanup_scratch(label, prof, run):
     """end-of-pass cleanup evidence (all platforms; the logs were copied above): remove the scratch HOME and ctl dirs, then audit for leftover
     processes whose command line names this run dir. Prints what it did; never raises."""
+    stop_ssh_controlmasters(label, run)
     try:
         gone, kept = [], []
         for d in (prof.home, prof.ctl, prof.rctl, prof.refctl, prof.rhome):

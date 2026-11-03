@@ -183,7 +183,11 @@ class Ctx:
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
         self.ctrlc_ts = []            # wall time of every Ctrl-C the harness sent (r18d2: see reset())
+        self.left_unproven = None     # leave(): where the probe ran when the pane was NOT provably remote (no `exit` typed)
+        self.extra_logs = []          # earlier app launches' log copies made by this case (snapshot_log), cleared per case by run.py
+        self.typed_log = []           # (time, text) of every be.type() (r18e9: tells "the case's own `exit` closed the pane" from an app death)
         self._wrap_ctrlc(be)
+        self._wrap_type(be)
         try:
             be.inject_log = os.path.join(run, "inject.log")
             os.makedirs(os.path.join(run, "logs"), exist_ok=True)
@@ -460,7 +464,7 @@ class Ctx:
             return None
         return want in got
 
-    SSH_HOP_RE = re.compile(r"kh_iq_(?:hold|release)\b.*Q7_ssh_typeahead|kh_hold_(?:entry|exit)\b|ssh hold:|apply_block_completed_to_ssh_gate|hop=hand_route|kh_handover|handoff_commit")
+    SSH_HOP_RE = re.compile(r"kh_iq_(?:hold|release)\b.*Q7_ssh_typeahead|kh_hold_(?:entry|exit)\b|kh_holding_set\b|gate_open kind=ssh_connect|ssh hold:|apply_block_completed_to_ssh_gate|hop=hand_route|kh_handover|handoff_commit")
 
     def app_hop_lines(self, rx, since):
         """[(wall_s or None, line)] of the app log lines (rotated chunks included, oldest first) matching `rx` whose t= is >= `since`"""
@@ -560,6 +564,46 @@ class Ctx:
                 return _orig(spec, *a, **k)
             setattr(be, name, wrapped)
         be._ctrlc_wrapped = self
+
+    def snapshot_log(self):
+        """r18e9: a case that relaunches the app (ui_startup_time x5, remote_session_ext x2) loses the earlier launches' app log to the overwrite, so injector accounting
+        counted only the last launch ("sent 331; app saw 164"). Copy the log (and its rotated chunks) aside BEFORE each stop; run.py accounts over all of them."""
+        import glob
+        try:
+            lp = self.log_path
+            if not lp or not os.path.exists(lp):
+                return
+            d = os.path.join(self.run, "logs", self.label, "acct")
+            os.makedirs(d, exist_ok=True)
+            base = os.path.join(d, "launch%d_%d.log" % (len(self.extra_logs), int(time.time())))
+            shutil.copyfile(lp, base)
+            for f in glob.glob(glob.escape(lp) + ".in_session.*"):
+                shutil.copyfile(f, base + ".in_session." + f.rsplit(".", 1)[1])
+            self.extra_logs.append(base)
+        except Exception:
+            pass
+
+    def _wrap_type(self, be):
+        """r18e9: remember what be.type() sent and when (the last few only), so a pane that vanished right after a typed `exit` is named as the case's own doing"""
+        if getattr(be, "_type_wrapped", None) is self or not hasattr(be, "type"):
+            return
+        orig, log = be.type, self.typed_log
+
+        def typed(text, *a, _orig=orig, **k):
+            log.append((time.time(), str(text)))
+            del log[:-20]
+            return _orig(text, *a, **k)
+        be.type = typed
+        be._type_wrapped = self
+
+    def last_typed_exit_since(self, t0):
+        """True when the case's LAST typed text was `exit` (at or after t0)"""
+        return bool(self.typed_log) and self.typed_log[-1][0] >= t0 and self.typed_log[-1][1].strip() == "exit"
+
+    def in_subshell(self, base):
+        """True/False/None: more shells under the app than `base` (a shell_count() taken before the subshell started). `exit` is typed only on True"""
+        now = self.shell_count()
+        return None if base is None or now is None else now > base
 
     def double_ctrlc_since(self, t0):
         """True when two Ctrl-C went out within the exit-confirmation window after t0: in an EMPTY agent conversation that is how the app is told to
@@ -893,6 +937,13 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
         # #1514: no rec.log in the PowerShell pane, so an extra character that still wrote the token passed. The exact line comes from PSReadLine's history file.
         want = [ctx.append_cmd(shell, t, fname) for t in exp]
         have = ctx.ps_history_lines()[hmark:]
+        try:        # r18e9: the history slice this check compared, kept per case as evidence (the validator had no copy to settle a mismatch)
+            ld = os.path.join(ctx.run, "logs", ctx.label)
+            os.makedirs(ld, exist_ok=True)
+            open(os.path.join(ld, "ps_history_%s.txt" % tag), "w", encoding="utf-8", errors="replace").write(
+                "hmark=%d total=%d new=%d want=%d\n%s\n" % (hmark, hmark + len(have), len(have), len(want), "\n".join(repr(h) for h in have)))
+        except Exception:
+            pass
         if len(have) == len(want):
             bad = [(h, w) for h, w in zip(have, want) if h != w]
             r.check(not bad, "%s: PowerShell received %d of %d lines NOT exactly as typed (PSReadLine history; first: got %r, want %r)" % (
@@ -1598,7 +1649,7 @@ def c_ssh_fail(ctx, r):
         t_failed = time.time()
         time.sleep(6)
         ev = ctx.app_hop_lines(SSH_GATE_RX, t_type - 0.5)
-        first = next(((t, l) for t, l in ev if t is not None and t >= t_type and "kh_hold_entry" in l), None)
+        first = next(((t, l) for t, l in ev if t is not None and t >= t_type and ("kh_hold_entry" in l or "kh_holding_set holding=true" in l or "gate_open kind=ssh_connect" in l)), None)      # r18e9: other hops that prove the same hold
         rel = [(t, l) for t, l in ev if t is not None and ("kh_hold_exit" in l or "kh_iq_release" in l) and t >= t_type]
         r.note("ssh gate at the first MUSTNOT key: %s; first gate release/exit after it: %s; ssh failed (connection closed) %.2f s after typing began; listener-side typing window %.2f s" % (
             ("t=+%.3fs %s" % (first[0] - t_type, first[1]) if first else "no kh_hold_entry logged (app key trace off or rotated)"),
@@ -1673,7 +1724,12 @@ def ref_terminal_windows(ctx):
     if ctx.pane == "gitbash":
         sh, shname = [winapi.git_bash(), "--rcfile", home + "/.bashrc", "-i"], "bash"
     else:
-        sh, shname = ["powershell.exe", "-NoLogo", "-NoProfile"], "powershell.exe"      # -NoProfile like the pane (#1514: the control must be symmetric)
+        # r18e9: the reference conhost PowerShell shared PSReadLine's ConsoleHost_history.txt with the app's pane, so its own `exit` (+ a leading Ctrl-U) landed in
+        # the pane's history slice and took the first slot of fast_typing. Give the reference its OWN HistorySavePath (and SaveNothing where that cannot be set).
+        ref_hist = os.path.join(ctx.W, ".appci_ref_ps_history.txt").replace("'", "''")
+        ctx.ref_ps_history = ref_hist
+        pre = "try{Set-PSReadLineOption -HistorySavePath '%s'}catch{try{Set-PSReadLineOption -HistorySaveStyle SaveNothing}catch{}}" % ref_hist
+        sh, shname = ["powershell.exe", "-NoLogo", "-NoProfile", "-NoExit", "-Command", pre], "powershell.exe"      # -NoProfile like the pane (#1514: the control must be symmetric)
     if want_wt:
         wt_exe = shutil.which("wt.exe") or shutil.which("wt")
         if not wt_exe:
@@ -2211,6 +2267,9 @@ def c_lat_enter(ctx, r):
         # plus the shell hooks Phosphor's bootstrap adds. Reported so the overhead can be split instead of argued.
         r.metric("app_enter_to_pty_write_ms", share)
         r.note("app share of Enter->start: enter_begin -> pty_write median %.2f ms (from the app's input_order log); the remaining overhead is shell/ConPTY side" % share)
+    if not segs:
+        r.metric("app_segments_ms", dict(unavailable=True, log_path=ctx.log_path, log_bytes=ctx.log_size(), platform=plat()))        # r18e9: say WHY the metric is absent
+        r.note("app segment metrics NOT available: no enter_begin -> pty_write pair in the app log %r (%d bytes) since the case started (stale log path after a relaunch, input-order logging off, or the Enters never reached the editor)" % (ctx.log_path, ctx.log_size()))
     if segs:
         # #1583 W3: the three segments per platform, as metrics (enter_begin->write, write->first pty_read, write->preexec)
         r.metric("app_segments_ms", dict(segs, platform=plat()))

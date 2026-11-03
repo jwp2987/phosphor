@@ -73,9 +73,26 @@ for ts, pid, wall in tap:
 unmatched_app = [a for a in app_ts if not any(abs(a - t[0]) <= TOL for t in tap)]
 
 say("Returns at the session tap: %d; Phosphor app_send_event lines: %d; Phosphor pids: %s" % (len(tap), len(app_ts), sorted(app_pids) or "unknown"))
-say("targeted at Phosphor but never reached its NSApplication: %d" % len(targeted_lost))
+# r18e9: 437 "lost" Returns were all for one pid and all after the second the saved app log (phosphor.3.log, 10.4 MB) ends, while the app ran 6 more minutes: a
+# log GAP, not a measured loss. Split them: LOST = the log has app_send_event lines within 3 s of the Return but none for it; UNCOVERED = no app_send_event near it at all.
+# Per-case taint is decided live by appci/taint.py (logs/enter_taint.jsonl); this is the whole-run cross-check.
+near = lambda ts: any(abs(ts - a) <= 3.0 for a in app_ts)
+unc_lost = [t for t in targeted_lost if not near(t[0])]
+say("targeted at Phosphor but never reached its NSApplication: %d (of which UNCOVERED, no app_send_event within 3 s = app-log gap, cause not established: %d; LOST with neighbours logged: %d)" % (
+    len(targeted_lost), len(unc_lost), len(targeted_lost) - len(unc_lost)))
+for f in sorted(glob.glob(os.path.join(run, "logs", "*", "phosphor*.log"))):
+    try:
+        with open(f, errors="replace") as fh:
+            first = fh.readline()[:20]
+            last = first
+            for last_l in fh:
+                if last_l[:2] == "20":
+                    last = last_l[:20]
+        say("  app log %s: %s .. %s (%d bytes)" % (os.path.relpath(f, run), first.strip(), last.strip(), os.path.getsize(f)))
+    except OSError:
+        pass
 for ts, pid, wall in targeted_lost[:50]:
-    say("  LOST ts=%.6f wall=%.3f target_pid=%d" % (ts, wall, pid))
+    say("  %s ts=%.6f wall=%.3f target_pid=%d" % ("UNCOVERED" if not near(ts) else "LOST", ts, wall, pid))
 n_else = sum(len(v) for v in elsewhere.values())
 say("targeted at another process: %d" % n_else)
 for pid, evs in sorted(elsewhere.items(), key=lambda kv: -len(kv[1])):

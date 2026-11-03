@@ -711,6 +711,87 @@ def r18e4_flood_zwj_routing_hang_fixes():
     assert ca.ambiguous_want("what is 5 > 3", "AgentConversation", "evidence-in-conversation (#1183)") == "shell"
 
 
+@check
+def r18e9_windows_reference_has_own_ps_history():
+    """r18e9: the conhost reference PowerShell must not share the pane's ConsoleHost_history.txt (its `exit` took fast_typing's first slot)"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cases.py"), encoding="utf-8").read()
+    i = src.index("def ref_terminal_windows")
+    body = src[i:src.index("def pane_shell", i)]
+    assert "HistorySavePath" in body and "-NoExit" in body, "the PowerShell reference needs its own history file"
+
+
+@check
+def r18e9_pane_closed_by_own_exit_is_not_an_app_death():
+    """r18e9: a pane closed by the case's own `exit` is named so; a panic keeps the crash wording"""
+    import run as runmod
+    class C:
+        def __init__(s, log, ex): s.log, s.ex = log, ex
+        def log_since(s, off): return s.log
+        def last_typed_exit_since(s, t0): return s.ex
+    t0 = time.time() - 1
+    m = runmod.classify_death("APP DIED: pid 1 is gone", C("13:51:34 enter_begin buffer=\"exit\"\n13:51:34 WindowId(0) will close\n", True), t0, 0)
+    assert "OWN `exit`" in m and "NOT an app crash" in m, m
+    m = runmod.classify_death("APP DIED: pid 1 is gone", C("thread 'main' panicked at x.rs:1\nWindowId(0) will close", True), t0, 0)
+    assert "OWN" not in m and "crash evidence" in m, m
+
+
+@check
+def r18e9_injector_accounting_spans_relaunches():
+    """r18e9: ui_startup_time relaunches 5 times and the app log is overwritten each time; accounting over [earlier copies..., live log] counts every launch, and the
+    per-launch seq counters do not collide"""
+    import injacct
+    d = tempfile.mkdtemp()
+    try:
+        def log(name, n):
+            p = os.path.join(d, name)
+            with open(p, "w") as f:
+                for i in range(n):
+                    f.write("2026 input_order typed_characters chars=1 t=%d seq=%d\n" % (1000 + i, i + 1))
+            return p
+        a, b = log("l1.log", 5), log("l2.log", 3)
+        one = injacct.app_keys(b, 0, 10)
+        both = injacct.app_keys([a, b], 0, 10)
+        assert len(one) == 3 and len(both) == 8, (len(one), len(both))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def r18e9_controlmaster_cleanup_parses_and_never_raises():
+    """r18e9: stop_ssh_controlmasters on a run dir nothing names is a silent no-op; the ControlPath regex reads the wrapper's option"""
+    import run as runmod
+    runmod.stop_ssh_controlmasters("t", "/nonexistent/appci-r18e9-" + str(os.getpid()))
+    assert runmod.SSH_CM_RX.search("/usr/bin/ssh -F x -o ControlMaster=yes -o ControlPath=/tmp/a/cm-1 -N -f h").group(1) == "/tmp/a/cm-1"
+
+
+@check
+def r18e9_enter_taint_splits_lost_from_uncovered():
+    """r18e9: a tapped Return with no app_send_event is LOST when neighbours are logged within 3 s, UNCOVERED when the log has nothing near it; a clean case is untainted"""
+    import taint
+    log = "x hop=mac_enter stage=app_send_event keycode=36 ts=10.000000 t=1\nx hop=mac_enter stage=app_send_event keycode=36 ts=11.000000 t=2\n"
+    taps = [(10.0, 5, 1.0), (12.0, 5, 3.0), (500.0, 5, 9.0), (50.0, 99, 5.0)]
+    c = taint.classify(taps, {5}, log)
+    assert [x[0] for x in c["lost"]] == [12.0] and [x[0] for x in c["uncovered"]] == [500.0] and c["elsewhere"] == 1, c
+    d = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d, "run"))
+        open(os.path.join(d, "ktap.log"), "w").write("E down keycode=36 ts_ns=10000000000 target_pid=5 source_pid=1 wall=100.0\n")
+        note, m = taint.case_taint(os.path.join(d, "run"), "c", "terminal", 99.0, 101.0, {5}, log)
+        assert note is None and m["lost"] == 0, (note, m)
+        note, m = taint.case_taint(os.path.join(d, "run"), "c", "terminal", 99.0, 101.0, {5}, "")
+        assert note and "TAINTED" in note and m["uncovered"] == 1 and os.path.exists(os.path.join(d, "run", "logs", "enter_taint.jsonl"))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
+def r18e9_pty_write_cr_count():
+    """r18e9: per-case count of pty writes that carried a CR"""
+    import run as runmod
+    L = 'x input_order hop=pty_write_bytes class=UserCommand wrote=2 of_job=2 bytes="\\r" since_precmd_ms=1\nx input_order hop=pty_write_bytes class=UserKey wrote=2 of_job=2 bytes="\\x1b1" s=2\nx input_order hop=enter_begin deferred=false t=1\n'
+    assert runmod.pty_write_cr(L) == dict(writes=2, with_cr=1, enters=1), runmod.pty_write_cr(L)
+
+
 def main():
     failed = 0
     for f in CHECKS:
