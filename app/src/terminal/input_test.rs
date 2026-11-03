@@ -14114,57 +14114,148 @@ fn test_enter_queue_voided_enter_keeps_the_typed_text_in_the_editor() {
 
 /// #1389: cursor keys typed behind a LARGE paste (100 KB and 1 MB) are applied after the paste's
 /// edit is fully reflected, whatever its size: Left lands before the last pasted character and the
-/// text typed after it goes there, End (a visual-line key) then takes the cursor to the end.
+/// text typed after it goes there, End (a visual-line key) then takes the cursor to the end. Run
+/// in both destination modes, without a rendered frame and with one (a soft-wrap layout that
+/// predates the paste, which End must not read: it waits for a layout laid out after the paste).
 #[test]
 fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
+    use crate::editor::soft_wrap::FrameLayouts;
+    use crate::terminal::input_queue::DestinationMode;
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
 
-    for size in [100 * 1024usize, 1024 * 1024] {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for with_layout in [false, true] {
+            for size in [100 * 1024usize, 1024 * 1024] {
+                App::test((), move |mut app| async move {
+                    let _mode =
+                        crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                    initialize_app(&mut app);
+                    let terminal =
+                        add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+                    let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+                    let editor = input.read(&app, |input, _| input.editor().clone());
+                    input.update(&mut app, |input, ctx| {
+                        input.clear_buffer_and_reset_undo_stack(ctx);
+                        input.user_insert("a", ctx);
+                    });
+                    let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
+                    if with_layout {
+                        // A frame was laid out for the one-character buffer.
+                        soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+                    }
+                    let pasted = "p".repeat(size);
+                    let content = pasted.clone();
+                    let (release, parked) = std::sync::mpsc::channel::<()>();
+                    let reader: BackgroundTextReader = Box::new(move || {
+                        let _ = parked.recv_timeout(Duration::from_secs(20));
+                        BackgroundTextRead::Content(ClipboardContent::plain_text(content))
+                    });
+                    input.update(&mut app, |input, ctx| {
+                        input.start_background_paste(reader, ctx)
+                    });
+                    editor.update(&mut app, |editor, ctx| {
+                        editor.handle_action(&EditorAction::Left, ctx);
+                        editor.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
+                        editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
+                        editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
+                    });
+                    input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "a"));
+                    release.send(()).unwrap();
+                    let expected = format!("a{}zp!", &pasted[..size - 1]);
+                    let before_end = format!("a{}zp", &pasted[..size - 1]);
+                    if with_layout {
+                        // The paste and the Left/z are in; End waits for a frame laid out after
+                        // them, and the `!` typed behind it waits too (never before it).
+                        for _ in 0..4000 {
+                            if input.read(&app, |input, ctx| input.buffer_text(ctx) == before_end) {
+                                break;
+                            }
+                            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                        }
+                        warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+                        input.read(&app, |input, ctx| {
+                            assert!(
+                                input.buffer_text(ctx) == before_end,
+                                "{mode:?} size {size}: End/! applied on the old layout"
+                            );
+                        });
+                        // The frame after the paste is laid out.
+                        soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+                    }
+                    for _ in 0..4000 {
+                        let idle = editor.read(&app, |editor, _| {
+                            let hold = editor.paste_hold();
+                            !hold.has_pending() && hold.queue().peek().is_idle()
+                        });
+                        if idle {
+                            break;
+                        }
+                        warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                    }
+                    input.read(&app, |input, ctx| {
+                        let text = input.buffer_text(ctx);
+                        assert_eq!(text.len(), expected.len(), "{mode:?} size {size}");
+                        assert!(
+                            text == expected,
+                            "{mode:?} size {size} layout {with_layout}: keys landed in the wrong place"
+                        );
+                    });
+                });
+            }
+        }
+    }
+}
+
+/// #1389: a cursor key typed LIVE (the queue is idle: the paste is already in) just after an edit,
+/// before a frame was laid out for it, must not read the old soft-wrap layout. End waits for the
+/// next layout and the text typed behind it waits too; nothing is lost or reordered. Both modes.
+#[test]
+fn test_live_end_after_an_edit_waits_for_the_next_layout() {
+    use crate::editor::soft_wrap::FrameLayouts;
+    use crate::terminal::input_queue::DestinationMode;
+
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app(&mut app);
             let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
             let input = terminal.read(&app, |terminal, _| terminal.input().clone());
             let editor = input.read(&app, |input, _| input.editor().clone());
             input.update(&mut app, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx);
-                input.user_insert("a", ctx);
+                input.user_insert("ab", ctx);
             });
-            let pasted = "p".repeat(size);
-            let content = pasted.clone();
-            let (release, parked) = std::sync::mpsc::channel::<()>();
-            let reader: BackgroundTextReader = Box::new(move || {
-                let _ = parked.recv_timeout(Duration::from_secs(20));
-                BackgroundTextRead::Content(ClipboardContent::plain_text(content))
-            });
-            input.update(&mut app, |input, ctx| {
-                input.start_background_paste(reader, ctx)
-            });
+            editor.update(&mut app, |editor, ctx| editor.move_to_buffer_start(ctx));
+            let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
+            soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+            assert!(!soft.is_stale());
+            // The edit (what a paste does) makes the stored layout stale.
+            input.update(&mut app, |input, ctx| input.user_insert("Q", ctx));
+            assert!(soft.is_stale(), "{mode:?}: the edit staled the layout");
             editor.update(&mut app, |editor, ctx| {
-                editor.handle_action(&EditorAction::Left, ctx);
-                editor.handle_action(&EditorAction::UserInsert(UserInput::new("z")), ctx);
                 editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
                 editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
             });
-            input.read(&app, |input, ctx| assert_eq!(input.buffer_text(ctx), "a"));
-            release.send(()).unwrap();
-            for _ in 0..4000 {
-                let idle = editor.read(&app, |editor, _| {
-                    let hold = editor.paste_hold();
-                    !hold.has_pending() && hold.queue().peek().is_idle()
-                });
-                if idle {
+            warpui::r#async::Timer::after(Duration::from_millis(100)).await;
+            input.read(&app, |input, ctx| {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "Qab",
+                    "{mode:?}: End and the text behind it wait for a layout newer than the edit"
+                );
+            });
+            soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+            for _ in 0..1000 {
+                if input.read(&app, |input, ctx| input.buffer_text(ctx) == "Qab!") {
                     break;
                 }
                 warpui::r#async::Timer::after(Duration::from_millis(5)).await;
             }
-            let expected = format!("a{}zp!", &pasted[..size - 1]);
             input.read(&app, |input, ctx| {
-                let text = input.buffer_text(ctx);
-                assert_eq!(text.len(), expected.len(), "size {size}");
-                assert!(
-                    text == expected,
-                    "size {size}: keys landed in the wrong place"
-                );
+                assert_eq!(input.buffer_text(ctx), "Qab!", "{mode:?}");
+            });
+            editor.read(&app, |editor, _| {
+                assert!(editor.paste_hold().queue().peek().is_idle(), "{mode:?}")
             });
         });
     }

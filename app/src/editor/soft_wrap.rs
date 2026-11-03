@@ -52,16 +52,33 @@ pub struct SoftWrapState {
     generation: Arc<std::sync::atomic::AtomicU64>,
     /// Told (bounded, one pending) each time a layout is stored.
     layout_waker: Arc<Mutex<Option<async_channel::Sender<()>>>>,
+    /// The buffer was edited after the last stored layout, so the stored layout describes text
+    /// that is no longer there (#1389). Cleared when the next layout is stored. A key that reads
+    /// the layout (End, Up, Down) must not apply while this is set.
+    stale: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SoftWrapState {
     pub fn update(&self, new_value: FrameLayouts) {
         *self.layouts.lock() = Some(new_value);
+        self.stale
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(waker) = self.layout_waker.lock().as_ref() {
             let _ = waker.try_send(());
         }
+    }
+
+    /// The buffer changed: the stored layout (if any) no longer describes it.
+    pub fn mark_stale(&self) {
+        self.stale.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A layout is stored and the buffer was edited since (#1389). False before the first frame
+    /// (there is no layout to be wrong) and once a frame after the edit was laid out.
+    pub fn is_stale(&self) -> bool {
+        self.is_laid_out() && self.stale.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The number of layouts stored so far.
