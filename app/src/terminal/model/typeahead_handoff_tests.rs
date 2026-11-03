@@ -3577,7 +3577,10 @@ fn ctrl_u_is_not_a_line_kill_on_powershell() {
         "^U left the PowerShell line dirty"
     );
     type_and_flush(&mut handoff, b"\x03");
-    assert!(!handoff.shell_line_may_hold_typed_text(), "^C still ends it");
+    assert!(
+        !handoff.shell_line_may_hold_typed_text(),
+        "^C still ends it"
+    );
 
     let mut posix = after_submit();
     posix.set_ctrl_u_kills_line(true);
