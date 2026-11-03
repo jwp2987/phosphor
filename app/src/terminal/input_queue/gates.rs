@@ -137,7 +137,9 @@ impl GateKind {
             GateKind::TabCompletion => "tab_completion_done_or_give_up_submit",
             GateKind::CliSubmit => "cli_submit_written",
             GateKind::HandoffReport => "report_received",
-            GateKind::PromptSeen => "precmd_parsed_or_command_running",
+            // #1614: the report of the request the prompt made due, or the command the held keys
+            // turn out to be typeahead for (a Preexec, a program taking the tty, a command written).
+            GateKind::PromptSeen => "report_or_command_running",
             GateKind::LineEditorActive => "line_editor_active",
             GateKind::SubshellSetup => "bootstrapped_then_precmd_or_abandoned",
             GateKind::PowershellSetup => "powershell_prompt_ready",

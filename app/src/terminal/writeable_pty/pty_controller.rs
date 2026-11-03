@@ -409,6 +409,15 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::ContinuationPrompt { .. } => {
                 me.on_continuation_prompt_marker(ctx);
             }
+            // #1614: the pty reader applied the stream a young hold waited on, and the hand-off
+            // decided again: the hold either ended as typeahead (the view writes its keys) or now
+            // waits for the request (decided here, if the line editor is active).
+            ModelEvent::YoungHoldReevaluated => {
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    me.announce_young_hold_end(ctx);
+                    me.retry_typeahead_handoff_request(ctx);
+                }
+            }
             // The shell ran what the chord inserted (or anything else): nothing to retype (#1581).
             ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
                 me.clear_file_insert();
@@ -695,6 +704,9 @@ impl<T: EventLoopSender> PtyController<T> {
         warpui::input_order::log_hop("handoff_decision", || {
             format!("decision={decision:?} retry={is_retry}")
         });
+        // #1614: a decision that found no request possible for a live young hold ended it as
+        // typeahead; the view writes its keys.
+        self.announce_young_hold_end(ctx);
         match decision {
             ActiveDecision::Legacy if !is_retry => {
                 self.handoff_request_waiting = false;

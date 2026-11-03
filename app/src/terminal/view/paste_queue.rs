@@ -52,8 +52,8 @@ use crate::terminal::input_queue::{
     is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{
-    CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldExpiry, forces_shell_submit,
-    text_for_editor,
+    CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldEvidence, YoungHoldExpiry,
+    forces_shell_submit, text_for_editor,
 };
 use crate::terminal::paste_sequencer::PasteFailure;
 
@@ -1205,6 +1205,12 @@ impl TerminalView {
     ) {
         let spec = GateSpec::new(GateKind::PromptSeen, hold_id).with_cap(Some(give_up));
         self.hold_keys_behind_gate(spec, bytes, takes_over_agent_control, ctx);
+        // #1614: a hold that stands on "the request is due" schedules its own release: the
+        // controller decides the request now (the shell's report runs the Enter), instead of
+        // waiting for a decision nothing else would trigger (the lost wakeup of #1614).
+        if self.handoff.read().young_hold_evidence() == Some(YoungHoldEvidence::RequestDue) {
+            ctx.emit(Event::RetryTypeaheadHandoffRequest);
+        }
     }
 
     fn hold_keys_behind_gate(
@@ -1454,6 +1460,29 @@ impl TerminalView {
             YoungHoldEnd::Dropped => {
                 trace::release(trace::legacy::HANDOFF, 0, held_bytes, "dropped");
             }
+            // #1614: an event (a Preexec, a program taking the tty, the barrier, a decision that
+            // found no request possible) said the held Enter and the keys behind it are typeahead
+            // for what owns the tty: written in typed order (one write, or one per key event on
+            // ConPTY) and counted as the user bytes they are. Not a timer's write: the cap only
+            // hands back (`give_up_queued_young_hold`).
+            YoungHoldEnd::Typeahead => {
+                let writes = self.handoff.write().route_expired_young_chunks(chunks);
+                let written: usize = writes.iter().map(Vec::len).sum();
+                warpui::input_order::log_hop("young_hold_typeahead", || {
+                    format!(
+                        "hold_id={hold_id} chunks={} bytes={written} held_bytes={held_bytes}",
+                        writes.len()
+                    )
+                });
+                trace::release(trace::legacy::HANDOFF, writes.len(), written, "pty");
+                self.input
+                    .update(ctx, |input, _| input.clear_handoff_enter_hold());
+                for bytes in writes {
+                    ctx.emit(Event::WriteHandoffUserBytesToPty {
+                        bytes: Cow::Owned(bytes),
+                    });
+                }
+            }
             YoungHoldEnd::FollowCommand => {
                 // The command is written (or queued ahead of these): the keys typed behind the
                 // Enter follow it, counted as the lines they are.
@@ -1627,7 +1656,11 @@ impl TerminalView {
         {
             return;
         }
-        let expiry = self.handoff.write().expire_queued_young_hold(hold_id);
+        let (expiry, evidence) = {
+            let mut handoff = self.handoff.write();
+            let evidence = handoff.young_hold_evidence();
+            (handoff.expire_queued_young_hold(hold_id), evidence)
+        };
         match expiry {
             YoungHoldExpiry::Keep => {}
             YoungHoldExpiry::Gone => {
@@ -1644,8 +1677,15 @@ impl TerminalView {
             // #1577: the cap is a give-up, and a timer never writes user bytes to the pty: the
             // held Enter and the keys behind it come back to the editor as text (the Enter a
             // newline, the next Enter consumed once with a toast). The event-driven ends
-            // (`drain_young_hold_ends`: a command, the report) still write them as typeahead.
+            // (`drain_young_hold_ends`: a command, the report, a Preexec, the barrier) still
+            // write them as typeahead.
             YoungHoldExpiry::Release => {
+                // #1614: the hold engaged on named evidence whose event did not come within the
+                // cap: a defect indicator, named so a run can be failed on it (appci greps it).
+                log::warn!(
+                    "typeahead young hold {hold_id} ({evidence:?}) ran to its cap with no release \
+                     event; handing the keys back to the editor (young_hold_cap)"
+                );
                 self.hand_back_young_hold_keys(hold_id, "young_hold_cap", ctx);
             }
         }
@@ -1659,9 +1699,14 @@ impl TerminalView {
         why: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
+        let (evidence, command_interactive) = {
+            let handoff = self.handoff.read();
+            (handoff.young_hold_evidence(), handoff.command_interactive())
+        };
         warpui::input_order::log_hop("young_hold_handed_back", || {
             format!(
-                "hold_id={hold_id} why={why} ssh_gate_armed={} ssh_holding={}",
+                "hold_id={hold_id} why={why} evidence={evidence:?} \
+                 command_interactive={command_interactive} ssh_gate_armed={} ssh_holding={}",
                 self.ssh_connect_gate.is_some(),
                 self.ssh_typeahead_holding
             )

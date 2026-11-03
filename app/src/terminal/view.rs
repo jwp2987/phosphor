@@ -11718,30 +11718,35 @@ impl TerminalView {
             gate.block_id = Some(block_id);
             gate.user_submitted = user_submitted;
             self.ssh_connect_gate = Some(gate);
-            // #1609: from this submit until the ssh block ends the pty belongs to ssh and the
-            // remote shell: an Enter typed into it is not held as a young line of the local shell.
-            self.set_handoff_ssh_owns_tty(true, "ssh_submit");
+            // #1609/#1614: from this submit until the ssh block ends the pty belongs to ssh and
+            // the remote shell. The hand-off needs no flag for it: the platform sample sees ssh
+            // in front (never the local shell's line editor) and the block latch calls the
+            // command interactive, so an Enter typed into it is delivered, not held.
+            self.log_ssh_pty_owner(true, "ssh_submit");
         } else {
             // A different command now owns the pty: a stale gate must not eat its typing.
             self.ssh_connect_gate = None;
-            self.set_handoff_ssh_owns_tty(false, "other_submit");
+            self.log_ssh_pty_owner(false, "other_submit");
         }
         self.ssh_edge(input_queue::SshEdge::Submitted {
             ssh: self.ssh_connect_gate.is_some(),
         });
     }
 
-    /// #1609: tells the hand-off whether an ssh the user submitted owns the pty; logged with the
-    /// site so a run shows every set and clear.
-    fn set_handoff_ssh_owns_tty(&mut self, owns: bool, site: &'static str) {
-        let was = {
-            let mut handoff = self.handoff.write();
-            let was = handoff.ssh_owns_tty();
-            handoff.set_ssh_owns_tty(owns);
-            was
-        };
-        warpui::input_order::log_hop("ssh_owns_tty", || {
-            format!("set={owns} was={was} site={site}")
+    /// #1609's proof logging, kept after #1614 removed the flag it set: at every site where the
+    /// pty passes to or from an ssh the user submitted, what the hand-off will decide a young
+    /// Enter on (the sampled shell state and the block latch), so a run shows the facts that
+    /// replaced the carve-out.
+    fn log_ssh_pty_owner(&self, ssh: bool, site: &'static str) {
+        warpui::input_order::log_hop("ssh_pty_owner", || {
+            let handoff = self.handoff.read();
+            format!(
+                "ssh={ssh} site={site} prompt_fact={:?} command_interactive={} \
+                 young_hold_evidence={:?}",
+                handoff.sample_prompt_fact(),
+                handoff.command_interactive(),
+                handoff.young_hold_evidence()
+            )
         });
     }
 
@@ -17422,7 +17427,7 @@ impl TerminalView {
                     self.on_user_block_completed(&block_completed_event.block_id, ctx);
                     // #1609: any user block ending returns the pty to the local shell, whether or
                     // not an ssh gate is still open.
-                    self.set_handoff_ssh_owns_tty(false, "block_completed");
+                    self.log_ssh_pty_owner(false, "block_completed");
                     // #983: the ssh block ends when the remote shell's first precmd arrives, well
                     // before the remote session is registered and bootstrapped. A failed ssh ends
                     // the connect window; a clean end keeps it for the bootstrap grace period.
@@ -18342,6 +18347,21 @@ impl TerminalView {
             ModelEvent::CommandBecameInteractive { block_id } => {
                 // A program took over the terminal (#1373): the event the "long running"
                 // consumers used to wait 50 ms for.
+                // #1614: the keys typed into that command are its, not a line at a prompt: the
+                // hand-off delivers an Enter typed now, and a young hold live at this moment is
+                // written as typeahead by this event. Only for the block still running (a late
+                // event for a block whose prompt is already back must not mark the next command).
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    let still_running = {
+                        let model = self.model.lock();
+                        model.active_block_id() == block_id
+                            && model.block_list().active_block().started()
+                    };
+                    if still_running {
+                        self.handoff.write().note_command_interactive();
+                        self.drain_young_hold_ends(ctx);
+                    }
+                }
                 // #1577: the held PowerShell line became a program that reads keys: the keys
                 // typed after it are its typeahead, released in order by this event (the
                 // 2 s grace no longer writes them).
@@ -18798,8 +18818,10 @@ impl TerminalView {
             }
             // Handled by RemoteServerController via model subscription.
             ModelEvent::SshInitShell { .. } => {}
-            // Consumed by the typeahead hand-off (#1390, #1391), not by the view itself.
-            ModelEvent::LineEditorReading { .. } | ModelEvent::ContinuationPrompt { .. } => {}
+            // Consumed by the typeahead hand-off (#1390, #1391, #1614), not by the view itself.
+            ModelEvent::LineEditorReading { .. }
+            | ModelEvent::ContinuationPrompt { .. }
+            | ModelEvent::YoungHoldReevaluated => {}
             // Consumed by the pty controller (#1581).
             ModelEvent::CommandFileFailed { .. } => {}
             ModelEvent::RemoteServerBlockRequested { session_id } => {

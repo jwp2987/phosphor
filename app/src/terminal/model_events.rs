@@ -408,6 +408,7 @@ impl ModelEventDispatcher {
             Event::ContinuationPrompt { session_id, seq } => {
                 ModelEvent::ContinuationPrompt { session_id, seq }
             }
+            Event::YoungHoldReevaluated => ModelEvent::YoungHoldReevaluated,
             Event::CommandFileFailed { session_id } => ModelEvent::CommandFileFailed { session_id },
             _ => return,
         };
@@ -621,6 +622,9 @@ pub enum ModelEvent {
         session_id: SessionId,
         seq: Option<u64>,
     },
+    /// A young-Enter hold waiting on the pty stream barrier was decided again (#1614); see
+    /// `Event::YoungHoldReevaluated`. Consumed by the pty controller.
+    YoungHoldReevaluated,
     /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command pipe and inserted
     /// nothing: the pty controller retypes the command.
     CommandFileFailed {
