@@ -15,11 +15,13 @@ $global:_warpBootstrapHistoryLines = if ($PSCommandPath) { @(". $PSCommandPath",
 # ($PSScriptRoot is empty, as when typing). Error positions refer to the command text. The
 # launcher line is kept out of history (see the AddToHistoryHandler), so a long command is not on
 # the Up arrow. Preexec has already reported the launcher; the app shows the real command.
+# It reads its own pipe (`$global:_warpCmdPipe` + '-long') so it can coexist with an outstanding
+# insert chord's pipe.
 function global:Warp-Run-LongCommand() {
     $text = $null
     $pipe = $null
     try {
-        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', [string]$global:_warpCmdPipe, [System.IO.Pipes.PipeDirection]::In)
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', ([string]$global:_warpCmdPipe + '-long'), [System.IO.Pipes.PipeDirection]::In)
         $pipe.Connect(5000)
         $buffer = New-Object System.IO.MemoryStream
         $pipe.CopyTo($buffer)

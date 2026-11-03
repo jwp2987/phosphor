@@ -446,3 +446,38 @@ fn a_precmd_without_a_preexec_retypes_once_and_a_preexec_first_retypes_nothing()
         assert_eq!(normal.sender.messages.lock().len(), 1);
     });
 }
+
+/// F1 (#1592): a long command submitted while a chord is outstanding is still served behind the
+/// launcher line (never typed raw), and both pipes stay alive.
+#[test]
+fn a_long_command_while_a_chord_is_outstanding_goes_behind_the_launcher() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_030, true);
+        let long = format!(
+            "echo '{}'",
+            "a".repeat(long_command_file::MAX_TYPED_BYTES + 1000)
+        );
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("one", None), ctx);
+            controller.send_write_to_event_loop(command(&long, None), ctx);
+        });
+        {
+            let messages = rig.sender.messages.lock();
+            assert_eq!(messages.len(), 3, "chord, ESC 2, launcher line");
+            assert_eq!(payload(&messages[0]), b"\x1b3".to_vec());
+            assert_eq!(payload(&messages[1]), b"\x1b2".to_vec());
+            assert_eq!(
+                payload(&messages[2]),
+                typed_bytes(long_command_file::LAUNCHER_LINE)[2..].to_vec()
+            );
+        }
+        rig.controller.read(&app, |controller, _| {
+            assert_eq!(controller.file_insert_pending.as_deref(), Some("one"));
+            assert!(controller.command_pipe.is_some(), "the chord's pipe lives");
+            assert!(
+                controller.long_command_pipe.is_some(),
+                "the launcher's pipe lives"
+            );
+        });
+    });
+}

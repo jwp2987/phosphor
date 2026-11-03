@@ -2143,7 +2143,7 @@ impl<T: EventLoopSender> PtyController<T> {
             && long_command_file::can_insert_via_pipe(&command)
         {
             // The pipe exists before the chord is written, so the shell cannot connect early.
-            if let Some(pipe) = self.serve_on_pipe(session_id, &command) {
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command, false) {
                 self.command_pipe = Some(pipe);
                 warpui::input_order::log_hop("pwsh_command_via_pipe", || {
                     format!("bytes={}", command.len())
@@ -2168,11 +2168,10 @@ impl<T: EventLoopSender> PtyController<T> {
             && self.runs_long_commands_from_file
             && is_user_command
             && !force_typed
-            && self.file_insert_pending.is_none()
             && self.fast_insert_on()
             && long_command_file::needs_launcher(&command)
         {
-            if let Some(pipe) = self.serve_on_pipe(session_id, &command) {
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command, true) {
                 self.long_command_pipe = Some(pipe);
                 let launcher = long_command_file::LAUNCHER_LINE.to_owned();
                 // The shell echoes and reports the launcher; the block header, tab title and
@@ -2212,17 +2211,24 @@ impl<T: EventLoopSender> PtyController<T> {
         long_command_file::fast_insert_enabled()
     }
 
-    /// Closes the pipes of earlier commands (the name is a first-instance create, so it has to be
-    /// free) and serves `command` on the session's pipe. `None`: type it instead.
+    /// Closes the previous pipe of the same slot (the name is a first-instance create, so it has
+    /// to be free) and serves `command` on the session's pipe. The insert chord and the long
+    /// command launcher have a slot each (the launcher's name has a `-long` suffix), so a long
+    /// command can follow an outstanding chord without being typed raw. `None`: type it instead.
     #[cfg(not(target_family = "wasm"))]
     fn serve_on_pipe(
         &mut self,
         session_id: Option<u64>,
         command: &str,
+        long: bool,
     ) -> Option<command_pipe::CommandPipe> {
-        let name = session_id.and_then(command_pipe::lookup_pipe_name)?;
-        self.command_pipe = None;
-        self.long_command_pipe = None;
+        let mut name = session_id.and_then(command_pipe::lookup_pipe_name)?;
+        if long {
+            name.push_str("-long");
+            self.long_command_pipe = None;
+        } else {
+            self.command_pipe = None;
+        }
         command_pipe::CommandPipe::serve(&name, command)
     }
 
