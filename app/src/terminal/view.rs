@@ -12494,6 +12494,21 @@ impl TerminalView {
                 .active_block_mut()
                 .mark_interrupted_by_ctrl_c();
         }
+        // #1580: user bytes already decided for the pty but still in the queue (a drain that
+        // stopped at a foreign entry or yielded, ops in the mailbox) go out BEFORE the agent's
+        // bytes. The agent bytes themselves are never held behind a gate (REFUSED, not held).
+        self.flush_deferred_queue_ops(ctx);
+        self.on_pane_queue_needs_drain(ctx);
+        warpui::input_order::log_key_hop("kh_agent_write", || {
+            format!(
+                "bytes={} queued={}",
+                bytes.len(),
+                self.paste_queue
+                    .queue
+                    .try_peek()
+                    .map_or(0, |queue| queue.queued_len())
+            )
+        });
         ctx.emit(Event::WriteAgentInputToPty { bytes, mode: *mode });
         self.end_origin_row(row, true);
     }

@@ -301,3 +301,56 @@ fn hand_back_into_a_busy_pane_is_kept_and_restored_at_block_end() {
         })
     }
 }
+
+/// #1580: user bytes already decided for the pty but still in the queue (a drain stopped at a
+/// foreign entry) go out BEFORE an agent write that follows them; the agent bytes are never held.
+#[test]
+fn an_agent_write_does_not_overtake_user_bytes_waiting_in_the_queue() {
+    App::test((), |mut app| async move {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(
+            DestinationMode::Table,
+        );
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let order: Rc<RefCell<Vec<(&'static str, Vec<u8>)>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = order.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                Event::WriteBytesToPty { bytes } | Event::WriteHandoffUserBytesToPty { bytes } => {
+                    sink.borrow_mut().push(("user", bytes.to_vec()));
+                }
+                Event::WriteAgentInputToPty { bytes, .. } => {
+                    sink.borrow_mut().push(("agent", bytes.to_vec()));
+                }
+                _ => {}
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("sleep 9", "");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            view.input.update(ctx, |input, ictx| {
+                input.offer_pty_bytes_through_editor_host_for_test(b"u".to_vec(), ictx);
+            });
+            // The editor host stopped at the pty entry: it is still queued.
+            assert_eq!(view.paste_queue.queue.peek().queued_len(), 1);
+            view.write_agent_bytes_to_pty(b"a".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+        });
+        let order = order.borrow();
+        let user_at = order
+            .iter()
+            .position(|(who, b)| *who == "user" && b == b"u");
+        let agent_at = order
+            .iter()
+            .position(|(who, b)| *who == "agent" && b == b"a");
+        assert!(
+            user_at.is_some() && agent_at.is_some() && user_at < agent_at,
+            "user bytes first, then the agent's: {order:?}"
+        );
+    })
+}
