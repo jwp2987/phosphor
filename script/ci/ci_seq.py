@@ -18,6 +18,8 @@
 # Prereqs: glab authenticated (run 'glab api user' first). Never re-plays a job that already ran. Heavy jobs: ask the owner.
 # Per-job variables (TEST_FILTER, APPCI_TIER) go through the play API's job_variables_attributes.
 import argparse, json, os, re, subprocess, sys, threading, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import glapi                                    # every GitLab call: honours Retry-After / RateLimit-* (GitLab.com rate limits)
 
 PROJECT = "88085499"
 LINUX, MAC, WIN = "linux", "macos", "windows"
@@ -389,25 +391,32 @@ def find_reusable(plat, head, cur_pid):
 
 
 def api(path, method="GET", variables=None):
-    a = ["glab", "api", path] + (["-X", method] if method != "GET" else [])
-    body = None
+    """-> GitLab's parsed JSON answer (an error body for a 4xx), or None when GitLab gave no answer within glapi's deadline.
+    Rate limits (429) and transient 5xx must never read as "no such job" (that ended a run early on 2026-11-02): glapi waits as
+    long as Retry-After says and paces before the window runs out."""
+    body = hdrs = None
     if variables:   # play API: job_variables_attributes must arrive as a JSON array of {key,value}
-        a += ["--header", "Content-Type: application/json", "--input", "-"]
+        hdrs = ["Content-Type: application/json"]
         body = json.dumps({"job_variables_attributes": [{"key": k, "value": v} for k, v in variables.items()]})
-    # GitLab rate limits (HTTP 429) and transient 5xx must never read as "no such job" (that ended a run early on 2026-11-02):
-    # retry with backoff, and only give up (None) after ~5 minutes
-    for attempt in range(10):
-        r = subprocess.run(a, input=body, capture_output=True, text=True)
-        # r18cz: a lost connection ("error connecting to gitlab.com", laptop asleep / Wi-Fi drop) is transient too
-        transient = r.returncode != 0 and any(x in (r.stderr or "") for x in ("429", "502", "503", "504", "timeout", "Timeout", "error connecting",
-                                                                              "connection", "Connection", "dial tcp", "EOF", "no such host"))
-        if not transient:
-            break
-        time.sleep(min(60, 5 * (attempt + 1)))
     try:
-        return json.loads(r.stdout or "null")
+        _, out = glapi.call(path, method, body=body, headers=hdrs or ())
+    except glapi.GitLabUnavailable as e:
+        print("%s: %s" % (time.strftime("%H:%M"), e), flush=True)
+        return None
+    try:
+        return json.loads(out or b"null")
     except ValueError:
         return None
+
+
+def api_raw(path):
+    """-> (HTTP status, body text) for a non-JSON resource (job trace, artifact file); (None, "") when GitLab gave no answer."""
+    try:
+        st, out = glapi.call(path)
+    except glapi.GitLabUnavailable as e:
+        print("%s: %s" % (time.strftime("%H:%M"), e), flush=True)
+        return None, ""
+    return st, out.decode(errors="replace")
 
 
 def play_error(resp):
@@ -706,8 +715,7 @@ FINDING_RX = re.compile(r"error\[[a-z-]+\]|^error: .*(vulnerabilit|advisor|licen
 
 def classify_network_job(job_id):
     """-> NETWORK_FAIL when a failed licenses/advisories job failed to FETCH (and shows no finding), else 'failed'."""
-    r = subprocess.run(["glab", "api", "projects/%s/jobs/%d/trace" % (PROJECT, job_id)], capture_output=True, text=True)
-    trace = r.stdout or ""
+    _, trace = api_raw("projects/%s/jobs/%d/trace" % (PROJECT, job_id))
     if FINDING_RX.search(trace):
         return "failed"
     return NETWORK_FAIL if NETWORK_RX.search(trace) else "failed"
@@ -729,11 +737,13 @@ def check_app_results(jobs, timeline):
         j = jobs().get(n)
         if not j or timeline.get(n, ("",))[0] != "success" or not j.get("id"):
             continue
-        r = subprocess.run(["glab", "api", "projects/%s/jobs/%d/artifacts/appci-out/%s/run/results.json" % (PROJECT, j["id"], d)], capture_output=True, text=True)
+        st, text = api_raw("projects/%s/jobs/%d/artifacts/appci-out/%s/run/results.json" % (PROJECT, j["id"], d))
         try:
-            doc = json.loads(r.stdout)
+            doc = json.loads(text) if st == 200 else None
         except ValueError:
-            print("%s: results.json unreadable (%s): cannot confirm the run judged anything" % (n, d), flush=True)
+            doc = None
+        if doc is None:
+            print("%s: results.json unreadable (%s, HTTP %s): cannot confirm the run judged anything" % (n, d, st), flush=True)
             continue
         if judged_nothing(doc):
             timeline[n] = ("success but its run judged NOTHING", timeline[n][1])

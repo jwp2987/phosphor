@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "realapp", "appci"))
 import results_scrub
+import glapi                                    # every GitLab call: honours Retry-After / RateLimit-*
 try:
     import lat as appci_lat                       # the regression rule shared with the harness (5 % and 0.5 ms)
 except Exception:
@@ -33,14 +34,15 @@ FIN = ("success", "failed")
 
 
 def api(path, raw=False):
-    for attempt in range(8):         # r18cz: one dropped connection lost a whole round's collection; retry ~3 minutes
-        r = subprocess.run(["glab", "api", path], capture_output=True)
-        if not r.returncode or b"404" in r.stderr:
-            break
-        time.sleep(5 * (attempt + 1))
-    if r.returncode:
-        raise RuntimeError("glab api %s failed: %s" % (path, r.stderr.decode(errors="replace").strip()[:300]))
-    return r.stdout if raw else json.loads(r.stdout or "null")
+    """GitLab answer for path (parsed JSON, or bytes with raw). glapi honours Retry-After / RateLimit-* and retries outages for up to
+    30 min (r18cz: one dropped connection lost a whole round's collection); a 404 or other 4xx raises, as before."""
+    try:
+        st, out = glapi.call(path)
+    except glapi.GitLabUnavailable as e:
+        raise RuntimeError(str(e))
+    if st != 200:
+        raise RuntimeError("glab api %s failed: HTTP %s %s" % (path, st, out.decode(errors="replace").strip()[:300]))
+    return out if raw else json.loads(out or b"null")
 
 
 def trace(job_id):

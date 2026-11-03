@@ -1228,6 +1228,8 @@ Real gaps that remain (each checked against `.gitlab-ci.yml` and `script/realapp
 Owner rule (2026-11-02): every test result is kept in the repo for regression review. `test-results/` is that archive; it is
 append-only history, **retained forever** (it is small by design, see the size rules).
 
+**GitLab API rate limits.** `ci_seq.py` and `collect_results.py` call GitLab only through `script/ci/glapi.py` (`glab api -i`). This account is on GitLab.com's per-user Free-plan burst limit (observed 2026-11-03: `Ratelimit-Name: burst_traffic_per_user_free_plan`, `Ratelimit-Limit: 100` per minute). glapi waits exactly as long as a 429's `Retry-After` says (else until `Ratelimit-Reset`), backs off exponentially when throttled again, pauses before the window is spent when `Ratelimit-Remaining` drops under 10%, and never reports a throttled call as "no such job" or "no results". Do not add other pollers alongside a running `ci_seq`; a hand-written wait loop polls no faster than every 2 minutes. `python3 script/ci/glapi.py --self-test` checks the header parsing.
+
 **Collect.** After a tier run, `python3 script/ci/collect_results.py <pipeline_id | build/ref> [--out test-results]` pulls every
 finished job of that pipeline through `glab api`: the nextest jobs (Summary line, every FAIL/TIMEOUT/SIGSEGV with test names, the
 known-failure notes, duration), `check-linux` (compile ok/fail, warnings by crate and kind), the guard jobs, bench/fuzz/mutants/shuttle
