@@ -922,6 +922,17 @@ impl BlocklistAIInputModel {
     /// user made, or a re-detection the view triggered). The view classifies a parse only while
     /// its text is still requested ([`Self::is_detection_requested_for`]) (#833).
     pub fn note_detection_requested(&mut self, buffer_text: String) {
+        // #1604: a request for the text whose job is already in flight keeps that job and its
+        // clock (#1335: a paste's `Edited` event re-requests what the paste path requested, and
+        // an Enter already waiting on that job must not see it aborted and the clock it measures
+        // reset -- for a buffer over `MAX_EAGER_ROUTING_BYTES` nothing but the next Enter would
+        // start another). Any other request supersedes the job in flight: its result must not
+        // land as a verdict, and a large buffer's Enter starts a job only when none is in flight.
+        let same_text_in_flight = self.detection_job_in_flight()
+            && self.pending_detection_buffer.as_deref() == Some(buffer_text.as_str());
+        if !same_text_in_flight {
+            self.abort_in_progress_detection();
+        }
         let explicit_state = self
             .explicit_input_type_set
             .as_ref()
@@ -941,6 +952,9 @@ impl BlocklistAIInputModel {
             None => {}
         }
         self.drop_typeahead_prefix_unless_leading(&buffer_text);
+        if same_text_in_flight {
+            return;
+        }
         self.pending_detection_buffer = Some(buffer_text);
         self.detection_clock = ComputeClock::default();
         self.config_when_requested = self.input_config;
@@ -1146,6 +1160,13 @@ impl BlocklistAIInputModel {
         if !self.detection_pending_for_buffer_text(&input.buffer_text, ctx) {
             return false;
         }
+        // #1604: text over the sync cap is routed by the background job the Enter starts (or is
+        // already waiting for): the rules are linear in the text, and a 10 MB paste would hold the
+        // UI thread for hundreds of milliseconds here. Undecided, so the Enter waits for that
+        // verdict; the clock never routes it (#1577).
+        if routes_off_thread(&input.buffer_text) {
+            return false;
+        }
         if routing_v2_enabled() {
             // #1234: the one procedure, with the session's own answer about the head in place of
             // the parse that has not landed. Undecided keeps the live type, as before: the Enter
@@ -1320,9 +1341,9 @@ impl BlocklistAIInputModel {
             .any(|entry| entry == first_word)
     }
 
-    /// Abandons the pending detection outright: the classifier will never answer for the
-    /// current buffer (it is over the background-job size cap, #1036) or is late (#1158), so
-    /// Enter must not wait for a verdict. Whatever the input type is now stands.
+    /// Abandons the pending detection outright: the classifier is late (#1158) or the Enter gave
+    /// up on it, so nothing must wait for its verdict any more. Whatever the input type is now
+    /// stands. (Size is no longer a reason, #1604: every buffer gets a verdict.)
     pub fn abandon_pending_detection(&mut self) {
         // A verdict still in flight (#1158: a late one) must not land after the submit and set
         // the input type the next command is typed into.
@@ -1521,6 +1542,23 @@ impl BlocklistAIInputModel {
         self.detection_clock.clone()
     }
 
+    /// Whether a detection job is in flight for the pending request (#1604). Every new request
+    /// aborts the previous job ([`Self::note_detection_requested`]), so an in-flight job is for
+    /// the text awaiting its verdict; the view starts a large buffer's job at Enter only when
+    /// none is.
+    pub fn detection_job_in_flight(&self) -> bool {
+        self.autodetect_abort_handle.is_some()
+    }
+
+    /// [`Self::abort_in_progress_detection`], unless the job in flight is for `buffer_text`, the
+    /// text about to be requested again (#1604; see [`Self::note_detection_requested`]).
+    pub fn abort_in_progress_detection_unless_for(&mut self, buffer_text: Option<&str>) {
+        if buffer_text.is_some_and(|text| self.pending_detection_buffer.as_deref() == Some(text)) {
+            return;
+        }
+        self.abort_in_progress_detection();
+    }
+
     /// Aborts any in progress work for autodetection.
     pub fn abort_in_progress_detection(&mut self) {
         if let Some(handle) = self.autodetect_abort_handle.take() {
@@ -1590,16 +1628,26 @@ impl BlocklistAIInputModel {
             self.explicit_input_type_set = None;
         }
 
-        // #968: a huge buffer is a paste, not a prompt. Never spend classifier time on it, and
-        // never flip the input type either way: forcing Shell would run pasted prose or logs
-        // (`$(..)`, `;`, `>`) on Enter, and forcing AI would send it all to the model. Leave
-        // whatever type the user is in.
-        if exceeds_autodetect_limit(&input.buffer_text) {
-            self.settle_detection(&input.buffer_text, ctx);
-            return;
-        }
+        // #1604: the rules see every byte of the buffer, but a buffer over the sync cap is routed
+        // in the spawned job below rather than here on the UI thread: `route` is linear in the
+        // text, microseconds for a typed line and hundreds of milliseconds for a 10 MB paste. The
+        // view starts this job at Enter for such text (never per keystroke) and the Enter waits
+        // for the verdict with a budget that grows with the text (`enter_verdict_budget_for`).
+        // Such a buffer has no completer parse (that parse is quadratic and stays capped, #1174),
+        // so its head is read from the text. The former #968 "never classify a huge paste" cap is
+        // gone: the rules decide a 10 MB script exactly as they decide its first line, and the
+        // model classifier sees a bounded opening of it (`truncate_for_model`).
+        let off_thread = routes_off_thread(&input.buffer_text);
 
-        let first_token_str = input.parsed_tokens.first().map(|t| t.token.clone());
+        let first_token_str: Option<String> = input
+            .parsed_tokens
+            .first()
+            .map(|t| t.token.as_str().to_owned())
+            .or_else(|| {
+                off_thread
+                    .then(|| input.buffer_text.split_whitespace().next().map(str::to_owned))
+                    .flatten()
+            });
         let Some(first_token_str) = first_token_str else {
             // If the buffer is empty, short-circuit and leave input type unchanged.
             //
@@ -1632,13 +1680,17 @@ impl BlocklistAIInputModel {
         //
         // #1185: classified without a trailing ` # comment`; #1183: in an agent conversation not
         // without positive evidence that the line is a plausible command.
-        let classify_snapshot =
-            input_classifier::util::strip_trailing_comment(&input).into_owned();
         let in_active_agent_view = self.in_active_agent_view(ctx);
         // Determine if the input is a follow-up to an AI block.
         let is_agent_follow_up = self.is_agent_follow_up();
+        // The comment-stripped snapshot (a copy) and the evidence scan are made here only for text
+        // routed synchronously; for text over the sync cap the job makes them (#1604).
+        let classify_snapshot = (!off_thread)
+            .then(|| input_classifier::util::strip_trailing_comment(&input).into_owned());
+        let mut off_thread_routing: Option<(RoutingContext, RoutingSurface)> = None;
+        let mut history_may_decide = false;
 
-        if routing_v2_enabled() {
+        if classify_snapshot.is_some() && routing_v2_enabled() {
             // #1234: the one procedure decides every clear case here, synchronously; only an
             // undecided line goes on to the history matcher and the classifier below. The exact
             // history lookup is O(1) through the command index (#1203); the session is not asked
@@ -1680,11 +1732,11 @@ impl BlocklistAIInputModel {
                 }
                 Route::Undecided => {}
             }
-        } else {
-            if input_classifier::util::is_unambiguous_shell_command(&classify_snapshot)
+        } else if let Some(classify_snapshot) = classify_snapshot.as_ref() {
+            if input_classifier::util::is_unambiguous_shell_command(classify_snapshot)
                 && !(in_active_agent_view
                     && input_classifier::util::lacks_command_evidence_in_agent_conversation(
-                        &classify_snapshot,
+                        classify_snapshot,
                     ))
             {
                 self.apply_autodetected_input_type(InputType::Shell, ctx);
@@ -1703,6 +1755,37 @@ impl BlocklistAIInputModel {
                 self.settle_detection(&input.buffer_text, ctx);
                 return;
             }
+        }
+        if let Some(classify_snapshot) = classify_snapshot.as_ref() {
+            // #1183: in an agent conversation, a line with no positive command evidence is never
+            // decided Shell by the history close-match below (`make commit port` is a close match
+            // of an earlier `make ...` line, and that match returned before the classifier's gate
+            // ran).
+            history_may_decide = history_close_match_allowed(in_active_agent_view, classify_snapshot);
+        } else if routing_v2_enabled() {
+            // #1604: the same procedure, run by the job. The exact-history lookup hashes the whole
+            // text on the UI thread, so it is not made for this size (the close match in the job
+            // covers history); the session is not asked about the head on this path either.
+            let surface = if in_active_agent_view {
+                RoutingSurface::AgentConversation
+            } else {
+                RoutingSurface::PlainTerminal
+            };
+            let typeahead = self.typeahead_for_routing(&input.buffer_text);
+            off_thread_routing = Some((
+                RoutingContext {
+                    surface,
+                    shell: facts.shell,
+                    head_known_to_shell: None,
+                    commands_fully_loaded: completion_context.top_level_commands_fully_loaded(),
+                    command_data_current: completion_context.top_level_command_data_is_current(),
+                    is_agent_follow_up,
+                    ran_before_exactly: false,
+                    denylisted: false,
+                    typeahead,
+                },
+                surface,
+            ));
         }
 
         // If we have a session, snapshot its command history (shared `Arc`s, oldest-first: no
@@ -1732,12 +1815,6 @@ impl BlocklistAIInputModel {
 
         let is_udi_enabled = InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
 
-        // #1183: in an agent conversation, a line with no positive command evidence is never
-        // decided Shell by the history close-match below (`make commit port` is a close match of
-        // an earlier `make ...` line, and that match returned before the classifier's gate ran).
-        let history_may_decide =
-            history_close_match_allowed(in_active_agent_view, &classify_snapshot);
-
         let classifier = InputClassifierModel::as_ref(ctx).classifier();
         let compute_clock = self.detection_clock.clone();
         let handle = ctx
@@ -1745,6 +1822,28 @@ impl BlocklistAIInputModel {
                 async move {
                     // The clock starts when this job runs, not when it was queued (#1351).
                     let _compute = compute_clock.begin();
+                    // #1604: a buffer over the sync cap is routed here, off the UI thread, by the
+                    // same rules the keystroke path applies synchronously to shorter text.
+                    if let Some((routing_context, surface)) = off_thread_routing {
+                        let decision = routing::route(&input, &routing_context);
+                        log_routing_decision("background", surface, &input.buffer_text, &decision);
+                        match decision.route {
+                            Route::Shell => return InputType::Shell,
+                            Route::Agent => return InputType::AI,
+                            Route::Undecided => {}
+                        }
+                    }
+                    let (classify_snapshot, history_may_decide) = match classify_snapshot {
+                        Some(snapshot) => (snapshot, history_may_decide),
+                        None => {
+                            let snapshot =
+                                input_classifier::util::strip_trailing_comment(&input).into_owned();
+                            let allowed =
+                                history_close_match_allowed(in_active_agent_view, &snapshot);
+                            (snapshot, allowed)
+                        }
+                    };
+                    drop(input);
                     // First check if the token is a natural language word, if the user was already
                     // in AI mode before this buffer's autodetection began.
                     if matches!(shortcut_input_type, InputType::AI)
@@ -1859,6 +1958,12 @@ impl BlocklistAIInputModel {
                     // Likewise if a newer detection replaced this one after it had already
                     // completed: the newer one owns the handle and will report its own verdict.
                     if me.detection_generation != detection_generation {
+                        return;
+                    }
+                    // #1604: a background routing job answers for the text it was started with;
+                    // a buffer edited since has asked for its own verdict.
+                    if off_thread && !me.is_detection_requested_for(&other_buffer_cloned) {
+                        me.autodetect_abort_handle = None;
                         return;
                     }
                     me.autodetect_abort_handle = None;
@@ -2116,7 +2221,11 @@ async fn most_recent_close_match<'a>(
     if !(0.0..=1.0).contains(&cutoff) {
         panic!("Cutoff must be greater than 0.0 and lower than 1.0");
     }
-    let mut matcher = difflib::sequencematcher::SequenceMatcher::new("", word);
+    // #1604: the matcher indexes every byte of `word` when it is built (a 10 MB paste is a
+    // 10 M-entry map), so it is built only once a candidate's length allows a match at all. The
+    // length bound is the matcher's own `real_quick_ratio`: a candidate shorter than
+    // `cutoff / (2 - cutoff)` of the buffer (or longer than its inverse) can never reach `cutoff`.
+    let mut matcher = None;
     for (idx, (candidate, start_ts)) in possibilities.enumerate() {
         // Periodically, yield to the executor so this task can be aborted if
         // requested.
@@ -2124,6 +2233,11 @@ async fn most_recent_close_match<'a>(
             futures_lite::future::yield_now().await;
         }
 
+        if !close_match_possible_by_length(candidate.len(), word.len(), cutoff) {
+            continue;
+        }
+        let matcher = matcher
+            .get_or_insert_with(|| difflib::sequencematcher::SequenceMatcher::new("", word));
         matcher.set_first_seq(candidate);
         // The fast ratio computations produce an upper bound on the value of
         // ratio, so if a faster check fails, the slower checks are guaranteed
@@ -2137,6 +2251,17 @@ async fn most_recent_close_match<'a>(
     }
 
     HistoryMatch::NoMatch
+}
+
+/// Whether two sequences of these lengths can be `cutoff`-similar at all (#1604): the matcher's
+/// ratio is `2 * matched / (a + b)` with `matched <= min(a, b)`, so this is its `real_quick_ratio`
+/// upper bound, computed before the matcher (and its index of the whole buffer) exists.
+pub(crate) fn close_match_possible_by_length(a: usize, b: usize, cutoff: f32) -> bool {
+    let total = a + b;
+    if total == 0 {
+        return true;
+    }
+    2.0 * a.min(b) as f32 / total as f32 >= cutoff
 }
 
 /// Fork-original (#832): the command-history entries that may route `buffer_text` to Shell by a
@@ -2233,9 +2358,20 @@ pub fn enter_verdict_wait_decision(
     verdict_pending: bool,
     classifier_compute: Duration,
 ) -> EnterVerdictWait {
+    enter_verdict_wait_decision_for(verdict_pending, classifier_compute, 0)
+}
+
+/// [`enter_verdict_wait_decision`] for a buffer of `text_len` bytes: the compute cap is
+/// [`enter_verdict_budget_for`] (#1604), so a 10 MB paste's linear classification is waited for
+/// instead of handed back after the 20 ms a typed line gets.
+pub fn enter_verdict_wait_decision_for(
+    verdict_pending: bool,
+    classifier_compute: Duration,
+    text_len: usize,
+) -> EnterVerdictWait {
     if !verdict_pending {
         EnterVerdictWait::Submit
-    } else if classifier_compute >= ENTER_VERDICT_BUDGET {
+    } else if classifier_compute >= enter_verdict_budget_for(text_len) {
         EnterVerdictWait::SubmitWithoutVerdict
     } else {
         EnterVerdictWait::Wait
@@ -2328,11 +2464,47 @@ fn resolve_history_match(
     }
 }
 
-/// Buffers longer than this many bytes are never autodetected as an agent prompt (#968).
-pub(crate) const MAX_AUTODETECT_BUFFER_BYTES: usize = 16 * 1024;
+/// The longest buffer the routing rules run on synchronously, on the UI thread (#1604): per
+/// keystroke in [`BlocklistAIInputModel::detect_and_set_input_type`] and at Enter in
+/// [`BlocklistAIInputModel::settle_pending_detection_for_submit`]. The rules are linear in the
+/// text with a bounded amount of work per word, so 4 KiB is well under a millisecond; anything
+/// longer is a paste, routed by the same rules in the detection job the Enter starts and waits
+/// for. There is no size above which text is NOT classified: the former 4096-byte prefilter cap,
+/// the 16 KiB #968 autodetect cap and the parse-cap abandon all sent an over-size shell command
+/// to the agent in agent mode.
+pub(crate) const MAX_SYNC_ROUTING_BYTES: usize = 4096;
 
-pub(crate) fn exceeds_autodetect_limit(buffer_text: &str) -> bool {
-    buffer_text.len() > MAX_AUTODETECT_BUFFER_BYTES
+/// Whether `buffer_text` is routed in the background job rather than on the UI thread (#1604).
+pub(crate) fn routes_off_thread(buffer_text: &str) -> bool {
+    buffer_text.len() > MAX_SYNC_ROUTING_BYTES
+}
+
+/// The longest buffer whose background routing job is started from the edit path, as the text is
+/// edited (#1604). Every edit aborts the job in flight, but a job inside its linear `route` cannot
+/// stop before it finishes, so a typing burst into a 10 MB buffer would stack up seconds of
+/// background CPU (#1191's blocking-pool starvation); at 256 KiB a job is ~25 ms of compute. A
+/// longer buffer is classified once, by the job its Enter starts, which the Enter waits for.
+pub(crate) const MAX_EAGER_ROUTING_BYTES: usize = 256 * 1024;
+
+/// Bytes of text per millisecond of extra classifier compute an Enter allows for a buffer over
+/// [`MAX_SYNC_ROUTING_BYTES`] (#1604): 4 KiB/ms is a floor of 4 MB/s for the linear rules plus
+/// the bounded model input, a few times slower than a release build runs them.
+const LARGE_TEXT_BYTES_PER_MS: usize = 4096;
+
+/// Extra compute the classifier is allowed on a buffer of `text_len` bytes before an Enter waiting
+/// for its verdict gives up (#1604): nothing up to [`MAX_SYNC_ROUTING_BYTES`], then one
+/// millisecond per [`LARGE_TEXT_BYTES_PER_MS`] bytes (a 1 MB paste gets ~250 ms more, 10 MB
+/// ~2.5 s). The give-up never routes the line: with autodetection live it hands the text back
+/// to the editor (#1577).
+pub fn large_text_compute_allowance(text_len: usize) -> Duration {
+    Duration::from_millis(
+        (text_len.saturating_sub(MAX_SYNC_ROUTING_BYTES) / LARGE_TEXT_BYTES_PER_MS) as u64,
+    )
+}
+
+/// [`ENTER_VERDICT_BUDGET`] plus the large-text allowance for a buffer of `text_len` bytes.
+pub fn enter_verdict_budget_for(text_len: usize) -> Duration {
+    ENTER_VERDICT_BUDGET + large_text_compute_allowance(text_len)
 }
 
 #[cfg(test)]

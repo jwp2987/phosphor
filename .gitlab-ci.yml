@@ -861,7 +861,7 @@ bench:
   timeout: 90m
   when: manual
   script:
-    - ./script/agent-cargo ci-bench bench -p warp --features dev-support --bench key_path_bench --bench ansi_bench
+    - ./script/agent-cargo ci-bench bench -p warp --features dev-support --bench key_path_bench --bench ansi_bench --bench routing_bench
     - mkdir -p bench-results
     - cp -r "$PHOSPHOR_TARGET_ROOT"/ci-bench/criterion bench-results/ 2>/dev/null || { echo "no criterion output found under $PHOSPHOR_TARGET_ROOT/ci-bench" >&2; exit 1; }
     - python3 script/bench_gate.py "$PHOSPHOR_TARGET_ROOT"/ci-bench/criterion

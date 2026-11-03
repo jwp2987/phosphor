@@ -174,6 +174,15 @@ impl ViewSnapshot {
             .map(|(_, text)| text.clone())
     }
 
+    /// Whether any placeholder prefix has exactly `len` chars, the necessary condition for
+    /// [`Self::matching_placeholder_text`] to match a buffer of that length (#1604): checked from
+    /// the buffer's cached length before the buffer is copied for the lookup.
+    pub fn placeholder_prefix_of_len_exists(&self, len: usize) -> bool {
+        self.placeholder_texts
+            .keys()
+            .any(|prefix| prefix.chars().count() == len)
+    }
+
     pub fn placeholder_text_exists(&self) -> bool {
         // Only consider the default placeholder (empty prefix) for "exists" checks.
         // This is used when laying out the input and determining input height.

@@ -510,8 +510,9 @@ use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
 };
 use crate::terminal::model::typeahead_handoff::{
-    InterruptOutcome, PaneHandoff, ReportDisposition, UserBytesRoute, YOUNG_DETECTION_CAP,
-    YoungSubmit, forces_shell_submit, is_signal_byte, text_for_editor, young_submit_decision,
+    InterruptOutcome, PaneHandoff, ReportDisposition, UserBytesRoute, YoungSubmit,
+    forces_shell_submit, is_signal_byte, text_for_editor, young_detection_cap_for,
+    young_submit_decision_for,
 };
 use crate::terminal::model::{
     ansi::{ClearMode, Handler},
@@ -822,6 +823,14 @@ const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
 /// it fires. The normal give-up is [`YOUNG_DETECTION_CAP`] of classifier compute. #1577: a give-up
 /// with the input type undecided hands the line back to the editor (never submitted by the clock).
 const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
+
+/// [`YOUNG_DETECTION_BACKSTOP`] for a buffer of `text_len` chars: grows with the text like the
+/// compute cap (#1604, `large_text_compute_allowance`), so a large paste's linear classification
+/// is waited for rather than given up on by the lost-signal net.
+fn young_detection_backstop_for(text_len: usize) -> Duration {
+    YOUNG_DETECTION_BACKSTOP
+        + crate::ai::blocklist::input_model::large_text_compute_allowance(text_len)
+}
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
 
@@ -13950,16 +13959,19 @@ impl TerminalView {
             self.young_enter_released = true;
             return;
         }
-        // #1174: text over the background-job cap is never parsed, so no verdict can land; do not
-        // wait the whole cap for one.
+        // #1604: text over the parse cap is classified without a parse, by a background job the
+        // Enter starts if the edit path did not (over `MAX_EAGER_ROUTING_BYTES`), and waits for
+        // with a compute cap that grows with the text. It used to be abandoned here and the Enter
+        // ran on the inherited input type.
         self.input.update(ctx, |input, ctx| {
-            input.abandon_detection_if_over_parse_cap(ctx)
+            input.start_detection_for_unparsed_buffer(true, ctx)
         });
-        let (can_run, pending, compute) = self.input.read(ctx, |input, ctx| {
+        let (can_run, pending, compute, text_len) = self.input.read(ctx, |input, ctx| {
             (
                 input.can_classify_buffer(ctx),
                 input.detection_pending_for_buffer(ctx),
                 input.detection_compute(ctx).1,
+                input.buffer_char_len(ctx),
             )
         });
         // The give-up is measured on the classifier's compute, never on the age of the Enter.
@@ -13967,7 +13979,7 @@ impl TerminalView {
         let decision = if force_give_up && can_run && pending {
             YoungSubmit::SubmitWithoutVerdict
         } else {
-            young_submit_decision(can_run, pending, waited)
+            young_submit_decision_for(can_run, pending, waited, text_len)
         };
         match decision {
             YoungSubmit::Submit => {
@@ -13980,7 +13992,7 @@ impl TerminalView {
                     log::warn!(
                         "young Enter backstop fired after {} ms: no input-type verdict arrived \
                          (classifier compute {} ms)",
-                        YOUNG_DETECTION_BACKSTOP.as_millis(),
+                        young_detection_backstop_for(text_len).as_millis(),
                         compute.as_millis()
                     );
                 }
@@ -14042,19 +14054,25 @@ impl TerminalView {
         );
         // A stage may already be running.
         self.arm_young_compute_cap(id, ctx);
-        self.arm_young_timer(id, YOUNG_DETECTION_BACKSTOP, true, ctx);
+        let text_len = self.input.read(ctx, |input, ctx| input.buffer_char_len(ctx));
+        self.arm_young_timer(id, young_detection_backstop_for(text_len), true, ctx);
     }
 
     /// Arms the give-up timer for the rest of the compute cap, if a stage is running now. When none
     /// is, its start (or the verdict) is an event of its own.
     fn arm_young_compute_cap(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
-        let (running, spent) = self
-            .input
-            .read(ctx, |input, ctx| input.detection_compute(ctx));
+        let ((running, spent), text_len) = self.input.read(ctx, |input, ctx| {
+            (input.detection_compute(ctx), input.buffer_char_len(ctx))
+        });
         if !running {
             return;
         }
-        self.arm_young_timer(id, YOUNG_DETECTION_CAP.saturating_sub(spent), false, ctx);
+        self.arm_young_timer(
+            id,
+            young_detection_cap_for(text_len).saturating_sub(spent),
+            false,
+            ctx,
+        );
     }
 
     fn arm_young_timer(
@@ -14075,10 +14093,10 @@ impl TerminalView {
                 me.finish_young_detection_wait(true, Instant::now(), ctx);
                 return;
             }
-            let (_, spent) = me
-                .input
-                .read(ctx, |input, ctx| input.detection_compute(ctx));
-            if spent < YOUNG_DETECTION_CAP {
+            let ((_, spent), text_len) = me.input.read(ctx, |input, ctx| {
+                (input.detection_compute(ctx), input.buffer_char_len(ctx))
+            });
+            if spent < young_detection_cap_for(text_len) {
                 // A stage that finished meanwhile, or a cap not yet reached: the verdict event or
                 // the next stage start decides.
                 me.arm_young_compute_cap(id, ctx);

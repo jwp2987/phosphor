@@ -59,7 +59,7 @@ use instant::Instant;
 
 use crate::ai::agent::AIAgentActionId;
 use crate::ai::agent::conversation::AIConversationId;
-use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+use crate::ai::blocklist::input_model::{ENTER_VERDICT_BUDGET, large_text_compute_allowance};
 
 /// How long after a command was written (or a prompt or preexec seen) an Enter the user types
 /// while the pty owns input may still be a line typed at a prompt the app has not noticed yet
@@ -368,6 +368,13 @@ impl QueuedLineBytesStamp {
 /// the line is rare, so it gets a few budgets, not the seconds it had before #1158.
 pub const YOUNG_DETECTION_CAP: Duration = ENTER_VERDICT_BUDGET.saturating_mul(5);
 
+/// [`YOUNG_DETECTION_CAP`] for a buffer of `text_len` bytes (#1604): a buffer over the sync
+/// routing cap is classified by a linear background job, which gets the same size-proportional
+/// allowance an editor Enter grants it (`large_text_compute_allowance`).
+pub fn young_detection_cap_for(text_len: usize) -> Duration {
+    YOUNG_DETECTION_CAP + large_text_compute_allowance(text_len)
+}
+
 /// What the view does with the deferred Enter of a young line whose text must be classified
 /// before it is submitted (#933). It is never submitted on an inherited or default input type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,11 +399,22 @@ pub fn young_submit_decision(
     verdict_pending: bool,
     waited: Duration,
 ) -> YoungSubmit {
+    young_submit_decision_for(can_run, verdict_pending, waited, 0)
+}
+
+/// [`young_submit_decision`] for a buffer of `text_len` bytes: the cap is
+/// [`young_detection_cap_for`] (#1604).
+pub fn young_submit_decision_for(
+    can_run: bool,
+    verdict_pending: bool,
+    waited: Duration,
+    text_len: usize,
+) -> YoungSubmit {
     if !can_run {
         YoungSubmit::KeepInEditor
     } else if !verdict_pending {
         YoungSubmit::Submit
-    } else if waited >= YOUNG_DETECTION_CAP {
+    } else if waited >= young_detection_cap_for(text_len) {
         YoungSubmit::SubmitWithoutVerdict
     } else {
         YoungSubmit::Wait

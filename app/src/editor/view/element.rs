@@ -1326,6 +1326,12 @@ impl EditorElement {
 
         let baseline_position_fn = view_snapshot.baseline_position_fn();
 
+        // Counted once per paint (#1604): `displayed_lines` walks every frame from the first, so
+        // counting it inside the loop below was O(visible rows x scroll offset) per paint, 5 M
+        // iterator steps at the end of a 10 MB multi-line paste.
+        let last_displayed_line_ix =
+            (layout.frame_layouts.num_displayed_lines() as usize).saturating_sub(1);
+
         for (ix, line) in layout.frame_layouts.displayed_lines().enumerate() {
             // Push over text content origin due to left notch, if the first line is visible.
             let text_content_origin = if ix == 0 && first_visible_row == 0 {
@@ -1367,7 +1373,7 @@ impl EditorElement {
             // If the autosuggestion is attached to a location, it belongs on the last TextFrame associated
             // with the logical line.
             let paint_autosuggestion_here = match autosuggestion_soft_wrapped_line_ix {
-                None => ix == layout.frame_layouts.displayed_lines().count() - 1,
+                None => ix == last_displayed_line_ix,
                 Some(line_ix) => line_ix == ix,
             };
 
@@ -1722,8 +1728,18 @@ impl Element for EditorElement {
             .unwrap_or(0.);
 
         // Choose what to render: placeholder takes precedence over autosuggestion
+        // The buffer is copied for the placeholder lookup only when a placeholder prefix is as
+        // long as the buffer (#1604): the lookup is an exact match, and this runs every layout
+        // pass, so a 10 MB paste must not be copied per frame for it.
+        let buffer_len = view_snapshot
+            .editor_model
+            .as_ref(app)
+            .buffer_len(app)
+            .as_usize();
         let placeholder_suggestion_text_line_layouts = if let Some(placeholder_text) = view_snapshot
-            .matching_placeholder_text(&view_snapshot.editor_model.as_ref(app).buffer_text(app))
+            .placeholder_prefix_of_len_exists(buffer_len)
+            .then(|| view_snapshot.editor_model.as_ref(app).buffer_text(app))
+            .and_then(|buffer_text| view_snapshot.matching_placeholder_text(&buffer_text))
         {
             view_snapshot.layout_placeholder_text(
                 &placeholder_text,

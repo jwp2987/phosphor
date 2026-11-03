@@ -1167,3 +1167,73 @@ fn test_slash_command_spelling_versus_path() {
         assert!(!starts_with_slash_command_not_path(text), "{text:?}");
     }
 }
+
+/// #1604: the inner (model) classifier is shown at most `MAX_MODEL_INPUT_BYTES` of the text, cut
+/// at a char boundary, while the gate's own rules read the whole buffer: a 10 MB paste costs the
+/// tokenizer no more than a 4 KiB line, and a shell line over the cap is still decided by the
+/// unambiguous-syntax rule before any model sees it.
+#[test]
+fn test_gate_bounds_what_the_inner_classifier_sees() {
+    use std::sync::Mutex;
+    use crate::util::MAX_MODEL_INPUT_BYTES;
+
+    struct Recording(Mutex<Vec<usize>>);
+
+    #[cfg_attr(not(target_family = "wasm"), async_trait)]
+    #[cfg_attr(target_family = "wasm", async_trait(?Send))]
+    impl InputClassifier for Recording {
+        async fn detect_input_type(
+            &self,
+            input: ParsedTokensSnapshot,
+            _context: &Context,
+        ) -> InputClassificationResult {
+            self.0.lock().unwrap().push(input.buffer_text.len());
+            InputClassificationResult::new(
+                InputType::AI,
+                InputClassifierDecisionSource::ShellHeuristic,
+            )
+        }
+
+        async fn classify_input(
+            &self,
+            input: ParsedTokensSnapshot,
+            _context: &Context,
+        ) -> anyhow::Result<ClassificationResult> {
+            self.0.lock().unwrap().push(input.buffer_text.len());
+            Ok(ClassificationResult::pure_ai(
+                InputClassifierDecisionSource::ShellHeuristic,
+            ))
+        }
+    }
+
+    futures::executor::block_on(async move {
+        let gated = SafetyGatedClassifier::new(Recording(Mutex::new(Vec::new())));
+        // Prose over the cap reaches the model, cut to the cap.
+        let prose = "the build fails on my machine with a strange error ".repeat(200);
+        assert!(prose.len() > MAX_MODEL_INPUT_BYTES);
+        let result = gated
+            .detect_input_type(snapshot_without_descriptions(&prose), &context(false))
+            .await;
+        assert_eq!(result.input_type, InputType::AI);
+        let _ = gated
+            .classify_input(snapshot_without_descriptions(&prose), &context(false))
+            .await;
+        {
+            let seen = gated.inner.0.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(seen.iter().all(|&len| len <= MAX_MODEL_INPUT_BYTES), "{seen:?}");
+        }
+        // A shell line over the cap never reaches the model at all.
+        let shell = format!("echo {}; echo END", "x ".repeat(3000));
+        assert!(shell.len() > MAX_MODEL_INPUT_BYTES);
+        let result = gated
+            .detect_input_type(snapshot_without_descriptions(&shell), &context(false))
+            .await;
+        assert_eq!(result.input_type, InputType::Shell);
+        assert_eq!(
+            result.source,
+            InputClassifierDecisionSource::UnambiguousShellSyntax
+        );
+        assert_eq!(gated.inner.0.lock().unwrap().len(), 2);
+    });
+}

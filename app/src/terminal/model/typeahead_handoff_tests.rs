@@ -1096,6 +1096,27 @@ fn a_young_line_is_submitted_only_on_an_actual_verdict() {
         young_submit_decision(true, true, YOUNG_DETECTION_CAP),
         YoungSubmit::SubmitWithoutVerdict
     );
+    // #1604: a large buffer's cap grows with its size (its linear classification runs in the
+    // background), a typed line's does not.
+    assert_eq!(young_detection_cap_for(40), YOUNG_DETECTION_CAP);
+    let ten_mb = 10 * 1024 * 1024;
+    assert!(young_detection_cap_for(ten_mb) >= YOUNG_DETECTION_CAP + Duration::from_millis(2500));
+    assert_eq!(
+        young_submit_decision_for(true, true, YOUNG_DETECTION_CAP, ten_mb),
+        YoungSubmit::Wait
+    );
+    assert_eq!(
+        young_submit_decision_for(true, true, young_detection_cap_for(ten_mb), ten_mb),
+        YoungSubmit::SubmitWithoutVerdict
+    );
+    assert_eq!(
+        young_submit_decision_for(true, false, Duration::ZERO, ten_mb),
+        YoungSubmit::Submit
+    );
+    assert_eq!(
+        young_submit_decision_for(true, true, YOUNG_DETECTION_CAP, 40),
+        young_submit_decision(true, true, YOUNG_DETECTION_CAP)
+    );
 }
 
 #[test]

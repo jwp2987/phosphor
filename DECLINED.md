@@ -1724,7 +1724,7 @@ upstream's behavior is actually a defect rather than a preference.
   stress pass); the shell never saw them, and with no reachable model the user got a stream error
   instead of their command. **We do:** force `InputType::Shell` with no model round-trip when the
   buffer has command *shape*. **Vetoes first** (always leave it to the classifier): a trailing
-  `?`; a buffer over 4 KiB (a paste); quoting bash would reject, including an apostrophe inside a
+  `?`; quoting bash would reject, including an apostrophe inside a
   word (`find Josh's PR`), a typographic quote (`don’t`) or a trailing line-continuation
   backslash; the #696 prose colon shape ("run exactly this:", via the same
   `buffer_has_prose_colon_shape` helper the safety gate uses); a quoted head; a slash command
@@ -1787,8 +1787,10 @@ upstream's behavior is actually a defect rather than a preference.
   prefix of a prose word (`kill th` is Shell for an instant before `kill the` flips back); (3) an
   assignment-prefixed unknown head followed by jargon and no colon (`FOO=1 mytool frobnicate`). A
   substitution (`$(`, `<(`, `>(`) only counts as an operator when a command word opens it (`echo
-  $(whoami)` yes, `make $(money) fast` no). The synchronous path is capped at 4 KiB; below that
-  there is no further length bound. The pre-filter only removes the model from the path of lines
+  $(whoami)` yes, `make $(money) fast` no). There is no length bound (#1604: the former 4 KiB
+  cap left every over-size shell command to the inherited type, which in agent mode is the
+  agent); the rules are linear in the text, and the app runs them off the UI thread for text over
+  `MAX_SYNC_ROUTING_BYTES`. The pre-filter only removes the model from the path of lines
   that have shell shape and no prose in them. The #696 exploit prompts (with or without an
   assignment prefix) are vetoed before either rule and still reach the gated classifier.
 

@@ -982,13 +982,135 @@ fn test_reads_as_prose_misses_command_headed_prose_without_a_veto_word() {
 }
 
 #[test]
-fn test_reads_as_prose_skips_buffers_over_the_size_cap() {
-    // Over `MAX_PREFILTER_BYTES` the buffer is not scanned at all, even when it is plainly prose.
+fn test_reads_as_prose_has_no_size_cap() {
+    // #1604: the former 4096-byte cap left plain prose unread; a long buffer reads as its short
+    // form does.
     let sentence = "find the bug in main.rs ";
-    let long = sentence.repeat(MAX_PREFILTER_BYTES / sentence.len() + 1);
-    assert!(long.trim().len() > MAX_PREFILTER_BYTES);
+    let long = sentence.repeat(4096 / sentence.len() + 1);
+    assert!(long.trim().len() > 4096);
     assert!(reads_as_prose(sentence));
-    assert!(!reads_as_prose(&long));
+    assert!(reads_as_prose(&long));
+    let command = "ls -la /tmp ";
+    let long_command = command.repeat(4096 / command.len() + 1);
+    assert!(!reads_as_prose(command));
+    assert!(!reads_as_prose(&long_command));
+}
+
+/// #1604: the model classifiers are shown a bounded opening of the text; the rules see all of it.
+#[test]
+fn test_truncate_for_model_cuts_at_a_char_boundary_and_drops_tokens_past_the_cut() {
+    let short = ParsedTokensSnapshot {
+        buffer_text: "echo hi".to_owned(),
+        parsed_tokens: Vec::new(),
+    };
+    assert!(matches!(
+        truncate_for_model(&short),
+        std::borrow::Cow::Borrowed(_)
+    ));
+    // Two-byte chars straddling the cap: the cut lands on a boundary at or below it.
+    let text = "é".repeat(MAX_MODEL_INPUT_BYTES);
+    let snapshot = ParsedTokensSnapshot {
+        buffer_text: text.clone(),
+        parsed_tokens: Vec::new(),
+    };
+    let cut = truncate_for_model(&snapshot).into_owned();
+    assert!(cut.buffer_text.len() <= MAX_MODEL_INPUT_BYTES);
+    assert!(cut.buffer_text.len() >= MAX_MODEL_INPUT_BYTES - 1);
+    assert!(text.starts_with(&cut.buffer_text));
+    // Tokens: those ending past the cut are dropped.
+    let words = "word ".repeat(1000);
+    let parsed = futures::executor::block_on(mock_parsed_input_token(words.clone()));
+    assert!(parsed.buffer_text.len() > MAX_MODEL_INPUT_BYTES);
+    let cut = truncate_for_model(&parsed).into_owned();
+    assert_eq!(cut.buffer_text.len(), MAX_MODEL_INPUT_BYTES);
+    assert!(!cut.parsed_tokens.is_empty());
+    assert!(cut
+        .parsed_tokens
+        .iter()
+        .all(|token| token.token.span.end() <= MAX_MODEL_INPUT_BYTES));
+    assert!(cut.parsed_tokens.len() < parsed.parsed_tokens.len());
+}
+
+/// #1604: the routing rules are linear in the text. `route` and the Enter-time predicates are
+/// timed on 1 MB and 10 MB of a shell line, a multi-line script and prose; each 10 MB run must
+/// cost at most `LINEAR_RATIO_CAP` times its 1 MB run (a quadratic step would cost ~100x) and
+/// finish under an absolute bound loose enough for a debug build. The release-build numbers, with
+/// their own limits, are the `routing/*` criterion benches (`app/benches/routing_bench.rs`).
+#[test]
+fn test_routing_rules_are_linear_in_the_text() {
+    use crate::util::routing::{
+        self, RoutingContext, ShellFamily, Surface, Typeahead as RoutingTypeahead,
+    };
+    use std::time::{Duration, Instant};
+
+    const LINEAR_RATIO_CAP: f64 = 30.0;
+    const ONE_MB: usize = 1024 * 1024;
+
+    fn context(surface: Surface) -> RoutingContext {
+        RoutingContext {
+            surface,
+            shell: ShellFamily::Posix,
+            head_known_to_shell: None,
+            commands_fully_loaded: false,
+            command_data_current: false,
+            is_agent_follow_up: false,
+            ran_before_exactly: false,
+            denylisted: false,
+            typeahead: RoutingTypeahead::None,
+        }
+    }
+    fn text_of(kind: &str, bytes: usize) -> String {
+        let unit = match kind {
+            // A shell line with no operator, so every word is examined (no early return).
+            "line" => "cp ./src/main.rs ./backup/main_v2.rs ",
+            "script" => "for f in src/*.rs; do grep -n TODO $f | sort > /tmp/out.txt; done\n",
+            _ => "please explain why the build failed on my machine and how to fix it ",
+        };
+        let mut text = unit.repeat(bytes / unit.len() + 1);
+        text.truncate(bytes);
+        // Cut back to a char boundary.
+        while !text.is_char_boundary(text.len()) {
+            text.pop();
+        }
+        text
+    }
+    fn time_all(text: &str) -> Duration {
+        let snapshot = ParsedTokensSnapshot {
+            buffer_text: text.to_owned(),
+            parsed_tokens: Vec::new(),
+        };
+        let started = Instant::now();
+        let plain = routing::route(&snapshot, &context(Surface::PlainTerminal));
+        let conversation = routing::route(&snapshot, &context(Surface::AgentConversation));
+        let predicates = [
+            is_unambiguous_shell_command(&snapshot),
+            reads_as_prose(text),
+            has_no_prose_evidence(text),
+            reads_as_request_to_agent(text),
+            lacks_command_evidence_in_agent_conversation(&snapshot),
+            has_clear_shell_structure_for_unknown_head(text),
+        ];
+        std::hint::black_box((plain, conversation, predicates));
+        started.elapsed()
+    }
+
+    for kind in ["line", "script", "prose"] {
+        let one = time_all(&text_of(kind, ONE_MB));
+        let ten = time_all(&text_of(kind, 10 * ONE_MB));
+        let ratio = ten.as_secs_f64() / one.max(Duration::from_millis(5)).as_secs_f64();
+        assert!(
+            ratio <= LINEAR_RATIO_CAP,
+            "{kind}: 10 MB took {ten:?}, 1 MB took {one:?} ({ratio:.1}x): a rule is super-linear"
+        );
+        assert!(
+            one <= Duration::from_secs(10),
+            "{kind}: routing 1 MB took {one:?} (debug-build bound 10 s)"
+        );
+        assert!(
+            ten <= Duration::from_secs(100),
+            "{kind}: routing 10 MB took {ten:?} (debug-build bound 100 s)"
+        );
+    }
 }
 
 #[test]

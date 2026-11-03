@@ -530,7 +530,6 @@ fn every_rule_names_itself() {
     use routing::Rule;
     for rule in [
         Rule::Empty,
-        Rule::Oversized,
         Rule::Denylist,
         Rule::RunningTypeahead,
         Rule::SlashSpelling,
@@ -646,6 +645,59 @@ fn prose_with_shell_characters_never_takes_the_structure_rule() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// #1604: there is no size above which a line is not routed. A 5000-byte shell line, a 5000-byte
+/// multi-line script and 5000 bytes of prose each route exactly as their short forms do (the
+/// former `Rule::Oversized` left all three undecided, and the app ran them on the inherited
+/// type). Both the keystroke facts (no parse, nothing known) and the Enter facts are tried.
+#[test]
+fn long_lines_route_like_their_short_forms() {
+    fn context(surface: RoutingSurface) -> RoutingContext {
+        RoutingContext {
+            surface,
+            shell: ShellFamily::Posix,
+            head_known_to_shell: None,
+            commands_fully_loaded: false,
+            command_data_current: false,
+            is_agent_follow_up: false,
+            ran_before_exactly: false,
+            denylisted: false,
+            typeahead: RoutingTypeahead::None,
+        }
+    }
+    fn unparsed(text: &str) -> ParsedTokensSnapshot {
+        ParsedTokensSnapshot {
+            buffer_text: text.to_owned(),
+            parsed_tokens: Vec::new(),
+        }
+    }
+    let shell_line = format!("echo {}; echo PASTE-LONG-END", "PASTE-G1 ".repeat(600));
+    let script = vec![format!("echo {}; echo PASTE-H1", "PASTE-G1 ".repeat(12)); 40].join("\n");
+    let prose = "please explain why the build failed ".repeat(140);
+    for (short, long, expected) in [
+        ("echo PASTE-G1; echo PASTE-LONG-END", shell_line, Route::Shell),
+        ("echo PASTE-G1; echo PASTE-H1\necho PASTE-G1; echo PASTE-H1", script, Route::Shell),
+        ("please explain why the build failed", prose, Route::Agent),
+    ] {
+        assert!(long.len() > 4096, "{}", long.len());
+        for surface in [
+            RoutingSurface::PlainTerminal,
+            RoutingSurface::AgentConversation,
+        ] {
+            let short_decision = routing::route(&unparsed(short), &context(surface));
+            let long_decision = routing::route(&unparsed(&long), &context(surface));
+            assert_eq!(short_decision.route, expected, "{short:?} on {surface:?}");
+            assert_eq!(
+                long_decision.route, expected,
+                "{} bytes on {surface:?}: {} (short form: {})",
+                long.len(),
+                long_decision.rule,
+                short_decision.rule
+            );
+            assert_eq!(long_decision.rule, short_decision.rule, "{} bytes", long.len());
         }
     }
 }

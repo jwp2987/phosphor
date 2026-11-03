@@ -28,6 +28,11 @@ name = "ansi_bench"
 harness = false
 required-features = ["dev-support"]
 
+[[bench]]
+name = "routing_bench"
+harness = false
+required-features = ["dev-support"]
+
 # Phosphor keeps only one bin: phosphor-oss. The original warp multi-channel
 # release bins (dev/stable/preview/local) have been removed, and the separate
 # generate_settings_schema build target was folded into this one as the
