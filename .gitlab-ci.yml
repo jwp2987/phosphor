@@ -1311,15 +1311,40 @@ release-macos-arm64:
     # --selfsign = ad-hoc signing: gives the .app a cdhash (required before notifications register)
     # with hardened runtime and Debug-Entitlements, no Apple Developer certificate needed.
     # Users still see Gatekeeper's "unidentified developer" dialog on first open.
-    - GIT_RELEASE_TAG="$RELEASE_TAG" script/bundle --channel "$CHANNEL" --arch aarch64 --dmg-name-suffix arm64 --selfsign
+    # #1515: Developer ID signing + notarization run ONLY when the owner has provided every variable listed in
+    # docs/release-signing.md (protected CI/CD variables, so only main/build/*/v* pipelines see them). Otherwise
+    # this stays the ad-hoc --selfsign build above. Nothing is echoed; no `set -x`.
+    - |
+      set -euo pipefail
+      SIGNED=0
+      if [ -n "${PHOSPHOR_APPLE_TEAM_ID:-}" ] && [ -n "${PHOSPHOR_APPLE_SIGNING_IDENTITY:-}" ] && [ -n "${PHOSPHOR_DEVELOPER_ID_CERT:-}" ] \
+         && [ -n "${PHOSPHOR_DEVELOPER_ID_CERT_PASSWORD:-}" ] && [ -n "${PHOSPHOR_CODESIGN_KEYCHAIN_PASSWORD:-}" ] \
+         && { [ -n "${PHOSPHOR_NOTARY_PROFILE:-}" ] || { [ -n "${PHOSPHOR_NOTARIZATION_APPLE_ID:-}" ] && [ -n "${PHOSPHOR_NOTARIZATION_PASSWORD:-}" ]; }; }; then
+        echo "Developer ID credentials present: signing and notarizing."
+        SIGNED=1
+        GIT_RELEASE_TAG="$RELEASE_TAG" script/bundle --channel "$CHANNEL" --arch aarch64 --dmg-name-suffix arm64 --read-passwords-from-env
+      else
+        echo "No Developer ID credentials configured: ad-hoc signed build (see docs/release-signing.md)."
+        GIT_RELEASE_TAG="$RELEASE_TAG" script/bundle --channel "$CHANNEL" --arch aarch64 --dmg-name-suffix arm64 --selfsign
+      fi
+      echo "$SIGNED" > .signed
     - |
       set -euo pipefail
       DMG=$(grep '^dmg_path=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
       [ -f "$DMG" ] || { echo "ERROR no DMG at '$DMG'" >&2; exit 1; }
       mkdir -p dist && cp "$DMG" dist/
       (cd dist && shasum -a 256 * > ../manifest-macos.txt)
-      script/ci/verify_artifacts.sh macos dist manifest-macos.txt   # #1515: verify BEFORE publishing
+      if [ "$(cat .signed)" = 1 ]; then
+        # signed + notarized: a bad signature or a missing stapled ticket must fail the release
+        PHOSPHOR_REQUIRE_SIGNED=1 script/ci/verify_artifacts.sh macos dist manifest-macos.txt
+        xcrun stapler validate dist/*.dmg
+      else
+        script/ci/verify_artifacts.sh macos dist manifest-macos.txt   # #1515: verify BEFORE publishing
+      fi
       ./script/ci/upload_package "$RELEASE_VERSION" dist/*
+  after_script:
+    # the throwaway signing keychain (only exists when Developer ID signing ran); runs on cancel too
+    - security delete-keychain phosphor-codesign-keychain >/dev/null 2>&1 || true
   artifacts:
     # dist/ is here so a dry run (which does not upload) still yields the installer, as a
     # member-only job artifact.
@@ -1387,7 +1412,21 @@ release-windows-x86_64:
       }
     # cargo-about generates the bundled third-party licenses (same pin as script/install_cargo_release_deps).
     - if (-not ((Get-Command cargo-about -ErrorAction SilentlyContinue) -and ((cargo-about --version) -match "0\.8\.4"))) { cargo install cargo-about --version 0.8.4 --locked --force; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
-    - .\script\windows\bundle.ps1 -CHANNEL $env:CHANNEL -ARCH x64 -RELEASE_TAG $env:RELEASE_TAG
+    # #1515: Authenticode signing runs ONLY when the owner has provided the certificate variables listed in
+    # docs/release-signing.md (protected). The .pfx is written outside the checkout and removed in after_script.
+    - |
+      $env:PHOSPHOR_SIGNED = "0"
+      if ($env:WINDOWS_CODESIGN_PFX_B64 -and $env:WINDOWS_CODESIGN_PFX_PASSWORD -and $env:WINDOWS_CODESIGN_TIMESTAMP_URL) {
+        $pfx = Join-Path $env:TEMP "phosphor-codesign-$env:CI_JOB_ID.pfx"
+        [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_B64))
+        # Inno Setup substitutes $f with the file to sign.
+        $env:SIGN_TOOL_CMD = "signtool.exe sign /fd SHA256 /td SHA256 /tr $env:WINDOWS_CODESIGN_TIMESTAMP_URL /f `"$pfx`" /p `"$env:WINDOWS_CODESIGN_PFX_PASSWORD`" `$f"
+        $env:PHOSPHOR_SIGNED = "1"
+        Write-Host "Authenticode credentials present: signing the installer."
+      } else {
+        Write-Host "No Windows code-signing certificate configured: unsigned installer (see docs/release-signing.md)."
+      }
+      .\script\windows\bundle.ps1 -CHANNEL $env:CHANNEL -ARCH x64 -RELEASE_TAG $env:RELEASE_TAG
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
     - |
       $installer = (Select-String -Path $env:GITHUB_OUTPUT -Pattern '^installer_path=(.*)$' | Select-Object -Last 1).Matches[0].Groups[1].Value
@@ -1396,10 +1435,13 @@ release-windows-x86_64:
       Copy-Item $installer "dist\Phosphor-windows-x86_64-Setup.exe"
       Get-FileHash dist\* -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + "  " + (Split-Path $_.Path -Leaf) } | Set-Content -Encoding ascii manifest-windows.txt
       Get-Content manifest-windows.txt
+      if ($env:PHOSPHOR_SIGNED -eq "1") { $env:PHOSPHOR_REQUIRE_SIGNED = "1" }   # signed release: an invalid signature fails the job
       .\script\ci\verify_artifacts.ps1 -Dist dist -Sums manifest-windows.txt   # #1515: verify BEFORE publishing
       if ($LASTEXITCODE) { exit $LASTEXITCODE }
       & "C:\Program Files\Git\bin\bash.exe" ./script/ci/upload_package "$env:RELEASE_VERSION" dist/Phosphor-windows-x86_64-Setup.exe
       if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  after_script:
+    - Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:TEMP "phosphor-codesign-$env:CI_JOB_ID.pfx")
   artifacts:
     paths: [manifest-windows.txt, dist/]
     expire_in: 3 days
