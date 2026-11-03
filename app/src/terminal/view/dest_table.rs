@@ -37,7 +37,7 @@
 //! | `replay_held_key`, `route_after_enter_input` (replayed Enter), `deliver_ssh_held`, `deliver_paste_text` | ROUTED (step 4, `deliver_via_table`) | deliveries |
 //! | `paste` (the routing decision) | ROUTED (table mode: `paste_routing_via_table`; shadow: compared) | a paste read takes its own `PasteReading` gate; the table decides the destination only |
 //! | `write_to_pty_for_syncing_long_running_commands` | ROUTED (origin row `O-synced`, judged as synced input) | text goes through the arrival, raw bytes through `begin_origin_row` |
-//! | `write_cli_submit_bytes` (9 callers in `use_agent_footer`) | WIRED (origin row `O-cli-submit`, exempt from the holds; the table's plan is logged, shadow compares) | the paced submit owns a `CliSubmit` gate and writes into the stage |
+//! | `write_cli_submit_bytes` (9 callers in `use_agent_footer`) | WIRED (origin row `O-cli-submit`, exempt from the holds but an open PowerShell setup (#1601); the table's plan is logged, shadow compares) | the paced submit owns a `CliSubmit` gate and writes into the stage |
 //! | `write_viewer_bytes_to_pty` | WIRED (origin `Viewer`; test-only writer in this tree) | no production caller |
 //! | `write_agent_bytes_to_pty` | ROUTED (row `D13`, refusal) | refused while a setup owns the pty, as `agent_pty_write_gate` |
 //! | `terminal_up` / `terminal_down` / `page_up` / `page_down` / `move_home` / `move_end` | NOT ROUTED, compared in shadow (`nav_key_goes_to_pty`) | their fall-back is a scroll or a block-selection move, which no row models, and their predicates differ by design (B11); `terminal_up` writes passively |

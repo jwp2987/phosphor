@@ -1022,7 +1022,7 @@ fn viewer_bytes_take_the_full_rows_and_observe_ctrl_c_when_written() {
 
 #[test]
 fn cli_submit_is_exempt_from_every_hold_but_the_powershell_setup_and_not_from_the_agent_check() {
-    // Every hold open EXCEPT the PowerShell setup (`ps` stays Off; its gate is not in the mask).
+    // Every hold open EXCEPT the PowerShell setup (`ps` stays Off: H6 reads `f.ps`, not the mask, which does include the PowerShell gate).
     let everything_open = RouteFacts {
         ssh: SshPhase::Holding,
         queue_has_ssh_gate: true,
