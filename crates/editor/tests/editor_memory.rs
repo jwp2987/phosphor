@@ -8,7 +8,8 @@
 //!   no undo entry, no leftover delta (`retained <= tree node bytes + slack`);
 //! * the load's transient peak stays bounded (a loose guard against the multi-GB regressions of
 //!   APP-5392 and #1340; the real-app number is the appci `editor_memory_7mb` case);
-//! * dropping the buffer gives everything back (`after drop <= before + slack`).
+//! * dropping the input and the buffer gives everything back (`after drop <= baseline + slack`,
+//!   the baseline taken before the input text existed).
 //!
 //! The numbers are printed (`--nocapture`) so a run doubles as a breakdown. Note that the
 //! dev-dependency on `sum_tree/test-util` shrinks the tree's fan-out in test builds, so the absolute
@@ -108,15 +109,19 @@ fn seven_mb_text() -> String {
 #[test]
 fn opening_a_7mb_file_keeps_only_the_content_tree_and_frees_it_on_drop() {
     App::test((), |mut app| async move {
+        // Nothing of the load exists yet: the final drop check compares against this.
+        let baseline = live();
         let text = seven_mb_text();
         let text_bytes = text.len();
 
+        // `before` and `after` are both taken while `text` is live, so the input is in both and
+        // cancels out: dropping it inside the window would hide a second copy of the same size.
         let before = reset_peak();
         let buffer = app.add_model(|_| Buffer::new(Box::new(|_, _| IndentBehavior::Ignore)));
         buffer.update(&mut app, |buffer, ctx| buffer.replace_all(&text, ctx));
-        drop(text);
         let peak = PEAK.load(Ordering::Relaxed);
         let after = live();
+        drop(text);
         let stats = buffer.read(&app, |buffer, _| buffer.memory_stats());
 
         let retained = after.saturating_sub(before);
@@ -163,13 +168,13 @@ fn opening_a_7mb_file_keeps_only_the_content_tree_and_frees_it_on_drop() {
         app.update(|_| {});
         let dropped = live();
         eprintln!(
-            "editor_memory test: after dropping the buffer {:+.1} MB vs before the load",
-            (dropped as f64 - before as f64) / MB
+            "editor_memory test: after dropping the text and the buffer {:+.1} MB vs before the load",
+            (dropped as f64 - baseline as f64) / MB
         );
         assert!(
-            dropped <= before + slack,
+            dropped <= baseline + slack,
             "dropping the buffer kept {} B of the load",
-            dropped.saturating_sub(before)
+            dropped.saturating_sub(baseline)
         );
     });
 }
