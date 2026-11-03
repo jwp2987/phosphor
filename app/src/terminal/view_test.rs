@@ -19644,6 +19644,12 @@ fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shel
                         )
                         .expect("Should be able to enter agent view")
                 });
+            });
+            // The agent view's `EnteredAgentView` event is delivered when the update above ends
+            // (effects flush only after the outermost update). Its subscriber resets the input to
+            // AI, unlocked: with the Shell lock below set in the SAME update, the event
+            // overwrote it before the Enter was processed and `ssh fake` went to the agent.
+            terminal.update(&mut app, |view, ctx| {
                 // The remote's prompt is up (Precmd in) but its session is not registered with
                 // the history yet: the shell refuses a command (#1572's window).
                 view.model
