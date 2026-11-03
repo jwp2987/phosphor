@@ -31,7 +31,7 @@ inputs=( "" "a" "'" '"' '%' '%%' '%d' '\' '\\' '\n' $'\n' $'\t' ' ' '  ' "a b" $
 for b in {1..255}; do inputs+=( ${(#)b} ); done
 for b in {1..255}; do inputs+=( "$(printf "\\x$(printf %02x $b)")" ); done
 for s in "${inputs[@]}"; do check "$s"; done
-for i in {1..50}; do check "$(head -c $((RANDOM % 2000 + 1)) /dev/urandom | tr -d '\0')"; done
+for i in {1..50}; do check "$(head -c $((RANDOM % 2000 + 1)) /dev/urandom | LC_ALL=C tr -d '\0')"; done
 # a zsh whose `builtin printf` cannot serve (stand-in for < 5.3) must still encode right, through the loop
 (
   disable printf
