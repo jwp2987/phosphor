@@ -48,7 +48,7 @@ open(os.path.join(run, "junit.xml"), "w").write("\n".join(x))
 m = ["# App test results (%s)" % ", ".join("%s=%s" % kv for kv in meta.items()), "", "pass %(pass)d, fail %(fail)d, skip %(skip)d, no-reference %(noref)d (not passes)" % cnt, "",
      "| mode | case | status | detail |", "|---|---|---|---|"]
 for r in rows:
-    m.append("| %s | %s | %s | %s |" % (r.get("mode", ""), r["name"], r["status"].upper(), row_detail_cell(r.get("detail", []))))
+    m.append("| %s | %s | %s | %s |" % (r.get("mode", ""), r["name"], r["status"].upper() + (" (TAINTED: Enters lost before the app, see detail)" if r.get("tainted") else ""), row_detail_cell(r.get("detail", []))))
 def f(x, nd=1):
     return "-" if x is None else ("%.*f" % (nd, x))
 

@@ -381,6 +381,20 @@ def main():
                             r.metrics["injector"] = acct
                     except Exception as e:
                         r.note("injector accounting failed: %r" % e)
+                tainted = False
+                if a.backend == "mac" and not sim:       # r18e9: Returns macOS targeted at the app that its NSApplication never logged taint THIS case's row
+                    import taint
+                    try:
+                        pids = {app.pid()} - {None}
+                    except Exception:
+                        pids = set()
+                    tn, tm = taint.case_taint(run, c["name"], label, t0, time.time(), pids,
+                                              ctx.log_since(log_off) if log_off is not None else "", alive=bool(app.alive()) if hasattr(app, "alive") else None)
+                    if tm:
+                        r.metrics["enter_taint"] = tm
+                    if tn:
+                        r.note(tn)
+                        tainted = True
                 for ev in (be.drain_health() if hasattr(be, "drain_health") else []):
                     r.note(ev + " (key loss in this case is the INJECTOR's, not the app's)")
                 shot = None if sim else ctx.shot(c["name"] + ("_FAIL" if status == "fail" else ""))
@@ -390,7 +404,7 @@ def main():
                     status = "fail"
                     dead = classify_death(dead, ctx, t0, log_off)
                     r.fails.append(dead)
-                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence,
+                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
                     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)   # the relaunch overwrites phosphor.log (#1457)
@@ -407,7 +421,7 @@ def main():
                     exit_fail = True
                     if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
                         save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
-                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence,
+                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence, tainted=tainted, wall=[round(t0, 3), round(time.time(), 3)],
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
                 if c["name"].startswith(("ssh_", "remote_")):
                     # r18ct: a failed nested-ssh case left the pane inside the remote shell, and the next case (latency_enter) typed a zsh-only

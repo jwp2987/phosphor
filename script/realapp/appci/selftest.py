@@ -764,6 +764,26 @@ def r18e9_controlmaster_cleanup_parses_and_never_raises():
     assert runmod.SSH_CM_RX.search("/usr/bin/ssh -F x -o ControlMaster=yes -o ControlPath=/tmp/a/cm-1 -N -f h").group(1) == "/tmp/a/cm-1"
 
 
+@check
+def r18e9_enter_taint_splits_lost_from_uncovered():
+    """r18e9: a tapped Return with no app_send_event is LOST when neighbours are logged within 3 s, UNCOVERED when the log has nothing near it; a clean case is untainted"""
+    import taint
+    log = "x hop=mac_enter stage=app_send_event keycode=36 ts=10.000000 t=1\nx hop=mac_enter stage=app_send_event keycode=36 ts=11.000000 t=2\n"
+    taps = [(10.0, 5, 1.0), (12.0, 5, 3.0), (500.0, 5, 9.0), (50.0, 99, 5.0)]
+    c = taint.classify(taps, {5}, log)
+    assert [x[0] for x in c["lost"]] == [12.0] and [x[0] for x in c["uncovered"]] == [500.0] and c["elsewhere"] == 1, c
+    d = tempfile.mkdtemp()
+    try:
+        os.makedirs(os.path.join(d, "run"))
+        open(os.path.join(d, "ktap.log"), "w").write("E down keycode=36 ts_ns=10000000000 target_pid=5 source_pid=1 wall=100.0\n")
+        note, m = taint.case_taint(os.path.join(d, "run"), "c", "terminal", 99.0, 101.0, {5}, log)
+        assert note is None and m["lost"] == 0, (note, m)
+        note, m = taint.case_taint(os.path.join(d, "run"), "c", "terminal", 99.0, 101.0, {5}, "")
+        assert note and "TAINTED" in note and m["uncovered"] == 1 and os.path.exists(os.path.join(d, "run", "logs", "enter_taint.jsonl"))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     failed = 0
     for f in CHECKS:
