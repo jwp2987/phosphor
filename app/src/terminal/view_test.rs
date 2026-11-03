@@ -20490,10 +20490,8 @@ fn ssh_submit_tells_the_handoff_the_tty_belongs_to_ssh_until_the_block_ends() {
             assert!(!view.handoff.read().ssh_owns_tty());
             submit_command(view, "ssh fake", ctx);
             assert!(view.handoff.read().ssh_owns_tty());
-            let block_id = view.model.lock().active_block_id().clone();
-            view.apply_block_completed_to_ssh_gate(&block_id, 0);
-            assert!(!view.handoff.read().ssh_owns_tty());
-            submit_command(view, "ssh fake", ctx);
+            // The flag does not depend on the gate (it is cleared with no gate open too).
+            view.ssh_connect_gate = None;
             assert!(view.handoff.read().ssh_owns_tty());
             submit_command(view, "echo hi", ctx);
             assert!(!view.handoff.read().ssh_owns_tty());

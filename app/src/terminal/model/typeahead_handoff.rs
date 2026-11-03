@@ -1441,6 +1441,8 @@ impl TypeaheadHandoff {
         self.reading_seq = None;
         self.line_editor_markers_live = false;
         self.last_parsed_hook = None;
+        // #1609: the new session's own prompts are counted from here.
+        self.ssh_owns_tty = false;
     }
 
     /// #1609: the view says an ssh command the user submitted now owns the pty (`true`), or that it
@@ -1449,7 +1451,6 @@ impl TypeaheadHandoff {
         self.ssh_owns_tty = owns;
     }
 
-    #[cfg(test)]
     pub fn ssh_owns_tty(&self) -> bool {
         self.ssh_owns_tty
     }
@@ -2279,10 +2280,25 @@ impl TypeaheadHandoff {
                 HandoffState::AwaitingReport => "awaiting_report",
                 HandoffState::EditorOwned => "editor_owned",
             };
+            let (wrote, enters, precmds) = match &self.state {
+                HandoffState::PtyOwned {
+                    wrote_user_bytes,
+                    enters_written,
+                    precmds_seen,
+                } => (*wrote_user_bytes, *enters_written, *precmds_seen),
+                _ => (false, 0, 0),
+            };
             format!(
-                "reason={reason} state={state} awaiting_ready={} in_flight={} bytes={}",
+                "reason={reason} state={state} awaiting_ready={} in_flight={} ssh_owns_tty={} \
+                 enters_written={enters} precmds_seen={precmds} young_line={} \
+                 wrote_user_bytes={wrote} prompt_seq_mode={} prompt_fact={:?} hold_id={} bytes={}",
                 self.awaiting_line_editor_since.is_some(),
                 self.writes_in_flight,
+                self.ssh_owns_tty,
+                self.young_line,
+                self.prompt_seq_mode(),
+                self.prompt_fact(),
+                self.young_hold_id,
                 warpui::input_order::describe_bytes_escaped(bytes)
             )
         });
@@ -2361,6 +2377,9 @@ impl TypeaheadHandoff {
     ) -> Option<bool> {
         // #1609: the Enter is for the ssh session, not a line the local shell may have answered.
         if self.ssh_owns_tty {
+            if matches!(bytes.first(), Some(b'\r' | b'\n')) {
+                self.log_route_decision("unheld_ssh_owns_tty", bytes);
+            }
             return None;
         }
         let HandoffState::PtyOwned {

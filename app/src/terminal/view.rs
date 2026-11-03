@@ -11151,9 +11151,12 @@ impl TerminalView {
         warpui::input_order::log_key_hop("kh_hold_entry", || {
             format!(
                 "gate_drops={gate_drops} dialog_up={dialog_up} holding={} held_bytes={} \
-                 control_sequence={control_sequence}",
+                 control_sequence={control_sequence} gate_armed={gate_armed} \
+                 pending_session={} output_seen={}",
                 self.ssh_typeahead_holding,
                 self.ssh_held_bytes(),
+                pending_now.is_some(),
+                self.ssh_connect_gate.as_ref().is_some_and(|g| g.output_seen),
             )
         });
         if dialog_up {
@@ -11174,7 +11177,12 @@ impl TerminalView {
         }
         if !gate_drops && !self.ssh_typeahead_holding {
             self.ssh_setup_drop_notified = false;
-            warpui::input_order::log_key_hop("kh_hold_exit", || "branch=gate_open_live".to_owned());
+            warpui::input_order::log_key_hop("kh_hold_exit", || {
+                format!(
+                    "branch=gate_open_live gate_armed={gate_armed} pending_session={}",
+                    pending_now.is_some()
+                )
+            });
             return false;
         }
         // #1292: hold the key. Once anything is held every later key is held too, even where the
@@ -11456,6 +11464,9 @@ impl TerminalView {
             self.schedule_ssh_typeahead_give_up(ctx);
             return false;
         }
+        warpui::input_order::log_hop("ssh_held_delivery", || {
+            format!("source={source} held_bytes={}", self.ssh_held_bytes())
+        });
         warpui::input_order::log_key_hop("kh_handover", || {
             format!(
                 "source={source} remote_prompt_seen={} held_bytes={} view_precmds_pending={}",
@@ -11698,14 +11709,28 @@ impl TerminalView {
             self.ssh_connect_gate = Some(gate);
             // #1609: from this submit until the ssh block ends the pty belongs to ssh and the
             // remote shell: an Enter typed into it is not held as a young line of the local shell.
-            self.handoff.write().set_ssh_owns_tty(true);
+            self.set_handoff_ssh_owns_tty(true, "ssh_submit");
         } else {
             // A different command now owns the pty: a stale gate must not eat its typing.
             self.ssh_connect_gate = None;
-            self.handoff.write().set_ssh_owns_tty(false);
+            self.set_handoff_ssh_owns_tty(false, "other_submit");
         }
         self.ssh_edge(input_queue::SshEdge::Submitted {
             ssh: self.ssh_connect_gate.is_some(),
+        });
+    }
+
+    /// #1609: tells the hand-off whether an ssh the user submitted owns the pty; logged with the
+    /// site so a run shows every set and clear.
+    fn set_handoff_ssh_owns_tty(&mut self, owns: bool, site: &'static str) {
+        let was = {
+            let mut handoff = self.handoff.write();
+            let was = handoff.ssh_owns_tty();
+            handoff.set_ssh_owns_tty(owns);
+            was
+        };
+        warpui::input_order::log_hop("ssh_owns_tty", || {
+            format!("set={owns} was={was} site={site}")
         });
     }
 
@@ -11924,8 +11949,6 @@ impl TerminalView {
     /// Applies a finished user block to the gate (#983). Only the armed block's completion
     /// counts; the observation of the announced remote runs first so a managed remote is known.
     fn apply_block_completed_to_ssh_gate(&mut self, block_id: &BlockId, exit_code: i32) {
-        // #1609: a user block ended: the pty is the local shell's again.
-        self.handoff.write().set_ssh_owns_tty(false);
         let applies =
             |gate: &SshConnectGate| gate.block_id.as_ref().is_none_or(|id| id == block_id);
         if !self.ssh_connect_gate.as_ref().is_some_and(applies) {
@@ -13609,6 +13632,14 @@ impl TerminalView {
     /// the pty still owns input, the controller is asked to decide again (draining writes held
     /// for this prompt, or requesting); it only does while the line editor is active.
     fn commit_typeahead_handoff_at_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        warpui::input_order::log_hop("handoff_commit_source", || {
+            format!(
+                "ssh_gate_armed={} ssh_holding={} remote_prompt_seen={}",
+                self.ssh_connect_gate.is_some(),
+                self.ssh_typeahead_holding,
+                self.ssh_remote_prompt_seen
+            )
+        });
         let (committed, still_pty_owned) = {
             let mut model = self.model.lock();
             let mut handoff = model.typeahead_handoff_mut();
@@ -17365,6 +17396,9 @@ impl TerminalView {
 
                 if let BlockType::User(user_completed) = &block_completed_event.block_type {
                     self.on_user_block_completed(&block_completed_event.block_id, ctx);
+                    // #1609: any user block ending returns the pty to the local shell, whether or
+                    // not an ssh gate is still open.
+                    self.set_handoff_ssh_owns_tty(false, "block_completed");
                     // #983: the ssh block ends when the remote shell's first precmd arrives, well
                     // before the remote session is registered and bootstrapped. A failed ssh ends
                     // the connect window; a clean end keeps it for the bootstrap grace period.
