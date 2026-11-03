@@ -16022,6 +16022,82 @@ fn powershell_setup_keys_are_delivered_once_in_order_at_the_prompt_after_bootstr
     })
 }
 
+/// #1601 (owner decision): a CLI-agent submit made during an announced PowerShell setup is held
+/// with the other keys -- nothing reaches the pty -- and is delivered exactly once, in typed order,
+/// at the prompt after `Bootstrapped` (the setup's closing event), never by a timer. Legacy and
+/// `table` mode agree (the table's O-cli-submit row used to be exempt from this hold).
+/// Not compiled/run when written (no builds in the fix pass).
+fn a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            // A key typed before the submit, the submit (text, then its Enter), a key after it.
+            assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+            view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+            view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+            assert!(view.write_user_bytes_to_pty(b"b".to_vec(), ctx));
+            assert_eq!(
+                powershell_held(view).concat(),
+                b"aTEXT\rb".to_vec(),
+                "{mode:?}: the submit is held in typed order with the keys around it"
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "{mode:?}: the submit reached the shell during the setup: {:?}",
+            String::from_utf8_lossy(&delivered.borrow())
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(
+                &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                    session_id: SessionId::from(1601),
+                    is_subshell: true,
+                }),
+                ctx,
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "{mode:?}: nothing before the prompt that follows Bootstrapped"
+        );
+        for _ in 0..2 {
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            });
+        }
+        let (editor_text, hold, held) = terminal.read(&app, |view, ctx| {
+            (
+                view.input.as_ref(ctx).buffer_text(ctx),
+                view.powershell_setup_hold,
+                powershell_held(view),
+            )
+        });
+        let mut everything = delivered.borrow().clone();
+        everything.extend_from_slice(editor_text.as_bytes());
+        assert_eq!(
+            String::from_utf8_lossy(&everything),
+            "aTEXT\rb",
+            "{mode:?}: every byte exactly once, in the order submitted"
+        );
+        assert_eq!(hold, PowerShellSetupHold::Off, "{mode:?}: the hold is over");
+        assert!(held.is_empty(), "{mode:?}: nothing stays held");
+    })
+}
+
+#[test]
+fn legacy_mode_a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once() {
+    a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(DestMode::Legacy);
+}
+
+#[test]
+fn table_mode_a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once() {
+    a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(DestMode::Table);
+}
+
 /// #1051: a Ctrl-C early in a PowerShell setup (Ctrl-C at ~0.5 s or ~2 s after the chip) is not
 /// written to the shell -- it stopped the bootstrap half-way and left the pane on "Starting
 /// shell..." with an editor that refused every command. It does what Ctrl-C does at a prompt:

@@ -1021,12 +1021,12 @@ fn viewer_bytes_take_the_full_rows_and_observe_ctrl_c_when_written() {
 }
 
 #[test]
-fn cli_submit_is_exempt_from_every_hold_but_not_from_the_agent_check() {
+fn cli_submit_is_exempt_from_every_hold_but_the_powershell_setup_and_not_from_the_agent_check() {
+    // Every hold open EXCEPT the PowerShell setup (`ps` stays Off; its gate is not in the mask).
     let everything_open = RouteFacts {
         ssh: SshPhase::Holding,
         queue_has_ssh_gate: true,
         ssh_dialog_up: true,
-        ps: PsPhase::LineRunning,
         subshell: SubshellPhase::BootstrapWriting,
         gates: GateMask::of(&GateKind::ALL),
         queued: true,
@@ -1048,6 +1048,51 @@ fn cli_submit_is_exempt_from_every_hold_but_not_from_the_agent_check() {
     assert_eq!(
         plan(from(Class::Typed, Origin::CliSubmit), in_control).outcome,
         drop_of(DropWhy::AgentControl)
+    );
+}
+
+/// #1601 (owner decision): an open PowerShell setup holds the CLI-agent submit like every other
+/// key, in every phase that holds keys (legacy `write_user_bytes_to_pty_after_paste_stage`).
+#[test]
+fn cli_submit_is_held_behind_an_open_powershell_setup() {
+    for ps in [
+        PsPhase::Setup { holds_keys: true },
+        PsPhase::LineRunning,
+        PsPhase::AfterAbort,
+    ] {
+        let held = RouteFacts { ps, ..running() };
+        for class in [
+            Class::Typed,
+            Class::Enter,
+            Class::Control,
+            Class::Paste,
+            Class::Raw,
+        ] {
+            let p = plan(from(class, Origin::CliSubmit), held);
+            assert_eq!(
+                (p.outcome, p.row),
+                (Outcome::Hold(GateKind::PowershellSetup), Row::H6),
+                "{ps:?} {class:?}"
+            );
+        }
+        // The hold comes before the agent check, as the legacy hold comes before D4/D5.
+        let in_control = RouteFacts {
+            agent_in_control: true,
+            ..held
+        };
+        assert_eq!(
+            plan(from(Class::Raw, Origin::CliSubmit), in_control).outcome,
+            Outcome::Hold(GateKind::PowershellSetup)
+        );
+    }
+    // A setup that no longer holds keys (typed-hold limit passed, or a read-only session) does not.
+    let released = RouteFacts {
+        ps: PsPhase::Setup { holds_keys: false },
+        ..running()
+    };
+    assert_eq!(
+        plan(from(Class::Raw, Origin::CliSubmit), released).outcome,
+        Outcome::Pty(PtyWrite::CliSubmit)
     );
 }
 
@@ -1868,14 +1913,19 @@ proptest! {
         }
     }
 
-    /// The paced CLI-agent submit is exempt from every hold, and nothing the editor produced goes
-    /// to the pty.
+    /// The paced CLI-agent submit is exempt from every hold but an open PowerShell setup (#1601),
+    /// which holds it behind `PowershellSetup` and nothing else; and nothing the editor produced
+    /// goes to the pty.
     #[test]
     fn origin_exemptions_hold(i in arb_intent(), f in arb_facts()) {
         let plan = decide(&i, &f, None);
         if i.origin == Origin::CliSubmit && !i.class.is_signal() && i.class != Class::AgentWrite {
-            prop_assert!(!plan.outcome.is_hold() && plan.outcome != Outcome::Hint
-                && !matches!(plan.outcome, Outcome::Swallow(_)), "{:?}", plan);
+            if f.ps.holds_keys() {
+                prop_assert_eq!(plan.outcome, Outcome::Hold(GateKind::PowershellSetup), "{:?}", plan);
+            } else {
+                prop_assert!(!plan.outcome.is_hold() && plan.outcome != Outcome::Hint
+                    && !matches!(plan.outcome, Outcome::Swallow(_)), "{:?}", plan);
+            }
         }
         if i.origin == Origin::Editor && !i.class.is_signal() && i.class != Class::AgentWrite {
             prop_assert!(!plan.outcome.is_pty(), "{:?}", plan);
