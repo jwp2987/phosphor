@@ -1943,7 +1943,11 @@ impl TerminalView {
             )
         });
         if !prompt_hold && (inserted || chunks > 0) {
-            self.show_error_toast(GATE_GIVE_UP_TOAST.to_string(), ctx);
+            let toast = match why {
+                "stall_ceiling" => "Shell setup stalled; what you typed is in the input",
+                _ => GATE_GIVE_UP_TOAST,
+            };
+            self.show_error_toast(toast.to_string(), ctx);
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);

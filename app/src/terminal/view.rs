@@ -919,6 +919,8 @@ const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 /// command is a plain interactive session and every key goes to the pty.
 const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// After this long without a finished subshell bootstrap, input is no longer held back (#960).
+/// #1577: when a stalled setup is abandoned at the ceiling, the keys held through it are handed
+/// back to the editor as text, not written to the abandoned shell.
 const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
 /// How often a deferred subshell setup (#1032) re-checks whether the prompt it is waiting behind
 /// has been answered.
@@ -22582,7 +22584,11 @@ impl TerminalView {
         if !abandoned {
             return;
         }
-        self.release_subshell_setup_held_bytes(ctx);
+        // #1577: the ceiling is a timer, and a timer never writes the keys held through the stalled
+        // setup into the abandoned shell: they come back to the editor as text (the Precmd EVENT
+        // of a setup that does finish still releases them in order). Both setup gates close,
+        // the setup state and the waiting notice go, and a toast says so.
+        self.give_up_setup_gates_to_editor("stall_ceiling", ctx);
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
         });

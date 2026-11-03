@@ -411,3 +411,42 @@ fn powershell_abort_marker_give_up_hands_the_held_keys_back() {
         });
     }
 }
+
+/// A10 (#1577): the stall ceiling (a subshell setup that never finishes) hands the keys held
+/// through it back to the editor as text, resets the setup state and the waiting notice, and
+/// writes nothing into the abandoned shell. (The Precmd event of a setup that does finish still
+/// releases them in order: `keys_held_through_a_stall_are_released_once_...`.)
+#[test]
+fn stall_ceiling_hands_the_keys_held_through_the_setup_back() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("zsh", " set | command grep x; true\r\n");
+                let block_id = view.model.lock().block_list().active_block().id().clone();
+                view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+                assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                assert!(view.subshell_setup_gate_open(), "the keys are held");
+                view.subshell_setup_waiting_toast_id = Some("waiting-test".to_string());
+                view.give_up_setup_gates_to_editor("stall_ceiling", ctx);
+                assert!(view.subshell_bootstrap_announced.is_none());
+                assert!(view.subshell_setup_waiting_toast_id.is_none());
+                assert!(!view.subshell_setup_gate_open());
+                assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+                assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "the ceiling wrote into the abandoned shell: {:?}",
+                writes.borrow()
+            );
+        });
+    }
+}
