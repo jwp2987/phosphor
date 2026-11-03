@@ -141,3 +141,102 @@ fn subshell_bootstrap_waits_for_a_line_holding_delivered_keys() {
         }
     }
 }
+
+/// An Enter key press delivered to the pane's key sink with `focus_chain` focused.
+fn pane_enter_with_focus(
+    view: &mut TerminalView,
+    focus_chain: Vec<EntityId>,
+    ctx: &mut ViewContext<TerminalView>,
+) -> PaneKeyOutcome {
+    let key = PaneKey {
+        seq: 0,
+        kind: PaneKeyKind::KeyDown {
+            keystroke: warpui::keymap::Keystroke::parse("enter").expect("enter parses"),
+            chars: "\r".to_owned(),
+            is_composing: false,
+            will_type: false,
+        },
+    };
+    view.on_pane_key_event(
+        &key,
+        &PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text: false,
+        },
+        ctx,
+    )
+}
+
+fn flat_bytes(writes: &Rc<RefCell<Vec<Vec<u8>>>>) -> Vec<u8> {
+    writes.borrow().iter().flatten().copied().collect()
+}
+
+/// #1552: a running command, focus nowhere in the pane. The Enter is the pane's (not left to the
+/// input's binding on an empty editor) and goes to the pty with the keys that preceded it.
+#[test]
+fn enter_in_a_focus_gap_follows_the_typed_keys_to_the_running_command() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let outcome = terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.model.lock().simulate_long_running_block("cat", "");
+                // Typed keys in the gap go to the pty (#1397) ...
+                assert_eq!(pane_typed_in_gap(view, "a", ctx), PaneKeyOutcome::Consumed);
+                pane_enter_with_focus(view, Vec::new(), ctx)
+            });
+            assert_eq!(outcome, PaneKeyOutcome::Consumed, "the Enter is the pane's");
+            assert_eq!(flat_bytes(&pty_writes), b"a\r".to_vec());
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            });
+        });
+    }
+}
+
+fn pane_typed_in_gap(
+    view: &mut TerminalView,
+    chars: &str,
+    ctx: &mut ViewContext<TerminalView>,
+) -> PaneKeyOutcome {
+    let key = PaneKey {
+        seq: 0,
+        kind: PaneKeyKind::Typed {
+            chars: chars.to_owned(),
+            ime_commit: false,
+        },
+    };
+    view.on_pane_key_event(
+        &key,
+        &PaneKeyContext {
+            focus_chain: Vec::new(),
+            leaf_takes_typed_text: false,
+        },
+        ctx,
+    )
+}
+
+/// #1552: at an idle prompt with an empty editor an Enter in a focus gap writes nothing and runs
+/// nothing; it is dropped (and focus goes back to the input).
+#[test]
+fn enter_in_a_focus_gap_at_an_idle_prompt_writes_and_runs_nothing() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                pane_enter_with_focus(view, Vec::new(), ctx);
+            });
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            });
+        });
+    }
+}

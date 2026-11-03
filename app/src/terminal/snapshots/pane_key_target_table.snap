@@ -18,7 +18,7 @@ Typed text_field=false editor=false terminal=true ssh_hold=true -> Terminal
 Typed text_field=true editor=false terminal=true ssh_hold=true -> NotMine
 Typed text_field=false editor=true terminal=true ssh_hold=true -> Terminal
 Typed text_field=true editor=true terminal=true ssh_hold=true -> NotMine
-Control text_field=false editor=false terminal=false ssh_hold=false -> NotMine
+Control text_field=false editor=false terminal=false ssh_hold=false -> Terminal
 Control text_field=true editor=false terminal=false ssh_hold=false -> NotMine
 Control text_field=false editor=true terminal=false ssh_hold=false -> NotMine
 Control text_field=true editor=true terminal=false ssh_hold=false -> NotMine
