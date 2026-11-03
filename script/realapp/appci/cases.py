@@ -85,10 +85,12 @@ def lat_checks(r, rec, label):
                 r.check(False, "REGRESSION " + msg)
             else:
                 r.note("WARN " + msg)
-    if rec["verdict"] in ("inconclusive", "no-compare") or rec.get("budget_verdict") in ("inconclusive", "no-compare"):
+    if rec["verdict"] in ("inconclusive", "no-compare") or rec.get("budget_verdict") in ("inconclusive", "no-compare"):  # (#1514: includes too-few-samples and resolution-limited)
         why = "overhead %s +/- %s ms (SE) vs budget %g ms is within noise" % (rec.get("overhead_ms"), rec.get("overhead_se_ms"), rec["budget_ms"])
         if rec.get("budget_verdict") == "no-compare":
             why = "pane shell %s != reference shell %s" % (rec.get("pane_shell"), rec.get("reference_shell"))
+        elif rec.get("insufficient"):
+            why = "insufficient evidence (%s)" % "; ".join(rec["insufficient"])
         r.no_reference("%s: %s: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)" % (label, why))
     if rec["verdict"] == "no-reference":
         r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
@@ -163,6 +165,10 @@ class Ctx:
 
     def count(self, n):
         return max(2, int(n * self.scale))
+
+    def count_lat(self, n):
+        """sample count for a LATENCY case (#1514): never below lat.min_n(), however small the scale (a scaled run judged on 2 samples proved nothing)"""
+        return max(lat.min_n(), int(n * self.scale))
 
     def tok(self, n=8):
         self.n += 1
@@ -456,6 +462,22 @@ class Ctx:
     def cmd_mark(self):
         return len(self.prof.commands())
 
+    def ps_history_path(self):
+        """#1514: the PSReadLine history file of the PowerShell pane (the only record of the exact command line the shell received there: the pane has no rc
+        hook, so no rec.log). None off Windows / when APPDATA is unknown."""
+        if not (self.win and self.pane == "powershell"):
+            return None
+        env = dict(self.app.env()) if hasattr(getattr(self, "app", None), "env") else dict(os.environ)
+        ad = env.get("APPDATA") or os.environ.get("APPDATA")
+        return os.path.join(ad, "Microsoft", "Windows", "PowerShell", "PSReadLine", "ConsoleHost_history.txt") if ad else None
+
+    def ps_history_lines(self):
+        p = self.ps_history_path()
+        try:
+            return [l.rstrip("\r\n") for l in open(p, encoding="utf-8", errors="replace")] if p else []
+        except Exception:
+            return []
+
     def log_size(self):
         try:
             return os.path.getsize(self.log_path)
@@ -667,6 +689,7 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
     ctx.rm(fname)
     t_start = time.time()
     mark = ctx.cmd_mark()
+    hmark = len(ctx.ps_history_lines())
     k0 = len(ctx.be.calls) if ctx.be.calls is not None else None
     exp = []
     for i in range(n):
@@ -730,6 +753,17 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
                 tag, len(have), pair[0] if pair else "count differs %d vs %d" % (len(have), len(want)), ev2))
         else:
             r.note("%s: rec.log empty (PROMPT_COMMAND hook not run), effect file checked only" % tag)
+    elif ctx.pane == "powershell" and verdict != "skip":
+        # #1514: no rec.log in the PowerShell pane, so an extra character that still wrote the token passed. The exact line comes from PSReadLine's history file.
+        want = [ctx.append_cmd(shell, t, fname) for t in exp]
+        have = ctx.ps_history_lines()[hmark:]
+        if len(have) == len(want):
+            bad = [(h, w) for h, w in zip(have, want) if h != w]
+            r.check(not bad, "%s: PowerShell received %d of %d lines NOT exactly as typed (PSReadLine history; first: got %r, want %r)" % (
+                tag, len(bad), len(want), bad[0][0] if bad else None, bad[0][1] if bad else None))
+        else:
+            r.metric("command_text_unverified_" + tag, dict(history_lines=len(have), typed=len(want)))
+            r.note("%s: command text NOT verified in the PowerShell pane: PSReadLine history has %d new line(s) for %d typed (file missing, filtered or not yet written); the effect file (exact lines, no extras) was checked only" % (tag, len(have), len(want)))
     return ok
 
 
@@ -898,10 +932,12 @@ def c_tab(ctx, r):
     r.check(not stray, "Tab+Enter ran the UNCOMPLETED line, stray files: %s" % stray)
 
 
-def ctrlc_line(ctx, fname, i):
+def ctrlc_line(ctx, fname, i, flood=False):
     """The line typed for one Ctrl-C sample. IDENTICAL in Phosphor and the reference terminal (same command, same timestamp source).
     macOS: zsh's $EPOCHREALTIME in the trap (no process start; the old ~/bin/now helper is a python3 start, ~30 ms of harness cost
-    that inflated every absolute number). Linux: `date +%s.%N` (one fork of a tiny binary, the same in both terminals)."""
+    that inflated every absolute number). Linux: `date +%s.%N` (one fork of a tiny binary, the same in both terminals).
+    flood=True (#1514): the interrupted command is `yes` writing to the terminal (an output flood) instead of `sleep 30`; unix panes only."""
+    run = "yes" if flood else "sleep 30"
     if ctx.pane == "powershell":
         # Windows PowerShell: the finally block of the interrupted try stamps UTC ms (13 digits; the Windows PowerShell harness of #1487). Ctrl-C stops
         # the whole line, so there is no AFTER marker: the next sample's typed line proves the shell came back
@@ -912,11 +948,11 @@ def ctrlc_line(ctx, fname, i):
         return ("try { Start-Sleep 30 } finally { [IO.File]::AppendAllText('%s', ('%d:' + [string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) + [char]10)) }"
                 % (os.path.join(ctx.W, fname).replace("\\", "/"), i))
     if ctx.be.name == "mac":
-        return "zsh -c 'zmodload zsh/datetime; trap \"print -r -- \\$EPOCHREALTIME >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
-    return "bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; sleep 30'; echo AFTER%d >> %s" % (fname, i, fname)
+        return "zsh -c 'zmodload zsh/datetime; trap \"print -r -- \\$EPOCHREALTIME >> %s; exit\" INT; %s'; echo AFTER%d >> %s" % (fname, run, i, fname)
+    return "bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; %s'; echo AFTER%d >> %s" % (fname, run, i, fname)
 
 
-def ctrlc_samples(ctx, n, fname, budget_s=None):
+def ctrlc_samples(ctx, n, fname, budget_s=None, flood=False):
     """n x (start a trap-instrumented sleep, press Ctrl-C, read the trap's timestamp) -> (latencies ms, all delivered)"""
     ctx.rm(fname)
     lat_ms, typed, misses = [], [], []
@@ -927,7 +963,7 @@ def ctrlc_samples(ctx, n, fname, budget_s=None):
     for i in range(n):
         if t_end and time.time() > t_end:
             break
-        typed.append(ctrlc_line(ctx, fname, i))
+        typed.append(ctrlc_line(ctx, fname, i, flood))
         ctx.be.guard_ref()
         ctx.be.type(typed[-1], 10, enter=True)
         time.sleep(1.5 if pw else 1.2)
@@ -991,10 +1027,38 @@ def stamps(ctx, fname):
     return out
 
 
+def ctrlc_flood(ctx, r, n, warm):
+    """#1514: the owner budget (docs/testing.md) is Ctrl-C "under flood", the plain-sleep measurement above is the control. Same trap/stamp line, but the
+    interrupted command is `yes` writing to the terminal. Phosphor vs the reference terminal, key 'ctrl_c_flood'. Unix panes only."""
+    ctx.reset()
+    fl, okf = ctrlc_samples(ctx, n + warm, "ccf.txt", flood=True)
+    fl = fl[warm:]
+    ctx.reset()
+    r.metric("ctrl_c_flood_ms", stats(fl))
+    rs, ref = [], ref_terminal(ctx)
+    if ref:
+        try:
+            time.sleep(2.5)
+            rs = ctrlc_samples(ctx, n + warm, "ccf_ref.txt", budget_s=max(120, (n + warm) * 5), flood=True)[0][warm:]
+            ctx.reset()
+        finally:
+            ref.close()
+        time.sleep(1.0)
+        r.metric("reference_ctrl_c_flood_ms", stats(rs))
+    if fl:
+        rec = lat.evaluate("%s/ctrl_c_d/ctrl_c_flood" % ctx.label, fl, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
+                           remeasure=None, ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms, expected=n,
+                           pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
+                           notes=["Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference measured after Phosphor"])
+        r.metrics.setdefault("lat", {})["ctrl_c_flood"] = rec
+        lat_checks(r, rec, "Ctrl-C under flood")
+    r.check(okf and bool(fl), "Ctrl-C under flood: fewer than %d samples stopped `yes` and ran the trap" % (n + warm))
+
+
 @case("ctrl_c_d", order=17)
 def c_ctrl(ctx, r):
     ctx.rm("cd.txt", "cd2.txt")
-    n, warm = ctx.count(30), lat.warmup()
+    n, warm = ctx.count_lat(30), lat.warmup()
     lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt")
     lat_ms = lat_ms[warm:]
     r.metric("ctrl_c_ms", stats(lat_ms))
@@ -1031,11 +1095,14 @@ def c_ctrl(ctx, r):
             r.note("fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode")
         rec = None if (short or not lat_ms) else lat.evaluate("%s/ctrl_c_d/ctrl_c" % ctx.label, lat_ms, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
                            remeasure=None if short else (lambda: ctrlc_samples(ctx, n + warm, "cc2.txt")[0][warm:]), ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
+                           expected=n,
                            notes=["same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; "
                                   "absolute Phosphor median %s ms includes the input-tool spawn (harness floor %s ms)" % (stats(lat_ms).get("p50"), ctx.be.key_floor_ms)])
         if rec:
             r.metrics.setdefault("lat", {})["ctrl_c"] = rec
             lat_checks(r, rec, "Ctrl-C")
+    if lat_ms and not short and not ctx.win and ctx.pane != "powershell":
+        ctrlc_flood(ctx, r, n, warm)
     why = ""
     ig, igr = ctx.cc_integrity.get("cc.txt"), ctx.cc_integrity.get("cc_ref.txt")
     if ig:
@@ -1303,7 +1370,7 @@ def ref_note(ctx, r):
 
 
 def ref_terminal_windows(ctx):
-    """Windows: the SAME shell as the pane in a plain console window (conhost: `powershell.exe -NoLogo`, or Git Bash `--rcfile` for the Git Bash
+    """Windows: the SAME shell as the pane in a plain console window (conhost: `powershell.exe -NoLogo -NoProfile`, as the pane, or Git Bash `--rcfile` for the Git Bash
     pane), driven through the same SendInput path under a guard that accepts only THAT window (its PID or its hwnd), never the job's own console.
     APPCI_WIN_REF=wt uses Windows Terminal (wt.exe, when present) instead of conhost. None (with ctx.ref_reason) when the window cannot be identified."""
     import winapi
@@ -1315,7 +1382,7 @@ def ref_terminal_windows(ctx):
     if ctx.pane == "gitbash":
         sh, shname = [winapi.git_bash(), "--rcfile", home + "/.bashrc", "-i"], "bash"
     else:
-        sh, shname = ["powershell.exe", "-NoLogo"], "powershell.exe"
+        sh, shname = ["powershell.exe", "-NoLogo", "-NoProfile"], "powershell.exe"      # -NoProfile like the pane (#1514: the control must be symmetric)
     if want_wt:
         wt_exe = shutil.which("wt.exe") or shutil.which("wt")
         if not wt_exe:
@@ -1699,7 +1766,7 @@ def c_lat_enter(ctx, r):
     """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
     Verdict is on OVERHEAD (Phosphor median - reference median) against the owner's 2 ms budget; both include one input-tool spawn,
     which cancels. No reference terminal -> verdict 'no-reference' (absolute numbers only). Also checked build-to-build (lat.py)."""
-    n, warm = ctx.count(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
+    n, warm = ctx.count_lat(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
     pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
     r.metric("pane_shell", pane_sh or "unknown")
     t_lat0 = time.time()
@@ -1721,7 +1788,7 @@ def c_lat_enter(ctx, r):
         if "write_to_preexec_ms" not in segs:
             r.note("write -> preexec NOT measurable: the app log has no preexec hop; needs an app log line `hop=preexec_received` (note_shell_signal(Preexec) only stamps an atomic)")
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
-    r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))
+    r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))      # hard floor; a PASS verdict needs 90 % (lat.evaluate expected=)
     ctx.reset()
     rs, ref = [], ref_terminal(ctx)
     if ref:
@@ -1759,7 +1826,7 @@ def c_lat_enter(ctx, r):
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
-                           pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
+                           pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None, expected=n,
                            notes=["reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
         r.metrics.setdefault("lat", {})["enter_to_start"] = rec
         lat_checks(r, rec, "Enter to command start")
@@ -1813,7 +1880,7 @@ def c_lat_key(ctx, r):
     needs RUST_LOG input_order (set by the launcher). Phosphor-side only: no paint-readback through Wayland."""
     if not ctx.log_path or not os.path.exists(ctx.log_path):
         r.skip("no app log at %s (set APPCI_APP_LOG)" % ctx.log_path)
-    n, warm = ctx.count(60), lat.warmup()
+    n, warm = ctx.count_lat(60), lat.warmup()
     SLOW = re.compile(r"slow ([\w .:/-]+?): (\d+) ms")
 
     def run_keys(count):
@@ -1865,6 +1932,9 @@ def c_lat_key(ctx, r):
     ctx.reset()
 
 
+KL3_QUANTUM_MS = 1000.0 / 240.0      # ScreenCaptureKit frame times at 240 Hz: 4.17 ms against a 2 ms budget, so a pass cannot be claimed (#1514)
+
+
 def paint_samples(ctx, rect, n):
     """n x (post 'm' or Delete through kl3, ScreenCaptureKit 240 Hz) -> key->first-changed-pixel ms in the window at `rect`.
     The same call for Phosphor and the reference terminal. Alternates 'm' and Delete so every key changes the screen."""
@@ -1906,7 +1976,7 @@ def c_lat_paint(ctx, r):
     if not rect or rect[2] < 100:
         r.skip("no Phosphor window rect from System Events")
     ctx.be.guard()
-    n, warm = ctx.count(30), lat.warmup()
+    n, warm = ctx.count_lat(30), lat.warmup()
     ds = paint_samples(ctx, rect, n + warm)[warm:]
     ctx.reset()
     r.metric("key_to_paint_ms", stats(ds))
@@ -1931,6 +2001,7 @@ def c_lat_paint(ctx, r):
     if ds:
         rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.label, ds, rs, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: paint_samples(ctx, rect, n + warm)[warm:], ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms,
+                           expected=n, resolution_ms=KL3_QUANTUM_MS,
                            notes=["kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"])
         r.metrics.setdefault("lat", {})["key_to_paint"] = rec
         lat_checks(r, rec, "Key to paint")

@@ -504,7 +504,7 @@ budget, previous build, baseline, verdict, n).
 
 - **Budgets.** Phosphor *overhead* = Phosphor median minus the reference terminal's median, measured in the same session with the
   same keys, cadence and timestamp command: Enter to command start <= 2 ms (`APPCI_ENTER_BUDGET_MS`), key to paint <= 2 ms
-  (`APPCI_KEY_BUDGET_MS`), Ctrl-C <= 20 ms (`APPCI_CTRLC_MAX_MS`; the CI case is a plain `sleep`, not the output flood of 3.6).
+  (`APPCI_KEY_BUDGET_MS`), Ctrl-C <= 20 ms (`APPCI_CTRLC_MAX_MS`; `ctrl_c` is a plain `sleep`, the control; `ctrl_c_flood` is the output flood of 3.6, #1514).
   Every one of the three is judged on overhead over the reference terminal (#1486): `ctrl_c_d` types the identical trap line in both
   terminals (macOS: zsh `$EPOCHREALTIME`, so no `python3` start inside the measurement; the old `~/bin/now` helper cost ~30 ms and
   was in every absolute number; Linux: `date +%s.%N`), `latency_paint` runs the same kl3 post/capture against Terminal.app's window
@@ -519,6 +519,24 @@ budget, previous build, baseline, verdict, n).
   are recorded as case metrics (`pane_shell`, `reference_shell`) and in the latency record (`pane_shell`, `reference_shell`); when they differ the verdict is `NO-COMPARE` (never PASS/FAIL).
   macOS `latency_enter` stamps with the pane shell's builtin when it is zsh (`zmodload zsh/datetime; print -r -- $EPOCHREALTIME`), the same line in
   Terminal.app; only bash 3.2 keeps the perl stamp.
+- **Thin evidence is never a pass (#1514).** A budget `PASS` is withheld (the verdict becomes `INCONCLUSIVE`, case status `noref`) when the Phosphor series has
+  fewer than `APPCI_MIN_SAMPLES` (30) samples, fewer than 90 % of the samples the case asked for, a time quantum above half the budget (`latency_paint`: kl3
+  samples at 240 Hz, a 4.17 ms quantum against the 2 ms budget, so it is `resolution-limited` and can only FAIL or be INCONCLUSIVE until the tool samples at
+  >= 1 kHz), or a half-to-half drift of either series (first half vs second half median, beyond 2 SE and half the budget; Phosphor and reference are
+  measured one after the other, not interleaved A/B/A/B, so slow drift is detected, not cancelled; the record carries `drift_ms`). A FAIL is never softened.
+  The reasons are in the record (`insufficient`, `notes`). Latency cases use `ctx.count_lat(n)`: the scale (`APPCI_SCALE`) can no longer take them below
+  `lat.min_n()`; `latency_enter` still hard-fails below 80 % captured. `ctrl_c_d` also runs `ctrl_c_flood` (unix panes, not the fix tier): the same trap line but the
+  interrupted command is `yes` writing to the terminal, Phosphor vs the reference, against the same 20 ms budget; the plain-sleep `ctrl_c` is its control.
+  The Windows reference runs `powershell.exe -NoLogo -NoProfile`, like the pane. The PowerShell pane has no `rec.log`: `fast_typing`
+  compares the lines PSReadLine's history file recorded with the typed ones (exact, FAIL on a mismatch); when the history has a different line count (file
+  missing, PSReadLine filters lines containing password/token/secret) it only notes `command text NOT verified` and the metric `command_text_unverified_<tag>`.
+- **Baselines and build-to-build (#1513).** `prev.py` takes the previous FINISHED job (success or failed) on a `build/*` ref that has a `results.json`. A previous
+  record with n < `APPCI_MIN_SAMPLES` is ignored (`prev: ignored`), since a crashed run is not a representative reference. `baselines/*.json` stay `pending`
+  (the baseline column says so; nothing is checked against it) until a run is accepted: `python3 script/realapp/appci/baseline.py check RESULTS.json` lists
+  why a run is not promotable, `... promote RESULTS.json PLATFORM` refuses unless the run is recorded as full tier (`meta.tier`, `meta.scale` = 1), has no
+  failed case, every latency record n >= 30 and no FAIL / INCONCLUSIVE / NO-COMPARE / NO-REFERENCE verdict (`--force` overrides). The owner reviews the numbers in
+  `summary.md`; the coordinator promotes and commits. `summary.md` ends with "Changed since previous build" (`APPCI_PREV_RESULTS`): cases that went
+  pass->fail (NEW-FAILURE), fail->pass (FIXED), vanished (MISSING), appeared (NEW-CASE) or changed otherwise. Informational, no exit-code change.
 - **Where the Enter time goes (#1583 W3).** From the app's own `input_order` log `latency_enter` records `metrics.app_segments_ms`
   (per platform): `enter_to_write_ms` (`hop=enter_begin` to the `pty_write` of the line), `write_to_first_read_ms` (that write to the first
   `pty_read`, the app's `since_write_ms`), and `write_to_preexec_ms` only if the log carries a `hop=preexec_received` line. The app does not

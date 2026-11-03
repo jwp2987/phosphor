@@ -49,6 +49,8 @@ def cell(x):
 
 
 def dcell(x):
+    if x and x.get("ignored"):
+        return "ignored (%s)" % x["ignored"]
     if not x or x.get("delta_ms") is None:
         return (x or {}).get("status", "-") if x and x.get("status") in ("pending", "missing") else "-"
     return "%s (%+.2f ms, %+.1f%%) %s" % (f(x.get("p50")), x["delta_ms"], x["delta_pct"], x["verdict"].upper())
@@ -90,6 +92,17 @@ if ec:
     for md, d in ec:
         for g, v in d.get("runs", {}).items():
             m.append("| %s | %s | %s | %s | %s |" % (md, d.get("reference"), g, v["bad"], v["n"]))
+# #1513: case status changes against the previous finished build (APPCI_PREV_RESULTS, fetched by prev.py). Informational: no exit-code effect.
+# Appended AFTER every other section so existing parsers of the earlier sections are unaffected.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lat  # noqa: E402
+_pd = lat.load_json(os.environ.get("APPCI_PREV_RESULTS", ""))
+_ch = lat.changed_since(_pd, rows)
+if _pd is None:
+    m += ["", "## Changed since previous build", "", "no previous build results (not in CI, first run, or none fetched): case status NOT compared"]
+else:
+    m += ["", "## Changed since previous build (%d)" % len(_ch), ""]
+    m += ["- %s: %s (%s -> %s)" % (c_, k_, (o_ or "-").upper(), (n_ or "-").upper()) for k_, c_, o_, n_ in _ch] or ["no case changed status"]
 open(os.path.join(run, "summary.md"), "w").write("\n".join(m) + "\n")
 print("\n".join(m))
 # #1508: a run that judged nothing is not a pass: zero rows, or nothing but skips, exits 1

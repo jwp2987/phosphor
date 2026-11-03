@@ -261,6 +261,81 @@ def injector_failures_are_errors():
         backend.is_injector = old
 
 
+@check
+def thin_evidence_is_never_a_pass():
+    import lat
+    good = [10.0 + (i % 3) * 0.1 for i in range(60)]
+    ref = [9.5 + (i % 3) * 0.1 for i in range(60)]
+    ev = lambda p, r, **k: lat.evaluate("x/y/z", p, r, 2.0, "overhead", "linux-test", **k)
+    assert ev(good, ref, expected=60)["budget_verdict"] == "pass"
+    assert ev(good[:20], ref[:20], expected=20)["budget_verdict"] == "inconclusive", "n < min_n must not pass"
+    assert ev(good, ref, expected=70)["budget_verdict"] == "inconclusive", "< 90 % of the requested samples must not pass"
+    assert ev(good, ref, expected=60, resolution_ms=4.17)["budget_verdict"] == "inconclusive", "resolution-limited must not pass"
+    slow = [20.0 + (i % 3) * 0.1 for i in range(60)]
+    assert ev(slow[:20], ref[:20], expected=20)["budget_verdict"] == "fail", "thin evidence never turns a FAIL into anything else"
+    assert ev(slow, ref, expected=60, resolution_ms=4.17)["budget_verdict"] == "fail"
+    drift = [10.0] * 30 + [14.0] * 30
+    d = ev(drift, ref, expected=60)
+    assert d["budget_verdict"] == "inconclusive" and d["drift_ms"]["phosphor"] == 4.0, d
+    assert lat.block_drift([1.0] * 5) is None
+
+
+@check
+def previous_run_with_few_samples_is_ignored():
+    import lat
+    tmp = tempfile.mkdtemp()
+    try:
+        p = os.path.join(tmp, "prev.json")
+        json.dump({"cases": [{"name": "c", "mode": "terminal", "metrics": {"lat": {"k": {"phosphor": {"n": 5, "p50": 1.0, "p95": 1.0}}}}}]}, open(p, "w"))
+        os.environ["APPCI_PREV_RESULTS"] = p
+        rec = lat.evaluate("terminal/c/k", [9.0] * 40, None, 2.0, "overhead", "linux-test")
+        assert rec["prev"] == {"ignored": "n=5 < 30"} and rec["prev_verdict"] == "none", rec["prev"]
+        json.dump({"cases": [{"name": "c", "mode": "terminal", "metrics": {"lat": {"k": {"phosphor": {"n": 40, "p50": 1.0, "p95": 1.0}}}}}]}, open(p, "w"))
+        assert lat.evaluate("terminal/c/k", [9.0] * 40, None, 2.0, "overhead", "linux-test")["prev_verdict"] == "fail"
+    finally:
+        os.environ.pop("APPCI_PREV_RESULTS", None)
+        shutil.rmtree(tmp)
+
+
+@check
+def case_status_changes_against_previous_build():
+    import lat
+    prev = {"cases": [{"mode": "t", "name": "a", "status": "pass"}, {"mode": "t", "name": "b", "status": "fail"}, {"mode": "t", "name": "c", "status": "pass"},
+                      {"mode": "t", "name": "d", "status": "pass"}]}
+    now = [{"mode": "t", "name": "a", "status": "fail"}, {"mode": "t", "name": "b", "status": "pass"}, {"mode": "t", "name": "d", "status": "noref"},
+           {"mode": "t", "name": "e", "status": "pass"}]
+    got = {(k, c) for k, c, _, _ in lat.changed_since(prev, now)}
+    assert got == {("NEW-FAILURE", "t/a"), ("FIXED", "t/b"), ("MISSING", "t/c"), ("CHANGED", "t/d"), ("NEW-CASE", "t/e")}, got
+    assert lat.changed_since(None, now) == []
+
+
+@check
+def baseline_promotion_is_gated():
+    import baseline
+    rec = lambda n, v="pass": {"phosphor": {"n": n, "p50": 5.0, "p95": 6.0}, "verdict": v, "budget_verdict": v}
+    doc = lambda **kw: dict({"meta": {"tier": "full", "scale": "1"}, "summary": {"fail": 0}, "cases": [{"mode": "t", "name": "c", "metrics": {"lat": {"k": rec(60)}}}]}, **kw)
+    assert baseline.eligibility(doc()) == []
+    assert baseline.eligibility(doc(meta={"tier": "smoke"}))
+    assert baseline.eligibility(doc(meta={}))                                       # tier unknown: not promotable
+    assert baseline.eligibility(doc(meta={"tier": "full", "scale": "0.3"}))
+    assert baseline.eligibility(doc(summary={"fail": 1}))
+    bad = doc(); bad["cases"][0]["metrics"]["lat"]["k"] = rec(10)
+    assert any("n=10" in w for w in baseline.eligibility(bad))
+    for v in ("fail", "inconclusive", "no-reference", "no-compare"):
+        bad = doc(); bad["cases"][0]["metrics"]["lat"]["k"] = rec(60, v)
+        assert baseline.eligibility(bad), v
+    assert baseline.eligibility({"meta": {"tier": "full"}, "cases": []})
+
+
+@check
+def latency_cases_have_a_sample_floor_and_flood_line():
+    c = types.SimpleNamespace(scale=0.1)
+    assert cases.Ctx.count_lat(c, 60) >= 30 and cases.Ctx.count(c, 60) == 6
+    fl = types.SimpleNamespace(pane="bash", be=types.SimpleNamespace(name="x11"))
+    assert "yes" in cases.ctrlc_line(fl, "f.txt", 0, flood=True) and "sleep 30" in cases.ctrlc_line(fl, "f.txt", 0)
+    assert cases.KL3_QUANTUM_MS > 2.0 / 2
+
+
 def main():
     failed = 0
     for f in CHECKS:
