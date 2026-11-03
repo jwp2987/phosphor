@@ -8,7 +8,7 @@
 # Windows (--backend windows --platform windows; windows/ci/app_test.ps1 does the VM safety work and calls this with the private Python):
 #   --bin is the exe of the side-by-side TEST build; each session mode runs once per pane shell (APPCI_WIN_SHELLS, default "powershell,gitbash"),
 #   cases a pane cannot run SKIP with the reason from winmap.py; `--report-only` regenerates results.json/junit/summary after the wrapper added its rows.
-import argparse, json, os, shutil, subprocess, sys, time, traceback
+import argparse, json, os, re, shutil, subprocess, sys, time, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import backend, cases, injacct, profile, sshd, winmap, app as appmod  # noqa: E402
@@ -255,8 +255,12 @@ def main():
             if not sim:
                 up = await_shell(ctx, app, prof, win, a.startup_timeout)
                 if not up:
+                    # r18d8 (macOS): the detail named logs/app.stdout (the mac app writes none) and a Wayland cause; the real cause,
+                    # 'Bootstrapping failed for shell "zsh"', sat only in phosphor.log. Quote the app's own error lines here.
+                    hint = {"windows": "Windows: no main window of pid %s, or the %s pane's shell never started" % (app.pid(), pane),
+                            "mac": "macOS: see logs/<mode>/phosphor.log"}.get(a.backend, "Linux: GPU/Wayland init or keyring? see logs/<mode>/app.stdout")
                     emit(dict(name="launch", mode=label, status="fail", seconds=a.startup_timeout,
-                              detail=["no shell prompt within %ds (see logs/app.stdout; GPU/Wayland init or keyring?%s)" % (a.startup_timeout, "; Windows: no main window of pid %s, or the %s pane's shell never started" % (app.pid(), pane) if win else "")]))
+                              detail=["no shell prompt within %ds (%s)" % (a.startup_timeout, hint)] + launch_errors(log_src(prof, a.backend, app), ollama_url)))
                     ctx.shot("launch_fail")
                     exit_fail = True
                     continue
@@ -530,6 +534,21 @@ def app_log_text(src):
         return int(tail) if tail.isdigit() else -1
     parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=idx, reverse=True) + [src]
     return "".join(open(f, errors="replace").read() for f in parts if os.path.exists(f))
+
+
+LAUNCH_ERROR_RX = re.compile(r"Bootstrapping failed|panicked|\bERROR\b|\[ERROR\]|failed to (create|open|spawn)|keyring", re.I)
+
+
+def launch_errors(src, ollama_url, limit=8):
+    """The app log's error lines at a launch failure (newest last, at most `limit`, redacted), so the case detail names the cause."""
+    import ci_env
+    try:
+        lines = [l for l in app_log_text(src).splitlines() if LAUNCH_ERROR_RX.search(l)] if src and os.path.exists(src) else []
+    except Exception as e:
+        return ["app log unreadable at launch failure: %s" % e]
+    if not lines:
+        return ["app log (%s): no error line" % (src or "not found")]
+    return ["app log: " + ci_env.redact(l.strip(), ollama_url)[:300] for l in lines[-limit:]]
 
 
 def log_src(prof, backend_name, app=None):

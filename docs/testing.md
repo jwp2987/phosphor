@@ -1228,6 +1228,8 @@ Real gaps that remain (each checked against `.gitlab-ci.yml` and `script/realapp
 Owner rule (2026-11-02): every test result is kept in the repo for regression review. `test-results/` is that archive; it is
 append-only history, **retained forever** (it is small by design, see the size rules).
 
+**Launch failures name their cause.** When the pane's shell never shows a prompt, the `launch` row's detail quotes the app log's own error lines (`Bootstrapping failed`, panics, `ERROR`, keyring), redacted, newest last, plus a platform hint (macOS has no `app.stdout`; read `logs/<mode>/phosphor.log`). r18d8's macOS run failed with only "see logs/app.stdout; GPU/Wayland init?" while the real cause, a zsh bootstrap line over macOS's 1024-byte canonical limit, was in phosphor.log.
+
 **GitLab API rate limits.** `ci_seq.py` and `collect_results.py` call GitLab only through `script/ci/glapi.py` (`glab api -i`). This account is on GitLab.com's per-user Free-plan burst limit (observed 2026-11-03: `Ratelimit-Name: burst_traffic_per_user_free_plan`, `Ratelimit-Limit: 100` per minute). glapi waits exactly as long as a 429's `Retry-After` says (else until `Ratelimit-Reset`), backs off exponentially when throttled again, pauses before the window is spent when `Ratelimit-Remaining` drops under 10%, and never reports a throttled call as "no such job" or "no results". Do not add other pollers alongside a running `ci_seq`; a hand-written wait loop polls no faster than every 2 minutes. `python3 script/ci/glapi.py --self-test` checks the header parsing.
 
 **Collect.** After a tier run, `python3 script/ci/collect_results.py <pipeline_id | build/ref> [--out test-results]` pulls every
