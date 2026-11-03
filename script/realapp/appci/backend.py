@@ -136,6 +136,10 @@ class WaylandBackend(Backend):
         # reached the client. The call is therefore led by a harmless Shift_L tap + a short sleep; the key_loss_control case measures
         # primed vs unprimed vs one-shot vs a reference terminal. APPCI_WL_PRIME_MS=0 turns the priming off.
         self.prime_ms = int(os.environ.get("APPCI_WL_PRIME_MS", "20"))
+        # #1414: wayland_session.sh keeps one virtual keyboard alive for the session (a sleeping wtype) and exports how it went:
+        # "persistent" (the seat always has a keyboard; every wtype call is a second device), "percall" (none held: the old behaviour,
+        # a keyboard created and destroyed per call) or unset when the backend runs outside that script. Reported by key_loss_control.
+        self.injector_mode = os.environ.get("APPCI_WL_INJECTOR", "unknown")
 
     def preflight(self):
         p = []

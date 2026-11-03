@@ -605,6 +605,16 @@ default (primed, per-line) injection must lose nothing in Phosphor. The Wayland 
 tap and a 20 ms sleep (`APPCI_WL_PRIME_MS`, 0 = off; it adds that much to input-tool spawn cost, which cancels in the
 Phosphor-vs-reference latency overhead). Keep the control permanently.
 
+**Wayland key injection: persistent keyboard (#1414, wire-trace 2026-11-03).** The lost first character (and the lost whole key in key-only
+calls such as ctrl+c or a bare Return) is an *injector* property: each `wtype` process creates a new virtual keyboard, so the seat's keyboard
+capability flips 0 -> 2 -> 0 per call, and wtype's first key press is sent before any client has bound the new `wl_keyboard`. The old
+per-call-keyboard behaviour is therefore a harness property, not a Phosphor result. `wayland_session.sh` now starts ONE long-lived
+`wtype -s ...` (sleep only; it keeps its virtual keyboard for ~11 h) right after sway is up, records it in `pids` as `kbd-holder` and kills it
+by exact PID in teardown. Clients bind `wl_keyboard` once, before any test key, for Phosphor and for the reference terminal alike (same
+session). The session exports `APPCI_WL_INJECTOR=persistent|percall` (percall = holder failed to start, or `APPCI_WL_KBD_HOLD=0` forces the
+old behaviour for reproducing the artifact); `key_loss_control` reports it as `metrics.key_loss.injector_mode` and a note. With `persistent`,
+the "perline-unprimed" variant measures Phosphor with a stable keyboard and no priming; with `percall` it reproduces the artifact.
+
 **Where a Return went (Mac, `ktap` + `enter_route.py`, #1482).** For the whole Mac run, `script/realapp/mac/tools/ktap.swift` (compiled at job
 start like htype2) sits at the *annotated* session event tap, where macOS has already chosen the target process, and logs each Return
 keyDown/keyUp (key code, the event's own timestamp, target and source PID; never characters), passing every event through unchanged. After the

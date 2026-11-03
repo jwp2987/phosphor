@@ -1720,7 +1720,9 @@ def c_key_loss(ctx, r):
         time.sleep(1.0)
     else:
         r.note("no reference terminal available: loss is reported but no variant can be attributed to Phosphor or the injector")
-    r.metric("key_loss", dict(variants=out, reference=ref.name if ref else None))
+    inj_mode = getattr(ctx.be, "injector_mode", None)
+    r.metric("key_loss", dict(variants=out, reference=ref.name if ref else None, injector_mode=inj_mode))
+    r.note("injector mode: %s (persistent = one session-long virtual keyboard, so 'unprimed' measures Phosphor itself; percall = a keyboard per wtype call, the #1414 artifact)" % inj_mode)
     byk = {(v["target"], v["inject"]): v for v in out}
     for v in out:
         r.note("%s / %s: first char lost on %d/%d lines, other bad %d, missing %d" % (v["target"], v["inject"], v["lost_first"], v["n"], v["other_bad"], v["missing"]))
