@@ -474,8 +474,9 @@ class Ctx:
             for m in PTY_WRITE_BYTES_RE.finditer(txt):
                 seen = True
                 if float(m.group(2)) / 1000.0 >= t0 - 1:
-                    out.append(unescape_rust_ascii(m.group(1)))
-        return "".join(out) if seen else None
+                    out.append(unescape_rust_ascii_bytes(m.group(1)))
+        # bytes first, decoded once: a UTF-8 character split over two writes is still one character
+        return b"".join(out).decode("utf-8", errors="replace") if seen else None
 
     def app_pty_wrote_line(self, want, have, t0):
         """#1490/#1393: which line the app's OWN pty writes since t0 carry; see pty_line_verdict."""
@@ -872,37 +873,53 @@ PTY_LINE_VERDICT_TEXT = {
 }
 
 
-def unescape_rust_ascii(s):
-    """the inverse of Rust's `<[u8]>::escape_ascii` (what the app's input_order log prints): \\t \\r \\n \\' \\" \\\\ and \\xNN"""
-    out, i = [], 0
+def unescape_rust_ascii_bytes(s):
+    """the inverse of Rust's `<[u8]>::escape_ascii` (what the app's input_order log prints), as BYTES: \\t \\r \\n \\' \\" \\\\ and \\xNN, where
+    \\xNN is one byte (escape_ascii writes every non-ASCII byte that way, so a UTF-8 character is several of them)"""
+    out, i = bytearray(), 0
     while i < len(s):
         ch = s[i]
         if ch == "\\" and i + 1 < len(s):
             nxt = s[i + 1]
             if nxt == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", s[i + 2:i + 4]):
-                out.append(chr(int(s[i + 2:i + 4], 16)))
+                out.append(int(s[i + 2:i + 4], 16))
                 i += 4
                 continue
-            out.append({"t": "\t", "r": "\r", "n": "\n", "0": "\0"}.get(nxt, nxt))
+            out += {"t": b"\t", "r": b"\r", "n": b"\n", "0": b"\0"}.get(nxt, nxt.encode("utf-8"))
             i += 2
             continue
-        out.append(ch)
+        out += ch.encode("utf-8")
         i += 1
-    return "".join(out)
+    return bytes(out)
+
+
+def unescape_rust_ascii(s):
+    """unescape_rust_ascii_bytes decoded as UTF-8 (invalid bytes replaced)"""
+    return unescape_rust_ascii_bytes(s).decode("utf-8", errors="replace")
+
+
+# Bytes that kill the shell's line: ^U, ^K, ^P (the bootstrap's kill-whole-line), PowerShell's ESC 2.
+PTY_KILL_BYTES = ("\x15", "\x0b", "\x10", "\x1b2")
 
 
 def pty_line_verdict(got, want, have):
     """#1490/#1393: 'have' when the corrupted line `have` is in the app's pty bytes `got` (and is not just a piece of the typed line), 'want' when the
-    typed line is there instead, 'neither' when neither is there contiguously, None without a trace. Report requests and bracketed-paste markers are
-    removed first (PTY_NON_LINE_BYTES)."""
+    typed line is there instead and no kill byte (PTY_KILL_BYTES) follows it before its line ends (a line written and then killed did not reach
+    the shell as typed), 'neither' otherwise, None without a trace. Report requests and bracketed-paste markers are removed first
+    (PTY_NON_LINE_BYTES)."""
     if got is None:
         return None
     for b in PTY_NON_LINE_BYTES:
         got = got.replace(b, "")
     if have and have not in want and have in got:
         return "have"
-    if want in got:
-        return "want"
+    at = got.rfind(want)
+    if at >= 0:
+        rest = got[at + len(want):]
+        ends = [i for i in (rest.find("\r"), rest.find("\n")) if i >= 0]
+        rest = rest[:min(ends)] if ends else rest
+        if not any(k in rest for k in PTY_KILL_BYTES):
+            return "want"
     return "neither"
 
 
