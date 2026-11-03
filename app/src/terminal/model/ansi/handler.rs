@@ -328,6 +328,9 @@ pub trait Handler {
     /// The shell is about to read a continuation line (bash PS2, zsh PS2; #1391).
     fn continuation_prompt(&mut self, _data: LineEditorMarkerValue) {}
 
+    /// The PowerShell insert chord could not read its command file (#1581); the app retypes.
+    fn command_file_failed(&mut self, _data: CommandFileFailedValue) {}
+
     /// Callback for the terminal to when user executes `clear` command.
     fn clear(&mut self, _data: ClearValue) {}
 

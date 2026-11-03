@@ -265,6 +265,11 @@ impl Handler for MockHandler {
             .push(DProtoHook::ContinuationPrompt { value: data })
     }
 
+    fn command_file_failed(&mut self, data: CommandFileFailedValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::CommandFileFailed { value: data })
+    }
+
     fn sourced_rc_file(&mut self, data: SourcedRcFileForWarpValue) {
         self.d_proto_hooks
             .push(DProtoHook::SourcedRcFileForWarp { value: data })
@@ -2013,4 +2018,15 @@ fn parse_dcs_preexec_decodes_the_hand_built_powershell_json() {
         handler.d_proto_hooks.as_slice(),
         [DProtoHook::Preexec { value }] if value.command.is_empty()
     ));
+}
+
+/// #1581: the insert chord's failure report is a hex-encoded JSON hook with the session id only.
+#[test]
+fn parse_dcs_command_file_failed_carries_the_session() {
+    let payload = r#"{"hook":"CommandFileFailed","value":{"session_id":7}}"#;
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(payload));
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::CommandFileFailed { value }] => assert_eq!(value.session_id, Some(7)),
+        other => panic!("unexpected hooks {other:?}"),
+    }
 }

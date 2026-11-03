@@ -67,9 +67,10 @@ use super::{
 };
 use super::{tmux, Secret, SecretHandle};
 use crate::terminal::model::ansi::{
-    ClearValue, CommandFinishedValue, CompletionMetadata, ExitShellValue, InitShellValue,
-    InitSshValue, InitSubshellValue, LineEditorMarkerValue, PreInteractiveSSHSessionValue,
-    PrecmdValue, PreexecValue, PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
+    ClearValue, CommandFileFailedValue, CommandFinishedValue, CompletionMetadata, ExitShellValue,
+    InitShellValue, InitSshValue, InitSubshellValue, LineEditorMarkerValue,
+    PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata, SSHValue,
+    SourcedRcFileForWarpValue,
 };
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::grid::IndexRegion;
@@ -3901,6 +3902,15 @@ impl ansi::Handler for TerminalModel {
                 .send_terminal_event(Event::ContinuationPrompt {
                     session_id: SessionId::from(session_id),
                     seq: data.seq,
+                });
+        }
+    }
+
+    fn command_file_failed(&mut self, data: CommandFileFailedValue) {
+        if let Some(session_id) = data.session_id {
+            self.event_proxy
+                .send_terminal_event(Event::CommandFileFailed {
+                    session_id: SessionId::from(session_id),
                 });
         }
     }

@@ -742,6 +742,7 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
             Ok(DProtoHook::ExitShell { value }) => self.handler.exit_shell(value),
             Ok(DProtoHook::LineEditorReading { value }) => self.handler.line_editor_reading(value),
             Ok(DProtoHook::ContinuationPrompt { value }) => self.handler.continuation_prompt(value),
+            Ok(DProtoHook::CommandFileFailed { value }) => self.handler.command_file_failed(value),
 
             Err(e) => safe_error!(
                 safe: ("Error when deserializing escape sequence data"),

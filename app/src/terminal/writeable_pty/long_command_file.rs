@@ -15,6 +15,7 @@
 //! The file is also removed when [`TempPath`] drops, as a fallback if it was never read.
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use tempfile::TempPath;
 
@@ -25,6 +26,10 @@ pub(super) const MAX_TYPED_BYTES: usize = 1024;
 
 /// Must match the `.phosphor-cmd-` pattern in `bootstrap/pwsh.ps1`.
 pub(super) const FILE_PREFIX: &str = ".phosphor-cmd-";
+
+/// The two bytes (`ESC 3`, Alt+3) that make the bootstrap's key handler read the session file,
+/// replace the line with it and run it (#1581). The same ConPTY translation as `Alt+1`/`Alt+2`.
+pub(super) const INSERT_CHORD: &[u8] = b"\x1b3";
 
 /// Whether `command` has to go through a file rather than the line editor.
 pub(super) fn needs_file(command: &str) -> bool {
@@ -67,6 +72,68 @@ pub(super) fn write_command_file(command: &str) -> Option<(TempPath, String)> {
     }
     let line = launcher_line(path.to_str()?);
     Some((path, line))
+}
+
+/// The fixed per-session file the PowerShell insert chord reads (#1581):
+/// `<temp>\.phosphor-cmd-<session_id>`. Must match the `Alt+3` handler in `bootstrap/pwsh.ps1`,
+/// which builds the same path from `[IO.Path]::GetTempPath()` and `$global:_warpSessionId`.
+pub(super) fn session_file_path(dir: &Path, session_id: u64) -> PathBuf {
+    dir.join(format!("{FILE_PREFIX}{session_id}"))
+}
+
+/// Writes `command` (UTF-8 with a BOM) to the session's fixed file in `dir`, replacing a stale
+/// one, and returns its path. The file is removed first and created with `create_new`, so a
+/// leftover or a planted link is never written through. `None` on any failure; the caller then
+/// types the command as before. Written synchronously: the chord that makes the shell read it is
+/// only queued after this returns.
+pub(super) fn write_session_command_file(
+    dir: &Path,
+    session_id: u64,
+    command: &str,
+) -> Option<PathBuf> {
+    let path = session_file_path(dir, session_id);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            log::warn!("Could not replace the PowerShell command file: {err:#}");
+            return None;
+        }
+    }
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut handle| {
+            handle.write_all(&[0xEF, 0xBB, 0xBF])?;
+            handle.write_all(command.as_bytes())?;
+            handle.flush()
+        });
+    if let Err(err) = written {
+        log::warn!("Could not write the PowerShell command file: {err:#}");
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+    Some(path)
+}
+
+/// Whether `command` can be inserted by the `Alt+3` chord instead of typed: one line, short
+/// enough to be typed at all, and free of control characters (typed, a Tab would run completion
+/// and an ESC would start a chord; the chord's `Insert` would take them literally, which is not
+/// what the typed path does, so those stay typed).
+pub(super) fn can_insert_from_file(command: &str) -> bool {
+    !command.is_empty() && !needs_file(command) && !command.chars().any(char::is_control)
+}
+
+/// `PHOSPHOR_PWSH_FILE_INSERT=0` turns the chord path off (the kill switch); anything else, or
+/// unset, leaves it on.
+pub(super) fn file_insert_enabled() -> bool {
+    file_insert_enabled_for(std::env::var("PHOSPHOR_PWSH_FILE_INSERT").ok().as_deref())
+}
+
+/// The kill switch's decision for the variable's value (`None` = unset).
+pub(super) fn file_insert_enabled_for(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
 }
 
 #[cfg(test)]

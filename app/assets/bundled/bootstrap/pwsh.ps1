@@ -525,6 +525,28 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Set-PSReadLineKeyHandler is the PowerShell equivalent of zsh's bindkey.
         PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+2' -Function BackwardDeleteLine
 
+        # Phosphor (#1581): the app writes a single-line command to <temp>\.phosphor-cmd-<session
+        # id> and sends only this chord (ESC 3), instead of ~80 typed keys. The handler reads and
+        # deletes the file, replaces the line with its contents in ONE Insert and accepts it, so
+        # PSReadLine renders twice instead of once per key, and the shell still echoes, records
+        # history and reports the real command to Preexec. Anything that goes wrong inserts
+        # nothing and tells the app (CommandFileFailed), which types the command the old way.
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+3' -ScriptBlock {
+            $text = $null
+            try {
+                $path = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ".phosphor-cmd-$($global:_warpSessionId)")
+                $text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+                [System.IO.File]::Delete($path)
+            } catch { }
+            if ([string]::IsNullOrEmpty($text)) {
+                Warp-Send-JsonMessage @{ hook = 'CommandFileFailed'; value = @{ session_id = $global:_warpSessionId } }
+                return
+            }
+            [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+            [Microsoft.PowerShell.PSConsoleReadLine]::Insert($text)
+            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        }
+
         # Input reporting. Note that ESC-1 is used instead of ESC-i as for all other shells. This
         # is because PowerShell on Windows does some virtual key code translation which depends on
         # the selected input language. On languages without an "i" on any key, this translation

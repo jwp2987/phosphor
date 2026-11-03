@@ -223,6 +223,17 @@ pub struct PtyController<T: EventLoopSender> {
     /// The temp file of the last such command; replaced by the next one, removed on drop.
     #[cfg(not(target_family = "wasm"))]
     long_command_file: Option<tempfile::TempPath>,
+    /// The per-session file the PowerShell insert chord reads (#1581) and the session it belongs
+    /// to; removed when replaced by another session's, and on drop. The handler normally deletes
+    /// it first.
+    #[cfg(not(target_family = "wasm"))]
+    session_command_file: Option<(u64, tempfile::TempPath)>,
+    /// The command whose text went to the shell as a file plus the insert chord (#1581), until its
+    /// Preexec arrives (the shell ran it) or `CommandFileFailed` does (the shell inserted nothing
+    /// and the command is typed instead). At most one: a second command is typed while it is set.
+    file_insert_pending: Option<String>,
+    /// One-shot: the retype after `CommandFileFailed` must be typed, not sent as the chord again.
+    force_typed_command: bool,
     tmux_control_mode: Option<TmuxControlMode>,
     in_flight_native_completions_state: Option<NativeShellCompletionsState>,
     /// Incremented every time a native-completions handshake starts or advances a phase, so a
@@ -371,6 +382,13 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             ModelEvent::ContinuationPrompt { .. } => {
                 me.on_continuation_prompt_marker(ctx);
+            }
+            // The shell ran what the chord inserted (or anything else): nothing to retype (#1581).
+            ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
+                me.file_insert_pending = None;
+            }
+            ModelEvent::CommandFileFailed { .. } => {
+                me.on_command_file_failed(ctx);
             }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
@@ -566,6 +584,10 @@ impl<T: EventLoopSender> PtyController<T> {
             runs_long_commands_from_file: false,
             #[cfg(not(target_family = "wasm"))]
             long_command_file: None,
+            #[cfg(not(target_family = "wasm"))]
+            session_command_file: None,
+            file_insert_pending: None,
+            force_typed_command: false,
             tmux_control_mode: None,
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
@@ -2062,9 +2084,45 @@ impl<T: EventLoopSender> PtyController<T> {
         self.send_message_to_event_loop(Message::Shutdown, ctx);
     }
 
-    /// What to type into the line editor for `command`: the command itself, or, for a command too
-    /// long for PSReadLine to render (#1106), a short line that dot-sources it from a temp file.
-    fn command_to_type(&mut self, command: String, shell_type: ShellType) -> String {
+    /// What to send to the shell for `command`: the line to type into the line editor, or, for a
+    /// PowerShell command that can be inserted in one operation, the insert chord (#1581). A
+    /// command too long for PSReadLine to render (#1106) becomes a short line that dot-sources it
+    /// from a temp file.
+    fn command_to_type(
+        &mut self,
+        command: String,
+        shell_type: ShellType,
+        is_user_command: bool,
+        session_id: Option<u64>,
+    ) -> TypedCommand {
+        #[cfg(not(target_family = "wasm"))]
+        if shell_type == ShellType::PowerShell
+            && self.runs_long_commands_from_file
+            && is_user_command
+            && !std::mem::take(&mut self.force_typed_command)
+            && self.file_insert_pending.is_none()
+            && long_command_file::file_insert_enabled()
+            && long_command_file::can_insert_from_file(&command)
+        {
+            if let Some(session_id) = session_id {
+                if let Some(path) = long_command_file::write_session_command_file(
+                    &std::env::temp_dir(),
+                    session_id,
+                    &command,
+                ) {
+                    if self.session_command_file.as_ref().map(|(id, _)| *id) != Some(session_id) {
+                        self.session_command_file =
+                            Some((session_id, tempfile::TempPath::from_path(path)));
+                    }
+                    warpui::input_order::log_hop("pwsh_command_via_file", || {
+                        format!("bytes={}", command.len())
+                    });
+                    self.file_insert_pending = Some(command);
+                    return TypedCommand::FileChord;
+                }
+            }
+        }
+        let _ = (is_user_command, session_id);
         #[cfg(not(target_family = "wasm"))]
         if shell_type == ShellType::PowerShell
             && self.runs_long_commands_from_file
@@ -2077,7 +2135,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.terminal_model
                     .lock()
                     .set_command_display_override(launcher.clone(), command);
-                return launcher;
+                return TypedCommand::Line(launcher);
             }
         }
         let _ = shell_type;
@@ -2092,9 +2150,47 @@ impl<T: EventLoopSender> PtyController<T> {
             self.terminal_model
                 .lock()
                 .set_command_display_override(line.clone(), command);
-            return line;
+            return TypedCommand::Line(line);
         }
-        command
+        TypedCommand::Line(command)
+    }
+
+    /// The insert chord found no command file and inserted nothing (#1581): type the command the
+    /// old way, once. The shell's buffer is untouched, and the retype starts with the kill-buffer
+    /// chord like every typed command. Nothing is retyped when no chord is outstanding (a Preexec
+    /// already answered it, or the report is stale).
+    fn on_command_file_failed(&mut self, ctx: &mut ModelContext<Self>) {
+        let Some(command) = self.file_insert_pending.take() else {
+            warpui::input_order::log_hop("pwsh_command_file_failed_ignored", String::new);
+            return;
+        };
+        warpui::input_order::log_hop("pwsh_command_file_failed_retype", || {
+            format!("bytes={}", command.len())
+        });
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.session_command_file = None;
+        }
+        self.force_typed_command = true;
+        self.send_write_to_event_loop(
+            PtyWrite::Command {
+                command,
+                shell_type: ShellType::PowerShell,
+                in_band_command_id: None,
+                before_write_fn: None,
+            },
+            ctx,
+        );
+        self.force_typed_command = false;
+    }
+
+    /// Forgets an outstanding insert chord whose write was refused before it reached the pty.
+    fn discard_file_insert(&mut self) {
+        self.file_insert_pending = None;
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.session_command_file = None;
+        }
     }
 
     /// Sends a message to the event loop thread requesting a PTY write for the given `bytes`.
@@ -2144,20 +2240,30 @@ impl<T: EventLoopSender> PtyController<T> {
             PtyWrite::Command {
                 command,
                 shell_type,
+                in_band_command_id,
                 before_write_fn: on_write_fn,
-                ..
             } => {
-                let command = self.command_to_type(command, shell_type);
-                (
-                    Cow::Owned(bytes_to_execute_command(
-                        command.as_str(),
+                let session_id = self
+                    .model_event_dispatcher
+                    .as_ref(ctx)
+                    .active_session_id()
+                    .map(|id| id.as_u64());
+                let bytes = match self.command_to_type(
+                    command,
+                    shell_type,
+                    in_band_command_id.is_none(),
+                    session_id,
+                ) {
+                    TypedCommand::Line(line) => Cow::Owned(bytes_to_execute_command(
+                        line.as_str(),
                         shell_type,
                         self.is_bracketed_paste_enabled,
                     )),
-                    true,
-                    on_write_fn,
-                    false,
-                )
+                    // Exactly the two chord bytes: no kill-buffer prefix (the handler reverts
+                    // the line), no command text, no Enter.
+                    TypedCommand::FileChord => Cow::Borrowed(long_command_file::INSERT_CHORD),
+                };
+                (bytes, true, on_write_fn, false)
             }
             PtyWrite::AgentInput { bytes, mode } => {
                 let decorated_bytes =
@@ -2227,6 +2333,7 @@ impl<T: EventLoopSender> PtyController<T> {
 
         if let Some(on_write_fn) = on_write_fn {
             if !on_write_fn().is_accepted() {
+                self.discard_file_insert();
                 return false;
             }
         }
@@ -2394,6 +2501,15 @@ fn start_command_execution_for_source(
     }
 }
 
+/// What `command_to_type` decided to send for a command.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+enum TypedCommand {
+    /// Type this line (with the shell's kill-buffer chord and Enter around it).
+    Line(String),
+    /// The command is in the session's command file: send only the insert chord (#1581).
+    FileChord,
+}
+
 /// Splits `shell_type`'s kill-buffer chord off the front of `bytes` (the output of
 /// `bytes_to_execute_command`, which prepends it), returning `Some((kill_buffer_bytes, rest))`, or
 /// `None` when there is nothing to split.
@@ -2524,6 +2640,9 @@ mod command_bytes_tests;
 #[cfg(test)]
 #[path = "pty_controller_lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "pty_controller_pwsh_insert_tests.rs"]
+mod pwsh_insert_tests;
 #[cfg(test)]
 #[path = "pty_controller_tests.rs"]
 mod tests;
