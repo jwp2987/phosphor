@@ -132,8 +132,11 @@ def main():
     ap.add_argument("--seed", type=int, default=int(os.environ.get("APPCI_SEED", "1")))
     ap.add_argument("--platform", default="linux")
     ap.add_argument("--startup-timeout", type=int, default=90)
+    ap.add_argument("--ssh-trials", type=int, default=0, help="#1127: TOTAL ssh_connect_typing trials, spread over its 4 gaps (APPCI_SSH_TOTAL_TRIALS); 40 bounds a 1/40 loss rate only to ~7 %% at 95 %%. Default: APPCI_SSH_TRIALS per gap")
     ap.add_argument("--report-only", action="store_true", help="only (re)generate results.json / junit.xml / summary.md from results.jsonl")
     a = ap.parse_args()
+    if a.ssh_trials:
+        os.environ["APPCI_SSH_TOTAL_TRIALS"] = str(a.ssh_trials)
     if a.app_display is None:
         a.app_display = {"mac": "macos", "windows": "windows"}.get(a.backend, "wayland")
     if not a.report_only and not a.backend:

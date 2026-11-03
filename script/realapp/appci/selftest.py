@@ -433,6 +433,19 @@ def keydown_audit_counts_plain_keys_and_flags_doubles():
     assert d["count"] == 4 and d["dups"] == [("a", 1000.4, 0.4)], d
 
 
+@check
+def ssh_trial_plan_and_loss_report():
+    assert cases.ssh_trial_plan(cases.SSH_GAPS, 3) == [(g, 3) for g in cases.SSH_GAPS]      # default: 12 trials
+    assert cases.ssh_trial_plan(cases.SSH_GAPS, 3, 40) == [(g, 10) for g in cases.SSH_GAPS]
+    p = cases.ssh_trial_plan(cases.SSH_GAPS, 3, 42)
+    assert sum(t for _, t in p) == 42 and [t for _, t in p] == [11, 11, 10, 10]
+    z = cases.loss_report(0, 40)
+    assert z["upper_bound"] == 0.0722 and "needs 119 clean trials" in z["text"], z
+    o = cases.loss_report(1, 40)
+    assert o["rate"] == 0.025 and o["upper_bound"] > 0.11
+    assert cases.loss_report(0, 150)["upper_bound"] < 0.025 and "needs" not in cases.loss_report(0, 150)["text"]
+
+
 def main():
     failed = 0
     for f in CHECKS:

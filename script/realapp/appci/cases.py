@@ -1296,11 +1296,33 @@ def c_alt(ctx, r):
 
 
 # ---------------------------------------------------------------- ssh (local server)
+SSH_GAPS = (0.0, 0.1, 0.2, 0.3)
+
+
+def ssh_trial_plan(gaps, per_gap, total=0):
+    """#1127: -> [(gap, trials)]. `total` (--ssh-trials / APPCI_SSH_TOTAL_TRIALS) spreads that many trials over the gaps (the first `total % len` gaps get one more);
+    else `per_gap` trials at every gap (APPCI_SSH_TRIALS, default 3 = 12 trials)."""
+    if total and total > 0:
+        base, extra = divmod(total, len(gaps))
+        return [(g, base + (1 if i < extra else 0)) for i, g in enumerate(gaps)]
+    return [(g, per_gap) for g in gaps]
+
+
+def loss_report(lost, n, conf=0.95):
+    """#1127: observed loss rate and its one-sided upper confidence bound, and how many clean trials a 1/40 rate would need to be excluded"""
+    ub = lat.loss_rate_bound(lost, n, conf)
+    need = lat.trials_to_exclude(1 / 40.0, conf)
+    text = ("%d of %d typed-ahead commands lost (observed %.1f %%); %d %% upper confidence bound %.1f %%%s" % (
+        lost, n, 100.0 * lost / n if n else 0.0, int(conf * 100), 100.0 * ub if ub is not None else float("nan"),
+        "" if ub is None or ub < 1 / 40.0 else "; this n cannot exclude a 1/40 (2.5 %%) rate: needs %d clean trials" % need))
+    return dict(lost=lost, n=n, rate=round(lost / n, 4) if n else None, upper_bound=round(ub, 4) if ub is not None else None, conf=conf, text=text)
+
+
 @case("ssh_connect_typing", order=30)
 def c_ssh(ctx, r):
     if not ctx.ssh:
         r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
-    trials = int(os.environ.get("APPCI_SSH_TRIALS", "3"))
+    plan = ssh_trial_plan(SSH_GAPS, int(os.environ.get("APPCI_SSH_TRIALS", "3")), int(os.environ.get("APPCI_SSH_TOTAL_TRIALS", "0") or 0))
     ctx.rm("rl.txt")
     for f in ("rl.txt",):
         try:
@@ -1308,7 +1330,7 @@ def c_ssh(ctx, r):
         except FileNotFoundError:
             pass
     exp, miss, base, stop = [], 0, ctx.shell_count(), False
-    for gap in (0.0, 0.1, 0.2, 0.3):
+    for gap, trials in plan:
         for i in range(trials):
             tok = ctx.tok(6)
             exp.append(tok)
@@ -1324,6 +1346,9 @@ def c_ssh(ctx, r):
             break
     got = ctx.lines("rl.txt", remote=True)
     r.metric("trials", len(exp))
+    lost = sum(1 for t in exp if t not in got)
+    r.metric("loss", loss_report(lost, len(exp)))
+    r.note("ssh_connect_typing loss: " + loss_report(lost, len(exp))["text"])
     r.check(got == exp, "remote shell received %d/%d typed-ahead commands exactly (missing %d)" % (sum(1 for t in exp if t in got), len(exp), miss))
     r.check(not ctx.local_lines("rl.txt"), "typed-ahead command ran LOCALLY: %r" % ctx.local_lines("rl.txt"))
     rem = [c for _, c in ctx.prof.commands(remote=True)]
