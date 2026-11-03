@@ -297,8 +297,11 @@ impl TerminalView {
     /// The give-up timer of the connect window fired (`schedule_ssh_typeahead_give_up`).
     pub(super) fn ssh_give_up_fired(&mut self, ctx: &mut ViewContext<Self>) {
         if self.ssh_typeahead_holding {
-            // Held keys: the hand-over runs the same refresh (and logs the release).
+            // Held keys: the hand-over runs the same refresh (and logs the release). #1577: this
+            // is a timer, so what it hands over comes back as text; it never reaches a pty.
+            self.ssh_give_up_in_progress = true;
             self.deliver_ssh_typeahead_if_ready("give_up", ctx);
+            self.ssh_give_up_in_progress = false;
             return;
         }
         if Self::ssh_events_own_the_gate() && self.ssh_connect_gate.is_some() {

@@ -7665,11 +7665,12 @@ fn test_enter_waiting_for_verdict_queues_input_typed_behind_it() {
     });
 }
 
-/// #1158/#1351: an Enter waiting for a verdict whose classifier is stuck (over ssh it waited on
-/// remote completion generators) submits once the classifier's own compute has spent the cap. It
-/// used to hold for 5 s and then keep the text in the editor.
+/// #1158/#1351/#1577: an Enter waiting for a verdict whose classifier is stuck (over ssh it waited
+/// on remote completion generators) is given up on once the classifier's own compute has spent the
+/// cap. The line is NOT submitted on the Enter-time rules (that picked shell or agent by the
+/// clock): it stays in the editor, the late verdict is dropped, and the next Enter sends it.
 #[test]
-fn test_enter_waiting_for_a_verdict_that_never_arrives_submits_within_the_budget() {
+fn test_enter_waiting_for_a_verdict_that_never_arrives_stays_in_the_editor_within_the_budget() {
     use crate::ai::blocklist::InputConfig;
     use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
 
@@ -7724,7 +7725,8 @@ fn test_enter_waiting_for_a_verdict_that_never_arrives_submits_within_the_budget
             assert!(input.verdict_wait.is_some(), "still within the cap");
         });
 
-        // The verdict never lands; once the classifier spent the cap the Enter goes ahead.
+        // The verdict never lands; once the classifier spent the cap the Enter is NOT submitted
+        // by the clock (#1577): the line stays in the editor and the next Enter sends it.
         input.update(&mut app, |input, ctx| {
             input.verdict_wait.as_mut().unwrap().compute = ComputeClock::with_spent_for_test(
                 ENTER_VERDICT_BUDGET + std::time::Duration::from_millis(5),
@@ -7741,9 +7743,55 @@ fn test_enter_waiting_for_a_verdict_that_never_arrives_submits_within_the_budget
                 "the late verdict is dropped"
             );
             assert!(
-                input.last_enter_submitted_shell_command || input.buffer_text(ctx) != line,
-                "the Enter must not be kept in the editor"
+                !input.last_enter_submitted_shell_command && input.buffer_text(ctx) == line,
+                "the clock must not pick shell or agent: the line stays in the editor (#1577)"
             );
+        });
+    });
+}
+
+/// #1577 (A5): the verdict cap hands the line back only when the input type is undecided. With the
+/// type locked to the shell the Enter needs no verdict and runs as before.
+#[test]
+fn test_verdict_cap_with_a_locked_shell_input_still_submits() {
+    use crate::ai::blocklist::InputConfig;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        {
+            let executed = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                    if let super::Event::ExecuteCommand(event) = event {
+                        executed.borrow_mut().push(event.command.clone());
+                    }
+                });
+            });
+        }
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo hi", ctx);
+            assert!(input.input_type_is_decided(ctx));
+            input.submit_without_verdict("echo hi", std::time::Duration::ZERO, ctx);
+        });
+        assert_eq!(executed.borrow().as_slice(), ["echo hi"]);
+        input.read(&app, |input, _| {
+            assert!(!input.ssh_handover_enter_guard_armed());
         });
     });
 }
@@ -13820,7 +13868,8 @@ async fn wait_until(app: &App, mut done: impl FnMut(&App) -> bool) {
 /// #1353 phase 3, agent mode: an Enter that waits for the autodetect verdict holds the keys typed
 /// behind it, at 10 ms per key, as queue entries. They never enter the buffer (so the line the
 /// Enter submits is exactly the line), a 50 ms stall between the Enter and the verdict releases
-/// nothing, and once the Enter has run they are released in typed order, the Enter among them.
+/// nothing. If the verdict never comes within the cap (#1577) they are handed back to the editor
+/// in typed order, the Enter among them as a new line, instead of being released by the clock.
 #[test]
 fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_per_key() {
     use crate::ai::blocklist::InputConfig;
@@ -13896,7 +13945,10 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             );
         });
 
-        // The classifier spent its compute cap: the Enter goes ahead on the Enter-time rules.
+        // The classifier spent its compute cap (#1577): the clock never picks shell or agent, so
+        // the Enter does NOT go ahead. The line and what was typed behind it come back to the
+        // editor in typed order (the Enters as new lines), the next Enter is held with the
+        // toast, and nothing was released to either destination.
         input.update(&mut app, |input, ctx| {
             if let Some(wait) = input.verdict_wait.as_mut() {
                 wait.compute = ComputeClock::with_spent_for_test(
@@ -13906,25 +13958,22 @@ fn test_enter_queue_keys_typed_behind_a_verdict_held_enter_keep_order_at_10ms_pe
             }
             input.wait_for_verdict_then_enter(line.to_string(), ctx);
         });
-        // The Enter has gone ahead; the released keys classify what they type, so let it through.
         verdict_gate.close();
-        let mut expected: Vec<AfterEnterInput> = "echo hi"
-            .chars()
-            .map(|ch| AfterEnterInput::Text(ch.to_string()))
-            .collect();
-        expected.push(AfterEnterInput::Enter);
-        expected.extend("ls".chars().map(|ch| AfterEnterInput::Text(ch.to_string())));
-        let sink = released.clone();
-        wait_until(&app, |_| sink.borrow().len() >= expected.len()).await;
-        assert_eq!(
-            *released.borrow(),
-            expected,
-            "released in typed order, after the Enter that waited"
-        );
         input.read(&app, |input, ctx| {
             assert!(input.verdict_wait.is_none());
             assert!(!input.enter_queue_holds_keys(ctx), "the gate is closed");
+            assert_eq!(
+                input.buffer_text(ctx),
+                "is it true\necho hi\nls",
+                "handed back in typed order, one line each"
+            );
+            assert!(input.ssh_handover_enter_guard_armed());
         });
+        assert!(
+            released.borrow().is_empty(),
+            "nothing was released to a destination: {:?}",
+            released.borrow()
+        );
     });
 }
 
@@ -14930,6 +14979,60 @@ fn test_unready_enter_give_up_hands_the_lines_back_and_runs_nothing() {
         assert!(!pending, "{mode:?}: the held line is no longer pending");
         assert!(!gated, "{mode:?}: the gate is closed");
         assert!(!holds, "{mode:?}: nothing is held");
+        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+    }
+}
+
+/// #1577 (A2): the route-settle net of a submitted Enter whose gate holds keys waiting for the pty
+/// to take its command (`AFTER_ENTER_REPLAY_PTY_WAIT`, 300 ms) hands them back to the editor
+/// instead of routing them by the facts of that moment. Nothing is run or written, the gate is
+/// gone, the next Enter is consumed once with the toast.
+#[test]
+fn test_route_wait_give_up_hands_the_keys_behind_a_submitted_enter_to_the_editor() {
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+        let result = Rc::new(RefCell::new(None));
+        let sink = result.clone();
+        App::test((), move |mut app| async move {
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+            {
+                let executed = executed.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                        if let super::Event::ExecuteCommand(event) = event {
+                            executed.borrow_mut().push(event.command.clone());
+                        }
+                    });
+                });
+            }
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.open_submitted_enter_gate_awaiting_pty_for_test(ctx);
+                // The gate's key is the wait's id (1 in the test seam).
+                input.give_up_enter_route_wait(1, ctx);
+            });
+            let state = input.read(&app, |input, ctx| {
+                (
+                    input.buffer_text(ctx),
+                    input.ssh_handover_enter_guard_armed(),
+                    input.enter_queue_holds_keys(ctx),
+                )
+            });
+            *sink.borrow_mut() = Some((state, executed.borrow().clone()));
+        });
+        let ((buffer, guard, holds), executed) =
+            result.borrow_mut().take().expect("the test body ran");
+        assert_eq!(
+            buffer, "x",
+            "{mode:?}: the key behind the Enter is back in the editor"
+        );
+        assert!(guard, "{mode:?}: the next Enter is held with the toast");
+        assert!(!holds, "{mode:?}: the gate is gone");
         assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
     }
 }

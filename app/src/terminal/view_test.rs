@@ -15057,12 +15057,13 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
-/// #1331: a terminal-bound paste whose clipboard read never answers fails at the backstop; the
-/// keys typed meanwhile reach the pty in typing order (none dropped, Enter after the fragment it
-/// followed) and the reader's late answer writes nothing. Not compiled/run when written (no
-/// builds in the fix pass).
+/// #1331/#1577: a terminal-bound paste whose clipboard read never answers fails at the backstop;
+/// the keys typed meanwhile are HANDED BACK to the editor in typing order (none dropped, the Enter
+/// a new line after the fragment it followed, the next Enter held with a toast), not written to
+/// the pty by the timer (owner rule 2026-11-01; this test used to assert the pty write). The
+/// reader's late answer writes nothing. Not compiled/run when written (no builds in the fix pass).
 #[test]
-fn stalled_pty_paste_releases_held_keys_in_order_at_the_backstop() {
+fn stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -15103,12 +15104,18 @@ fn stalled_pty_paste_releases_held_keys_in_order_at_the_backstop() {
             }
             warpui::r#async::Timer::after(Duration::from_millis(5)).await;
         }
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"ls\r".to_vec(), "held keys released in order");
+        let buffer_of =
+            |app: &App| terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "the backstop wrote to the pty: {:?}",
+            pty_writes.borrow()
+        );
+        assert_eq!(buffer_of(&app), "ls\n", "held keys handed back in order");
         release.send(()).unwrap();
         warpui::r#async::Timer::after(Duration::from_millis(100)).await;
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"ls\r".to_vec(), "the late answer is ignored");
+        assert!(pty_writes.borrow().is_empty());
+        assert_eq!(buffer_of(&app), "ls\n", "the late answer is ignored");
     })
 }
 
@@ -15202,16 +15209,23 @@ async fn pty_paste_bytes(app: &mut App, scenario: PtyPasteScenario) -> Vec<u8> {
                 }
                 warpui::r#async::Timer::after(Duration::from_millis(5)).await;
             }
+            // #1577: the keys typed behind the paste are handed back to the editor at the
+            // backstop, not written by the timer; only the key typed before the paste was sent.
             assert_eq!(
                 flat(&pty_writes),
-                b"als\r".to_vec(),
-                "keys released at the backstop"
+                b"a".to_vec(),
+                "nothing was written at the backstop"
+            );
+            assert_eq!(
+                terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx)),
+                "ls\n",
+                "keys handed back to the editor at the backstop"
             );
             release.send(()).unwrap();
             warpui::r#async::Timer::after(Duration::from_millis(100)).await;
             assert_eq!(
                 flat(&pty_writes),
-                b"als\r".to_vec(),
+                b"a".to_vec(),
                 "the late result is ignored"
             );
         }
@@ -15278,14 +15292,15 @@ fn pty_paste_ctrl_c_during_a_pending_read_cancels_it() {
     });
 }
 
-/// #1353 phase 1: the backstop gives up once, releases the keys in order and the reader's late
-/// answer writes nothing, on both paths.
+/// #1353 phase 1 / #1577: the backstop gives up once, hands the keys behind the paste back to the
+/// editor (the scenario asserts the editor's text) and the reader's late answer writes nothing.
+/// Only the key typed before the paste reaches the pty.
 #[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_paste_backstop_gives_up_then_the_late_result_is_ignored() {
     App::test((), move |mut app| async move {
         let written = pty_paste_bytes(&mut app, PtyPasteScenario::BackstopThenLateResult).await;
-        assert_eq!(written, b"als\r".to_vec());
+        assert_eq!(written, b"a".to_vec());
     });
 }
 
@@ -15695,12 +15710,14 @@ fn key_typed_between_bootstrapped_and_the_first_prompt_follows_the_held_keys() {
     })
 }
 
-/// #1353 phase 2: the gates' give-up caps are safety nets that log and then behave like the
-/// event. The setup gate's cap treats setup as over and delivers the held keys; the bootstrap
-/// gate's cap lets the queue go, but keys it drains while the bootstrap is still being written
-/// wait for the last line instead of landing among its lines.
+/// #1353 phase 2 / #1577: the gates' give-up caps are safety nets that log and then HAND BACK. The
+/// setup gate's cap treats setup as over and returns the held keys to the editor as visible text
+/// (owner rule 2026-11-01: a timer may close a segment and hand text back, never write to a pty);
+/// the old expectation (the cap delivered them to the pty) encoded exactly what the rule forbids.
+/// The bootstrap gate's cap, while the paced lines are still being written, still waits: the keys
+/// are released by the last line's event, in order, never among the setup lines.
 #[test]
-fn subshell_gate_give_ups_deliver_without_losing_or_reordering() {
+fn subshell_gate_give_ups_hand_back_without_losing_or_reordering() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -15725,12 +15742,26 @@ fn subshell_gate_give_ups_deliver_without_losing_or_reordering() {
             assert!(view.subshell_bootstrap_announced.is_none());
             token
         });
-        assert_eq!(*written.borrow(), b"l".to_vec());
+        assert!(
+            written.borrow().is_empty(),
+            "the cap wrote to the pty: {:?}",
+            written.borrow()
+        );
+        terminal.read(&app, |view, ctx| {
+            view.input.read(ctx, |input, ctx| {
+                assert_eq!(input.buffer_text(ctx), "l", "handed back to the editor");
+                assert!(input.ssh_handover_enter_guard_armed());
+            });
+        });
         // A second, late cap for the same gate does nothing.
         terminal.update(&mut app, |view, ctx| {
             view.on_paste_queue_give_up(setup_token, ctx)
         });
-        assert_eq!(*written.borrow(), b"l".to_vec());
+        assert!(written.borrow().is_empty());
+        terminal.read(&app, |view, ctx| {
+            view.input
+                .read(ctx, |input, ctx| assert_eq!(input.buffer_text(ctx), "l"));
+        });
 
         written.borrow_mut().clear();
         terminal.update(&mut app, |view, ctx| {
@@ -17924,13 +17955,78 @@ fn ssh_pane_with_held_typeahead_for_test(
     assert!(!view.ssh_held_is_empty());
 }
 
-/// #1494: the ssh bootstrap timed out with typing held. The remote shell is alive at a
+/// #1494 / #1577 (owner decision): the ssh bootstrap timed out with typing held and the remote
+/// shell is alive at a non-bootstrapped prompt. A timer no longer writes anything there: no
+/// ` stty sane`, no keys. The held text is handed back (kept for the input while the ssh block
+/// runs, like any ssh hand-back), nothing reaches the pty, nothing runs, and the delivery is not
+/// marked committed. Old behaviour: the kill-switch test below. Legacy and Table.
+#[test]
+fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _delivers =
+                crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let executed = count_executed_commands(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                view.model
+                    .lock()
+                    .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .interactive_latch()
+                    .force(true);
+                assert!(view.is_long_running(), "the bootstrap block is running");
+                view.on_bootstrap_failed_timer_complete((), ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                // The ssh block is still running, so the text is kept for the input (as for any
+                // ssh hand-back); it is never lost and never written.
+                let input = view.input.as_ref(ctx);
+                let kept = input.handed_back_text_for_test().map(str::to_owned);
+                let shown = input.buffer_text(ctx);
+                assert!(
+                    kept.as_deref() == Some("echo hi") || shown == "echo hi",
+                    "{mode:?}: the held text is handed back: kept={kept:?} shown={shown:?}"
+                );
+                assert!(
+                    !view
+                        .model
+                        .lock()
+                        .typeahead_handoff()
+                        .committed_delivery_pending(),
+                    "{mode:?}: nothing was delivered"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: a timer wrote to the pty: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(*executed.borrow(), 0, "{mode:?}: nothing ran");
+        })
+    }
+}
+
+/// #1494 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the ssh bootstrap timed out with
+/// typing held. The remote shell is alive at a
 /// non-bootstrapped prompt (its tty still raw), so the held text is delivered to it -- after a
 /// `stty sane` line, once, in order -- instead of being discarded, and nothing is written to the
 /// local shell. (Against the old behaviour nothing was delivered at all.)
 #[test]
-fn ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane() {
+fn ssh_bootstrap_failure_under_the_kill_switch_delivers_held_typeahead_after_stty_sane() {
     App::test((), |mut app| async move {
+        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -18109,11 +18205,61 @@ fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
     }
 }
 
-/// #1566: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes, the
-/// second expiry runs the #1494 path (held text delivered after `stty sane`, once).
+/// #1566 / #1577: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes,
+/// the second expiry fails the session, and (owner decision) hands the held text back instead of
+/// writing it after `stty sane`: nothing reaches the pty. The kill-switch copy is below.
 #[test]
 fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
     App::test((), |mut app| async move {
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        // The hand-over writes through the counted route too (`WriteHandoffUserBytesToPty`).
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            let input = view.input.as_ref(ctx);
+            assert!(
+                input.handed_back_text_for_test() == Some("echo hi")
+                    || input.buffer_text(ctx) == "echo hi",
+                "the held text is handed back"
+            );
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "no `stty sane`, no keys: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
+/// #1566 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the deferral is one grace, not an
+/// escape hatch: if `Bootstrapped` never comes, the second expiry runs the #1494 path (held text
+/// delivered after `stty sane`, once).
+#[test]
+fn ssh_bootstrap_timer_second_expiry_under_the_kill_switch_still_delivers_after_stty_sane() {
+    App::test((), |mut app| async move {
+        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -23725,11 +23871,15 @@ fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
     }
 }
 
-/// #1574 wiring: the #1494 path (held ssh typeahead delivered to an unbootstrapped remote after
+/// #1574 wiring: the #1494 path (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1; held ssh
+/// typeahead delivered to an unbootstrapped remote after
 /// `stty sane`) marks the delivery as final, so the remote's report of that line is not inserted.
 #[test]
 fn the_ssh_bootstrap_failure_delivery_is_marked_final() {
     App::test((), |mut app| async move {
+        // The delivery exists only behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1 (#1577).
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -24126,10 +24276,12 @@ fn hold_a_young_enter(
     );
 }
 
-/// No prompt came: the give-up (the gate's cap on the queue path, the window timer on the other)
-/// writes the Enter and the key behind it as typeahead, in typed order, once.
+/// No prompt came: the give-up (the gate's cap) HANDS the held Enter and the key behind it back
+/// to the editor as text, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer may
+/// close a segment and hand text back, never write to a pty. This test asserted the old
+/// typeahead write; the event-driven ends still write, see the tests below.)
 #[test]
-fn a_young_enter_and_its_keys_are_written_as_typeahead_when_no_prompt_comes() {
+fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -24145,11 +24297,16 @@ fn a_young_enter_and_its_keys_are_written_as_typeahead_when_no_prompt_comes() {
             assert!(!young_gate_open(view));
             assert!(view.paste_queue.queue.borrow().is_idle());
             assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "\nx",
+                "the Enter (a newline) and the key, in typed order, once"
+            );
         });
-        assert_eq!(
-            *pty_writes.borrow(),
-            vec![b"\rx".to_vec()],
-            "one write, in typed order"
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a timer wrote to the pty: {:?}",
+            pty_writes.borrow()
         );
     });
 }
@@ -26584,3 +26741,8 @@ mod group3_paste_tests;
 // reason as group 1.
 #[path = "view/group4_prompt_tests.rs"]
 mod group4_prompt_tests;
+
+// Group 2 (timers that decided delivery or ran a command, #1577 / #1588). Declared here for the
+// same reason as group 1.
+#[path = "view/group2_timer_tests.rs"]
+mod group2_timer_tests;

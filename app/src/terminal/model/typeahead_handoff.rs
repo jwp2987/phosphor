@@ -2420,6 +2420,15 @@ impl TypeaheadHandoff {
         YoungHoldExpiry::Release
     }
 
+    /// #1577: the give-up of queued young hold `id` handed its keys back to the editor instead of
+    /// writing them: the hold is over, nothing is routed and no byte is counted as written. Clears
+    /// the queued flag if it is still set for `id` (the expiry already did when it said `Release`).
+    pub fn finish_young_hold_handed_back(&mut self, id: u64) {
+        if self.young_hold_queued && id == self.young_hold_id {
+            self.young_hold_queued = false;
+        }
+    }
+
     /// Routes the keys of an expired queued hold (one chunk per key event, in typed order) and
     /// returns the writes to make: one chunk per key event on a ConPTY session (#1162), one write
     /// elsewhere, exactly what the buffered hold's expiry returns.

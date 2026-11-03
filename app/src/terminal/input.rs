@@ -6753,6 +6753,8 @@ impl Input {
         self.has_pending_command = false;
         self.held_unready_enter = false;
         self.pending_command_text = None;
+        // #1588: the hold on the Enter that went with a given-up pending command is over.
+        self.ssh_handover_enter_guard = None;
 
         self.editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(InteractionState::Editable, ctx);
@@ -13227,6 +13229,31 @@ impl Input {
         self.pending_command_text.as_deref()
     }
 
+    /// #1588: the 2 s net for a pending command found no prompt. The command is NOT run by the
+    /// timer: its text is made visible in the input (when the input holds nothing else), the next
+    /// Enter is consumed once with the "check the line" toast, and the pending state is kept for
+    /// the prompt's own event (`execute_pending_command`). Returns whether a command is waiting.
+    pub(crate) fn show_pending_command_after_give_up(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.has_pending_command || self.held_unready_enter {
+            return false;
+        }
+        let Some(text) = self.pending_command_text.clone() else {
+            return false;
+        };
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        if buffer.is_empty() {
+            self.editor
+                .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+            self.arm_ssh_handover_enter_guard(text);
+        } else if buffer == text {
+            self.arm_ssh_handover_enter_guard(text);
+        }
+        true
+    }
+
     /// The command [`Self::set_pending_command`] was last asked to run, for tests.
     #[cfg(test)]
     pub(crate) fn pending_command_text_for_test(&self) -> Option<&str> {
@@ -14594,6 +14621,34 @@ impl Input {
         }
     }
 
+    /// #1577: whether the input's shell-or-agent type is already decided (locked by the user, or
+    /// autodetection is off for this context), so that an Enter needs no verdict. When it is not,
+    /// a timer must not pick a destination by the clock.
+    pub(crate) fn input_type_is_decided(&self, ctx: &AppContext) -> bool {
+        !self
+            .ai_input_model
+            .as_ref(ctx)
+            .should_run_input_autodetection(ctx)
+    }
+
+    /// #1577: the Enter held for its verdict / Tab completion is given up by a timer: the wait is
+    /// dropped (nothing will submit it) and its completion is cancelled. The caller hands the line
+    /// back to the editor.
+    fn void_verdict_wait_for_give_up(&mut self) {
+        let wait = self.verdict_wait.take();
+        if let Some(wait) = wait.as_ref() {
+            wait.compute.stop_notifying();
+        }
+        if wait
+            .as_ref()
+            .is_some_and(VerdictWait::holds_for_tab_completion)
+        {
+            self.tab_completion_request = None;
+            self.cancel_pending_completions_for_deferred_enter();
+        }
+        self.end_deferred_enter_activity();
+    }
+
     /// Runs the Enter that waited (verdict or completion hold): opens the replay for what was
     /// typed behind it (#1016), submits, and hands the replay to the view.
     fn submit_held_enter(&mut self, ctx: &mut ViewContext<Self>) {
@@ -14673,6 +14728,13 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         log_late_enter_verdict(text, classifier_compute);
+        // #1577: the clock never chooses between the shell and the agent. With the input type
+        // undecided (autodetection running) the Enter is not submitted: the line stays in the
+        // editor with what was typed behind it, and the next Enter submits it.
+        if !self.input_type_is_decided(ctx) {
+            self.hand_back_unsubmitted_enter("verdict_cap", ctx);
+            return;
+        }
         // The parse may have landed since the Enter: decide on everything known now, then drop
         // the verdict so it cannot land after the submit.
         self.settle_pending_input_detection_for_submit(ctx);

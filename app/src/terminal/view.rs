@@ -809,12 +809,14 @@ async fn wait_frame_or_give_up(frame_rx: async_channel::Receiver<()>, cap: Durat
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 /// The longest input typed after a deferred Enter waits for the pty to take the command that
-/// Enter submitted, before it is routed anyway (#1016).
+/// Enter submitted, before it is handed back to the editor as text (#1016; #1577: the timer no
+/// longer routes it by the facts of that moment, which could write it to the pty).
 const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
 
 /// How long a young line's Enter waits for a verdict that never arrives at all before it gives up
 /// (#1353 phase 3). A safety net for a lost signal, never how the wait normally ends; logged when
-/// it fires. The normal give-up is [`YOUNG_DETECTION_CAP`] of classifier compute.
+/// it fires. The normal give-up is [`YOUNG_DETECTION_CAP`] of classifier compute. #1577: a give-up
+/// with the input type undecided hands the line back to the editor (never submitted by the clock).
 const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
@@ -917,6 +919,8 @@ const SSH_BOOTSTRAP_SWALLOW_CEILING: Duration = Duration::from_secs(15);
 /// command is a plain interactive session and every key goes to the pty.
 const SSH_CONNECT_SILENCE_CEILING: Duration = Duration::from_secs(15);
 /// After this long without a finished subshell bootstrap, input is no longer held back (#960).
+/// #1577: when a stalled setup is abandoned at the ceiling, the keys held through it are handed
+/// back to the editor as text, not written to the abandoned shell.
 const SUBSHELL_BOOTSTRAP_STALL_CEILING: Duration = Duration::from_secs(20);
 /// How often a deferred subshell setup (#1032) re-checks whether the prompt it is waiting behind
 /// has been answered.
@@ -941,7 +945,8 @@ fn subshell_bootstrap_gate_cap(lines: usize) -> Duration {
 /// Logged when it fires.
 const SUBSHELL_FIRST_PROMPT_GIVE_UP: Duration = Duration::from_secs(5);
 /// Give-up net for a pending command / ssh `cd` waiting for the first prompt after a block
-/// completed (#1354); the prompt itself is what releases it. Logged when it fires.
+/// completed (#1354); the prompt itself is what releases it. Logged when it fires. #1588: firing
+/// runs NOTHING; the command stays pending for the prompt (its text is shown in the input).
 const PENDING_COMMAND_PRECMD_GIVE_UP: Duration = Duration::from_secs(2);
 /// After the user answered a prompt that setup was deferred behind, the output must stay unchanged
 /// this long (the shell took the answer and went quiet) before setup is written, when the
@@ -953,16 +958,18 @@ const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
 const SUBSHELL_SETUP_TYPED_HOLD_LIMIT: Duration = Duration::from_secs(90);
 /// How long the keys typed during a PowerShell subshell setup after a complete line stay held
 /// behind the command that line ran, waiting for its prompt (#1048). A command still running
-/// then is slow or interactive, and the rest is written to the pty as its typeahead.
+/// then is slow or interactive. #1577: firing only tells the user the input waits (log + toast);
+/// the keys are released by the command's prompt or by it becoming interactive, never this timer.
 const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
 /// How long after a Ctrl-C that skips a PowerShell subshell setup the keys held behind it wait
 /// (#1048): the Windows console flushes its input buffer as it processes the Ctrl-C, and keys
-/// written right behind the ^C were lost with it.
+/// written right behind the ^C were lost with it. Only the legacy timed setup
+/// (`PHOSPHOR_BOOTSTRAP_TIMED`, a kill switch) is paced by this; a marker-paced setup is not.
 const POWERSHELL_ABORT_SETTLE: Duration = Duration::from_millis(500);
 /// The give-up net behind the marker that ends the settle after a Ctrl-C skipped a marker-paced
 /// PowerShell setup (#1372): the shell prints the marker when PSReadLine is about to read again;
 /// if it never does (the Ctrl-C killed the wrapper's session, a host without the hook), the held
-/// keys are released after this, with a log line.
+/// keys are handed back to the editor as text after this (#1577: never written), with a log line.
 const POWERSHELL_ABORT_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
@@ -2855,7 +2862,8 @@ enum PowerShellSetupHold {
     /// `Bootstrapped` arrived; the keys are delivered at the prompt that follows it.
     AwaitingPrompt,
     /// A held line was submitted as a command; what was typed after it stays held until that
-    /// command's prompt is back (or `POWERSHELL_HELD_LINE_GRACE` passes).
+    /// command's prompt is back (or it becomes interactive); `POWERSHELL_HELD_LINE_GRACE` only
+    /// tells the user the input waits (#1577).
     LineRunning { generation: u64 },
     /// Ctrl-C skipped the setup. The Windows console discards its pending input when it processes
     /// a Ctrl-C, so the keys held meanwhile (and any typed now) go out only once
@@ -3188,6 +3196,11 @@ pub struct TerminalView {
     /// The remote shell's first prompt was seen in this connect: the point where held keys are
     /// handed to it (#1292). Without it the connect failed and they become editor text.
     ssh_remote_prompt_seen: bool,
+    /// #1577: the connect window's give-up TIMER is running the hand-over right now
+    /// (`ssh_give_up_fired`). A timer never delivers held keys to a pty: `finish_ssh_typeahead`
+    /// hands them back as text even when the remote's prompt was seen (that prompt is an event
+    /// that itself hands over; seeing it here means the hand-over missed its window).
+    ssh_give_up_in_progress: bool,
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
     ssh_bootstrap_failed_session: Option<SessionId>,
@@ -5052,6 +5065,7 @@ impl TerminalView {
             young_enter_released: true,
             young_enter_wait_id: 0,
             ssh_remote_prompt_seen: false,
+            ssh_give_up_in_progress: false,
             ssh_bootstrap_failed_session: None,
             bootstrap_precmd_seen_session: None,
             bootstrap_grace_used_session: None,
@@ -11469,7 +11483,16 @@ impl TerminalView {
             warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
             return;
         }
-        if self.ssh_remote_prompt_seen {
+        if self.ssh_remote_prompt_seen && self.ssh_give_up_in_progress {
+            // #1577: the give-up timer never delivers; the held keys are handed back as text (the
+            // release that ended the window was already counted as a give-up).
+            warpui::input_order::log_key_hop("kh_finish_begin", || {
+                format!(
+                    "give_up=ceiling remote_prompt_seen=true held_bytes={}",
+                    self.ssh_held_bytes()
+                )
+            });
+        } else if self.ssh_remote_prompt_seen {
             self.log_ssh_typeahead_delivery(self.ssh_held_count());
             // #1353 phase 4: closing the `SshConnect` gate IS the delivery; the queue's one drain
             // writes the held inputs in typed order (the legacy buffer does it in a loop).
@@ -12812,11 +12835,13 @@ impl TerminalView {
                         if me.powershell_setup_hold
                             == (PowerShellSetupHold::AfterAbort { generation })
                         {
+                            // #1577: a timer never writes the held keys to the pty. The marker
+                            // event releases them; this give-up hands them back as text.
                             log::warn!(
                                 "PowerShell did not signal it was reading again after the Ctrl-C \
-                                 (setup token {token}); releasing the held keys"
+                                 (setup token {token}); handing the held keys back (#1577)"
                             );
-                            me.end_powershell_abort_wait(generation, ctx);
+                            me.give_up_powershell_abort_wait(generation, ctx);
                         }
                     },
                 );
@@ -12828,9 +12853,12 @@ impl TerminalView {
                 ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
                     if me.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation })
                     {
+                        // #1577: the legacy (kill-switch, timed-setup) path: the only release there
+                        // is, and a timer write by design. Marker-paced setups never get here.
                         log::warn!(
                             "PowerShell setup has no read marker to wait for after the Ctrl-C; \
-                             releasing the held keys after the settle give-up"
+                             releasing the held keys after the settle give-up (legacy timed \
+                             setup, PHOSPHOR_BOOTSTRAP_TIMED; #1577)"
                         );
                     }
                     me.end_powershell_abort_wait(generation, ctx)
@@ -13465,7 +13493,7 @@ impl TerminalView {
 
     /// Starts the patience timer of an Enter deferred behind a report that covers untracked
     /// bytes (#1104), if one was just armed. When it fires the report is not coming (a program
-    /// ate the request) and the Enter runs rather than wait forever.
+    /// ate the request): the Enter is NOT run (#1577); its text stays in the editor.
     fn arm_uncovered_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
         let id = self.handoff.write().take_uncovered_deferral_started();
         if let Some(id) = id {
@@ -13482,23 +13510,32 @@ impl TerminalView {
                 Timer::after(UNCOVERED_REPORT_PATIENCE),
                 move |me, _, ctx| {
                     log_late_timer_wake("uncovered report patience", deadline);
-                    let released = me
-                        .model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .give_up_uncovered_deferral(id);
-                    if released {
-                        // #1192: the report covering the pasted/typed line never arrived.
-                        log::warn!(
-                            "Enter held {} ms: the shell's typeahead report never covered the \
-                             untracked line bytes (uncovered-report patience expired)",
-                            UNCOVERED_REPORT_PATIENCE.as_millis()
-                        );
-                        me.run_deferred_enter(false, ctx);
-                    }
+                    me.uncovered_report_patience_fired(id, ctx);
                 },
             );
         }
+    }
+
+    /// The patience of deferral `id` ran out (#1104): the report covering the untracked line bytes
+    /// never arrived. #1577: a timer never runs the Enter. The report may still be on its way,
+    /// and the Enter's text is what the user typed: it stays in the editor, the keys held behind
+    /// it follow, and the next Enter runs it.
+    fn uncovered_report_patience_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let released = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .give_up_uncovered_deferral(id);
+        if !released {
+            return;
+        }
+        // #1192: the report covering the pasted/typed line never arrived.
+        log::warn!(
+            "Enter held {} ms: the shell's typeahead report never covered the untracked line \
+             bytes (uncovered-report patience expired); the Enter is not run (#1577)",
+            UNCOVERED_REPORT_PATIENCE.as_millis()
+        );
+        self.keep_deferred_enter_text_hand_back("uncovered_report", ctx);
     }
 
     /// #1215: starts the patience timer of an Enter deferred behind the hand-off's own
@@ -13570,6 +13607,70 @@ impl TerminalView {
         }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
+    }
+
+    /// #1577: a timer gave up on the deferred Enter before the verdict / report it waited for
+    /// (`why` names which): the Enter does not run, the text stays in the editor, the keys held
+    /// behind the Enter follow it as text, the next Enter is consumed once with a toast, and it is
+    /// logged with counts. Nothing is written to the pty, nothing is routed by the clock.
+    pub(super) fn hand_back_deferred_enter_keys_to_editor(
+        &mut self,
+        held: Vec<u8>,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let text = text_for_editor(&held);
+        log::warn!(
+            "Enter not run ({why}): the text stays in the input; {} held byte(s) handed back to \
+             the editor",
+            held.len()
+        );
+        warpui::input_order::log_key_hop("enter_verdict_give_up", || {
+            format!(
+                "{why} held_bytes={} chars={}",
+                held.len(),
+                text.chars().count()
+            )
+        });
+        self.input.update(ctx, |input, ctx| {
+            input.clear_handoff_enter_hold();
+            if !text.is_empty() {
+                input.system_insert(&text, ctx);
+            }
+            // Several lines in one buffer would submit as ONE command: the first Enter on them
+            // is held with the "check the line" toast. One line is what the user typed: the
+            // next Enter sends it.
+            let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
+            if buffer.contains('\n') {
+                input.arm_ssh_handover_enter_guard(buffer);
+            }
+        });
+        let toast = match why {
+            "uncovered_report" => "The shell did not report its line; the text stays in the input",
+            _ => "Couldn't tell shell from chat in time; press Enter again to send",
+        };
+        self.show_error_toast(toast.to_string(), ctx);
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
+    }
+
+    /// [`Self::keep_deferred_enter_text`] for a timer's give-up (#1577): the keys behind the Enter
+    /// come back to the editor as text instead of being released to the pty, and the next Enter
+    /// is consumed once with a toast.
+    fn keep_deferred_enter_text_hand_back(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        let gate = self.handoff.write().release_after_unsubmitted_enter();
+        match gate {
+            Some(gate) => {
+                self.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUpHandBack(why), ctx)
+            }
+            None => self.hand_back_deferred_enter_keys_to_editor(Vec::new(), why, ctx),
+        }
     }
 
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
@@ -13687,10 +13788,27 @@ impl TerminalView {
                     "young line waited for the input-type verdict and gave up",
                     started.elapsed(),
                 );
-                self.input.update(ctx, |input, ctx| {
-                    input.give_up_pending_detection_for_submit(ctx)
-                });
-                self.run_deferred_enter(true, ctx);
+                // #1577: the clock never chooses between the shell and the agent. With the input
+                // type already decided (locked, or autodetection off) the Enter runs as before;
+                // otherwise it is not run: the text stays in the editor and the next Enter
+                // submits it once the verdict is in.
+                let decided = self
+                    .input
+                    .read(ctx, |input, ctx| input.input_type_is_decided(ctx));
+                if decided {
+                    self.input.update(ctx, |input, ctx| {
+                        input.give_up_pending_detection_for_submit(ctx)
+                    });
+                    self.run_deferred_enter(true, ctx);
+                } else {
+                    // The late verdict is dropped: the next Enter is the user's say-so.
+                    self.input.update(ctx, |input, ctx| {
+                        input
+                            .ai_input_model()
+                            .update(ctx, |model, _| model.abandon_pending_detection())
+                    });
+                    self.keep_deferred_enter_text_hand_back("young_verdict_cap", ctx);
+                }
             }
             YoungSubmit::Wait => self.watch_young_detection(ctx),
             YoungSubmit::KeepInEditor => {
@@ -17402,14 +17520,20 @@ impl TerminalView {
                                     warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP)
                                         .await;
                                 },
-                                |me, _, ctx| {
+                                |me, _, _| {
+                                    // #1588: a timer never runs a command. The remote `cd`
+                                    // stays pending: the prompt's own event (`Precmd`) runs it.
                                     if me.ssh_split_cd_awaits_precmd {
                                         log::warn!(
-                                            "No prompt after the ssh split bootstrap block; \
-                                             running the remote cd anyway"
+                                            "No prompt within {} s after the ssh split bootstrap \
+                                             block; the remote cd stays pending for the next \
+                                             prompt (#1588)",
+                                            PENDING_COMMAND_PRECMD_GIVE_UP.as_secs()
                                         );
-                                        me.ssh_split_cd_awaits_precmd = false;
-                                        me.run_ssh_split_cd(ctx);
+                                        warpui::input_order::log_key_hop(
+                                            "kh_pending_command_give_up",
+                                            || "ssh_split_cd kept".to_owned(),
+                                        );
                                     }
                                 },
                             );
@@ -17568,16 +17692,7 @@ impl TerminalView {
                             async move {
                                 warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP).await;
                             },
-                            |me, _, ctx| {
-                                if me.pending_command_awaits_precmd {
-                                    log::warn!(
-                                        "No prompt after a completed block; running the pending \
-                                         command anyway"
-                                    );
-                                    me.pending_command_awaits_precmd = false;
-                                    me.execute_pending_command_after_timer((), ctx);
-                                }
-                            },
+                            |me, _, ctx| me.pending_command_precmd_give_up(ctx),
                         );
                     }
                 }
@@ -17953,6 +18068,15 @@ impl TerminalView {
             ModelEvent::CommandBecameInteractive { block_id } => {
                 // A program took over the terminal (#1373): the event the "long running"
                 // consumers used to wait 50 ms for.
+                // #1577: the held PowerShell line became a program that reads keys: the keys
+                // typed after it are its typeahead, released in order by this event (the
+                // 2 s grace no longer writes them).
+                if matches!(
+                    self.powershell_setup_hold,
+                    PowerShellSetupHold::LineRunning { .. }
+                ) {
+                    self.release_subshell_setup_held_bytes(ctx);
+                }
                 // #1490: keys the ConPTY enter window held since the Enter are typeahead for this
                 // program, not for the shell's line editor: they are released to it in typed
                 // order, by this event and not by a timer.
@@ -21159,12 +21283,32 @@ impl TerminalView {
         }
     }
 
+    /// #1577: the marker never came within `POWERSHELL_ABORT_MARKER_GIVE_UP`. A timer never writes
+    /// user bytes to the pty: the keys held behind the ^C come back to the editor as text, with
+    /// the Enter guard and a toast. Nothing happens if a later Ctrl-C restarted the wait.
+    fn give_up_powershell_abort_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        if self.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation }) {
+            self.give_up_setup_gates_to_editor("abort_marker_give_up", ctx);
+        }
+    }
+
     /// The held line `generation` ran was still running after `POWERSHELL_HELD_LINE_GRACE`
-    /// (#1048): a slow or interactive command. What was typed after it is its typeahead, written
-    /// to the pty in order as if typed while it ran. Nothing happens if its prompt already came.
+    /// (#1048): a slow or interactive command. #1577: a timer never writes the keys typed after
+    /// it. They stay held, a toast and a log line say the input waits for the command's prompt,
+    /// and the events release them in order: its prompt (`Precmd`), or the command becoming
+    /// interactive (`CommandBecameInteractive`: a program that reads keys, for which the held
+    /// keys are typeahead). Nothing happens if its prompt already came.
     fn end_powershell_held_line_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
         if self.powershell_setup_hold == (PowerShellSetupHold::LineRunning { generation }) {
-            self.release_subshell_setup_held_bytes(ctx);
+            log::warn!(
+                "PowerShell held line still running after {} ms; the keys typed after it stay \
+                 held for its prompt (#1577)",
+                POWERSHELL_HELD_LINE_GRACE.as_millis()
+            );
+            warpui::input_order::log_key_hop("kh_powershell_held_line_grace", || {
+                "kept held".to_owned()
+            });
+            self.show_error_toast("Input is waiting for the command's prompt".to_string(), ctx);
         }
     }
 
@@ -22176,6 +22320,39 @@ impl TerminalView {
         }
     }
 
+    /// #1588: the `PENDING_COMMAND_PRECMD_GIVE_UP` net fired with no prompt seen. A timer never
+    /// runs a command: the pending command stays pending (`pending_command_awaits_precmd` stays
+    /// set, so the `Precmd` that finally comes runs it exactly once), its text is made visible in
+    /// the input with the Enter guard, and a toast says it waits for the shell.
+    fn pending_command_precmd_give_up(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.pending_command_awaits_precmd {
+            return;
+        }
+        let waiting = self.input.update(ctx, |input, ctx| {
+            input.show_pending_command_after_give_up(ctx)
+        });
+        log::warn!(
+            "No prompt within {} s after a completed block; the pending command stays pending \
+             for the next prompt (#1588) (waiting={waiting})",
+            PENDING_COMMAND_PRECMD_GIVE_UP.as_secs()
+        );
+        warpui::input_order::log_key_hop("kh_pending_command_give_up", || {
+            format!("kept waiting={waiting}")
+        });
+        if waiting && ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(
+                        "The shell showed no prompt; the queued command waits for it".to_string(),
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
+    }
+
     /// [`Self::execute_pending_command`] from a timer (a settling delay or a give-up net). An Enter
     /// held because the shell was not ready (#1571) is never run by a timer: only the readiness
     /// events run it (`retry_held_unready_enter`), and its own net hands it back instead.
@@ -22407,7 +22584,11 @@ impl TerminalView {
         if !abandoned {
             return;
         }
-        self.release_subshell_setup_held_bytes(ctx);
+        // #1577: the ceiling is a timer, and a timer never writes the keys held through the stalled
+        // setup into the abandoned shell: they come back to the editor as text (the Precmd EVENT
+        // of a setup that does finish still releases them in order). Both setup gates close,
+        // the setup state and the waiting notice go, and a toast says so.
+        self.give_up_setup_gates_to_editor("stall_ceiling", ctx);
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
         });
@@ -22421,6 +22602,11 @@ impl TerminalView {
     /// that) goes first, then the held keys through the normal hand-over, in order, exactly once.
     /// When no remote shell is provably in front (the ssh block is no longer running) the keys
     /// are handed back as unexecuted text instead; they are never run locally.
+    ///
+    /// #1577 (owner decision 2026-11-03): that delivery is a timer writing a command and the
+    /// user's keys to a pty. By default the keys are handed back here too (the ssh hand-back: the
+    /// input, or kept for it while the ssh block runs) with a toast naming `stty sane`; the #1494
+    /// delivery stays behind `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1`.
     fn hand_held_ssh_typeahead_to_unbootstrapped_remote(
         &mut self,
         is_ssh: bool,
@@ -22453,6 +22639,28 @@ impl TerminalView {
                 self.ssh_held_bytes()
             );
             self.finish_ssh_typeahead(ctx);
+            return;
+        }
+        if !crate::terminal::bootstrap::ssh_bootstrap_giveup_delivers() {
+            // #1577 (owner decision): a timer never writes user bytes or a command to a pty. The
+            // held keys are handed back (to the input, or kept for it while the ssh block runs,
+            // like any ssh hand-back) and nothing is sent: no `stty sane`, no keys.
+            log::warn!(
+                "ssh typeahead: bootstrap failed; handing {} held byte(s) back instead of \
+                 writing them to the remote (#1577; PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1 \
+                 restores the #1494 delivery)",
+                self.ssh_held_bytes()
+            );
+            warpui::input_order::log_key_hop("kh_bootstrap_giveup", || {
+                format!("handed_back held_bytes={}", self.ssh_held_bytes())
+            });
+            self.ssh_remote_prompt_seen = false;
+            self.finish_ssh_typeahead(ctx);
+            self.show_ssh_typing_toast(
+                "SSH setup didn't finish; your typed text was not sent. The remote terminal may \
+                 be in raw mode: run `stty sane` there",
+                ctx,
+            );
             return;
         }
         log::warn!(
@@ -37473,8 +37681,8 @@ fn choice_block_owns_input(
 /// holding keys while it waits for the remote session to register (#983).
 const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
-/// (#1104) before it runs as it did without the deferral. Reports normally take milliseconds;
-/// this only bounds a request a program ate.
+/// (#1104) before it is given up on. Reports normally take milliseconds; this only bounds a
+/// request a program ate. #1577: the expiry does not run the Enter; the text stays in the editor.
 const UNCOVERED_REPORT_PATIENCE: Duration = Duration::from_secs(3);
 
 /// How long an Enter deferred behind the hand-off's own outstanding report waits for it before
