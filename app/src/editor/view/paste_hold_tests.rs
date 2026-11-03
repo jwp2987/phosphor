@@ -94,7 +94,10 @@ fn an_edit_stales_the_stored_layout_until_the_next_one() {
     state.mark_stale();
     assert!(state.is_stale());
     state.update(FrameLayouts::new(Vec::new(), 0, 0));
-    assert!(!state.is_stale(), "a layout stored after the edit is current");
+    assert!(
+        !state.is_stale(),
+        "a layout stored after the edit is current"
+    );
 }
 
 /// The matrix class of an editor key is the legacy split: what submits or completes is not an
