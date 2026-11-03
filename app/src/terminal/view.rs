@@ -809,7 +809,8 @@ async fn wait_frame_or_give_up(frame_rx: async_channel::Receiver<()>, cap: Durat
 const AGENT_INTERRUPT_GRACE: Duration = Duration::from_secs(3);
 
 /// The longest input typed after a deferred Enter waits for the pty to take the command that
-/// Enter submitted, before it is routed anyway (#1016).
+/// Enter submitted, before it is handed back to the editor as text (#1016; #1577: the timer no
+/// longer routes it by the facts of that moment, which could write it to the pty).
 const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
 
 /// How long a young line's Enter waits for a verdict that never arrives at all before it gives up

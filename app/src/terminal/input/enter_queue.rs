@@ -77,6 +77,10 @@ pub(super) struct EnterGate {
 /// ceilings are 15 s).
 pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(15);
 
+/// #1577: the toast of an Enter gate that gave up without routing what was typed behind the Enter.
+const ENTER_GATE_GIVE_UP_TOAST: &str = "The shell did not take the command in time; what you typed \
+     after it is in the input, not sent";
+
 const UNREADY_ENTER_GIVE_UP_TOAST: &str = "The shell was not ready, so the line was not run; it is \
      back in the input with what you typed after it";
 
@@ -480,6 +484,50 @@ impl Input {
              handed back to the input, not run (#1571)"
         );
         warpui::input_order::log_hop("enter_held_give_up", || format!("by={why}"));
+        self.hand_back_enter_gate(gate, UNREADY_ENTER_GIVE_UP_TOAST, ctx);
+    }
+
+    /// #1577 (A2): a timer gave up on the Enter gate (the route-settle net, the verdict cap, the
+    /// generic leak net). NOTHING is routed or run: what was typed behind the Enter comes back to
+    /// the editor as text, the next Enter is consumed once with the "check the line" toast, and it
+    /// is logged with counts only. An Enter held for an unready shell has its own give-up.
+    pub(crate) fn give_up_enter_gate_to_editor(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(gate) = self.enter_gate else {
+            return;
+        };
+        if gate.held_unready {
+            self.give_up_unready_enter(why, ctx);
+            return;
+        }
+        let held_behind = self.enter_gate_held_len(ctx);
+        log::warn!(
+            "input: the Enter gate gave up ({why}) with {held_behind} entr(ies) behind it; they \
+             are handed back to the input, nothing is routed (#1577)"
+        );
+        warpui::input_order::log_key_hop("kh_enter_gate_give_up", || {
+            format!("by={why} behind={held_behind} submitted={}", gate.submitted)
+        });
+        self.hand_back_enter_gate(gate, ENTER_GATE_GIVE_UP_TOAST, ctx);
+    }
+
+    /// The shared body of the Enter-gate give-ups: the gate is closed taking what waited behind
+    /// it and that text goes back into the editor, with the Enter guard armed and a toast.
+    ///
+    /// An Enter that was already SUBMITTED (the command is in flight; the buffer still holds the
+    /// submitted line until its block completes) is not part of the hand-back: the text follows
+    /// the submitted line directly, which is where typing it would have put it, so the block's
+    /// completion keeps exactly the text typed after it.
+    fn hand_back_enter_gate(
+        &mut self,
+        gate: EnterGate,
+        toast: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let submitted = gate.submitted && !gate.held_unready;
         let held_behind = self.enter_gate_held_len(ctx);
         self.clear_held_unready_enter();
         self.enter_gate = None;
@@ -493,7 +541,7 @@ impl Input {
                 // Busy: the take and the insert are one deferred operation (the text typed behind
                 // the gate comes back into the editor, #1446), at the cursor: put it at the end of
                 // the held line, on a line of its own.
-                if held_behind > 0 {
+                if held_behind > 0 && !submitted {
                     let line = self.editor.as_ref(ctx).buffer_text(ctx);
                     if !line.is_empty() {
                         self.editor.update(ctx, |editor, ctx| {
@@ -513,17 +561,20 @@ impl Input {
         });
         if !typed_after.is_empty() {
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
-            let text = if line.is_empty() {
-                typed_after
+            let (text, baseline) = if submitted {
+                (format!("{line}{typed_after}"), typed_after)
+            } else if line.is_empty() {
+                (typed_after.clone(), typed_after)
             } else {
-                format!("{line}\n{typed_after}")
+                let text = format!("{line}\n{typed_after}");
+                (text.clone(), text)
             };
             self.editor
                 .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
             // Several lines in one buffer submit as ONE command: the first Enter on the handed-back
             // text is held with the "check the line" toast (the ssh hand-back's guard).
-            self.arm_ssh_handover_enter_guard(text);
-        } else {
+            self.arm_ssh_handover_enter_guard(baseline);
+        } else if !submitted {
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
             self.arm_ssh_handover_enter_guard(line);
         }
@@ -531,7 +582,7 @@ impl Input {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(
-                    DismissibleToast::error(UNREADY_ENTER_GIVE_UP_TOAST.to_string()),
+                    DismissibleToast::error(toast.to_string()),
                     window_id,
                     ctx,
                 );
@@ -740,9 +791,9 @@ impl Input {
         }
         log::warn!(
             "input queue: keys typed behind an Enter waited for the pty to take its command and \
-             gave up; routing them now"
+             gave up; handing them back to the input (#1577)"
         );
-        self.release_enter_gate(ctx);
+        self.give_up_enter_gate_to_editor("route_wait", ctx);
     }
 
     /// ^C / ^D reached the terminal while keys wait behind an Enter: what was typed behind it is

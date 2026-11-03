@@ -14934,6 +14934,60 @@ fn test_unready_enter_give_up_hands_the_lines_back_and_runs_nothing() {
     }
 }
 
+/// #1577 (A2): the route-settle net of a submitted Enter whose gate holds keys waiting for the pty
+/// to take its command (`AFTER_ENTER_REPLAY_PTY_WAIT`, 300 ms) hands them back to the editor
+/// instead of routing them by the facts of that moment. Nothing is run or written, the gate is
+/// gone, the next Enter is consumed once with the toast.
+#[test]
+fn test_route_wait_give_up_hands_the_keys_behind_a_submitted_enter_to_the_editor() {
+    use crate::terminal::input_queue::facts::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+        let result = Rc::new(RefCell::new(None));
+        let sink = result.clone();
+        App::test((), move |mut app| async move {
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+            {
+                let executed = executed.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                        if let super::Event::ExecuteCommand(event) = event {
+                            executed.borrow_mut().push(event.command.clone());
+                        }
+                    });
+                });
+            }
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.open_submitted_enter_gate_awaiting_pty_for_test(ctx);
+                // The gate's key is the wait's id (1 in the test seam).
+                input.give_up_enter_route_wait(1, ctx);
+            });
+            let state = input.read(&app, |input, ctx| {
+                (
+                    input.buffer_text(ctx),
+                    input.ssh_handover_enter_guard_armed(),
+                    input.enter_queue_holds_keys(ctx),
+                )
+            });
+            *sink.borrow_mut() = Some((state, executed.borrow().clone()));
+        });
+        let ((buffer, guard, holds), executed) =
+            result.borrow_mut().take().expect("the test body ran");
+        assert_eq!(
+            buffer, "x",
+            "{mode:?}: the key behind the Enter is back in the editor"
+        );
+        assert!(guard, "{mode:?}: the next Enter is held with the toast");
+        assert!(!holds, "{mode:?}: the gate is gone");
+        assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
+    }
+}
+
 /// Runs a refused (unready) direct `ssh fake` Enter in `mode`, then `typed_after` runs against the
 /// input and editor (the keys typed behind the gate), then `then` against the input. Returns the
 /// buffer, whether the input still holds a pending command or a gate, and the commands executed
