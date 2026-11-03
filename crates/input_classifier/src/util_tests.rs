@@ -891,13 +891,15 @@ fn test_is_unambiguous_shell_command_accepts_completer_evidence_for_unknown_comm
 }
 
 #[test]
-fn test_is_unambiguous_shell_command_ignores_pasted_buffers() {
+fn test_is_unambiguous_shell_command_holds_at_any_size() {
     futures::executor::block_on(async move {
-        // The pre-filter runs synchronously per keystroke; a buffer over the size cap is a paste
-        // for the classifier to handle, even when it is a plain command line.
+        // #1604 (owner: "remove the 4096 limit"): there is no size cap any more, so a plain
+        // command line over 4 KiB is as unambiguous as a short one. The old expectation (a buffer
+        // over the cap is a paste the pre-filter ignores) encoded the removed MAX_PREFILTER_BYTES.
         let long = format!("ls {}", "-a ".repeat(2000));
+        assert!(long.len() > 4096);
         assert!(is_unambiguous_shell_command_for("ls -a -a").await);
-        assert!(!is_unambiguous_shell_command_for(&long).await);
+        assert!(is_unambiguous_shell_command_for(&long).await);
     });
 }
 

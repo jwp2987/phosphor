@@ -959,8 +959,8 @@ pub(crate) const CASES: &[Case] = &[
     Case::cmd("npm install everything", "#1203 (installed `npm`)"),
     // A bare trailing `?` is a glob character and stays shell (`reads_as_command_headed_prose`).
     Case::cmd("git status please?", "#1203 (trailing `?` is a glob)"),
-    // -- #1036 / #1174: an oversized buffer never changes the input type (added in
-    //    `all_cases`, built at run time).
+    // -- #1604: a command line over 4 KiB is still a command (added in `all_cases`, built at
+    //    run time; it replaced #1036 / #1174's "oversized buffer keeps its type").
     // -- #1234: PowerShell 5.1 / pwsh 7.
     Case::cmd("Get-ChildItem -Recurse", "#1234 PowerShell").shell(Shell::PowerShell),
     Case::cmd(
@@ -1183,7 +1183,7 @@ pub(crate) const CASES: &[Case] = &[
 ];
 
 /// Every case: the pinned ones, the torture corpus expanded with its overrides, the #897 request
-/// corpus, and the oversized-paste case built at run time (#1036 / #1174).
+/// corpus, and the oversized command line built at run time (#1604).
 pub(crate) fn all_cases() -> Vec<Case> {
     let mut cases: Vec<Case> = CASES.to_vec();
     for line in TORTURE_COMMANDS {
@@ -1216,11 +1216,14 @@ pub(crate) fn all_cases() -> Vec<Case> {
     for line in PROSE_WITH_COMMAND_HEADS {
         cases.push(Case::cmd(line, "#897 / #965 request corpus (prose)").expect(Expect::Agent));
     }
-    // #1036 / #1174: a paste over every size cap is never classified, so no rule may move it.
+    // #1604 (owner: "remove the 4096 limit"): no size cap, so a command line far over 4 KiB is
+    // routed like any command line -- to the shell, never kept in the agent by its size. (Before
+    // #1604 this case pinned #1036 / #1174's "an oversized buffer keeps its type", the rule #1604
+    // removed: it sent pasted scripts and long pipelines to the agent.)
     let oversized: &'static str = Box::leak(format!("ls {}", "-a ".repeat(3000)).into_boxed_str());
-    cases.push(Case::model(
+    cases.push(Case::cmd(
         oversized,
-        "#1036 / #1174 (oversized buffer keeps its type)",
+        "#1604 (a command line of any size is a command)",
     ));
     cases
 }
