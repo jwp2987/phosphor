@@ -14013,6 +14013,15 @@ impl Input {
             }
 
             self.model.lock().set_is_input_dirty(false);
+            // #1606: try_execute_done -> this hop is the submit bookkeeping that runs before the
+            // queued ExecuteCommand effect reaches the pty (agent mode measured ~0.7 ms here,
+            // terminal mode ~0.1); this hop -> write_command is the effect flush.
+            warpui::input_order::log_hop("enter_submit_done", || {
+                format!(
+                    "since_submit_ms={:.2}",
+                    submit_started.elapsed().as_secs_f64() * 1000.
+                )
+            });
         }
 
         // #1203: only when a banner is actually waiting. The update below writes a setting and

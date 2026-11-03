@@ -46,6 +46,9 @@ const PTY_ECHO_SLOW: Duration = Duration::from_millis(50);
 /// round trip and a TUI's multi-write response; a flood that starts within the window (Enter on
 /// `cat bigfile`) is only capped by the throttle's floor until the window closes.
 const USER_WRITE_ECHO_WINDOW: Duration = Duration::from_millis(300);
+/// A read pass that waited at least this long for the model lock after a user write logs
+/// `input_order hop=pty_lock_wait` (#1606).
+const PTY_LOCK_WAIT_LOG: Duration = Duration::from_micros(200);
 static SLOW_PTY_PARSE: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
     "pty parse (terminal model lock held)",
     PTY_PARSE_SLOW,
@@ -1285,7 +1288,24 @@ where
                     // `read` + `try_lock` for as long as the UI paints, a whole core burnt
                     // while the echo of a keystroke waits for the lock anyway.
                     None if bytes_in_buffer >= MAX_UNLOCKED_ACCUMULATION || !*can_read => {
-                        model.lock()
+                        let wait_started = Instant::now();
+                        let guard = model.lock();
+                        // #1606: output that answers a keystroke (the shell's echo, its
+                        // Preexec hook) waited this long for the model lock the UI holds while
+                        // it builds a frame; the shell's own progress does not, so the Enter
+                        // latency split needs to tell the two apart.
+                        let waited = wait_started.elapsed();
+                        if waited >= PTY_LOCK_WAIT_LOG
+                            && state.read_follows_user_write(Instant::now())
+                        {
+                            warpui::input_order::log_hop("pty_lock_wait", || {
+                                format!(
+                                    "waited_ms={:.2} buffered={bytes_in_buffer}",
+                                    waited.as_secs_f64() * 1000.
+                                )
+                            });
+                        }
+                        guard
                     }
                     // Otherwise, if we failed to acquire the lock, try to read more
                     // data into the buffer.

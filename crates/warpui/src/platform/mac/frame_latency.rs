@@ -16,6 +16,8 @@ use parking_lot::Mutex;
 pub(super) const SLOW_KEY_TO_PRESENTED_MS: u64 = 50;
 /// A frame whose `nextDrawable` wait exceeds this is "slow".
 pub(super) const SLOW_DRAWABLE_WAIT_MS: u64 = 8;
+/// A `nextDrawable` wait at least this long is logged as `input_order hop=drawable_wait` (#1606).
+pub(super) const DRAWABLE_WAIT_LOG_NS: u64 = 2_000_000;
 /// Minimum spacing between WARN lines.
 pub(super) const WARN_INTERVAL_MS: u64 = 10_000;
 
@@ -148,6 +150,18 @@ extern "C-unwind" fn warp_frame_presented(
 ) {
     let key_ms = (presented && key_to_presented_ns > 0).then_some(key_to_presented_ns / 1_000_000);
     let wait_ms = drawable_wait_ns / 1_000_000;
+    // #1606: a main thread blocked in `nextDrawable` cannot dequeue key events; a Ctrl-C under an
+    // output flood waits behind these. Logged on the input-order target (which the real-app
+    // harness captures) only when the wait is long enough to matter for the 2 ms key budgets.
+    if drawable_wait_ns >= DRAWABLE_WAIT_LOG_NS {
+        warpui_core::input_order::log_hop("drawable_wait", || {
+            format!(
+                "wait_ms={:.2} key_frame={}",
+                drawable_wait_ns as f64 / 1_000_000.0,
+                key_to_presented_ns > 0
+            )
+        });
+    }
     log::debug!(
         "frame presented={presented} key_to_presented_ms={key_ms:?} drawable_wait_ms={wait_ms}"
     );

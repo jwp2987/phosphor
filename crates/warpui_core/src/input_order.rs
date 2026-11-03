@@ -318,6 +318,26 @@ pub fn log_enter(layer: &str, stage: &str, detail: impl FnOnce() -> String) {
     }
 }
 
+/// `input_order hop=os_key_event age_ms=0.412 enter=false ctrl=true t=...` (#1606): how long a
+/// key-down waited between the OS stamping it (the event's own timestamp) and the app dequeuing
+/// it on the main thread. A main thread busy rendering (a flood's frames blocking in
+/// `nextDrawable`) shows up here as a large age. Flags only, never the key itself (typed text
+/// can be a password); Enter and Control are named because the latency split needs them.
+fn os_key_event_line(age_ms: f64, enter: bool, ctrl: bool) -> String {
+    hop_line(
+        "os_key_event",
+        &format!("age_ms={age_ms:.3} enter={enter} ctrl={ctrl}"),
+    )
+}
+
+/// Logs a key-down's OS-to-app queueing age (#1606); see [`os_key_event_line`]. A negative or
+/// absurd age (clock mismatch) is logged as it is: the harness filters, the app never guesses.
+pub fn log_os_key_event(age_ms: f64, enter: bool, ctrl: bool) {
+    if enabled() {
+        log::debug!(target: TARGET, "{}", os_key_event_line(age_ms, enter, ctrl));
+    }
+}
+
 /// Logs the first pty output read after user input was written, `since_write` after the write,
 /// and arms [`log_frame_if_pty_output_pending`] for the frame that should show it.
 pub fn log_pty_read_after_write(bytes: usize, since_write: Duration) {
@@ -435,6 +455,16 @@ mod tests {
         let line = preexec_line();
         assert!(
             line.starts_with("input_order hop=preexec_received signal=preexec t="),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn the_os_key_event_line_carries_the_age_and_flags_only() {
+        // script/realapp/appci/cases.py os_key_ages matches `hop=os_key_event age_ms=`.
+        let line = os_key_event_line(0.4126, true, false);
+        assert!(
+            line.starts_with("input_order hop=os_key_event age_ms=0.413 enter=true ctrl=false t="),
             "{line}"
         );
     }
