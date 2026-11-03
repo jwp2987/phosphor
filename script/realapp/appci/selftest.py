@@ -407,6 +407,45 @@ def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
     assert sent.count("ctrl+c") == 1 and sent.count("ctrl+u") == 2, sent
 
 
+@check
+def idle_schedule_and_loss_bound():
+    import lat
+    sch = lat.idle_schedule([1.0, 2.0, 5.0], 30, 10, 3)
+    for g in (1.0, 2.0, 5.0):
+        for side in ("phosphor", "reference"):
+            rows = [x for x in sch if x[0] == g and x[1] == side]
+            assert sum(c - d for _, _, c, d in rows) == 30 and sum(d for *_, d in rows) == 3 and rows[0][3] == 3, (g, side, rows)
+    assert sch[0][1] == "phosphor" and [x for x in sch if x[0] == 2.0][0][1] == "reference"      # the side that goes first alternates per gap
+    assert all(a[1] != b[1] for a, b in zip([x for x in sch if x[0] == 1.0], [x for x in sch if x[0] == 1.0][1:]))      # A/B/A/B blocks
+    assert {x[1] for x in lat.idle_schedule([1.0], 30, 10, 3, two_sided=False)} == {"phosphor"}
+    assert abs(lat.loss_rate_bound(0, 40) - 0.0722) < 0.001 and abs(lat.loss_rate_bound(1, 40) - 0.1132) < 0.001   # 95 % one-sided Clopper-Pearson
+    assert lat.loss_rate_bound(40, 40) == 1.0 and lat.loss_rate_bound(0, 0) is None
+    assert lat.trials_to_exclude(1 / 40) == 119
+
+
+@check
+def keydown_audit_counts_plain_keys_and_flags_doubles():
+    ln = lambda k, t, ctrl="false", shift="false": "input_order keydown key=%s ctrl=%s alt=false shift=%s cmd=false t=%s seq=1\n" % (k, ctrl, shift, t)
+    ok = ln("g", 1000.0) + ln("i", 1020.5) + ln("t", 1041.0) + ln("Shift", 1050.0, shift="true") + ln("c", 1060.0, ctrl="true") + ln("Enter", 1080.0)
+    a = cases.keydown_audit("junk\n" + ok)
+    assert a["count"] == 4 and a["dups"] == [], a            # ctrl press and the bare Shift are not typed keys
+    d = cases.keydown_audit(ln("a", 1000.0) + ln("a", 1000.4) + ln("b", 1030.0) + ln("b", 1060.0))   # 0.4 ms apart = the #1159 signature; 30 ms apart = a real repeat
+    assert d["count"] == 4 and d["dups"] == [("a", 1000.4, 0.4)], d
+
+
+@check
+def ssh_trial_plan_and_loss_report():
+    assert cases.ssh_trial_plan(cases.SSH_GAPS, 3) == [(g, 3) for g in cases.SSH_GAPS]      # default: 12 trials
+    assert cases.ssh_trial_plan(cases.SSH_GAPS, 3, 40) == [(g, 10) for g in cases.SSH_GAPS]
+    p = cases.ssh_trial_plan(cases.SSH_GAPS, 3, 42)
+    assert sum(t for _, t in p) == 42 and [t for _, t in p] == [11, 11, 10, 10]
+    z = cases.loss_report(0, 40)
+    assert z["upper_bound"] == 0.0722 and "needs 119 clean trials" in z["text"], z
+    o = cases.loss_report(1, 40)
+    assert o["rate"] == 0.025 and o["upper_bound"] > 0.11
+    assert cases.loss_report(0, 150)["upper_bound"] < 0.025 and "needs" not in cases.loss_report(0, 150)["text"]
+
+
 def main():
     failed = 0
     for f in CHECKS:

@@ -1296,11 +1296,33 @@ def c_alt(ctx, r):
 
 
 # ---------------------------------------------------------------- ssh (local server)
+SSH_GAPS = (0.0, 0.1, 0.2, 0.3)
+
+
+def ssh_trial_plan(gaps, per_gap, total=0):
+    """#1127: -> [(gap, trials)]. `total` (--ssh-trials / APPCI_SSH_TOTAL_TRIALS) spreads that many trials over the gaps (the first `total % len` gaps get one more);
+    else `per_gap` trials at every gap (APPCI_SSH_TRIALS, default 3 = 12 trials)."""
+    if total and total > 0:
+        base, extra = divmod(total, len(gaps))
+        return [(g, base + (1 if i < extra else 0)) for i, g in enumerate(gaps)]
+    return [(g, per_gap) for g in gaps]
+
+
+def loss_report(lost, n, conf=0.95):
+    """#1127: observed loss rate and its one-sided upper confidence bound, and how many clean trials a 1/40 rate would need to be excluded"""
+    ub = lat.loss_rate_bound(lost, n, conf)
+    need = lat.trials_to_exclude(1 / 40.0, conf)
+    text = ("%d of %d typed-ahead commands lost (observed %.1f %%); %d %% upper confidence bound %.1f %%%s" % (
+        lost, n, 100.0 * lost / n if n else 0.0, int(conf * 100), 100.0 * ub if ub is not None else float("nan"),
+        "" if ub is None or ub < 1 / 40.0 else "; this n cannot exclude a 1/40 (2.5 %%) rate: needs %d clean trials" % need))
+    return dict(lost=lost, n=n, rate=round(lost / n, 4) if n else None, upper_bound=round(ub, 4) if ub is not None else None, conf=conf, text=text)
+
+
 @case("ssh_connect_typing", order=30)
 def c_ssh(ctx, r):
     if not ctx.ssh:
         r.skip(ctx.ssh_why or "no local ssh server (needs /usr/sbin/sshd + ssh-keygen, or python3-paramiko for fakesshd.py)")
-    trials = int(os.environ.get("APPCI_SSH_TRIALS", "3"))
+    plan = ssh_trial_plan(SSH_GAPS, int(os.environ.get("APPCI_SSH_TRIALS", "3")), int(os.environ.get("APPCI_SSH_TOTAL_TRIALS", "0") or 0))
     ctx.rm("rl.txt")
     for f in ("rl.txt",):
         try:
@@ -1308,7 +1330,7 @@ def c_ssh(ctx, r):
         except FileNotFoundError:
             pass
     exp, miss, base, stop = [], 0, ctx.shell_count(), False
-    for gap in (0.0, 0.1, 0.2, 0.3):
+    for gap, trials in plan:
         for i in range(trials):
             tok = ctx.tok(6)
             exp.append(tok)
@@ -1324,6 +1346,9 @@ def c_ssh(ctx, r):
             break
     got = ctx.lines("rl.txt", remote=True)
     r.metric("trials", len(exp))
+    lost = sum(1 for t in exp if t not in got)
+    r.metric("loss", loss_report(lost, len(exp)))
+    r.note("ssh_connect_typing loss: " + loss_report(lost, len(exp))["text"])
     r.check(got == exp, "remote shell received %d/%d typed-ahead commands exactly (missing %d)" % (sum(1 for t in exp if t in got), len(exp), miss))
     r.check(not ctx.local_lines("rl.txt"), "typed-ahead command ran LOCALLY: %r" % ctx.local_lines("rl.txt"))
     rem = [c for _, c in ctx.prof.commands(remote=True)]
@@ -2010,6 +2035,18 @@ def c_lat_key(ctx, r):
 KL3_QUANTUM_MS = 1000.0 / 240.0      # ScreenCaptureKit frame times at 240 Hz: 4.17 ms against a 2 ms budget, so a pass cannot be claimed (#1514)
 
 
+def kl_paint_ms(out):
+    """one kl3 `K` answer line -> ms from the key post to the first changed pixel, or None when kl3 saw no change"""
+    m0 = re.search(r"post0=([\d.]+)", out)
+    ch = [float(x.split(":")[0]) for x in (re.search(r"ch=(\S*)", out).group(1) if re.search(r"ch=(\S*)", out) else "").split(",") if x]
+    if m0 and ch:
+        t0 = float(m0.group(1))
+        after = [c for c in ch if c >= t0 - 1]
+        if after:
+            return min(after) - t0
+    return None
+
+
 def paint_samples(ctx, rect, n):
     """n x (post 'm' or Delete through kl3, ScreenCaptureKit 240 Hz) -> key->first-changed-pixel ms in the window at `rect`.
     The same call for Phosphor and the reference terminal. Alternates 'm' and Delete so every key changes the screen."""
@@ -2017,14 +2054,9 @@ def paint_samples(ctx, rect, n):
     ctx.be.kl_start(rect)
     try:
         for i in range(n):
-            out = ctx.be.kl("K 400 %s" % ("m" if i % 2 == 0 else "DEL"))
-            m0 = re.search(r"post0=([\d.]+)", out)
-            ch = [float(x.split(":")[0]) for x in (re.search(r"ch=(\S*)", out).group(1) if re.search(r"ch=(\S*)", out) else "").split(",") if x]
-            if m0 and ch:
-                t0 = float(m0.group(1))
-                after = [c for c in ch if c >= t0 - 1]
-                if after:
-                    ds.append(min(after) - t0)
+            d = kl_paint_ms(ctx.be.kl("K 400 %s" % ("m" if i % 2 == 0 else "DEL")))
+            if d is not None:
+                ds.append(d)
     finally:
         ctx.be.kl_stop()
     return ds
@@ -2082,6 +2114,209 @@ def c_lat_paint(ctx, r):
         lat_checks(r, rec, "Key to paint")
         if not rs:
             r.check(statistics.median(ds) <= 120, "key->paint median %.1f ms > 120 ms sanity bound (no reference measured)" % statistics.median(ds))
+
+
+# ---------------------------------------------------------------- keydown count == keys sent (#1159)
+KEYDOWN_KEY_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false) t=(\d+(?:\.\d+)?)")
+MODIFIER_KEYS = {"shift", "control", "ctrl", "alt", "option", "meta", "super", "command", "cmd", "capslock", "fn"}
+
+
+def keydown_audit(txt, dup_ms=2.0):
+    """#1159: the app log's own count of plain key presses. -> dict(count, dups): `count` = `input_order keydown` lines without ctrl/alt/cmd and not for a
+    bare modifier key (Shift of a capital is not a typed key); `dups` = [(key, t_ms, dt_ms)] consecutive presses of the SAME key less than `dup_ms`
+    apart (the #1159 signature: the extra keydown arrived ~0.4 ms after the real one; a human or injector at >= 12 ms/key never repeats a key that fast)."""
+    ks = []
+    for m in KEYDOWN_KEY_RE.finditer(txt):
+        key, ctrl, alt, _shift, cmd, t = m.groups()
+        if ctrl == "true" or alt == "true" or cmd == "true" or key.lower() in MODIFIER_KEYS:
+            continue
+        ks.append((key, float(t)))
+    dups = [(k2, t2, round(t2 - t1, 2)) for (k1, t1), (k2, t2) in zip(ks, ks[1:]) if k1 == k2 and 0 <= t2 - t1 < dup_ms]
+    return dict(count=len(ks), dups=dups)
+
+
+@case("keydown_count", order=14, gui=True)
+def c_keydown_count(ctx, r):
+    """#1159: N known lines typed at 12-30 ms/key (alternating plain typing and the injector's rollover, where it has one: ctx.be.roll = overlapping key-down/key-up on
+    macOS htype2 `r:`, the backend's own approximation elsewhere), then (1) the number of plain `input_order keydown` lines in the app log must equal the keys sent (every
+    character plus Enter), with no same-key repeat < 2 ms apart, and (2) the shell must have received every line exactly (effect file; rec.log where the pane has one).
+    Full tier only. A doubled keydown is an app/OS-delivery fault; a SHORT count with exact text would mean logging missed a key, a short count with wrong text is key loss."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.skip("no app log at %s (set APPCI_APP_LOG): the keydown count is read from the app's input_order log" % ctx.log_path)
+    shell = ctx.pane_shell()
+    fname = "kd.txt"
+    ctx.rm(fname)
+    n = ctx.count(20)
+    ctx.reset()
+    time.sleep(0.5)
+    mark = ctx.cmd_mark()
+    off = ctx.log_size()
+    exp, cmds, sent, how = [], [], 0, {"roll": 0, "type": 0}
+    for i in range(n):
+        tok = "".join(ctx.rng.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(12))
+        cmd = ctx.append_cmd(shell, tok, fname)
+        exp.append(tok)
+        cmds.append(cmd)
+        gap = ctx.rng.randint(12, 30)
+        if i % 2:
+            ctx.be.roll(cmd, overlap_ms=gap, enter=True)
+            how["roll"] += 1
+        else:
+            ctx.be.type(cmd, gap, enter=True)
+            how["type"] += 1
+        sent += len(cmd) + 1
+        time.sleep(ctx.rng.choice([0.05, 0.2]))
+    ctx.until(lambda: len(ctx.lines(fname)) >= n, 20 + n * 0.5)
+    time.sleep(1.0)
+    got = ctx.lines(fname)
+    aud = keydown_audit(ctx.log_since(off))
+    r.metric("keys_sent", sent)
+    r.metric("keydowns_logged", aud["count"])
+    r.metric("injection", how)
+    if aud["count"] == 0:
+        r.check(False, "no `input_order keydown` line at all in %s for %d keys sent: input_order logging off, wrong log path, or the keys never reached the app" % (ctx.log_path, sent))
+        return
+    r.check(aud["count"] == sent, "keydown count %d != keys sent %d (%+d): %s" % (aud["count"], sent, aud["count"] - sent,
+            "EXTRA keydowns (the #1159 doubled-delivery signature)" if aud["count"] > sent else "keydowns missing from the app log (lost before the app, or not logged)"))
+    r.check(not aud["dups"], "same key pressed twice < 2 ms apart %d time(s): %s" % (len(aud["dups"]), aud["dups"][:5]))
+    r.check(got == exp, "received text not exact: %d/%d lines; first mismatch %s" % (
+        len(got), n, next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))
+    if ctx.prof.commands():
+        have = ctx.cmds_since(mark)
+        r.check(have == cmds, "shell rec.log: %d/%d commands exact; first mismatch %s" % (
+            sum(1 for a, b in zip(cmds, have) if a == b), n, next(((a, b) for a, b in zip(cmds + [None], have + [None]) if a != b), None)))
+
+
+# ---------------------------------------------------------------- first key after idle (#1160)
+IDLE_GAPS = (1.0, 2.0, 5.0)
+IDLE_BLOCK = 10      # samples per side before the A/B order flips (macOS: a focus switch between Phosphor and Terminal.app costs ~1 s, so not per sample)
+
+
+def idle_key_budget_ms():
+    return float(os.environ.get("APPCI_IDLE_KEY_BUDGET_MS", "4"))
+
+
+def idle_paint_block(ctx, rect, gap, count):
+    """macOS: `count` x (sleep `gap` s with no input, then ONE key through kl3) -> key->first-changed-pixel ms of that first key alone"""
+    ds = []
+    ctx.be.kl_start(rect)
+    try:
+        for i in range(count):
+            time.sleep(gap)
+            d = kl_paint_ms(ctx.be.kl("K 400 %s" % ("m" if i % 2 == 0 else "DEL")))
+            if d is not None:
+                ds.append(d)
+    finally:
+        ctx.be.kl_stop()
+    return ds
+
+
+def idle_log_block(ctx, gap, count):
+    """Linux / Windows Git Bash: `count` x (sleep `gap`, one key, 0.3 s later a second key) typed into a running `cat > /dev/null` -> (first-key, second-key)
+    key->first-frame ms from the app's input_order log. The second key (0.3 s after the first, no idle) is the in-app control."""
+    ctx.be.type("cat > /dev/null", 10, enter=True)
+    time.sleep(1.0)
+    first, second = [], []
+    off = ctx.log_size()
+    try:
+        for i in range(count + 1):
+            if i:       # the previous sample's two keys are in the log by now
+                ds, _ = key_frame_pairs(ctx.log_since(off))
+                if len(ds) >= 2:
+                    first.append(ds[0]); second.append(ds[1])
+            if i == count:
+                break
+            time.sleep(gap)
+            off = ctx.log_size()
+            ctx.be.type("m", 10)
+            time.sleep(0.3)
+            ctx.be.type("m", 10)
+    finally:
+        time.sleep(0.5)
+        ctx.reset()
+    return first, second
+
+
+@case("latency_first_key_after_idle", order=44, gui=True)
+def c_lat_first_key_idle(ctx, r):
+    """#1160: the FIRST key after an idle gap of 1, 2 and 5 s, measured alone (full tier only; ~9 min on macOS). n = ctx.count_lat(30) kept samples per gap (never < 30),
+    a few discarded warm-up samples per side and gap.
+    macOS: key -> first changed pixel (kl3, 240 Hz) for Phosphor AND Terminal.app in the same session, A/B by blocks of 10 samples (the side that goes first
+    alternates per gap); the verdict per gap is lat.evaluate on OVERHEAD (Phosphor median - Terminal.app median) against APPCI_IDLE_KEY_BUDGET_MS (4 ms, the
+    issue's 'next refresh + 4 ms'), SE-aware PASS / FAIL / INCONCLUSIVE. Other platforms: no paint read-back, so key -> first frame from the app log, and
+    the control is the SAME session's second key (0.3 s after the first, not idle): the verdict is the idle penalty (first - second median) against the
+    same budget. Not interleaved per sample: a macOS focus switch between the two windows is itself an activation, so it happens between blocks."""
+    mac = ctx.be.name == "mac" and hasattr(ctx.be, "kl_start")
+    n, warm = ctx.count_lat(30), lat.warmup()
+    budget = idle_key_budget_ms()
+    if not mac:
+        if not ctx.log_path or not os.path.exists(ctx.log_path):
+            r.skip("no app log at %s (set APPCI_APP_LOG): key -> frame is read from the app's input_order log" % ctx.log_path)
+        for g in IDLE_GAPS:
+            first, second = [], []
+            for gap, _side, cnt, disc in lat.idle_schedule([g], n, block=n, warm=warm, two_sided=False):
+                a, b = idle_log_block(ctx, gap, cnt)
+                first += a[disc:]
+                second += b[disc:]
+            tag = "gap%gs" % g
+            r.metric("first_key_" + tag, stats(first))
+            r.metric("second_key_" + tag, stats(second))
+            r.check(len(first) >= 0.9 * n, "idle %g s: only %d of %d first-key key->frame pairs in the app log (keys not reaching the `cat`, or no input_order logging)" % (g, len(first), n))
+            if len(first) >= 2:
+                rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), first, second, budget, "overhead", plat(), ref_name="second key 0.3 s later (same session)",
+                                   expected=n, notes=["key -> first frame from the app's input_order log (Phosphor-side); the control is the following non-idle key, so the figure is the idle penalty, not an overhead vs another terminal"])
+                r.metrics.setdefault("lat", {})[tag] = rec
+                lat_checks(r, rec, "First key after %g s idle" % g)
+        return
+    rect = ctx.be.window_rect()
+    if not rect or rect[2] < 100:
+        r.skip("no Phosphor window rect")
+    ctx.be.guard()
+    ref = ref_terminal(ctx)
+    rrect = None
+
+    def close_ref():
+        ctx.be.guard_override = "Terminal"          # RefTerm.close types `exit` under the guard: it must be aimed at Terminal.app, never Phosphor
+        ctx.be._focus_pid(pid_of("Terminal"))
+        ref.close()
+    if ref:
+        time.sleep(2.5)
+        rrect = ctx.be.window_rect(pid=pid_of("Terminal"))
+        if not rrect or rrect[2] < 100:
+            r.note("no reference: absolute only (first key after idle): no Terminal.app window rect")
+            close_ref()
+            ref, rrect = None, None
+    else:
+        r.note("no reference: absolute only (first key after idle): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
+    ph, rs = {g: [] for g in IDLE_GAPS}, {g: [] for g in IDLE_GAPS}
+    try:
+        for g, side, cnt, disc in lat.idle_schedule(IDLE_GAPS, n, IDLE_BLOCK, warm, two_sided=bool(ref)):
+            if side == "reference":
+                ctx.be.guard_override = "Terminal"
+                ctx.be._focus_pid(pid_of("Terminal"))
+                rs[g] += idle_paint_block(ctx, rrect, g, cnt)[disc:]
+            else:
+                ctx.be.guard_override = None
+                ctx.be.refocus()
+                ph[g] += idle_paint_block(ctx, rect, g, cnt)[disc:]
+            ctx.reset()
+    finally:
+        if ref:
+            close_ref()
+    for g in IDLE_GAPS:
+        tag = "gap%gs" % g
+        r.metric("first_key_paint_" + tag, stats(ph[g]))
+        if ref:
+            r.metric("reference_first_key_paint_" + tag, stats(rs[g]))
+        r.check(len(ph[g]) >= 0.9 * n, "idle %g s: only %d of %d first-key key->paint samples from kl3" % (g, len(ph[g]), n))
+        if ph[g]:
+            rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), ph[g], rs[g] if ref else [], budget, "overhead", plat(),
+                               ref_name=ref.name if ref and rs[g] else None, floor=ctx.be.key_floor_ms, expected=n,
+                               pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
+                               notes=["first key after %g s idle, kl3 post-to-first-changed-pixel at 240 Hz (%.2f ms quantum, not applied as a resolution veto: the SE of the median difference is); "
+                                      "Phosphor and Terminal.app in blocks of %d, the first side alternating per gap" % (g, KL3_QUANTUM_MS, IDLE_BLOCK)])
+            r.metrics.setdefault("lat", {})[tag] = rec
+            lat_checks(r, rec, "First key after %g s idle" % g)
 
 
 # ---------------------------------------------------------------- agent
