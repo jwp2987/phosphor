@@ -1102,6 +1102,23 @@ fn redacted_tool_kind_for_tool_call(tool_call: &api::message::ToolCall) -> Redac
 /// huge result gets "detoxified" at this layer and can keep being used.
 const MAX_TOOL_RESPONSE_CHARS: usize = 40_000;
 
+/// Like [`cap_tool_response_content`], but a grep result (local or remote -- both arrive as
+/// `tool_call_result::Result::Grep`) is exempt (#1278, owner: "there shouldn't be a cap on
+/// grep"). The slice cut grep JSON mid-record, so the model saw a broken list. The full
+/// result is sent; no new limit is added here. If it is larger than the provider's context
+/// window the provider rejects the request with its own error rather than this layer
+/// silently dropping matches. (Upstream of here the remote protocol still bounds a single
+/// RunCommand response at ~64 MB; nothing in this layer does.)
+fn cap_tool_result_for(
+    inner: Option<&api::message::tool_call_result::Result>,
+    content: String,
+) -> String {
+    if matches!(inner, Some(api::message::tool_call_result::Result::Grep(_))) {
+        return content;
+    }
+    cap_tool_response_content(content)
+}
+
 fn cap_tool_response_content(content: String) -> String {
     // Byte count >= char count, so short-circuit first on the cheap byte length.
     if content.len() <= MAX_TOOL_RESPONSE_CHARS {
@@ -2702,7 +2719,7 @@ fn build_chat_request_unredacted(
                 };
                 messages.push(ChatMessage::from(ToolResponse::new(
                     tcr.tool_call_id.clone(),
-                    cap_tool_response_content(content),
+                    cap_tool_result_for(tcr.result.as_ref(), content),
                 )));
             }
             _ => {
@@ -2849,7 +2866,7 @@ fn build_chat_request_unredacted(
                 });
                 messages.push(ChatMessage::from(ToolResponse::new(
                     tool_call_id,
-                    cap_tool_response_content(content),
+                    cap_tool_result_for(msg_side.as_ref(), content),
                 )));
             }
             AIAgentInput::InvokeSkill {
@@ -17994,5 +18011,27 @@ mod outbound_redaction_chat_tests {
             overflow: false,
         }];
         assert!(!wire(&params).contains(SECRET));
+    }
+}
+
+#[cfg(test)]
+mod grep_uncapped_tests {
+    use super::*;
+
+    /// #1278: a grep result above the generic 40,000-char slice reaches the model whole;
+    /// any other tool's result of the same size is still sliced.
+    #[test]
+    fn grep_result_over_the_generic_cap_is_not_sliced() {
+        let big = "x".repeat(MAX_TOOL_RESPONSE_CHARS * 3);
+        let grep = api::message::tool_call_result::Result::Grep(api::GrepResult { result: None });
+        let out = cap_tool_result_for(Some(&grep), big.clone());
+        assert_eq!(out, big);
+
+        let other =
+            api::message::tool_call_result::Result::RequestComputerUseResult(Default::default());
+        let out = cap_tool_result_for(Some(&other), big.clone());
+        assert!(out.contains("tool output truncated"));
+        assert!(out.len() < big.len());
+        assert!(cap_tool_result_for(None, big.clone()).contains("tool output truncated"));
     }
 }
