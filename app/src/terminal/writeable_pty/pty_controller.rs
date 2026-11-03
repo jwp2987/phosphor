@@ -387,8 +387,25 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
                 me.file_insert_pending = None;
             }
-            ModelEvent::CommandFileFailed { .. } => {
+            ModelEvent::CommandFileFailed { session_id } => {
+                let active = me
+                    .model_event_dispatcher
+                    .as_ref(ctx)
+                    .active_session_id()
+                    .map(|id| id.as_u64());
+                if active != Some(session_id.as_u64()) {
+                    log::warn!(
+                        "CommandFileFailed for session {} while the active session is {:?}; retyping anyway",
+                        session_id.as_u64(),
+                        active
+                    );
+                }
                 me.on_command_file_failed(ctx);
+            }
+            // The shell is back at a prompt and never ran the inserted command (no Preexec came):
+            // nothing else will report it, so type it once (#1581).
+            ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                me.on_precmd_with_chord_outstanding(ctx);
             }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
                 me.tmux_control_mode = Some(TmuxControlMode::Pending {
@@ -2182,6 +2199,14 @@ impl<T: EventLoopSender> PtyController<T> {
             ctx,
         );
         self.force_typed_command = false;
+    }
+
+    /// A Precmd while a chord is outstanding means no Preexec came (it clears the chord): retype.
+    fn on_precmd_with_chord_outstanding(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.file_insert_pending.is_some() {
+            warpui::input_order::log_hop("pwsh_precmd_without_preexec", String::new);
+            self.on_command_file_failed(ctx);
+        }
     }
 
     /// Forgets an outstanding insert chord whose write was refused before it reached the pty.

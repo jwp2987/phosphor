@@ -3907,12 +3907,11 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn command_file_failed(&mut self, data: CommandFileFailedValue) {
-        if let Some(session_id) = data.session_id {
-            self.event_proxy
-                .send_terminal_event(Event::CommandFileFailed {
-                    session_id: SessionId::from(session_id),
-                });
-        }
+        // Sent whatever the id says (#1581): the controller owns the outstanding chord.
+        self.event_proxy
+            .send_terminal_event(Event::CommandFileFailed {
+                session_id: SessionId::from(data.session_id.unwrap_or_default()),
+            });
     }
 
     fn exit_shell(&mut self, data: ExitShellValue) {

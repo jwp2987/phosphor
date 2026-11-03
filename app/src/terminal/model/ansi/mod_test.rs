@@ -2030,3 +2030,17 @@ fn parse_dcs_command_file_failed_carries_the_session() {
         other => panic!("unexpected hooks {other:?}"),
     }
 }
+
+/// #1581: the failure report is not dropped for a session id the app did not register, or the
+/// command it reports would be lost; the pty controller retypes for its outstanding chord.
+#[test]
+fn command_file_failed_is_delivered_for_an_unregistered_session() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook":"CommandFileFailed","value":{"session_id":99}}"#,
+    );
+    let (_, handler) = parse_bytes_with_registered_sessions(&bytes, [SessionId::from(7)]);
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::CommandFileFailed { .. }]
+    ));
+}

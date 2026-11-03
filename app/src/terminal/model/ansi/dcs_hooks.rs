@@ -210,12 +210,15 @@ impl DProtoHook {
             | DProtoHook::ExitShell { .. }
             | DProtoHook::LineEditorReading { .. }
             | DProtoHook::ContinuationPrompt { .. }
-            | DProtoHook::CommandFileFailed { .. }
             | DProtoHook::InitSsh { .. }
             | DProtoHook::RemoteWarpificationIsUnavailable { .. }
             | DProtoHook::SshTmuxInstaller { .. }
             | DProtoHook::TmuxInstallFailed { .. } => true,
             DProtoHook::SourcedRcFileForWarp { .. } => false,
+            // Never dropped for its session id (#1581): the failure report must reach the pty
+            // controller even if the shell's id is not the one the app registered, or the command
+            // would be lost. The controller retypes for whatever chord it has outstanding.
+            DProtoHook::CommandFileFailed { .. } => false,
         }
     }
 

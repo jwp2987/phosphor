@@ -274,3 +274,31 @@ fn a_refused_write_leaves_no_outstanding_chord() {
         });
     });
 }
+
+#[test]
+fn a_precmd_without_a_preexec_retypes_once_and_a_preexec_first_retypes_nothing() {
+    App::test((), |mut app| async move {
+        let rig = rig(&mut app, 9_100_009, true);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+            controller.on_precmd_with_chord_outstanding(ctx);
+            // A second Precmd has nothing outstanding.
+            controller.on_precmd_with_chord_outstanding(ctx);
+        });
+        {
+            let messages = rig.sender.messages.lock();
+            assert_eq!(messages.len(), 3, "chord, then one typed retype");
+            assert_eq!(payload(&messages[1]), b"\x1b2".to_vec());
+            assert_eq!(payload(&messages[2]), typed_bytes("Get-Date")[2..].to_vec());
+        }
+
+        // Normal flow: Preexec clears the chord, the Precmd after the command retypes nothing.
+        let normal = self::rig(&mut app, 9_100_010, true);
+        normal.controller.update(&mut app, |controller, ctx| {
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+            controller.file_insert_pending = None; // what the Preexec subscription does
+            controller.on_precmd_with_chord_outstanding(ctx);
+        });
+        assert_eq!(normal.sender.messages.lock().len(), 1);
+    });
+}
