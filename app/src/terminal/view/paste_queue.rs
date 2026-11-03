@@ -2735,7 +2735,7 @@ impl TerminalView {
                         then,
                     });
                 }
-                let held = self.ssh_drop_detached(gate, &paste_ids);
+                let held = self.ssh_drop_detached(gate, &paste_ids, Some(&mut *ctx));
                 self.finish_dropped_ssh_gate(held, then, ctx);
             }
             Deferred::FlushProgrammaticEdits => {
