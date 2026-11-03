@@ -17,16 +17,50 @@ use std::{collections::HashMap, path::PathBuf};
 use warp_util::path::LineAndColumnArg;
 
 lazy_static! {
-    /// Markdown prefix for code blocks. Matches on triple backticks followed by a language.
-    /// Importantly, parameters for linked code blocks are captured into their own group.
-    static ref CODE_START_REGEX: Regex = Regex::new(r"^\s*```([\w+-]*)(.*)$").expect("Regex is valid");
-
-    /// Markdown suffix for code blocks.
-    static ref CODE_END_REGEX: Regex = Regex::new(r"^\s*```\s*$").expect("Regex is valid");
-
     /// Extracts key-value parameters from text in the format: key=value, used for code block metadata.
     /// Expects to match on text with format path=/path/to/file start=<line_number>
     static ref CODE_PARAMS_REGEX: Regex = Regex::new(r"(\w+)=([^\s]+)").expect("Regex is valid");
+}
+
+/// An open code fence: the fence character (`` ` `` or `~`), the length of the opening run and
+/// the opening line's indentation. The same rules as the Markdown parser's fenced blocks: three
+/// or more fence characters, closed by a line of the same character at least as long.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FenceSpec {
+    ch: char,
+    len: usize,
+    indent: usize,
+}
+
+/// Reads a fence opener: its spec, the language token (the leading `[\w+-]*` of the info
+/// string) and the rest of the info string (code block parameters).
+fn parse_fence_open(line: &str) -> Option<(FenceSpec, &str, &str)> {
+    let trimmed = line.trim_start();
+    let ch = trimmed.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let len = trimmed.chars().take_while(|c| *c == ch).count();
+    if len < 3 {
+        return None;
+    }
+    let indent = line.len() - trimmed.len();
+    let info = &trimmed[len..];
+    let language_len = info
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '+' || c == '-'))
+        .unwrap_or(info.len());
+    let (language, params) = info.split_at(language_len);
+    Some((FenceSpec { ch, len, indent }, language, params))
+}
+
+fn is_fence_open(line: &str) -> bool {
+    parse_fence_open(line).is_some()
+}
+
+/// Whether `line` closes `fence`: only the same character, at least as many times as the
+/// opening, nothing but whitespace after, indented less than 4 columns past the opener.
+fn is_fence_close(line: &str, fence: FenceSpec) -> bool {
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+    let run = trimmed.chars().take_while(|c| *c == fence.ch).count();
+    run >= fence.len && trimmed[run..].trim().is_empty() && indent.saturating_sub(fence.indent) < 4
 }
 
 /// Converts the given `markdown_text` into corresponding `Text` and `Code` `AIAgentOutputStep`s.
@@ -41,9 +75,9 @@ pub(super) fn parse_markdown_into_text_and_code_sections(
         match &mut current_section {
             CurrentSection::PlainText(text) => {
                 // Detect tables and render them as formatted table sections.
-                if let Some(table_lines) = maybe_collect_gfm_table_lines(line, &mut lines, |l| {
-                    CODE_START_REGEX.is_match(l)
-                }) {
+                if let Some(table_lines) =
+                    maybe_collect_gfm_table_lines(line, &mut lines, |l| is_fence_open(l))
+                {
                     let markdown_source = table_lines.join("\n");
                     let table_section = if FeatureFlag::BlocklistMarkdownTableRendering.is_enabled()
                     {
@@ -69,16 +103,14 @@ pub(super) fn parse_markdown_into_text_and_code_sections(
                     continue;
                 }
 
-                if let Some((_, [language, param_str])) = CODE_START_REGEX
-                    .captures(line)
-                    .map(|capture_group| capture_group.extract())
-                {
+                if let Some((fence, language, param_str)) = parse_fence_open(line) {
                     if !text.is_empty() {
                         flush_plain_text_sections(text, &mut sections);
                     }
 
                     let source = code_source_from_params(param_str);
                     current_section = CurrentSection::Code {
+                        fence,
                         code: String::new(),
                         language_token: Some(language.to_owned()).filter(|l| !l.is_empty()),
                         language: Some(language)
@@ -94,12 +126,13 @@ pub(super) fn parse_markdown_into_text_and_code_sections(
                 }
             }
             CurrentSection::Code {
+                fence,
                 code,
                 language,
                 language_token,
                 source,
             } => {
-                if CODE_END_REGEX.is_match(line) {
+                if is_fence_close(line, *fence) {
                     if !code.is_empty() {
                         push_closed_code_section(
                             std::mem::take(code),
@@ -129,6 +162,7 @@ pub(super) fn parse_markdown_into_text_and_code_sections(
             language,
             language_token,
             source,
+            ..
         } => {
             push_code_or_mermaid_section(
                 code,
@@ -226,6 +260,7 @@ fn parse_agent_output_table(markdown_source: &str) -> Option<AgentOutputTable> {
 enum CurrentSection {
     PlainText(String),
     Code {
+        fence: FenceSpec,
         code: String,
         language_token: Option<String>,
         language: Option<ProgrammingLanguage>,
@@ -405,6 +440,7 @@ struct CommittedPlain {
 /// right after the final sections.
 #[derive(Debug, Clone)]
 struct CommittedCode {
+    fence: FenceSpec,
     code_len: usize,
     language_token: Option<String>,
     language: Option<ProgrammingLanguage>,
@@ -445,6 +481,7 @@ impl OpenPiece {
 }
 
 struct WorkingCode {
+    fence: FenceSpec,
     code: String,
     language_token: Option<String>,
     language: Option<ProgrammingLanguage>,
@@ -534,9 +571,8 @@ impl IncrementalTextSections {
                 WorkingMode::Plain(plain) => {
                     let mut rest = lines[index + 1..].iter().copied().peekable();
                     let rest_before = rest.len();
-                    let table_lines = maybe_collect_gfm_table_lines(line, &mut rest, |l| {
-                        CODE_START_REGEX.is_match(l)
-                    });
+                    let table_lines =
+                        maybe_collect_gfm_table_lines(line, &mut rest, |l| is_fence_open(l));
                     // Lines the table detection took, including a separator row it consumed
                     // before rejecting the table — which the full conversion skips too.
                     consumed += rest_before - rest.len();
@@ -574,10 +610,7 @@ impl IncrementalTextSections {
                                 );
                             }
                         }
-                    } else if let Some((_, [language, param_str])) = CODE_START_REGEX
-                        .captures(line)
-                        .map(|capture_group| capture_group.extract())
-                    {
+                    } else if let Some((fence, language, param_str)) = parse_fence_open(line) {
                         if plain.buffer_nonempty {
                             let piece =
                                 std::mem::replace(&mut plain.piece, OpenPiece::new(next_piece_id));
@@ -585,6 +618,7 @@ impl IncrementalTextSections {
                             self.finish_piece(piece, sections, &mut pending);
                         }
                         next_mode = Some(WorkingMode::Code(WorkingCode {
+                            fence,
                             code: String::new(),
                             language_token: Some(language.to_owned()).filter(|l| !l.is_empty()),
                             language: Some(language)
@@ -603,7 +637,7 @@ impl IncrementalTextSections {
                     }
                 }
                 WorkingMode::Code(code) => {
-                    if CODE_END_REGEX.is_match(line) {
+                    if is_fence_close(line, code.fence) {
                         if !code.code.is_empty() {
                             push_closed_code_section(
                                 std::mem::take(&mut code.code),
@@ -650,6 +684,7 @@ impl IncrementalTextSections {
                                 piece_resume: plain.piece.resume.clone(),
                             }),
                             WorkingMode::Code(code) => CommittedMode::Code(CommittedCode {
+                                fence: code.fence,
                                 code_len: code.code.len(),
                                 language_token: code.language_token.clone(),
                                 language: code.language.clone(),
@@ -756,6 +791,7 @@ impl IncrementalTextSections {
                 }
                 code_text.truncate(code.code_len);
                 Some(WorkingMode::Code(WorkingCode {
+                    fence: code.fence,
                     code: code_text,
                     language_token: code.language_token.clone(),
                     language: code.language.clone(),
