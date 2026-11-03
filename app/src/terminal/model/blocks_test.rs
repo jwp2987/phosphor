@@ -553,6 +553,47 @@ fn test_deferred_restore_install_clears_stale_selection() {
     assert!(deferred.selection().is_some());
 }
 
+// A placeholder whose off-thread parse failed (panicked or produced no block) must stop being
+// "pending" when the failure lands, or a fork waits for it until the stall watchdog; it stays
+// blank and is marked failed so nothing saves it as the block's content (#1265).
+#[test]
+fn test_failed_deferred_restore_is_no_longer_pending_and_marked_failed() {
+    let restored_blocks = lazy_restore_test_blocks();
+    let mut deferred = TestBlockListBuilder::new()
+        .with_restored_blocks(&restored_blocks)
+        .with_lazy_restore_min_bytes(0)
+        .build();
+    let failed_id = deferred.blocks[1].id().clone();
+    // Replace the parsed result for block 1 with the outcome a panicking parse sends.
+    {
+        let mailbox = deferred
+            .deferred_restores
+            .as_ref()
+            .expect("every restored block was deferred");
+        let mut ready = mailbox.ready.lock().unwrap();
+        let slot = ready
+            .iter_mut()
+            .find(|(id, _)| id == &failed_id)
+            .expect("block 1 was parsed");
+        slot.1 = DeferredRestoreOutcome::Failed;
+    }
+    assert!(deferred.blocks[1].is_restore_pending());
+
+    assert!(deferred.install_ready_deferred_restores());
+    assert!(
+        deferred.blocks.iter().all(|b| !b.is_restore_pending()),
+        "a failed parse must not leave its placeholder pending"
+    );
+    assert!(deferred.blocks[1].is_restore_failed());
+    assert_eq!(deferred.blocks[1].output_to_string(), "");
+    assert!(!deferred.blocks[0].is_restore_failed());
+    assert!(!deferred.blocks[2].is_restore_failed());
+    // The failed block is not reported as installed content for a Find rescan.
+    let installed = deferred.take_installed_restore_blocks();
+    assert_eq!(installed.len(), restored_blocks.len() - 1);
+    assert!(!installed.contains(&BlockIndex(1)));
+}
+
 // Installing deferred content tells the view which blocks changed so an active Find can rescan
 // them (they were empty placeholders when it ran); the list is drained once (#1265).
 #[test]

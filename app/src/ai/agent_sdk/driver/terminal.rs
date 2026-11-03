@@ -232,7 +232,8 @@ impl TerminalDriver {
         model
             .block_list()
             .block_with_id(block_id)
-            .filter(|block| !block.is_restore_pending())
+            // A failed deferred restore is blank, not the block's content (#1265).
+            .filter(|block| !block.is_restore_pending() && !block.is_restore_failed())
             .map(SerializedBlock::from)
     }
 

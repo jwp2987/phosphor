@@ -1183,7 +1183,9 @@ impl TerminalView {
                 .block_list()
                 .blocks()
                 .iter()
-                .filter(|b| b.is_restored() && !b.is_background())
+                // A placeholder whose parse failed is blank: saving it would record an empty
+                // copy of the original block, so the fork leaves it out (#1265).
+                .filter(|b| b.is_restored() && !b.is_background() && !b.is_restore_failed())
                 .map(|b| (b.id().clone(), b.is_restore_pending()))
                 .collect::<Vec<_>>();
             let ready_ids = self.fork_restore_persist.poll(candidates);
