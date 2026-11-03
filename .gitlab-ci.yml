@@ -836,17 +836,19 @@ mutants-warpui-core:
 
 # criterion benches (the pane queue, destination table, hand-off reads, ANSI throughput). The
 # HTML reports and raw estimates are stored as artifacts; compare two runs with
-# `--baseline` locally. Timings on a shared build box are noisy: read them as order of
-# magnitude against the budgets in the bench headers, not as a gate.
+# `--baseline` locally. Timings on a shared build box are noisy, so the gate
+# (script/bench_gate.py + script/bench_thresholds.json, #1533) uses generous per-bench max
+# medians from the bench-file budgets: it catches order-of-magnitude regressions, and the
+# job FAILS on one (or on a bench missing from the output). Update limits per docs/dev-tooling.md.
 bench:
   extends: .box_job
   timeout: 90m
   when: manual
-  allow_failure: true
   script:
     - ./script/agent-cargo ci-bench bench -p warp --features dev-support --bench key_path_bench --bench ansi_bench
     - mkdir -p bench-results
     - cp -r "$PHOSPHOR_TARGET_ROOT"/ci-bench/criterion bench-results/ 2>/dev/null || { echo "no criterion output found under $PHOSPHOR_TARGET_ROOT/ci-bench" >&2; exit 1; }
+    - python3 script/bench_gate.py "$PHOSPHOR_TARGET_ROOT"/ci-bench/criterion
   artifacts:
     when: always
     expire_in: 30 days

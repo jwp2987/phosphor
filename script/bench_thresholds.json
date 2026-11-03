@@ -1,0 +1,12 @@
+{
+  "_doc": "Max allowed MEDIAN time per iteration, in nanoseconds, per criterion benchmark id. Checked by script/bench_gate.py after the manual `bench` CI job. These are the budgets from the bench file headers (app/benches/*.rs) with generous headroom for a noisy shared build box, NOT measured baselines: they catch order-of-magnitude regressions. To update: run the `bench` job (or `script/bench_gate.py --suggest` on a local `cargo bench` run), look at the measured medians, and edit max_ns here in the same commit as the code change that justifies it. Never raise a limit just to go green.",
+  "max_ns": {
+    "pane_queue/idle_key": 20000,
+    "pane_queue/gate_open_offer_drain": 1000000,
+    "destination_for": 200000,
+    "handoff/young_submit_decision": 10000,
+    "handoff/key_facts_load": 10000,
+    "handoff/pane_handoff_read": 10000,
+    "ansi/mixed_1mb_in_4k_reads": 100000000
+  }
+}
