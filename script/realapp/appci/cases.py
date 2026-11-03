@@ -2193,7 +2193,7 @@ IDLE_BLOCK = 10      # samples per side before the A/B order flips (macOS: a foc
 
 
 def idle_key_budget_ms():
-    return float(os.environ.get("APPCI_IDLE_KEY_BUDGET_MS", "4"))
+    return float(os.environ.get("APPCI_IDLE_KEY_BUDGET_MS", "5"))
 
 
 def idle_paint_block(ctx, rect, gap, count):
@@ -2242,7 +2242,7 @@ def c_lat_first_key_idle(ctx, r):
     """#1160: the FIRST key after an idle gap of 1, 2 and 5 s, measured alone (full tier only; ~9 min on macOS). n = ctx.count_lat(30) kept samples per gap (never < 30),
     a few discarded warm-up samples per side and gap.
     macOS: key -> first changed pixel (kl3, 240 Hz) for Phosphor AND Terminal.app in the same session, A/B by blocks of 10 samples (the side that goes first
-    alternates per gap); the verdict per gap is lat.evaluate on OVERHEAD (Phosphor median - Terminal.app median) against APPCI_IDLE_KEY_BUDGET_MS (4 ms, the
+    alternates per gap); the verdict per gap is lat.evaluate on OVERHEAD (Phosphor median - Terminal.app median) against APPCI_IDLE_KEY_BUDGET_MS (5 ms, owner 2026-11-03; the
     issue's 'next refresh + 4 ms'), SE-aware PASS / FAIL / INCONCLUSIVE. Other platforms: no paint read-back, so key -> first frame from the app log, and
     the control is the SAME session's second key (0.3 s after the first, not idle): the verdict is the idle penalty (first - second median) against the
     same budget. Not interleaved per sample: a macOS focus switch between the two windows is itself an activation, so it happens between blocks."""
