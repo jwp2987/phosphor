@@ -71,6 +71,9 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     # q Preexec done, c the prompt function entered, m Precmd sent, x the prompt function done,
     # i PSConsoleHostReadLine entered, e LineEditorReading sent.
     $script:warpDiagPath = $env:PHOSPHOR_PWSH_HOOK_TIMING
+    # See Warp-Prompt (#1280).
+    $script:warpNoPromptOptionCache = $env:PHOSPHOR_PWSH_PROMPT_OPTION_CACHE -eq '0'
+    $script:warpExtraPromptLines = $null
     $script:warpDiagOn = $false
     $script:warpDiagBuf = $null
     if ($script:warpDiagPath) {
@@ -669,6 +672,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
         Warp-Disable-PSPrediction
         Warp-Disable-PSErrorPrompt
+        $script:warpExtraPromptLines = $null
         $script:psrlConfiguredState = Warp-Get-PSReadLineState
         $script:psrlConfiguredHandler = (PSReadLine\Get-PSReadLineOption).AddToHistoryHandler
     }
@@ -1278,7 +1282,14 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         $renderedPrompt = Warp-Render-Prompt -status $status -code $code -isGeneratorCommand $isGeneratorCommand
         $decoratedPrompt = Warp-Decorate-Prompt -basePrompt $renderedPrompt
         $extraLines = ($decoratedPrompt -split "$([char]0x0a)").Length - 1
-        PSReadLine\Set-PSReadLineOption -ExtraPromptLineCount $extraLines
+        # Phosphor (#1280): a cmdlet call per prompt (0.2 ms on pwsh 7 on Linux, several times that
+        # on Windows PowerShell 5.1) to restate the same count. Set it when it changes; a
+        # reconfiguration of PSReadLine (module re-imported, options reset) forgets the cached
+        # value, so it is set again. PHOSPHOR_PWSH_PROMPT_OPTION_CACHE=0 sets it every prompt.
+        if ($script:warpNoPromptOptionCache -or $extraLines -ne $script:warpExtraPromptLines) {
+            PSReadLine\Set-PSReadLineOption -ExtraPromptLineCount $extraLines
+            $script:warpExtraPromptLines = $extraLines
+        }
 
         # NOTE: Because we are in the prompt, we do not need to reset
         # the $? automatic variable (apparently $prompt does not impact it).
