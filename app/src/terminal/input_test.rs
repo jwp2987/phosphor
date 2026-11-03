@@ -2822,6 +2822,68 @@ fn test_enter_with_an_as_you_type_menu_and_no_selection_submits() {
     });
 }
 
+// #1610: classic completions. After an ambiguous Tab nothing is highlighted, so Enter submits the
+// visible line; once Down has highlighted a candidate, Enter accepts exactly that candidate (the
+// full name, never the uncompleted prefix).
+#[test]
+fn test_classic_menu_enter_accepts_only_a_highlighted_candidate() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let _classic = FeatureFlag::ForceClassicCompletions.override_enabled(true);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("open-file ", ctx);
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![
+                        argument_suggestion("menuzz_one.txt"),
+                        argument_suggestion("menuzz_two.txt"),
+                    ],
+                    (10, 10),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::Keybinding,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert!(matches!(
+                input.suggestions_mode_model.as_ref(ctx).mode(),
+                InputSuggestionsMode::CompletionSuggestions { .. }
+            ));
+            assert!(
+                !input.should_enter_accept_completion_suggestion(ctx),
+                "nothing is highlighted after Tab: Enter submits the visible line"
+            );
+        });
+        input.update(&mut app, |input, ctx| {
+            input
+                .input_suggestions
+                .update(ctx, |suggestions, ctx| suggestions.select_next(ctx));
+        });
+        input.read(&app, |input, ctx| {
+            assert!(
+                input.should_enter_accept_completion_suggestion(ctx),
+                "a highlighted candidate is accepted by Enter"
+            );
+            let selected = input.input_suggestions.as_ref(ctx).get_selected_item_text();
+            assert!(
+                matches!(selected, Some("menuzz_one.txt" | "menuzz_two.txt")),
+                "the accepted item is one full candidate: {selected:?}"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_agent_mode_set_while_typing_slash_command() {
     App::test((), |mut app| async move {
