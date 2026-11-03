@@ -347,6 +347,8 @@ impl TerminalView {
                 pending_now.is_some(),
             )
             .is_some(),
+            // Set by `facts_after_prompt_discard`, which may read the grid; never here.
+            ssh_prompt_is_shell: false,
             ssh_sigint_applies: !snapshot.has_pending_ssh_session
                 && pending_now.is_none()
                 && gate.is_some_and(|g| !g.block_done),

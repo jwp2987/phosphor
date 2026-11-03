@@ -311,6 +311,13 @@ impl TerminalView {
             self.discard_held_ssh_typeahead_for_prompt(ctx);
             return self.build_route_facts(queue, ctx);
         }
+        let mut facts = facts;
+        if prompt_up {
+            // A held input delivered to a SHELL's prompt (a nested ssh's inner shell, #1575) goes
+            // to that shell: row H4 exempts it. Read here, not in `build_route_facts`, which
+            // never reads the grid.
+            facts.ssh_prompt_is_shell = self.ssh_prompt_is_unmanaged_shell_prompt();
+        }
         facts
     }
 

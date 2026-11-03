@@ -319,6 +319,11 @@ pub struct RouteFacts {
     pub ssh_pre_init_abort: bool,
     /// A ^C applies as SIGINT to the foreground group (`ssh_connect_sigint_applies`).
     pub ssh_sigint_applies: bool,
+    /// While `ssh` is `PromptUp`: the unterminated line is a SHELL's prompt (ends in `$ # % >`,
+    /// not credential-shaped), e.g. a nested `ssh` into a host that is not bootstrapped. Keys held
+    /// for the connect that handed over to it belong to that shell (#1561, #1575), so H4 does not
+    /// drop them as a possible password. False otherwise (and never computed outside `PromptUp`).
+    pub ssh_prompt_is_shell: bool,
 
     // ---- focus, cards, editor ----
     pub focus: FocusSnap,
