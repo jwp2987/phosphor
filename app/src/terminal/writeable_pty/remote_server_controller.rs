@@ -111,6 +111,10 @@ pub struct RemoteServerController<T: EventLoopSender> {
     /// Outcome of the preinstall check from the binary check phase,
     /// used for telemetry on the supported path.
     preinstall_check: Option<PreinstallCheckResult>,
+    /// The current ssh init's bootstrap has been written to the PTY (#1172). Makes a second
+    /// write impossible by construction: every path that releases the stash goes through
+    /// `flush_stashed_bootstrap`, which is a no-op once this is set. Reset per ssh init.
+    bootstrap_written: bool,
 }
 
 impl<T: EventLoopSender> Entity for RemoteServerController<T> {
@@ -202,12 +206,17 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             did_install: false,
             remote_platform: None,
             preinstall_check: None,
+            bootstrap_written: false,
         }
     }
 
     /// Extracts the `SessionInfo` from the stash and writes the bootstrap
     /// script to the PTY via `PtyController::initialize_shell`.
     fn flush_stashed_bootstrap(&mut self, session_info: SessionInfo, ctx: &mut ModelContext<Self>) {
+        if self.bootstrap_written {
+            return;
+        }
+        self.bootstrap_written = true;
         match self.pty_controller.upgrade(ctx) { Some(pty) => {
             pty.update(ctx, |pty, ctx| {
                 pty.initialize_shell(&session_info, ctx);
@@ -257,6 +266,8 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 }
             }
         }
+        // A new ssh init: the previous one's stash was released above, so its write flag ends.
+        self.bootstrap_written = false;
         // ControlMaster ownership is driven by the bootstrap SSH hook's
         // `external_control_master` flag (parsed from the DCS hook into
         // `IsLegacySSHSession::Yes`). Warp owns the master only when the
@@ -294,6 +305,22 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         } else {
             SpeculativeConnect::Off
         };
+        // #1172 (proposal 1): a host that already proved to have the extension this app session
+        // gets its bootstrap NOW; the binary check runs behind it instead of holding the remote
+        // shell idle for a mux round trip. The stash is still kept: a check that then says
+        // absent / old / unsupported / failed runs the same install, prompt and fallback paths
+        // as ever, and `bootstrap_written` stops any of them writing the script a second time.
+        let host_key = connection_label_for_session_info(&info);
+        if early_flush_known_hosts_enabled()
+            && !info.hostname.is_empty()
+            && known_extension_hosts().contains(&host_key)
+        {
+            self.flush_stashed_bootstrap(info.clone(), ctx);
+            log::info!(
+                "remote-server bootstrap flushed immediately for {host_key} (extension known \
+                 present); binary check runs behind it for session {session_id:?}"
+            );
+        }
         self.state = SshInitState::AwaitingCheck {
             session_info: info,
             transport: transport.clone(),
@@ -428,6 +455,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                  ({:?}); falling back to legacy SSH",
                 check.status
             );
+            known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
             send_unsupported_telemetry(self.remote_platform.as_ref(), check, ctx);
             Self::cancel_speculative_connect(session_id, speculative, ctx);
             RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
@@ -448,8 +476,9 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 // so the two overlap. If the connect somehow lands after the session was
                 // initialized, `Sessions` swaps the remote-server executor in (the same swap a
                 // reconnect does); a failed connect just leaves the legacy executor.
-                let bootstrap_flushed = early_bootstrap_flush_enabled();
-                if bootstrap_flushed {
+                known_extension_hosts().remember(&connection_label);
+                let bootstrap_flushed = self.bootstrap_written || early_bootstrap_flush_enabled();
+                if bootstrap_flushed && !self.bootstrap_written {
                     self.flush_stashed_bootstrap(session_info.clone(), ctx);
                     log::info!(
                         "remote-server bootstrap flushed {} ms after ssh init, \
@@ -478,6 +507,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 }
             }
             Ok(false) if has_old_binary => {
+                known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
                 Self::cancel_speculative_connect(session_id, speculative, ctx);
                 // Auto-update: a prior install exists, so skip the modal
                 // and reinstall.
@@ -493,6 +523,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 });
             }
             Ok(false) => {
+                known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
                 Self::cancel_speculative_connect(session_id, speculative, ctx);
                 let install_mode = *WarpifySettings::as_ref(ctx)
                     .ssh_extension_install_mode
@@ -530,6 +561,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 // where the probe failed, `Sessions` adopts its client (the #1172 swap); if not,
                 // nothing changes. The session goes on with the bootstrap either way, as before.
                 log::error!("Binary check failed for {session_id:?}: {err}");
+                known_extension_hosts().forget(&connection_label_for_session_info(&session_info));
                 self.flush_stashed_bootstrap(session_info, ctx);
             }
         }
@@ -615,12 +647,14 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             | SshInitState::AwaitingConnect { .. } => return,
         };
 
+        known_extension_hosts().remember(&connection_label_for_session_info(&session_info));
         // Flush the stashed bootstrap now that the server is connected (unless the binary check
         // already did, #1172). `client_for_session` will return `Some` when the session
         // subsequently initializes, so it picks `RemoteServerCommandExecutor`.
         if !bootstrap_flushed {
             self.flush_stashed_bootstrap(session_info, ctx);
         }
+        let bootstrap_flushed = bootstrap_flushed || self.bootstrap_written;
 
         let duration_ms = Instant::now()
             .duration_since(setup_start)
@@ -819,6 +853,47 @@ fn early_bootstrap_flush_enabled() -> bool {
 
 fn early_bootstrap_flush_from_env(value: Option<&str>) -> bool {
     !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// #1172: whether a host already known to have the extension gets its bootstrap written at ssh
+/// init, with the binary check running behind it. On by default;
+/// `PHOSPHOR_SSH_EARLY_FLUSH_KNOWN=0` restores the stash-until-checked order.
+fn early_flush_known_hosts_enabled() -> bool {
+    early_flush_known_hosts_from_env(
+        std::env::var("PHOSPHOR_SSH_EARLY_FLUSH_KNOWN")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn early_flush_known_hosts_from_env(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), Some("0" | "false" | "off" | "no"))
+}
+
+/// Hosts (by connection label) whose binary check passed, or whose server connected, earlier in
+/// this app session. In-memory only: a restart pays one stashed connect, then it is warm.
+#[derive(Default)]
+struct KnownExtensionHosts(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl KnownExtensionHosts {
+    fn contains(&self, key: &str) -> bool {
+        self.0.lock().map(|set| set.contains(key)).unwrap_or(false)
+    }
+    fn remember(&self, key: &str) {
+        if let Ok(mut set) = self.0.lock() {
+            set.insert(key.to_owned());
+        }
+    }
+    fn forget(&self, key: &str) {
+        if let Ok(mut set) = self.0.lock() {
+            set.remove(key);
+        }
+    }
+}
+
+fn known_extension_hosts() -> &'static KnownExtensionHosts {
+    static HOSTS: std::sync::OnceLock<KnownExtensionHosts> = std::sync::OnceLock::new();
+    HOSTS.get_or_init(KnownExtensionHosts::default)
 }
 
 /// Builds the connection label for a session from its [`SessionInfo`],

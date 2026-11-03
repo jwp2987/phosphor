@@ -4189,3 +4189,39 @@ fn powershell_setup_lines_parse_as_powershell() {
         });
     });
 }
+
+/// #1172: the zsh wrapper no longer forks `printf | od | tr` to hex-encode the remote env script;
+/// the constant head and tail are hex literals in the body. Decode them and check they are still
+/// the script they replaced, so editing the script without re-encoding fails here.
+#[test]
+fn test_zsh_env_script_hex_constants_decode_to_the_script() {
+    fn constant<'a>(zsh: &'a str, name: &str) -> &'a str {
+        let marker = format!("local {name}='");
+        let start = zsh
+            .find(&marker)
+            .unwrap_or_else(|| panic!("zsh_body.sh lost `{marker}`"))
+            + marker.len();
+        let len = zsh[start..].find('\'').expect("unterminated constant");
+        &zsh[start..start + len]
+    }
+    fn decode(hex: &str) -> String {
+        assert_eq!(hex.len() % 2, 0, "odd hex length");
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("not hex"))
+            .collect();
+        String::from_utf8(bytes).expect("not utf-8")
+    }
+
+    let zsh = bundled_script("bundled/bootstrap/zsh_body.sh");
+    let head = decode(constant(&zsh, "zsh_env_head"));
+    let tail = decode(constant(&zsh, "zsh_env_tail"));
+    assert_eq!(head, "unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID=");
+    assert!(tail.starts_with("_hostname=$(command -pv hostname"), "{tail}");
+    assert!(
+        tail.ends_with("unset _hostname _user _msg _ju _jh"),
+        "{tail}"
+    );
+    // No substituted placeholder may hide in a constant: those belong in the builtin-encoded middle.
+    assert!(!tail.contains("@@"), "{tail}");
+}

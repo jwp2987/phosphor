@@ -1277,7 +1277,14 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
           # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
           # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
           # and use printf to convert back to plaintext
-          local zsh_env_script=$(builtin printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID='$remote_session_id'; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || builtin echo $USER); _ju=${${_user//\\/\\\\}//\"/\\\"}; _ju=${_ju//[[:cntrl:]]/}; _jh=${${_hostname//\\/\\\\}//\"/\\\"}; _jh=${_jh//[[:cntrl:]]/}; _msg=$(builtin printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); builtin printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg _ju _jh' | command -p od -An -v -tx1 | command -p tr -d ' \n')
+          # #1172: the script is three parts. The first and last are constants, hex-encoded here once (decoding them
+          # must give the script that used to be built with printf|od|tr; bootstrap_test.rs decodes both and
+          # checks their ends) instead of forking printf|od|tr on every ssh. Only the middle varies (the session id and the
+          # ConPTY flag) and is hex-encoded by the builtin loop, no fork.
+          local zsh_env_head='756e7365746f7074205a4c452052435320474c4f42414c5f5243533b20574152505f53455353494f4e5f49443d'
+          local zsh_env_tail='5f686f73746e616d653d2428636f6d6d616e64202d707620686f73746e616d65203e2f6465762f6e756c6c20323e263120262620636f6d6d616e64202d7020686f73746e616d6520323e2f6465762f6e756c6c207c7c20636f6d6d616e64202d7020756e616d65202d6e293b205f757365723d2428636f6d6d616e64202d70762077686f616d69203e2f6465762f6e756c6c20323e263120262620636f6d6d616e64202d702077686f616d6920323e2f6465762f6e756c6c207c7c206275696c74696e206563686f202455534552293b205f6a753d247b247b5f757365722f2f5c5c2f5c5c5c5c7d2f2f5c222f5c5c5c227d3b205f6a753d247b5f6a752f2f5b5b3a636e74726c3a5d5d2f7d3b205f6a683d247b247b5f686f73746e616d652f2f5c5c2f5c5c5c5c7d2f2f5c222f5c5c5c227d3b205f6a683d247b5f6a682f2f5b5b3a636e74726c3a5d5d2f7d3b205f6d73673d24286275696c74696e207072696e746620227b5c22686f6f6b5c223a205c22496e69745368656c6c5c222c205c2276616c75655c223a207b5c2273657373696f6e5f69645c223a2024574152505f53455353494f4e5f49442c205c227368656c6c5c223a205c227a73685c222c205c22757365725c223a205c2225735c222c205c22686f73746e616d655c223a205c2225735c227d7d222022245f6a75222022245f6a6822207c20636f6d6d616e64202d70206f64202d416e202d76202d747831207c20636f6d6d616e64202d70207472202d642027205c6e27293b206275696c74696e207072696e746620275c655d393237383b643b25735c7830372720245f6d73673b20756e736574205f686f73746e616d65205f75736572205f6d7367205f6a75205f6a68'
+          __warp_hex_encode_to "$remote_session_id; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; "
+          local zsh_env_script="${zsh_env_head}${__warp_hex}${zsh_env_tail}"
 
           # Optionally attach to an existing ControlMaster the user already
           # runs for this destination instead of creating our own. Resolve
@@ -1469,8 +1476,8 @@ case "'${SHELL##*/}'" in
       HISTIGNORE=" *"
       WARP_SESSION_ID='$remote_session_id'
       WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
-      _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
-      _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)
+      _hostname=${HOSTNAME:-$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)}
+      _user=${USER:-$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER)}
       _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\$_o"; printf -v _h "\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
       _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
       WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
@@ -1560,13 +1567,26 @@ esac
           local now line rest l_ts l_key
           local kept=""
           local verdict=""
+          # #1172: as in bash, share the cache between tabs and restarts through a private file next to
+          # the pane sockets (the key and lifetime rules are unchanged; only the memory is shared).
+          # `$(<file)` is a zsh builtin read, no fork.
+          local probe_file=""
+          if [[ -n "${SSH_SOCKET_DIR-}" ]]; then
+              probe_file="${SSH_SOCKET_DIR/#\~/$HOME}/phosphor-ssh-probe-cache"
+              if [[ -z "${WARP_SSH_PROBE_CACHE-}" && -r "$probe_file" ]]; then
+                  WARP_SSH_PROBE_CACHE=$(<"$probe_file") 2>/dev/null || :
+              fi
+          fi
           now=$(command -p date +%s)
+          # WARP_SSH_PROBE_TTL (seconds) overrides the 10-minute lifetime; 0 turns the cache off.
+          local ttl=600
+          [[ "${WARP_SSH_PROBE_TTL-}" =~ ^[0-9]+$ ]] && ttl=$WARP_SSH_PROBE_TTL
           while IFS= read -r line; do
               [[ -z "$line" ]] && continue
               l_ts="${line##*|}"
               rest="${line%|*}"
               l_key="${rest%|*}"
-              if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < 600 )); then
+              if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < ttl )); then
                   kept+="$line"$'\n'
                   if [[ "$l_key" == "$key" ]]; then
                       verdict="${rest##*|}"
@@ -1582,6 +1602,10 @@ esac
           warp_ssh_remote_is_non_posix "$control_path" "$@" || probe_rc=$?
           if [[ -n "$warp_ssh_probe_verdict" ]]; then
               WARP_SSH_PROBE_CACHE="$kept$key|$warp_ssh_probe_verdict|$now"$'\n'
+              if [[ -n "$probe_file" ]]; then
+                  # Best effort and private (the file names hosts); a failed write only costs a probe.
+                  ( umask 077; printf '%s' "$WARP_SSH_PROBE_CACHE" > "$probe_file" ) 2>/dev/null || :
+              fi
           fi
           return $probe_rc
       }

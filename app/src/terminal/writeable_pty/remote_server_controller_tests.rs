@@ -1,6 +1,7 @@
 use super::{
     connection_label_from_session_hosts, connection_label_from_ssh_host,
     connection_label_from_user_and_host, early_bootstrap_flush_from_env,
+    early_flush_known_hosts_from_env, KnownExtensionHosts,
 };
 
 #[test]
@@ -93,4 +94,27 @@ fn speculative_connect_is_on_unless_switched_off() {
     assert!(!speculative_connect_from_env(Some("0")));
     assert!(!speculative_connect_from_env(Some(" off ")));
     assert!(!speculative_connect_from_env(Some("false")));
+}
+
+#[test]
+fn early_flush_of_known_hosts_is_on_unless_switched_off() {
+    // #1172: kill switch PHOSPHOR_SSH_EARLY_FLUSH_KNOWN=0.
+    assert!(early_flush_known_hosts_from_env(None));
+    assert!(early_flush_known_hosts_from_env(Some("1")));
+    assert!(!early_flush_known_hosts_from_env(Some("0")));
+    assert!(!early_flush_known_hosts_from_env(Some(" off ")));
+    assert!(!early_flush_known_hosts_from_env(Some("false")));
+}
+
+#[test]
+fn known_extension_hosts_remember_and_forget() {
+    // A host is early-flushed only after a pass; any non-pass verdict removes it again so the
+    // next connect goes back through the stashed install/prompt flow.
+    let hosts = KnownExtensionHosts::default();
+    assert!(!hosts.contains("me@box"));
+    hosts.remember("me@box");
+    assert!(hosts.contains("me@box"));
+    assert!(!hosts.contains("me@other"));
+    hosts.forget("me@box");
+    assert!(!hosts.contains("me@box"));
 }
