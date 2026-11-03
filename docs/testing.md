@@ -448,7 +448,9 @@ connect and a remote command runs remotely and never locally), `remote_session_e
 setting and relaunched back with `never_install` afterwards; the CI host has no route to the extension download, so the app may fall back, and the
 case asserts exact input and records `connect_s` and the app-log lines naming the remote server / extension), `ssh_hanging_host_not_local` (a refused
 port and a TCP listener that never speaks, `ConnectTimeout=4`: the line typed behind the ssh Enter never runs locally nor reaches the local `rec.log`;
-the local shell is usable afterwards), `ssh_password_prompt` (the owner's rule: host `fakepw` is a passphrase-protected key the local sshd accepts,
+the local shell is usable afterwards), `latency_enter_ssh` (#1532: Enter -> command start inside `ssh fake`, Phosphor vs plain `ssh fake` in the
+reference terminal, both typing into the same remote shell; overhead verdict against `APPCI_SSH_ENTER_BUDGET_MS`, default 1 ms = the owner's
+"plain ssh +-1 ms"; sequential; Windows: Git Bash pane only), `ssh_password_prompt` (the owner's rule: host `fakepw` is a passphrase-protected key the local sshd accepts,
 so ssh stops at `Enter passphrase for key` on the tty, `NumberOfPasswordPrompts 1`. A junk burst typed BEFORE the prompt must be discarded and not
 reach any shell; the passphrase typed AFTER it must reach the prompt and log in; neither appears in any `rec.log`; a wrong passphrase returns to the
 local shell where the next command runs locally. Needs the system OpenSSH sshd; fakesshd.py cannot prompt, so it skips there),

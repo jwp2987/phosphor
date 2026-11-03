@@ -27,6 +27,7 @@ GITBASH_ONLY = {
     "remote_session_legacy": "uses rec.log and prompt.log of the local shell and `ssh.cmd` Ctrl-C paths: runs in the Git Bash pane",
     "remote_session_ext": "uses rec.log and prompt.log of the local shell: runs in the Git Bash pane",
     "ssh_hanging_host_not_local": "Ctrl-C while ssh.cmd (a batch file) runs would ask 'Terminate batch job (Y/N)?': runs in the Git Bash pane",
+    "latency_enter_ssh": "the plain-ssh control is the conhost reference running the pane's shell; a PowerShell reference's `ssh fake` path (ssh.cmd) differs from the pane's: runs in the Git Bash pane (#1532)",
     "ssh_password_prompt": "needs the system sshd's passphrase-key prompt (fakesshd cannot prompt); skips itself with that reason",
     "shell_zsh": "zsh as a subshell of bash: Git Bash pane only (skips itself when not installed)",
     "shell_fish": "fish as a subshell of bash: Git Bash pane only (skips itself when not installed)",

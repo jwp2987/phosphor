@@ -1904,16 +1904,18 @@ def stamp_line(ctx):
     return "date +%%s.%%N > lat_%d"
 
 
-def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12):
+def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None):
+    """stamp/d (#1532 latency_enter_ssh): the stamp line and the directory its lat_<i> files land in, when they are not the local pane's
+    (stamp_line(ctx), ctx.W): over ssh the REMOTE shell writes them into the remote home."""
     ds = []
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
         if t_end and time.time() > t_end:
             break
-        f = os.path.join(ctx.W, "lat_%d" % i)
+        f = os.path.join(d or ctx.W, "lat_%d" % i)
         if os.path.exists(f):
             os.remove(f)
-        stamp = stamp_line(ctx)
+        stamp = stamp or stamp_line(ctx)
         ctx.be.guard_ref()
         ctx.be.type(stamp % i, key_delay_ms)
         time.sleep(0.3)
