@@ -102,8 +102,9 @@ fn skip_redundant_render_enabled() -> bool {
     })
 }
 
-/// Whether a buffer edit needs the bar re-rendered (#1491). Every message producer reads only
-/// whether the buffer is empty; the input mode, its lock, the slash-command state and ephemeral
+/// Whether a buffer edit needs the bar re-rendered (#1491). Every read of the buffer by the bar
+/// and its message producers is an emptiness check (the Figma chip's text check notifies on its
+/// own when its answer changes); the input mode, its lock, the slash-command state and ephemeral
 /// messages notify the bar through their own subscriptions. So in shell mode a keystroke that
 /// leaves the buffer non-empty cannot change the bar, yet it re-rendered it on every key (the
 /// agent-mode twin of the terminal message bar's per-key render, measured at about a frame of

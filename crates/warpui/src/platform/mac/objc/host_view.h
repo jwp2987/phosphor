@@ -6,7 +6,8 @@
 // Enter (76) key-downs are traced, via WARP_LOG_ENTER; detail never contains typed text.
 void warp_log_enter(const char *stage, const char *detail);
 // Key-down queueing age (#1606), implemented in Rust (`warp_note_key_event` in window.rs): logs
-// `input_order hop=os_key_event age_ms=<ms> enter=<0|1> ctrl=<0|1>` at debug level. Flags only.
+// `input_order hop=os_key_event age_ms=<ms> enter=<true|false> ctrl=<true|false>` at debug level.
+// Flags only; is_enter/is_ctrl are passed as 0/1.
 void warp_note_key_event(double age_ms, int is_enter, int is_ctrl);
 
 static inline BOOL warpIsEnterKeyDown(NSEvent *event) {
