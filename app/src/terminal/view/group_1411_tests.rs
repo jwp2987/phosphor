@@ -379,3 +379,37 @@ fn a_stale_selection_bit_never_swallows_a_ctrl_c_as_a_copy() {
         );
     });
 }
+
+/// A selection clear a Ctrl-C left in the model's inbox (the parser held the model) lands at the
+/// next output wakeup at the latest, not "at the next byte or key": a selection the user makes in
+/// the meantime cannot be wiped by a clear that waited for the pty.
+#[test]
+fn a_selection_clear_left_in_the_inbox_lands_at_the_next_wakeup() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.alt_screen_mut().start_selection(
+                    Point::new(1, 1),
+                    SelectionType::Simple,
+                    Side::Left,
+                );
+                assert!(model.alt_screen().selection().is_some());
+            }
+            // The ^C found the parser inside the model and left the clear for it; no bytes follow.
+            view.model_inbox.post(ModelCommand::ClearAltScreenSelection);
+            assert!(view.model_inbox.has_pending());
+            view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+            assert!(
+                !view.model_inbox.has_pending(),
+                "the wakeup applied the inbox"
+            );
+            assert!(
+                view.model.lock().alt_screen().selection().is_none(),
+                "the clear landed at the wakeup"
+            );
+        });
+    });
+}

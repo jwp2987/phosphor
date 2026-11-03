@@ -14363,11 +14363,15 @@ impl TerminalView {
         }
 
         let (redraw, footer) = if crate::terminal::model_lock_trace::legacy_lock_scoping() {
-            // For simplicity, we simply rescan the entire block for block filter matches.
-            self.model
-                .lock()
-                .block_list_mut()
-                .maybe_refilter_active_block_output();
+            {
+                let mut model = self.model.lock();
+                // What a key left in the inbox while the pty reader held the model (#1411: a
+                // selection a Ctrl-C cleared) lands here at the latest, one wakeup late, never
+                // "at the next byte", so it cannot wipe a selection the user makes meanwhile.
+                model.apply_inbox();
+                // For simplicity, we simply rescan the entire block for block filter matches.
+                model.block_list_mut().maybe_refilter_active_block_output();
+            }
 
             // If the block filter editor is open on an active block we update the
             // number of line matches.
@@ -14420,6 +14424,10 @@ impl TerminalView {
                 // Declared after `model`, so it logs a slow hold just before the guard drops.
                 let _hold =
                     crate::terminal::model_lock_trace::HoldTimer::start("handle_terminal_wakeup");
+                // What a key left in the inbox while the pty reader held the model (#1411: a
+                // selection a Ctrl-C cleared) lands here at the latest, one wakeup late, never
+                // "at the next byte", so it cannot wipe a selection the user makes meanwhile.
+                model.apply_inbox();
                 // For simplicity, we simply rescan the entire block for block filter matches.
                 model.block_list_mut().maybe_refilter_active_block_output();
 
