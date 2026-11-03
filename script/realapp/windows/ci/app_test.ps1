@@ -82,6 +82,7 @@ try {
   if ($pyok -ne 0) { Emit "preflight" "-" "fail" "the private Python cannot import paramiko and Pillow: $($pyver -join ' ')"; throw "python modules" }
   $env:APPCI_WIN_BAK = $Bak
   $env:PYTHONUNBUFFERED = "1"
+  $env:PYTHONUTF8 = "1"   # r18e4: open()/print default to cp1252 here; a U+FFFD in a case log crashed save_case_log and its crash handler, ending the run after the PowerShell pane
   $ErrorActionPreference = "Continue"       # native stderr text is output, not an error; the exit code is what counts
   & $Py (Join-Path $AppciDir "run.py") --run $Run --bin "$App\phosphor-oss.exe" --backend windows --platform windows --modes $Modes
   $pyrc = $LASTEXITCODE

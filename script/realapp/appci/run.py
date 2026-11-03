@@ -119,6 +119,11 @@ def self_test():
 
 
 def main():
+    for st in (sys.stdout, sys.stderr):    # r18e4 (Windows cp1252): an unencodable character in a log line must be escaped, never end the pass
+        try:
+            st.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
     if "--self-test" in sys.argv[1:]:
         return self_test()
     ap = argparse.ArgumentParser()
