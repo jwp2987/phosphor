@@ -298,13 +298,28 @@ def c_quit_24(ctx, r):
 
 
 # ------------------------------------------------------------------ floods
+# r18e4: a fixed line count is a guess about the machine's output rate (macOS finished 2e6 `yes` lines / 8e6 `seq` lines before the typing did, so three
+# flood cases tested nothing). The producers below run until the CASE touches a stop file (after the typing / the checks), so the flood provably outlasts
+# the typing on every platform; the "flood ended before the typing finished" self-checks stay as the proof.
+def endless_flood(kind, stop_f, min_lines=0, min_s=0):
+    """shell text (bash/zsh) that floods the pane until `stop_f` exists (and at least min_lines lines / min_s seconds have passed). kind: 'yes' | 'seq'"""
+    chunk = "yes | head -n 200000" if kind == "yes" else "seq 1 500000"
+    n = 200000 if kind == "yes" else 500000
+    return ("__s=$SECONDS; __i=0; while [ ! -e %s ] || [ $__i -lt %d ] || [ $((SECONDS-__s)) -lt %d ]; do %s; __i=$((__i+%d)); done" % (stop_f, min_lines, min_s, chunk, n))
+
+
+def touch(ctx, name):
+    open(os.path.join(ctx.W, name), "w").close()
+
+
 def flood_once(ctx, r, name, gen, n_expect_s):
-    """flood command `gen` in the pane; a line typed during it must run once, after it, exactly as typed"""
+    """flood command gen(stop_file) (runs until the case touches the file) in the pane; a line typed during it must run once, after it, exactly as typed"""
     now = NOW(ctx)
     end_f, typed_f, eff_f = "fl_end_%s.txt" % name, "fl_typed_%s.txt" % name, "fl_%s.txt" % name
-    ctx.rm(end_f, typed_f, eff_f)
+    stop_f = "fl_stop_%s.txt" % name
+    ctx.rm(end_f, typed_f, eff_f, stop_f)
     tok = ctx.tok(8).lower()
-    flood_cmd = "%s; %s >> %s" % (gen, now, end_f)
+    flood_cmd = "%s; %s >> %s" % (gen(stop_f), now, end_f)
     typed_cmd = "%s >> %s; echo %s >> %s" % (now, typed_f, tok, eff_f)
     mark = ctx.cmd_mark()
     ctx.be.type(flood_cmd, 12, enter=True)
@@ -314,6 +329,8 @@ def flood_once(ctx, r, name, gen, n_expect_s):
     t_type0 = time.time()
     ctx.be.type(typed_cmd, ctx.rng.randint(10, 25), enter=True)
     t_type1 = time.time()
+    time.sleep(1.0)                                    # the flood was running through the whole typing; now let it end
+    touch(ctx, stop_f)
     ctx.until(lambda: ctx.lines(eff_f), 300 if ctx.scale >= 1 else 60, step=0.25)
     time.sleep(0.8)
     ctx.shot("flood_%s_done" % name)
@@ -324,7 +341,7 @@ def flood_once(ctx, r, name, gen, n_expect_s):
         dur = ends[0] - t_type1
         r.metric("%s_flood_remaining_after_typing_s" % name, round(dur, 2))
         r.check(typed[0] >= ends[0] - 0.02, "%s: the typed line ran %.2f s BEFORE the flood ended (typed at %.3f, flood end %.3f)" % (name, ends[0] - typed[0], typed[0], ends[0]))
-        r.check(ends[0] > t_type1, "%s: the flood ended (%.2f s) before the typing finished: not a flood test, raise APPCI_FLOOD_LINES" % (name, ends[0] - t_type1))
+        r.check(ends[0] > t_type1, "%s: the flood ended (%.2f s) before the typing finished: not a flood test (the producer should run until the case stops it)" % (name, ends[0] - t_type1))
     else:
         r.check(False, "%s: flood end / typed timestamps missing (end %r typed %r)" % (name, ends, typed))
     got = ctx.cmds_since(mark)
@@ -336,9 +353,8 @@ def flood_once(ctx, r, name, gen, n_expect_s):
 def c_flood_typed(ctx, r):
     """a large output flood (`yes | head -n 2e6`, `seq 1 5e6`) while a line is typed at 10-25 ms/key + Enter: the typed line runs exactly
     once, exactly as typed, and only after the flood (shell-side timestamps), nothing else reaches the shell"""
-    n_yes, n_seq = ctx.count(2_000_000), ctx.count(5_000_000)
-    flood_once(ctx, r, "yes", "yes | head -n %d" % n_yes, 0)
-    flood_once(ctx, r, "seq", "seq 1 %d" % n_seq, 0)
+    flood_once(ctx, r, "yes", lambda f: endless_flood("yes", f, ctx.count(2_000_000), 4), 0)
+    flood_once(ctx, r, "seq", lambda f: endless_flood("seq", f, ctx.count(5_000_000), 4), 0)
 
 
 @case("flood_typing_latency", order=61, gui=True)
@@ -346,11 +362,10 @@ def c_flood_lat(ctx, r):
     """tab A floods, tab B (active) reads raw keys at the pty (ts_reader): 80 chars typed at 15 ms/key arrive complete, in order, and
     the arrival-gap distribution is recorded. Verdicts: loss/order exact; stall = max gap > APPCI_FLOOD_STALL_MS (default 1000).
     No reference terminal is measured here, so p50/p95 are metrics, not a pass/fail against a reference."""
-    n_seq = ctx.count(8_000_000)
     now = NOW(ctx)
-    ctx.rm("fla_end.txt", "flt.txt")
+    ctx.rm("fla_end.txt", "flt.txt", "fla_stop.txt")
     mark = ctx.cmd_mark()
-    ctx.be.type("seq 1 %d; %s >> fla_end.txt" % (n_seq, now), 12, enter=True)
+    ctx.be.type("%s; %s >> fla_end.txt" % (endless_flood("seq", "fla_stop.txt", ctx.count(8_000_000), 6), now), 12, enter=True)
     ctx.until(lambda: ctx.cmds_since(mark), 10)
     time.sleep(1.0)
     ctx.be.guard()
@@ -369,7 +384,8 @@ def c_flood_lat(ctx, r):
     t1 = time.time()
     still_after = not os.path.exists(os.path.join(ctx.W, "fla_end.txt"))
     ctx.shot("flood_lat")
-    r.check(still and still_after, "the flood in tab A ended before the typing finished (before=%s, after=%s): raise APPCI_FLOOD_LINES" % (still, still_after))
+    touch(ctx, "fla_stop.txt")                         # the flood ran through the whole typing; let tab A finish
+    r.check(still and still_after, "the flood in tab A ended before the typing finished (before=%s, after=%s): the producer should run until the case stops it" % (still, still_after))
     try:
         rows = [l.split() for l in open(out)]
     except FileNotFoundError:
@@ -401,16 +417,17 @@ def c_flood_find(ctx, r):
     marker = "".join(ctx.rng.choice("ABCDEFGHJKLMNPQRSTUVWXYZ") for _ in range(14))
     n = ctx.count(300_000)
     now = NOW(ctx)
-    ctx.rm("ff_end.txt")
+    ctx.rm("ff_end.txt", "ff_stop.txt")
+    touch(ctx, "ff_stop.txt")       # the producer runs until n lines AND 3 s have passed (a fast machine used to finish 300k lines before the screen had scrolled)
     mark = ctx.cmd_mark()
-    ctx.be.type("echo %s; seq 1 %d; %s >> ff_end.txt" % (marker, n, now), 12, enter=True)
+    ctx.be.type("echo %s; %s; %s >> ff_end.txt" % (marker, endless_flood("seq", "ff_stop.txt", n, 3), now), 12, enter=True)
     ctx.until(lambda: os.path.exists(os.path.join(ctx.W, "ff_end.txt")), 200, step=0.5)
     time.sleep(1.0)
     r.check(os.path.exists(os.path.join(ctx.W, "ff_end.txt")), "the flood did not finish")
     before = ctx.ocr("find_before") or ""
     on_screen_before = marker in before.replace(" ", "").upper()
     r.metric("marker_visible_before_find", on_screen_before)
-    r.check(not on_screen_before, "control: the marker is already visible before the Find (the flood did not scroll it away; raise APPCI_SCALE/lines)")
+    r.check(not on_screen_before, "control: the marker is already visible before the Find (the flood did not scroll it away; the producer runs >= n lines and >= 3 s)")
     ctx.be.guard()
     ctx.be.key("ctrl+shift+f")
     time.sleep(0.8)
