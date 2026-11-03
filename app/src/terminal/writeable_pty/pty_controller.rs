@@ -2358,7 +2358,11 @@ impl<T: EventLoopSender> PtyController<T> {
                     )),
                     // Exactly the two chord bytes: no kill-buffer prefix (the handler reverts
                     // the line), no command text, no Enter.
+                    #[cfg(not(target_family = "wasm"))]
                     TypedCommand::FileChord => Cow::Borrowed(long_command_file::INSERT_CHORD),
+                    // Never produced on wasm (`command_to_type` has no pipe there).
+                    #[cfg(target_family = "wasm")]
+                    TypedCommand::FileChord => Cow::Borrowed(&b"\x1b3"[..]),
                 };
                 (bytes, true, on_write_fn, false)
             }
