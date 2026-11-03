@@ -1571,7 +1571,9 @@ impl CodeEditorView {
 
     /// Whether this editor holds state that rebuilding it from its text would lose (#1267, the
     /// agent answer's off-screen code-block recycling): focus (also in a window that is not
-    /// active), a selection or a selection drag in progress, an open find bar, or a scroll offset.
+    /// active), a selection or a selection drag in progress, an open find bar or go-to-line dialog
+    /// (each takes focus from the editor when it opens, so focus alone does not cover them), or a
+    /// scroll offset.
     pub fn holds_user_state(&self, app: &AppContext) -> bool {
         let focused = self
             .self_handle
@@ -1584,7 +1586,12 @@ impl CodeEditorView {
         let render_state = self.model.as_ref(app).render_state().as_ref(app);
         let viewport = render_state.viewport();
         let scrolled = viewport.scroll_left().as_f32() > 0. || viewport.scroll_top().as_f32() > 0.;
-        focused || self.is_selecting || find_open || scrolled || self.selected_text(app).is_some()
+        focused
+            || self.is_selecting
+            || find_open
+            || self.goto_line_dialog_open(app)
+            || scrolled
+            || self.selected_text(app).is_some()
     }
 
     /// Extend the selection to the given offset.  This is used for shift-clicking to extend the
