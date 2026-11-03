@@ -413,3 +413,92 @@ fn a_selection_clear_left_in_the_inbox_lands_at_the_next_wakeup() {
         });
     });
 }
+
+/// A stand-in for the pty reader: holds the model's lock for `hold`, as a parse slice does, then
+/// lets go. Returns once the lock is held.
+fn parser_holds_model(
+    model: &Arc<FairMutex<TerminalModel>>,
+    hold: Duration,
+) -> std::thread::JoinHandle<()> {
+    let model = model.clone();
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let parser = std::thread::spawn(move || {
+        let _parsing = model.lock();
+        held_tx.send(()).unwrap();
+        std::thread::sleep(hold);
+    });
+    held_rx.recv().unwrap();
+    parser
+}
+
+/// The first Ctrl-C on an agent-driven command hands the command to the user and sends nothing;
+/// the second interrupts. Both read "is the agent in control" from the published copy while the
+/// pty reader holds the model, so the take-over must reach that copy under the lock that made it:
+/// otherwise the second ^C, one slice later, found "agent in control" again, tried a second
+/// take-over (`InvalidTakeOver`) and the interrupt was lost.
+#[test]
+fn a_second_ctrl_c_after_the_take_over_interrupts_while_the_parser_holds_the_model() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("sleep 20", "running");
+                let task_id = crate::ai::agent::task::TaskId::new("test-cli-subagent".to_owned());
+                model
+                    .block_list_mut()
+                    .active_block_mut()
+                    .set_agent_interaction_mode_for_agent_monitored_command(
+                        &task_id,
+                        conversation_id,
+                    )
+                    .expect("command should become agent monitored");
+                model.publish_key_facts();
+            }
+            assert!(view.key_model.load().input_box.block_agent_in_control);
+
+            // ^C #1 with the parser inside the model: it waits for the slice and takes over.
+            let parser = parser_holds_model(&view.model, Duration::from_millis(150));
+            view.handle_ctrl_c_input_event(0, ctx);
+            parser.join().unwrap();
+            assert!(
+                !view
+                    .model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_in_control(),
+                "the first ^C handed the command to the user"
+            );
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "the first ^C hands over, it does not interrupt"
+            );
+            let copy = view.key_model.load();
+            assert!(
+                !copy.input_box.block_agent_in_control,
+                "the take-over was published under the lock that made it, before any slice end"
+            );
+            assert_eq!(copy.conversation_to_stop, Some(conversation_id));
+            assert!(!view.key_facts.load().agent_in_control);
+
+            // ^C #2, the parser inside the model again: it must interrupt, not take over twice.
+            let parser = parser_holds_model(&view.model, Duration::from_millis(150));
+            view.handle_ctrl_c_input_event(0, ctx);
+            parser.join().unwrap();
+        });
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            vec![0x03],
+            "the second ^C reached the pty"
+        );
+    });
+}
