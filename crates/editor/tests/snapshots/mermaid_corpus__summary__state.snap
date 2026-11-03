@@ -1,0 +1,28 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ~190
+height: ~360
+viewBox: true
+g: 0
+rect: 8
+path: 7
+circle: 3
+ellipse: 0
+polygon: 0
+polyline: 0
+line: 0
+text: 7
+tspan: 7
+marker: 2
+foreignObject: 0
+image: 0
+labels:
+  - "Idle"
+  - "Paused"
+  - "Running"
+  - "start"
+  - "pause"
+  - "resume"
+  - "stop"

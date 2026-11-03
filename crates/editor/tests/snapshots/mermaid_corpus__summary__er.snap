@@ -1,0 +1,34 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ?
+height: ?
+viewBox: true
+g: 9
+rect: 7
+path: 10
+circle: 4
+ellipse: 0
+polygon: 0
+polyline: 0
+line: 6
+text: 13
+tspan: 0
+marker: 8
+foreignObject: 0
+image: 0
+labels:
+  - "places"
+  - "contains"
+  - "CUSTOMER"
+  - "string"
+  - "name"
+  - "string"
+  - "email"
+  - "LINE_ITEM"
+  - "ORDER"
+  - "int"
+  - "id"
+  - "date"
+  - "placed"

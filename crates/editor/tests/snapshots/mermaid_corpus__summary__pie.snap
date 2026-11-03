@@ -1,0 +1,27 @@
+---
+source: crates/editor/tests/mermaid_corpus.rs
+expression: summary(&svg)
+---
+width: ?
+height: ?
+viewBox: true
+g: 4
+rect: 3
+path: 3
+circle: 1
+ellipse: 0
+polygon: 0
+polyline: 0
+line: 0
+text: 6
+tspan: 0
+marker: 0
+foreignObject: 0
+image: 0
+labels:
+  - "79%"
+  - "17%"
+  - "3%"
+  - "Dogs"
+  - "Cats"
+  - "Rats"
