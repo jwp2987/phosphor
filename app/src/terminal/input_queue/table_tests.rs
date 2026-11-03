@@ -1020,9 +1020,13 @@ fn viewer_bytes_take_the_full_rows_and_observe_ctrl_c_when_written() {
     );
 }
 
+/// A PACED CLI-agent submit (its own `CliSubmit` gate is open) goes straight to the stage after the
+/// paste stage: every hold but the PowerShell setup is skipped, the agent check is not (#1601b).
 #[test]
-fn cli_submit_is_exempt_from_every_hold_but_the_powershell_setup_and_not_from_the_agent_check() {
-    // Every hold open EXCEPT the PowerShell setup (`ps` stays Off: H6 reads `f.ps`, not the mask, which does include the PowerShell gate).
+fn a_paced_cli_submit_is_exempt_from_every_hold_but_the_powershell_setup_and_not_from_the_agent_check()
+ {
+    // Every gate open, the CliSubmit gate among them (`ALL`), and every other hold fact; `ps`
+    // stays Off (H6 reads `f.ps`, not the mask, which does include the PowerShell gate).
     let everything_open = RouteFacts {
         ssh: SshPhase::Holding,
         queue_has_ssh_gate: true,
@@ -1033,6 +1037,7 @@ fn cli_submit_is_exempt_from_every_hold_but_the_powershell_setup_and_not_from_th
         mailbox_non_empty: true,
         ..running()
     };
+    assert!(everything_open.gates.has(GateKind::CliSubmit));
     for class in [Class::Typed, Class::Enter, Class::Control, Class::Paste] {
         let p = plan(from(class, Origin::CliSubmit), everything_open);
         assert_eq!(
@@ -1040,6 +1045,8 @@ fn cli_submit_is_exempt_from_every_hold_but_the_powershell_setup_and_not_from_th
             (Outcome::Pty(PtyWrite::CliSubmit), Row::OCliSubmit),
             "{class:?}"
         );
+        // The hand-off is consulted, as for a typed key (it may hold the bytes itself).
+        assert!(p.effects.contains(Effects::CONSULT_ORACLE), "{class:?}");
     }
     let in_control = RouteFacts {
         agent_in_control: true,
@@ -1049,6 +1056,143 @@ fn cli_submit_is_exempt_from_every_hold_but_the_powershell_setup_and_not_from_th
         plan(from(Class::Typed, Origin::CliSubmit), in_control).outcome,
         drop_of(DropWhy::AgentControl)
     );
+}
+
+/// An UNPACED CLI-agent submit (no `CliSubmit` gate) is offered to the queue by the legacy writer
+/// (`write_user_bytes_to_pty` -> `prepare_subshell_gates` -> `offer_to_paste_queue`): it waits
+/// behind every gate a key waits behind, with the same rows and outcomes (#1601b).
+#[test]
+fn an_unpaced_cli_submit_is_held_behind_the_gates_any_key_is_held_behind() {
+    for class in [Class::Raw, Class::Typed, Class::Enter, Class::Paste] {
+        for (gate, row) in [
+            (GateKind::EnterVerdict, Row::H5),
+            (GateKind::TabCompletion, Row::H5),
+            (GateKind::PasteReading, Row::H8),
+            (GateKind::PromptSeen, Row::H8),
+            (GateKind::LineEditorActive, Row::H8),
+            (GateKind::SubshellSetup, Row::H8),
+            (GateKind::PowershellSetup, Row::H8),
+        ] {
+            let f = RouteFacts {
+                gates: GateMask::of(&[gate]),
+                queued: true,
+                ..running()
+            };
+            let p = plan(from(class, Origin::CliSubmit), f);
+            assert_eq!(
+                (p.outcome, p.row),
+                (Outcome::Hold(gate), row),
+                "{class:?} behind {gate:?}"
+            );
+            // The same gate PACED (the submit's own gate open as well) does not hold it.
+            let paced = RouteFacts {
+                gates: f.gates.with(GateKind::CliSubmit),
+                ..f
+            };
+            assert_eq!(
+                plan(from(class, Origin::CliSubmit), paced).outcome,
+                Outcome::Pty(PtyWrite::CliSubmit),
+                "{class:?} paced, {gate:?}"
+            );
+        }
+    }
+}
+
+/// The subshell setup: `prepare_subshell_gates` holds the unpaced submit behind the setup gate and
+/// the paced bootstrap write (row H7), unless the shell asks for an answer (the bypass, H7b), which
+/// writes it through; the paced submit ignores the setup.
+#[test]
+fn an_unpaced_cli_submit_is_held_behind_a_subshell_setup_like_a_key() {
+    for (phase, gate) in [
+        (SubshellPhase::SetupHeld, GateKind::SubshellSetup),
+        (
+            SubshellPhase::BootstrapWriting,
+            GateKind::SubshellBootstrapWrite,
+        ),
+    ] {
+        let f = RouteFacts {
+            subshell: phase,
+            gates: GateMask::of(&[gate]),
+            ..running()
+        };
+        let p = plan(from(Class::Raw, Origin::CliSubmit), f);
+        assert_eq!(
+            (p.outcome, p.row),
+            (Outcome::Hold(gate), Row::H7),
+            "{phase:?}"
+        );
+        let typed = plan(from(Class::Typed, Origin::Keyboard), f);
+        assert_eq!(
+            (p.outcome, p.row),
+            (typed.outcome, typed.row),
+            "a key and a submit wait the same way, {phase:?}"
+        );
+        let paced = RouteFacts {
+            gates: f.gates.with(GateKind::CliSubmit),
+            ..f
+        };
+        assert_eq!(
+            plan(from(Class::Raw, Origin::CliSubmit), paced).outcome,
+            Outcome::Pty(PtyWrite::CliSubmit),
+            "{phase:?} paced"
+        );
+    }
+    // The shell asks for an answer behind a setup gate: typing is the answer, the submit passes.
+    let asked = RouteFacts {
+        subshell: SubshellPhase::SetupHeld,
+        subshell_awaiting_answer: true,
+        gates: GateMask::of(&[GateKind::SubshellSetup]),
+        ..running()
+    };
+    assert_eq!(
+        plan(from(Class::Raw, Origin::CliSubmit), asked).outcome,
+        Outcome::Pty(PtyWrite::CliSubmit)
+    );
+}
+
+/// Only the ssh connect gate open: a pass-through (the ssh hold holds its own keys). Entries
+/// queued with no gate, and the mailbox, hold the submit like any key (`holds_keys`).
+#[test]
+fn an_unpaced_cli_submit_passes_an_ssh_only_gate_set_and_waits_behind_the_queue() {
+    let ssh_only = RouteFacts {
+        gates: GateMask::of(&[GateKind::SshConnect]),
+        ssh: SshPhase::Holding,
+        queue_has_ssh_gate: true,
+        ..running()
+    };
+    let p = plan(from(Class::Raw, Origin::CliSubmit), ssh_only);
+    assert_eq!(
+        (p.outcome, p.row),
+        (Outcome::Pty(PtyWrite::CliSubmit), Row::OCliSubmit)
+    );
+    // The ssh gate with another one: held behind the queue.
+    let both = RouteFacts {
+        gates: GateMask::of(&[GateKind::SshConnect, GateKind::PasteReading]),
+        ..ssh_only
+    };
+    assert!(
+        plan(from(Class::Raw, Origin::CliSubmit), both)
+            .outcome
+            .is_hold()
+    );
+    let queued = RouteFacts {
+        queued: true,
+        ..running()
+    };
+    let p = plan(from(Class::Raw, Origin::CliSubmit), queued);
+    assert_eq!((p.outcome, p.row), (Outcome::Queue, Row::H8Queue));
+    let mailbox = RouteFacts {
+        mailbox_non_empty: true,
+        ..running()
+    };
+    assert_eq!(
+        plan(from(Class::Raw, Origin::CliSubmit), mailbox).outcome,
+        Outcome::Queue
+    );
+    // Idle: straight to the stage and the hand-off, paced or not.
+    let p = plan(from(Class::Raw, Origin::CliSubmit), running());
+    assert_eq!(p.outcome, Outcome::Pty(PtyWrite::CliSubmit));
+    assert!(p.effects.contains(Effects::CONSULT_ORACLE));
 }
 
 /// #1601 (owner decision): an open PowerShell setup holds the CLI-agent submit like every other
@@ -1913,18 +2057,41 @@ proptest! {
         }
     }
 
-    /// The paced CLI-agent submit is exempt from every hold but an open PowerShell setup (#1601),
-    /// which holds it behind `PowershellSetup` and nothing else; and nothing the editor produced
-    /// goes to the pty.
+    /// The CLI-agent submit (#1601b), as the legacy writer treats its bytes. An open PowerShell
+    /// setup holds it behind `PowershellSetup` and nothing else, paced or not. A PACED submit (its
+    /// `CliSubmit` gate is open) is exempt from every other hold. An UNPACED one waits behind any
+    /// open gate but an ssh-only set, behind a subshell setup, and behind the queue; otherwise it
+    /// is not held. Nothing the editor produced goes to the pty.
     #[test]
     fn origin_exemptions_hold(i in arb_intent(), f in arb_facts()) {
         let plan = decide(&i, &f, None);
         if i.origin == Origin::CliSubmit && !i.class.is_signal() && i.class != Class::AgentWrite {
+            let paced = f.gates.has(GateKind::CliSubmit);
+            let setup_held = matches!(
+                f.subshell,
+                SubshellPhase::SetupHeld | SubshellPhase::BootstrapWriting
+            );
             if f.ps.holds_keys() {
                 prop_assert_eq!(plan.outcome, Outcome::Hold(GateKind::PowershellSetup), "{:?}", plan);
-            } else {
+            } else if paced {
                 prop_assert!(!plan.outcome.is_hold() && plan.outcome != Outcome::Hint
                     && !matches!(plan.outcome, Outcome::Swallow(_)), "{:?}", plan);
+            } else {
+                // The shell asking for an answer lets a key past the setup gates (H7b).
+                if !f.subshell_awaiting_answer
+                    && ((!f.gates.is_empty() && !f.gates.all_within(&[GateKind::SshConnect]))
+                        || setup_held
+                        // A delivering entry is never held behind the queue it is being drained from.
+                        || (!i.delivering && (f.mailbox_non_empty || (f.queued && f.gates.is_empty()))))
+                {
+                    prop_assert!(plan.outcome.is_hold(), "{:?}", plan);
+                }
+                if f.gates.is_empty() || f.gates.all_within(&[GateKind::SshConnect]) {
+                    if !setup_held && !f.mailbox_non_empty && !(f.queued && f.gates.is_empty()) {
+                        prop_assert!(!plan.outcome.is_hold() && plan.outcome != Outcome::Hint
+                            && !matches!(plan.outcome, Outcome::Swallow(_)), "{:?}", plan);
+                    }
+                }
             }
         }
         if i.origin == Origin::Editor && !i.class.is_signal() && i.class != Class::AgentWrite {

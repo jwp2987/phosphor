@@ -218,17 +218,44 @@ fuzz_target!(|data: &[u8]| {
                 "oracle consultation: {plan:?}"
             );
         }
+        // #1601b: held by an open PowerShell setup (paced or not); a PACED submit (its `CliSubmit`
+        // gate is open) by nothing else; an UNPACED one passes only an idle queue (or an ssh-only
+        // gate set with nothing queued) outside a subshell setup, and waits behind any other gate.
         if intent.origin == Origin::CliSubmit
             && !is_signal(intent.class)
             && intent.class != Class::AgentWrite
-            && !facts.ps.holds_keys()
         {
-            assert!(
-                !plan.outcome.is_hold()
-                    && plan.outcome != Outcome::Hint
-                    && !matches!(plan.outcome, Outcome::Swallow(_)),
-                "the CLI-agent submit was held: {plan:?}"
+            let paced = facts.gates.has(GateKind::CliSubmit);
+            let ssh_only = facts.gates.all_within(&[GateKind::SshConnect]);
+            let setup_held = matches!(
+                facts.subshell,
+                SubshellPhase::SetupHeld | SubshellPhase::BootstrapWriting
             );
+            let not_held = !plan.outcome.is_hold()
+                && plan.outcome != Outcome::Hint
+                && !matches!(plan.outcome, Outcome::Swallow(_));
+            if facts.ps.holds_keys() {
+                assert_eq!(
+                    plan.outcome,
+                    Outcome::Hold(GateKind::PowershellSetup),
+                    "{plan:?}"
+                );
+            } else if paced {
+                assert!(not_held, "the paced CLI-agent submit was held: {plan:?}");
+            } else if (facts.gates.is_empty() || ssh_only)
+                && !facts.queued
+                && !facts.mailbox_non_empty
+                && !setup_held
+            {
+                assert!(not_held, "the idle CLI-agent submit was held: {plan:?}");
+            } else if !facts.subshell_awaiting_answer
+                && ((!facts.gates.is_empty() && !ssh_only) || setup_held)
+            {
+                assert!(
+                    plan.outcome.is_hold(),
+                    "the unpaced CLI-agent submit passed a gate: {plan:?}"
+                );
+            }
         }
         if intent.origin == Origin::Editor
             && !is_signal(intent.class)

@@ -387,8 +387,9 @@ pub enum Origin {
     Synced,
     /// Bytes a shared-session viewer wrote (`write_viewer_bytes_to_pty`).
     Viewer,
-    /// The paced CLI-agent submit's own pieces (`write_cli_submit_bytes`): exempt from the holds
-    /// except an open PowerShell setup (#1601).
+    /// The CLI-agent submit's own pieces (`write_cli_submit_bytes`). Paced (its `CliSubmit` gate
+    /// is open): held only by an open PowerShell setup (#1601); unpaced: also held behind the
+    /// gates and queue a key waits behind, as `offer_to_paste_queue` does (#1601b).
     CliSubmit,
     /// The agent wrote it (`write_agent_bytes_to_pty`).
     Agent,

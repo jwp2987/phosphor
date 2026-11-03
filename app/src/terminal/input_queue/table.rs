@@ -23,7 +23,7 @@
 //! |---|---|---|
 //! | `OSynced` | origin Synced, not (a pending or bootstrapped session and a running command) | `Drop(NotLongRunning)` |
 //! | `D13` | agent write, setup gate or ssh remote setup | `Drop(AgentRefusedSetup)`, else `Pty(Agent)` |
-//! | `OCliSubmit` | origin CliSubmit: exempt from every hold but the PowerShell setup (#1601: held, row `H6`, like legacy) | `Pty(CliSubmit)` or `Drop(AgentControl)` |
+//! | `OCliSubmit` | origin CliSubmit (#1601b, see [`decide_cli_submit`]): PACED (a `CliSubmit` gate is open): held only by the PowerShell setup (`H6`); UNPACED: also held as any key is by the Enter-verdict / tab-completion gates (`H5`), the subshell gates (`H7`), any other gate but an ssh-only set (`H8`) and the queue (`H8-queue`) | `Pty(CliSubmit)` + `CONSULT_ORACLE`, or `Drop(AgentControl)` |
 //! | `H1` | Typed/Paste, stamped focus is the ssh choice card | `Hint` |
 //! | `H4` | ssh prompt up, the stamp is older than `prompt_gen` (OD-7) | `Drop(StaleBeforePrompt)` |
 //! | `H2` | Typed/Enter/Control/Paste, the ssh setup dialog is up | `Swallow(SshDialogOpen)` |
@@ -583,6 +583,111 @@ fn pty_plan(intent: &Intent, outcome: Outcome, row: Row, effects: Effects) -> Pl
     Plan::new(outcome, row, fx)
 }
 
+/// Rows H7, H7b, H8 and H8-queue: the subshell setup / bootstrap-write gate, any other open gate
+/// (the matrix, [`gate_holds`]), and the queued entries or the mailbox. `None`: nothing of these
+/// holds the input. Shared by the content hold rows and the unpaced CLI-agent submit
+/// ([`decide_cli_submit`]), which the legacy writer offers to the same queue.
+fn setup_and_queue_holds(i: &Intent, f: &RouteFacts, fx: Effects) -> Option<Plan> {
+    let class = i.class;
+    let editor_origin = i.origin == Origin::Editor;
+    // H7b: the shell asks for something and only subshell/PowerShell gates are open: typing is
+    // the answer, so the subshell holds (and the matrix) let it through.
+    let only_setup_gates = f.gates.is_empty()
+        || f.gates.all_within(&[
+            GateKind::SubshellSetup,
+            GateKind::SubshellBootstrapWrite,
+            GateKind::PowershellSetup,
+        ]);
+    let bypass_holds = f.subshell_awaiting_answer
+        && only_setup_gates
+        && f.subshell != SubshellPhase::BootstrapWriting
+        && !f.ps.is_active();
+    if !bypass_holds {
+        if !editor_origin {
+            match f.subshell {
+                SubshellPhase::SetupHeld => {
+                    return Some(Plan::new(
+                        Outcome::Hold(GateKind::SubshellSetup),
+                        Row::H7,
+                        fx,
+                    ));
+                }
+                SubshellPhase::BootstrapWriting => {
+                    return Some(Plan::new(
+                        Outcome::Hold(GateKind::SubshellBootstrapWrite),
+                        Row::H7,
+                        fx,
+                    ));
+                }
+                SubshellPhase::Idle | SubshellPhase::Announced => {}
+            }
+        }
+        if gate_holds(f, class, i.origin) {
+            return Some(Plan::new(Outcome::Hold(first_gate(f)), Row::H8, fx));
+        }
+        if !i.delivering && (f.mailbox_non_empty || (f.queued && f.gates.is_empty())) {
+            return Some(Plan::new(Outcome::Queue, Row::H8Queue, fx));
+        }
+    } else if !i.delivering && f.mailbox_non_empty {
+        // The bypass lets a key past the subshell gates, never past earlier operations.
+        return Some(Plan::new(Outcome::Queue, Row::H8Queue, fx));
+    }
+    None
+}
+
+/// Row `O-cli-submit` (#1601b, owner decision): the table's model of a CLI-agent submit states
+/// exactly what the legacy writer (`write_cli_submit_bytes`) does with the bytes. Whether the
+/// submit is PACED is a fact of the gate mask: the paced submit owns a `CliSubmit` gate
+/// (`begin_cli_submit_gate`) for as long as it writes its pieces.
+///
+/// * **Paced** (`CliSubmit` gate open): the bytes go straight to
+///   `write_user_bytes_to_pty_after_paste_stage`: only the PowerShell hold (`H6`, `PsPhase::holds_keys`) and the stage's agent check and hand-off apply. No other gate holds it: the
+///   keys the user types meanwhile wait for the gate, the submit must not wait behind itself.
+/// * **Unpaced** (no `CliSubmit` gate): `write_user_bytes_to_pty` runs `prepare_subshell_gates`
+///   (the setup / bootstrap-write gates `H7`, with the same bypass `H7b` when the shell asks for an
+///   answer), then `offer_to_paste_queue`, which holds the bytes behind ANY open gate or queued
+///   entry (`holds_keys`: paste reading, Enter verdict, tab completion, the hand-off's gates, the
+///   queue itself, leftover PowerShell entries) except when only the ssh connect gate is open (the
+///   ssh hold holds its own keys; this is a pass-through): the rows are `H5` for the Enter-verdict
+///   and tab-completion gates and `H7` / `H8` / `H8-queue` for the rest, with the outcomes every
+///   other key gets for those gates. An abort byte (the `Stashed` / `HeldInOrder` cases of
+///   `prepare_subshell_gates`) is a signal and is judged by the signal rows, not here.
+///
+/// Both then reach `write_user_bytes_to_pty_after_paste_stage`: the PowerShell hold, then D4/D5
+/// (the take-over; a command the agent still controls refuses the write) and the typeahead
+/// hand-off, which is the oracle ([`Effects::CONSULT_ORACLE`] on the `Pty` plan, exactly as for a
+/// typed key). The hand-off's `Held` answer is the hand-off writing the bytes later; the shadow
+/// calls both `Pty` ("handed to a hold of the hand-off"), so the plan needs no further fact for it.
+fn decide_cli_submit(i: &Intent, f: &RouteFacts) -> Plan {
+    // #1601: an open PowerShell setup holds the submit like every other key. It is released, once
+    // and in typed order with the keys held with it, by the setup's closing event. It is checked
+    // before D4/D5, as the legacy hold is, so a held submit is not judged by them yet.
+    if f.ps.holds_keys() {
+        return Plan::new(
+            Outcome::Hold(GateKind::PowershellSetup),
+            Row::H6,
+            Effects::NONE,
+        );
+    }
+    let paced = f.gates.has(GateKind::CliSubmit);
+    if !paced {
+        for gate in [GateKind::EnterVerdict, GateKind::TabCompletion] {
+            if f.gates.has(gate) {
+                return Plan::new(Outcome::Hold(gate), Row::H5, Effects::NONE);
+            }
+        }
+        if let Some(plan) = setup_and_queue_holds(i, f, Effects::NONE) {
+            return plan;
+        }
+    }
+    let (agent, fx) = take_over(i, f);
+    if agent {
+        drop_plan(DropWhy::AgentControl, Row::D5, fx)
+    } else {
+        pty_plan(i, Outcome::Pty(PtyWrite::CliSubmit), Row::OCliSubmit, fx)
+    }
+}
+
 fn decide_content(i: &Intent, f: &RouteFacts) -> Plan {
     let class = i.class;
     // ---- origin rows that come before anything ----
@@ -599,24 +704,7 @@ fn decide_content(i: &Intent, f: &RouteFacts) -> Plan {
         };
     }
     if i.origin == Origin::CliSubmit {
-        // #1601 (owner decision): an open PowerShell setup holds the submit like every other
-        // key, as the legacy writer does (`write_user_bytes_to_pty_after_paste_stage` checks the
-        // hold before D4/D5, so a held submit is not judged by them yet). It is released, once and
-        // in typed order with the keys held with it, by the setup's closing event.
-        if f.ps.holds_keys() {
-            return Plan::new(
-                Outcome::Hold(GateKind::PowershellSetup),
-                Row::H6,
-                Effects::NONE,
-            );
-        }
-        // Exempt from every other hold; still through D4/D5 and the oracle, as `after_paste_stage`.
-        let (agent, fx) = take_over(i, f);
-        return if agent {
-            drop_plan(DropWhy::AgentControl, Row::D5, fx)
-        } else {
-            pty_plan(i, Outcome::Pty(PtyWrite::CliSubmit), Row::OCliSubmit, fx)
-        };
+        return decide_cli_submit(i, f);
     }
 
     // ---- hold rows ----
@@ -668,39 +756,8 @@ fn decide_content(i: &Intent, f: &RouteFacts) -> Plan {
     if !editor_origin && f.ps.holds_keys() {
         return Plan::new(Outcome::Hold(GateKind::PowershellSetup), Row::H6, fx);
     }
-    // H7b: the shell asks for something and only subshell/PowerShell gates are open: typing is
-    // the answer, so the subshell holds (and the matrix) let it through.
-    let only_setup_gates = f.gates.is_empty()
-        || f.gates.all_within(&[
-            GateKind::SubshellSetup,
-            GateKind::SubshellBootstrapWrite,
-            GateKind::PowershellSetup,
-        ]);
-    let bypass_holds = f.subshell_awaiting_answer
-        && only_setup_gates
-        && f.subshell != SubshellPhase::BootstrapWriting
-        && !f.ps.is_active();
-    if !bypass_holds {
-        if !editor_origin {
-            match f.subshell {
-                SubshellPhase::SetupHeld => {
-                    return Plan::new(Outcome::Hold(GateKind::SubshellSetup), Row::H7, fx);
-                }
-                SubshellPhase::BootstrapWriting => {
-                    return Plan::new(Outcome::Hold(GateKind::SubshellBootstrapWrite), Row::H7, fx);
-                }
-                SubshellPhase::Idle | SubshellPhase::Announced => {}
-            }
-        }
-        if gate_holds(f, class, i.origin) {
-            return Plan::new(Outcome::Hold(first_gate(f)), Row::H8, fx);
-        }
-        if !i.delivering && (f.mailbox_non_empty || (f.queued && f.gates.is_empty())) {
-            return Plan::new(Outcome::Queue, Row::H8Queue, fx);
-        }
-    } else if !i.delivering && f.mailbox_non_empty {
-        // The bypass lets a key past the subshell gates, never past earlier operations.
-        return Plan::new(Outcome::Queue, Row::H8Queue, fx);
+    if let Some(plan) = setup_and_queue_holds(i, f, fx) {
+        return plan;
     }
     if class == Class::EditKey && i.needs_display_map && !i.flushing && !i.display_map_fresh {
         return Plan::new(Outcome::Hold(GateKind::EditorDisplayMap), Row::H10, fx);
