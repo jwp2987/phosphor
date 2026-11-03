@@ -28,8 +28,8 @@ class Backend:
     name = "base"
     key_floor_ms = 0.0   # measured cost of one input-tool invocation (harness overhead), filled by calibrate()
 
-    inject_log = None        # path of <run>/inject.log (set by Ctx); only the Mac backend records injector calls so far (#1482)
-    calls = None             # per-injector-call records, in order (Mac only); None = this backend cannot say what it posted
+    inject_log = None        # path of <run>/inject.log (set by Ctx); Mac, Windows and (since #1509) Wayland/X11 record injector calls
+    calls = None             # per-injector-call records, in order; None = this backend cannot say what it posted
 
     def preflight(self):
         return []
@@ -37,6 +37,41 @@ class Backend:
     def inject_enter(self, idx):
         """what the injector says about the Enter of the idx-th recorded call: (posted: bool, text) or None when unknown"""
         return None
+
+    def record_injection(self, argv, t0, t1, err=None):
+        """Linux (#1509): one record per logical injector call, in the shape the Mac/Windows backends keep (chars, special, enters_*), in self.calls
+        and <run>/inject.log. Typed characters are a COUNT only; named keys are logged in full. `ref` marks keys aimed at a reference terminal
+        (guard_override), which the app-side join must not expect Phosphor to have seen."""
+        if self.calls is None:
+            return
+        p = parse_injector(argv)
+        enters = [k for k in p["keys"] if k.lower() in ("return", "kp_enter")]
+        ok = err is None
+        rec = dict(n=len(self.calls), wall0=t0, wall1=t1, enters_want=len(enters), enters_posted=len(enters) if ok else 0,
+                   enter_wall=[t0] * len(enters) if ok else [], chars=p["chars"], special=["%s@%.3f" % (k, t0) for k in p["keys"]],
+                   err=err, out=True, span_ms=(t1 - t0) * 1000, ref=bool(getattr(self, "guard_override", None)), tool=argv[0])
+        self.calls.append(rec)
+        if self.inject_log:
+            try:
+                with open(self.inject_log, "a") as f:
+                    f.write("call=%d tool=%s wall=%.3f..%.3f chars=%d span_ms=%.0f enters_want=%d enters_posted=%d out=True%s%s %s\n" % (
+                        rec["n"], rec["tool"], t0, t1, rec["chars"], rec["span_ms"], rec["enters_want"], rec["enters_posted"],
+                        (" ERR=" + err) if err else "", " REF" if rec["ref"] else "", " ".join(rec["special"])))
+            except OSError:
+                pass
+
+    def run_recorded(self, cmds):
+        """run the injector commands of ONE logical call (xdotool type + key Return is two processes) and record them as one call"""
+        t0 = time.time()
+        err = None
+        try:
+            for c in cmds:
+                _run(c)
+        except Exception as e:
+            err = "%s: %s" % (type(e).__name__, str(e)[:120])
+            raise
+        finally:
+            self.record_injection(cmds[0] + [t for c in cmds[1:] for t in c[1:]], t0, time.time(), err)
 
     def type(self, text, delay_ms=15, enter=False):
         raise NotImplementedError
@@ -105,6 +140,74 @@ def focus_matches(want, got):
     return (got.get("app_id") or got.get("class") or "").lower() in want.get("names", ())
 
 
+MODIFIER_KEYS = {"shift", "control", "ctrl", "alt", "super", "logo", "meta", "cmd", "hyper", "caps_lock", "iso_level3_shift", "altgr"}
+
+
+def is_modifier(name):
+    n = name.lower()
+    for sfx in ("_l", "_r"):
+        if n.endswith(sfx):
+            n = n[:-2]
+    return n in MODIFIER_KEYS
+
+
+def parse_injector(argv):
+    """What one wtype / xdotool invocation (xdotool may chain verbs) asks for: {"chars": n typed characters (a COUNT, never the text: typed text
+    can be a password), "keys": [names of non-modifier keys pressed, in order]}. Modifier taps (the wtype priming Shift_L) are not keys (#1509)."""
+    chars, keys = 0, []
+    if not argv:
+        return dict(chars=0, keys=[])
+    if argv[0] == "wtype":
+        a, i = argv[1:], 0
+        while i < len(a):
+            t = a[i]
+            if t in ("-d", "-s", "-M", "-m", "-p"):
+                i += 2
+            elif t in ("-k", "-P"):
+                if i + 1 < len(a) and not is_modifier(a[i + 1]):
+                    keys.append(a[i + 1])
+                i += 2
+            elif t == "--":
+                i += 1
+            elif t.startswith("-") and len(t) == 2:
+                i += 1
+            else:
+                chars += len(t)
+                i += 1
+    elif argv[0] == "xdotool":
+        verbs = {"type", "key", "keydown", "keyup", "sleep", "windowfocus", "search", "getwindowfocus"}
+        a, i = argv[1:], 0
+        while i < len(a):
+            v = a[i]
+            i += 1
+            if v == "type":
+                while i < len(a) and a[i] in ("--delay", "--window", "--args"):
+                    i += 2
+                if i < len(a) and a[i] == "--":
+                    i += 1
+                if i < len(a):
+                    chars += len(a[i])
+                    i += 1
+            elif v == "key":
+                while i < len(a) and a[i] not in verbs:
+                    if a[i] in ("--delay", "--window", "--repeat"):
+                        i += 2
+                    elif a[i].startswith("--"):
+                        i += 1
+                    else:
+                        last = a[i].split("+")[-1] or "plus"
+                        if not is_modifier(last):
+                            keys.append(last)
+                        i += 1
+            elif v == "keydown":
+                if i < len(a) and not is_modifier(a[i]):
+                    keys.append(a[i])
+                i += 1
+            elif v in ("keyup", "sleep"):
+                i += 1
+    return dict(chars=chars, keys=keys)
+
+
 INJECT_TIMEOUT_S = 120      # a wedged wtype/xdotool must not hang the case (#1508)
 
 
@@ -140,6 +243,7 @@ class WaylandBackend(Backend):
         # "persistent" (the seat always has a keyboard; every wtype call is a second device), "percall" (none held: the old behaviour,
         # a keyboard created and destroyed per call) or unset when the backend runs outside that script. Reported by key_loss_control.
         self.injector_mode = os.environ.get("APPCI_WL_INJECTOR", "unknown")
+        self.calls = []       # injector accounting (#1509)
 
     def preflight(self):
         p = []
@@ -193,7 +297,9 @@ class WaylandBackend(Backend):
     def _wtype(self, args, prime=True):
         if prime and self.prime_ms > 0:
             args = ["-k", "Shift_L", "-s", str(self.prime_ms)] + args
-        return _run(["wtype"] + args)
+        if prime:
+            return self.run_recorded([["wtype"] + args])
+        return _run(["wtype"] + args)     # noop(): the calibration probe is not a key
 
     def type_lines(self, lines, delay_ms=15, gap_ms=300):
         a = []
@@ -297,6 +403,9 @@ class WaylandBackend(Backend):
 class X11Backend(Backend):
     name = "x11"
 
+    def __init__(self):
+        self.calls = []       # injector accounting (#1509)
+
     def preflight(self):
         p = [("missing tool: " + t) for t in ("xdotool", "xsel") if not shutil.which(t)]
         if not shutil.which("ffmpeg") and not shutil.which("import"):
@@ -312,17 +421,18 @@ class X11Backend(Backend):
             self.guard()
 
     def type(self, text, delay_ms=15, enter=False):
-        _run(["xdotool", "type", "--delay", str(int(delay_ms)), "--", text])
+        cmds = [["xdotool", "type", "--delay", str(int(delay_ms)), "--", text]]
         if enter:
-            _run(["xdotool", "key", "--delay", "0", "Return"])
+            cmds.append(["xdotool", "key", "--delay", "0", "Return"])
+        self.run_recorded(cmds)
 
     def key(self, spec, repeat=1, delay_ms=15):
         mods, k = split_key(spec)
         x = "+".join(mods + [k])
-        _run(["xdotool", "key", "--delay", str(int(delay_ms))] + [x] * repeat)
+        self.run_recorded([["xdotool", "key", "--delay", str(int(delay_ms))] + [x] * repeat])
 
     def keys(self, specs, delay_ms=15):
-        _run(["xdotool", "key", "--delay", str(int(delay_ms))] + ["+".join(split_key(s)[0] + [split_key(s)[1]]) for s in specs])
+        self.run_recorded([["xdotool", "key", "--delay", str(int(delay_ms))] + ["+".join(split_key(s)[0] + [split_key(s)[1]]) for s in specs]])
 
     def roll(self, text, overlap_ms=10, enter=True):
         cmd, prev = ["xdotool"], None
@@ -337,7 +447,7 @@ class X11Backend(Backend):
             cmd += ["keyup", prev]
         if enter:
             cmd += ["key", "Return"]
-        _run(cmd)
+        self.run_recorded([cmd])
 
     def noop(self):
         _run(["xdotool", "keyup", "shift"])

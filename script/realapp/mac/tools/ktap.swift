@@ -1,7 +1,9 @@
 // ktap: pass-through observer of Return/Enter key events at the ANNOTATED session tap (#1482), where macOS has already chosen
 // the target process. For every keyCode 36/76 keyDown/keyUp it logs one line and returns the event UNCHANGED: it never drops,
-// delays or edits an event. No typed text is logged (Return only, and only its key code, never characters).
-// Line: E <down|up> keycode=<n> ts_ns=<CGEvent timestamp> target_pid=<n> source_pid=<n> wall=<epoch s>
+// delays or edits an event. No typed text is logged (key codes only, never characters).
+// Line: E <down|up> keycode=<n> ts_ns=<CGEvent timestamp> target_pid=<n> source_pid=<n> wall=<epoch s>     (Return/Enter, down and up)
+//       K down keycode=<n> ts_ns=<CGEvent timestamp> target_pid=<n> source_pid=<n> wall=<epoch s>          (every OTHER key-down, #1509: so
+//       enter_route.py can say how many of the keys the injector posted reached which process; no key-ups, no characters)
 // Started by script/realapp/mac/ci/app_test.sh for the whole run (exact PID in the run's pids file, stopped by its trap / teardown.sh);
 // script/realapp/mac/ci/enter_route.py matches each Enter to Phosphor's own `hop=mac_enter stage=app_send_event ts=` line by timestamp.
 // Needs the Accessibility permission the job's process chain already has for htype2 (an active tap); if the tap cannot be created
@@ -29,6 +31,9 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     let code = event.getIntegerValueField(.keyboardEventKeycode)
     if code == 36 || code == 76 {
       let line = "E \(type == .keyDown ? "down" : "up") keycode=\(code) ts_ns=\(event.timestamp) target_pid=\(event.getIntegerValueField(.eventTargetUnixProcessID)) source_pid=\(event.getIntegerValueField(.eventSourceUnixProcessID)) wall=\(String(format: "%.6f", Date().timeIntervalSince1970))\n"
+      lock.lock(); pending.append(line); lock.unlock()
+    } else if type == .keyDown {
+      let line = "K down keycode=\(code) ts_ns=\(event.timestamp) target_pid=\(event.getIntegerValueField(.eventTargetUnixProcessID)) source_pid=\(event.getIntegerValueField(.eventSourceUnixProcessID)) wall=\(String(format: "%.6f", Date().timeIntervalSince1970))\n"
       lock.lock(); pending.append(line); lock.unlock()
     }
   }

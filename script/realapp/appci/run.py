@@ -11,7 +11,7 @@
 import argparse, json, os, shutil, subprocess, sys, time, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import backend, cases, profile, sshd, winmap, app as appmod  # noqa: E402
+import backend, cases, injacct, profile, sshd, winmap, app as appmod  # noqa: E402
 
 
 def skip_status(r, why):
@@ -295,6 +295,7 @@ def main():
                 r = cases.Result(c["name"], mode)
                 t0 = time.time()
                 ctx.t_case0 = t0
+                k_start = len(be.calls) if getattr(be, "calls", None) is not None else None     # injector accounting (#1509)
                 status = "pass"
                 disarm = arm_case_timeout(case_timeout)
                 try:
@@ -316,6 +317,14 @@ def main():
                     traceback.print_exc()
                 finally:
                     disarm()
+                if k_start is not None and a.backend in ("wayland", "x11", "mac") and not sim:
+                    try:       # informational (#1509): injector sent N; app saw M; lost-before-app K
+                        txt, acct = injacct.account(be.calls[k_start:], log_path, c["name"])
+                        if txt:
+                            r.note("injector accounting: " + txt)
+                            r.metrics["injector"] = acct
+                    except Exception as e:
+                        r.note("injector accounting failed: %r" % e)
                 shot = None if sim else ctx.shot(c["name"] + ("_FAIL" if status == "fail" else ""))
                 dead = app.death() if hasattr(app, "death") else (None if app is None or app.alive() else "APP DIED during/after this case (crash): see logs/app.stdout")
                 if dead:
