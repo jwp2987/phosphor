@@ -885,7 +885,7 @@ impl TerminalView {
             // never signalled (#1349), or the window's Enter was never acted on:
             // * keys with no Enter, at a prompt whose line holds nothing typed, go back to the
             //   editor as shell-routed text (visible, logged with counts), and the editor takes
-            //   input over;
+            //   input over -- with an Enter too when the shell has never signalled;
             // * a segment with an Enter (or one that cannot go back in order) stays held: the cap
             //   is armed again, a toast says input is waiting for the shell, and the events
             //   release it (the signal, the precmd's wait, a command becoming interactive, a
@@ -896,8 +896,19 @@ impl TerminalView {
                 self.hand_back_prompt_hold_keys(key, token, true, ctx);
                 return;
             }
-            let can_hand_back = !self.prompt_hold_segment_has_enter(key)
-                && self.handoff.read().prompt_hold_can_hand_back(key);
+            // A shell that has never signalled will not signal for this prompt either: a segment
+            // with an Enter kept for it would be kept forever, so at a clean prompt it goes back
+            // too (the Enter as a newline in the editor, never run). Only an enter window's
+            // segment (the shell's state unknown) stays held for its events.
+            let (clean_prompt, never_signalled) = {
+                let handoff = self.handoff.read();
+                (
+                    handoff.prompt_hold_can_hand_back(key),
+                    handoff.prompt_hold_shell_never_signalled(key),
+                )
+            };
+            let can_hand_back =
+                clean_prompt && (never_signalled || !self.prompt_hold_segment_has_enter(key));
             if can_hand_back {
                 self.hand_back_prompt_hold_keys(key, token, false, ctx);
             } else {
@@ -1079,24 +1090,30 @@ impl TerminalView {
         }
     }
 
-    /// A signal or EOF is about to be written while keys are held for the prompt in the queue:
-    /// the held keys come back in front of `bytes`, one write in typed order, so an Enter among
-    /// them runs before a ^C reaches it (#1162), as the hand-off's own buffer did. Anything else
-    /// passes through untouched.
+    /// A signal or EOF is about to be written while keys are held for the prompt in the queue.
+    /// For a lone EOF (^D) the held keys come back in front of `bytes`, one write in typed order:
+    /// the tty keeps typeahead across EOF. For an interrupt (^C, ^Z, ^\\) the held pty keys are
+    /// VOID (#1584, the table's `VoidHeldThenSignal`): a real tty flushes its typeahead on them, and
+    /// prepending them made `ls\r` + ^C run `ls`. They are dropped with a counted log; editor entries
+    /// in the segment still reach the editor. Anything else passes through untouched.
     pub(super) fn prepend_queued_prompt_hold_to_signal(
         &mut self,
         bytes: Cow<'static, [u8]>,
         ctx: &mut ViewContext<Self>,
     ) -> Cow<'static, [u8]> {
-        if !bytes.iter().any(super::is_signal_byte)
-            || !self
-                .paste_queue
-                .queue
-                .try_peek()
-                .is_some_and(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
-        {
+        if !bytes.iter().any(super::is_signal_byte) {
             return bytes;
         }
+        let Some(next_id) = self
+            .paste_queue
+            .queue
+            .try_peek()
+            .filter(|queue| queue.has_gate_kind(GateKind::LineEditorActive))
+            .map(|queue| queue.peek_next_id())
+        else {
+            return bytes;
+        };
+        let voids = bytes.iter().any(|byte| matches!(byte, 0x03 | 0x1a | 0x1c));
         let hold_id = {
             self.handoff
                 .write()
@@ -1108,17 +1125,28 @@ impl TerminalView {
         let queue = self.paste_queue.queue.clone();
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
-                // The hold was already taken from the hand-off: its keys are released by the
-                // next operation instead of waiting for the cap.
-                queue.defer(Deferred::ReleasePromptHold {
-                    hold_id,
-                    gave_up: false,
-                });
+                // The hold was already taken from the hand-off: its keys are released (EOF) or
+                // voided (an interrupt) by the next operation instead of waiting for the cap.
+                if voids {
+                    queue.defer(Deferred::VoidPromptHold {
+                        hold_id,
+                        before: next_id,
+                    });
+                } else {
+                    queue.defer(Deferred::ReleasePromptHold {
+                        hold_id,
+                        gave_up: false,
+                    });
+                }
                 return bytes;
             };
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
         };
+        if voids {
+            self.void_prompt_hold_entries(hold_id, entries, None, ctx);
+            return bytes;
+        }
         let mut combined = self.bytes_of_taken_entries(entries, ctx).concat();
         trace::release(trace::legacy::HANDOFF, 1, combined.len(), "pty");
         combined.extend_from_slice(&bytes);
@@ -1503,35 +1531,105 @@ impl TerminalView {
     ) -> Vec<Vec<u8>> {
         let mut chunks = Vec::with_capacity(entries.len());
         for entry in entries {
-            // An entry of the editor side that ended up in this gate's segment (the queue is
-            // shared with the editor): never lost, delivered to the editor.
-            if !is_pty_entry(&entry.kind) {
-                // The gate this entry waited behind is gone, so it must not wait for anything
-                // else either: `flushing_now` applies a key that reads the display map at once
-                // instead of answering `Requeue` for a gate that does not exist (#1416).
-                let outcome =
-                    self.deliver_editor_entry(&entry, &mut FollowUps::flushing_now(), ctx);
-                if outcome != DeliverOutcome::Delivered {
-                    log::warn!(
-                        "input queue: an editor entry taken out of a gate answered {outcome:?}"
-                    );
-                }
-                continue;
-            }
-            match entry.kind {
-                EntryKind::PtyBytes { bytes, .. } => chunks.push(bytes),
-                EntryKind::Paste { paste_id, .. } => {
-                    match self.paste_queue.payloads.remove(&paste_id) {
-                        Some(bytes) => chunks.push(bytes),
-                        None => log::warn!("input queue: held paste {paste_id} had no bytes"),
-                    }
-                }
-                other => log::warn!(
-                    "input queue: a prompt hold held an entry it cannot release: {other:?}"
-                ),
+            if let Some(bytes) = self.take_entry_bytes(entry, ctx) {
+                chunks.push(bytes);
             }
         }
         chunks
+    }
+
+    /// One entry taken out of a hand-off gate: an entry of the editor side that ended up in this
+    /// gate's segment (the queue is shared with the editor) is delivered to the editor now, never
+    /// lost, and gives `None`; a pty entry gives its bytes.
+    fn take_entry_bytes(
+        &mut self,
+        entry: InputEntry,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<Vec<u8>> {
+        if !is_pty_entry(&entry.kind) {
+            // The gate this entry waited behind is gone, so it must not wait for anything else
+            // either: `flushing_now` applies a key that reads the display map at once instead of
+            // answering `Requeue` for a gate that does not exist (#1416).
+            let outcome = self.deliver_editor_entry(&entry, &mut FollowUps::flushing_now(), ctx);
+            if outcome != DeliverOutcome::Delivered {
+                log::warn!("input queue: an editor entry taken out of a gate answered {outcome:?}");
+            }
+            return None;
+        }
+        match entry.kind {
+            EntryKind::PtyBytes { bytes, .. } => Some(bytes),
+            EntryKind::Paste { paste_id, .. } => {
+                let bytes = self.paste_queue.payloads.remove(&paste_id);
+                if bytes.is_none() {
+                    log::warn!("input queue: held paste {paste_id} had no bytes");
+                }
+                bytes
+            }
+            other => {
+                log::warn!("input queue: a prompt hold held an entry it cannot release: {other:?}");
+                None
+            }
+        }
+    }
+
+    /// #1584: the entries of prompt hold `hold_id`, taken because an interrupt voided it. The pty
+    /// keys held before the signal (all of them, or the ids below `before` when the void ran
+    /// deferred) are dropped, as the tty flushes its typeahead on the interrupt, with a counted
+    /// log; editor entries are delivered in order; pty keys that arrived after the signal go out,
+    /// in order, counted by the hand-off (the hold is over, they are live keys).
+    fn void_prompt_hold_entries(
+        &mut self,
+        hold_id: u64,
+        entries: Vec<InputEntry>,
+        before: Option<crate::terminal::input_queue::EntryId>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut dropped_chunks = 0usize;
+        let mut dropped_bytes = 0usize;
+        let mut after: Vec<Vec<u8>> = Vec::new();
+        for entry in entries {
+            let held_before_signal = before.is_none_or(|before| entry.id < before);
+            if let Some(bytes) = self.take_entry_bytes(entry, ctx) {
+                if held_before_signal {
+                    dropped_chunks += 1;
+                    dropped_bytes += bytes.len();
+                } else {
+                    after.push(bytes);
+                }
+            }
+        }
+        log::info!(
+            "typeahead prompt hold {hold_id}: an interrupt voided {dropped_chunks} held chunk(s), \
+             {dropped_bytes} byte(s) (the tty flushes typeahead on it); none reached the pty"
+        );
+        warpui::input_order::log_hop("prompt_hold_voided", || {
+            format!(
+                "hold={hold_id} chunks={dropped_chunks} bytes={dropped_bytes} after={}",
+                after.len()
+            )
+        });
+        let mut absorbed: Vec<(u64, Vec<u8>)> = Vec::new();
+        let mut writes: Vec<Vec<u8>> = Vec::new();
+        {
+            let mut handoff = self.handoff.write();
+            handoff.finish_queued_prompt_hold(hold_id);
+            for chunk in after {
+                if handoff.route_released_chunk(&chunk) {
+                    writes.push(chunk);
+                } else if let Some(gate) = handoff.take_deferred_key_started() {
+                    // An Enter was deferred meanwhile: the key is typed behind it.
+                    absorbed.push((gate, chunk));
+                }
+            }
+        }
+        for (gate, chunk) in absorbed {
+            self.hold_deferred_key_in_queue(gate, chunk, true, ctx);
+        }
+        for bytes in writes {
+            ctx.emit(Event::WriteHandoffUserBytesToPty {
+                bytes: Cow::Owned(bytes),
+            });
+        }
     }
 
     /// #1584: whether the keys held behind prompt hold gate `hold_id` include an Enter (a held
@@ -1592,43 +1690,73 @@ impl TerminalView {
             let mut host = PtyQueueHost::new(self, ctx);
             guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
         };
-        let chunks = self.bytes_of_taken_entries(entries, ctx);
-        let held: Vec<u8> = chunks.concat();
         let committed = {
             let mut handoff = self.handoff.write();
             handoff.expire_queued_prompt_hold(hold_id);
             handoff.finish_queued_prompt_hold(hold_id);
             !gone && handoff.try_commit_at_prompt()
         };
-        let text = text_for_editor(&held);
-        log::warn!(
-            "typeahead prompt hold {hold_id} gave up: {} chunk(s), {} byte(s) handed back to the \
-             editor as text (gone={gone}, committed={committed}); nothing written to the pty",
-            chunks.len(),
-            held.len()
-        );
-        warpui::input_order::log_hop("prompt_hold_handed_back", || {
-            format!(
-                "hold={hold_id} chunks={} bytes={} chars={} gone={gone} committed={committed}",
-                chunks.len(),
-                held.len(),
-                text.chars().count()
-            )
-        });
         if committed {
             self.handle_typeahead_handoff_changed(ctx);
         }
-        if !text.is_empty() {
-            self.input.update(ctx, |input, ctx| {
-                input.system_insert(&text, ctx);
-                if !gone && forces_shell_submit(&text) {
-                    input.submit_next_enter_as_shell_command();
-                }
-            });
+        // In typed order across both sides of the queue: pty keys accumulate as one run of text;
+        // an editor entry first puts the run before it into the editor, then is delivered itself.
+        let mut run: Vec<u8> = Vec::new();
+        let (mut chunks, mut bytes, mut chars) = (0usize, 0usize, 0usize);
+        let mut inserted = false;
+        for entry in entries {
+            if !is_pty_entry(&entry.kind) {
+                self.insert_handed_back_run(&mut run, &mut chars, &mut inserted, ctx);
+            }
+            if let Some(chunk) = self.take_entry_bytes(entry, ctx) {
+                chunks += 1;
+                bytes += chunk.len();
+                run.extend_from_slice(&chunk);
+            }
         }
+        self.insert_handed_back_run(&mut run, &mut chars, &mut inserted, ctx);
+        if inserted {
+            // The text was typed for the shell: the next Enter runs it as a shell command, for a
+            // stale gate (`gone`) too.
+            self.input
+                .update(ctx, |input, _| input.submit_next_enter_as_shell_command());
+        }
+        log::warn!(
+            "typeahead prompt hold {hold_id} gave up: {chunks} chunk(s), {bytes} byte(s) handed \
+             back to the editor as text (gone={gone}, committed={committed}); nothing written to \
+             the pty"
+        );
+        warpui::input_order::log_hop("prompt_hold_handed_back", || {
+            format!(
+                "hold={hold_id} chunks={chunks} bytes={bytes} chars={chars} gone={gone} \
+                 committed={committed}"
+            )
+        });
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
         ctx.emit(Event::RetryTypeaheadHandoffRequest);
+    }
+
+    /// Puts the run of pty keys handed back so far into the editor as text (#1584), and empties it.
+    fn insert_handed_back_run(
+        &mut self,
+        run: &mut Vec<u8>,
+        chars: &mut usize,
+        inserted: &mut bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if run.is_empty() {
+            return;
+        }
+        let text = text_for_editor(run);
+        run.clear();
+        if !forces_shell_submit(&text) {
+            return;
+        }
+        *chars += text.chars().count();
+        *inserted = true;
+        self.input
+            .update(ctx, |input, ctx| input.system_insert(&text, ctx));
     }
 
     /// #1584: the give-up of prompt hold `hold_id` whose keys must not go back to the editor (they
@@ -2264,6 +2392,18 @@ impl TerminalView {
                     PromptHoldEnd::Signal
                 };
                 self.release_queued_prompt_hold(hold_id, how, ctx);
+            }
+            Deferred::VoidPromptHold { hold_id, before } => {
+                let queue = self.paste_queue.queue.clone();
+                let Some(mut guard) = queue.try_lock() else {
+                    return Err(Deferred::VoidPromptHold { hold_id, before });
+                };
+                let entries = {
+                    let mut host = PtyQueueHost::new(self, ctx);
+                    guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
+                };
+                drop(guard);
+                self.void_prompt_hold_entries(hold_id, entries, Some(before), ctx);
             }
             Deferred::ReleaseYoungHoldKeys { hold_id, routed } => {
                 self.release_young_hold_keys(hold_id, routed, ctx);

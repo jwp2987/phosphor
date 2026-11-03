@@ -14878,6 +14878,13 @@ impl Input {
         self.shell_command_submit_pending = true;
     }
 
+    /// Whether the next Enter runs as a shell command ([`Self::submit_next_enter_as_shell_command`]),
+    /// for tests.
+    #[cfg(test)]
+    pub(crate) fn shell_command_submit_pending_for_test(&self) -> bool {
+        self.shell_command_submit_pending
+    }
+
     /// Defers this Enter while the typeahead hand-off waits for the shell's report of what the
     /// user typed before the editor took over, so the buffer is submitted (or accepted by an open
     /// menu, or sent to the agent) with that text in front of it rather than as a fragment

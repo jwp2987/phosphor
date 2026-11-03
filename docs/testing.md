@@ -757,13 +757,18 @@ command), the editor takes input over, and the log says so with counts (`hop=pro
 that cannot go back in order (an enter window whose Enter the shell never acted on), stays held: the cap is armed again, a toast and one
 log line (`hop=prompt_hold_kept_overdue`) say input is waiting for the shell, and the events release it (the signal, a command becoming
 interactive, a continuation prompt, ^C or another signal key). A shell that has never signalled is not held for at later prompts (its
-keys go by the live path) until a signal shows it does.
+keys go by the live path) until a signal shows it does. Such a shell's segment at a clean prompt is handed back even with an Enter (as a
+newline, never run): its signal is not coming. An interrupt (^C, ^Z, ^\\) on held keys VOIDS them (the tty flushes typeahead on it;
+`hop=prompt_hold_voided` with counts) -- only the signal reaches the pty; a lone ^D still follows them. The hand-back keeps typed order
+across editor and pty entries, and a stale gate's keys are shell-routed too. A preexec that clears a hold's precmd wait turns it into
+an enter window, released by the latch.
 
 | layer | test | asserts |
 |---|---|---|
 | model | `typeahead_handoff_tests.rs`: `only_a_hold_at_a_clean_prompt_can_go_back_to_the_editor`, `an_overdue_hold_kept_for_the_events_is_still_released_by_the_signal` | hand-back only at a clean prompt; a kept hold keeps its wait and the signal releases it |
 | view, Legacy and Table | `view_test.rs`: `a_prompt_hold_past_its_cap_hands_its_keys_back_to_the_editor_and_writes_nothing`, `a_held_segment_with_an_enter_past_the_cap_stays_held_until_the_signal` | no signal past the cap: `ls -l` in the editor, editor owns input, zero pty writes; `ls\rx` past the cap (twice): still held, nothing written, then the signal writes it once, in order |
-| view | `view_test.rs`: `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off`, `a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys` | the give-up hands back to the editor (also from a busy queue), never writes; the never-signalling shell's next key goes by the live path |
+| view, Legacy and Table | `view_test.rs`: `an_interrupt_voids_a_kept_overdue_segment_and_only_the_signal_reaches_the_pty`, `a_hand_back_keeps_typed_order_across_editor_and_pty_entries`, `a_stale_prompt_hold_gate_hands_back_shell_routed_text`, `a_never_signalling_shell_hands_back_a_segment_with_an_enter`, `a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch`; model `a_preexec_turns_a_waiting_prompt_hold_into_an_enter_window` | ^C on a kept `ls\r`: the pty gets only `\x03`; `l`,`s`,editor `x`,` -a` → `lsx -a`; a stale gate's `ls` is shell-submitted; a never-signalling shell's `ls\rx` → editor `ls\nx`, nothing written; a preexec-cleared hold is released by the latch, once, in order |
+| view | `view_test.rs`: `a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it` (^C voids, ^D follows), `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off`, `a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys` | the give-up hands back to the editor (also from a busy queue), never writes; the never-signalling shell's next key goes by the live path |
 
 ## 3. Real-app testing
 

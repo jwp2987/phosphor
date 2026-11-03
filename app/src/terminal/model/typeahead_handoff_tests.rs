@@ -3474,3 +3474,19 @@ fn an_overdue_hold_kept_for_the_events_is_still_released_by_the_signal() {
     assert!(!handoff.prompt_hold_off_for_session());
     assert!(!handoff.keep_overdue_prompt_hold(id + 1));
 }
+
+/// A preexec while keys wait in the precmd's wait (the shell started a line it already had) turns
+/// the hold into an enter window: not overdue while the command runs, released by its latch.
+#[test]
+fn a_preexec_turns_a_waiting_prompt_hold_into_an_enter_window() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    handoff.on_preexec(true);
+    assert!(!handoff.awaiting_line_editor_signal());
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::NotYet(CONPTY_PROMPT_HOLD_GIVE_UP)
+    );
+    assert_eq!(handoff.release_enter_window_for_program(), Some(id));
+}

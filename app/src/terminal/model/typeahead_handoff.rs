@@ -1112,6 +1112,16 @@ impl TypeaheadHandoff {
             )
     }
 
+    /// #1584: whether queued prompt hold `id` waits in a precmd's wait of a shell that has never
+    /// answered one with a ready signal: the signal is not coming, so a hold kept for it would
+    /// be kept forever.
+    pub fn prompt_hold_shell_never_signalled(&self, id: u64) -> bool {
+        id == self.prompt_hold_id
+            && self.prompt_hold_queued
+            && self.awaiting_line_editor_since.is_some()
+            && !self.line_editor_signal_seen
+    }
+
     /// #1584: the give-up cap of queued prompt hold `id` ran out but its keys stay held (they hold
     /// an Enter, or cannot be handed back in order): no timer writes them. The waits are kept, so
     /// the events still release them. A shell that has never signalled is not waited for at the
@@ -1872,9 +1882,16 @@ impl TypeaheadHandoff {
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Preexec);
         self.shell_activity = ShellActivity::Running;
         self.activity_generation = self.activity_generation.wrapping_add(1);
+        let now = Instant::now();
+        // A prompt hold whose keys wait for this prompt's line editor: the shell started a command
+        // instead (a line it already had), so the keys are typeahead for that command, held as in
+        // an enter window and released by its events (the command becoming interactive, its
+        // prompt, a continuation prompt, a signal key), never left with no wait at all.
+        if self.prompt_hold_queued && self.awaiting_line_editor_since.is_some() {
+            self.enter_window_since = Some(now);
+        }
         // The shell took a line: its line editor is not about to start.
         self.awaiting_line_editor_since = None;
-        let now = Instant::now();
         self.last_activity_at = Some(now);
         // #1573: an enter window whose command started is not overdue while it runs.
         self.last_preexec_at = Some(now);
