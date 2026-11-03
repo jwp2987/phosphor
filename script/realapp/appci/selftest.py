@@ -711,6 +711,15 @@ def r18e4_flood_zwj_routing_hang_fixes():
     assert ca.ambiguous_want("what is 5 > 3", "AgentConversation", "evidence-in-conversation (#1183)") == "shell"
 
 
+@check
+def r18e9_windows_reference_has_own_ps_history():
+    """r18e9: the conhost reference PowerShell must not share the pane's ConsoleHost_history.txt (its `exit` took fast_typing's first slot)"""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cases.py"), encoding="utf-8").read()
+    i = src.index("def ref_terminal_windows")
+    body = src[i:src.index("def pane_shell", i)]
+    assert "HistorySavePath" in body and "-NoExit" in body, "the PowerShell reference needs its own history file"
+
+
 def main():
     failed = 0
     for f in CHECKS:

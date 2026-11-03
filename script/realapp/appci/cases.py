@@ -893,6 +893,13 @@ def effect_run(ctx, r, tag, n, gap, rollover=False, shell=None, attribute=None):
         # #1514: no rec.log in the PowerShell pane, so an extra character that still wrote the token passed. The exact line comes from PSReadLine's history file.
         want = [ctx.append_cmd(shell, t, fname) for t in exp]
         have = ctx.ps_history_lines()[hmark:]
+        try:        # r18e9: the history slice this check compared, kept per case as evidence (the validator had no copy to settle a mismatch)
+            ld = os.path.join(ctx.run, "logs", ctx.label)
+            os.makedirs(ld, exist_ok=True)
+            open(os.path.join(ld, "ps_history_%s.txt" % tag), "w", encoding="utf-8", errors="replace").write(
+                "hmark=%d total=%d new=%d want=%d\n%s\n" % (hmark, hmark + len(have), len(have), len(want), "\n".join(repr(h) for h in have)))
+        except Exception:
+            pass
         if len(have) == len(want):
             bad = [(h, w) for h, w in zip(have, want) if h != w]
             r.check(not bad, "%s: PowerShell received %d of %d lines NOT exactly as typed (PSReadLine history; first: got %r, want %r)" % (
@@ -1673,7 +1680,12 @@ def ref_terminal_windows(ctx):
     if ctx.pane == "gitbash":
         sh, shname = [winapi.git_bash(), "--rcfile", home + "/.bashrc", "-i"], "bash"
     else:
-        sh, shname = ["powershell.exe", "-NoLogo", "-NoProfile"], "powershell.exe"      # -NoProfile like the pane (#1514: the control must be symmetric)
+        # r18e9: the reference conhost PowerShell shared PSReadLine's ConsoleHost_history.txt with the app's pane, so its own `exit` (+ a leading Ctrl-U) landed in
+        # the pane's history slice and took the first slot of fast_typing. Give the reference its OWN HistorySavePath (and SaveNothing where that cannot be set).
+        ref_hist = os.path.join(ctx.W, ".appci_ref_ps_history.txt").replace("'", "''")
+        ctx.ref_ps_history = ref_hist
+        pre = "try{Set-PSReadLineOption -HistorySavePath '%s'}catch{try{Set-PSReadLineOption -HistorySaveStyle SaveNothing}catch{}}" % ref_hist
+        sh, shname = ["powershell.exe", "-NoLogo", "-NoProfile", "-NoExit", "-Command", pre], "powershell.exe"      # -NoProfile like the pane (#1514: the control must be symmetric)
     if want_wt:
         wt_exe = shutil.which("wt.exe") or shutil.which("wt")
         if not wt_exe:
