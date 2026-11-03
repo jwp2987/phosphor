@@ -204,3 +204,130 @@ fn control_keys_with_terminal_focus_take_no_model_lock() {
         });
     }
 }
+
+/// A kitty flag the program popped in the middle of a parse slice (so the published copy is one
+/// slice stale) never puts CSI-u bytes into the shell: the key is encoded with the modes of the
+/// moment they changed, with the parser still holding the model.
+#[test]
+fn a_kitty_pop_mid_slice_is_seen_by_the_next_enter() {
+    use crate::terminal::model::key_facts::PublishedKeyModes;
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("cat", "");
+                model.publish_key_facts();
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            });
+            held_rx.recv().unwrap();
+            // The copy published after the last slice says the program is in kitty mode ...
+            let mut stale = view.key_model.load();
+            stale.key_modes = PublishedKeyModes {
+                keyboard_protocol: true,
+                report_all_as_escape: true,
+                ..PublishedKeyModes::default()
+            };
+            view.key_model.store(stale);
+            assert_eq!(
+                pane_key_down(view, "enter", "\r", ctx),
+                PaneKeyOutcome::Consumed
+            );
+            // ... the program pops its flags (the parser stores the eager word mid-slice).
+            view.key_model
+                .store_eager_modes(PublishedKeyModes::default(), false);
+            assert_eq!(
+                pane_key_down(view, "enter", "\r", ctx),
+                PaneKeyOutcome::Consumed
+            );
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+        });
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            b"\x1b[13u\r".to_vec(),
+            "CSI-u while the program is in kitty mode, a plain CR the moment it is not"
+        );
+    });
+}
+
+/// Tab, Escape, F1 and an Alt-letter reach the running command through the sink.
+#[test]
+fn tab_escape_f1_and_alt_letter_are_translated_by_the_sink() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            view.model.lock().simulate_long_running_block("cat", "");
+            for (keystroke, chars) in [
+                ("tab", "\t"),
+                ("escape", "\u{1b}"),
+                ("f1", ""),
+                ("alt-b", "b"),
+            ] {
+                assert_eq!(
+                    pane_key_down(view, keystroke, chars, ctx),
+                    PaneKeyOutcome::Consumed,
+                    "{keystroke}"
+                );
+            }
+        });
+        assert_eq!(pty_writes.borrow().concat(), b"\t\x1b\x1bOP\x1bb".to_vec());
+    });
+}
+
+/// The Ctrl-C binding (it fires before the sink) takes no model lock either: with the parser
+/// inside the model, a ^C into a running command reaches the pty at once, and the focus
+/// redetermination it wants is left for the next wakeup.
+#[test]
+fn ctrl_c_binding_takes_no_model_lock() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("cat", "");
+                model.publish_key_facts();
+            }
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            });
+            held_rx.recv().unwrap();
+            let locks_before = crate::terminal::model_lock_trace::key_path_lock_count();
+            let started = Instant::now();
+            view.handle_ctrl_c_input_event(0, ctx);
+            let waited = started.elapsed();
+            let locks = crate::terminal::model_lock_trace::key_path_lock_count() - locks_before;
+            let deferred = view.global_focus_redetermine_deferred;
+            done_tx.send(()).unwrap();
+            parser.join().unwrap();
+            assert!(
+                waited < Duration::from_secs(1),
+                "the Ctrl-C waited {waited:?} for the parser"
+            );
+            assert_eq!(locks, 0);
+            assert!(deferred, "the focus redetermination waits for the wakeup");
+        });
+        assert_eq!(pty_writes.borrow().concat(), vec![0x03]);
+    });
+}

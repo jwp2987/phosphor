@@ -42,6 +42,7 @@ use super::image_map::StoredImageMetadata;
 use super::index::Point;
 use super::key_facts::{
     KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand, ModelInbox,
+    PublishedKeyModes,
 };
 use super::kitty::{
     create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
@@ -1875,6 +1876,13 @@ impl TerminalModel {
             .store_with_gen(KeyFacts::from_model(self), facts_gen);
     }
 
+    /// Publishes the key modes and the alt-screen bit now, in the middle of a parse slice (#1411):
+    /// a key that finds this model locked is encoded with the modes of this moment.
+    fn publish_key_modes(&self) {
+        self.key_model
+            .store_eager_modes(PublishedKeyModes::from_model(self), self.alt_screen_active);
+    }
+
     /// The gen of the latest publication (0 before the first). A main-thread refresh that read
     /// the exact state stores it unchanged.
     pub fn facts_gen(&self) -> u64 {
@@ -1919,6 +1927,8 @@ impl TerminalModel {
                     self.send_write_to_pty_events_for_shared_session(bytes)
                 }
                 ModelCommand::IgnoreBootstrappingMessages => self.ignore_bootstrapping_messages(),
+                ModelCommand::ClearAltScreenSelection => self.alt_screen_mut().clear_selection(),
+                ModelCommand::ClearBlockListSelection => self.block_list.clear_selection(),
                 ModelCommand::TypedAhead(bytes) => {
                     // #1033: the tty echoes these keys wherever the output is when they arrive;
                     // record them so that echo can be told from output. A full-screen program
@@ -2583,6 +2593,7 @@ impl TerminalModel {
 
         self.alt_screen_mut().clear_selection();
         self.alt_screen_active = true;
+        self.publish_key_modes();
 
         self.event_proxy
             .send_terminal_event(Event::TerminalModeSwapped(TerminalMode::AltScreen));
@@ -2602,6 +2613,7 @@ impl TerminalModel {
         self.alt_screen_mut().grid_handler_mut().evict_all_images();
 
         self.alt_screen_active = false;
+        self.publish_key_modes();
 
         if restore_cursor {
             self.block_list.active_block_mut().restore_cursor_position();
@@ -3565,6 +3577,7 @@ impl ansi::Handler for TerminalModel {
 
         self.alt_screen.set_mode(mode);
         self.block_list.set_mode(mode);
+        self.publish_key_modes();
         self.emit_handler_event(HandlerEvent::SetMode { mode });
     }
 
@@ -3585,6 +3598,7 @@ impl ansi::Handler for TerminalModel {
 
         self.alt_screen.unset_mode(mode);
         self.block_list.unset_mode(mode);
+        self.publish_key_modes();
         self.emit_handler_event(HandlerEvent::UnsetMode { mode });
     }
 
@@ -4731,14 +4745,17 @@ impl ansi::Handler for TerminalModel {
         apply: KeyboardModesApplyBehavior,
     ) {
         delegate!(self.set_keyboard_enhancement_flags(mode, apply));
+        self.publish_key_modes();
     }
 
     fn push_keyboard_enhancement_flags(&mut self, mode: KeyboardModes) {
         delegate!(self.push_keyboard_enhancement_flags(mode));
+        self.publish_key_modes();
     }
 
     fn pop_keyboard_enhancement_flags(&mut self, count: u16) {
         delegate!(self.pop_keyboard_enhancement_flags(count));
+        self.publish_key_modes();
     }
 
     fn query_keyboard_enhancement_flags<W: std::io::Write>(&mut self, writer: &mut W) {

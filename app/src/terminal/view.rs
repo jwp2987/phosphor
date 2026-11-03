@@ -2502,6 +2502,9 @@ impl BlocklistAIRenderContext {
 /// Groups together some structs to represent the state of the Terminal View for the
 /// current frame. Passed to `AltScreenElement` and `BlockListElement`.
 pub struct TerminalViewRenderContext {
+    /// The model's published key facts: the elements read the key modes from it, never the model's
+    /// lock, to encode a modifier key event (#1411).
+    pub key_model: KeyModelCell,
     pub size_info: SizeInfo,
     pub scroll_position: ScrollPosition,
     pub highlighted_url: Option<GridHighlightedLink>,
@@ -2895,6 +2898,10 @@ pub struct TerminalView {
     key_facts: KeyFactsCell,
     /// The rest of what a key reads from the model, published the same way (#1404).
     key_model: KeyModelCell,
+    /// A focus redetermination a Ctrl-C asked for while the pty reader held the model: run by the
+    /// next wakeup (the key never waits for the parser, #1411).
+    global_focus_redetermine_deferred: bool,
+    terminal_focus_redetermine_deferred: bool,
     /// Depth of user-key handling on this thread; see [`KeyPathScope`].
     key_path_depth: Rc<Cell<u32>>,
     /// The last answer of `active_output_ends_in_unterminated_text`, given to a key that finds the
@@ -5105,6 +5112,8 @@ impl TerminalView {
             handoff,
             key_facts,
             key_model,
+            global_focus_redetermine_deferred: false,
+            terminal_focus_redetermine_deferred: false,
             key_path_depth: Rc::new(Cell::new(0)),
             unterminated_text_at_last_look: Cell::new(false),
             setup_echo_mid_line_at_last_look: Cell::new(false),
@@ -9883,6 +9892,8 @@ impl TerminalView {
     /// Windows users expect ctrl-c to copy if there is selected text. Otherwise,
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        // A key being handled: its model reads come from the key snapshot (#1411).
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
         self.end_focus_reclaim();
         if self.powershell_setup_hold != PowerShellSetupHold::Off {
             self.ctrl_c_during_powershell_setup(ctx);
@@ -9893,64 +9904,36 @@ impl TerminalView {
         // An agent command in flight still gets its single ^C below (#850); only the deferred
         // Enter and its keys are dropped.
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
-            let (cancelled, agent_command_in_flight) = {
-                let mut model = self.model.lock();
-                let cancelled = model.typeahead_handoff_mut().cancel_deferred_enter();
-                let agent_command_in_flight = model
-                    .block_list()
-                    .active_block()
-                    .is_agent_requested_command_in_flight();
-                (cancelled, agent_command_in_flight)
-            };
+            // #1411: the hand-off through its own handle, the rest from the key snapshot; the
+            // Ctrl-C never waits for the pty reader.
+            let cancelled = self.handoff.write().cancel_deferred_enter();
+            let agent_command_in_flight =
+                self.read_key_snapshot().agent_requested_command_in_flight;
             self.drain_young_hold_ends(ctx);
             if cancelled && !agent_command_in_flight {
-                self.redetermine_terminal_focus(ctx);
+                self.redetermine_terminal_focus_after_key(ctx);
                 ctx.notify();
                 return;
             }
         }
-        let (
-            has_block_list_selection,
-            has_alt_screen_selection,
-            is_long_running,
-            is_agent_in_control_of_command,
-            conversation_id_to_stop,
-        ) = {
-            let model = self.model.lock();
-            let has_alt_screen_selection = model.alt_screen().selection().is_some();
-            let has_block_list_selection = model.block_list().selection().is_some();
-            let active_block = model.block_list().active_block();
-            // An agent-requested command counts from the moment it is written to the shell --
-            // before preexec, and before `LONG_RUNNING_COMMAND_DURATION_MS` -- not only once it
-            // is long-running: in that window ctrl-c otherwise fell through to
-            // `maybe_handle_ctrl_c_in_rich_content_block`, cancelling the whole conversation
-            // while the command ran on, orphaned. Before preexec the ^C makes the shell abort
-            // the line; precmd then finishes the block and the tool call resolves with it
-            // (issue #850).
-            let is_long_running = active_block.is_active_and_long_running()
-                || active_block.is_agent_requested_command_in_flight()
-                || (FeatureFlag::TypeaheadHandoff.is_enabled()
-                    && model.typeahead_handoff().routes_keys_to_pty());
-            let is_agent_in_control_of_command = active_block.is_agent_in_control();
-            // If the user already took control via `Stop` (e.g. an earlier Ctrl-C), capture the
-            // conversation to cancel so a follow-up Ctrl-C tears down both command and conversation.
-            let conversation_id_to_stop = active_block
-                .long_running_control_state()
-                .and_then(|state| {
-                    state
-                        .user_take_over_reason()
-                        .is_some_and(UserTakeOverReason::is_stop)
-                        .then(|| active_block.ai_conversation_id())
-                })
-                .flatten();
-            (
-                has_block_list_selection,
-                has_alt_screen_selection,
-                is_long_running,
-                is_agent_in_control_of_command,
-                conversation_id_to_stop,
-            )
-        };
+        let snapshot = self.read_key_snapshot();
+        let has_alt_screen_selection = snapshot.has_alt_screen_selection;
+        let has_block_list_selection = snapshot.has_block_list_selection;
+        // An agent-requested command counts from the moment it is written to the shell --
+        // before preexec, and before `LONG_RUNNING_COMMAND_DURATION_MS` -- not only once it
+        // is long-running: in that window ctrl-c otherwise fell through to
+        // `maybe_handle_ctrl_c_in_rich_content_block`, cancelling the whole conversation
+        // while the command ran on, orphaned. Before preexec the ^C makes the shell abort
+        // the line; precmd then finishes the block and the tool call resolves with it
+        // (issue #850).
+        let is_long_running = snapshot.active_and_long_running
+            || snapshot.agent_requested_command_in_flight
+            || (FeatureFlag::TypeaheadHandoff.is_enabled()
+                && self.handoff.read().routes_keys_to_pty());
+        let is_agent_in_control_of_command = snapshot.input_box.block_agent_in_control;
+        // If the user already took control via `Stop` (e.g. an earlier Ctrl-C), the conversation
+        // to cancel, so a follow-up Ctrl-C tears down both command and conversation.
+        let conversation_id_to_stop = snapshot.conversation_to_stop;
         // #1001: an ssh command is submitted but its block is not long running yet (the first
         // 50 ms): the ^C must still reach it, not vanish. The connect gate is armed at submission.
         let is_long_running = is_long_running || self.refresh_ssh_connect_gate();
@@ -9970,7 +9953,7 @@ impl TerminalView {
         );
 
         // We want to focus the input/rich content block if it is active.
-        self.redetermine_global_focus(ctx);
+        self.redetermine_global_focus_after_key(ctx);
         ctx.notify();
     }
 
@@ -9993,7 +9976,7 @@ impl TerminalView {
             return;
         } else if has_alt_screen_selection {
             self.copy(ctx);
-            self.model.lock().alt_screen_mut().clear_selection();
+            self.clear_alt_screen_selection_for_key();
             return;
         } else if has_copiable_block_selection {
             // If there are blocks selected, we want to copy them but
@@ -10228,7 +10211,7 @@ impl TerminalView {
         if has_block_list_selection || has_copiable_block_selection {
             self.clear_selections_when_shell_mode_without_focusing_input(ctx);
         } else if has_alt_screen_selection {
-            self.model.lock().alt_screen_mut().clear_selection();
+            self.clear_alt_screen_selection_for_key();
         }
         self.ctrl_c_to_active_block(
             is_long_running,
@@ -10271,13 +10254,7 @@ impl TerminalView {
             // A second Ctrl+C after Stop takeover should cancel both the command and conversation.
             if let Some(conversation_id) = conversation_id_to_stop {
                 self.stop_local_agent_conversation(conversation_id, ctx);
-            } else if self
-                .model
-                .lock()
-                .block_list()
-                .active_block()
-                .is_agent_requested_command_in_flight()
-            {
+            } else if self.read_key_snapshot().agent_requested_command_in_flight {
                 // The agent's command may not have reached the shell yet (#850).
                 self.interrupt_agent_command(ctx);
             } else {
@@ -10316,12 +10293,7 @@ impl TerminalView {
         }
 
         // Cannot use ctrl-c to exit agent view if there's a long-running command.
-        let model = self.model.lock();
-        if model
-            .block_list()
-            .active_block()
-            .is_active_and_long_running()
-        {
+        if self.read_key_snapshot().active_and_long_running {
             return false;
         }
 
@@ -10401,6 +10373,69 @@ impl TerminalView {
             || self.subshell_bootstrap_announced.is_some()
             || self.subshell_bootstrap_in_flight.is_some()
             || self.powershell_setup_hold != PowerShellSetupHold::Off
+    }
+
+    /// Clears the alt screen's selection. A key being handled never waits for the pty reader: when
+    /// the model is busy the clear is left in its inbox (applied before it parses the next bytes).
+    fn clear_alt_screen_selection_for_key(&mut self) {
+        if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+            && self.model.try_lock().is_none()
+        {
+            self.model_inbox.post(ModelCommand::ClearAltScreenSelection);
+            return;
+        }
+        self.model.lock().alt_screen_mut().clear_selection();
+    }
+
+    /// As [`Self::clear_alt_screen_selection_for_key`], for the block list's text selection.
+    fn clear_block_list_selection_for_key(&mut self) {
+        if self.in_key_path()
+            && !crate::terminal::model_lock_trace::key_path_uses_model_lock()
+            && self.model.try_lock().is_none()
+        {
+            self.model_inbox.post(ModelCommand::ClearBlockListSelection);
+            return;
+        }
+        self.model.lock().block_list_mut().clear_selection();
+    }
+
+    /// Whether a key being handled may take the model's lock now without waiting for the pty
+    /// reader. (Outside a key, or with `PHOSPHOR_HANDOFF_FACTS=0`, it always may.)
+    fn key_may_lock_model_now(&self) -> bool {
+        !self.in_key_path()
+            || crate::terminal::model_lock_trace::key_path_uses_model_lock()
+            || self.model.try_lock().is_some()
+    }
+
+    /// `redetermine_global_focus` for a key being handled: when the pty reader holds the model the
+    /// focus is redetermined by the next wakeup instead (the key does not wait; the focus only
+    /// follows the key's effects).
+    fn redetermine_global_focus_after_key(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.key_may_lock_model_now() {
+            self.redetermine_global_focus(ctx);
+        } else {
+            self.global_focus_redetermine_deferred = true;
+        }
+    }
+
+    /// As [`Self::redetermine_global_focus_after_key`], for `redetermine_terminal_focus`.
+    fn redetermine_terminal_focus_after_key(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.key_may_lock_model_now() {
+            self.redetermine_terminal_focus(ctx);
+        } else {
+            self.terminal_focus_redetermine_deferred = true;
+        }
+    }
+
+    /// Runs the focus redeterminations a Ctrl-C left for the wakeup.
+    fn flush_deferred_focus_redeterminations(&mut self, ctx: &mut ViewContext<Self>) {
+        if std::mem::take(&mut self.terminal_focus_redetermine_deferred) {
+            self.redetermine_terminal_focus(ctx);
+        }
+        if std::mem::take(&mut self.global_focus_redetermine_deferred) {
+            self.redetermine_global_focus(ctx);
+        }
     }
 
     fn ctrl_d(&mut self, ctx: &mut ViewContext<Self>) {
@@ -12152,7 +12187,7 @@ impl TerminalView {
                     chars,
                     is_composing,
                     key_without_modifiers,
-                    ..
+                    will_type,
                 },
             ) if facts.terminal_focused => {
                 if !self.terminal_key_down(
@@ -12160,6 +12195,7 @@ impl TerminalView {
                     chars,
                     key_without_modifiers.as_deref(),
                     *is_composing,
+                    *will_type,
                     ctx,
                 ) {
                     return PaneKeyOutcome::NotMine;
@@ -12219,8 +12255,24 @@ impl TerminalView {
         chars: &str,
         key_without_modifiers: Option<&str>,
         is_composing: bool,
+        will_type: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        // A printable key without ctrl/alt/cmd/meta makes bytes only under the kitty protocol's
+        // "report all keys" mode: with the protocol off (as last published) its typed event is the
+        // key, and nothing here needs the full snapshot (#1411).
+        if will_type
+            && !keystroke.ctrl
+            && !keystroke.alt
+            && !keystroke.cmd
+            && !keystroke.meta
+            && self
+                .key_model
+                .eager_modes()
+                .is_some_and(|modes| !modes.keyboard_protocol)
+        {
+            return false;
+        }
         let snapshot = self.read_key_snapshot();
         let alt_screen = snapshot.input_box.alt_screen_active;
         if !alt_screen && keystroke.normalized() == "ctrl-d" {
@@ -12829,7 +12881,7 @@ impl TerminalView {
                 self.key_model.store(snapshot.clone());
                 snapshot
             }
-            None => self.key_model.load(),
+            None => self.key_model.load_exact_modes(),
         }
     }
 
@@ -14150,8 +14202,7 @@ impl TerminalView {
         /// report) that was expected after the interrupt and never came.
         const INTERRUPT_GIVE_UP: Duration = Duration::from_secs(2);
         let (outcome, barrier, awaiting_cycle) = {
-            let mut model = self.model.lock();
-            let mut handoff = model.typeahead_handoff_mut();
+            let mut handoff = self.handoff.write();
             let outcome = handoff.on_interrupt_for_shell(prompt_cycle_expected);
             (
                 outcome,
@@ -14176,8 +14227,7 @@ impl TerminalView {
             // for a signal that never comes.
             ctx.spawn(Timer::after(INTERRUPT_GIVE_UP), |me, _, ctx| {
                 let gave_up = {
-                    let mut model = me.model.lock();
-                    let mut handoff = model.typeahead_handoff_mut();
+                    let mut handoff = me.handoff.write();
                     let cycle = handoff.take_interrupt_awaiting_cycle();
                     let barrier = handoff.take_interrupt_barrier();
                     cycle || barrier
@@ -14211,6 +14261,7 @@ impl TerminalView {
         }
         // #1440: scroll updates keys left while the model was parsing.
         self.flush_deferred_scroll_updates(ctx);
+        self.flush_deferred_focus_redeterminations(ctx);
         // #1384 P5: the first output after the alt screen was entered re-sends the window size.
         #[cfg(feature = "local_tty")]
         if self.alt_screen_resend_pending {
@@ -18511,6 +18562,14 @@ impl TerminalView {
                 }
             }
             ModelEvent::SelectedTextChanged => {
+                {
+                    // Whether Ctrl-C copies or interrupts is decided from this, without the lock.
+                    let model = self.model.lock();
+                    self.key_model.store_selections(
+                        model.block_list().selection().is_some(),
+                        model.alt_screen().selection().is_some(),
+                    );
+                }
                 ctx.emit(Event::SelectedTextChanged);
             }
             ModelEvent::ShellSpawned(shell_type) => {
@@ -28146,7 +28205,7 @@ impl TerminalView {
         // This also explains why we don't invoke this function unless we're attempting to clear
         // **all** selected text; because rich content text copying will stop working otherwise.
         if exempt_rich_content_view_id.is_none() {
-            self.model.lock().block_list_mut().clear_selection();
+            self.clear_block_list_selection_for_key();
         }
 
         // Clear all selected text within CLI subagent views,
@@ -31483,6 +31542,7 @@ impl TerminalView {
         };
 
         TerminalViewRenderContext {
+            key_model: self.key_model.clone(),
             size_info: *self.size_info(),
             scroll_position: self.scroll_position(),
             highlighted_url: self.highlighted_link.clone_inner(),

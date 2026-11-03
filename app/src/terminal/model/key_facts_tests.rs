@@ -512,8 +512,6 @@ fn published_key_modes_answer_only_the_modes_they_hold() {
     assert!(!none.is_term_mode_set(TermMode::APP_CURSOR));
     assert!(!app_cursor.is_term_mode_set(TermMode::KEYBOARD_PROTOCOL));
     assert!(!app_cursor.is_term_mode_set(TermMode::KEYBOARD_REPORT_ALL_AS_ESCAPE));
-    // A mode the key path never asks about reads as unset.
-    assert!(!app_cursor.is_term_mode_set(TermMode::ALTERNATE_SCROLL));
     let kitty = PublishedKeyModes {
         keyboard_protocol: true,
         report_all_as_escape: true,
@@ -554,4 +552,62 @@ fn the_ignore_bootstrapping_flag_is_never_dropped_by_a_full_inbox() {
             .iter()
             .any(|command| matches!(command, ModelCommand::IgnoreBootstrappingMessages))
     );
+}
+
+// ---- #1411: modes and selections published between two parse slices ----
+
+#[test]
+fn eager_modes_replace_the_stale_modes_of_the_published_copy() {
+    let cell = KeyModelCell::default();
+    // Before any publication nothing is overlaid.
+    let mut untouched = KeyModelSnapshot::default();
+    cell.overlay_eager_modes(&mut untouched);
+    assert_eq!(untouched.key_modes, PublishedKeyModes::default());
+    assert!(cell.eager_modes().is_none());
+
+    let kitty = PublishedKeyModes {
+        keyboard_protocol: true,
+        report_all_as_escape: true,
+        ..PublishedKeyModes::default()
+    };
+    cell.store(KeyModelSnapshot {
+        key_modes: kitty,
+        ..KeyModelSnapshot::default()
+    });
+    assert_eq!(cell.load_exact_modes().key_modes, kitty);
+    // The program pops its flags in the middle of the next slice: the copy is stale, the eager
+    // word is not.
+    cell.store_eager_modes(PublishedKeyModes::default(), true);
+    assert_eq!(cell.load().key_modes, kitty, "the copy still says kitty");
+    let exact = cell.load_exact_modes();
+    assert_eq!(exact.key_modes, PublishedKeyModes::default());
+    assert!(exact.input_box.alt_screen_active);
+}
+
+#[test]
+fn every_published_mode_survives_the_eager_word() {
+    let all = PublishedKeyModes {
+        app_cursor: true,
+        keyboard_protocol: true,
+        disambiguate_escape: true,
+        report_event_types: true,
+        report_alternate_keys: true,
+        report_all_as_escape: true,
+        report_associated_text: true,
+    };
+    let cell = KeyModelCell::default();
+    cell.store_eager_modes(all, false);
+    assert_eq!(cell.eager_modes(), Some(all));
+    cell.store_eager_modes(PublishedKeyModes::default(), false);
+    assert_eq!(cell.eager_modes(), Some(PublishedKeyModes::default()));
+}
+
+#[test]
+fn selection_bits_overlay_the_stale_copy() {
+    let cell = KeyModelCell::default();
+    cell.store(KeyModelSnapshot::default());
+    cell.store_selections(true, false);
+    let exact = cell.load_exact_modes();
+    assert!(exact.has_block_list_selection && !exact.has_alt_screen_selection);
+    assert!(!cell.load().has_block_list_selection);
 }

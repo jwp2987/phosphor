@@ -214,6 +214,15 @@ pub struct KeyModelSnapshot {
     pub active_block_executing: bool,
     /// What `TerminalView::is_input_box_visible` reads from the model (#1440).
     pub input_box: InputBoxFacts,
+    /// The block list has a text selection (Ctrl-C copies it instead of interrupting, #1411).
+    pub has_block_list_selection: bool,
+    /// The alt screen has a text selection.
+    pub has_alt_screen_selection: bool,
+    /// The active block holds an agent-requested command that is on its way to / in the shell.
+    pub agent_requested_command_in_flight: bool,
+    /// The conversation a second Ctrl-C tears down: the user already took the command over with
+    /// `Stop` (an earlier Ctrl-C).
+    pub conversation_to_stop: Option<crate::ai::agent::conversation::AIConversationId>,
     /// The publication this snapshot belongs to (#1424): the model's `facts_gen` when it was
     /// built. The same value is stored in the [`KeyFactsCell`], and a reader that wants the two
     /// cells to describe one moment retries until they agree ([`load_consistent`]). A snapshot
@@ -286,6 +295,8 @@ impl ModeProvider for PublishedKeyModes {
         } else if is(TermMode::KEYBOARD_REPORT_ASSOCIATED_TEXT) {
             self.report_associated_text
         } else {
+            debug_assert!(false, "key mode {asked:#x} is not published");
+            log::debug!("key mode {asked:#x} is not published; read as unset");
             false
         }
     }
@@ -433,6 +444,19 @@ impl KeyModelSnapshot {
             key_modes: PublishedKeyModes::from_model(model),
             active_block_executing: active_block.is_executing(),
             input_box: InputBoxFacts::from_model(model),
+            has_block_list_selection: model.block_list().selection().is_some(),
+            has_alt_screen_selection: model.alt_screen().selection().is_some(),
+            agent_requested_command_in_flight: active_block
+                .is_agent_requested_command_in_flight(),
+            conversation_to_stop: active_block
+                .long_running_control_state()
+                .and_then(|state| {
+                    state
+                        .user_take_over_reason()
+                        .is_some_and(crate::ai::blocklist::block::cli_controller::UserTakeOverReason::is_stop)
+                        .then(|| active_block.ai_conversation_id())
+                })
+                .flatten(),
             facts_gen,
             is_bootstrapped: model.block_list().is_bootstrapped(),
             needs_bracketed_paste: model.needs_bracketed_paste_shared(),
@@ -449,21 +473,113 @@ impl KeyModelSnapshot {
 
 /// The latest [`KeyModelSnapshot`], shared between the model (which stores) and the views (which
 /// load).
+///
+/// Next to the snapshot (republished after every parse slice) it holds the key modes and the
+/// alt-screen bit in one atomic word that the model stores the moment a mode changes, in the middle
+/// of a slice (#1411): a key that finds the parser inside the lock overlays it on the stale copy
+/// ([`Self::overlay_eager_modes`]), so it is encoded with the modes of this moment, not of the last
+/// slice's end (a kitty pop and the prompt that follows arrive in one slice).
 #[derive(Clone, Debug, Default)]
-pub struct KeyModelCell(Arc<Mutex<KeyModelSnapshot>>);
+pub struct KeyModelCell {
+    snapshot: Arc<Mutex<KeyModelSnapshot>>,
+    eager_modes: Arc<AtomicU32>,
+    /// Bit 0: the block list has a selection; bit 1: the alt screen has one. Stored by the main
+    /// thread when the model reports a selection change, and with every stored snapshot.
+    selections: Arc<AtomicU32>,
+}
+
+const EAGER_VALID: u32 = 1 << 8;
+const EAGER_ALT_SCREEN: u32 = 1 << 7;
+
+impl PublishedKeyModes {
+    fn to_eager_bits(self) -> u32 {
+        [
+            self.app_cursor,
+            self.keyboard_protocol,
+            self.disambiguate_escape,
+            self.report_event_types,
+            self.report_alternate_keys,
+            self.report_all_as_escape,
+            self.report_associated_text,
+        ]
+        .into_iter()
+        .enumerate()
+        .fold(0, |bits, (i, set)| if set { bits | (1 << i) } else { bits })
+    }
+
+    fn from_eager_bits(bits: u32) -> Self {
+        let bit = |i: u32| bits & (1 << i) != 0;
+        Self {
+            app_cursor: bit(0),
+            keyboard_protocol: bit(1),
+            disambiguate_escape: bit(2),
+            report_event_types: bit(3),
+            report_alternate_keys: bit(4),
+            report_all_as_escape: bit(5),
+            report_associated_text: bit(6),
+        }
+    }
+}
 
 impl KeyModelCell {
     pub fn store(&self, snapshot: KeyModelSnapshot) {
-        *self.0.lock() = snapshot;
+        self.store_eager_modes(snapshot.key_modes, snapshot.input_box.alt_screen_active);
+        self.store_selections(
+            snapshot.has_block_list_selection,
+            snapshot.has_alt_screen_selection,
+        );
+        *self.snapshot.lock() = snapshot;
     }
 
     pub fn load(&self) -> KeyModelSnapshot {
-        self.0.lock().clone()
+        self.snapshot.lock().clone()
+    }
+
+    /// [`Self::load`] with the modes of this moment (see the type's doc).
+    pub fn load_exact_modes(&self) -> KeyModelSnapshot {
+        let mut snapshot = self.load();
+        self.overlay_eager_modes(&mut snapshot);
+        snapshot
+    }
+
+    /// Stores the key modes and the alt-screen bit as they are now. Called by the model with its
+    /// lock held, wherever one of them changes.
+    pub fn store_eager_modes(&self, modes: PublishedKeyModes, alt_screen: bool) {
+        let word =
+            modes.to_eager_bits() | EAGER_VALID | if alt_screen { EAGER_ALT_SCREEN } else { 0 };
+        self.eager_modes.store(word, Ordering::Release);
+    }
+
+    /// Records whether the model has a text selection (the main thread, on a selection change).
+    pub fn store_selections(&self, block_list: bool, alt_screen: bool) {
+        self.selections.store(
+            u32::from(block_list) | (u32::from(alt_screen) << 1),
+            Ordering::Release,
+        );
+    }
+
+    /// The key modes as last published (mid-slice or at a slice's end), `None` before the first.
+    pub fn eager_modes(&self) -> Option<PublishedKeyModes> {
+        let word = self.eager_modes.load(Ordering::Acquire);
+        (word & EAGER_VALID != 0).then(|| PublishedKeyModes::from_eager_bits(word))
+    }
+
+    /// Replaces the snapshot's modes and alt-screen bit with the eagerly published ones (nothing
+    /// before the first publication).
+    pub fn overlay_eager_modes(&self, snapshot: &mut KeyModelSnapshot) {
+        let word = self.eager_modes.load(Ordering::Acquire);
+        if word & EAGER_VALID != 0 {
+            snapshot.key_modes = PublishedKeyModes::from_eager_bits(word);
+            snapshot.input_box.alt_screen_active = word & EAGER_ALT_SCREEN != 0;
+        }
+        let selections = self.selections.load(Ordering::Acquire);
+        snapshot.has_block_list_selection = selections & 1 != 0;
+        snapshot.has_alt_screen_selection = selections & 2 != 0;
     }
 
     /// The gen of the stored snapshot, without cloning it.
     pub fn facts_gen(&self) -> u64 {
-        self.0.lock().facts_gen
+        self.snapshot.lock().facts_gen
     }
 }
 
@@ -574,6 +690,10 @@ pub enum ModelCommand {
     /// the model ignores the bootstrapping messages that command's session would still send
     /// (`TerminalModel::ignore_bootstrapping_messages`, #1111). A flag, never dropped.
     IgnoreBootstrappingMessages,
+    /// Ctrl-C with a selection on the alt screen clears it (`AltScreen::clear_selection`, #1411).
+    ClearAltScreenSelection,
+    /// Clears the block list's text selection (`BlockList::clear_selection`, #1411).
+    ClearBlockListSelection,
 }
 
 /// The most commands the inbox keeps (#1442). A key leaves at most ~3 (typed-ahead record, user
@@ -642,7 +762,12 @@ impl ModelInbox {
                 return true;
             }
             // A one-way flag: dropping it would let a dying session's bootstrap run (#1111).
-            if matches!(command, ModelCommand::IgnoreBootstrappingMessages) {
+            if matches!(
+                command,
+                ModelCommand::IgnoreBootstrappingMessages
+                    | ModelCommand::ClearAltScreenSelection
+                    | ModelCommand::ClearBlockListSelection
+            ) {
                 commands.push(command);
                 self.pending.store(true, Ordering::Release);
                 return true;
