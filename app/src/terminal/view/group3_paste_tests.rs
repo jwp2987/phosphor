@@ -30,6 +30,27 @@ fn offer_text_for_test(view: &mut TerminalView, text: &str, ctx: &mut ViewContex
         .offer(&mut host, input_queue::EntryKind::Text(text.to_owned()));
 }
 
+/// The queued entries' text in queue order, an editor paste included (`queued_texts` skips
+/// `Paste` entries, which stay in the queue behind a connect hold in Legacy).
+fn queued_texts_and_editor_pastes(
+    view: &TerminalView,
+    ctx: &ViewContext<TerminalView>,
+) -> Vec<String> {
+    view.paste_queue
+        .queue
+        .peek()
+        .entries()
+        .filter_map(|entry| match &entry.kind {
+            input_queue::EntryKind::Text(text) => Some(text.clone()),
+            input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
+            input_queue::EntryKind::Paste { paste_id, .. } => {
+                view.input.as_ref(ctx).peek_paste_payload_text(*paste_id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// #1585: `echo `, a paste of `X`, ` Y` are queued behind an Enter whose command is `ssh host`.
 /// At the release the paste follows the line into the connect hold, in order, instead of landing
 /// in the local editor (Table); the kill switch keeps the editor insert (Legacy).
@@ -61,9 +82,14 @@ fn editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold() {
                     }
                     DestinationMode::Legacy | DestinationMode::Shadow => {
                         // Same hold as Table at this instant: nothing is typed ahead of the line.
-                        assert_eq!(buffer, "", "nothing reached the local editor ahead of the line");
                         assert_eq!(
-                            queued_texts(view),
+                            buffer, "",
+                            "nothing reached the local editor ahead of the line"
+                        );
+                        // Legacy keeps the paste as its own queue entry behind the held line (not
+                        // lost: `queued_texts` lists only text entries), still in typed order.
+                        assert_eq!(
+                            queued_texts_and_editor_pastes(view, ctx),
                             vec!["echo ".to_owned(), "X".to_owned(), " Y".to_owned()]
                         );
                         // No remote shell comes up: the hold gives up and hands the text back
