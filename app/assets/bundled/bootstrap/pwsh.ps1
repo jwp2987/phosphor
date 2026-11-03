@@ -5,18 +5,40 @@ param()
 # user's history (#942). Anchored to this session's own path, never a pattern.
 $global:_warpBootstrapHistoryLines = if ($PSCommandPath) { @(". $PSCommandPath", ". '$PSCommandPath'", ". `"$PSCommandPath`"") } else { @() }
 
-# Runs a command too long to type into PSReadLine (#1106). The app writes the command to a temp file
-# and types `. (Warp-Run-LongCommand '<path>')` instead. This is deliberately NOT a script file that
-# is dot-sourced: a script block made from a string is not subject to the execution policy, which is
-# Restricted on a stock Windows install. It lives outside Warp-Module and is global so the script
-# block is not bound to the module's session state, and because `. (...)` runs in the caller's
-# scope, variables, `cd` and `exit` behave exactly as for a typed command ($PSScriptRoot is empty,
-# as when typing). The file is read (ReadAllText honours the BOM) and deleted at once, so nothing
-# stays on disk. Error positions refer to the command text, not to a file. The launcher line is
-# kept out of history (see the AddToHistoryHandler), so a long command is not on the Up arrow.
-function global:Warp-Run-LongCommand([string]$Path) {
-    $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-    try { [System.IO.File]::Delete($Path) } catch { }
+# Runs a command too long to type into PSReadLine (#1106). The app serves the command on the
+# session's named pipe ($global:_warpCmdPipe; in memory, never on disk, since commands can hold
+# secrets) and types `. (Warp-Run-LongCommand)` instead (#1592). This is deliberately NOT a script
+# file that is dot-sourced: a script block made from a string is not subject to the execution
+# policy, which is Restricted on a stock Windows install. It lives outside Warp-Module and is
+# global so the script block is not bound to the module's session state, and because `. (...)`
+# runs in the caller's scope, variables, `cd` and `exit` behave exactly as for a typed command
+# ($PSScriptRoot is empty, as when typing). Error positions refer to the command text. The
+# launcher line is kept out of history (see the AddToHistoryHandler), so a long command is not on
+# the Up arrow. Preexec has already reported the launcher; the app shows the real command.
+function global:Warp-Run-LongCommand() {
+    $text = $null
+    $pipe = $null
+    try {
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', [string]$global:_warpCmdPipe, [System.IO.Pipes.PipeDirection]::In)
+        $pipe.Connect(5000)
+        $buffer = New-Object System.IO.MemoryStream
+        $pipe.CopyTo($buffer)
+        $text = (New-Object System.Text.UTF8Encoding($false)).GetString($buffer.ToArray())
+    } catch {
+        $text = $null
+    } finally {
+        if ($null -ne $pipe) { $pipe.Dispose() }
+    }
+    if ([string]::IsNullOrEmpty($text)) {
+        Microsoft.PowerShell.Utility\Write-Error 'Phosphor could not read the command from its pipe; nothing was run.'
+        return {}
+    }
+    # Window title: the first line, clamped (Preexec only saw the launcher).
+    try {
+        $title = ($text.Substring(0, [Math]::Min($text.Length, 400)) -replace "(?s)\r?\n.*", [string][char]0x2026)
+        if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
+        $HOST.UI.RawUI.WindowTitle = $title
+    } catch { }
     [scriptblock]::Create($text)
 }
 
@@ -282,20 +304,6 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # here would keep PSConsoleHostReadLine from returning the line (#1106).
         try {
             $titleSource = $command
-            # A command too long to type (#1106) is the launcher line `. (Warp-Run-LongCommand
-            # '<path>')`; title it with the start of the real command (#1121). This runs before
-            # the function, which deletes the file, so the file is still there to read.
-            if ($command -match "^\.\s+\(Warp-Run-LongCommand\s+'(.*)'\)\s*$") {
-                $titleReader = $null
-                try {
-                    $titleReader = [System.IO.StreamReader]::new(($Matches[1] -replace "(['\u2018\u2019\u201a\u201b])\1", '$1'), [System.Text.Encoding]::UTF8)
-                    $titleBuffer = [char[]]::new(400)
-                    $titleSource = [string]::new($titleBuffer, 0, $titleReader.Read($titleBuffer, 0, 400))
-                } catch {
-                } finally {
-                    if ($titleReader) { $titleReader.Dispose() }
-                }
-            }
             $title = ($titleSource -replace "(?s)\r?\n.*", [string][char]0x2026)
             if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
         } catch { }
@@ -607,7 +615,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             # file. The subshell bootstrap's first line installs a handler with the same filter
             # before either is typed; this one keeps them out once it has replaced that handler.
             $trimmed = $line.TrimStart()
-            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["'']?\s*$' -or $trimmed.StartsWith('. (Warp-Run-LongCommand ', [System.StringComparison]::Ordinal)) {
+            if ($trimmed.StartsWith('if (-not $global:WARP_BOOTSTRAPPED) {', [System.StringComparison]::Ordinal) -or $global:_warpBootstrapHistoryLines -contains $trimmed -or $trimmed -match '^\.\s+[^\r\n]*[\\/](\.tmp[A-Za-z0-9]{6}\.ps1|Phosphor[\\/]pwsh\.ps1)["'']?\s*$' -or $trimmed -eq '. (Warp-Run-LongCommand)') {
                 return $false
             }
             # Keep honouring the handler the user had before the subshell bootstrap replaced it.
@@ -1301,7 +1309,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             $line = & $script:oldPSConsoleHostReadLine
 
             # A command too long to type into PSReadLine (#1106) arrives as the launcher line
-            # `. (Warp-Run-LongCommand '<path>')`. Preexec reports that line as is; the app
+            # `. (Warp-Run-LongCommand)` (#1592). Preexec reports that line as is; the app
             # recorded the real command against it (set_command_display_override) and shows that
             # in the block header, tab title and history.
             Warp-Preexec "$line"

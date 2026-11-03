@@ -57,6 +57,34 @@ pub(crate) fn lookup_pipe_name(session_id: u64) -> Option<String> {
     names.get(&session_id).cloned()
 }
 
+/// Drops the name minted for `session_id` (its session ended), so the map does not grow for the
+/// life of the app (#1592). Idempotent.
+pub(crate) fn forget_session(session_id: u64) {
+    let mut names = PIPE_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    names.remove(&session_id);
+}
+
+/// Forgets the pipe names of the sessions it was told about when dropped, i.e. when the terminal
+/// that owned them goes away.
+#[derive(Default)]
+pub(crate) struct SessionPipeNames(Vec<u64>);
+
+impl SessionPipeNames {
+    pub(crate) fn track(&mut self, session_id: u64) {
+        if !self.0.contains(&session_id) {
+            self.0.push(session_id);
+        }
+    }
+}
+
+impl Drop for SessionPipeNames {
+    fn drop(&mut self) {
+        for session_id in self.0.drain(..) {
+            forget_session(session_id);
+        }
+    }
+}
+
 /// What the init script gets for `session_id`: the name on Windows, an empty string elsewhere
 /// (the chord is never sent there).
 pub(crate) fn init_script_value(session_id: u64) -> String {

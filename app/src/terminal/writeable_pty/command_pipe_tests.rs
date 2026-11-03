@@ -28,6 +28,24 @@ fn pipe_names_are_random_and_not_derived_from_the_session_id() {
 }
 
 #[test]
+fn a_session_name_is_forgotten_when_its_owner_drops() {
+    let session = 8_200_020;
+    let other = 8_200_021;
+    let name = pipe_name_for_session(session);
+    let kept = pipe_name_for_session(other);
+    let mut tracker = SessionPipeNames::default();
+    tracker.track(session);
+    tracker.track(session);
+    assert_eq!(lookup_pipe_name(session).as_deref(), Some(name.as_str()));
+    drop(tracker);
+    assert_eq!(lookup_pipe_name(session), None);
+    assert_eq!(lookup_pipe_name(other), Some(kept));
+    forget_session(other);
+    forget_session(other);
+    assert_eq!(lookup_pipe_name(other), None);
+}
+
+#[test]
 fn the_init_script_gets_a_name_only_on_windows() {
     let value = init_script_value(8_200_010);
     if cfg!(windows) {
