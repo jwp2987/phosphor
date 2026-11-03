@@ -437,6 +437,41 @@ impl BlocklistAIHistoryModel {
     /// Returns the ids of every conversation cleared from `terminal_view_id`, or an empty
     /// slice if none. Used by `QueuedQueryModel` to drop the queues of conversations cleared
     /// via `ClearedConversationsInTerminalView` (whose event does not carry the ids).
+    /// Moves `conversation_ids` from `from`'s live conversations to `to`'s, and `from`'s active
+    /// conversation with them when it is one of them. Emits nothing: the conversations do not
+    /// change, only which view owns them. A shell restarted in place (#1103) hands the dead
+    /// pane's conversations to the replacement this way, so the dead pane's close (which clears
+    /// what it still owns, and with it their queued prompts) leaves them alone.
+    pub fn move_live_conversations_to_terminal_view(
+        &mut self,
+        from: EntityId,
+        to: EntityId,
+        conversation_ids: &[AIConversationId],
+    ) {
+        if let Some(ids) = self.live_conversation_ids_for_terminal_view.get_mut(&from) {
+            ids.retain(|id| !conversation_ids.contains(id));
+        }
+        let to_ids = self
+            .live_conversation_ids_for_terminal_view
+            .entry(to)
+            .or_default();
+        for id in conversation_ids {
+            if !to_ids.contains(id) {
+                to_ids.push(*id);
+            }
+        }
+        if self
+            .active_conversation_for_terminal_view
+            .get(&from)
+            .is_some_and(|active| conversation_ids.contains(active))
+            && let Some(active) = self.active_conversation_for_terminal_view.remove(&from)
+        {
+            self.active_conversation_for_terminal_view
+                .entry(to)
+                .or_insert(active);
+        }
+    }
+
     pub fn cleared_conversation_ids_for_terminal_view(
         &self,
         terminal_view_id: EntityId,

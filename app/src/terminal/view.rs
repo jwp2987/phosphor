@@ -9879,7 +9879,9 @@ impl TerminalView {
     /// cancelled with every queued row still there to send or delete, and nothing resumes on
     /// its own. If the close is never undone, discarding the pane clears the conversations,
     /// which drops their queues (`QueuedQueryModel::handle_history_event`).
-    pub(crate) fn suspend_agent_work_for_close(&mut self, ctx: &mut ViewContext<Self>) {
+    ///
+    /// Returns how many running conversations it stopped (#1103 logs and reports them).
+    pub(crate) fn suspend_agent_work_for_close(&mut self, ctx: &mut ViewContext<Self>) -> usize {
         self.suspended_for_close = true;
         // The controller refuses every request from here on -- an action follow-up triggered
         // by the cancellations below, a resume, a passive suggestion -- until the undo.
@@ -9904,6 +9906,7 @@ impl TerminalView {
             })
             .map(|conversation| conversation.id())
             .collect();
+        let stopped = running_conversation_ids.len();
 
         for conversation_id in running_conversation_ids {
             // Before the stop: with the batch's earlier results gone, the actions it cancels
@@ -9918,6 +9921,7 @@ impl TerminalView {
                 ctx,
             );
         }
+        stopped
     }
 
     /// Lifts [`Self::suspend_agent_work_for_close`]'s suspension when a closed pane is restored.

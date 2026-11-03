@@ -4399,31 +4399,45 @@ impl PaneGroup {
     /// pane should call this first.
     fn forget_llm_overrides_for_pane(&self, pane_id: PaneId, ctx: &mut ViewContext<Self>) {
         if let Some(terminal_view) = self.terminal_view_from_pane_id(pane_id, ctx) {
-            let terminal_view_id = terminal_view.id();
-            LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
-                prefs.forget_terminal_view(terminal_view_id, ctx);
-            });
-            // Same teardown point (#843): the AI history model's per-view maps (and,
-            // when reloadable from SQLite, the full conversations) and the per-view
-            // active execution profile.
-            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
-                history_model.forget_terminal_view(terminal_view_id, ctx);
-            });
-            crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::handle(ctx)
-                .update(ctx, |profiles, _| {
-                    profiles.forget_terminal_view(terminal_view_id);
-                });
-            // Same teardown point, same reason (#843): the shell session's `History`
-            // bookkeeping is otherwise never released.
-            let session_id = terminal_view
-                .as_ref(ctx)
-                .active_session()
-                .as_ref(ctx)
-                .session_id(ctx);
-            if let Some(session_id) = session_id {
-                crate::terminal::history::History::handle(ctx)
-                    .update(ctx, |history, _| history.forget_session(session_id));
-            }
+            self.forget_terminal_view_state(&terminal_view, ctx);
+        }
+    }
+
+    /// Releases the per-view state a terminal view leaves in app-wide models (#801/#843): its
+    /// LLM override, the AI history model's per-view maps, its active execution profile, and its
+    /// shell session's `History` bookkeeping. Called when the view is gone for good: a pane
+    /// closed for good, or the dead pane a shell restarted in place replaced (#1103).
+    fn forget_terminal_view_state(
+        &self,
+        terminal_view: &ViewHandle<TerminalView>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let terminal_view_id = terminal_view.id();
+        LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+            prefs.forget_terminal_view(terminal_view_id, ctx);
+        });
+        // Same teardown point (#843): the AI history model's per-view maps (and,
+        // when reloadable from SQLite, the full conversations) and the per-view
+        // active execution profile.
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+            history_model.forget_terminal_view(terminal_view_id, ctx);
+        });
+        crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::handle(ctx).update(
+            ctx,
+            |profiles, _| {
+                profiles.forget_terminal_view(terminal_view_id);
+            },
+        );
+        // Same teardown point, same reason (#843): the shell session's `History`
+        // bookkeeping is otherwise never released.
+        let session_id = terminal_view
+            .as_ref(ctx)
+            .active_session()
+            .as_ref(ctx)
+            .session_id(ctx);
+        if let Some(session_id) = session_id {
+            crate::terminal::history::History::handle(ctx)
+                .update(ctx, |history, _| history.forget_session(session_id));
         }
     }
 
@@ -5783,6 +5797,12 @@ impl PaneGroup {
             return false;
         };
 
+        // Stop the dead pane's agent work before its conversations are copied: a reply still
+        // streaming there would otherwise be copied mid-stream and then cancelled behind the
+        // copy by the close below. Undone if the swap fails.
+        let stopped_conversations =
+            old_view.update(ctx, |view, ctx| view.suspend_agent_work_for_close(ctx));
+
         let old_view_id = old_view.id();
         let restored_blocks = old_view
             .as_ref(ctx)
@@ -5803,6 +5823,20 @@ impl PaneGroup {
             .cloned()
             .collect();
         let conversation_count = conversations.len();
+        let carried_conversation_ids: Vec<AIConversationId> = conversations
+            .iter()
+            .map(|conversation| conversation.id())
+            .collect();
+        // A queued command that was running in the dead shell never finishes; left marked in
+        // flight, the first command to finish in the new shell would drain the queue and fire
+        // its next row on its own. The rows stay queued for the user.
+        if ctx.has_singleton_model::<crate::ai::blocklist::QueuedQueryModel>() {
+            crate::ai::blocklist::QueuedQueryModel::handle(ctx).update(ctx, |queued, _| {
+                for conversation_id in &carried_conversation_ids {
+                    queued.clear_command_in_flight(*conversation_id);
+                }
+            });
+        }
         let active_conversation_id = terminal_snapshot.active_conversation_id;
         let conversation_restoration = match vec1::Vec1::try_from_vec(conversations) {
             Ok(conversations) => Some(ConversationRestorationInNewPaneType::Startup {
@@ -5813,7 +5847,7 @@ impl PaneGroup {
         };
 
         log::info!(
-            "Restarting the exited shell of pane {pane_id:?} in place: {} blocks, {conversation_count} conversations, cwd {:?} (#1103)",
+            "Restarting the exited shell of pane {pane_id:?} in place: {} blocks, {conversation_count} conversations ({stopped_conversations} running ones stopped), cwd {:?} (#1103)",
             restored_blocks.len(),
             terminal_snapshot.cwd,
         );
@@ -5836,6 +5870,16 @@ impl PaneGroup {
         );
         let new_pane_id = pane_data.id();
         let new_view = pane_data.terminal_view(ctx);
+        // The replacement restored the carried conversations; it owns them from here, so the
+        // dead pane's close neither clears them nor drops their queued prompts.
+        let new_view_id = new_view.id();
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _| {
+            history.move_live_conversations_to_terminal_view(
+                old_view_id,
+                new_view_id,
+                &carried_conversation_ids,
+            );
+        });
 
         // Both panes carry the session uuid until the swap is done, and whichever one is closed
         // by it (the dead pane, or the replacement if it cannot be attached) must not delete the
@@ -5851,10 +5895,35 @@ impl PaneGroup {
             if let Some(pane) = self.terminal_session_by_id(pane_id) {
                 pane.set_keep_persisted_blocks_on_close(false);
             }
+            // The dead pane stays: give its conversations back and lift the suspension (the
+            // stopped ones stay cancelled, as after an undone close).
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _| {
+                history.move_live_conversations_to_terminal_view(
+                    new_view_id,
+                    old_view_id,
+                    &carried_conversation_ids,
+                );
+            });
+            old_view.update(ctx, |view, ctx| view.resume_after_close_undone(ctx));
             return false;
         }
+        // The dead view is gone for good: release its per-view state, as closing a pane does
+        // (#801/#843). `replace_pane` itself does not.
+        self.forget_terminal_view_state(&old_view, ctx);
         if let Some(pane) = self.terminal_session_by_id(new_pane_id) {
             pane.set_keep_persisted_blocks_on_close(false);
+        }
+
+        if stopped_conversations > 0 {
+            new_view.update(ctx, |view, ctx| {
+                view.show_shell_restart_stopped_agent_message(stopped_conversations, ctx);
+            });
+            ctx.emit(Event::ShowToast {
+                message: "Restarting the shell stopped the agent work that was still running"
+                    .to_owned(),
+                flavor: ToastFlavor::Default,
+                pane_id: Some(new_pane_id),
+            });
         }
 
         if !pending_input.is_empty() {
