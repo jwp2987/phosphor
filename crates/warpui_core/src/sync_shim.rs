@@ -179,14 +179,20 @@ mod model {
 
     /// parking_lot's `RwLock`, modelled: a mutex-and-condvar lock with per-thread ownership, so
     /// it can do what the checkers' own `RwLock` cannot. Both checkers panic when a thread takes a
-    /// lock it already holds, a read included, while parking_lot's `read_recursive` on a thread
-    /// that already reads succeeds even with a writer waiting (that is what it is for). The
-    /// checkers' lock therefore failed a nested read the normal build performs safely; this one
-    /// grants it and still panics on every acquisition that deadlocks with parking_lot:
+    /// lock it already holds, a read included, while parking_lot's `read_recursive` succeeds
+    /// whenever some thread already reads, even with a writer waiting (that is what it is for).
+    /// The checkers' lock therefore failed a nested read the normal build performs safely.
+    ///
+    /// Fairness follows parking_lot: a writer that is waiting blocks every new plain `read`, and
+    /// blocks a `read_recursive` (or fails a `try_read_recursive`) only while no thread reads. A
+    /// writer waits until no thread reads or writes.
+    ///
+    /// Every acquisition that deadlocks with parking_lot on one thread panics:
     ///
     /// - `write` by a thread that holds the lock (a read or the write);
     /// - `read` or `read_recursive` by the thread that holds the write;
-    /// - a nested plain `read` (parking_lot's queues behind a waiting writer).
+    /// - a nested plain `read` (with parking_lot it queues behind a waiting writer, which waits
+    ///   for the outer read).
     ///
     /// Blocking is modelled with the checker's condvar, so a cross-thread deadlock is still a
     /// deadlock the checker reports.
@@ -206,6 +212,18 @@ mod model {
         writer: Option<thread::ThreadId>,
         /// Each reading thread with how many read guards it holds.
         readers: Vec<(thread::ThreadId, usize)>,
+        /// Writers blocked in `write`, waiting for the readers or the writer to leave.
+        writers_waiting: usize,
+    }
+
+    impl RwState {
+        /// Whether a new read must wait (or a `try_read_recursive` fail): a writer holds the lock,
+        /// or one is waiting and the read may not pass it. A recursive read passes a waiting
+        /// writer while any thread reads, as parking_lot's does.
+        fn read_blocked(&self, recursive: bool) -> bool {
+            self.writer.is_some()
+                || (self.writers_waiting > 0 && (!recursive || self.readers.is_empty()))
+        }
     }
 
     impl RwState {
@@ -272,9 +290,7 @@ mod model {
                      queues behind a waiting writer); use `read_recursive`"
                 );
             }
-            // A thread that already reads is not made to wait for a writer: that writer waits for
-            // this thread's guards, so waiting would be the deadlock `read_recursive` avoids.
-            while state.writer.is_some() {
+            while state.read_blocked(recursive) {
                 state = self
                     .changed
                     .wait(state)
@@ -296,11 +312,12 @@ mod model {
             self.acquire_read(true)
         }
 
-        /// As parking_lot's `try_read_recursive`: `None` while a writer holds it.
+        /// As parking_lot's `try_read_recursive`: `None` where `read_recursive` would wait.
         pub fn try_read_recursive(&self) -> Option<RwLockReadGuard<'_, T>> {
             let me = thread::current().id();
             let mut state = self.state();
-            if state.writer.is_some() {
+            // On the writing thread too: parking_lot's answers `None` there, it does not block.
+            if state.read_blocked(true) {
                 return None;
             }
             state.add_reader(me);
@@ -317,12 +334,14 @@ mod model {
                 drop(state);
                 panic!("deadlock! a thread took an RwLock's write lock while holding that lock");
             }
+            state.writers_waiting += 1;
             while state.writer.is_some() || !state.readers.is_empty() {
                 state = self
                     .changed
                     .wait(state)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
+            state.writers_waiting -= 1;
             state.writer = Some(me);
             RwLockWriteGuard { lock: self }
         }
