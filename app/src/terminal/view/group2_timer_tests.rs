@@ -255,3 +255,55 @@ fn young_hold_cap_hands_the_enter_and_keys_back_with_the_guard_armed() {
         });
     }
 }
+
+/// A6 (#1577): the uncovered-report patience (3 s) no longer RUNS the deferred Enter. The text
+/// stays in the editor, the keys held behind the Enter follow it, nothing is written or executed.
+#[test]
+fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                let id = {
+                    let mut model = view.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    handoff.on_command_written();
+                    handoff.on_user_bytes(b"ec");
+                    handoff.on_user_write_flushed();
+                    handoff.on_precmd();
+                    assert_eq!(
+                        handoff.on_line_editor_active(true, true),
+                        ActiveDecision::SendRequest
+                    );
+                    handoff.note_untracked_line_bytes();
+                    assert!(handoff.defer_enter());
+                    handoff
+                        .take_uncovered_deferral_started()
+                        .expect("the patience timer is armed")
+                };
+                view.input
+                    .update(ctx, |input, ctx| input.replace_buffer_content("ho 47", ctx));
+                view.write_user_bytes_to_pty(b"ls".to_vec(), ctx);
+                view.uncovered_report_patience_fired(id, ctx);
+                // A second firing changes nothing.
+                view.uncovered_report_patience_fired(id, ctx);
+                let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+                assert!(buffer.starts_with("ho 47"), "{buffer:?}");
+                assert!(
+                    buffer.contains("ls"),
+                    "the key behind the Enter is back: {buffer:?}"
+                );
+                assert!(view.paste_queue.queue.borrow().is_idle());
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "nothing ran or was written: {:?}",
+                writes.borrow()
+            );
+        });
+    }
+}

@@ -13468,7 +13468,7 @@ impl TerminalView {
 
     /// Starts the patience timer of an Enter deferred behind a report that covers untracked
     /// bytes (#1104), if one was just armed. When it fires the report is not coming (a program
-    /// ate the request) and the Enter runs rather than wait forever.
+    /// ate the request): the Enter is NOT run (#1577); its text stays in the editor.
     fn arm_uncovered_deferral_timer(&mut self, ctx: &mut ViewContext<Self>) {
         let id = self.handoff.write().take_uncovered_deferral_started();
         if let Some(id) = id {
@@ -13485,23 +13485,32 @@ impl TerminalView {
                 Timer::after(UNCOVERED_REPORT_PATIENCE),
                 move |me, _, ctx| {
                     log_late_timer_wake("uncovered report patience", deadline);
-                    let released = me
-                        .model
-                        .lock()
-                        .typeahead_handoff_mut()
-                        .give_up_uncovered_deferral(id);
-                    if released {
-                        // #1192: the report covering the pasted/typed line never arrived.
-                        log::warn!(
-                            "Enter held {} ms: the shell's typeahead report never covered the \
-                             untracked line bytes (uncovered-report patience expired)",
-                            UNCOVERED_REPORT_PATIENCE.as_millis()
-                        );
-                        me.run_deferred_enter(false, ctx);
-                    }
+                    me.uncovered_report_patience_fired(id, ctx);
                 },
             );
         }
+    }
+
+    /// The patience of deferral `id` ran out (#1104): the report covering the untracked line bytes
+    /// never arrived. #1577: a timer never runs the Enter. The report may still be on its way,
+    /// and the Enter's text is what the user typed: it stays in the editor, the keys held behind
+    /// it follow, and the next Enter runs it.
+    fn uncovered_report_patience_fired(&mut self, id: u64, ctx: &mut ViewContext<Self>) {
+        let released = self
+            .model
+            .lock()
+            .typeahead_handoff_mut()
+            .give_up_uncovered_deferral(id);
+        if !released {
+            return;
+        }
+        // #1192: the report covering the pasted/typed line never arrived.
+        log::warn!(
+            "Enter held {} ms: the shell's typeahead report never covered the untracked line \
+             bytes (uncovered-report patience expired); the Enter is not run (#1577)",
+            UNCOVERED_REPORT_PATIENCE.as_millis()
+        );
+        self.keep_deferred_enter_text_hand_back("uncovered_report", ctx);
     }
 
     /// #1215: starts the patience timer of an Enter deferred behind the hand-off's own
@@ -37587,8 +37596,8 @@ fn choice_block_owns_input(
 /// holding keys while it waits for the remote session to register (#983).
 const SSH_CONNECT_POST_BLOCK_GRACE: Duration = Duration::from_secs(5);
 /// How long an Enter deferred behind a report that must cover untracked user bytes waits for it
-/// (#1104) before it runs as it did without the deferral. Reports normally take milliseconds;
-/// this only bounds a request a program ate.
+/// (#1104) before it is given up on. Reports normally take milliseconds; this only bounds a
+/// request a program ate. #1577: the expiry does not run the Enter; the text stays in the editor.
 const UNCOVERED_REPORT_PATIENCE: Duration = Duration::from_secs(3);
 
 /// How long an Enter deferred behind the hand-off's own outstanding report waits for it before
