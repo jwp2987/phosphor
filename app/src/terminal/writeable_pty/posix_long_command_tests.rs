@@ -19,10 +19,9 @@ fn bracketed_paste_wraps_only_from_the_larger_size() {
     let between = "a".repeat(MIN_WRAPPED_BYTES_BRACKETED - 1);
     assert!(!needs_wrapper_for(&between, true));
     assert!(needs_wrapper_for(&between, false));
-    assert!(needs_wrapper_for(
-        &"a".repeat(MIN_WRAPPED_BYTES_BRACKETED),
-        true
-    ));
+    // A multi-line command of the larger size is wrapped.
+    let multi_line = format!("{}\nb", "a".repeat(MIN_WRAPPED_BYTES_BRACKETED));
+    assert!(needs_wrapper_for(&multi_line, true));
     // A here-doc below the larger size keeps going in as pasted.
     assert!(!needs_wrapper_for(&"x\n".repeat(100_000), true));
 }
@@ -58,4 +57,17 @@ fn the_line_grows_by_a_third_only() {
     let command = "x".repeat(300_000);
     let line = wrapper_line(&command);
     assert!(line.len() < command.len() * 4 / 3 + 600, "{}", line.len());
+}
+
+#[test]
+fn a_single_line_command_is_never_wrapped_with_bracketed_paste() {
+    // #1191: the shell takes a pasted single line of any size quickly; the wrapper made it slower.
+    for len in [MIN_WRAPPED_BYTES_BRACKETED, 1024 * 1024, 3 * 1024 * 1024] {
+        assert!(!needs_wrapper_for(&"a".repeat(len), true), "{len}");
+    }
+    // Without bracketed paste the size alone still decides (#1129).
+    assert!(needs_wrapper_for(&"a".repeat(MIN_WRAPPED_BYTES), false));
+    // A CR also makes a multi-line paste.
+    let cr = format!("{}\rb", "a".repeat(MIN_WRAPPED_BYTES_BRACKETED));
+    assert!(needs_wrapper_for(&cr, true));
 }

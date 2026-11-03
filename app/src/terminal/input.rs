@@ -9855,7 +9855,8 @@ impl Input {
             && FeatureFlag::PredictAMQueries.is_enabled()
             && AISettings::as_ref(ctx).is_natural_language_autosuggestions_enabled(ctx)
             && is_ai_input_enabled
-            && !self.buffer_text(ctx).is_empty()
+            // Not `buffer_text(ctx).is_empty()`: that copied the whole buffer on every edit (#1191).
+            && !self.editor.as_ref(ctx).is_empty(ctx)
         {
             // Cancel any pending requests for AM ghosted text predictions.
             if let Some(future_handle) = self.predict_am_queries_future_handle.take() {
