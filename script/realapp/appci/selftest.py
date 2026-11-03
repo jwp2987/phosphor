@@ -538,6 +538,58 @@ def ssh_trial_plan_and_loss_report():
 
 
 @check
+def ssh_trial_facts_name_the_issue():
+    """#1292/#1332/#1345/#1394/#1400/#1596/#1614: one ssh typeahead trial's app-log window -> the hop that went wrong, by issue"""
+    line = "echo T1_abc >> ~/rl.txt"
+
+    def kd_enter(t):
+        return "x input_order keydown key=enter ctrl=false t=%.1f seq=1" % t
+
+    def ty(c, t):
+        return 'x input_order typed_characters text="%s" t=%.1f seq=2' % (c, t)
+
+    def held(t):
+        return "x input_order hop=kh_iq_hold seq=3 queue=Q7_ssh_typeahead bytes=1 t=%.1f" % t
+    ssh = [ty(c, 1.0) for c in "ssh fake"] + [kd_enter(2.0)]
+    typed = [ty(c, 3.0 + i) for i, c in enumerate(line)]
+    # r18e4 Mac: the ssh Enter given up by the young hold, every key then raw: the ssh hold was never exercised
+    mac = ssh + ["x input_order hop=prompt_hold_handed_back hold=25 kind=PromptSeen why=young_hold_cap chunks=1 t=2.5"] + typed + [kd_enter(40.0)]
+    v = cases.ssh_trial_facts(mac, line, [])
+    assert not v["exact"] and v["text"].startswith("#1614: the `ssh` Enter") and "young_hold_cap" in v["text"] and v["app_saw_line"], v["text"]
+    # exact: 10 held, hand-over at precmd, the rest live
+    ok = ssh + typed[:10] + [held(3.0 + i) for i in range(10)] + ["x input_order hop=kh_handover seq=9 source=precmd remote_prompt_seen=true held_bytes=10 t=20.0",
+                                                               "x input_order hop=kh_finish_end seq=9 delivered=remote buffer_chars=10 t=20.1"] + typed[10:]
+    v = cases.ssh_trial_facts(ok, line, ["echo w1 >> ~/.appci_where", line])
+    assert v["exact"] and v["text"].startswith("exact") and v["handovers"] == [("precmd", 10)] and "delivered=remote" in v["finish"], v
+    # #1394: the key right after the 10 held at the hand-over is lost
+    v = cases.ssh_trial_facts(ok, line, [line[:10] + line[11:]])
+    assert v["text"].startswith("#1345/#1394: ONE key lost: char 11") and "the 10 held at the hand-over" in v["text"], v["text"]
+    # #1400: a run of keys lost
+    v = cases.ssh_trial_facts(ok, line, [line[:5] + line[14:]])
+    assert v["text"].startswith("#1400: keys lost: chars 6-14"), v["text"]
+    # #1332: the delivered Enter refused (the WARN has no t= of its own)
+    v = cases.ssh_trial_facts(ok + ["[WARN] Tried to execute command but can_execute_command was false: HistoryNotAppendable"], line, [])
+    assert v["text"].startswith("#1332"), v["text"]
+    # #1596: handed back and kept until the ssh block ends
+    v = cases.ssh_trial_facts(ok + ["x input_order hop=ssh_handed_back chars=23 dest=stashed_until_block_end remote_prompt_seen=false give_up=true"], line, [])
+    assert v["text"].startswith("#1596"), v["text"]
+    # #1292: held, then the line never reached the remote
+    v = cases.ssh_trial_facts(ok, line, [])
+    assert v["text"].startswith("#1292: the line never reached"), v["text"]
+    # the window reader: a line with no t= takes the t= of the line before it
+    d = tempfile.mkdtemp()
+    try:
+        lp = os.path.join(d, "phosphor.log")
+        with open(lp, "w") as fh:
+            fh.write("a t=1000.0\n[WARN] no stamp\nb t=5000.0\nc t=9000.0\n")
+        c = types.SimpleNamespace(log_path=lp)
+        assert cases.Ctx.app_log_window(c, 0.5, 6.0) == ["a t=1000.0", "[WARN] no stamp", "b t=5000.0"]
+        assert cases.Ctx.app_log_window(c, 4.0) == ["b t=5000.0", "c t=9000.0"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@check
 def profile_build_writes_every_file_in_a_fresh_dir():
     # r18d4 diag: #1550 wrote .refzdot/.zshrc into a directory nobody created; every pass crashed in prof.build. Build both modes offline.
 
