@@ -20482,26 +20482,66 @@ fn ssh_line_typed_at_once_after_the_ssh_enter_is_held_and_delivered_once_to_the_
     }
 }
 
-/// #1609: the local typeahead hand-off is told an ssh owns the pty from its submit until its block
-/// ends, so an Enter typed into it is not held as a young line of the local shell; a command that
-/// is not ssh never sets it.
+/// #1609, redone by #1614: the hand-off is no longer told that an ssh owns the pty; the block latch
+/// (`CommandBecameInteractive`, which an interactive ssh, an inner shell or a program all raise) is
+/// the event. A young Enter and the keys behind it held when it arrives are written to the pty as
+/// typeahead, in typed order, as one write; nothing is handed back and no timer is involved. Legacy
+/// and Table.
 #[test]
-fn ssh_submit_tells_the_handoff_the_tty_belongs_to_ssh_until_the_block_ends() {
+fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                let block_id = view.model.lock().active_block_id().clone();
+                view.handle_terminal_event(&ModelEvent::CommandBecameInteractive { block_id }, ctx);
+                assert!(
+                    !young_gate_open(view),
+                    "{mode:?}: the hold ended on the event"
+                );
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+                assert!(view.model.lock().typeahead_handoff().command_interactive());
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing handed back to the editor"
+                );
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"\rx".to_vec()],
+                "{mode:?}: the Enter and the key behind it, one write, typed order"
+            );
+        });
+    }
+}
+
+/// #1614: a late `CommandBecameInteractive` for a block whose prompt is already back (the model
+/// thread ran ahead of the main thread) must not mark the shell's next line as a program's.
+#[test]
+fn a_late_interactive_event_for_a_finished_block_does_not_mark_the_shell_interactive() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            register_local_session_for_ssh_test(view, ctx);
-            submit_command(view, "ls -l", ctx);
-            assert!(!view.handoff.read().ssh_owns_tty());
-            submit_command(view, "ssh fake", ctx);
-            assert!(view.handoff.read().ssh_owns_tty());
-            // The flag does not depend on the gate (it is cleared with no gate open too).
-            view.ssh_connect_gate = None;
-            assert!(view.handoff.read().ssh_owns_tty());
-            submit_command(view, "echo hi", ctx);
-            assert!(!view.handoff.read().ssh_owns_tty());
+            let stale_block_id = view.model.lock().active_block_id().clone();
+            // The block is not started (its prompt is back / it never ran): the event is stale.
+            view.handle_terminal_event(
+                &ModelEvent::CommandBecameInteractive {
+                    block_id: stale_block_id,
+                },
+                ctx,
+            );
+            assert!(!view.model.lock().typeahead_handoff().command_interactive());
         });
     })
 }
