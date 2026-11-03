@@ -32,13 +32,18 @@ pub use warp_completer::{
     ParsedTokensSnapshot,
 };
 
-/// Input buffers with more chars than this get no background parse: no syntax
-/// highlighting, error underlining or input-type detection (#868). Lowered from 1 MiB to
-/// 150_000 (#1009), then to 4096 (#1174): the completer lexer/parser is roughly quadratic in
-/// the token count, so a 5k-100k char single-line paste kept a core at 100% for over a minute
-/// and parked the first Enter. Measured in round 18: 2k chars parsed in ~137 ms, 10k in
-/// ~1-2 s, 100k in over 60 s, so the knee sits at 2-5k chars; 4096 is the conservative end
-/// that still decorates every command anyone types by hand.
+/// Input buffers with more chars than this get no background *completer parse*: no syntax
+/// highlighting, error underlining, alias expansion or completer autosuggestion (#868). Lowered
+/// from 1 MiB to 150_000 (#1009), then to 4096 (#1174): the completer lexer/parser is roughly
+/// quadratic in the token count, so a 5k-100k char single-line paste kept a core at 100% for
+/// over a minute and parked the first Enter. Measured in round 18: 2k chars parsed in ~137 ms,
+/// 10k in ~1-2 s, 100k in over 60 s, so the knee sits at 2-5k chars; 4096 is the conservative
+/// end that still decorates every command anyone types by hand.
+///
+/// This is NOT a cap on input-type detection any more (#1604): a buffer over it is classified
+/// from a parse-less snapshot by the linear routing rules, in a background job the Enter starts
+/// and waits for (`Input::start_detection_for_unparsed_buffer`). Only the quadratic parse and the
+/// decorations it feeds are skipped.
 pub(super) const MAX_BACKGROUND_JOB_BUFFER_CHARS: usize = 4096;
 
 /// The token cap that goes with [`MAX_BACKGROUND_JOB_BUFFER_CHARS`] (#1174): the parse cost
@@ -223,14 +228,24 @@ impl Input {
         let mut ranges = Vec::new();
 
         for reference in references {
+            if reference.is_empty() {
+                continue;
+            }
+            let reference_chars = reference.chars().count();
+            // One pass per reference (#1604): the char offset is carried forward from the last
+            // match instead of recounted from the start of the buffer for every match, which was
+            // quadratic in a buffer full of the same reference.
             let mut search_start = 0;
+            let mut chars_before_search_start = 0;
             while let Some(relative_start) = buffer_text[search_start..].find(&reference) {
                 let start_byte = search_start + relative_start;
                 let end_byte = start_byte + reference.len();
-                let start_char = buffer_text[..start_byte].chars().count();
-                let end_char = start_char + reference.chars().count();
+                let start_char =
+                    chars_before_search_start + buffer_text[search_start..start_byte].chars().count();
+                let end_char = start_char + reference_chars;
                 ranges.push(CharOffset::from(start_char)..CharOffset::from(end_char));
                 search_start = end_byte;
+                chars_before_search_start = end_char;
             }
         }
 
@@ -300,15 +315,21 @@ impl Input {
         // length, so an oversized buffer is never copied out here.
         if self.buffer_exceeds_background_job_cap(ctx) {
             self.cancel_decorations_job();
-            // No verdict will ever come for this text: a request left pending would make
-            // Enter wait for one and swallow the first Enter (#1036).
-            self.ai_input_model
-                .update(ctx, |model, _| model.abandon_pending_detection());
             // Clearing walks the whole buffer's styles, so do it once per oversized
             // stretch, not on every edit.
             if !self.decorations_cleared_for_oversized_buffer {
                 self.clear_decorations_unchecked(ctx);
                 self.decorations_cleared_for_oversized_buffer = true;
+            }
+            // #1604: the request stays pending and IS answered: the routing rules run on the
+            // text without a parse, in a background job. Up to `MAX_EAGER_ROUTING_BYTES` the job
+            // starts here, as it does for typed text (each edit aborts the previous one); a
+            // longer buffer waits for its Enter to start it, so a typing burst cannot stack up
+            // uncancellable 10 MB jobs. Before this, the request was abandoned here and the Enter
+            // ran the text on the inherited input type -- a 5000-byte shell line in agent mode
+            // went to the agent.
+            if mode.ai_input_detection {
+                self.start_detection_for_unparsed_buffer(false, ctx);
             }
             return;
         }
@@ -463,6 +484,76 @@ impl Input {
                         },
                     );
                 }
+            }
+        }
+    }
+
+    /// #1604: classifies a buffer over the parse cap without a parse. The routing rules need only
+    /// the text (the session's view of the head word is read from the context, as at Enter), and
+    /// the model classifier sees a bounded opening of it, so no step is quadratic in the text and
+    /// none runs on the UI thread: `BlocklistAIInputModel::detect_and_set_input_type_with_facts`
+    /// moves the rules into its job for text over `MAX_SYNC_ROUTING_BYTES`. The verdict lands
+    /// through the usual callback and settles the pending request, which releases an Enter
+    /// waiting on it.
+    ///
+    /// Starts nothing for a buffer under the parse cap (its completer parse delivers the verdict:
+    /// a parse-less job here would race it and settle the request without one), when detection is
+    /// not requested for the current text, when a job is already in flight for it, or -- unless
+    /// `at_enter` -- when the buffer is over `MAX_EAGER_ROUTING_BYTES` (the Enter starts that one;
+    /// see `run_input_background_jobs`).
+    pub(crate) fn start_detection_for_unparsed_buffer(
+        &mut self,
+        at_enter: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // Cached lengths first: a buffer that is parsed, or too long for the eager start, is not
+        // copied here.
+        if !self.buffer_exceeds_background_job_cap(ctx) {
+            return;
+        }
+        let len = self.editor.as_ref(ctx).buffer_size(ctx).as_usize();
+        if !at_enter && len > crate::ai::blocklist::input_model::MAX_EAGER_ROUTING_BYTES {
+            return;
+        }
+        let buffer_text = self.editor.as_ref(ctx).buffer_text(ctx);
+        {
+            let model = self.ai_input_model.as_ref(ctx);
+            if !model.is_detection_requested_for(&buffer_text) || model.detection_job_in_flight()
+            {
+                return;
+            }
+        }
+        let snapshot = ParsedTokensSnapshot {
+            buffer_text,
+            parsed_tokens: Vec::new(),
+        };
+        match self.completion_session_context_or_empty_context(ctx) {
+            CompletionSessionContext::Session(completion_context) => {
+                // #1158: no generators, as for any parse that feeds detection.
+                let completion_context = completion_context.for_classification();
+                let session_id = completion_context.session.id();
+                let facts = RoutingSessionFacts {
+                    shell: shell_family(completion_context.session.shell().shell_type()),
+                };
+                self.ai_input_model.update(ctx, |model, ctx| {
+                    model.detect_and_set_input_type_with_facts(
+                        snapshot,
+                        completion_context,
+                        Some(session_id),
+                        facts,
+                        ctx,
+                    )
+                });
+            }
+            CompletionSessionContext::Empty(_) => {
+                self.ai_input_model.update(ctx, |model, ctx| {
+                    model.detect_and_set_input_type(
+                        snapshot,
+                        EmptyCompletionContext::new(),
+                        None,
+                        ctx,
+                    )
+                });
             }
         }
     }

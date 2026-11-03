@@ -44,6 +44,7 @@ with `INSTA_UPDATE=always cargo test ...`. CI (`CI=true`) never writes: a mismat
 ```
 cargo bench -p warp --features dev-support --bench key_path_bench
 cargo bench -p warp --features dev-support --bench ansi_bench
+cargo bench -p warp --features dev-support --bench routing_bench
 cargo bench -p warp --features dev-support --bench key_path_bench -- --save-baseline before
 cargo bench -p warp --features dev-support --bench key_path_bench -- --baseline before
 ```
@@ -55,6 +56,7 @@ cargo bench -p warp --features dev-support --bench key_path_bench -- --baseline 
 | `destination_for` | the destination table, 15 (kind, facts) pairs per iteration |
 | `handoff/*` | `young_submit_decision`, `KeyFactsCell::load`, `PaneHandoff::read` |
 | `ansi/mixed_1mb_in_4k_reads` | 1 MB mixed VT stream into a real `TerminalModel` |
+| `routing/*` | input-type routing of 1 MB and 10 MB text (a line, a script) and the Enter-time predicates on 10 MB (#1604). Limits are set AT the Enter's compute allowance (1 ms per 4 KiB), not at 10x: over the limit means an Enter on a paste that size is handed back |
 
 **Regression gate (#1533).** The manual `bench` CI job runs `script/bench_gate.py` on the criterion output and
 fails when a benchmark's median exceeds `max_ns` in `script/bench_thresholds.json` (or a listed bench is missing,

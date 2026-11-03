@@ -20,7 +20,7 @@ use crate::{
         first_token_forces_ai_override, is_unambiguous_shell_command,
         is_unknown_single_word_in_agent_conversation, known_command_head,
         lacks_command_evidence_in_agent_conversation, reads_as_request_to_agent,
-        strip_trailing_comment,
+        strip_trailing_comment, truncate_for_model,
     },
 };
 
@@ -65,7 +65,12 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
                 InputClassifierDecisionSource::UnambiguousShellSyntax,
             );
         }
-        let result = self.inner.detect_input_type(input.clone(), context).await;
+        // #1604: the model is shown a bounded opening of the text (the rules above and below read
+        // all of it), so a 10 MB paste costs the tokenizer no more than a 4 KiB line.
+        let result = self
+            .inner
+            .detect_input_type(truncate_for_model(&input).into_owned(), context)
+            .await;
         if matches!(result.input_type, InputType::Shell)
             && first_token_forces_ai_override(&input, context.commands_fully_loaded)
         {
@@ -127,7 +132,10 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
         // `classify_input` is a lower-level "give me a raw probability" API with no external
         // production callers (only `detect_input_type`, and the offline `evaluate` bin tool);
         // gating the final `InputType` decision at `detect_input_type` is what matters for safety.
-        self.inner.classify_input(input, context).await
+        // The model input is bounded here too (#1604).
+        self.inner
+            .classify_input(truncate_for_model(&input).into_owned(), context)
+            .await
     }
 }
 

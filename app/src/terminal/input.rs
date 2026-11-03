@@ -36,7 +36,8 @@ use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
 use crate::ai::blocklist::compute_clock::ComputeClock;
 use crate::ai::blocklist::input_model::{
-    EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision, shell_family,
+    EnterProvenance, EnterVerdictWait, enter_verdict_wait_decision_for,
+    large_text_compute_allowance, routes_off_thread, shell_family,
     should_wait_for_verdict_before_submit,
 };
 use instant::Instant;
@@ -1426,20 +1427,28 @@ const TAB_COMPLETION_ENTER_BUDGET: std::time::Duration = std::time::Duration::fr
 const TAB_COMPLETION_ENTER_WARN: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl EnterHold {
-    /// The most compute the awaited job may spend before the Enter gives up on it (#1351).
-    fn compute_cap(self) -> std::time::Duration {
+    /// The most compute the awaited job may spend before the Enter gives up on it (#1351). For a
+    /// verdict the cap grows with the text (#1604, `enter_verdict_budget_for`): a buffer over the
+    /// sync routing cap is classified by a linear background job the Enter waits for, and the
+    /// 20 ms a typed line gets would hand a 1 MB paste back on every Enter.
+    fn compute_cap(self, text_len: usize) -> std::time::Duration {
         match self {
-            EnterHold::Verdict { .. } => crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET,
+            EnterHold::Verdict { .. } => {
+                crate::ai::blocklist::input_model::enter_verdict_budget_for(text_len)
+            }
             EnterHold::TabCompletion { .. } => TAB_COMPLETION_ENTER_BUDGET,
         }
     }
 
     /// How long an Enter holds before giving up on a result that never arrived, whether or not
     /// any job was seen running (#1351). A safety net for a lost signal, never the way a hold is
-    /// normally released; it is logged when it fires.
-    fn backstop(self) -> std::time::Duration {
+    /// normally released; it is logged when it fires. Grows with the text like the compute cap
+    /// (#1604), so it cannot fire inside a large buffer's allowed compute.
+    fn backstop(self, text_len: usize) -> std::time::Duration {
         match self {
-            EnterHold::Verdict { .. } => std::time::Duration::from_millis(250),
+            EnterHold::Verdict { .. } => {
+                std::time::Duration::from_millis(250) + large_text_compute_allowance(text_len)
+            }
             EnterHold::TabCompletion { .. } => std::time::Duration::from_millis(500),
         }
     }
@@ -9485,6 +9494,12 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) -> Option<ExpansionInfo> {
         let session_context = self.completion_session_context(ctx)?;
+        // A buffer over the parse cap gets no alias or abbreviation expansion (#1604): the lexer
+        // and parser below walk the whole buffer on the UI thread, on every Space and at Enter,
+        // and a buffer that size is a paste, whose aliases the shell expands itself.
+        if self.buffer_exceeds_background_job_cap(ctx) {
+            return None;
+        }
         let editor = self.editor.as_ref(ctx);
         editor.single_cursor_to_point(ctx)?;
         let buffer_text = editor.buffer_text(ctx);
@@ -10132,7 +10147,12 @@ impl Input {
                 let user_typed_edit = matches!(edit_origin, EditOrigin::UserTyped);
                 if !typed_behind_waiting_enter {
                     self.ai_input_model.update(ctx, |controller, _| {
-                        controller.abort_in_progress_detection();
+                        // #1604: a job already classifying exactly this text (the paste path
+                        // requested it before this `Edited` event, #1335) is kept, with the
+                        // clock a waiting Enter measures it on; any other job is for old text.
+                        controller.abort_in_progress_detection_unless_for(
+                            buffer_text_for_detection.as_deref(),
+                        );
                         if let Some(buffer_text) = buffer_text_for_typeahead {
                             controller.note_buffer_edited(&buffer_text);
                         }
@@ -13473,7 +13493,11 @@ impl Input {
         // while a command is running (a non-warpified ssh, `docker exec`, `sudo -s`,
         // `nix-shell`, or the gap before a subshell/ssh session bootstraps all leave the previous
         // session as the active one) and not before bootstrap completes.
-        let prompt_session_is_the_target = {
+        // #1604: a buffer over the sync routing cap is decided by its background job; the session
+        // facts below are only gathered for the synchronous rules (`effective_head_word` and the
+        // #965 request shapes split the whole text into words, and the exact-history lookup
+        // hashes all of it, on this thread).
+        let prompt_session_is_the_target = !routes_off_thread(&snapshot.buffer_text) && {
             let model = self.model.lock();
             model.block_list().is_bootstrapped()
                 && !model
@@ -14106,13 +14130,10 @@ impl Input {
             .is_detection_pending_for(&text, ctx)
     }
 
-    /// #1036/#1174: text over the background-job cap is never parsed, so no verdict can land for
-    /// it; drop the pending request so an Enter does not wait for one.
-    pub(crate) fn abandon_detection_if_over_parse_cap(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.buffer_exceeds_background_job_cap(ctx) {
-            self.ai_input_model
-                .update(ctx, |model, _| model.abandon_pending_detection());
-        }
+    /// The buffer's length in chars, from the editor's cached size: no copy (#1604). A lower bound
+    /// of its byte length, which the large-text compute allowances are measured in.
+    pub(crate) fn buffer_char_len(&self, ctx: &AppContext) -> usize {
+        self.editor.as_ref(ctx).buffer_size(ctx).as_usize()
     }
 
     /// #1174: the classifier did not answer in time. Decide on everything known now, then drop
@@ -14177,11 +14198,14 @@ impl Input {
         // before: an unambiguous command or a known head settles to Shell at once (#906, #956),
         // a request to the agent settles to AI. Settling clears the pending verdict, so only
         // text those rules leave undecided waits below.
-        // #1036: text over the background-job cap is never parsed, so no verdict can land;
-        // the debounced job that would clear the request may not have run before this Enter.
-        self.abandon_detection_if_over_parse_cap(ctx);
         self.settle_pending_input_detection_for_submit(ctx);
         let text = self.editor.as_ref(ctx).buffer_text(ctx);
+        // #1604: a buffer over the sync routing cap is decided by its background job, never by
+        // the rules on this thread (`has_no_prose_evidence` is linear in the text, and a 10 MB
+        // scan here is a frame): it counts as prose evidence, so the Enter waits for the verdict.
+        let off_thread = routes_off_thread(&text);
+        let has_prose_evidence =
+            off_thread || !input_classifier::util::has_no_prose_evidence(&text);
         let model = self.ai_input_model.as_ref(ctx);
         let provenance = if model.has_typeahead_provenance() && !model.typeahead_is_young() {
             EnterProvenance::ShellTypeahead
@@ -14189,13 +14213,18 @@ impl Input {
             EnterProvenance::Classifiable
         };
         if !should_wait_for_verdict_before_submit(
-            !input_classifier::util::has_no_prose_evidence(&text),
+            has_prose_evidence,
             self.buffer_is_slash_command(ctx),
             model.is_detection_pending_for(&text, ctx),
             provenance,
             false,
         ) {
             return None;
+        }
+        // The verdict this Enter waits for comes from the job that classifies the text without a
+        // parse (#1604); over `MAX_EAGER_ROUTING_BYTES` nothing but an Enter starts it.
+        if off_thread {
+            self.start_detection_for_unparsed_buffer(true, ctx);
         }
         Some(text)
     }
@@ -14317,7 +14346,11 @@ impl Input {
         let Some(wait) = self.verdict_wait.as_ref() else {
             return;
         };
-        let (id, backstop, clock) = (wait.id, wait.hold.backstop(), wait.compute.clone());
+        let (id, backstop, clock) = (
+            wait.id,
+            wait.hold.backstop(wait.text.len()),
+            wait.compute.clone(),
+        );
         if let Some(wait) = self.verdict_wait.as_mut() {
             wait.watch_epoch = wait.watch_epoch.wrapping_add(1);
         }
@@ -14349,7 +14382,10 @@ impl Input {
         if !wait.compute.is_running() {
             return;
         }
-        let remaining = wait.hold.compute_cap().saturating_sub(wait.compute.spent());
+        let remaining = wait
+            .hold
+            .compute_cap(wait.text.len())
+            .saturating_sub(wait.compute.spent());
         self.arm_hold_timer(id, remaining, "compute cap", ctx);
     }
 
@@ -14393,7 +14429,7 @@ impl Input {
         let Some(wait) = self.verdict_wait.as_ref().filter(|wait| wait.id == id) else {
             return;
         };
-        if wait.compute.spent() < wait.hold.compute_cap() {
+        if wait.compute.spent() < wait.hold.compute_cap(wait.text.len()) {
             self.arm_compute_cap(id, ctx);
             return;
         }
@@ -14412,7 +14448,7 @@ impl Input {
         let (text, hold, spent) = (wait.text.clone(), wait.hold, wait.compute.spent());
         log::warn!(
             "Enter hold backstop fired after {} ms: no {} arrived (job compute {} ms)",
-            hold.backstop().as_millis(),
+            hold.backstop(text.len()).as_millis(),
             match hold {
                 EnterHold::Verdict { .. } => "input-type verdict",
                 EnterHold::TabCompletion { .. } => "Tab completion",
@@ -14734,7 +14770,7 @@ impl Input {
             .as_ref()
             .map(|wait| wait.compute.spent())
             .unwrap_or_default();
-        let decision = enter_verdict_wait_decision(pending, spent);
+        let decision = enter_verdict_wait_decision_for(pending, spent, text.len());
         if decision != EnterVerdictWait::Wait {
             let waited = self.verdict_wait.as_ref().map(|wait| match wait.hold {
                 EnterHold::Verdict { since } | EnterHold::TabCompletion { since } => {
@@ -17071,9 +17107,12 @@ impl Input {
     /// Returns whether the buffer contains any attachment patterns (blocks, drive objects, or diffs).
     /// These patterns indicate the user is referencing context that requires AI mode.
     fn buffer_contains_attachment_patterns(buffer_text: &str) -> bool {
-        BLOCK_CONTEXT_ATTACHMENT_REGEX.is_match(buffer_text)
-            || DRIVE_OBJECT_ATTACHMENT_REGEX.is_match(buffer_text)
-            || DIFF_HUNK_ATTACHMENT_REGEX.is_match(buffer_text)
+        // Every pattern opens with `<`; the byte search runs at memory speed, so an edit of a
+        // large paste without one skips the three regex passes (#1604).
+        buffer_text.contains('<')
+            && (BLOCK_CONTEXT_ATTACHMENT_REGEX.is_match(buffer_text)
+                || DRIVE_OBJECT_ATTACHMENT_REGEX.is_match(buffer_text)
+                || DIFF_HUNK_ATTACHMENT_REGEX.is_match(buffer_text))
     }
 
     /// Shows the AI command search panel.

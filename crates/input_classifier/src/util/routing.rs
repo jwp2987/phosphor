@@ -24,7 +24,7 @@ use natural_language_detection::is_ordinary_english_word;
 use warp_completer::ParsedTokensSnapshot;
 
 use super::{
-    AMBIGUOUS_LONE_HEADS, FREE_TEXT_ARG_HEADS, MAX_PREFILTER_BYTES, QUESTION_HEADS,
+    AMBIGUOUS_LONE_HEADS, FREE_TEXT_ARG_HEADS, QUESTION_HEADS,
     REQUEST_OPENER_HEADS, SHELL_WORD_TERMINATORS, STRONG_PROSE_WORDS, ShellWord, WRAPPER_HEADS,
     buffer_has_prose_colon_shape, effective_head_chain, effective_head_index,
     ends_in_sentence_punctuation, has_clear_shell_structure_for_unknown_head,
@@ -112,8 +112,6 @@ pub enum Route {
 pub enum Rule {
     /// Nothing to route.
     Empty,
-    /// Over the size cap: a paste, never classified, never moved (#968, #1036, #1174).
-    Oversized,
     /// The first word is in the user's autodetection denylist.
     Denylist,
     /// Typeahead for a running command with no prose evidence anywhere (#886).
@@ -174,7 +172,6 @@ impl std::fmt::Display for Rule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
             Rule::Empty => "empty",
-            Rule::Oversized => "oversized (#1036)",
             Rule::Denylist => "denylist",
             Rule::RunningTypeahead => "running-typeahead (#886)",
             Rule::SlashSpelling => "slash-spelling (#1184)",
@@ -237,9 +234,10 @@ pub fn route(input: &ParsedTokensSnapshot, ctx: &RoutingContext) -> Decision {
     if raw.is_empty() {
         return Decision::undecided(Rule::Empty);
     }
-    if raw.len() > MAX_PREFILTER_BYTES {
-        return Decision::undecided(Rule::Oversized);
-    }
+    // #1604: there is no size cap. Every rule below is linear in the text (one pass per rule, a
+    // bounded amount of work per word, no regex), so a 10 MB paste is classified exactly like a
+    // 10-byte line; the caller chooses the thread (the app runs text over its sync cap in the
+    // background and the Enter waits for the verdict).
     if ctx.denylisted {
         return Decision::shell(Rule::Denylist);
     }

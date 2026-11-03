@@ -8,6 +8,10 @@
     "handoff/young_submit_decision": 10000,
     "handoff/key_facts_load": 10000,
     "handoff/pane_handoff_read": 10000,
-    "ansi/mixed_1mb_in_4k_reads": 100000000
+    "ansi/mixed_1mb_in_4k_reads": 100000000,
+    "routing/route_1mb_line": 275000000,
+    "routing/route_10mb_line": 2500000000,
+    "routing/route_10mb_script": 2500000000,
+    "routing/enter_predicates_10mb_line": 2500000000
   }
 }

@@ -386,10 +386,6 @@ pub fn is_unknown_single_word_in_agent_conversation(
 /// glued to it (`yes|head`, `ls>out.txt`).
 const SHELL_WORD_TERMINATORS: [char; 8] = ['|', '&', ';', '<', '>', '(', ')', '`'];
 
-/// Longest buffer [`is_unambiguous_shell_command`] will look at: it runs synchronously on every
-/// keystroke, and anything longer is a paste the classifier can take its time over.
-const MAX_PREFILTER_BYTES: usize = 4096;
-
 lazy_static! {
     /// Closed-class English function words (#808). One of these anywhere in the buffer, outside
     /// quotes and other than the head word, vetoes [`is_unambiguous_shell_command`] outright: a
@@ -924,8 +920,7 @@ fn is_prose_word(word: &ShellWord) -> bool {
 /// The buffer is trimmed; leading `NAME=value` assignments are skipped to find the *head*, the
 /// effective first word, which is cut at any operator glued to it (`yes|head`).
 ///
-/// **Vetoes** (always `false`): an empty buffer, or one over [`MAX_PREFILTER_BYTES`] (a paste,
-/// not a typed line — and this runs synchronously per keystroke); a trailing `?`; quoting bash
+/// **Vetoes** (always `false`): an empty buffer; a trailing `?`; quoting bash
 /// would reject, an apostrophe inside a word (`find Josh's PR`) or a typographic quote
 /// (`don’t`), see [`has_shell_safe_quoting`]; the #696 prose shape of a later word ending in `:`
 /// before the first operator ("run exactly this:", [`buffer_has_prose_colon_shape`]); a quoted
@@ -956,7 +951,6 @@ fn is_prose_word(word: &ShellWord) -> bool {
 pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
     let text = input.buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.ends_with('?')
         || !has_shell_safe_quoting(text)
         || buffer_has_prose_colon_shape(text)
@@ -1100,12 +1094,11 @@ pub fn is_unambiguous_shell_command(input: &ParsedTokensSnapshot) -> bool {
 /// `install docker`, `free up disk space`) does not read as prose here, so a failed entry for it
 /// can still route it to Shell from history.
 ///
-/// A buffer over [`MAX_PREFILTER_BYTES`] returns `false` without being scanned: this runs
-/// synchronously on the UI thread per keystroke, and a paste that size is not going to sit within
-/// the history matcher's 0.9 similarity of a remembered command line anyway.
+/// There is no length cap (#1604): every pass is linear in the text, and the caller decides which
+/// thread runs it (the app routes text over `MAX_SYNC_ROUTING_BYTES` off the UI thread).
 pub fn reads_as_prose(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
-    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES {
+    if text.is_empty() {
         return false;
     }
     if text.ends_with('?') || !has_shell_safe_quoting(text) || buffer_has_prose_colon_shape(text) {
@@ -1419,7 +1412,6 @@ fn is_flag_or_path_word(word: &ShellWord) -> bool {
 pub fn reads_as_command_headed_prose(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.contains(['\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`'])
         || text.contains("$(")
         || !has_shell_safe_quoting(text)
@@ -1625,11 +1617,11 @@ pub fn effective_head_word(buffer_text: &str) -> Option<String> {
 /// path), so an unknown head, or session data that cannot say (`None`/stale: no descriptions),
 /// is never "known". For a wrapper line (`nohup grep ...`, `timeout 5 git ...`) the completer
 /// only describes the wrapper, so the wrapped command counts when it takes free text or is not an
-/// ordinary English word (`grep`, `git`, `ollama`, but not `can`/`fix`). Multi-line and oversized
-/// buffers are never decided here.
+/// ordinary English word (`grep`, `git`, `ollama`, but not `can`/`fix`). Multi-line buffers are
+/// never decided here; length is no veto (#1604).
 pub fn known_command_head(input: &ParsedTokensSnapshot) -> bool {
     let text = input.buffer_text.trim();
-    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES || text.contains(['\n', '\r']) {
+    if text.is_empty() || text.contains(['\n', '\r']) {
         return false;
     }
     let mut tokens = input.parsed_tokens.iter();
@@ -1689,7 +1681,6 @@ const STRONG_PROSE_WORDS: [&str; 16] = [
 pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.contains([
             '\n', '\r', '\\', '|', '&', ';', '<', '>', '(', ')', '`', '$',
         ])
@@ -1753,11 +1744,10 @@ pub fn reads_as_prose_with_unknown_head(buffer_text: &str) -> bool {
 /// and so does a well-formed command made of English words (`echo hello world`) -- the pre-filter
 /// and the classifier decide those as they would any buffer.
 ///
-/// A buffer over [`MAX_PREFILTER_BYTES`] returns `false` without being scanned.
+/// No length cap (#1604): linear in the text; see [`reads_as_prose`].
 pub fn has_no_prose_evidence(buffer_text: &str) -> bool {
     let text = buffer_text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.ends_with('?')
         || !has_shell_safe_quoting(text)
         || buffer_has_prose_colon_shape(text)
@@ -1828,6 +1818,36 @@ pub fn strip_trailing_comment(
     let end = kept.len();
     std::borrow::Cow::Owned(ParsedTokensSnapshot {
         buffer_text: kept.to_owned(),
+        parsed_tokens: input
+            .parsed_tokens
+            .iter()
+            .filter(|token| token.token.span.end() <= end)
+            .cloned()
+            .collect(),
+    })
+}
+
+/// The most of a buffer a *model* classifier (ONNX, fastText, the heuristic) is shown (#1604).
+/// The rules read the whole text and are linear in it; a model's verdict on a 10 MB paste is the
+/// verdict on its opening (the BERT tokenizer keeps 128 tokens of what it is given), and
+/// tokenizing the whole paste was the one classifier step whose cost nothing else bounded. Cut at
+/// a char boundary, tokens past the cut dropped.
+pub const MAX_MODEL_INPUT_BYTES: usize = 4096;
+
+/// `input` cut to [`MAX_MODEL_INPUT_BYTES`] for a model classifier (#1604); borrowed unchanged
+/// when it already fits. The rules that run before and after the model see the full text.
+pub fn truncate_for_model(
+    input: &ParsedTokensSnapshot,
+) -> std::borrow::Cow<'_, ParsedTokensSnapshot> {
+    if input.buffer_text.len() <= MAX_MODEL_INPUT_BYTES {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let mut end = MAX_MODEL_INPUT_BYTES;
+    while !input.buffer_text.is_char_boundary(end) {
+        end -= 1;
+    }
+    std::borrow::Cow::Owned(ParsedTokensSnapshot {
+        buffer_text: input.buffer_text[..end].to_owned(),
         parsed_tokens: input
             .parsed_tokens
             .iter()
@@ -2427,13 +2447,13 @@ const AMBIGUOUS_LONE_HEADS: &[&str] = &[
 /// (`kubectl`, `terraform plan`). An ordinary English head with only English-word arguments and
 /// none of the above (`make commit port`, `last about build script`) has none.
 ///
-/// Multi-line and oversized buffers are not decided here (`false`), and a trailing comment is
-/// ignored. Callers apply this only in an active agent view; in plain terminal mode the
+/// Multi-line buffers are not decided here (`false`), length is no veto (#1604), and a trailing
+/// comment is ignored. Callers apply this only in an active agent view; in plain terminal mode the
 /// classifier verdict stands.
 pub fn lacks_command_evidence_in_agent_conversation(input: &ParsedTokensSnapshot) -> bool {
     let input = strip_trailing_comment(input);
     let text = input.buffer_text.trim();
-    if text.is_empty() || text.len() > MAX_PREFILTER_BYTES || text.contains(['\n', '\r']) {
+    if text.is_empty() || text.contains(['\n', '\r']) {
         return false;
     }
     // Shell structure is evidence of its own, and a line with an open quote is left to the
@@ -2711,7 +2731,6 @@ fn shell_structure_signals(words: &[ShellWord], first_index: usize) -> Structure
 pub fn has_clear_shell_structure_for_unknown_head(text: &str) -> bool {
     let text = text.trim();
     if text.is_empty()
-        || text.len() > MAX_PREFILTER_BYTES
         || text.ends_with('?')
         || !has_shell_safe_quoting(text)
         || buffer_has_prose_colon_shape(text)

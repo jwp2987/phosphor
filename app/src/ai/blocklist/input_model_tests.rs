@@ -1677,37 +1677,176 @@ fn typeahead_is_young_only_while_the_provenance_lasts() {
     });
 }
 
-/// #968: a huge paste never changes the input type in either direction. Forcing Shell would
-/// run pasted prose/logs on Enter; forcing AI would send them to the model.
+/// #968 -> #1604: a huge paste is classified exactly like its first line, by the same rules, in
+/// the background. Shell metacharacters in a 20 KB script in AI mode used to be left to the
+/// inherited type (so the script went to the agent); now the script runs in the shell and the
+/// prose goes to the agent, whichever type the user started in. The verdict is not synchronous
+/// (the request is still pending right after it is made, the rules run off the UI thread) and
+/// lands within the text's compute allowance.
 #[test]
-fn huge_buffer_never_changes_input_type() {
-    assert!(!exceeds_autodetect_limit(
-        &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES)
-    ));
-    assert!(exceeds_autodetect_limit(
-        &"a".repeat(MAX_AUTODETECT_BUFFER_BYTES + 1)
-    ));
+fn huge_buffer_is_classified_like_a_short_one_in_the_background() {
+    assert!(!routes_off_thread(&"a".repeat(MAX_SYNC_ROUTING_BYTES)));
+    assert!(routes_off_thread(&"a".repeat(MAX_SYNC_ROUTING_BYTES + 1)));
 
-    let prose = "please explain why the build fails on my machine today. ".repeat(1000);
-    // The attack: shell metacharacters in a big paste while in AI mode must stay AI.
-    let attack = "rm -rf ~/x ; echo hi\n".repeat(1000);
+    let prose = "please explain why the build failed on my machine ".repeat(1000);
+    let script = "rm -rf ~/x ; echo hi\n".repeat(1000);
+    assert!(prose.len() > 16 * 1024 && script.len() > 16 * 1024);
     for (start, text, expected) in [
         (AI_UNLOCKED, prose.clone(), InputType::AI),
-        (SHELL_UNLOCKED, prose, InputType::Shell),
-        (AI_UNLOCKED, attack.clone(), InputType::AI),
-        (SHELL_UNLOCKED, attack, InputType::Shell),
+        (SHELL_UNLOCKED, prose, InputType::AI),
+        (AI_UNLOCKED, script.clone(), InputType::Shell),
+        (SHELL_UNLOCKED, script, InputType::Shell),
     ] {
         App::test((), |mut app| async move {
             let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
             let input_model = build_autodetecting_input_model(&mut app, start);
-            assert!(exceeds_autodetect_limit(&text));
             request_detection(&mut app, &input_model, snapshot_without_parse(&text));
             input_model.read(&app, |model, ctx| {
-                assert_eq!(model.input_type(), expected);
+                assert!(
+                    model.is_detection_pending_for(&text, ctx),
+                    "a buffer over the sync cap is not routed on the UI thread ({} bytes)",
+                    text.len()
+                );
+                assert!(model.detection_job_in_flight());
+            });
+            warpui::r#async::Timer::after(std::time::Duration::from_millis(500)).await;
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(
+                    model.input_type(),
+                    expected,
+                    "{} bytes from {start:?}",
+                    text.len()
+                );
                 assert!(!model.is_detection_pending_for(&text, ctx));
+                assert!(!model.detection_job_in_flight());
             });
         });
     }
+}
+
+/// #1604 (review): a SHORT buffer with no parse (an Enter that beat the debounced parse, a test
+/// snapshot) is still classified, synchronously, from the head read out of the text: it must not
+/// be settled without a verdict (which left the inherited type to decide). The head window is
+/// bounded, so a huge buffer with no whitespace is not scanned to its end for its first word.
+#[test]
+fn a_short_line_without_a_parse_is_classified_from_its_text() {
+    for (text, expected) in [
+        ("echo PASTE-G1; echo PASTE-H1", InputType::Shell),
+        ("please explain why the build failed", InputType::AI),
+    ] {
+        App::test((), |mut app| async move {
+            let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+            let start = if expected == InputType::Shell {
+                AI_UNLOCKED
+            } else {
+                SHELL_UNLOCKED
+            };
+            let input_model = build_autodetecting_input_model(&mut app, start);
+            request_detection(&mut app, &input_model, snapshot_without_parse(text));
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), expected, "{text:?}");
+                assert!(
+                    !model.is_detection_pending_for(text, ctx),
+                    "{text:?}: decided synchronously, under the sync cap"
+                );
+            });
+        });
+    }
+    assert_eq!(head_word_from_text("  echo hi"), Some("echo".to_owned()));
+    assert_eq!(head_word_from_text("   \n\t "), None);
+    // More than the 4 KiB window of leading blank lines still finds the head.
+    assert_eq!(
+        head_word_from_text(&format!("{}echo hi", " \n".repeat(3000))),
+        Some("echo".to_owned())
+    );
+    let no_whitespace = "x".repeat(10 * 1024 * 1024);
+    let started = std::time::Instant::now();
+    let head = head_word_from_text(&no_whitespace).expect("a word");
+    assert_eq!(head.chars().count(), 256);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(100),
+        "{:?}: the head window is bounded",
+        started.elapsed()
+    );
+}
+
+/// #1604: the Enter's compute budget grows with the text it waits for, so a large paste's linear
+/// classification is waited for instead of handed back; a typed line's budget is unchanged.
+#[test]
+fn enter_verdict_budget_grows_with_the_text() {
+    use std::time::Duration;
+    assert_eq!(enter_verdict_budget_for(0), ENTER_VERDICT_BUDGET);
+    assert_eq!(
+        enter_verdict_budget_for(MAX_SYNC_ROUTING_BYTES),
+        ENTER_VERDICT_BUDGET
+    );
+    assert_eq!(
+        large_text_compute_allowance(MAX_SYNC_ROUTING_BYTES + 4096),
+        Duration::from_millis(1)
+    );
+    let one_mb = 1024 * 1024;
+    assert_eq!(
+        enter_verdict_budget_for(one_mb),
+        ENTER_VERDICT_BUDGET + Duration::from_millis(255)
+    );
+    let ten_mb = 10 * one_mb;
+    assert!(
+        enter_verdict_budget_for(ten_mb) >= Duration::from_millis(2500)
+            && enter_verdict_budget_for(ten_mb) <= Duration::from_secs(3),
+        "{:?}",
+        enter_verdict_budget_for(ten_mb)
+    );
+    // The size-aware decision: a 10 MB paste keeps waiting past the typed-line budget and gives
+    // up only past its own.
+    assert_eq!(
+        enter_verdict_wait_decision_for(true, ENTER_VERDICT_BUDGET, ten_mb),
+        EnterVerdictWait::Wait
+    );
+    assert_eq!(
+        enter_verdict_wait_decision_for(true, enter_verdict_budget_for(ten_mb), ten_mb),
+        EnterVerdictWait::SubmitWithoutVerdict
+    );
+    assert_eq!(
+        enter_verdict_wait_decision_for(false, Duration::from_secs(60), ten_mb),
+        EnterVerdictWait::Submit
+    );
+    // A typed line: identical to the size-less decision.
+    assert_eq!(
+        enter_verdict_wait_decision_for(true, ENTER_VERDICT_BUDGET, 40),
+        enter_verdict_wait_decision(true, ENTER_VERDICT_BUDGET)
+    );
+}
+
+/// #1604: the history matcher indexes the whole buffer when it is built, so it is built only once
+/// a candidate's length allows a match; the length test is the matcher's own upper bound.
+#[test]
+fn history_close_match_is_ruled_out_by_length_before_the_matcher_is_built() {
+    let cutoff = HISTORY_ENTRY_MATCH_CUTOFF;
+    assert!(close_match_possible_by_length(100, 100, cutoff));
+    assert!(close_match_possible_by_length(0, 0, cutoff));
+    // 2 * 90 / 190 = 0.947 >= 0.9; 2 * 80 / 180 = 0.889 < 0.9.
+    assert!(close_match_possible_by_length(90, 100, cutoff));
+    assert!(close_match_possible_by_length(100, 90, cutoff));
+    assert!(!close_match_possible_by_length(80, 100, cutoff));
+    assert!(!close_match_possible_by_length(100, 4096, cutoff));
+    assert!(!close_match_possible_by_length(10 * 1024 * 1024, 4096, cutoff));
+    // A 10 MB buffer against a 4 KiB history: no entry can match, so the matcher is never built
+    // and the job returns at once.
+    let buffer = "x".repeat(10 * 1024 * 1024);
+    let entries: Vec<(String, Option<DateTime<Local>>)> =
+        (0..100).map(|i| (format!("echo {i}"), None)).collect();
+    let started = std::time::Instant::now();
+    let outcome = futures::executor::block_on(most_recent_close_match(
+        &buffer,
+        entries.iter().map(|(command, ts)| (command.as_str(), *ts)),
+        cutoff,
+    ));
+    assert!(matches!(outcome, HistoryMatch::NoMatch));
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "{:?}: the 10 MB buffer was indexed although no entry could match",
+        started.elapsed()
+    );
 }
 
 #[test]

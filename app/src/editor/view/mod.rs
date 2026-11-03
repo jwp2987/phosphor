@@ -6358,7 +6358,9 @@ impl EditorView {
     }
 
     pub fn backspace(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.buffer_text(ctx).is_empty() {
+        // The cached length, not a copy of the buffer (#1604: a Backspace after a 10 MB paste
+        // copied all of it to ask whether it was empty).
+        if self.is_empty(ctx) {
             ctx.emit(Event::BackspaceOnEmptyBuffer);
         } else if self.single_cursor_at_buffer_start(ctx) {
             ctx.emit(Event::BackspaceAtBeginningOfBuffer);

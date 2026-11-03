@@ -7796,31 +7796,48 @@ fn test_verdict_cap_with_a_locked_shell_input_still_submits() {
     });
 }
 
-/// #1036: a buffer over the background-job cap is never parsed, so no verdict can ever land for
-/// it. The first Enter must submit rather than wait for one (it used to be swallowed, and only a
-/// second Enter submitted).
+/// #1036 -> #1604: a buffer over the completer parse cap gets no parse, but it IS classified: the
+/// routing rules run on the text in a background job the Enter starts, and the Enter waits for
+/// that verdict (its compute budget grows with the text) instead of submitting on the inherited
+/// input type. A 4100-byte `echo ...; echo END` line in agent mode runs in the shell exactly once,
+/// with no agent request, and the Enter is neither swallowed nor left waiting.
 #[test]
-fn test_enter_on_oversized_buffer_does_not_wait_for_a_verdict() {
+fn test_enter_on_oversized_buffer_waits_for_its_background_verdict_and_runs_the_shell_line() {
     use crate::ai::blocklist::InputConfig;
     use crate::terminal::input::decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS;
 
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
-
         initialize_app(&mut app);
-
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
                 .set_value(true, ctx);
         });
-
-        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
 
         let line = format!(
-            "is it true {}",
+            "echo {}; echo PASTE-OVERSIZED-END",
             "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS + 1)
         );
         input.update(&mut app, |input, ctx| {
@@ -7830,56 +7847,187 @@ fn test_enter_on_oversized_buffer_does_not_wait_for_a_verdict() {
                         input_type: InputType::AI,
                         is_locked: false,
                     },
-                    false, /* is_input_buffer_empty */
+                    true, /* is_input_buffer_empty */
                     ctx,
                 );
             });
-            input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert("x", ctx);
         });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
             input.user_insert(&line, ctx);
         });
         input.read(&app, |input, ctx| {
             assert!(input.buffer_exceeds_background_job_cap(ctx));
+            assert!(
+                input.detection_pending_for_buffer(ctx),
+                "the request stays pending for an over-cap buffer: a verdict will come for it"
+            );
         });
 
-        // The first Enter must not park itself waiting for a verdict that cannot come.
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
-        input.read(&app, |input, _| {
+        input.read(&app, |input, ctx| {
             assert!(
-                input.verdict_wait.is_none(),
-                "an oversized buffer has no verdict to wait for"
+                input.verdict_wait.is_some(),
+                "the Enter waits for the background verdict instead of running on the inherited \
+                 agent type"
             );
+            assert!(
+                input.ai_input_model().as_ref(ctx).detection_job_in_flight(),
+                "the Enter started the classification job"
+            );
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+        assert_eq!(
+            executed.borrow().as_slice(),
+            [line.clone()],
+            "the over-cap shell line ran in the shell exactly once"
+        );
+        assert_eq!(*ai_queries.borrow(), 0);
+        input.read(&app, |input, ctx| {
+            assert!(input.verdict_wait.is_none(), "the wait was released by the verdict");
+            assert!(!input.detection_pending_for_buffer(ctx));
         });
     });
 }
 
-/// #1174: a 20k-char single-line paste of words is over the parse cap (chars and tokens), so no
-/// parse runs and the first Enter submits at once instead of waiting on a verdict. Text under
-/// the cap still waits for its verdict, as before.
+/// #1174 -> #1604: a 21k-char single-line paste of words is over the parse cap (chars and tokens),
+/// so no completer parse runs; the Enter still gets a verdict, from the routing rules on the text
+/// in the background, and is never swallowed. The text reads as a request to the agent, so in
+/// agent mode it goes to the agent, once, and never to the shell; the Enter is released within
+/// the budget the text's size earns it.
 #[test]
-fn test_enter_on_20k_char_paste_submits_without_waiting_for_the_parse() {
+fn test_enter_on_20k_char_paste_is_classified_without_a_parse_and_never_swallowed() {
     use crate::ai::blocklist::InputConfig;
 
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
-        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
-
         initialize_app(&mut app);
-
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
                 .set_value(true, ctx);
         });
-
-        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
         let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
 
-        let pasted = vec!["word"; 4001].join(" ");
-        assert!(pasted.len() >= 20_000);
+        let pasted = "please explain why the build failed ".repeat(600);
+        assert!(pasted.len() >= 20_000 && pasted.split_whitespace().count() > 1024);
+        input.update(&mut app, |input, ctx| {
+            input.last_enter_submitted_ai_query = false;
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert(&pasted, ctx);
+        });
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_exceeds_background_job_cap(ctx));
+            assert!(
+                input.decorations_future_handle.is_none(),
+                "no completer parse for a buffer over the parse cap"
+            );
+        });
+        input.update(&mut app, |input, ctx| input.input_enter(ctx));
+        input.read(&app, |input, _| {
+            assert!(
+                input.verdict_wait.is_some(),
+                "the Enter waits for the background verdict"
+            );
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+        assert!(
+            executed.borrow().is_empty(),
+            "pasted prose is never run by the shell: {:?}",
+            executed.borrow().first().map(|command| command.len())
+        );
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.ai_input_model().as_ref(ctx).input_type(), InputType::AI);
+            assert!(
+                input.last_enter_submitted_ai_query,
+                "the prose took the agent submit path"
+            );
+            assert!(input.verdict_wait.is_none(), "the Enter was not swallowed");
+            assert!(!input.detection_pending_for_buffer(ctx));
+        });
+        assert_eq!(*ai_queries.borrow(), 1, "the prose went to the agent, once");
+    });
+}
+
+/// #1604 (review): the give-up on an over-cap buffer keeps the request and its background job.
+/// A 4100-byte shell line in agent mode whose Enter is given up by the compute cap is handed back
+/// intact (nothing runs, nothing goes to the agent) with its request still pending; the verdict
+/// then lands, and the SECOND Enter runs the line in the shell exactly once -- never an
+/// unclassified paste on the inherited agent type.
+#[test]
+fn test_second_enter_after_a_give_up_on_an_over_cap_shell_line_runs_it_in_the_shell() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::ai::blocklist::input_model::enter_verdict_budget_for;
+    use crate::terminal::input::decorations::MAX_BACKGROUND_JOB_BUFFER_CHARS;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
+
+        let line = format!(
+            "echo {}; echo PASTE-GIVE-UP-END",
+            "x".repeat(MAX_BACKGROUND_JOB_BUFFER_CHARS + 1)
+        );
         input.update(&mut app, |input, ctx| {
             input.ai_input_model().update(ctx, |ai_input, ctx| {
                 ai_input.set_input_config(
@@ -7887,36 +8035,146 @@ fn test_enter_on_20k_char_paste_submits_without_waiting_for_the_parse() {
                         input_type: InputType::AI,
                         is_locked: false,
                     },
-                    false, /* is_input_buffer_empty */
+                    true, /* is_input_buffer_empty */
                     ctx,
                 );
             });
-            input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert("x", ctx);
         });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert(&pasted, ctx);
+            input.user_insert(&line, ctx);
+        });
+        // The first Enter waits; the cap fires before the job's verdict can land (the job runs in
+        // the background and its callback cannot run inside this update).
+        input.update(&mut app, |input, ctx| {
+            input.input_enter(ctx);
+            let id = input
+                .verdict_wait_id()
+                .expect("the over-cap line's Enter waits for its verdict");
+            input.verdict_wait.as_mut().unwrap().compute =
+                ComputeClock::with_spent_for_test(enter_verdict_budget_for(line.len()) * 2);
+            input.compute_cap_fired(id, ctx);
         });
         input.read(&app, |input, ctx| {
-            assert!(input.buffer_exceeds_background_job_cap(ctx));
+            assert!(input.verdict_wait.is_none(), "the cap gave the Enter up");
+            assert_eq!(
+                input.buffer_text(ctx),
+                line,
+                "the line is handed back intact"
+            );
+            assert!(
+                input.detection_pending_for_buffer(ctx),
+                "the over-cap request is kept across the give-up"
+            );
+        });
+        assert!(executed.borrow().is_empty(), "the clock ran nothing");
+        assert_eq!(*ai_queries.borrow(), 0, "the clock sent nothing to the agent");
+
+        // The verdict lands; the second Enter runs the line in the shell, once.
+        warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+        input.read(&app, |input, ctx| {
+            assert!(!input.detection_pending_for_buffer(ctx), "the verdict landed");
+            assert_eq!(input.ai_input_model().as_ref(ctx).input_type(), InputType::Shell);
         });
         input.update(&mut app, |input, ctx| input.input_enter(ctx));
-        input.read(&app, |input, ctx| {
-            assert!(
-                input.verdict_wait.is_none(),
-                "an Enter on a huge paste must not park waiting for the parse"
-            );
-            assert!(!input.detection_pending_for_buffer(ctx));
-        });
+        warpui::r#async::Timer::after(Duration::from_millis(300)).await;
+        assert_eq!(
+            executed.borrow().as_slice(),
+            [line.clone()],
+            "the second Enter runs the over-cap shell line in the shell exactly once"
+        );
+        assert_eq!(*ai_queries.borrow(), 0);
+    });
+}
 
-        // Under the cap, a short prose line is not over it.
+/// #1604: the paste path is linear in the text, measured on the real input view. A paste of
+/// 1 MB (insert plus the whole `Edited` handler: the buffer model, the detection request, the
+/// attachment scan, the background-job dispatch) and a keystroke after it each cost at most
+/// `LINEAR_RATIO_CAP` times their 100 KB counterparts (a quadratic step would cost ~100x), and
+/// stay under loose absolute bounds that hold in a debug build. The release-build numbers are the
+/// `large_input/*` criterion benches (`app/benches/routing_bench.rs`), gated in CI.
+#[test]
+fn test_paste_of_a_large_buffer_and_the_keystroke_after_it_are_linear_in_its_size() {
+    use std::time::Instant;
+
+    const LINEAR_RATIO_CAP: f64 = 40.0;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        // Single-line prose with shell metacharacters sprinkled in, so every scan on the path
+        // (attachment patterns, operators, words) has work to do.
+        let unit = "please explain why the build failed; see <log> $HOME | grep error ";
+        let mut measure_once = |bytes: usize| -> (Duration, Duration) {
+            let text = unit.repeat(bytes / unit.len() + 1);
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+            });
+            let paste_started = Instant::now();
+            input.update(&mut app, |input, ctx| {
+                input.user_insert(&text, ctx);
+            });
+            let paste = paste_started.elapsed();
+            // Warm the per-version text cache the way a real second keystroke finds it.
+            input.update(&mut app, |input, ctx| {
+                input.user_insert("x", ctx);
+            });
+            let key_started = Instant::now();
+            input.update(&mut app, |input, ctx| {
+                input.user_insert("y", ctx);
+            });
+            let keystroke = key_started.elapsed();
+            (paste, keystroke)
+        };
+        // The minimum of three samples per size: a scheduler hiccup or a page-fault storm on one
+        // run must not read as a complexity regression.
+        let mut measure = |bytes: usize| -> (Duration, Duration) {
+            let samples = [measure_once(bytes), measure_once(bytes), measure_once(bytes)];
+            (
+                samples.iter().map(|(paste, _)| *paste).min().unwrap(),
+                samples.iter().map(|(_, key)| *key).min().unwrap(),
+            )
+        };
+        let (paste_100k, key_100k) = measure(100 * 1024);
+        let (paste_1m, key_1m) = measure(1024 * 1024);
+        // Floors keep a very fast small run (timer granularity, a cold cache) from inflating the
+        // ratio.
+        let ratio = |large: Duration, small: Duration| {
+            large.as_secs_f64() / small.max(Duration::from_millis(2)).as_secs_f64()
+        };
+        assert!(
+            ratio(paste_1m, paste_100k) <= LINEAR_RATIO_CAP,
+            "a 1 MB paste ({paste_1m:?}) costs more than {LINEAR_RATIO_CAP}x a 100 KB paste \
+             ({paste_100k:?}): something on the paste path is super-linear"
+        );
+        assert!(
+            ratio(key_1m, key_100k) <= LINEAR_RATIO_CAP,
+            "a keystroke after a 1 MB paste ({key_1m:?}) costs more than {LINEAR_RATIO_CAP}x one \
+             after 100 KB ({key_100k:?}): something per edit is super-linear"
+        );
+        assert!(
+            paste_1m <= Duration::from_secs(5),
+            "a 1 MB paste took {paste_1m:?} (debug-build bound 5 s)"
+        );
+        assert!(
+            key_1m <= Duration::from_secs(1),
+            "a keystroke after a 1 MB paste took {key_1m:?} (debug-build bound 1 s)"
+        );
         input.update(&mut app, |input, ctx| {
             input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert("is it true", ctx);
-        });
-        input.read(&app, |input, ctx| {
-            assert!(!input.buffer_exceeds_background_job_cap(ctx));
         });
     });
 }
@@ -13457,7 +13715,14 @@ fn test_paste_then_held_enter_classifies_the_pasted_line() {
 /// #1590: a ready paste (the text already read, nothing queued) with an Enter applied in the
 /// same update, before the editor's `Edited` event could request detection: the Enter must still
 /// wait for the pasted line's verdict. A shell line runs in the shell (no agent request), prose is
-/// not run by the shell. Padded variants stay under the #968 limit (16 KiB), so they classify.
+/// not run by the shell.
+///
+/// #1604: the same for text over the former 4096-byte caps (the prefilter's, the parse cap's
+/// abandon and the 16 KiB #968 cap), which used to send every over-size shell command to the
+/// agent in agent mode. A 5400-byte shell line and a 5000-byte 40-line script (under the 50-line
+/// confirmation threshold) each run in the shell exactly once with no agent request; 5000 bytes
+/// of prose go where the short prose goes, to the agent, and never to the shell. Over-size text
+/// is classified by the background job the Enter starts, which the Enter waits for.
 #[test]
 fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
     App::test((), |mut app| async move {
@@ -13489,15 +13754,26 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
                 });
             });
         }
+        let long_shell_line = format!("echo {}; echo PASTE-LONG-END", "PASTE-G1 ".repeat(600));
+        assert!(long_shell_line.len() > 5000 && !long_shell_line.contains('\n'));
+        let long_script = vec![format!("echo {}; echo PASTE-H1", "PASTE-G1 ".repeat(12)); 40]
+            .join("\n");
+        assert!(long_script.len() > 4096 && long_script.lines().count() == 40);
+        let long_prose = "please explain why the build failed ".repeat(140);
+        assert!(long_prose.len() > 5000);
         let cases = [
             ("echo PASTE-G1; echo PASTE-H1".to_owned(), true),
             ("please explain why the build failed".to_owned(), false),
+            (long_shell_line, true),
+            (long_script, true),
+            (long_prose, false),
         ];
         for (text, runs_in_shell) in cases {
             executed.borrow_mut().clear();
             *ai_queries.borrow_mut() = 0;
             input.update(&mut app, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx);
+                input.last_enter_submitted_ai_query = false;
                 input.ai_input_model().update(ctx, |ai_input, ctx| {
                     ai_input.set_input_config(
                         InputConfig {
@@ -13528,13 +13804,44 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
                     "a pasted shell command Enter-ed at once runs in the shell ({} bytes)",
                     text.len()
                 );
-                assert_eq!(*ai_queries.borrow(), 0);
+                assert_eq!(*ai_queries.borrow(), 0, "{} bytes", text.len());
             } else {
                 assert!(
                     executed.borrow().is_empty(),
-                    "pasted prose is not run by the shell"
+                    "pasted prose is not run by the shell ({} bytes)",
+                    text.len()
+                );
+                // Backend-independent: the verdict is AI and the Enter took the agent submit path
+                // (`last_enter_submitted_ai_query` is set on both of its branches). The event
+                // count is the stricter check: with the BYO key the prompt alert never blocks,
+                // and without the agent view the submit emits `ExecuteAIQuery`.
+                input.read(&app, |input, ctx| {
+                    assert_eq!(
+                        input.ai_input_model().as_ref(ctx).input_type(),
+                        InputType::AI,
+                        "{} bytes",
+                        text.len()
+                    );
+                    assert!(
+                        input.last_enter_submitted_ai_query,
+                        "pasted prose takes the agent submit path ({} bytes)",
+                        text.len()
+                    );
+                });
+                assert_eq!(
+                    *ai_queries.borrow(),
+                    1,
+                    "pasted prose goes to the agent, once ({} bytes)",
+                    text.len()
                 );
             }
+            input.read(&app, |input, ctx| {
+                assert!(
+                    input.verdict_wait.is_none() && !input.detection_pending_for_buffer(ctx),
+                    "the Enter was released by the verdict ({} bytes)",
+                    text.len()
+                );
+            });
         }
     });
 }
@@ -13632,8 +13939,9 @@ fn padded_ready_paste_run(text: String, late: bool) -> (Vec<String>, usize, Stri
     outcome.expect("the test body ran")
 }
 
-/// #1590 + #1577 A5, padded pastes (500 and 3500 bytes: under the 4096-char background-job cap
-/// (#1036), above which no verdict is ever requested and the Enter never waits for one): the
+/// #1590 + #1577 A5, padded pastes (500 and 3500 bytes: under the 4096-byte sync routing cap, so
+/// the Enter-time rules and the verdict wait take their usual synchronous path; over it the same
+/// wait is on the background routing job, #1604): the
 /// verdict on time runs the line in the shell with no agent request; a verdict that misses the
 /// Enter's compute budget hands the line back intact (nothing runs, nothing goes to the agent).
 /// Deterministic: the classifier is gated and the on-time verdict is delivered by the test. The
