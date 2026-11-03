@@ -219,9 +219,11 @@ fn check(intent: &Intent, facts: &RouteFacts, pin: Option<Destination>) -> Plan 
                 "oracle consultation: {plan:?} for {intent:?} / {facts:?}"
             );
         }
+        // #1601: exempt from every hold except an open PowerShell setup.
         if intent.origin == Origin::CliSubmit
             && !is_signal(intent.class)
             && intent.class != Class::AgentWrite
+            && !facts.ps.holds_keys()
         {
             assert!(
                 !plan.outcome.is_hold()

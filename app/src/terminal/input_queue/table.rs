@@ -23,7 +23,7 @@
 //! |---|---|---|
 //! | `OSynced` | origin Synced, not (a pending or bootstrapped session and a running command) | `Drop(NotLongRunning)` |
 //! | `D13` | agent write, setup gate or ssh remote setup | `Drop(AgentRefusedSetup)`, else `Pty(Agent)` |
-//! | `OCliSubmit` | origin CliSubmit: exempt from every hold | `Pty(CliSubmit)` or `Drop(AgentControl)` |
+//! | `OCliSubmit` | origin CliSubmit: exempt from every hold but the PowerShell setup (#1601: held, row `H6`, like legacy) | `Pty(CliSubmit)` or `Drop(AgentControl)` |
 //! | `H1` | Typed/Paste, stamped focus is the ssh choice card | `Hint` |
 //! | `H4` | ssh prompt up, the stamp is older than `prompt_gen` (OD-7) | `Drop(StaleBeforePrompt)` |
 //! | `H2` | Typed/Enter/Control/Paste, the ssh setup dialog is up | `Swallow(SshDialogOpen)` |
@@ -599,7 +599,18 @@ fn decide_content(i: &Intent, f: &RouteFacts) -> Plan {
         };
     }
     if i.origin == Origin::CliSubmit {
-        // Exempt from every hold; still through D4/D5 and the oracle, as `after_paste_stage`.
+        // #1601 (owner decision): an open PowerShell setup holds the submit like every other
+        // key, as the legacy writer does (`write_user_bytes_to_pty_after_paste_stage` checks the
+        // hold before D4/D5, so a held submit is not judged by them yet). It is released, once and
+        // in typed order with the keys held with it, by the setup's closing event.
+        if f.ps.holds_keys() {
+            return Plan::new(
+                Outcome::Hold(GateKind::PowershellSetup),
+                Row::H6,
+                Effects::NONE,
+            );
+        }
+        // Exempt from every other hold; still through D4/D5 and the oracle, as `after_paste_stage`.
         let (agent, fx) = take_over(i, f);
         return if agent {
             drop_plan(DropWhy::AgentControl, Row::D5, fx)

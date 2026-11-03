@@ -221,6 +221,7 @@ fuzz_target!(|data: &[u8]| {
         if intent.origin == Origin::CliSubmit
             && !is_signal(intent.class)
             && intent.class != Class::AgentWrite
+            && !facts.ps.holds_keys()
         {
             assert!(
                 !plan.outcome.is_hold()
