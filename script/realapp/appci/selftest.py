@@ -5,7 +5,7 @@
 # mode_now's log-first rule, log_since), Profile.commands, routing classification, case-name validation, tier_plan, and the registry
 # consistency checks (SMOKE, winmap, FIX_TIER name only registered cases: a renamed case used to drop out of smoke silently).
 import os
-import json, os, subprocess, sys, tempfile, shutil, types
+import json, os, subprocess, sys, tempfile, shutil, time, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -495,6 +495,36 @@ def keydown_audit_counts_plain_keys_and_flags_doubles():
 
 
 @check
+def key_event_audit_counts_typed_only_and_enter_hops():
+    kd = lambda k, t, seq: "input_order keydown key=%s ctrl=false alt=false shift=false cmd=false t=%s seq=%d\n" % (k, t, seq)
+    ty = lambda seq: "input_order typed_characters text=len1 t=1 seq=%d\n" % seq
+    hop = lambda d="false": "input_order hop=enter_begin deferred=%s buffer=x input_type=Shell t=1\n" % d
+    # letter: keydown+typed share a seq (one key); symbol: typed_characters alone (one key); Enter: only the hop (one key); deferred re-run: none
+    txt = kd("a", 1, 1) + ty(1) + ty(2) + kd("Shift", 2, 3) + kd("Enter", 3, 4) + hop() + hop("true")
+    a = cases.key_event_audit(txt)
+    assert (a["count"], a["keydown"], a["typed_only"], a["enter_only"]) == (3, 2, 1, 0), a       # a, symbol, Enter(keydown path; its hop is not a 2nd key)
+    b = cases.key_event_audit(kd("a", 1, 1) + ty(1) + ty(2) + hop())
+    assert (b["count"], b["enter_only"]) == (3, 1), b                                            # a, symbol, editor Enter via hop only
+    assert cases.key_event_audit(kd("a", 1, 1) + kd("a", 1.1, 2))["count"] == 2                  # a doubled keydown still counts twice (the #1159 signature)
+
+
+@check
+def hanging_tcp_server_reports_connecting_then_closed():
+    import socket
+    srv = cases.HangingTcpServer()
+    try:
+        assert srv.poll() == (0, 0)
+        c = socket.create_connection(("127.0.0.1", srv.port))
+        time.sleep(0.1)
+        assert srv.poll() == (1, 1)            # accepted, silent, open = an ssh that is still connecting
+        c.close()
+        time.sleep(0.1)
+        assert srv.poll() == (1, 0)            # the client gave up (ConnectTimeout): connecting is over
+    finally:
+        srv.close()
+
+
+@check
 def ssh_trial_plan_and_loss_report():
     assert cases.ssh_trial_plan(cases.SSH_GAPS, 3) == [(g, 3) for g in cases.SSH_GAPS]      # default: 12 trials
     assert cases.ssh_trial_plan(cases.SSH_GAPS, 3, 40) == [(g, 10) for g in cases.SSH_GAPS]
@@ -570,6 +600,23 @@ def injector_accounting_parse_and_join():
     txt, j = injacct.account(be.calls, log, "fast_typing")
     assert (j["sent"], j["seen"], j["lost"], j["enters_seen"]) == (9, 4, 5, 1), j      # sent = 6 + 1 + 2 (the errored call posted nothing: counted in errs, not in sent)
     assert txt.startswith("WARN loss case: injector sent 9; app saw 4; lost-before-app 5"), txt
+    # Enter handled by the input editor logs only hop=enter_begin (deferred=true re-runs are not new keys): it counts as the app's Enter
+    be2 = backend.X11Backend()
+    be2.record_injection(["xdotool", "type", "--", "ab", "key", "Return"], 200.0, 200.2)
+    be2.record_injection(["xdotool", "type", "--", "c", "key", "Return"], 201.0, 201.2)
+    log2 = os.path.join(d, "p2.log")
+    open(log2, "w").write(kd("a", 200.01, 1) + kd("b", 200.02, 2) + kd("c", 201.01, 3)
+                          + "input_order hop=enter_begin deferred=false buffer=x input_type=Shell t=%.3f\n" % 200150
+                          + "input_order hop=enter_begin deferred=true buffer=x input_type=Shell t=%.3f\n" % 200160
+                          + "input_order hop=enter_begin deferred=false buffer=x input_type=Shell t=%.3f\n" % 201150)
+    txt2, j2 = injacct.account(be2.calls, log2, "x")
+    assert (j2["sent"], j2["seen"], j2["lost"], j2["enters_seen"], j2["enters_sent"]) == (5, 5, 0, 2, 2), (j2, txt2)
+    # paste-only row: n/a, not "saw 0"
+    be3 = backend.WaylandBackend()
+    be3.record_injection(["wtype", "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"], 300.0, 300.1)
+    assert backend.count_pastes(["xdotool", "key", "ctrl+shift+v", "Return"]) == 1 and backend.count_pastes(["wtype", "-k", "v"]) == 0
+    txt3, j3 = injacct.account(be3.calls, log2, "x")
+    assert j3["na"] and "n/a" in txt3, (j3, txt3)
     assert injacct.account(be.calls, None, "x")[1]["seen"] is None                 # no trace: reported, not compared
     assert injacct.account([], log, "x") == (None, None)
 

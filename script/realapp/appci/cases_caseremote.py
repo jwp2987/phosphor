@@ -95,7 +95,7 @@ def remote_session(ctx, r, variant):
     log_off = ctx.log_size()
     # ---- 1. connect
     secs = connect(ctx, "fake", 120 if variant == "ext" else 60)
-    r.check(secs is not None, "[%s] no remote shell prompt after `ssh fake` (see sshd.log, phosphor.log)" % variant)
+    r.check(secs is not None, "[%s] no remote shell prompt after `ssh fake` (see sshd.log, phosphor.log). Test host: %s" % (variant, ctx.ssh_diag() if secs is None else ""))
     ctx.shot("%s_connected" % tag)
     if secs is None:
         ctx.reset()
@@ -195,7 +195,7 @@ def remote_session(ctx, r, variant):
         r.check(("echo %s >> %s_back.txt" % (tok, tag)) in ctx.cmds_since(lmark), "[%s] local rec.log lacks the exact command typed after exit" % variant)
     # ---- 8. and vice versa: connect again, a remote command runs remotely only
     if connect(ctx, "fake", 90) is None:
-        r.check(False, "[%s] second connect never reached a remote prompt" % variant)
+        r.check(False, "[%s] second connect never reached a remote prompt. Test host: %s" % (variant, ctx.ssh_diag()))
     else:
         tok = ctx.tok(8).lower()
         ctx.be.type("echo %s >> ~/%s_m.txt" % (tok, tag), 12, enter=True)

@@ -318,6 +318,8 @@ def main():
                     if sim and c["gui"]:
                         raise cases.Skip("needs a GUI backend")
                     if not sim:
+                        if hasattr(be, "check_injector"):
+                            be.check_injector()       # r18d8: a dead keyboard holder is recorded and restarted, never read as app key loss
                         be.guard()
                     if c["name"] not in ("mode_proof",):
                         ctx.reset()
@@ -341,6 +343,8 @@ def main():
                             r.metrics["injector"] = acct
                     except Exception as e:
                         r.note("injector accounting failed: %r" % e)
+                for ev in (be.drain_health() if hasattr(be, "drain_health") else []):
+                    r.note(ev + " (key loss in this case is the INJECTOR's, not the app's)")
                 shot = None if sim else ctx.shot(c["name"] + ("_FAIL" if status == "fail" else ""))
                 dead = app.death() if hasattr(app, "death") else (None if app is None or app.alive() else "APP DIED during/after this case (crash): see logs/app.stdout")
                 if dead:
