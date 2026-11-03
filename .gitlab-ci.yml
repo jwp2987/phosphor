@@ -619,7 +619,13 @@ test-linux:
         echo "main push: RUN_SUITE=$RUN_SUITE TEST_FILTER=${TEST_FILTER:-<none: full suite>}"
         if [[ "$RUN_SUITE" == 0 ]]; then echo "skipped: nothing in test-linux's scope changed"; exit 0; fi
       fi
-    - ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui ${TEST_FILTER:+-E "$TEST_FILTER"}
+    # #1504: a filtered run also fails when a test(/.../) term of TEST_FILTER selected no test that ran.
+    - |
+      set -o pipefail
+      st=0
+      ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui ${TEST_FILTER:+-E "$TEST_FILTER"} 2>&1 | tee nextest-linux.log || st=$?
+      if [[ -n "${TEST_FILTER:-}" ]]; then python3 script/ci/check_filter_terms.py "$TEST_FILTER" nextest-linux.log || st=$(( st ? st : 1 )); fi
+      exit $st
 
 # warpui_core with --features tui. The flag is NOT optional: elements/tui/ is
 # cfg(feature = "tui"), so without it those ~259 tests do not exist, and the run

@@ -15291,3 +15291,40 @@ fn test_ctrl_c_voids_an_unready_enter_and_its_gate() {
         assert!(executed.is_empty(), "{mode:?}: nothing ran: {executed:?}");
     }
 }
+
+/// #1425: a ready paste answered while the pane queue is held (a drain delivering, or a peek out)
+/// must not take the queue with the panicking `lock()`: it is offered through the deferred
+/// mailbox, and the paste still lands once the queue is free.
+#[test]
+fn test_ready_paste_while_the_queue_is_held_is_deferred_not_a_panic() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let editor = input.read(&app, |input, _| input.editor().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx)
+        });
+        let queue = editor.read(&app, |editor, _| editor.paste_hold().queue());
+        {
+            let _held = queue.peek();
+            input.update(&mut app, |input, ctx| {
+                input.offer_ready_paste(
+                    warpui::clipboard::ClipboardContent::plain_text("PASTED".to_owned()),
+                    PasteSource::PlainTextPaste,
+                    ctx,
+                )
+            });
+            assert!(queue.has_deferred(), "the paste waits in the mailbox");
+        }
+        for _ in 0..1000 {
+            if input.read(&app, |input, ctx| input.buffer_text(ctx) == "PASTED") {
+                break;
+            }
+            warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+        }
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "PASTED", "the paste landed, once");
+        });
+    });
+}

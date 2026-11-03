@@ -8,6 +8,9 @@ except Exception as e:
     print("record_reuse: no reused_build.json (%s)" % e); sys.exit(0)
 line = "**Tested a REUSED build**: job %s (%s) of pipeline %s, commit %s; this pipeline %s, commit %s (app-identical)." % (
     meta["job_id"], meta["job_name"], meta["pipeline_id"], meta["commit"], meta["this_pipeline"], meta["this_commit"])
+sums = meta.get("dist_sha256") or {}
+if sums:  # #1501: the sha256 of every file tested (dist/SHA256SUMS, verified by fetch_build.sh)
+    line += " Files tested (sha256): " + ", ".join("%s %s" % (name, h[:16]) for name, h in sorted(sums.items())) + "."
 for f in glob.glob("appci-out/*/run/results.json"):
     try:
         d = json.load(open(f))

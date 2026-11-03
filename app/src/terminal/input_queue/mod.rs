@@ -100,9 +100,12 @@
 //!    `destination_for`), the `ReleasedFrom` origin (no producer yet),
 //!    `TypeaheadHandoff::peek_user_bytes_route`.
 //!  - THE SWITCH: `PHOSPHOR_QUEUE_DESTINATION=legacy|shadow|table` ([`DestinationMode`], parsed like
-//!    `PHOSPHOR_PANE_KEY`). Default `table` since 2026-11-02 (owner; `shadow` was the default from
-//!    step 4 until then): `shadow` is legacy behaviour plus the comparison log; `legacy` turns the
-//!    table off entirely and is the kill switch.
+//!    `PHOSPHOR_PANE_KEY`). Default `table` (unset or empty, owner 2026-11-02, a627d297c): the
+//!    table decides at delivery from the real facts (`view/route_facts.rs`, `view/dest_table.rs`);
+//!    `shadow` is legacy behaviour plus the comparison log; `legacy` turns the table off entirely
+//!    and is the kill switch. NOTE: `Host::facts` / `destination_for` below are the queue's own
+//!    coarse routing (which host drains an entry), not the destination decision, so the hosts'
+//!    constant facts are not the table's facts.
 //!  - DELIBERATE CHANGES encoded in the table, effective in `table` mode for the paths above (the
 //!    owner's decisions OD-1, OD-5, OD-7): a key stamped before the ssh prompt was published is
 //!    dropped even if it is processed later (H4); a held signal is delivered to the REMOTE shell.
@@ -115,9 +118,9 @@
 //!    give-up. The focus epoch follows focus, owner-change edges clear the line pin
 //!    ([`InputQueue::clear_line_pin`]), and the gates nothing opened (`EditorFocusPending`,
 //!    `PtyRouteSettling`) are gone.
-//!  - NEXT (design step 8): the deletion of the legacy fields (`delivering`/`requeue_request`).
-//!    It removes the `legacy` kill switch, so it waits until the `table` default has passed an
-//!    app test round (#1353).
+//!  - NEXT (design step 8): the deletion of the legacy fields (`delivering`/`requeue_request`) and
+//!    of the legacy chain. Waits for a test round of `table` mode: until then `legacy` is the
+//!    owner's kill switch and must keep working (#1353).
 //!
 //! BUSY QUEUE = DEFERRED OPERATION (one mechanism, #1416-#1419, #1425-#1428). The queue is held
 //! while a drain delivers (and while anyone holds a peek). An operation that needs it then must
