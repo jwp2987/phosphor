@@ -173,6 +173,8 @@ class Ctx:
         self.opts = {}                # tier options of this pass (winmap.tier_plan): ref, ft_gaps, cc_short; empty = the full tier
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
+        self.ctrlc_ts = []            # wall time of every Ctrl-C the harness sent (r18d2: see reset())
+        self._wrap_ctrlc(be)
         try:
             be.inject_log = os.path.join(run, "inject.log")
         except Exception:
@@ -461,8 +463,41 @@ class Ctx:
             out.append("PROBE: " + self.prof.ssh_hint)
         return "; ".join(out) or "no ssh server log"
 
+    EXIT_WINDOW_S = 1.0       # agent_view/controller.rs ENTER_OR_EXIT_CONFIRMATION_WINDOW
+
+    def _wrap_ctrlc(self, be):
+        """record every Ctrl-C sent through be.key / be.keys (instance-level wrap; idempotent per backend object)"""
+        if getattr(be, "_ctrlc_wrapped", None) is self:
+            return
+        ts = self.ctrlc_ts
+        for name in ("key", "keys"):
+            orig = getattr(be, name, None)
+            if orig is None:
+                continue
+
+            def wrapped(spec, *a, _orig=orig, _nm=name, **k):
+                specs = [spec] if _nm == "key" else list(spec)
+                now = time.time()
+                # key() may call keys() on the same backend: one physical Ctrl-C must not count twice
+                if any(str(x).lower() == "ctrl+c" for x in specs) and not (ts and now - ts[-1] < 0.05):
+                    ts.append(now)
+                return _orig(spec, *a, **k)
+            setattr(be, name, wrapped)
+        be._ctrlc_wrapped = self
+
+    def double_ctrlc_since(self, t0):
+        """True when two Ctrl-C went out within the exit-confirmation window after t0: in an EMPTY agent conversation that is how the app is told to
+        leave agent view (first press arms a confirmation, the second within 1 s exits; view.rs should_ctrl_c_exit_agent_view)"""
+        t = [x for x in self.ctrlc_ts if x >= t0]
+        return any(b - a < self.EXIT_WINDOW_S + 0.3 for a, b in zip(t, t[1:]))
+
     def reset(self):
-        self.be.key("ctrl+c")
+        # r18d2 (Wayland): the agent pass left agent view after cadence/fast_typing because reset() sent Ctrl-C twice within the 1 s exit-confirmation window of an
+        # empty agent conversation. By design that exits the view; so in agent mode a Ctrl-C is skipped when the previous one is that recent (the Ctrl-U still
+        # clears the line; a running command is stopped by the cases that start one, which press Ctrl-C themselves).
+        recent = self.ctrlc_ts and time.time() - self.ctrlc_ts[-1] < self.EXIT_WINDOW_S + 0.3
+        if not (self.mode == "agent" and recent):
+            self.be.key("ctrl+c")
         time.sleep(0.25)
         self.be.key("ctrl+u")
         time.sleep(0.15)
@@ -973,7 +1008,7 @@ def ctrlc_line(ctx, fname, i, flood=False):
     return "bash -c 'trap \"date +%%s.%%N >> %s; exit\" INT; %s'; echo AFTER%d >> %s" % (fname, run, i, fname)
 
 
-def ctrlc_samples(ctx, n, fname, budget_s=None, flood=False):
+def ctrlc_samples(ctx, n, fname, budget_s=None, flood=False, bail_after=None):
     """n x (start a trap-instrumented sleep, press Ctrl-C, read the trap's timestamp) -> (latencies ms, all delivered)"""
     ctx.rm(fname)
     lat_ms, typed, misses = [], [], []
@@ -983,6 +1018,10 @@ def ctrlc_samples(ctx, n, fname, budget_s=None, flood=False):
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
         if t_end and time.time() > t_end:
+            break
+        if pw and bail_after and i == bail_after and not lat_ms:
+            # r18d2: every one of the first samples ran its full 30 s sleep (each miss costs ~36 s; 33 of them held the pane for ~20 minutes). Nothing stops
+            # the sleep: stop here, the caller asks the reference whether the INJECTED Ctrl-C can stop it at all.
             break
         typed.append(ctrlc_line(ctx, fname, i, flood))
         ctx.be.guard_ref()
@@ -1080,7 +1119,7 @@ def ctrlc_flood(ctx, r, n, warm):
 def c_ctrl(ctx, r):
     ctx.rm("cd.txt", "cd2.txt")
     n, warm = ctx.count_lat(30), lat.warmup()
-    lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt")
+    lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
     lat_ms = lat_ms[warm:]
     r.metric("ctrl_c_ms", stats(lat_ms))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
@@ -1090,6 +1129,7 @@ def c_ctrl(ctx, r):
     rs, ref = [], None
     short = ctx.opts.get("cc_short", False)
     pw_all_missed = ctx.pane == "powershell" and not lat_ms
+    ps_no_control = False
     if lat_ms or pw_all_missed:
         # r18cz: when Ctrl-C stopped NOTHING in the Phosphor PowerShell pane the reference never ran, so "does conhost stop it?" stayed unanswered. Run a few
         # reference samples anyway (each miss costs a 36 s wait) and say what the reference did.
@@ -1102,6 +1142,8 @@ def c_ctrl(ctx, r):
                     rs = ctrlc_samples(ctx, 4, "cc_ref.txt", budget_s=300)[0]
                     nref = len(ctx.cc_integrity.get("misses", {}).get("cc_ref.txt", []))
                     r.note("Phosphor stopped the sleep on 0 samples; reference %s: Ctrl-C stopped it on %d of 4 samples" % (ref.name, 4 - nref))
+                    if nref >= 4:
+                        ps_no_control = True
                 else:
                     rs = ctrlc_samples(ctx, n + warm, "cc_ref.txt", budget_s=max(120, (n + warm) * 5))[0][warm:]
                 ctx.reset()
@@ -1138,6 +1180,11 @@ def c_ctrl(ctx, r):
         why += " -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on %d of %d samples (indexes %s)" % (len(mp["cc.txt"]), n + warm, mp["cc.txt"][:12])
     if mp.get("cc_ref.txt"):
         why += "; reference: %d misses" % len(mp["cc_ref.txt"])
+    if ps_no_control:
+        # r18d2 (also r18cz): the injected Ctrl-C stopped the sleep in NEITHER Phosphor nor the conhost reference (0 of 4), and the screenshot shows each sleep ran its
+        # full 30 s. A control that fails the same way is the injector / PowerShell-under-SendInput, not Phosphor: no verdict, and the reason is in the row.
+        r.skip("NO-CONTROL: the injected Ctrl-C stopped the PowerShell sleep in neither Phosphor (0/%d tried) nor the conhost reference (0/4); this harness cannot judge Ctrl-C in PowerShell%s" % (
+            len(ctx.cc_integrity.get("misses", {}).get("cc.txt", [])), why))
     r.check(ok1, "Ctrl-C / command-after-Ctrl-C delivered fewer than %d times%s" % (n + warm, why))
     if ctx.win:
         r.note("Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran")
@@ -1538,7 +1585,10 @@ def ref_terminal(ctx):
             ctx.be.refocus()
         return RefTerm("Terminal.app (.command via open)", close=close)
     disp, wl = os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY")
-    env = dict(os.environ, HOME=home)
+    # r18d2: the reference shell starts in the case work dir like the pane does (the rc cds to $APPCI_W). Without it foot/xterm inherited the harness's cwd, so every
+    # effect file the reference shell wrote (el_ref*.txt, lat_N, cc_ref.txt) landed OUTSIDE ctx.W where the case reads: enter_loss_control saw 30/30 lines
+    # "missing" while the shell's own rec.log had all 30 exact (and the same misplacement would starve the reference latency samples).
+    env = dict(os.environ, HOME=home, APPCI_W=ctx.W)
     # its OWN rc and ctl dir (#1500): the reference logs to refctl/rec.log, never the app pane's ctl/rec.log, so a burst that reached the wrong
     # window can never be read back as reference data
     rc = ctx.prof.ref_rc
@@ -1550,7 +1600,7 @@ def ref_terminal(ctx):
         names = {"xterm"}
     else:
         return None
-    proc = subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(argv, env=env, cwd=ctx.W, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ctx.ref_shell = "bash"
     ctx.prof.ref_active = True
     ctx.be.guard_override = dict(pids={proc.pid}, names=names)
