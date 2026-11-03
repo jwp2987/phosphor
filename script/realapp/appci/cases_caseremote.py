@@ -334,7 +334,8 @@ def c_remote_heredoc(ctx, r):
             continue
         probe = "hd_%s_probe.txt" % key
         rm_remote(ctx, probe)
-        ctx.be.type(path, 12, enter=True)
+        # zsh -f: the remote home has no .zshrc, and an interactive zsh would start zsh-newuser-install and swallow the probe lines
+        ctx.be.type(path + (" -f" if key == "zsh" else ""), 12, enter=True)
         time.sleep(SHELLS[key][2])
         ready = False
         for _ in range(4):
@@ -344,6 +345,9 @@ def c_remote_heredoc(ctx, r):
                 break
         r.check(ready, "remote %s never executed a probe line" % key)
         if not ready:
+            # leave the inner shell (if it started at all) so leave() below talks to the remote bash
+            ctx.be.type("exit", 12, enter=True)
+            time.sleep(1.5)
             break
         name = "hd_%s.txt" % key
         if key == "fish":
