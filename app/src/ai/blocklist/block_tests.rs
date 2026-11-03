@@ -799,19 +799,29 @@ mod code_editor_recycling {
             let selected = snippet(&mut app, window, CODE_A, None);
             let focused = snippet(&mut app, window, CODE_B, None);
             let searching = snippet(&mut app, window, CODE_A, None);
+            let going_to_line = snippet(&mut app, window, CODE_A, None);
             let plain = snippet(&mut app, window, CODE_A, None);
             selected.update(&mut app, |view, ctx| {
                 view.handle_action(&CodeEditorViewAction::SelectAll, ctx);
             });
-            focused.update(&mut app, |view, ctx| view.focus(ctx));
+            // Opening the find bar or the go-to-line dialog focuses that dialog, and a window has
+            // one focused view, so the editor that keeps its focus is focused last.
             searching.update(&mut app, |view, ctx| {
                 view.handle_action(&CodeEditorViewAction::ShowFindBar, ctx);
             });
+            going_to_line.update(&mut app, |view, ctx| {
+                view.handle_action(&CodeEditorViewAction::ShowGoToLine, ctx);
+            });
+            focused.update(&mut app, |view, ctx| view.focus(ctx));
             assert!(selected.read(&app, |view, ctx| view.holds_user_state(ctx)));
             assert!(focused.read(&app, |view, ctx| view.holds_user_state(ctx)));
             assert!(
                 searching.read(&app, |view, ctx| view.holds_user_state(ctx)),
                 "an open find bar is user state"
+            );
+            assert!(
+                going_to_line.read(&app, |view, ctx| view.holds_user_state(ctx)),
+                "an open go-to-line dialog is user state"
             );
             assert!(!plain.read(&app, |view, ctx| view.holds_user_state(ctx)));
 
@@ -819,6 +829,7 @@ mod code_editor_recycling {
                 EmbeddedCodeEditorView::new(selected, None, CODE_A.len()),
                 EmbeddedCodeEditorView::new(focused, None, CODE_B.len()),
                 EmbeddedCodeEditorView::new(searching, None, CODE_A.len()),
+                EmbeddedCodeEditorView::new(going_to_line, None, CODE_A.len()),
                 EmbeddedCodeEditorView::new(plain, None, CODE_A.len()),
             ];
             let codes = vec![
@@ -826,11 +837,12 @@ mod code_editor_recycling {
                 CODE_B.to_string(),
                 CODE_A.to_string(),
                 CODE_A.to_string(),
+                CODE_A.to_string(),
             ];
             let dropped = app.read(|ctx| recycle_embedded_editors(&mut views, &codes, ctx));
             assert_eq!(dropped, 1, "only the editor without user state goes");
-            assert!(views[..3].iter().all(|v| v.view.is_some()));
-            assert!(views[3].view.is_none());
+            assert!(views[..4].iter().all(|v| v.view.is_some()));
+            assert!(views[4].view.is_none());
         });
     }
 }
