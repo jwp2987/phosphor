@@ -11514,6 +11514,22 @@ async fn multiline_submit_fixture(
     text: &str,
     bracketed_paste: bool,
 ) -> (ViewHandle<Input>, Rc<RefCell<Vec<String>>>) {
+    let (_, input, executed) =
+        multiline_submit_fixture_with_terminal(app, text, bracketed_paste).await;
+    (input, executed)
+}
+
+/// [`multiline_submit_fixture`] that also returns the terminal view, for tests that need to start
+/// the block the submitted command runs in.
+async fn multiline_submit_fixture_with_terminal(
+    app: &mut App,
+    text: &str,
+    bracketed_paste: bool,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    Rc<RefCell<Vec<String>>>,
+) {
     initialize_app(app);
     let session_info = SessionInfo::new_for_test();
     let session_id = session_info.session_id;
@@ -11540,7 +11556,7 @@ async fn multiline_submit_fixture(
     input.update(app, |input, ctx| {
         input.replace_buffer_content(text, ctx);
     });
-    (input, executed)
+    (terminal, input, executed)
 }
 
 /// #1046: more than the threshold of lines to a shell that runs each line on its own asks first;
@@ -12162,9 +12178,27 @@ async fn tab_enter_fixture(
     u64,
     EditorSnapshot,
 ) {
+    let (_, input, executed, generation, snapshot) =
+        tab_enter_fixture_with_terminal(app, local).await;
+    (input, executed, generation, snapshot)
+}
+
+/// [`tab_enter_fixture`] that also returns the terminal view (to start the block the completed
+/// line runs in).
+async fn tab_enter_fixture_with_terminal(
+    app: &mut App,
+    local: bool,
+) -> (
+    ViewHandle<TerminalView>,
+    ViewHandle<Input>,
+    Rc<RefCell<Vec<String>>>,
+    u64,
+    EditorSnapshot,
+) {
     use crate::ai::blocklist::InputConfig;
 
-    let (input, executed) = multiline_submit_fixture(app, "git checkout fe", false).await;
+    let (terminal, input, executed) =
+        multiline_submit_fixture_with_terminal(app, "git checkout fe", false).await;
     input.update(app, |input, ctx| {
         input.ai_input_model().update(ctx, |ai_input, ctx| {
             ai_input.set_input_config(
@@ -12188,7 +12222,7 @@ async fn tab_enter_fixture(
         });
         (generation, snapshot)
     });
-    (input, executed, generation, snapshot)
+    (terminal, input, executed, generation, snapshot)
 }
 
 fn deliver_tab_result(
@@ -13455,11 +13489,8 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
                 });
             });
         }
-        let pad = |n: usize| format!(" #{}", "x".repeat(n));
         let cases = [
             ("echo PASTE-G1; echo PASTE-H1".to_owned(), true),
-            (format!("echo PASTE-G1; echo PASTE-H1{}", pad(500)), true),
-            (format!("echo PASTE-G1; echo PASTE-H1{}", pad(5000)), true),
             ("please explain why the build failed".to_owned(), false),
         ];
         for (text, runs_in_shell) in cases {
@@ -13506,6 +13537,106 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
             }
         }
     });
+}
+
+/// One padded-paste run of #1590 with a gated classifier, so the verdict's timing is the test's,
+/// not the clock's: `late` leaves the verdict outstanding and spends the Enter's compute budget
+/// (the cap fires), otherwise the verdict lands right after the Enter. Returns what ran, the agent
+/// queries and the buffer.
+fn padded_ready_paste_run(text: String, late: bool) -> (Vec<String>, usize, String) {
+    use crate::ai::blocklist::InputConfig;
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let gate = gated_input_classifier_for_test(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+        let pasted = text.clone();
+        input.update(&mut app, |input, ctx| {
+            input.offer_ready_paste(
+                ClipboardContent::plain_text(pasted),
+                PasteSource::PlainTextPaste,
+                ctx,
+            );
+            input.input_enter(ctx);
+            if late {
+                let id = input
+                    .verdict_wait_id()
+                    .expect("the pasted line's Enter waits for its verdict");
+                input.verdict_wait.as_mut().unwrap().compute =
+                    ComputeClock::with_spent_for_test(ENTER_VERDICT_BUDGET * 2);
+                input.compute_cap_fired(id, ctx);
+            }
+        });
+        if !late {
+            gate.close();
+        }
+        warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+        let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        *sink.borrow_mut() = Some((executed.borrow().clone(), *ai_queries.borrow(), buffer));
+    });
+    let outcome = result.borrow_mut().take();
+    outcome.expect("the test body ran")
+}
+
+/// #1590 + #1577 A5, padded pastes (500 and 5000 bytes under the #968 limit): the verdict on time
+/// runs the line in the shell with no agent request; a verdict that misses the Enter's compute
+/// budget hands the line back intact (nothing runs, nothing goes to the agent). Deterministic:
+/// the classifier is gated.
+#[test]
+fn test_padded_ready_paste_then_immediate_enter_runs_on_time_and_hands_back_when_late() {
+    for pad in [500usize, 5000] {
+        let text = format!("echo PASTE-G1; echo PASTE-H1 #{}", "x".repeat(pad));
+        let (executed, queries, _) = padded_ready_paste_run(text.clone(), false);
+        assert_eq!(executed, [text.clone()], "on time, pad {pad}: runs in the shell");
+        assert_eq!(queries, 0, "on time, pad {pad}");
+        let (executed, queries, buffer) = padded_ready_paste_run(text.clone(), true);
+        assert!(executed.is_empty(), "late, pad {pad}: {executed:?}");
+        assert_eq!(buffer, text, "late, pad {pad}: the line stays in the editor");
+        assert_eq!(queries, 0, "late, pad {pad}");
+    }
 }
 
 #[test]
@@ -13984,7 +14115,8 @@ fn test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         ensure_input_classifier_for_test(&mut app);
-        let (input, executed, generation, snapshot) = tab_enter_fixture(&mut app, true).await;
+        let (terminal, input, executed, generation, snapshot) =
+            tab_enter_fixture_with_terminal(&mut app, true).await;
         let editor = input.read(&app, |input, _| input.editor().clone());
         let released = record_released_enter_entries(&mut app, &input);
         input.update(&mut app, |input, ctx| {
@@ -14018,6 +14150,15 @@ fn test_enter_queue_tab_enter_then_typing_releases_the_keys_after_the_completed_
         assert_eq!(executed.borrow()[0].trim_end(), "git checkout feature");
         input.read(&app, |input, ctx| {
             assert_eq!(input.buffer_text(ctx).trim_end(), "git checkout feature");
+        });
+        // The completed line's command starts and takes the pty: that event releases the keys
+        // behind it. Without it the keys are handed back to the editor after
+        // `AFTER_ENTER_REPLAY_PTY_WAIT` instead of routed by the clock (#1577, A2).
+        terminal.update(&mut app, |terminal, _| {
+            terminal
+                .model
+                .lock()
+                .simulate_long_running_block("git checkout feature", "");
         });
         let sink = released.clone();
         wait_until(&app, |_| sink.borrow().len() >= 3).await;
@@ -14140,8 +14281,11 @@ fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
                     });
                     let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
                     if with_layout {
-                        // A frame was laid out for the one-character buffer.
+                        // A frame was laid out for the one-character buffer; no other frame
+                        // lands until the test releases the hold (unit tests build the scene at
+                        // every effect flush, which would otherwise lay one out after the paste).
                         soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+                        soft.hold_updates_for_test(true);
                     }
                     let pasted = "p".repeat(size);
                     let content = pasted.clone();
@@ -14179,6 +14323,8 @@ fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
                                 "{mode:?} size {size}: End/! applied on the old layout"
                             );
                         });
+                        assert!(soft.is_stale(), "{mode:?} size {size}: the paste staled the layout");
+                        soft.hold_updates_for_test(false);
                         // The frame after the paste is laid out.
                         soft.update(FrameLayouts::new(Vec::new(), 0, 0));
                     }
@@ -14229,7 +14375,10 @@ fn test_live_end_after_an_edit_waits_for_the_next_layout() {
             let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
             soft.update(FrameLayouts::new(Vec::new(), 0, 0));
             assert!(!soft.is_stale());
-            // The edit (what a paste does) makes the stored layout stale.
+            // The edit (what a paste does) makes the stored layout stale. Unit tests build the
+            // scene at every effect flush, so layout stores are held to keep "no frame since the
+            // edit" open.
+            soft.hold_updates_for_test(true);
             input.update(&mut app, |input, ctx| input.user_insert("Q", ctx));
             assert!(soft.is_stale(), "{mode:?}: the edit staled the layout");
             editor.update(&mut app, |editor, ctx| {
@@ -14244,6 +14393,8 @@ fn test_live_end_after_an_edit_waits_for_the_next_layout() {
                     "{mode:?}: End and the text behind it wait for a layout newer than the edit"
                 );
             });
+            assert!(soft.is_stale(), "{mode:?}: still no layout after the edit");
+            soft.hold_updates_for_test(false);
             soft.update(FrameLayouts::new(Vec::new(), 0, 0));
             for _ in 0..1000 {
                 if input.read(&app, |input, ctx| input.buffer_text(ctx) == "Qab!") {
@@ -14341,9 +14492,15 @@ fn test_shared_queue_display_map_gate_replays_cursor_keys_in_order() {
 
 // ---- #1558: a deferred Enter the shell cannot take yet is held, never dropped --------------------
 
+// The held line of the #1558 / #1571 tests is NOT an ssh command: `ssh ...` opens the ssh connect
+// window when it is submitted, and keys that meet it afterwards are held for the remote shell
+// (by design, #1292), so the queue legitimately stops behind the connect gate and the tests
+// could not observe the release order they are about. The bug shape (`<line>` merged with the
+// next line's text) is the same for any command.
+
 /// Runs the #1558 sequence in `mode`: a bootstrapped session whose first Precmd has not given it
 /// its history (a command is refused, as in PostBootstrapPrecmd on a fresh ssh session), an Enter
-/// on `ssh fake` that waits behind its verdict gate, optionally text typed behind it, and the
+/// on `make fake` that waits behind its verdict gate, optionally text typed behind it, and the
 /// verdict arriving. Returns the commands the input executed, in order, after the shell became
 /// ready, and the text the editor holds at the end.
 fn deferred_enter_on_unready_shell(
@@ -14395,9 +14552,9 @@ fn deferred_enter_on_unready_shell(
                 );
             });
             input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert("ssh fake", ctx);
+            input.user_insert("make fake", ctx);
             let wait_id = input.start_verdict_wait(
-                "ssh fake".to_string(),
+                "make fake".to_string(),
                 EnterHold::Verdict {
                     since: Instant::now(),
                 },
@@ -14415,7 +14572,7 @@ fn deferred_enter_on_unready_shell(
         }
         // The verdict arrives (nothing is pending for the line): the Enter is released.
         input.update(&mut app, |input, ctx| {
-            input.wait_for_verdict_then_enter("ssh fake".to_string(), ctx);
+            input.wait_for_verdict_then_enter("make fake".to_string(), ctx);
         });
         // The Enter was refused for a shell that is not ready: it is held, not dropped, and
         // nothing has run.
@@ -14424,7 +14581,7 @@ fn deferred_enter_on_unready_shell(
                 input.has_pending_command(),
                 "the refused deferred Enter must be held as the pending command"
             );
-            assert_eq!(input.pending_command_text_for_test(), Some("ssh fake"));
+            assert_eq!(input.pending_command_text_for_test(), Some("make fake"));
         });
         assert!(executed.borrow().is_empty(), "{:?}", executed.borrow());
         // #1571: what was typed behind the Enter waits behind it (the held Enter is a gate) until
@@ -14447,6 +14604,15 @@ fn deferred_enter_on_unready_shell(
         });
         input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
         let still_pending = input.read(&app, |input, _| input.has_pending_command());
+        // The held line's command starts and takes the pty; what was typed after it follows. (Left
+        // unstarted, the keys are handed back to the editor after `AFTER_ENTER_REPLAY_PTY_WAIT`
+        // rather than routed by the clock, #1577 A2.)
+        terminal.update(&mut app, |terminal, _| {
+            terminal
+                .model
+                .lock()
+                .simulate_long_running_block("make fake", "");
+        });
 
         // What was typed behind the Enter is released after it, in order, never into its line.
         let want = typed_behind.chars().count();
@@ -14463,27 +14629,27 @@ fn deferred_enter_on_unready_shell(
     outcome.expect("the test body ran")
 }
 
-/// #1558, both destination modes: the Enter pressed on `ssh fake` that waited for a verdict while
-/// the shell was not ready runs exactly once, as `ssh fake`, when the shell can take it. It used to
+/// #1558, both destination modes: the Enter pressed on `make fake` that waited for a verdict while
+/// the shell was not ready runs exactly once, as `make fake`, when the shell can take it. It used to
 /// log `submit` and vanish, leaving its text in the buffer.
 #[test]
 fn test_deferred_enter_on_unready_shell_is_held_and_runs_once_as_typed() {
     use crate::terminal::input_queue::facts::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let (executed, _, still_pending) = deferred_enter_on_unready_shell(mode, "");
-        assert_eq!(executed, ["ssh fake".to_owned()], "{mode:?}");
+        assert_eq!(executed, ["make fake".to_owned()], "{mode:?}");
         assert!(!still_pending, "{mode:?}: the pending command was consumed");
     }
 }
 
 /// #1558, both destination modes: text typed while the Enter waits goes to the NEXT line. The held
-/// Enter still runs exactly `ssh fake` (never `ssh fakeecho ...`).
+/// Enter still runs exactly `make fake` (never `make fakeecho ...`).
 #[test]
 fn test_text_typed_during_the_verdict_wait_never_merges_into_the_held_enter() {
     use crate::terminal::input_queue::facts::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let (executed, released, _) = deferred_enter_on_unready_shell(mode, "echo T");
-        assert_eq!(executed, ["ssh fake".to_owned()], "{mode:?}");
+        assert_eq!(executed, ["make fake".to_owned()], "{mode:?}");
         assert_eq!(released.len(), "echo T".chars().count(), "{mode:?}");
     }
 }
@@ -14648,7 +14814,7 @@ struct UnreadyEnterRun {
 }
 
 /// Runs the #1564 shape with the readiness event delayed past the user's SECOND Enter, in `mode`:
-/// a shell that cannot take a command yet (its session has no history), `ssh fake` + Enter
+/// a shell that cannot take a command yet (its session has no history), `make fake` + Enter
 /// (direct, or `deferred` behind its verdict gate with `echo T` + Enter typed during that wait),
 /// then the next line typed (`echo T` + Enter for a direct Enter, `ls` + Enter after a deferred
 /// one), then the shell becomes ready and the command the held line starts takes the pty.
@@ -14700,12 +14866,12 @@ fn unready_enter_then_the_next_line(
                 );
             });
             input.clear_buffer_and_reset_undo_stack(ctx);
-            input.user_insert("ssh fake", ctx);
+            input.user_insert("make fake", ctx);
         });
         let next_line = if deferred {
             input.update(&mut app, |input, ctx| {
                 let wait_id = input.start_verdict_wait(
-                    "ssh fake".to_string(),
+                    "make fake".to_string(),
                     EnterHold::Verdict {
                         since: Instant::now(),
                     },
@@ -14724,7 +14890,7 @@ fn unready_enter_then_the_next_line(
             type_into_editor(&mut app, &editor, HeldPasteKey::Action(EditorAction::Enter));
             // The verdict lands: the Enter runs, and the shell refuses it (not ready).
             input.update(&mut app, |input, ctx| {
-                input.wait_for_verdict_then_enter("ssh fake".to_string(), ctx);
+                input.wait_for_verdict_then_enter("make fake".to_string(), ctx);
             });
             "ls"
         } else {
@@ -14770,7 +14936,7 @@ fn unready_enter_then_the_next_line(
             terminal
                 .model
                 .lock()
-                .simulate_long_running_block("ssh fake", "");
+                .simulate_long_running_block("make fake", "");
         });
         let want = held_before_ready
             .iter()
@@ -14806,7 +14972,7 @@ fn per_key_lines(lines: &[&str]) -> Vec<AfterEnterInput> {
 /// #1571, both destination modes: a DIRECT Enter refused by a shell that is not ready, then the
 /// next line and its Enter typed before the readiness event. The second Enter used to reach
 /// `input_enter`, be refused too, and re-hold the MERGED buffer, so the readiness event ran
-/// `ssh fakeecho T` (the #1564 shape, timing-dependent). Now the held Enter is a gate: the buffer
+/// `make fakeecho T` (the #1564 shape, timing-dependent). Now the held Enter is a gate: the buffer
 /// keeps exactly its line, the next line waits behind it as its own entries, the held line runs
 /// once, alone, and the next line follows it in order.
 #[test]
@@ -14815,7 +14981,7 @@ fn test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands() 
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let run = unready_enter_then_the_next_line(mode, false);
         assert_eq!(
-            run.buffer_before_ready, "ssh fake",
+            run.buffer_before_ready, "make fake",
             "{mode:?}: nothing merged"
         );
         assert!(run.executed_before_ready.is_empty(), "{mode:?}");
@@ -14829,8 +14995,8 @@ fn test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands() 
         );
         assert_eq!(
             run.executed,
-            ["ssh fake".to_owned()],
-            "{mode:?}: the held line runs once, alone (never `ssh fakeecho T`)"
+            ["make fake".to_owned()],
+            "{mode:?}: the held line runs once, alone (never `make fakeecho T`)"
         );
         assert_eq!(
             run.released,
@@ -14843,7 +15009,7 @@ fn test_unready_direct_enter_then_a_second_line_and_enter_run_as_two_commands() 
 /// #1571, both destination modes: the same with a DEFERRED Enter (it waited for its verdict with
 /// `echo T` + Enter typed meanwhile, then met the unready shell), and `ls` + Enter typed after the
 /// refusal. The verdict gate used to be released when the deferred Enter's submit returned, so
-/// `echo T` merged into the held line and its Enter re-held `ssh fakeecho T`. Now the verdict gate
+/// `echo T` merged into the held line and its Enter re-held `make fakeecho T`. Now the verdict gate
 /// becomes the held Enter's gate in place: both later lines stay behind it, in order.
 #[test]
 fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
@@ -14851,7 +15017,7 @@ fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         let run = unready_enter_then_the_next_line(mode, true);
         assert_eq!(
-            run.buffer_before_ready, "ssh fake",
+            run.buffer_before_ready, "make fake",
             "{mode:?}: nothing merged"
         );
         assert!(run.executed_before_ready.is_empty(), "{mode:?}");
@@ -14865,7 +15031,7 @@ fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
             ],
             "{mode:?}"
         );
-        assert_eq!(run.executed, ["ssh fake".to_owned()], "{mode:?}");
+        assert_eq!(run.executed, ["make fake".to_owned()], "{mode:?}");
         assert_eq!(
             run.released,
             per_key_lines(&["echo T", "ls"]),
