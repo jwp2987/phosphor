@@ -1062,6 +1062,16 @@ def pty_bytes_decide_where_a_line_changed():
         shutil.rmtree(d)
 
 
+@check
+def agent_code_recycle_log_parse():
+    """#1267: the agent_code_recycle case reads the app's recycle / rebuild lines and builds the exact snippet lines it expects back"""
+    log = ("x DEBUG editor_memory editor_memory agent_code_recycled block=EntityId(42) dropped=12\n"
+           "y DEBUG editor_memory editor_memory agent_code_rebuilt block=EntityId(42) rebuilt=12\n")
+    assert ca.recycle_events(log) == [("recycled", "EntityId(42)", 12), ("rebuilt", "EntityId(42)", 12)], ca.recycle_events(log)
+    assert ca.snippet_lines("AB12", 3) == ["echo RCYAB12_01", "echo RCYAB12_02", "echo RCYAB12_03"]
+    assert "agent_code_recycle" in winmap.BOTH
+
+
 def main():
     failed = 0
     for f in CHECKS:

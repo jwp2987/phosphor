@@ -12,7 +12,7 @@ BOTH = {
     "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "ssh_failing_not_local",
     "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "tabs_two_windows", "tabs_streaming",
     "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
-    "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "editor_memory_7mb", "gitbash_subshell",
+    "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
 GITBASH_ONLY = {
