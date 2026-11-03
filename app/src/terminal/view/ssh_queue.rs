@@ -261,6 +261,7 @@ impl TerminalView {
         &mut self,
         gate: Option<u64>,
         paste_ids: &[u64],
+        mut ctx: Option<&mut ViewContext<Self>>,
     ) -> Vec<HeldInput> {
         if gate.is_none() && paste_ids.is_empty() {
             return Vec::new();
@@ -303,6 +304,11 @@ impl TerminalView {
                 // failed) it is never handed back as text and never delivered locally.
                 EntryKind::Held { class, .. } if class == HELD_SIGNAL => signals_discarded += 1,
                 EntryKind::Held { class, text } => held.push(HeldInput::from_parts(class, text)),
+                // Legacy leaves typed text and editor pastes that were queued behind an Enter's
+                // gate as they are when that Enter opens the connect (the table turns them into
+                // held inputs at delivery): they were typed for the connect, so they come back
+                // in typed order like the held keys, never dropped.
+                EntryKind::Text(text) => held.push(HeldInput::Typed(text)),
                 EntryKind::Paste { paste_id, .. } => {
                     self.paste_queue.routed_pastes.remove(&paste_id);
                     self.paste_queue.refused.remove(&paste_id);
@@ -310,6 +316,13 @@ impl TerminalView {
                         held.push(HeldInput::Paste(
                             String::from_utf8_lossy(&bytes).into_owned(),
                         ));
+                    } else if let Some(ctx) = ctx.as_deref_mut()
+                        && let Some(text) = self
+                            .input
+                            .update(ctx, |input, _| input.take_paste_payload_text(paste_id))
+                    {
+                        // An editor paste keeps its content in the input editor.
+                        held.push(HeldInput::Paste(text));
                     }
                 }
                 _ => {}
@@ -338,14 +351,14 @@ impl TerminalView {
                 self.flush_deferred_queue_ops(ctx);
             }
             if !queue.has_deferred() && queue.try_peek().is_some() {
-                let held = self.ssh_drop_detached(gate, &paste_ids);
+                let held = self.ssh_drop_detached(gate, &paste_ids, Some(&mut *ctx));
                 self.finish_dropped_ssh_gate(held, then, ctx);
                 return;
             }
         } else if !queue.has_deferred() && queue.try_peek().is_some() {
             // Discarding needs no view context.
             debug_assert_eq!(then, SshDropThen::Discard);
-            let dropped = self.ssh_drop_detached(gate, &paste_ids);
+            let dropped = self.ssh_drop_detached(gate, &paste_ids, None);
             if !dropped.is_empty() {
                 log::info!("ssh hold: discarded {} held input(s)", dropped.len());
             }
@@ -392,7 +405,7 @@ impl TerminalView {
     #[cfg(test)]
     pub(super) fn ssh_hold_take(&mut self) -> Vec<HeldInput> {
         let (gate, paste_ids) = self.ssh_hold_detach();
-        let held = self.ssh_drop_detached(gate, &paste_ids);
+        let held = self.ssh_drop_detached(gate, &paste_ids, None);
         let mut merged = SshTypeahead::default();
         for input in held {
             merged.push(input);
