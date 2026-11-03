@@ -203,3 +203,101 @@ fn an_unrelated_deferred_op_does_not_make_a_missing_ssh_gate_look_alive() {
         })
     }
 }
+
+/// #1576: handed-back ssh text is never discarded. While a command owns the pty it is kept on the
+/// input and restored, guarded, when that block completes; an Enter on it is consumed, not run.
+#[test]
+fn hand_back_into_a_busy_pane_is_kept_and_restored_at_block_end() {
+    use crate::terminal::event::{BlockCompletedEvent, BlockType, UserBlockCompleted};
+    use crate::terminal::model::block::{BlockId, SerializedBlock};
+    use crate::terminal::model::terminal_model::BlockIndex;
+    use std::sync::Arc;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.model.lock().simulate_long_running_block("sleep 9", "");
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .interactive_latch()
+                    .force(true);
+                assert!(view.is_long_running(), "{mode:?}");
+                view.hand_back_unexecuted_ssh_text("echo hi".to_owned(), ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).handed_back_text_for_test(),
+                    Some("echo hi"),
+                    "{mode:?}"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // The block ends: the text comes back, guarded.
+                view.input.update(ctx, |input, ctx| {
+                    input.deferred_remote_operations.latest_block_id = BlockId::new();
+                    input.handle_block_completed_event(
+                        BlockCompletedEvent {
+                            block_latency_data: None,
+                            block_type: BlockType::User(UserBlockCompleted::new_for_test(
+                                BlockIndex::zero(),
+                                Arc::new(SerializedBlock::new_for_test(
+                                    b"sleep 9".to_vec(),
+                                    vec![],
+                                )),
+                                "sleep 9".to_owned(),
+                                "sleep 9".to_owned(),
+                                String::new(),
+                                String::new(),
+                                false,
+                                None,
+                                0,
+                                0,
+                            )),
+                            num_secrets_obfuscated: 0,
+                            block_index: BlockIndex::zero(),
+                            eviction_stamp: Default::default(),
+                            block_id: BlockId::new(),
+                            session_id: None,
+                            restored_block_was_local: None,
+                        },
+                        ctx,
+                    );
+                });
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "echo hi",
+                    "{mode:?}"
+                );
+                assert!(
+                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
+                    "{mode:?}"
+                );
+                editor_key(view, EditorAction::Enter, ctx);
+            });
+            terminal.update(&mut app, |view, ctx| {
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "echo hi",
+                    "{mode:?}"
+                );
+            });
+            assert!(
+                !executed.borrow().iter().any(|c| c.contains("echo hi")),
+                "{mode:?}: {:?}",
+                executed.borrow()
+            );
+        })
+    }
+}
