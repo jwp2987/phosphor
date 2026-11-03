@@ -109,6 +109,8 @@ pub fn key_target(class: KeyClass, facts: &PaneFocusFacts) -> KeyTarget {
         // control key typed in a focus gap (#1332, #1394, #1552): typed keys in the gap are
         // delivered through the terminal's routing (above), so the Enter that ends their line
         // must follow them there instead of leaving through the element tree to the input's
+        // (The sink in `on_pane_key_event` narrows this gap to a settled AI target or the ssh
+        // hold: any other pane child with focus binds its own control keys.)
         // keybinding on an empty editor. The terminal's table then decides: the pty, the
         // editor's submit, or a drop that puts focus back on the input.
         KeyClass::Control => {
