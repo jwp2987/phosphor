@@ -951,3 +951,7 @@ fn exhaustive_enumeration_reaches_every_row_but_the_effect_only_ones() {
         "rows no enumeration reaches: {missing:?}"
     );
 }
+
+// #1529: the table against the legacy destination function.
+#[path = "table_equiv_tests.rs"]
+mod equiv;
