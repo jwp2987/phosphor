@@ -13372,6 +13372,94 @@ fn test_paste_then_held_enter_classifies_the_pasted_line() {
     });
 }
 
+/// #1590: a ready paste (the text already read, nothing queued) with an Enter applied in the
+/// same update, before the editor's `Edited` event could request detection: the Enter must still
+/// wait for the pasted line's verdict. A shell line runs in the shell (no agent request), prose is
+/// not run by the shell. Padded variants stay under the #968 limit (16 KiB), so they classify.
+#[test]
+fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
+        let pad = |n: usize| format!(" #{}", "x".repeat(n));
+        let cases = [
+            ("echo PASTE-G1; echo PASTE-H1".to_owned(), true),
+            (format!("echo PASTE-G1; echo PASTE-H1{}", pad(500)), true),
+            (format!("echo PASTE-G1; echo PASTE-H1{}", pad(5000)), true),
+            ("please explain why the build failed".to_owned(), false),
+        ];
+        for (text, runs_in_shell) in cases {
+            executed.borrow_mut().clear();
+            *ai_queries.borrow_mut() = 0;
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: false,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+            });
+            warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+            // The paste lands and the Enter is applied in the same update.
+            let pasted = text.clone();
+            input.update(&mut app, |input, ctx| {
+                input.offer_ready_paste(
+                    ClipboardContent::plain_text(pasted),
+                    PasteSource::PlainTextPaste,
+                    ctx,
+                );
+                input.input_enter(ctx);
+            });
+            warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+            if runs_in_shell {
+                assert_eq!(
+                    executed.borrow().as_slice(),
+                    [text.clone()],
+                    "a pasted shell command Enter-ed at once runs in the shell ({} bytes)",
+                    text.len()
+                );
+                assert_eq!(*ai_queries.borrow(), 0);
+            } else {
+                assert!(
+                    executed.borrow().is_empty(),
+                    "pasted prose is not run by the shell"
+                );
+            }
+        }
+    });
+}
+
 #[cfg(not(target_family = "wasm"))]
 #[test]
 fn export_error_message_names_the_failure() {
@@ -14644,6 +14732,113 @@ fn test_unready_deferred_enter_keeps_both_later_lines_behind_it_in_order() {
             per_key_lines(&["echo T", "ls"]),
             "{mode:?}: released after the held line, in typed order"
         );
+    }
+}
+
+/// #1586, both destination modes: behind an Enter held for an unready shell, keys with a tty form
+/// (Delete, Home, End, Tab, ^K) wait as `Held` entries and never edit the held line; keys with
+/// neither a tty form nor text (Escape, Shift-Tab, ...) are swallowed. The held line then runs
+/// exactly as typed.
+#[test]
+fn test_unready_enter_holds_or_swallows_keys_with_no_text() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::terminal::input_queue::facts::DestinationMode;
+    use crate::terminal::input_queue::{HELD_KEY, HELD_SEQ};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+        App::test((), move |mut app| async move {
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            initialize_app(&mut app);
+            let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+            let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+            let editor = input.read(&app, |input, _| input.editor().clone());
+            let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+            {
+                let executed = executed.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                        if let super::Event::ExecuteCommand(event) = event {
+                            executed.borrow_mut().push(event.command.clone());
+                        }
+                    });
+                });
+            }
+            let real_session = terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                let block = model.block_list_mut().active_block_for_test();
+                let real = block.session_id();
+                block.set_session_id(SessionId::from(1571));
+                real
+            });
+            input.update(&mut app, |input, ctx| {
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::Shell,
+                            is_locked: true,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.user_insert("ssh fake", ctx);
+                input.input_enter(ctx);
+            });
+            input.read(&app, |input, _| {
+                assert!(input.unready_enter_gate_open(), "{mode:?}");
+            });
+            for action in [
+                EditorAction::Delete,
+                EditorAction::MoveToLineStart,
+                EditorAction::MoveToLineEnd,
+                EditorAction::Tab,
+                EditorAction::DeleteAllRight,
+            ] {
+                type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
+            }
+            let held_with_forms = input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
+            for action in [
+                EditorAction::Escape,
+                EditorAction::ShiftTab,
+                EditorAction::DeleteWordRight,
+                EditorAction::MoveToBufferStart,
+                EditorAction::MoveToBufferEnd,
+            ] {
+                type_into_editor(&mut app, &editor, HeldPasteKey::Action(action));
+            }
+            let held_after_swallowed =
+                input.read(&app, |input, ctx| input.queued_held_for_test(ctx));
+            let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
+            assert_eq!(buffer, "ssh fake", "{mode:?}: the held line is not edited");
+            assert_eq!(
+                held_with_forms,
+                vec![
+                    (HELD_SEQ, "\u{1b}[3~".to_owned()),
+                    (HELD_SEQ, "\u{1b}[H".to_owned()),
+                    (HELD_SEQ, "\u{1b}[F".to_owned()),
+                    (HELD_SEQ, "\t".to_owned()),
+                    (HELD_KEY, "\u{b}".to_owned()),
+                ],
+                "{mode:?}"
+            );
+            assert_eq!(
+                held_after_swallowed, held_with_forms,
+                "{mode:?}: keys with no text and no tty form queue nothing"
+            );
+            // The readiness event: the held line runs exactly as typed.
+            terminal.update(&mut app, |terminal, _| {
+                let mut model = terminal.model.lock();
+                if let Some(real) = real_session {
+                    model
+                        .block_list_mut()
+                        .active_block_for_test()
+                        .set_session_id(real);
+                }
+            });
+            input.update(&mut app, |input, ctx| input.execute_pending_command(ctx));
+            assert_eq!(*executed.borrow(), ["ssh fake".to_owned()], "{mode:?}");
+        });
     }
 }
 

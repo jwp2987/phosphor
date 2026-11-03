@@ -40,14 +40,16 @@ use std::time::Duration;
 use warpui::r#async::Timer;
 use warpui::{SingletonEntity as _, ViewContext};
 
-use super::{AfterEnterInput, Event, TerminalView, held_bytes_through_last_enter};
+use super::dest_table::Replayed;
+use super::{AfterEnterInput, Event, KeyPathScope, TerminalView, held_bytes_through_last_enter};
 use crate::editor::{EditorAction, HeldPasteKey};
 use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_leaf};
-use crate::terminal::input_queue::table::Class;
+use crate::terminal::input_queue::table::{Class, Outcome};
 use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DestinationMode, DiscardReason, EntryKind,
     FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue,
-    PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode, is_pty_entry, trace,
+    PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode, is_editor_paste_id,
+    is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{
     CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldExpiry, forces_shell_submit,
@@ -375,6 +377,43 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
                 return self.deliver_replayed_entry_table(entry);
             }
             return self.deliver_replayed_entry(entry);
+        }
+        // An editor paste queued behind an Enter gate follows the line it belongs to (#1585): the
+        // table decides it like the Text and Enter entries around it. Where the table says editor
+        // it keeps the editor's own delivery (rich content, paste sources) below.
+        if destination_mode() == DestinationMode::Table
+            && let EntryKind::Paste {
+                paste_id,
+                payload: Some(_),
+            } = &entry.kind
+            && is_editor_paste_id(*paste_id)
+            && let Some(text) = self.view.input.read(self.ctx, |input, _| {
+                input.peek_paste_payload_text(*paste_id)
+            })
+        {
+            let _key_path = KeyPathScope::enter(&self.view.key_path_depth);
+            let (plan, facts) = self.view.decide_delivery(
+                Replayed::Paste(&text),
+                Origin::Replay(entry.id),
+                entry.stamp,
+                self.ctx,
+            );
+            if !matches!(plan.outcome, Outcome::EditorInsert | Outcome::AgentInput) {
+                // The line this paste belongs to went elsewhere (a connect hold, the pty): follow it.
+                let taken = self
+                    .view
+                    .input
+                    .update(self.ctx, |input, _| {
+                        input.take_paste_payload_text(*paste_id)
+                    })
+                    .unwrap_or(text);
+                warpui::input_order::log_key_hop("kh_editor_paste_followed_line", || {
+                    format!("outcome={:?} chars={}", plan.outcome, taken.chars().count())
+                });
+                self.view
+                    .execute_table_plan(Replayed::Paste(&taken), &plan, &facts, self.ctx);
+                return self.finish_replayed_delivery();
+            }
         }
         // The pane's queue is shared with the input editor (#1353 step 3): this host reaches both
         // destinations, so an entry that belongs to the editor side (an editor key, an editor

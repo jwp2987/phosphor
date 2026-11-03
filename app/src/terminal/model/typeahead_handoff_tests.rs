@@ -3433,6 +3433,49 @@ fn the_committed_delivery_mark_ends_when_its_line_cannot_hold_it() {
     assert!(!handoff.committed_delivery_pending());
 }
 
+/// #1589: the delivered bytes may still be deferred behind the queue's gate (nothing written
+/// yet), so the line looks empty: the pty keeps input and nothing commits to the editor until
+/// the bytes land.
+#[test]
+fn committed_delivery_pins_the_pty_until_the_bytes_land() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_command_written();
+    handoff.note_committed_delivery();
+    assert!(!handoff.try_commit_at_prompt());
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Drain
+    );
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.committed_delivery_pending());
+    assert_eq!(
+        handoff.on_user_bytes(b"echo hi\r"),
+        UserBytesRoute::WriteCounted
+    );
+    // The Enter ended the line (and the mark): its prompt is still owed, so nothing commits.
+    assert!(!handoff.committed_delivery_pending());
+    assert!(!matches!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Committed
+    ));
+    assert!(handoff.is_pty_owned());
+    handoff.on_command_written();
+    assert!(!handoff.committed_delivery_pending());
+}
+
+/// #1589 liveness: the bytes never landed (the remote exited) and no line is queued; the outer
+/// shell's prompt is the event that clears the mark and lets the editor take input.
+#[test]
+fn committed_delivery_clears_at_a_prompt_with_an_empty_line() {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.on_command_written();
+    handoff.note_committed_delivery();
+    assert!(!handoff.try_commit_at_prompt());
+    handoff.on_precmd();
+    assert!(!handoff.committed_delivery_pending());
+    assert!(handoff.try_commit_at_prompt());
+}
+
 // ---- #1584: a give-up never writes to the pty ----------------------------------------------------
 
 /// Keys held in the precmd's wait at a prompt whose line holds nothing typed may go back to the

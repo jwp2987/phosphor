@@ -541,6 +541,14 @@ impl Input {
         self.flush_deferred_programmatic_edits(ctx);
     }
 
+    /// The text of the editor paste `id` whose content waits here, left in place (#1585: the
+    /// view asks the table where the paste goes before it takes it).
+    pub(crate) fn peek_paste_payload_text(&self, id: u64) -> Option<String> {
+        self.paste_payloads
+            .get(&id)
+            .map(|(_, content)| content.plain_text.clone())
+    }
+
     /// The text of the editor paste `id` whose content waits here (a ready paste taken out of the
     /// queue without being delivered, #1446 / #1571), removed.
     pub(crate) fn take_paste_payload_text(&mut self, id: u64) -> Option<String> {
@@ -824,6 +832,20 @@ impl Input {
     #[cfg(test)]
     pub(crate) fn enter_gate_held_len_for_test(&self, ctx: &AppContext) -> usize {
         self.enter_gate_held_len(ctx)
+    }
+
+    /// The `Held` entries (class, text) the Enter gate holds, in order, for tests (#1586).
+    #[cfg(test)]
+    pub(crate) fn queued_held_for_test(&self, ctx: &AppContext) -> Vec<(u8, String)> {
+        let queue = self.enter_queue_handle(ctx);
+        let queue = queue.peek();
+        queue
+            .entries()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Held { class, text } => Some((*class, text.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The text and Enters queued behind the Enter, in order, adjacent text merged: what the

@@ -33,7 +33,9 @@ const PASTE_FAILED_TOAST: &str =
 pub(super) struct InputQueueHost<'a, 'b> {
     input: &'a mut Input,
     ctx: &'a mut ViewContext<'b, Input>,
-    /// Entries queued behind the paste that is about to be delivered.
+    /// Entries queued behind the paste that is about to be delivered. (Detection for a pasted
+    /// line is now requested for every delivered paste, #1590; the count is kept for logging.)
+    #[allow(dead_code)]
     held_behind: usize,
 }
 
@@ -101,9 +103,13 @@ impl Host for InputQueueHost<'_, '_> {
                             .paste_insert(content.plain_text.as_str(), self.ctx);
                     }
                 }
-                if self.held_behind > 0 {
-                    self.input.request_detection_for_pasted_text(self.ctx);
-                }
+                // #1590: asked for whether or not an Enter was queued behind the paste at read
+                // time. The editor's own `Edited` request is an effect delivered after this
+                // update, and an Enter that is the next entry of the same drain (or arrives in
+                // the same update) would find no detection pending and submit on the inherited
+                // input type. The function returns at once when autodetection is off, the buffer
+                // is empty or an inline menu is open.
+                self.input.request_detection_for_pasted_text(self.ctx);
             }
             EntryKind::EditorKey(payload) => {
                 // #1353 merge step 4: a key that reads the display map waits for it behind a
