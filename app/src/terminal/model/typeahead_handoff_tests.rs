@@ -3448,7 +3448,9 @@ fn a_committed_delivery_is_never_asked_for_and_stays_in_the_shell() {
     assert!(handoff.is_pty_owned());
     assert!(handoff.committed_delivery_pending());
     assert!(!handoff.try_commit_at_prompt(), "the line is not empty");
-    // The user's Enter submits the line where it is: the mark ends, nothing was reported.
+    // The user's Enter, typed after the young-Enter window (#933) has passed, submits the line
+    // where it is: the mark ends, nothing was reported.
+    handoff.age_last_activity_for_test();
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
     assert!(!handoff.committed_delivery_pending());
 
@@ -3483,6 +3485,7 @@ fn the_committed_delivery_mark_ends_when_its_line_cannot_hold_it() {
     // ... and a later report of keys the hand-off owns is accounted.
     let mut handoff = line_awaiting_a_request();
     handoff.note_committed_delivery();
+    handoff.age_last_activity_for_test();
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
     assert!(!handoff.committed_delivery_pending());
 }
