@@ -32,12 +32,26 @@ fn find_compositor_in_proc(proc_root: &path::Path, uid: u32) -> Option<String> {
     pids.sort_unstable_by_key(|(pid, _)| *pid);
 
     pids.into_iter().find_map(|(_, dir)| {
-        if fs::metadata(&dir).ok()?.uid() != uid {
+        if process_euid(&dir)? != uid {
             return None;
         }
         let comm = fs::read_to_string(dir.join("comm")).ok()?;
         match_wayland_tiling_wm(comm.trim_end())
     })
+}
+
+/// The effective uid of the process whose `/proc/<pid>` directory is `dir`, from the `Uid:` line
+/// of its `status` file (what `ps -u` matches). The directory's owner is wrong for a
+/// non-dumpable process (e.g. a compositor with file capabilities), which `/proc` makes root-owned.
+/// Falls back to the directory owner when `status` is missing or has no parsable `Uid:` line.
+fn process_euid(dir: &path::Path) -> Option<u32> {
+    let from_status = fs::read_to_string(dir.join("status"))
+        .ok()
+        .and_then(|status| {
+            let line = status.lines().find_map(|l| l.strip_prefix("Uid:"))?;
+            line.split_whitespace().nth(1)?.parse::<u32>().ok()
+        });
+    from_status.or_else(|| fs::metadata(dir).ok().map(|m| m.uid()))
 }
 
 /// The earliest case-insensitive occurrence of a [`WAYLAND_TILING_WM`] name in `comm`, as written.
