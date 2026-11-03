@@ -16,7 +16,9 @@
 //! dropped), `OD7` (a key stamped before the ssh prompt is dropped), `B3` (the table logs a drop
 //! legacy did silently), `B7` (the published agent flag was one publication old), `B13` (a control
 //! key reaches the pty while the agent owns it, through the hand-off), `B14` (legacy put text for
-//! the editor past the gates that hold every other key; the table holds it, strict FIFO).
+//! the editor past the gates that hold every other key; the table holds it, strict FIFO), `B15`
+//! (a CLI-agent submit during a PowerShell setup: legacy holds it, the table's O-cli-submit row is
+//! exempt from every hold; owner decision pending, #1601).
 //!
 //! The comparison is pure; the only state is two thread-locals (the leaf the legacy chain noted,
 //! and, in tests, the recorded lines).
@@ -133,6 +135,9 @@ pub fn expected_tag(intent: &Intent, plan: &Plan, f: &RouteFacts) -> Option<&'st
     }
     if f.agent_in_control && !f.agent_in_control_exact {
         return Some("B7");
+    }
+    if plan.row == Row::OCliSubmit && f.gates.has(super::GateKind::PowershellSetup) {
+        return Some("B15");
     }
     None
 }
