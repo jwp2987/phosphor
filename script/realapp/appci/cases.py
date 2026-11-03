@@ -510,8 +510,12 @@ class Ctx:
             return None
         return p
 
+    HARNESS_MARKER_RE = re.compile(r"(?:alive|proof)_[\w@.-]*\.txt")
+
     def cmds_since(self, mark):
-        return [c for _, c in self.prof.commands()[mark:]]
+        """what the shell logged after `mark`, minus the harness's OWN marker lines (the key-proof and wedge-probe `echo tok >> proof_*/alive_*.txt`): rec.log can
+        log one of those late, after a case took its mark (r18d2 agent@gitbash fast_typing: 31 commands for 30 typed, every line shifted by that one)"""
+        return [c for _, c in self.prof.commands()[mark:] if not self.HARNESS_MARKER_RE.search(c)]
 
     def cmd_mark(self):
         return len(self.prof.commands())
