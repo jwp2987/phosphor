@@ -309,7 +309,7 @@ impl TerminalView {
                 // held inputs at delivery): they were typed for the connect, so they come back
                 // in typed order like the held keys, never dropped.
                 EntryKind::Text(text) => held.push(HeldInput::Typed(text)),
-                EntryKind::Paste { paste_id, .. } => {
+                EntryKind::Paste { paste_id, payload } => {
                     self.paste_queue.routed_pastes.remove(&paste_id);
                     self.paste_queue.refused.remove(&paste_id);
                     if let Some(bytes) = self.paste_queue.payloads.remove(&paste_id) {
@@ -323,8 +323,16 @@ impl TerminalView {
                     {
                         // An editor paste keeps its content in the input editor.
                         held.push(HeldInput::Paste(text));
+                    } else if let Some(bytes) = payload {
+                        // No store has it any more (refused, already taken, or no ctx): the entry
+                        // still carries its bytes (review of #1605).
+                        held.push(HeldInput::Paste(
+                            String::from_utf8_lossy(&bytes).into_owned(),
+                        ));
                     }
                 }
+                // Enter / EditorKey / Control / Seq / PtyBytes behind a dropped hold are not handed
+                // back yet; whether legacy ever queues them here is open (#1605 follow-up).
                 _ => {}
             }
         }
