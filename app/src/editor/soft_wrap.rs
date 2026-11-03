@@ -56,10 +56,18 @@ pub struct SoftWrapState {
     /// that is no longer there (#1389). Cleared when the next layout is stored. A key that reads
     /// the layout (End, Up, Down) must not apply while this is set.
     stale: Arc<std::sync::atomic::AtomicBool>,
+    /// Test only: while set, `update` stores nothing, so a test can keep "the edit is in, no frame
+    /// has been laid out since" open against the eager scene build of unit tests.
+    #[cfg(test)]
+    hold: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SoftWrapState {
     pub fn update(&self, new_value: FrameLayouts) {
+        #[cfg(test)]
+        if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         *self.layouts.lock() = Some(new_value);
         self.stale
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -68,6 +76,12 @@ impl SoftWrapState {
         if let Some(waker) = self.layout_waker.lock().as_ref() {
             let _ = waker.try_send(());
         }
+    }
+
+    /// Test only: hold (or release) layout stores; see the `hold` field.
+    #[cfg(test)]
+    pub fn hold_updates_for_test(&self, hold: bool) {
+        self.hold.store(hold, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The buffer changed: the stored layout (if any) no longer describes it.

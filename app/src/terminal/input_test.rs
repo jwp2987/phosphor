@@ -13489,30 +13489,11 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
                 });
             });
         }
-        let pad = |n: usize| format!(" #{}", "x".repeat(n));
-        // (text, runs in the shell, may be handed back instead). A padded line takes the
-        // classifier longer than the Enter's verdict budget (`ENTER_VERDICT_BUDGET`, 20 ms of
-        // classifier compute) on a slow or debug build; the cap never picks shell or agent by the
-        // clock (#1577 A5), so such a line is handed back to the editor intact, not run.
         let cases = [
-            ("echo PASTE-G1; echo PASTE-H1".to_owned(), true, false),
-            (
-                format!("echo PASTE-G1; echo PASTE-H1{}", pad(500)),
-                true,
-                true,
-            ),
-            (
-                format!("echo PASTE-G1; echo PASTE-H1{}", pad(5000)),
-                true,
-                true,
-            ),
-            (
-                "please explain why the build failed".to_owned(),
-                false,
-                false,
-            ),
+            ("echo PASTE-G1; echo PASTE-H1".to_owned(), true),
+            ("please explain why the build failed".to_owned(), false),
         ];
-        for (text, runs_in_shell, may_be_handed_back) in cases {
+        for (text, runs_in_shell) in cases {
             executed.borrow_mut().clear();
             *ai_queries.borrow_mut() = 0;
             input.update(&mut app, |input, ctx| {
@@ -13541,26 +13522,12 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
             });
             warpui::r#async::Timer::after(Duration::from_millis(500)).await;
             if runs_in_shell {
-                let handed_back = may_be_handed_back && executed.borrow().is_empty();
-                if handed_back {
-                    // Nothing ran and nothing went to the agent; the pasted line is still in the
-                    // editor for the user's next Enter.
-                    input.read(&app, |input, ctx| {
-                        assert_eq!(
-                            input.buffer_text(ctx),
-                            text,
-                            "a pasted line whose verdict was late stays in the editor ({} bytes)",
-                            text.len()
-                        );
-                    });
-                } else {
-                    assert_eq!(
-                        executed.borrow().as_slice(),
-                        [text.clone()],
-                        "a pasted shell command Enter-ed at once runs in the shell ({} bytes)",
-                        text.len()
-                    );
-                }
+                assert_eq!(
+                    executed.borrow().as_slice(),
+                    [text.clone()],
+                    "a pasted shell command Enter-ed at once runs in the shell ({} bytes)",
+                    text.len()
+                );
                 assert_eq!(*ai_queries.borrow(), 0);
             } else {
                 assert!(
@@ -13570,6 +13537,106 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
             }
         }
     });
+}
+
+/// One padded-paste run of #1590 with a gated classifier, so the verdict's timing is the test's,
+/// not the clock's: `late` leaves the verdict outstanding and spends the Enter's compute budget
+/// (the cap fires), otherwise the verdict lands right after the Enter. Returns what ran, the agent
+/// queries and the buffer.
+fn padded_ready_paste_run(text: String, late: bool) -> (Vec<String>, usize, String) {
+    use crate::ai::blocklist::InputConfig;
+    use crate::ai::blocklist::input_model::ENTER_VERDICT_BUDGET;
+
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    App::test((), move |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        let gate = gated_input_classifier_for_test(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+        let pasted = text.clone();
+        input.update(&mut app, |input, ctx| {
+            input.offer_ready_paste(
+                ClipboardContent::plain_text(pasted),
+                PasteSource::PlainTextPaste,
+                ctx,
+            );
+            input.input_enter(ctx);
+            if late {
+                let id = input
+                    .verdict_wait_id()
+                    .expect("the pasted line's Enter waits for its verdict");
+                input.verdict_wait.as_mut().unwrap().compute =
+                    ComputeClock::with_spent_for_test(ENTER_VERDICT_BUDGET * 2);
+                input.compute_cap_fired(id, ctx);
+            }
+        });
+        if !late {
+            gate.close();
+        }
+        warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+        let buffer = input.read(&app, |input, ctx| input.buffer_text(ctx));
+        *sink.borrow_mut() = Some((executed.borrow().clone(), *ai_queries.borrow(), buffer));
+    });
+    let outcome = result.borrow_mut().take();
+    outcome.expect("the test body ran")
+}
+
+/// #1590 + #1577 A5, padded pastes (500 and 5000 bytes under the #968 limit): the verdict on time
+/// runs the line in the shell with no agent request; a verdict that misses the Enter's compute
+/// budget hands the line back intact (nothing runs, nothing goes to the agent). Deterministic:
+/// the classifier is gated.
+#[test]
+fn test_padded_ready_paste_then_immediate_enter_runs_on_time_and_hands_back_when_late() {
+    for pad in [500usize, 5000] {
+        let text = format!("echo PASTE-G1; echo PASTE-H1 #{}", "x".repeat(pad));
+        let (executed, queries, _) = padded_ready_paste_run(text.clone(), false);
+        assert_eq!(executed, [text.clone()], "on time, pad {pad}: runs in the shell");
+        assert_eq!(queries, 0, "on time, pad {pad}");
+        let (executed, queries, buffer) = padded_ready_paste_run(text.clone(), true);
+        assert!(executed.is_empty(), "late, pad {pad}: {executed:?}");
+        assert_eq!(buffer, text, "late, pad {pad}: the line stays in the editor");
+        assert_eq!(queries, 0, "late, pad {pad}");
+    }
 }
 
 #[test]
@@ -14214,8 +14281,11 @@ fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
                     });
                     let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
                     if with_layout {
-                        // A frame was laid out for the one-character buffer.
+                        // A frame was laid out for the one-character buffer; no other frame
+                        // lands until the test releases the hold (unit tests build the scene at
+                        // every effect flush, which would otherwise lay one out after the paste).
                         soft.update(FrameLayouts::new(Vec::new(), 0, 0));
+                        soft.hold_updates_for_test(true);
                     }
                     let pasted = "p".repeat(size);
                     let content = pasted.clone();
@@ -14238,32 +14308,23 @@ fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
                     let expected = format!("a{}zp!", &pasted[..size - 1]);
                     let before_end = format!("a{}zp", &pasted[..size - 1]);
                     if with_layout {
-                        // The paste and the Left/z are in. In a unit test the app lays a frame out
-                        // at every effect flush (`on_window_invalidated` builds the scene eagerly
-                        // when `is_unit_test`), so the stored layout is replaced by a real one as
-                        // soon as the paste lands and the window between the edit and "a frame
-                        // laid out after it" cannot be held open here (the first version of this
-                        // test asserted `before_end` for 100 ms and timed out after 20 s because
-                        // End and `!` had already applied, on a layout laid out after the paste).
-                        // Wait for either state, then lay out one more frame as the pre-paste
-                        // layout's replacement; the keys must have landed in the right place.
+                        // The paste and the Left/z are in; End waits for a frame laid out after
+                        // them, and the `!` typed behind it waits too (never before it).
                         for _ in 0..4000 {
-                            if input.read(&app, |input, ctx| {
-                                let text = input.buffer_text(ctx);
-                                text == before_end || text == expected
-                            }) {
+                            if input.read(&app, |input, ctx| input.buffer_text(ctx) == before_end) {
                                 break;
                             }
                             warpui::r#async::Timer::after(Duration::from_millis(5)).await;
                         }
                         warpui::r#async::Timer::after(Duration::from_millis(100)).await;
                         input.read(&app, |input, ctx| {
-                            let text = input.buffer_text(ctx);
                             assert!(
-                                text == before_end || text == expected,
-                                "{mode:?} size {size}: the keys landed in the wrong place"
+                                input.buffer_text(ctx) == before_end,
+                                "{mode:?} size {size}: End/! applied on the old layout"
                             );
                         });
+                        assert!(soft.is_stale(), "{mode:?} size {size}: the paste staled the layout");
+                        soft.hold_updates_for_test(false);
                         // The frame after the paste is laid out.
                         soft.update(FrameLayouts::new(Vec::new(), 0, 0));
                     }
@@ -14314,29 +14375,26 @@ fn test_live_end_after_an_edit_waits_for_the_next_layout() {
             let soft = editor.read(&app, |editor, ctx| editor.soft_wrap_state(ctx));
             soft.update(FrameLayouts::new(Vec::new(), 0, 0));
             assert!(!soft.is_stale());
-            // The edit (what a paste does) makes the stored layout stale. (In a unit test the app
-            // lays a frame out at every effect flush, `on_window_invalidated` with `is_unit_test`,
-            // which stores a layout after the edit and clears the mark; the window the product
-            // has between an edit and the next frame is set up by marking the layout stale again.)
+            // The edit (what a paste does) makes the stored layout stale. Unit tests build the
+            // scene at every effect flush, so layout stores are held to keep "no frame since the
+            // edit" open.
+            soft.hold_updates_for_test(true);
             input.update(&mut app, |input, ctx| input.user_insert("Q", ctx));
-            soft.mark_stale();
             assert!(soft.is_stale(), "{mode:?}: the edit staled the layout");
             editor.update(&mut app, |editor, ctx| {
                 editor.handle_action(&EditorAction::MoveToVisualLineEnd, ctx);
                 editor.handle_action(&EditorAction::UserInsert(UserInput::new("!")), ctx);
             });
             warpui::r#async::Timer::after(Duration::from_millis(100)).await;
-            // End waits for a layout laid out after the edit: whether the next frame has landed
-            // yet depends on the app's eager scene build, so the only states are "End and `!` not
-            // applied yet" and "both applied, End first". `!` never lands before End ("Qab" with
-            // `!` in the middle would show here), and nothing is lost.
             input.read(&app, |input, ctx| {
-                let text = input.buffer_text(ctx);
-                assert!(
-                    text == "Qab" || text == "Qab!",
-                    "{mode:?}: End and the text behind it keep their order: {text:?}"
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "Qab",
+                    "{mode:?}: End and the text behind it wait for a layout newer than the edit"
                 );
             });
+            assert!(soft.is_stale(), "{mode:?}: still no layout after the edit");
+            soft.hold_updates_for_test(false);
             soft.update(FrameLayouts::new(Vec::new(), 0, 0));
             for _ in 0..1000 {
                 if input.read(&app, |input, ctx| input.buffer_text(ctx) == "Qab!") {
