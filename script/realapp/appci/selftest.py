@@ -735,6 +735,27 @@ def r18e9_pane_closed_by_own_exit_is_not_an_app_death():
     assert "OWN" not in m and "crash evidence" in m, m
 
 
+@check
+def r18e9_injector_accounting_spans_relaunches():
+    """r18e9: ui_startup_time relaunches 5 times and the app log is overwritten each time; accounting over [earlier copies..., live log] counts every launch, and the
+    per-launch seq counters do not collide"""
+    import injacct
+    d = tempfile.mkdtemp()
+    try:
+        def log(name, n):
+            p = os.path.join(d, name)
+            with open(p, "w") as f:
+                for i in range(n):
+                    f.write("2026 input_order typed_characters chars=1 t=%d seq=%d\n" % (1000 + i, i + 1))
+            return p
+        a, b = log("l1.log", 5), log("l2.log", 3)
+        one = injacct.app_keys(b, 0, 10)
+        both = injacct.app_keys([a, b], 0, 10)
+        assert len(one) == 3 and len(both) == 8, (len(one), len(both))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     failed = 0
     for f in CHECKS:

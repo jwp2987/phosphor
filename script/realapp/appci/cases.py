@@ -184,6 +184,7 @@ class Ctx:
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
         self.ctrlc_ts = []            # wall time of every Ctrl-C the harness sent (r18d2: see reset())
         self.left_unproven = None     # leave(): where the probe ran when the pane was NOT provably remote (no `exit` typed)
+        self.extra_logs = []          # earlier app launches' log copies made by this case (snapshot_log), cleared per case by run.py
         self.typed_log = []           # (time, text) of every be.type() (r18e9: tells "the case's own `exit` closed the pane" from an app death)
         self._wrap_ctrlc(be)
         self._wrap_type(be)
@@ -563,6 +564,24 @@ class Ctx:
                 return _orig(spec, *a, **k)
             setattr(be, name, wrapped)
         be._ctrlc_wrapped = self
+
+    def snapshot_log(self):
+        """r18e9: a case that relaunches the app (ui_startup_time x5, remote_session_ext x2) loses the earlier launches' app log to the overwrite, so injector accounting
+        counted only the last launch ("sent 331; app saw 164"). Copy the log (and its rotated chunks) aside BEFORE each stop; run.py accounts over all of them."""
+        import glob
+        try:
+            lp = self.log_path
+            if not lp or not os.path.exists(lp):
+                return
+            d = os.path.join(self.run, "logs", self.label, "acct")
+            os.makedirs(d, exist_ok=True)
+            base = os.path.join(d, "launch%d_%d.log" % (len(self.extra_logs), int(time.time())))
+            shutil.copyfile(lp, base)
+            for f in glob.glob(glob.escape(lp) + ".in_session.*"):
+                shutil.copyfile(f, base + ".in_session." + f.rsplit(".", 1)[1])
+            self.extra_logs.append(base)
+        except Exception:
+            pass
 
     def _wrap_type(self, be):
         """r18e9: remember what be.type() sent and when (the last few only), so a pane that vanished right after a typed `exit` is named as the case's own doing"""

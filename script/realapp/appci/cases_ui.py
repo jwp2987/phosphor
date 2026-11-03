@@ -574,6 +574,7 @@ def c_split(ctx, r):
 # ---------------------------------------------------------------- (11) startup time and live settings
 def relaunch(ctx, wipe_state):
     """stop the app and start it again; seconds from start() to the first shell prompt the NEW instance logged (prompt.log epoch clock)"""
+    ctx.snapshot_log()                                                 # r18e9: the next launch overwrites phosphor.log; accounting spans every launch
     ctx.app.stop()
     if wipe_state and not mac(ctx):                                    # first-run state: nothing under .local/{state,share}
         for sub in (".local/state", ".local/share"):

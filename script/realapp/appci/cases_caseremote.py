@@ -81,6 +81,7 @@ def set_ext_mode(ctx, mode):
     except Exception:
         pass
     n = ctx.prompts()
+    ctx.snapshot_log()                # r18e9: injector accounting spans the relaunch
     ctx.app.stop()
     time.sleep(1.0)
     ctx.app.start()

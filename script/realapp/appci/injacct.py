@@ -21,38 +21,48 @@ _HOP_ENTER = re.compile(r"input_order hop=enter_begin deferred=(\w+)\b.* t=(\d+(
 LOSS_CASES = ("key_loss_control", "enter_loss_control", "fast_typing", "ssh_connect_typing", "cadence")
 
 
+def _groups(log_path):
+    """r18e9: log_path may be one path or a list (the case's earlier launches' log copies, then the live log); each is a separate app instance with its OWN seq counter"""
+    return [p for p in (log_path if isinstance(log_path, (list, tuple)) else [log_path]) if p]
+
+
 def app_keys(log_path, t_from, t_to):
     """[(wall_s, seq, key_name_or_None)] of the keys the app logged in [t_from, t_to] (modifier keydowns excluded), from the active log plus its
     rotated chunks; None when the app has no key trace at all (no log, or the debug target is off)."""
-    if not log_path:
+    groups = _groups(log_path)
+    if not groups:
         return None
-    parts = sorted(glob.glob(glob.escape(log_path) + ".in_session.*"),
-                   key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [log_path]
     seen_any, out = False, {}
-    for f in parts:
-        try:
-            txt = open(f, errors="replace").read()
-        except OSError:
-            continue
-        for m in _LINE.finditer(txt):
-            seen_any = True
-            key = m.group(2)
-            if key is not None and is_modifier(key):
+    for gi, gp in enumerate(groups):
+        parts = sorted(glob.glob(glob.escape(gp) + ".in_session.*"),
+                       key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [gp]
+        for f in parts:
+            try:
+                txt = open(f, errors="replace").read()
+            except OSError:
                 continue
-            t = float(m.group(3)) / 1000.0
-            if t_from <= t <= t_to:
-                out.setdefault(int(m.group(4)), (t, key))      # keydown and its typed_characters share a seq: one physical key
+            for m in _LINE.finditer(txt):
+                seen_any = True
+                key = m.group(2)
+                if key is not None and is_modifier(key):
+                    continue
+                t = float(m.group(3)) / 1000.0
+                if t_from <= t <= t_to:
+                    out.setdefault((gi, int(m.group(4))), (t, key))      # keydown and its typed_characters share a seq: one physical key; seq restarts per launch (gi)
     if not seen_any:
         return None
-    return sorted((t, seq, key) for seq, (t, key) in out.items())
+    return sorted((t, seq[1], key) for seq, (t, key) in out.items())
 
 
 def app_enter_hops(log_path, t_from, t_to):
     """number of `hop=enter_begin` (a fresh, not deferred, Enter reaching the input editor) in [t_from, t_to]; None without a log"""
-    if not log_path:
+    groups = _groups(log_path)
+    if not groups:
         return None
-    parts = sorted(glob.glob(glob.escape(log_path) + ".in_session.*"),
-                   key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [log_path]
+    parts = []
+    for gp in groups:
+        parts += sorted(glob.glob(glob.escape(gp) + ".in_session.*"),
+                        key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [gp]
     n = 0
     for f in parts:
         try:
