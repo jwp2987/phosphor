@@ -93,7 +93,7 @@ pub(crate) fn write_queue_enabled() -> bool {
 /// bracketed paste, so without this every PowerShell prompt waited the full 50 ms fallback
 /// timer (`hop=line_editor_activation_fallback delay_ms=50` after every command in r18e4) before
 /// the input report went out and keys typed since the prompt were handed over (#1401, #1402).
-/// `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0` keeps the timer.
+/// `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0` (or off/false/no) keeps the timer.
 fn line_editor_reading_activates() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -104,17 +104,24 @@ fn line_editor_reading_activates() -> bool {
         );
         if !enabled {
             log::info!(
-                "PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0: the line editor's reading marker does \
-                 not end the activation wait; shells without bracketed paste wait the fallback"
+                "PHOSPHOR_LINE_EDITOR_READING_ACTIVATES is off: the line editor's reading marker \
+                 does not end the activation wait; shells without bracketed paste wait the \
+                 fallback"
             );
         }
         enabled
     })
 }
 
-/// [`line_editor_reading_activates`] for a given value of its kill switch.
+/// [`line_editor_reading_activates`] for a given value of its kill switch: `0`, `off`, `false`
+/// or `no` (any case) keeps the timer, as for `PHOSPHOR_CONPTY_CTRL_C_RESET`.
 pub(crate) fn line_editor_reading_activates_from(value: Option<&str>) -> bool {
-    !value.is_some_and(|value| value.trim() == "0")
+    !matches!(
+        value
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("0" | "off" | "false" | "no")
+    )
 }
 
 /// Byte sequence to emulate the user pressing ENTER, used to execute a command in the shell.
@@ -827,10 +834,12 @@ impl<T: EventLoopSender> PtyController<T> {
         // #1401/#1402: PowerShell's marker is sent by its PSConsoleHostReadLine wrapper as the
         // last thing before PSReadLine reads, the same event the bracketed-paste enable is for
         // readline: it ends the activation wait instead of the 50 ms timer, under the same
-        // conditions. PSReadLine reads raw console input records, so a request written before it
-        // starts is neither echoed nor lost. Only PowerShell: the other shells print the marker
-        // with their prompt, where the tty may still be cooked (an early request would echo), and
-        // they have the bracketed-paste signal.
+        // conditions. On Windows PSReadLine reads raw console input records, so a request written
+        // before it starts is neither echoed nor lost. On Unix pwsh the request can precede
+        // ReadKey's tty setup, exactly as the 50 ms timer's request already could (the timer
+        // never knew when PSReadLine started either). Only PowerShell: the other shells print the
+        // marker with their prompt, where the tty may still be cooked (an early request would
+        // echo), and they have the bracketed-paste signal.
         let is_powershell = self
             .sessions
             .as_ref(ctx)

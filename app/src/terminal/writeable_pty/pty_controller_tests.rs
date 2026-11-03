@@ -3074,6 +3074,13 @@ fn line_editor_reading_activation_kill_switch() {
     assert!(line_editor_reading_activates_from(Some("")));
     assert!(!line_editor_reading_activates_from(Some("0")));
     assert!(!line_editor_reading_activates_from(Some(" 0 ")));
+    for value in ["off", "false", "no", " OFF ", "False"] {
+        assert!(
+            !line_editor_reading_activates_from(Some(value)),
+            "{value:?}"
+        );
+    }
+    assert!(line_editor_reading_activates_from(Some("on")));
 }
 
 /// nushell cannot eval a string, so its bootstrap is always a file: the app types a space-led
