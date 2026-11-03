@@ -792,6 +792,39 @@ def r18e9_pty_write_cr_count():
     assert runmod.pty_write_cr(L) == dict(writes=2, with_cr=1, enters=1), runmod.pty_write_cr(L)
 
 
+@check
+def pty_bytes_decide_where_a_line_changed():
+    """#1490/#1393: line_evidence says app-side vs. after-the-pty-write from the app's own pty_write_bytes, never from typed_characters alone"""
+    assert cases.unescape_rust_ascii('a\\x1b[200~b\\r\\n\\"q\\\\\\x10') == 'a\x1b[200~b\r\n"q\\\x10'
+    want, have = "echo t134_xy", "34echo t1_xy"
+    # keys to the shell's line in order, an `ESC i` request between two of them: the typed line, so the change came after the pty write
+    assert cases.pty_line_verdict("echo t1\x1bi34_xy\r", want, have) == "want"
+    # the editor command carries the moved keys: the app wrote it that way
+    assert cases.pty_line_verdict("echo t1\x1bi\x10\x1b[200~34echo t1_xy\x1b[201~\r", want, have) == "have"
+    # split between the shell's line and an editor command: neither contiguously
+    assert cases.pty_line_verdict("echo\x10\x1b[200~ t134_xy\x1b[201~\r", want, have) == "neither"
+    assert cases.pty_line_verdict(None, want, have) is None
+    # a corrupted line that is only a piece of the typed one (a lost tail) proves nothing about the app's writes
+    assert cases.pty_line_verdict("echo t134_xy\r", want, "echo t1") == "want"
+    d = tempfile.mkdtemp()
+    try:
+        log = os.path.join(d, "phosphor.log")
+        open(log, "w").write(
+            'x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes="e" since_precmd_ms=1 t=1000000.0\n'
+            'x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes="old" since_precmd_ms=1 t=10.0\n'
+            'x [DEBUG] input_order hop=pty_write_bytes class=UserCommand wrote=9 of_job=9 bytes="\\x10\\x1b[200~cho\\x1b[201~\\r" s=1 t=1000001.0\n')
+        c = _ctx(d, log)
+        assert cases.Ctx.app_pty_text(c, 999.0) == "e\x10\x1b[200~cho\x1b[201~\r", repr(cases.Ctx.app_pty_text(c, 999.0))
+        open(log, "w").write('x input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes=<1 bytes> t=1.0\n')
+        assert cases.Ctx.app_pty_text(c, 0.0) is None, "a log without opted-in text is no trace"
+        c.app_saw_line = lambda w, t: True
+        c.app_pty_wrote_line = lambda w, h, t: "have"
+        ev = cases.line_evidence(c, want, have, 0.0)
+        assert "after the app's pty write" not in ev and "Phosphor wrote it that way" in ev, ev
+    finally:
+        shutil.rmtree(d)
+
+
 def main():
     failed = 0
     for f in CHECKS:
