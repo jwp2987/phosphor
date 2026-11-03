@@ -1847,7 +1847,7 @@ impl TerminalModel {
     }
 
     /// Shared access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
-    pub fn typeahead_handoff(&self) -> parking_lot::RwLockReadGuard<'_, TypeaheadHandoff> {
+    pub fn typeahead_handoff(&self) -> warpui_core::sync_shim::RwLockReadGuard<'_, TypeaheadHandoff> {
         self.typeahead_handoff.read()
     }
 
@@ -1964,7 +1964,7 @@ impl TerminalModel {
     }
 
     /// Exclusive access to the typeahead hand-off (its own leaf lock; see [`PaneHandoff`]).
-    pub fn typeahead_handoff_mut(&mut self) -> parking_lot::RwLockWriteGuard<'_, TypeaheadHandoff> {
+    pub fn typeahead_handoff_mut(&mut self) -> warpui_core::sync_shim::RwLockWriteGuard<'_, TypeaheadHandoff> {
         self.typeahead_handoff.write()
     }
 
