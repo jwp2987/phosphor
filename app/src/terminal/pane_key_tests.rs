@@ -51,7 +51,7 @@ fn ssh_hold_takes_typed_text_even_when_the_editor_has_focus() {
 }
 
 #[test]
-fn control_keys_stay_with_the_elements_except_in_an_ssh_hold_focus_gap() {
+fn control_keys_stay_with_the_elements_except_in_a_focus_gap() {
     // The terminal with focus translates its own keys; the editor's are its bindings.
     let terminal = PaneFocusFacts {
         terminal_focused: true,
@@ -71,8 +71,31 @@ fn control_keys_stay_with_the_elements_except_in_an_ssh_hold_focus_gap() {
         ..facts()
     };
     assert_eq!(key_target(KeyClass::Control, &gap), KeyTarget::Terminal);
-    // A card without a hold: its own bindings, as before.
-    assert_eq!(key_target(KeyClass::Control, &facts()), KeyTarget::NotMine);
+    // #1552: a focus gap without a hold is the same gap: the control key follows the typed
+    // keys of the gap through the terminal.
+    assert_eq!(key_target(KeyClass::Control, &facts()), KeyTarget::Terminal);
+    // A text field has every key first.
+    let text_field = PaneFocusFacts {
+        in_text_field: true,
+        ..facts()
+    };
+    assert_eq!(
+        key_target(KeyClass::Control, &text_field),
+        KeyTarget::NotMine
+    );
+    // Editor or terminal focus, no hold: the elements.
+    for focus in [
+        PaneFocusFacts {
+            editor_focused: true,
+            ..facts()
+        },
+        PaneFocusFacts {
+            terminal_focused: true,
+            ..facts()
+        },
+    ] {
+        assert_eq!(key_target(KeyClass::Control, &focus), KeyTarget::NotMine);
+    }
 }
 
 #[test]

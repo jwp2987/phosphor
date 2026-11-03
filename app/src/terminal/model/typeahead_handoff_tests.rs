@@ -3533,3 +3533,32 @@ fn a_preexec_turns_a_waiting_prompt_hold_into_an_enter_window() {
     );
     assert_eq!(handoff.release_enter_window_for_program(), Some(id));
 }
+
+// ---- #1562: a setup write must not land on a line that holds delivered typed text --------------
+
+#[test]
+fn the_shell_line_holds_typed_text_from_a_delivered_key_until_enter_or_a_kill() {
+    let mut handoff = after_submit();
+    assert!(!handoff.shell_line_may_hold_typed_text());
+    type_and_flush(&mut handoff, b"ec");
+    assert!(handoff.shell_line_may_hold_typed_text());
+    type_and_flush(&mut handoff, b"\r");
+    assert!(!handoff.shell_line_may_hold_typed_text(), "Enter ends it");
+
+    // ^C and ^U end the line as the tty does; neither is counted as an Enter.
+    for kill in [b"\x03", b"\x15"] {
+        let mut handoff = after_submit();
+        type_and_flush(&mut handoff, b"ec");
+        assert!(handoff.shell_line_may_hold_typed_text());
+        let enters_before = handoff.counts_diverged();
+        type_and_flush(&mut handoff, kill);
+        assert!(!handoff.shell_line_may_hold_typed_text());
+        assert_eq!(handoff.counts_diverged(), enters_before);
+    }
+
+    // Untracked bytes in the line count too.
+    let mut untracked = TypeaheadHandoff::default();
+    assert!(!untracked.shell_line_may_hold_typed_text());
+    untracked.note_untracked_line_bytes();
+    assert!(untracked.shell_line_may_hold_typed_text());
+}

@@ -2768,6 +2768,9 @@ struct LocalSessionCanonicalPwdCache {
 struct DeferredSubshellSetup {
     shell_type: Option<ShellType>,
     triggered_by_rc_file_snippet: bool,
+    /// #1562: setup waits for the shell's line to be ended (Enter, ^U), not for a prompt to be
+    /// answered: the line holds text the user typed, and the setup would be appended to it.
+    waits_for_line: bool,
     /// The block that showed the prompt; setup is dropped if another block takes over.
     block_id: BlockId,
     since: Instant,
@@ -2777,6 +2780,19 @@ struct DeferredSubshellSetup {
     last_output: String,
     unchanged_since: Instant,
     notified: bool,
+}
+
+/// An ssh warpify write that waits for the shell's line to be ended (#1562): the line holds text
+/// the user typed, and the clear-line prefix of the write would kill it.
+enum DeferredSshWarpify {
+    Probe,
+    Continue {
+        uname: String,
+        shell_type: ShellType,
+    },
+    InstallTmux {
+        install_method: TmuxInstallMethod,
+    },
 }
 
 /// What a bootstrap trigger does once the subshell draws its first prompt (#1354).
@@ -3299,6 +3315,9 @@ pub struct TerminalView {
     /// (`Password:`, a passphrase or `read -p` prompt, #1032). Nothing of the setup is written
     /// while this is `Some`; typing goes straight to the pty, where it answers the prompt.
     subshell_setup_deferred: Option<DeferredSubshellSetup>,
+    /// An ssh warpify write waiting for the shell's line to be ended, with the block it was for
+    /// (#1562). Resumed by the hand-off's change and by output, never by a timer.
+    ssh_warpify_deferred: Option<(DeferredSshWarpify, BlockId)>,
     /// A subshell bootstrap trigger (auto-warpify, rc-file) waiting for the subshell's first
     /// prompt (#1354). At most one: a newer trigger replaces an older one, so a subshell is
     /// bootstrapped once.
@@ -5080,6 +5099,7 @@ impl TerminalView {
             powershell_abort_marker_count: 0,
             subshell_setup_waiting_toast_id: None,
             subshell_setup_deferred: None,
+            ssh_warpify_deferred: None,
             awaiting_subshell_prompt: None,
             awaiting_subshell_prompt_id: 0,
             pending_command_awaits_precmd: false,
@@ -13328,6 +13348,8 @@ impl TerminalView {
         self.redetermine_terminal_focus(ctx);
         // The hand-off engaging is the event the keys typed behind a submitted Enter wait for.
         self.settle_enter_queue(ctx);
+        // #1562: the shell's line may have ended: a setup write waiting for that goes now.
+        self.resume_deferred_setup_writes(ctx);
     }
 
     /// #1353 phase 6 (INP-10): the hand-off decided it will not engage for the Enter that just ran as
@@ -14023,11 +14045,13 @@ impl TerminalView {
         if let Some(since) = self
             .subshell_setup_deferred
             .as_ref()
-            .filter(|d| d.answered_at.is_some())
+            .filter(|d| d.answered_at.is_some() || d.waits_for_line)
             .map(|d| d.since)
         {
             self.check_deferred_subshell_setup(since, false, ctx);
         }
+        // #1562: output is also an event on which a deferred ssh warpify write is re-judged.
+        self.resume_deferred_ssh_warpify(ctx);
         warpui::profiling::zone!("grid_update");
         self.install_deferred_restores_keeping_scroll(ctx);
         self.resume_fork_restore_persist(ctx);
@@ -14457,7 +14481,15 @@ impl TerminalView {
         }
         if let Some(prompt_line) = self.active_output_input_prompt_line() {
             log::info!("Deferring subshell setup behind an input prompt ({prompt_line:?})");
-            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, ctx);
+            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, false, ctx);
+            return;
+        }
+        // #1562: keys delivered to this shell's prompt sit in its line; the setup text would be
+        // appended to them. Wait for the line to end (Enter, ^U), by that event.
+        if self.setup_write_must_wait_for_the_line() {
+            log::info!("setup write deferred: the shell's line holds typed text");
+            self.defer_subshell_setup(shell_type, triggered_by_rc_file_snippet, true, ctx);
+            self.show_setup_waits_for_line_toast(ctx);
             return;
         }
         self.trigger_subshell_bootstrap_now(shell_type, triggered_by_rc_file_snippet, ctx);
@@ -20541,6 +20573,7 @@ impl TerminalView {
         &mut self,
         shell_type: Option<ShellType>,
         triggered_by_rc_file_snippet: bool,
+        waits_for_line: bool,
         ctx: &mut ViewContext<Self>,
     ) {
         let now = Instant::now();
@@ -20548,6 +20581,7 @@ impl TerminalView {
         self.subshell_setup_deferred = Some(DeferredSubshellSetup {
             shell_type,
             triggered_by_rc_file_snippet,
+            waits_for_line,
             block_id,
             since: now,
             answered_at: None,
@@ -20584,6 +20618,7 @@ impl TerminalView {
     ) {
         let output = self.active_output_snapshot();
         let prompt_visible = self.active_output_input_prompt_line().is_some();
+        let line_dirty = self.setup_write_must_wait_for_the_line();
         let block_id = self.model.lock().block_list().active_block().id().clone();
         let now = Instant::now();
         let Some(deferred) = self.subshell_setup_deferred.as_mut() else {
@@ -20599,6 +20634,20 @@ impl TerminalView {
         }
         if deferred.last_output != output {
             deferred.last_output = output;
+            deferred.unchanged_since = now;
+        }
+        if deferred.waits_for_line {
+            // #1562: only the line ending (a fact the hand-off reports) resumes the setup; a
+            // timer keeps the deferral alive and never writes.
+            if line_dirty || reschedule {
+                if reschedule {
+                    self.schedule_subshell_setup_poll(since, ctx);
+                }
+                return;
+            }
+            // The line ended: the user's Enter / ^U is the answer; the ordinary checks go on.
+            deferred.waits_for_line = false;
+            deferred.answered_at = Some(now);
             deferred.unchanged_since = now;
         }
         let ready = subshell_setup_defer_ready(
@@ -20641,11 +20690,16 @@ impl TerminalView {
     /// pty is the answer to the prompt; an abort key skips the setup. The bytes themselves are
     /// not touched, they go to the pty like any typing.
     fn note_input_for_deferred_subshell_setup(&mut self, bytes: &[u8]) {
+        if self.ssh_warpify_deferred.is_some() && is_abort_key(bytes) {
+            self.ssh_warpify_deferred = None;
+        }
         let Some(deferred) = self.subshell_setup_deferred.as_mut() else {
             return;
         };
         if is_abort_key(bytes) {
             self.subshell_setup_deferred = None;
+        } else if deferred.waits_for_line {
+            // The line-ending key is judged by the hand-off's change event, not here.
         } else if bytes.iter().any(|b| matches!(b, b'\r' | b'\n')) {
             let now = Instant::now();
             deferred.answered_at = Some(now);
@@ -33859,7 +33913,87 @@ impl TerminalView {
         session_id
     }
 
+    /// #1562: whether a setup write (ssh warpify, subshell bootstrap) must not be made now,
+    /// because keys delivered to the pty sit in the shell's line and the write would kill them or
+    /// be appended to them.
+    pub(super) fn setup_write_must_wait_for_the_line(&self) -> bool {
+        FeatureFlag::TypeaheadHandoff.is_enabled()
+            && self.handoff.read().shell_line_may_hold_typed_text()
+    }
+
+    fn show_setup_waits_for_line_toast(&self, ctx: &mut ViewContext<Self>) {
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::new(
+                    "Finish the line in the shell (Enter) or clear it (Ctrl-U) to start \
+                     Phosphor's setup. Ctrl-C skips setup."
+                        .to_string(),
+                    ToastFlavor::Default,
+                );
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            });
+        }
+    }
+
+    /// Defers an ssh warpify write while the shell's line holds typed text (#1562). Returns
+    /// whether it was deferred; the request is resumed by [`Self::resume_deferred_ssh_warpify`].
+    fn defer_ssh_warpify_for_the_line(
+        &mut self,
+        request: impl FnOnce() -> DeferredSshWarpify,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.setup_write_must_wait_for_the_line() {
+            return false;
+        }
+        log::info!("setup write deferred: the shell's line holds typed text");
+        let block_id = self.model.lock().block_list().active_block().id().clone();
+        self.ssh_warpify_deferred = Some((request(), block_id));
+        self.show_setup_waits_for_line_toast(ctx);
+        true
+    }
+
+    /// Resumes whatever setup write waited for the shell's line (#1562).
+    fn resume_deferred_setup_writes(&mut self, ctx: &mut ViewContext<Self>) {
+        self.resume_deferred_ssh_warpify(ctx);
+        if let Some(since) = self
+            .subshell_setup_deferred
+            .as_ref()
+            .filter(|d| d.waits_for_line)
+            .map(|d| d.since)
+        {
+            self.check_deferred_subshell_setup(since, false, ctx);
+        }
+    }
+
+    /// Calls the deferred ssh warpify function once the line is clean (#1562). Event-driven:
+    /// the hand-off's change and output call it; a timer never does.
+    fn resume_deferred_ssh_warpify(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.ssh_warpify_deferred.is_none() || self.setup_write_must_wait_for_the_line() {
+            return;
+        }
+        let Some((request, block_id)) = self.ssh_warpify_deferred.take() else {
+            return;
+        };
+        if self.model.lock().block_list().active_block().id() != &block_id {
+            // The shell the request was for is gone.
+            return;
+        }
+        match request {
+            DeferredSshWarpify::Probe => self.warpify_ssh_session(ctx),
+            DeferredSshWarpify::Continue { uname, shell_type } => {
+                self.continue_warpify_ssh_session(&uname, shell_type, ctx)
+            }
+            DeferredSshWarpify::InstallTmux { install_method } => {
+                self.install_tmux_and_warpify(ctx, &install_method)
+            }
+        }
+    }
+
     fn warpify_ssh_session(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.defer_ssh_warpify_for_the_line(|| DeferredSshWarpify::Probe, ctx) {
+            return;
+        }
         self.warpify_state.set_shell_detection_in_progress();
         self.begin_ssh_warpify_timeout(SSH_WARPIFY_TIMEOUT_DURATION, ctx);
         // Mint and register the ID *before* the probe reaches the pty, so the `InitSsh` hook it
@@ -33880,6 +34014,15 @@ impl TerminalView {
         shell_type: ShellType,
         ctx: &mut ViewContext<Self>,
     ) {
+        if self.defer_ssh_warpify_for_the_line(
+            || DeferredSshWarpify::Continue {
+                uname: uname.to_owned(),
+                shell_type,
+            },
+            ctx,
+        ) {
+            return;
+        }
         self.warpify_state.set_shell_type(&shell_type);
         self.model.lock().set_pending_warp_initiated_control_mode();
         // The warpify script emits `SshTmuxInstaller` and `RemoteWarpificationIsUnavailable` from
@@ -33907,6 +34050,14 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
         install_method: &TmuxInstallMethod,
     ) {
+        if self.defer_ssh_warpify_for_the_line(
+            || DeferredSshWarpify::InstallTmux {
+                install_method: install_method.clone(),
+            },
+            ctx,
+        ) {
+            return;
+        }
         let install_with_root_method = install_method.should_use_package_manager;
         let install_script = &install_method.script;
         self.model
