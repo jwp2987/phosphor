@@ -1965,6 +1965,8 @@ pub struct Input {
     /// If true, will submit the command in the editor to the shell upon receiving the
     /// precmd message.
     has_pending_command: bool,
+    /// F6 (#1594): the editor was made read-only by `show_pending_command_after_give_up`.
+    pending_command_shown_read_only: bool,
     /// #1558: the pending command is an Enter the shell could not take yet (its first Precmd had
     /// not arrived), held so it runs when it can instead of being dropped with its text kept.
     held_unready_enter: bool,
@@ -3880,6 +3882,7 @@ impl Input {
             debounce_input_background_tx,
             debounce_ai_query_prediction_tx,
             has_pending_command: false,
+            pending_command_shown_read_only: false,
             held_unready_enter: false,
             pending_command_text: None,
             deferred_programmatic_edits: Vec::new(),
@@ -6722,6 +6725,13 @@ impl Input {
             return;
         }
 
+        // F6 (#1594): the read-only state `show_pending_command_after_give_up` set ends here, before
+        // the command is run, so the run and its buffer clearing see an ordinary editor.
+        if std::mem::take(&mut self.pending_command_shown_read_only) {
+            self.editor.update(ctx, |editor, ctx| {
+                editor.set_interaction_state(InteractionState::Editable, ctx);
+            });
+        }
         let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
         let requested = self.pending_command_text.clone();
         let mut keep_typed_after: Option<String> = None;
@@ -13250,11 +13260,23 @@ impl Input {
             return false;
         };
         let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
-        if buffer.is_empty() {
+        let shown = if buffer.is_empty() {
             self.editor
                 .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
-            self.arm_ssh_handover_enter_guard(text);
-        } else if buffer == text {
+            true
+        } else {
+            buffer == text
+        };
+        if shown {
+            // F6 (#1594): `execute_pending_command` runs the REQUESTED text, never an edit of it
+            // (#1435). While the command is shown and waiting it is therefore read-only, so no
+            // edit can look like it will run. `execute_pending_command` restores `Editable`.
+            if self.editor.as_ref(ctx).interaction_state(ctx) == InteractionState::Editable {
+                self.editor.update(ctx, |editor, ctx| {
+                    editor.set_interaction_state(InteractionState::Selectable, ctx);
+                });
+                self.pending_command_shown_read_only = true;
+            }
             self.arm_ssh_handover_enter_guard(text);
         }
         true
