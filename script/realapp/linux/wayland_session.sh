@@ -17,7 +17,7 @@
 # tesseract (mode proof / approval card), xterm (reference terminal), zsh fish nu (subshell cases), vim less,
 # /usr/sbin/sshd or python3-paramiko (ssh cases), vulkan drivers for the GPU (mesa-vulkan-drivers).
 # Environment: APPCI_OLLAMA_URL (optional provider endpoint; without it provider-dependent agent cases skip), APPCI_SCALE,
-# APPCI_TABS, APPCI_BIG_MB, APPCI_SSH_TRIALS, APPCI_SEED, APPCI_WL_KEY_MODE=batch|perkey, APPCI_IDLE_CPU_MAX.
+# APPCI_TABS, APPCI_BIG_MB, APPCI_SSH_TRIALS, APPCI_SEED, APPCI_WL_KEY_MODE=batch|perkey, APPCI_WL_KBD_HOLD=0|1 (default 1: persistent virtual keyboard, #1414), APPCI_IDLE_CPU_MAX.
 # usage: wayland_session.sh --mode M --dist DIR_WITH_deb_or_AppImage [--bin PATH] [--out DIR] [--modes terminal,agent] [--cases a,b] [--skip a,b]
 # APPCI_TIER=smoke runs only the smoke case list (appci/cases.py SMOKE); the xwayland and x11 CI passes are skipped by the jobs.
 # Exit: 0 all pass/skip, 1 a case failed, 2 prerequisites/session could not start.
@@ -133,6 +133,31 @@ else
   W=$(basename "$(ls "$RT"/wayland-[0-9]* | grep -v '\.lock$' | head -1)")
   export WAYLAND_DISPLAY="$W" SWAYSOCK="$(ls "$RT"/sway-ipc.*.sock | head -1)"
   sleep 1
+  # #1414: ONE virtual keyboard for the whole session. Every wtype call creates (and on exit destroys) its own virtual keyboard, so with
+  # none alive the seat's keyboard capability flips 0->2->0 per call and wtype's first key lands before any client has bound the new
+  # wl_keyboard (a lost first character; key-only calls like ctrl+c lose the whole key). A long-lived wtype that only sleeps keeps its
+  # keyboard (and so the capability) alive; clients bind wl_keyboard once, before any test key. Recorded in $PIDS, killed by exact PID.
+  # APPCI_WL_KBD_HOLD=0 restores the old per-call-keyboard behaviour (a harness property, docs/testing.md "Wayland key injection").
+  WL_KBD_HOLD=off
+  if [ "${APPCI_WL_KBD_HOLD:-1}" != 0 ]; then
+    nsl=(); for _ in $(seq 1 40); do nsl+=(-s 1000000); done     # 40 x 1e6 ms (each under int/usleep limits) = 11 h
+    setsid wtype "${nsl[@]}" > "$OUT/kbd-holder.log" 2>&1 &
+    KBDPID=$!
+    echo "kbd-holder $KBDPID" >> "$PIDS"
+    sleep 1
+    if kill -0 "$KBDPID" 2>/dev/null; then
+      WL_KBD_HOLD=persistent
+      kb=$(swaymsg -t get_inputs 2>/dev/null | grep -c '"type": *"keyboard"')
+      log "persistent virtual keyboard held by wtype pid $KBDPID (sway sees $kb keyboard input(s))"
+    else
+      WL_KBD_HOLD=percall
+      log "WARNING: the keyboard holder exited ($(head -c 200 "$OUT/kbd-holder.log")); falling back to a keyboard per wtype call"
+    fi
+  else
+    WL_KBD_HOLD=percall
+    log "APPCI_WL_KBD_HOLD=0: a virtual keyboard per wtype call (old behaviour)"
+  fi
+  export APPCI_WL_INJECTOR=$WL_KBD_HOLD
   XD=$(cat "$OUT/xdisplay" 2>/dev/null | tr -d '[:space:]'); [ -n "$XD" ] && export DISPLAY="$XD"
   BACKEND=wayland APPDISP=wayland; [ "$MODE" = xwayland ] && APPDISP=x11
   [ "$MODE" = xwayland ] && [ -z "${DISPLAY:-}" ] && { log "XWayland DISPLAY was not published by sway"; exit 2; }
