@@ -331,3 +331,51 @@ fn ctrl_c_binding_takes_no_model_lock() {
         assert_eq!(pty_writes.borrow().concat(), vec![0x03]);
     });
 }
+
+/// A selection bit the published copy still carries -- the alt screen's selection scrolled away
+/// in the slice being parsed (`AltScreen::rotate_selection` sends no event), or the previous ^C's
+/// clear still sits in the model's inbox -- never turns a Ctrl-C into a copy of nothing (on Windows
+/// a copy swallows the interrupt). With the parser holding the model and no real selection, the ^C
+/// confirms under the lock, exactly once, and reaches the pty.
+#[test]
+fn a_stale_selection_bit_never_swallows_a_ctrl_c_as_a_copy() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block("cat", "");
+                model.publish_key_facts();
+            }
+            // The copy says the alt screen has a selection; the model has none.
+            view.key_model.store_selections(false, true);
+            assert!(view.key_model.load_exact_modes().has_alt_screen_selection);
+            // The parser holds the model for the rest of its slice, then lets go.
+            let model = view.model.clone();
+            let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+            let parser = std::thread::spawn(move || {
+                let _parsing = model.lock();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(200));
+            });
+            held_rx.recv().unwrap();
+            let locks_before = crate::terminal::model_lock_trace::key_path_lock_count();
+            view.handle_ctrl_c_input_event(0, ctx);
+            let locks = crate::terminal::model_lock_trace::key_path_lock_count() - locks_before;
+            parser.join().unwrap();
+            assert_eq!(locks, 1, "the selection was confirmed under the lock, once");
+            assert!(
+                !view.key_model.load_exact_modes().has_alt_screen_selection,
+                "the confirmation corrected the published copy"
+            );
+        });
+        assert_eq!(
+            pty_writes.borrow().concat(),
+            vec![0x03],
+            "the ^C interrupted the command; nothing was copied"
+        );
+    });
+}

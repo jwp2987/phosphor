@@ -9917,8 +9917,8 @@ impl TerminalView {
             }
         }
         let snapshot = self.read_key_snapshot();
-        let has_alt_screen_selection = snapshot.has_alt_screen_selection;
-        let has_block_list_selection = snapshot.has_block_list_selection;
+        let (has_block_list_selection, has_alt_screen_selection) =
+            self.ctrl_c_selection_bits(&snapshot);
         // An agent-requested command counts from the moment it is written to the shell --
         // before preexec, and before `LONG_RUNNING_COMMAND_DURATION_MS` -- not only once it
         // is long-running: in that window ctrl-c otherwise fell through to
@@ -9955,6 +9955,36 @@ impl TerminalView {
         // We want to focus the input/rich content block if it is active.
         self.redetermine_global_focus_after_key(ctx);
         ctx.notify();
+    }
+
+    /// Whether the block list / the alt screen has a text selection, for a Ctrl-C: `(block
+    /// list, alt screen)`. On Windows a selection turns the ^C into a copy and the interrupt is
+    /// never sent, so a "yes" is never taken from the published copy (#1411): the copy is at most
+    /// one parse slice behind, and in that slice the parser may have scrolled an alt-screen
+    /// selection away (`AltScreen::rotate_selection`, no event), or the previous ^C's clear may
+    /// still sit in the model's inbox. When the model is free the answer is read exactly, after
+    /// the inbox is applied; when the parser holds it and the copy says "a selection", the ^C
+    /// waits for the lock (the copy it would make has to wait for it anyway) and reads exactly;
+    /// when the copy says "none", that is trusted -- the only way it is wrong is a selection the
+    /// user made within the last `SelectedTextChanged` event, and then the ^C interrupts rather
+    /// than copies, the direction that loses nothing.
+    fn ctrl_c_selection_bits(&self, snapshot: &KeyModelSnapshot) -> (bool, bool) {
+        let exact = |model: &mut TerminalModel| {
+            model.apply_inbox();
+            let block_list = model.block_list().selection().is_some();
+            let alt_screen = model.alt_screen().selection().is_some();
+            // The copy is corrected while the lock is held (the model's own stores are under it).
+            self.key_model.store_selections(block_list, alt_screen);
+            (block_list, alt_screen)
+        };
+        match self.model.try_lock() {
+            Some(mut model) => exact(&mut model),
+            None if snapshot.has_block_list_selection || snapshot.has_alt_screen_selection => {
+                crate::terminal::model_lock_trace::note_key_path_lock();
+                exact(&mut self.model.lock())
+            }
+            None => (false, false),
+        }
     }
 
     /// Copy if there is a selection. Otherwise, we defer to the normal ctrl-c
