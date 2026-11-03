@@ -33,7 +33,11 @@ use crate::terminal::writeable_pty::posix_long_command;
 use crate::terminal::{
     bootstrap,
     line_editor_status::{LineEditorStatus, LineEditorStatusEvent},
-    model::{ansi::Handler, escape_sequences, session::SessionInfo},
+    model::{
+        ansi::Handler,
+        escape_sequences,
+        session::{SessionId, SessionInfo},
+    },
     model_events::{ModelEvent, ModelEventDispatcher},
     shell::ShellType,
     SizeUpdate, TerminalModel,
@@ -82,6 +86,35 @@ pub(crate) fn write_queue_enabled() -> bool {
         }
         !off
     })
+}
+
+/// Whether the shell's `LineEditorReading` marker (#1390) ends the line editor's activation wait,
+/// as the bracketed-paste enable does for readline/zle (#1208). PowerShell never enables
+/// bracketed paste, so without this every PowerShell prompt waited the full 50 ms fallback
+/// timer (`hop=line_editor_activation_fallback delay_ms=50` after every command in r18e4) before
+/// the input report went out and keys typed since the prompt were handed over (#1401, #1402).
+/// `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0` keeps the timer.
+fn line_editor_reading_activates() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let enabled = line_editor_reading_activates_from(
+            std::env::var("PHOSPHOR_LINE_EDITOR_READING_ACTIVATES")
+                .ok()
+                .as_deref(),
+        );
+        if !enabled {
+            log::info!(
+                "PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0: the line editor's reading marker does \
+                 not end the activation wait; shells without bracketed paste wait the fallback"
+            );
+        }
+        enabled
+    })
+}
+
+/// [`line_editor_reading_activates`] for a given value of its kill switch.
+pub(crate) fn line_editor_reading_activates_from(value: Option<&str>) -> bool {
+    !value.is_some_and(|value| value.trim() == "0")
 }
 
 /// Byte sequence to emulate the user pressing ENTER, used to execute a command in the shell.
@@ -307,6 +340,10 @@ pub struct PtyController<T: EventLoopSender> {
     /// When the last lone ^C was sent to the event loop, until the line editor next announces it
     /// is ready (input-order log only: the ^C -> next prompt leg, #1401).
     ctrl_c_sent_at: Option<std::time::Instant>,
+    /// The same ^C, kept until the NEXT command's Preexec (input-order log only, #1401): the
+    /// ^C -> next command leg (line editor active, command written, Preexec) that the harness's
+    /// "Ctrl-C then type the next command" measurement spans. Never decides anything.
+    ctrl_c_next_command_at: Option<std::time::Instant>,
     /// A `SetupChunked` job was sent and no abort since, so a cancel has something to abort.
     setup_job_sent: bool,
     /// Test-only: whether `shutdown_pty` was called (#980 tests; the real event loop is not
@@ -367,33 +404,13 @@ impl<T: EventLoopSender> PtyController<T> {
                     }
                 }
                 // #1208: readline and zle enable bracketed paste as they start reading a line, so
-                // the shell is at its prompt now, not 50 ms after precmd. Only while the hand-off
-                // can vouch that no typeahead line is queued ahead of a write: readline would
-                // run that line first and the write would land in the program it starts.
-                // With the keys still in the view's queue their Enters are not counted yet, so the
-                // line editor is not announced as reading until the view has released them (it
-                // asks for the decision again then).
-                if FeatureFlag::TypeaheadHandoff.is_enabled()
-                    && !released_queued_hold
-                    && !me
-                        .terminal_model
-                        .lock()
-                        .typeahead_handoff()
-                        .has_unanswered_lines()
-                {
-                    me.line_editor_status
-                        .update(ctx, |status, ctx| status.note_shell_reading_line(ctx));
-                } else {
-                    // The signal cannot end the activation wait itself (#1349): fall back to the
-                    // default delay now that the keys held for it are released.
-                    me.line_editor_status
-                        .update(ctx, |status, ctx| status.expedite_pending_activation(ctx));
-                }
+                // the shell is at its prompt now, not 50 ms after precmd.
+                me.activate_line_editor_on_ready_signal(released_queued_hold, ctx);
             }
             ModelEvent::Handler(AnsiHandlerEvent::UnsetBracketedPaste) => {
                 me.set_bracketed_paste_enabled(false);
             }
-            ModelEvent::LineEditorReading { .. } => {
+            ModelEvent::LineEditorReading { session_id, .. } => {
                 // #1401: PowerShell never enables bracketed paste, so its "ready after ^C" leg
                 // ends here (the last hop of the chain; the clock stops).
                 if let Some(sent) = me.ctrl_c_sent_at.take() {
@@ -404,7 +421,7 @@ impl<T: EventLoopSender> PtyController<T> {
                         )
                     });
                 }
-                me.on_line_editor_reading_marker(ctx);
+                me.on_line_editor_reading_marker(*session_id, ctx);
             }
             ModelEvent::ContinuationPrompt { .. } => {
                 me.on_continuation_prompt_marker(ctx);
@@ -420,6 +437,7 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             // The shell ran what the chord inserted (or anything else): nothing to retype (#1581).
             ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
+                me.log_ctrl_c_to_next_command("preexec_after_ctrl_c", true);
                 me.clear_file_insert();
                 // #1614: a Preexec parsed after a young hold opened ended it as typeahead (on the
                 // model thread); the view writes its keys now, on this event, not at the next key
@@ -580,6 +598,7 @@ impl<T: EventLoopSender> PtyController<T> {
 
         ctx.subscribe_to_model(&line_editor_status, |me, event, ctx| {
             if let LineEditorStatusEvent::Active = event {
+                me.log_ctrl_c_to_next_command("line_editor_active_after_ctrl_c", false);
                 if FeatureFlag::TypeaheadHandoff.is_enabled() {
                     me.decide_typeahead_handoff_request(false, ctx);
                     return;
@@ -666,6 +685,7 @@ impl<T: EventLoopSender> PtyController<T> {
             paced_write_generation: 0,
             write_queue,
             ctrl_c_sent_at: None,
+            ctrl_c_next_command_at: None,
             setup_job_sent: false,
             #[cfg(test)]
             shutdown_requested: false,
@@ -787,7 +807,11 @@ impl<T: EventLoopSender> PtyController<T> {
     /// hand-off's own account of the marker (idempotent per prompt, in stream order) was applied
     /// on the model thread; releasing a hold twice, for the marker and for the enable, releases
     /// it once.
-    fn on_line_editor_reading_marker(&mut self, ctx: &mut ModelContext<Self>) {
+    fn on_line_editor_reading_marker(
+        &mut self,
+        session_id: SessionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return;
         }
@@ -796,8 +820,56 @@ impl<T: EventLoopSender> PtyController<T> {
             .lock()
             .typeahead_handoff_mut()
             .release_queued_prompt_hold_on_signal();
+        let released_queued_hold = queued_hold.is_some();
         if let Some(hold_id) = queued_hold {
             ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
+        }
+        // #1401/#1402: PowerShell's marker is sent by its PSConsoleHostReadLine wrapper as the
+        // last thing before PSReadLine reads, the same event the bracketed-paste enable is for
+        // readline: it ends the activation wait instead of the 50 ms timer, under the same
+        // conditions. PSReadLine reads raw console input records, so a request written before it
+        // starts is neither echoed nor lost. Only PowerShell: the other shells print the marker
+        // with their prompt, where the tty may still be cooked (an early request would echo), and
+        // they have the bracketed-paste signal.
+        let is_powershell = self
+            .sessions
+            .as_ref(ctx)
+            .get(session_id)
+            .is_some_and(|session| session.shell().shell_type() == ShellType::PowerShell);
+        if is_powershell && line_editor_reading_activates() {
+            warpui::input_order::log_hop("line_editor_reading_activates", || {
+                format!("released_queued_hold={released_queued_hold}")
+            });
+            self.activate_line_editor_on_ready_signal(released_queued_hold, ctx);
+        }
+    }
+
+    /// The shell's line editor said it started reading a line (bracketed-paste enable, #1208, or
+    /// the `LineEditorReading` marker, #1390): a pending activation is due now. Only while the
+    /// hand-off can vouch that no typeahead line is queued ahead of a write: the line editor would
+    /// run that line first and the write would land in the program it starts. With the keys still
+    /// in the view's queue their Enters are not counted yet, so the line editor is not announced
+    /// as reading until the view has released them (it asks for the decision again then).
+    fn activate_line_editor_on_ready_signal(
+        &mut self,
+        released_queued_hold: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if FeatureFlag::TypeaheadHandoff.is_enabled()
+            && !released_queued_hold
+            && !self
+                .terminal_model
+                .lock()
+                .typeahead_handoff()
+                .has_unanswered_lines()
+        {
+            self.line_editor_status
+                .update(ctx, |status, ctx| status.note_shell_reading_line(ctx));
+        } else {
+            // The signal cannot end the activation wait itself (#1349): fall back to the
+            // default delay now that the keys held for it are released.
+            self.line_editor_status
+                .update(ctx, |status, ctx| status.expedite_pending_activation(ctx));
         }
     }
 
@@ -2483,6 +2555,7 @@ impl<T: EventLoopSender> PtyController<T> {
         }
 
         if is_for_command {
+            self.log_ctrl_c_to_next_command("command_written_after_ctrl_c", false);
             self.line_editor_status
                 .update(ctx, |line_editor_status, ctx| {
                     line_editor_status.did_execute_command(ctx)
@@ -2507,7 +2580,9 @@ impl<T: EventLoopSender> PtyController<T> {
 
         if is_interrupt {
             warpui::input_order::log_hop("ctrl_c_to_event_loop", String::new);
-            self.ctrl_c_sent_at = Some(std::time::Instant::now());
+            let now = std::time::Instant::now();
+            self.ctrl_c_sent_at = Some(now);
+            self.ctrl_c_next_command_at = Some(now);
             self.send_message_to_event_loop(Message::DiscardQueuedInput, ctx);
         }
         // On a pty with the write queue, a paste and an agent write are their own job classes
@@ -2531,6 +2606,21 @@ impl<T: EventLoopSender> PtyController<T> {
     /// the line editor's ready signal) and decides nothing.
     fn log_since_ctrl_c(&self, what: &str) {
         if let Some(sent) = self.ctrl_c_sent_at {
+            warpui::input_order::log_hop(what, || {
+                format!("since_ctrl_c_ms={:.1}", sent.elapsed().as_secs_f64() * 1e3)
+            });
+        }
+    }
+
+    /// Input-order log only (#1401): one hop of the ^C -> next command chain (see
+    /// `ctrl_c_next_command_at`); `end` stops the clock (the next command's Preexec).
+    fn log_ctrl_c_to_next_command(&mut self, what: &str, end: bool) {
+        let sent = if end {
+            self.ctrl_c_next_command_at.take()
+        } else {
+            self.ctrl_c_next_command_at
+        };
+        if let Some(sent) = sent {
             warpui::input_order::log_hop(what, || {
                 format!("since_ctrl_c_ms={:.1}", sent.elapsed().as_secs_f64() * 1e3)
             });

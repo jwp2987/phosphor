@@ -1751,19 +1751,24 @@ mod typeahead_handoff {
 
     /// A zsh session at its prompt, with the line editor active.
     fn harness(app: &mut App) -> Harness {
+        harness_with(app, zsh_session_info())
+    }
+
+    /// A session of `session_info`'s shell at its prompt, with the line editor active.
+    fn harness_with(app: &mut App, session_info: SessionInfo) -> Harness {
         let model = terminal_model();
         model
             .lock()
             .block_list_mut()
             .early_output_mut()
-            .init_session(&zsh_session_info());
+            .init_session(&session_info);
         model.lock().start_command_execution();
         shell_runs_a_command(&model, "bootstrap");
         let (model_events_tx, model_events_rx) = async_channel::unbounded();
         let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
         let sessions = app.add_model(|_| Sessions::new_for_test());
         sessions.update(app, |sessions, _| {
-            sessions.register_session_for_test(zsh_session_info())
+            sessions.register_session_for_test(session_info)
         });
         let model_events =
             app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
@@ -2968,6 +2973,107 @@ mod typeahead_handoff {
             );
         });
     }
+    /// The shell's `LineEditorReading` marker for the active session.
+    fn shell_marks_line_editor_reading(app: &mut App, harness: &Harness) {
+        harness.model_events.update(app, |_, ctx| {
+            ctx.emit(ModelEvent::LineEditorReading {
+                session_id: SessionId::from(0),
+                seq: None,
+            })
+        });
+    }
+
+    fn powershell_session_info() -> SessionInfo {
+        let mut session_info = SessionInfo::new_for_test();
+        session_info.shell =
+            Shell::new(ShellType::PowerShell, None, None, Default::default(), None);
+        session_info
+    }
+
+    /// The prompt's hook armed the activation fallback; the line editor is not active yet.
+    fn activation_pending(app: &mut App, harness: &Harness) {
+        harness.line_editor_status.update(app, |status, ctx| {
+            status.set_line_editor_active_for_test(false);
+            status.arm_activation_for_test(ctx);
+        });
+        harness.line_editor_status.read(&*app, |status, _| {
+            assert!(!status.is_line_editor_active(), "the fallback is pending")
+        });
+    }
+
+    /// #1401/#1402: PowerShell never enables bracketed paste, so its line editor's own
+    /// `LineEditorReading` marker is its ready signal: an activation pending from the prompt's
+    /// hook completes at once, as it does for readline's bracketed-paste enable (#1208), instead
+    /// of at the end of the 50 ms fallback timer.
+    #[test]
+    fn the_line_editor_reading_marker_activates_a_pending_powershell_line_editor_at_once() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness_with(&mut app, powershell_session_info());
+            activation_pending(&mut app, &harness);
+            shell_marks_line_editor_reading(&mut app, &harness);
+            harness.line_editor_status.read(&app, |status, _| {
+                assert!(
+                    status.is_line_editor_active(),
+                    "the marker ends the activation wait"
+                )
+            });
+        });
+    }
+
+    /// The other shells print the marker with their prompt, where the tty may still be cooked,
+    /// and have the bracketed-paste signal: for them the marker leaves the activation alone.
+    #[test]
+    fn the_line_editor_reading_marker_leaves_a_zsh_activation_to_its_own_signals() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            activation_pending(&mut app, &harness);
+            shell_marks_line_editor_reading(&mut app, &harness);
+            harness
+                .line_editor_status
+                .read(&app, |status, _| assert!(!status.is_line_editor_active()));
+        });
+    }
+
+    /// The marker cannot vouch for a line the shell has not answered yet (`b` typed behind `a`):
+    /// the line editor would run that line first, so the activation keeps waiting, exactly as
+    /// for the bracketed-paste signal.
+    #[test]
+    fn the_line_editor_reading_marker_waits_behind_an_unanswered_user_line() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness_with(&mut app, powershell_session_info());
+            submit(&mut app, &harness, "sleep 1");
+            user_types(&mut app, &harness, b"a\rb");
+            shell_runs_a_command(&harness.model, "sleep 1");
+            assert!(
+                harness
+                    .model
+                    .lock()
+                    .typeahead_handoff()
+                    .has_unanswered_lines()
+            );
+            activation_pending(&mut app, &harness);
+            shell_marks_line_editor_reading(&mut app, &harness);
+            harness.line_editor_status.read(&app, |status, _| {
+                assert!(
+                    !status.is_line_editor_active(),
+                    "an unanswered line keeps the activation pending"
+                )
+            });
+        });
+    }
+}
+
+/// `PHOSPHOR_LINE_EDITOR_READING_ACTIVATES=0` keeps the 50 ms activation timer (#1401).
+#[test]
+fn line_editor_reading_activation_kill_switch() {
+    assert!(line_editor_reading_activates_from(None));
+    assert!(line_editor_reading_activates_from(Some("1")));
+    assert!(line_editor_reading_activates_from(Some("")));
+    assert!(!line_editor_reading_activates_from(Some("0")));
+    assert!(!line_editor_reading_activates_from(Some(" 0 ")));
 }
 
 /// nushell cannot eval a string, so its bootstrap is always a file: the app types a space-led
