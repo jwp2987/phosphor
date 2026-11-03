@@ -721,6 +721,9 @@ impl CodeEditorModel {
         match event {
             RenderEvent::PendingEditsFlushed => {
                 self.mark_lazy_layout_initialized(ctx);
+                if self.render_state.as_ref(ctx).take_large_layout_done() {
+                    self.after_large_layout(ctx);
+                }
             }
             RenderEvent::ViewportUpdated(version) => {
                 self.mark_lazy_layout_initialized(ctx);
@@ -732,6 +735,45 @@ impl CodeEditorModel {
                 ctx.emit(CodeEditorModelEvent::LayoutInvalidated);
             }
             RenderEvent::NeedsResize => {}
+        }
+    }
+
+    /// A file-sized delta was just laid out (#1607). Logs where the editor's memory is
+    /// (`editor_memory` target, info) and hands the freed transients of the load (the read text,
+    /// the formatted-text copy, the delta's styled blocks, the per-line layout tasks) back to the
+    /// OS on a worker; kill switch `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=0`. Once per large delta,
+    /// never per frame.
+    fn after_large_layout(&self, ctx: &mut ModelContext<Self>) {
+        if log::log_enabled!(target: "editor_memory", log::Level::Info) {
+            let buffer = self.content.as_ref(ctx).memory_stats();
+            let render = self.render_state.as_ref(ctx).memory_stats();
+            log::info!(
+                target: "editor_memory",
+                "editor_memory open text_bytes={} lines={} buffer_items={} buffer_leaves={} buffer_nodes_bytes={} buffer_item_size={} undo_entries={} render_items={} render_nodes_bytes={} parked_chunks={} parked_lines={} parked_bytes={} hydrated={} dehydrated={} frame_bytes={} source_bytes={} other_items={} syntax_trees={}",
+                buffer.text_bytes,
+                buffer.lines,
+                buffer.tree.items,
+                buffer.tree.leaves,
+                buffer.tree.node_bytes,
+                buffer.item_bytes,
+                buffer.undo_entries,
+                render.tree.items,
+                render.tree.node_bytes,
+                render.parked_chunks,
+                render.parked_lines,
+                render.parked_bytes,
+                render.hydrated_paragraphs,
+                render.dehydrated_paragraphs,
+                render.frame_bytes,
+                render.source_bytes,
+                render.other_items,
+                self.syntax_tree.as_ref(ctx).tree_count(),
+            );
+        }
+        if crate::alloc::trim_after_large_open_enabled() {
+            ctx.background_executor()
+                .spawn(async { crate::alloc::trim_free_memory() })
+                .detach();
         }
     }
 

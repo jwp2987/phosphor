@@ -320,6 +320,10 @@ pub struct CharOffsetEdit {
 pub struct GlobalBufferModel {
     location_to_id: BiMap<BufferLocation, FileId>,
     buffers: HashMap<FileId, InternalBufferState>,
+    /// A closing editor asked for a heap trim (#1407). Its sweep can run before the buffer is
+    /// actually dropped (#1478), so the trim is repeated on the next buffer-drop event, when the
+    /// buffer's own tree has really been freed.
+    trim_on_next_buffer_drop: bool,
 }
 
 impl GlobalBufferModel {
@@ -349,6 +353,7 @@ impl GlobalBufferModel {
         Self {
             location_to_id: BiMap::new(),
             buffers: HashMap::new(),
+            trim_on_next_buffer_drop: false,
         }
     }
 
@@ -475,6 +480,9 @@ impl GlobalBufferModel {
         trim: bool,
         ctx: &mut ModelContext<Self>,
     ) {
+        if trim {
+            self.trim_on_next_buffer_drop = true;
+        }
         ctx.spawn(async {}, move |me, _, ctx| {
             me.remove_deallocated_buffers(ctx);
             if trim {
@@ -503,6 +511,17 @@ impl GlobalBufferModel {
             |me, ctx| {
                 log::debug!(target: "code::buffer_lifecycle", "buffer dropped; pruning");
                 me.remove_deallocated_buffers(ctx);
+                log::info!(
+                    target: "editor_memory",
+                    "editor_memory buffer_dropped registered={} trim={}",
+                    me.buffers.len(),
+                    me.trim_on_next_buffer_drop
+                );
+                if std::mem::take(&mut me.trim_on_next_buffer_drop) {
+                    ctx.background_executor()
+                        .spawn(async { crate::alloc::trim_free_memory() })
+                        .detach();
+                }
             },
         );
     }
