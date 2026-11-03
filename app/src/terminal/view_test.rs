@@ -19788,6 +19788,119 @@ fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shel
     }
 }
 
+/// #1571 / #1572, the real scenario behind `nested_ssh_with_late_readiness_...`: the agent view's
+/// input is left as the view sets it (AI, UNLOCKED, autodetection on: the default) and the shell is
+/// not ready yet. `ssh fake` + Enter is an unambiguous shell line: it is routed to the shell and
+/// held as the unready gate (#1571), never sent to the agent, and it runs once at readiness.
+/// Legacy and Table.
+#[test]
+fn ssh_in_the_agent_view_on_an_unready_shell_is_routed_to_the_shell_and_held_not_sent_to_the_agent()
+{
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
+            let terminal = add_window_with_terminal(&mut app, None);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+            });
+            // The entry event is delivered when the update above ends; the input is then AI,
+            // unlocked, and this test leaves it exactly so.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(SessionId::from(9001));
+                let input = view.input.as_ref(ctx);
+                let config = input.ai_input_model().as_ref(ctx).input_config();
+                assert_eq!(
+                    config,
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false
+                    },
+                    "{mode:?}: precondition: AI, unlocked"
+                );
+                assert!(input.shell_unready_for_submit(ctx), "{mode:?}: unready");
+                editor_text(view, "ssh fake", ctx);
+                editor_key(view, EditorAction::Enter, ctx);
+            });
+            for _ in 0..200 {
+                let held = terminal.read(&app, |view, ctx| {
+                    view.input.as_ref(ctx).unready_enter_gate_open()
+                });
+                if held {
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+            }
+            terminal.update(&mut app, |view, ctx| {
+                let input = view.input.as_ref(ctx);
+                let agent_exchanges: usize = BlocklistAIHistoryModel::as_ref(ctx)
+                    .all_live_conversations_for_terminal_view(view.view_id)
+                    .map(|conversation| conversation.exchange_count())
+                    .sum();
+                assert!(
+                    input.has_held_unready_enter() && input.unready_enter_gate_open(),
+                    "{mode:?}: the Enter is held as a gate; input_config={:?} \
+                     agent_exchanges={agent_exchanges} executed={:?} buffer={:?}",
+                    input.ai_input_model().as_ref(ctx).input_config(),
+                    executed.borrow(),
+                    input.buffer_text(ctx),
+                );
+                assert_eq!(
+                    agent_exchanges, 0,
+                    "{mode:?}: a shell line is never sent to the agent"
+                );
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: nothing ran before the shell was ready: {:?}",
+                executed.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                first_precmd_processed_for_test(view, ctx);
+                view.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
+                view.retry_held_unready_enter("session_bootstrapped", ctx);
+            });
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: the held line ran once, alone"
+            );
+        })
+    }
+}
+
 /// #1348: no timing. Keys held when a password / host-key prompt appears are discarded; keys typed
 /// after it (even the very next instant, which the old 200 ms burst rule dropped as a "tail")
 /// go straight to the prompt, like plain ssh. Replaces `ssh_prompt_mid_burst_discards_the_tail_too`.
