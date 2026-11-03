@@ -3130,6 +3130,9 @@ impl TerminalModel {
         }
         let handled_after_inband = data.was_sent_after_in_band_command();
         self.block_list.apply_precmd_to_active(data);
+        // The prompt's block is the active one now, with its own grid's modes (a program that
+        // died with DECCKM or kitty flags set left them on the finished block only, #1411).
+        self.publish_key_modes();
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             let mut handoff = self.typeahead_handoff.write();
             handoff.on_precmd();
@@ -3555,6 +3558,8 @@ impl ansi::Handler for TerminalModel {
 
         self.alt_screen.reset_state();
         self.block_list.reset_state();
+        // Whatever RIS did to the grids' modes is what a key encodes with from here on (#1411).
+        self.publish_key_modes();
     }
 
     fn reverse_index(&mut self) -> ScrollDelta {

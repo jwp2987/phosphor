@@ -3702,3 +3702,59 @@ fn line_editor_markers_update_the_handoffs_account_in_stream_order() {
         ShellActivity::Continuation
     );
 }
+
+// ---- #1411: the eager key modes follow a block switch and a full reset ----
+
+/// A program that dies with DECCKM set leaves the mode on its finished block only: the prompt's
+/// fresh block has default modes, and the word a key encodes with says so the moment the precmd
+/// makes that block active, not at the end of the slice.
+#[test]
+fn eager_key_modes_follow_the_precmd_block_switch() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.simulate_long_running_block("cat", "");
+    terminal.set_mode(ansi::Mode::CursorKeys);
+    assert!(terminal.is_term_mode_set(TermMode::APP_CURSOR));
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the mode change");
+    assert!(eager.app_cursor);
+
+    terminal.finish_block();
+    assert!(
+        !terminal.is_term_mode_set(TermMode::APP_CURSOR),
+        "the fresh block has default modes"
+    );
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the block switch");
+    assert_eq!(eager, PublishedKeyModes::from_model(&terminal));
+    assert!(!eager.app_cursor);
+}
+
+/// RIS republishes the modes: whatever the reset left in the grids is what a key encodes with
+/// from here on, and the alt-screen bit rides along.
+#[test]
+fn eager_key_modes_are_republished_by_a_full_reset() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.set_mode(ansi::Mode::CursorKeys);
+    // A copy that does not match the model: the reset must overwrite it.
+    terminal
+        .key_model_cell()
+        .store_eager_modes(PublishedKeyModes::default(), true);
+    terminal.reset_state();
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the reset");
+    assert_eq!(eager, PublishedKeyModes::from_model(&terminal));
+    assert_eq!(
+        terminal
+            .key_model_cell()
+            .load_exact_modes()
+            .input_box
+            .alt_screen_active,
+        terminal.is_alt_screen_active()
+    );
+}
