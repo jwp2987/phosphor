@@ -1076,6 +1076,7 @@ def c_big(ctx, r):
     ctx.be.type("cat > big.out", 12, enter=True)
     time.sleep(1.0)
     ctx.be.clip_set(data)
+    ui_off = ctx.log_size()
     ctx.be.paste()
 
     def stable():
@@ -1091,6 +1092,7 @@ def c_big(ctx, r):
     got = open(os.path.join(ctx.W, "big.out"), "rb").read() if os.path.exists(os.path.join(ctx.W, "big.out")) else b""
     r.metric("bytes_expected", len(data) + 1)
     r.metric("bytes_got", len(got))
+    ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
     r.check(got == (data + "\n").encode(), "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
     ctx.reset()
 
@@ -1277,13 +1279,50 @@ def ctrlc_flood(ctx, r, n, warm):
     r.check(okf and bool(fl), "Ctrl-C under flood: fewer than %d samples stopped `yes` and ran the trap" % (n + warm))
 
 
+_CC_KD_RE = re.compile(r'input_order keydown key="?[cC]"? ctrl=true\b.* t=(\d+(?:\.\d+)?)')
+_CC_HOP_RE = re.compile(r"input_order hop=(ctrl_c_keydown|ctrl_c_to_event_loop|ctrl_c_received|ctrl_c_pty_write)\b.* t=(\d+(?:\.\d+)?)")
+_CC_STAGES = ("keydown", "ctrl_c_keydown", "ctrl_c_to_event_loop", "ctrl_c_received", "ctrl_c_pty_write")
+
+
+def ctrl_c_segments(txt, skip=0):
+    """#1408: the APP's share of Ctrl-C, from its own input_order lines, per press: `keydown key=c ctrl=true` (presenter) -> hop=ctrl_c_keydown
+    (TerminalView::ctrl_c) -> hop=ctrl_c_to_event_loop (PtyController) -> hop=ctrl_c_received (pty event loop) -> hop=ctrl_c_pty_write (write(2)
+    returned). -> dict(n, <segment>: stats ms, keydown_to_write: stats ms). A press is closed by its pty write; a stage logged twice before the write
+    keeps the first stamp; the first `skip` presses (warm-up) are dropped. Whatever the reference terminal gap is beyond keydown_to_write is outside the app (injector, X server, signal delivery)."""
+    samples, cur = [], None
+    for line in txt.splitlines():
+        m = _CC_KD_RE.search(line)
+        if m:
+            cur = {"keydown": float(m.group(1))}
+            continue
+        m = _CC_HOP_RE.search(line)
+        if not m:
+            continue
+        stage, t = m.group(1), float(m.group(2))
+        if cur is None:
+            cur = {}
+        cur.setdefault(stage, t)
+        if stage == "ctrl_c_pty_write":
+            samples.append(cur)
+            cur = None
+    samples = samples[skip:]                    # the warm-up presses the end-to-end latency (lat_ms[warm:]) drops too
+    out = {"n": len(samples)}
+    for a, b in zip(_CC_STAGES, _CC_STAGES[1:]):
+        out["%s->%s" % (a, b)] = stats([x[b] - x[a] for x in samples if a in x and b in x])
+    out["keydown_to_write"] = stats([x["ctrl_c_pty_write"] - x["keydown"] for x in samples if "keydown" in x])
+    return out
+
+
 @case("ctrl_c_d", order=17)
 def c_ctrl(ctx, r):
     ctx.rm("cd.txt", "cd2.txt")
     n, warm = ctx.count_lat(30), lat.warmup()
+    cc_off = ctx.log_size()
     lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
     lat_ms = lat_ms[warm:]
     r.metric("ctrl_c_ms", stats(lat_ms))
+    if ctx.log_path and os.path.exists(ctx.log_path):
+        r.metric("ctrl_c_app_segments", ctrl_c_segments(ctx.log_since(cc_off), skip=warm))     # #1408: where the app's share of each Ctrl-C goes
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     # (the delivered-count verdict is below, after the reference ran, so it can say whether the reference lost any sample line)
     # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp
@@ -2559,6 +2598,56 @@ def keydown_audit(txt, dup_ms=2.0):
         ks.append((key, float(t)))
     dups = [(k2, t2, round(t2 - t1, 2)) for (k1, t1), (k2, t2) in zip(ks, ks[1:]) if k1 == k2 and 0 <= t2 - t1 < dup_ms]
     return dict(count=len(ks), dups=dups)
+
+
+_UI_ITEM_RE = re.compile(r"input_order hop=ui_item kind=(\w+) ms=(\d+(?:\.\d+)?)")
+
+
+def ui_item_audit(txt):
+    """#1191/#1219/#1301: the app's own `hop=ui_item kind=<frame|event|action> ms=<x>` lines (input_order::log_ui_item_if_over_budget, written for
+    every main-thread item at or over the owner's 4 ms UI budget) -> dict(over_4ms, over_16ms, max_ms, by_kind={kind: [count, max_ms]}). Builds
+    before the hop log nothing, which reads exactly like 'no item over budget': callers say so (ui_item_metrics)."""
+    by_kind, ms_all = {}, []
+    for m in _UI_ITEM_RE.finditer(txt):
+        kind, ms = m.group(1), float(m.group(2))
+        ms_all.append(ms)
+        k = by_kind.setdefault(kind, [0, 0.0])
+        k[0] += 1
+        k[1] = max(k[1], ms)
+    return dict(over_4ms=len(ms_all), over_16ms=sum(1 for v in ms_all if v >= 16.0), max_ms=max(ms_all) if ms_all else 0.0, by_kind=by_kind)
+
+
+_LOCK_HOLD_RE = re.compile(r"model lock held (\d+(?:\.\d+)?)(ns|µs|us|ms|s) by (\S+)")
+_DUR_MS = {"ns": 1e-6, "µs": 1e-3, "us": 1e-3, "ms": 1.0, "s": 1000.0}
+
+
+def lock_hold_audit(txt):
+    """#1301: the app's `model lock held <Duration> by <scope>` lines (app/src/terminal/model_lock_trace.rs HoldTimer: every hold >= 2 ms, needs
+    RUST_LOG warp::terminal::model_lock_trace=debug) -> {scope: [count, max_ms]}. TerminalView::render and BlockListElement::layout are the
+    holds #1301 is about; an empty dict is 'no hold over 2 ms' only on a build and RUST_LOG that log them."""
+    out = {}
+    for m in _LOCK_HOLD_RE.finditer(txt):
+        ms = float(m.group(1)) * _DUR_MS[m.group(2)]
+        k = out.setdefault(m.group(3), [0, 0.0])
+        k[0] += 1
+        k[1] = max(k[1], round(ms, 3))
+    return out
+
+
+def ui_item_metrics(ctx, r, off, label):
+    """Records the ui_item audit of the app log written since byte offset `off` as metric `<label>_ui_items`, and the model-lock holds over 2 ms
+    as `<label>_lock_holds` (#1301). Informational: llvmpipe/Xvfb frames
+    are raster bound and over 4 ms by themselves, so this is a metric for the before/after comparison, never a check."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.note("%s: no app log, ui_item audit not taken" % label)
+        return None
+    txt = ctx.log_since(off)
+    a = ui_item_audit(txt)
+    r.metric("%s_ui_items" % label, a)
+    r.metric("%s_lock_holds" % label, lock_hold_audit(txt))
+    if not a["over_4ms"]:
+        r.note("%s: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)" % label)
+    return a
 
 
 _KD_SEQ_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(?:true|false) cmd=(true|false) t=\d+(?:\.\d+)? seq=(\d+)")

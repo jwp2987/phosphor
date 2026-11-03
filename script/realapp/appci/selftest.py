@@ -509,6 +509,32 @@ def key_event_audit_counts_typed_only_and_enter_hops():
 
 
 @check
+def ui_item_audit_counts_items_over_budget():
+    ln = lambda kind, ms: "input_order hop=ui_item kind=%s ms=%s iter=1 t=1\n" % (kind, ms)
+    a = cases.ui_item_audit("junk\n" + ln("frame", "4.25") + ln("frame", "17.00") + ln("action", "5.5"))
+    assert (a["over_4ms"], a["over_16ms"], a["max_ms"]) == (3, 1, 17.0), a
+    assert a["by_kind"] == {"frame": [2, 17.0], "action": [1, 5.5]}, a
+    assert cases.ui_item_audit("input_order hop=enter_begin deferred=false t=1\n") == dict(over_4ms=0, over_16ms=0, max_ms=0.0, by_kind={})
+    h = cases.lock_hold_audit("DEBUG model lock held 3.25ms by TerminalView::render\nmodel lock held 812.5µs by TerminalView::render\n"
+                              "WARN model lock held 1.5s by BlockListElement::layout (> 8ms; 0 similar holds suppressed)\n")
+    assert h == {"TerminalView::render": [2, 3.25], "BlockListElement::layout": [1, 1500.0]}, h
+
+
+@check
+def ctrl_c_segments_split_the_app_share():
+    kd = lambda t: 'input_order keydown key="c" ctrl=true alt=false shift=false cmd=false t=%s seq=1\n' % t
+    hop = lambda h, t: "input_order hop=%s x=1 t=%s\n" % (h, t)
+    one = lambda t0: (kd(t0) + hop("ctrl_c_keydown", t0 + 0.5) + hop("ctrl_c_to_event_loop", t0 + 1.0) + hop("ctrl_c_received", t0 + 1.25)
+                      + hop("ctrl_c_received", t0 + 9) + hop("ctrl_c_pty_write", t0 + 2.0))
+    a = cases.ctrl_c_segments("junk\n" + one(1000.0) + one(2000.0) + hop("ctrl_c_keydown", 3000.0))
+    assert a["n"] == 2, a
+    assert a["keydown->ctrl_c_keydown"]["p50"] == 0.5 and a["ctrl_c_received->ctrl_c_pty_write"]["p50"] == 0.75, a
+    assert a["keydown_to_write"]["p50"] == 2.0, a
+    assert cases.ctrl_c_segments("")["n"] == 0
+    assert cases.ctrl_c_segments(one(1000.0) + one(2000.0), skip=1)["n"] == 1    # warm-up presses dropped
+
+
+@check
 def hanging_tcp_server_reports_connecting_then_closed():
     import socket
     srv = cases.HangingTcpServer()

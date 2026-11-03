@@ -123,7 +123,7 @@ class MacApp:
         env_args = []
         for k, v in (("HOME", self.home), ("SHELL", "/bin/zsh"), ("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"),
                      ("PA_CTL", os.path.join(self.run, "ctl")),
-                     ("RUST_LOG", "warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"),
+                     ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in passthrough_env().items():
@@ -266,7 +266,7 @@ class WindowsApp:
         fwd = lambda p: p.replace("\\", "/")           # noqa: E731  (msys bash takes C:/... paths; backslashes inside variables survive unchanged)
         # r18d2: the agent cases read INFO markers ('[byop] opening stream', 'stream opened OK', '[byop-diag] queue_actions'); a bare `warn` base hid them, so
         # agent_stream_cancel / agent_approval reported "no model request" on a run whose screenshot showed the finished reply. Only those two modules go to info.
-        e["RUST_LOG"] = "warn,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"
+        e["RUST_LOG"] = "warn,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug"
         e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))

@@ -62,25 +62,79 @@ pub enum TextAlignment {
     Right,
 }
 
+/// How many entries the retired generation of a [`TextCache`] keeps (#1219). When it is full it is
+/// emptied and refilled, so its memory is bounded by this count times the short texts it admits.
+const RETIRED_CAPACITY: usize = 1024;
+
+/// Only texts up to this many bytes are retired (#1219). Overlay rows, menu items, chips and
+/// labels are short; a long paragraph or a pasted line is not worth holding after it left the
+/// screen.
+const RETIRED_MAX_TEXT_LEN: usize = 160;
+
+/// Whether a `PHOSPHOR_LAYOUT_CACHE_RETIRED` value keeps the retired generation (#1219). Unset,
+/// empty or anything but `0` keeps it; `0` restores the plain two-generation cache.
+fn retired_generation_from_value(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "0")
+}
+
+/// `PHOSPHOR_LAYOUT_CACHE_RETIRED=0` turns the retired generation off (#1219). Read once.
+fn retired_generation_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        retired_generation_from_value(
+            std::env::var("PHOSPHOR_LAYOUT_CACHE_RETIRED")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
 /// Two generations of laid-out text keyed by everything that affects the layout. The keys hash
 /// the whole text, so the hasher is Fx, not SipHash: every cached line on screen is looked up
 /// once per layout pass.
+///
+/// Behind the two generations sits a bounded retired generation (#1219): a short text that was
+/// not laid out for two frames moves there instead of being dropped, so an overlay that closes and
+/// opens again (slash menu, palette, Tab menu, chips) is served without being shaped again. A
+/// retired entry is invalidated exactly like a live one ([`TextCache::remove`]), so a fallback
+/// font that loads later still forces a fresh layout.
 struct TextCache<T> {
     prev_frame: Mutex<FxHashMap<CacheKeyValue, Arc<T>>>,
     curr_frame: RwLock<FxHashMap<CacheKeyValue, Arc<T>>>,
+    retired: Mutex<FxHashMap<CacheKeyValue, Arc<T>>>,
+    /// Whether entries evicted from `prev_frame` are retired rather than dropped.
+    retire: bool,
 }
 
 impl<T> TextCache<T> {
     pub fn new() -> Self {
+        Self::with_retired_generation(retired_generation_enabled())
+    }
+
+    fn with_retired_generation(retire: bool) -> Self {
         Self {
             prev_frame: Mutex::new(FxHashMap::default()),
             curr_frame: RwLock::new(FxHashMap::default()),
+            retired: Mutex::new(FxHashMap::default()),
+            retire,
         }
     }
 
     pub fn finish_frame(&self) {
         let mut prev_frame = self.prev_frame.lock();
         let mut curr_frame = self.curr_frame.write();
+        if self.retire && !prev_frame.is_empty() {
+            let mut retired = self.retired.lock();
+            for (key, val) in prev_frame.drain() {
+                if key.text.len() > RETIRED_MAX_TEXT_LEN {
+                    continue;
+                }
+                if retired.len() >= RETIRED_CAPACITY {
+                    retired.clear();
+                }
+                retired.insert(key, val);
+            }
+        }
         std::mem::swap(&mut *prev_frame, &mut *curr_frame);
         curr_frame.clear();
     }
@@ -92,12 +146,17 @@ impl<T> TextCache<T> {
         }
 
         let mut curr_frame = RwLockUpgradableReadGuard::upgrade(curr_frame);
-        match self.prev_frame.lock().remove_entry(key) { Some((key, val)) => {
+        let found = self.prev_frame.lock().remove_entry(key).or_else(|| {
+            if self.retire {
+                self.retired.lock().remove_entry(key)
+            } else {
+                None
+            }
+        });
+        found.map(|(key, val)| {
             curr_frame.insert(key, val.clone());
-            Some(val)
-        } _ => {
-            None
-        }}
+            val
+        })
     }
 
     pub fn insert(&self, key: CacheKeyValue, val: Arc<T>) {
@@ -108,6 +167,7 @@ impl<T> TextCache<T> {
     pub fn remove(&self, key: &dyn CacheKey) {
         self.prev_frame.lock().remove(key);
         self.curr_frame.write().remove(key);
+        self.retired.lock().remove(key);
     }
 }
 
