@@ -60,12 +60,24 @@ fn editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold() {
                         assert!(view.ssh_typeahead_holding);
                     }
                     DestinationMode::Legacy | DestinationMode::Shadow => {
-                        // The kill switch does not follow the line, but at this instant the
-                        // entries still wait behind the connect hold exactly as in Table: the
-                        // paste has not reached the editor yet (it would be delivered, as an
-                        // editor insert, only when the hold hands over). Nothing is typed into
-                        // the local editor ahead of the line.
-                        assert_eq!(buffer, "", "nothing reached the local editor yet");
+                        // Same hold as Table at this instant: nothing is typed ahead of the line.
+                        assert_eq!(buffer, "", "nothing reached the local editor ahead of the line");
+                        assert_eq!(
+                            queued_texts(view),
+                            vec!["echo ".to_owned(), "X".to_owned(), " Y".to_owned()]
+                        );
+                        // No remote shell comes up: the hold gives up and hands the text back
+                        // unexecuted. The kill switch keeps the editor insert, in typed order.
+                        view.ssh_connect_gate = None;
+                        view.note_ssh_gate_released(
+                            crate::terminal::input_queue::SshRelease::GiveUpCeiling,
+                        );
+                        view.deliver_ssh_typeahead_if_ready("test", ctx);
+                        assert_eq!(
+                            view.input.as_ref(ctx).buffer_text(ctx),
+                            "echo X Y",
+                            "the paste stays in order between the typed parts"
+                        );
                     }
                 }
             });
