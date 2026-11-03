@@ -289,6 +289,24 @@ pub fn take_recorded() -> Vec<String> {
     RECORDED.with(|lines| std::mem::take(&mut *lines.borrow_mut()))
 }
 
+/// The lines of `recorded` that are NOT tagged with a known cause (`expected=..`): the regressions.
+#[cfg(test)]
+pub fn untagged(recorded: &[String]) -> Vec<&String> {
+    recorded
+        .iter()
+        .filter(|line| !line.contains(" expected="))
+        .collect()
+}
+
+/// The consumer of shadow mode (#1528): the disagreement lines reported on this thread since the
+/// last call that carry no known-cause tag. A test that runs key sequences in shadow mode asserts
+/// this is empty; the count of ALL lines (tagged included) is `take_recorded().len()`.
+#[cfg(test)]
+pub fn take_untagged() -> Vec<String> {
+    let recorded = take_recorded();
+    untagged(&recorded).into_iter().cloned().collect()
+}
+
 #[cfg(test)]
 #[path = "shadow_tests.rs"]
 mod tests;

@@ -13,6 +13,17 @@
 //!
 //! The sample space is fixed, so a failure is reproducible from the message alone (it prints the
 //! intent, the facts and the pin).
+//!
+//! #1530 adds `exhaustive_*` below: enumerations, not samples. `RouteFacts` has ~42 booleans, four
+//! small enums and a 12-bit gate mask (about 2^60 combinations), so the full product cannot be
+//! walked. The reduction is stated in each test: (1) EVERY gate mask x ssh phase x every class x
+//! every origin; (2) EVERY subshell x ps x ssh phase x all 11 core booleans x every class; (3)
+//! EVERY PAIR of values of ANY two dimensions (all booleans, all enum values, all gate bits, the
+//! intent flags, four stamps) on three base fact sets, x every class x origin x two pins. The
+//! rows branch on at most a handful of facts each, so two-way coverage plus the exhaustive
+//! blocks for the dimensions that interact most (gates, phases) is the decisive reduction; rows
+//! that need three simultaneous odd facts are reached by the existing samples above, which the
+//! reachability test unions in.
 
 use crate::terminal::input_queue::table::{
     Class, DropWhy, Effects, Intent, OnRefused, Outcome, Plan, PtyWrite, Row, decide,
@@ -567,4 +578,372 @@ fn row_names_are_unique_and_the_list_is_complete() {
     let before = names.len();
     names.dedup();
     assert_eq!(names.len(), before, "two rows share a name");
+}
+
+// ---- #1530: enumerated, not sampled ------------------------------------------------------------
+
+/// One point of the enumeration: the facts, the five intent flags and the stamp.
+#[derive(Clone, Copy)]
+struct Point {
+    facts: RouteFacts,
+    /// takes_over_agent, delivering, needs_display_map, display_map_fresh, flushing.
+    flags: [bool; 5],
+    stamp: Stamp,
+}
+
+impl Point {
+    fn intent(&self, class: Class, origin: Origin) -> Intent {
+        let mut intent = Intent::new(class, origin).stamped(self.stamp);
+        intent.takes_over_agent = self.flags[0];
+        intent.delivering = self.flags[1];
+        intent.needs_display_map = self.flags[2];
+        intent.display_map_fresh = self.flags[3];
+        intent.flushing = self.flags[4];
+        intent
+    }
+}
+
+/// One enumerated dimension: `values` settings, applied by `set`.
+struct Dim {
+    values: usize,
+    set: fn(&mut Point, usize),
+}
+
+macro_rules! bool_dim {
+    ($($field:ident),* $(,)?) => {
+        [$(Dim { values: 2, set: |p, v| p.facts.$field = v == 1 }),*]
+    };
+}
+
+fn stamp_of(index: usize) -> Stamp {
+    match index % 4 {
+        0 => Stamp::UNSTAMPED,
+        1 => Stamp {
+            facts_gen: 5,
+            focus: FocusSnap::Terminal,
+            epoch: 0,
+        },
+        2 => Stamp {
+            facts_gen: 0,
+            focus: FocusSnap::ApprovalCard,
+            epoch: 0,
+        },
+        _ => Stamp {
+            facts_gen: 0,
+            focus: FocusSnap::Editor,
+            epoch: 0,
+        },
+    }
+}
+
+/// Every dimension the table can branch on: all 42 boolean facts, the four enum facts, the 12 gate
+/// bits, the five intent flags and the stamp.
+fn all_dims() -> Vec<Dim> {
+    let mut dims: Vec<Dim> = Vec::new();
+    dims.extend(bool_dim![
+        model_consistent,
+        alt_screen,
+        agent_in_control,
+        agent_in_control_exact,
+        agent_owns_pty,
+        long_running,
+        read_only,
+        is_bootstrapped,
+        needs_bracketed_paste,
+        active_block_started,
+        shared_session_executor,
+        session_pending_or_bootstrapped,
+        has_pending_ssh_command,
+        handoff_routes,
+        handoff_known,
+        forwards_subshell_key,
+        forwards_subshell_abort,
+        subshell_awaiting_answer,
+        subshell_bootstrap_stalled,
+        ssh_dialog_up,
+        ssh_setup_in_flight,
+        ssh_bootstrapping,
+        ssh_connecting_silently,
+        ssh_interrupt_must_wait,
+        ssh_eot_must_wait,
+        ssh_hold_exists,
+        queue_has_ssh_gate,
+        ssh_route_forward,
+        ssh_pre_init_abort,
+        ssh_sigint_applies,
+        approval_card,
+        ai_awaiting_confirmation,
+        settled_ai_target,
+        input_box_visible,
+        editor_focused,
+        editor_takeover_open,
+        blocks_selected,
+        buffer_empty,
+        cli_agent_session,
+        queued,
+        queued_only_pty,
+        mailbox_non_empty,
+        agent_write_gate_closed,
+    ]);
+    dims.push(Dim {
+        values: 3,
+        set: |p, v| p.facts.ssh = ssh_of(v),
+    });
+    dims.push(Dim {
+        values: 4,
+        set: |p, v| p.facts.subshell = subshell_of(v),
+    });
+    dims.push(Dim {
+        values: 5,
+        set: |p, v| p.facts.ps = ps_of(v),
+    });
+    dims.push(Dim {
+        values: 7,
+        set: |p, v| p.facts.focus = focus_of(v),
+    });
+    dims.push(Dim {
+        values: 4,
+        set: |p, v| p.stamp = stamp_of(v),
+    });
+    dims.push(Dim {
+        values: 2,
+        set: |p, v| p.flags[0] = v == 1,
+    });
+    dims.push(Dim {
+        values: 2,
+        set: |p, v| p.flags[1] = v == 1,
+    });
+    dims.push(Dim {
+        values: 2,
+        set: |p, v| p.flags[2] = v == 1,
+    });
+    dims.push(Dim {
+        values: 2,
+        set: |p, v| p.flags[3] = v == 1,
+    });
+    dims.push(Dim {
+        values: 2,
+        set: |p, v| p.flags[4] = v == 1,
+    });
+    // One dimension per gate kind (the mask bit), so every pair of gates is covered too.
+    macro_rules! gate_dim {
+        ($index:expr) => {
+            dims.push(Dim {
+                values: 2,
+                set: |p, v| {
+                    let kind = GateKind::ALL[$index];
+                    p.facts.gates = if v == 1 {
+                        p.facts.gates.with(kind)
+                    } else {
+                        GateMask(p.facts.gates.0 & !GateMask::EMPTY.with(kind).0)
+                    };
+                },
+            });
+        };
+    }
+    gate_dim!(0);
+    gate_dim!(1);
+    gate_dim!(2);
+    gate_dim!(3);
+    gate_dim!(4);
+    gate_dim!(5);
+    gate_dim!(6);
+    gate_dim!(7);
+    gate_dim!(8);
+    gate_dim!(9);
+    gate_dim!(10);
+    gate_dim!(11);
+    assert_eq!(GateKind::ALL.len(), 12, "add a gate_dim! for the new kind");
+    dims
+}
+
+/// The three base points the pairs are applied to: a shell with nothing known, a running command
+/// the pty takes input for, and an idle prompt with the input box up.
+fn base_points() -> [Point; 3] {
+    let point = |facts: RouteFacts| Point {
+        facts,
+        flags: [true, false, false, false, false],
+        stamp: Stamp::UNSTAMPED,
+    };
+    let mut running = RouteFacts::default();
+    running.model_consistent = true;
+    running.handoff_known = true;
+    running.long_running = true;
+    running.active_block_started = true;
+    running.session_pending_or_bootstrapped = true;
+    running.is_bootstrapped = true;
+    let mut prompt = RouteFacts::default();
+    prompt.model_consistent = true;
+    prompt.handoff_known = true;
+    prompt.session_pending_or_bootstrapped = true;
+    prompt.is_bootstrapped = true;
+    prompt.input_box_visible = true;
+    prompt.editor_focused = true;
+    [point(RouteFacts::default()), point(running), point(prompt)]
+}
+
+/// Which rows the enumeration decided, by their position in `ALL_ROWS`.
+struct Tally {
+    seen: [bool; 36],
+    decisions: u64,
+}
+
+impl Tally {
+    fn new() -> Self {
+        Self {
+            seen: [false; 36],
+            decisions: 0,
+        }
+    }
+
+    /// Checks one decision and counts its row. Every plan carries exactly one row of the table.
+    fn decide(&mut self, intent: &Intent, facts: &RouteFacts, pin: Option<Destination>) {
+        let plan = check(intent, facts, pin);
+        let position = ALL_ROWS
+            .iter()
+            .position(|row| *row == plan.row)
+            .unwrap_or_else(|| panic!("a plan names a row outside the table: {plan:?}"));
+        self.seen[position] = true;
+        self.decisions += 1;
+    }
+
+    fn rows(&self) -> impl Iterator<Item = Row> + '_ {
+        ALL_ROWS
+            .iter()
+            .zip(self.seen)
+            .filter(|(_, seen)| *seen)
+            .map(|(row, _)| *row)
+    }
+}
+
+/// Every class x the given origins for one point (and the given pins).
+fn decide_all_intents(
+    tally: &mut Tally,
+    point: &Point,
+    origins: &[Origin],
+    pins: &[Option<Destination>],
+) {
+    for class in CLASSES {
+        for origin in origins.iter().copied() {
+            let intent = point.intent(class, origin);
+            for pin in pins {
+                tally.decide(&intent, &point.facts, *pin);
+            }
+        }
+    }
+}
+
+/// Runs the three exhaustive blocks and returns what they decided.
+fn run_exhaustive() -> Tally {
+    let mut tally = Tally::new();
+    let bases = base_points();
+    let origins = all_origins();
+
+    // 1. EVERY gate mask (2^12) x every ssh phase x every class x every origin, on the running and
+    //    the idle-prompt base. Gates are what holds content, so they get the full product.
+    for base in &bases[1..] {
+        for mask in 0..(1u16 << GateKind::ALL.len()) {
+            for ssh in 0..3 {
+                let mut point = *base;
+                point.facts.gates = GateMask(mask);
+                point.facts.ssh = ssh_of(ssh);
+                for class in CLASSES {
+                    for origin in origins {
+                        tally.decide(&point.intent(class, origin), &point.facts, None);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. EVERY subshell x ps x ssh phase x the 11 core booleans of `facts_from`, every class, for
+    //    the keyboard (the editor's origin is covered by block 1 and the pairs).
+    for bits in 0..(1u32 << 11) {
+        for ssh in 0..3 {
+            for subshell in 0..4 {
+                for ps in 0..5 {
+                    let facts = facts_from(bits, ssh, subshell, ps, GateMask::EMPTY);
+                    for class in CLASSES {
+                        tally.decide(&Intent::new(class, Origin::Keyboard), &facts, None);
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. EVERY PAIR of values of any two dimensions, on each base, every class x origin x pin.
+    //    The pins only rewrite D6 (a keyboard line), so they run for the keyboard origin only.
+    let dims = all_dims();
+    let all = all_origins();
+    let pinned = [
+        Some(Destination::Editor),
+        Some(Destination::Pty),
+        Some(Destination::AgentInput),
+    ];
+    let both = |tally: &mut Tally, point: &Point| {
+        decide_all_intents(tally, point, &all, &[None]);
+        decide_all_intents(tally, point, &[Origin::Keyboard], &pinned);
+    };
+    for base in &bases {
+        both(&mut tally, base);
+        for (i, first) in dims.iter().enumerate() {
+            for second in dims.iter().skip(i + 1) {
+                for a in 0..first.values {
+                    for b in 0..second.values {
+                        let mut point = *base;
+                        (first.set)(&mut point, a);
+                        (second.set)(&mut point, b);
+                        both(&mut tally, &point);
+                    }
+                }
+            }
+        }
+    }
+    tally
+}
+
+/// `decide` is total and satisfies every table property over the exhaustive blocks (see the module
+/// docs for what is enumerated), every plan carries exactly one row, and no sample decides an
+/// effect-only row.
+#[test]
+fn exhaustive_enumeration_is_total_and_never_decides_an_effect_only_row() {
+    let tally = run_exhaustive();
+    assert!(
+        tally.decisions > 5_000_000,
+        "the enumeration shrank: {}",
+        tally.decisions
+    );
+    let decided: Vec<&'static str> = tally
+        .rows()
+        .filter(|row| EFFECT_ONLY_ROWS.contains(row))
+        .map(|row| row.name())
+        .collect();
+    assert!(
+        decided.is_empty(),
+        "effect-only rows that a plan names as its row: {decided:?}"
+    );
+}
+
+/// Every row except the effect-only ones (H3b, H7b, P1b, D4) is decided by the exhaustive blocks
+/// together with the existing enumerated samples: no row is unreachable.
+#[test]
+fn exhaustive_enumeration_reaches_every_row_but_the_effect_only_ones() {
+    let mut tally = run_exhaustive();
+    for_each_sample(|intent, facts, pin| {
+        let position = ALL_ROWS
+            .iter()
+            .position(|row| *row == decide(intent, facts, pin).row)
+            .expect("a plan names a row of the table");
+        tally.seen[position] = true;
+    });
+    let missing: Vec<&'static str> = ALL_ROWS
+        .iter()
+        .zip(tally.seen)
+        .filter(|(row, seen)| !seen && !EFFECT_ONLY_ROWS.contains(*row))
+        .map(|(row, _)| row.name())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "rows no enumeration reaches: {missing:?}"
+    );
 }

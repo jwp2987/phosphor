@@ -325,3 +325,96 @@ fn editor_text_past_a_gate_is_the_tagged_difference_b14() {
     let untagged = check(&intent, &plan, &facts, DestClass::Pty).expect("they differ");
     assert_eq!(untagged.expected, None);
 }
+
+/// #1528: shadow mode's consumer, at the pure level. When legacy reaches the destination class the
+/// table's plan has, NOTHING is reported, whatever the facts, so a run whose legacy chain agrees
+/// with the table has zero disagreements by the counter (`take_untagged`); and when it does not,
+/// exactly one line is reported, tagged or not.
+#[test]
+fn a_legacy_that_mirrors_the_table_reports_zero_disagreements_over_the_facts() {
+    use crate::terminal::input_queue::GateMask;
+    let _ = take_recorded();
+    let mut compared = 0u32;
+    let mut disagreed = 0u32;
+    for facts in [at_prompt(), running(), RouteFacts::default()] {
+        for ssh in [
+            SshPhase::Idle,
+            SshPhase::Holding,
+            SshPhase::PromptUp { prompt_gen: 3 },
+        ] {
+            for mask in [0u16, 1, 1 << 4, 1 << 10, (1 << 12) - 1] {
+                let mut facts = facts;
+                facts.ssh = ssh;
+                facts.gates = GateMask(mask);
+                for class in [
+                    Class::Typed,
+                    Class::Enter,
+                    Class::Control,
+                    Class::Seq,
+                    Class::Paste,
+                    Class::Raw,
+                    Class::EditKey,
+                    Class::Signal(SignalKind::Interrupt),
+                    Class::Signal(SignalKind::Eof),
+                ] {
+                    for origin in [
+                        Origin::Keyboard,
+                        Origin::Replay(crate::terminal::input_queue::EntryId(1)),
+                        Origin::Held,
+                    ] {
+                        let intent = Intent::new(class, origin).stamped(Stamp::UNSTAMPED);
+                        let plan = decide(&intent, &facts, None);
+                        let table = class_of(&plan.outcome);
+                        assert_eq!(check(&intent, &plan, &facts, table), None);
+                        compared += 1;
+                        // Any other class is a disagreement, reported exactly once.
+                        let other = if table == DestClass::Dropped {
+                            DestClass::Pty
+                        } else {
+                            DestClass::Dropped
+                        };
+                        let found = check(&intent, &plan, &facts, other).expect("they differ");
+                        assert_eq!((found.legacy, found.table), (other, table));
+                        disagreed += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(compared > 1000, "{compared}");
+    let lines = take_recorded();
+    assert_eq!(
+        lines.len() as u32,
+        disagreed,
+        "only the constructed differences were reported"
+    );
+}
+
+/// The shadow counter: `take_untagged` returns only lines without an `expected=` tag, and
+/// drains the record.
+#[test]
+fn take_untagged_counts_only_the_lines_with_no_known_cause() {
+    let _ = take_recorded();
+    let intent = kb(Class::Typed);
+    let facts = at_prompt();
+    let plan = decide(&intent, &facts, None);
+    // D7, no tag.
+    check(&intent, &plan, &facts, DestClass::Pty).expect("they differ");
+    // ^Z is tagged OD1.
+    let suspend = kb(Class::Signal(SignalKind::Suspend));
+    let plan = decide(&suspend, &running(), None);
+    let other = if class_of(&plan.outcome) == DestClass::Dropped {
+        DestClass::Pty
+    } else {
+        DestClass::Dropped
+    };
+    let tagged = check(&suspend, &plan, &running(), other).expect("they differ");
+    assert_eq!(tagged.expected, Some("OD1"));
+    let untagged_lines = take_untagged();
+    assert_eq!(untagged_lines.len(), 1, "{untagged_lines:?}");
+    assert!(
+        untagged_lines[0].starts_with("row=D7 "),
+        "{untagged_lines:?}"
+    );
+    assert!(take_recorded().is_empty(), "drained");
+}

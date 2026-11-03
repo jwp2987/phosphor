@@ -363,6 +363,20 @@ modes (`SMOKE` in `script/realapp/appci/cases.py`, applied by `run.py`); on Linu
 the ConPTY release blocker #1349. Target <= 10 min per platform; UNMEASURED so far (the full matrix has not been timed
 either).
 
+**Destination mode in the real app (#1532, #1528).** The app runs in the table's default mode (`PHOSPHOR_QUEUE_DESTINATION` unset = `table`)
+unless the run sets the variable; the harness passes it through (Linux and Windows inherit the environment, macOS via `open --env`,
+`app.passthrough_env`; `APPCI_APP_ENV="K=V,K2=V2"` sets more app variables for one run). Every `mode_proof` row records
+`metrics.queue_destination` (`table` | `legacy` | `shadow`, parsed like `facts.rs`), and `run.py` prints the mode at the start. To exercise
+the kill switch in the real app, play the fix tier a second time with `PHOSPHOR_QUEUE_DESTINATION=legacy` (set it as a play-time variable or
+export it): with `APPCI_TIER=smoke` the case list narrows to `winmap.KILL_SWITCH_SMOKE` (`mode_proof`, `paste_instant_enter`, `tab_enter`,
+`ctrl_c_d`, `ssh_connect_typing`, `ssh_enter_then_immediate_command`, `routing_table`: the cases whose routing the table decides), about a
+third of the smoke time, so both modes are covered without doubling the tier. It is NOT part of the default fix tier (that would double
+its runtime); run it per candidate. `PHOSPHOR_QUEUE_DESTINATION=shadow` runs the whole smoke list and adds a `dest_disagree` row per
+pass that FAILS on any `kh_dest_disagree` line in the app log that carries no `expected=` tag (`metrics.dest_disagree`, `dest_disagree_untagged`).
+Unit side of the same checks: `shadow::take_untagged` (a `cfg(test)` counter), `shadow_mode_reports_zero_untagged_disagreements_over_chained_key_sequences`
+(`terminal/view_test.rs`) and the exhaustive `exhaustive_enumeration_*` tests (`input_queue/table_enum_tests.rs`, #1530: all gate masks, the phase
+product and every pair of fact dimensions). `python3 script/realapp/appci/selftest.py` checks the metric and the list.
+
 | job | runner | session | input / screenshots |
 |---|---|---|---|
 | `app-test-linux-wayland` | box (`little-thing`, resource_group `little-thing-gui`) | headless sway, `WLR_BACKENDS=headless`, gles2 on `/dev/dri/renderD128` (pixman fallback), 1600x1000; full matrix as a native Wayland client, then a reduced set under XWayland (`--mode xwayland`, app forced to X11) | `wtype` (`-d N` = 10-25 ms/key, text + Enter in one call), `grim`, `wl-copy`/`wl-paste` |

@@ -45,6 +45,50 @@ def registry_consistency():
 
 
 @check
+def destination_mode_metric_and_kill_switch_smoke():
+    """#1532 / #1528: the destination mode is recorded in the results metrics, the legacy smoke pass is a subset of SMOKE, and the shadow
+    disagreement counter reads the app log."""
+    import app as appmod
+    assert cases.dest_mode({}) == "table" and cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": "  "}) == "table"
+    assert cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": "shadow"}) == "shadow" and cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": "table"}) == "table"
+    for v in ("legacy", "0", "off", "false", "bogus"):
+        assert cases.dest_mode({"PHOSPHOR_QUEUE_DESTINATION": v}) == "legacy", v
+    assert set(winmap.KILL_SWITCH_SMOKE) <= set(cases.SMOKE), "KILL_SWITCH_SMOKE names a case outside SMOKE"
+    assert winmap.smoke_for("table", cases.SMOKE) == tuple(cases.SMOKE) and winmap.smoke_for("shadow", cases.SMOKE) == tuple(cases.SMOKE)
+    legacy = winmap.smoke_for("legacy", cases.SMOKE)
+    assert legacy and set(legacy) == set(winmap.KILL_SWITCH_SMOKE) and len(legacy) < len(cases.SMOKE) and "mode_proof" in legacy
+    # the metric lands in the mode_proof row (fake ctx: no OCR, the log says the view mode)
+    saved = os.environ.get("PHOSPHOR_QUEUE_DESTINATION")
+    try:
+        for env, want in ((None, "table"), ("legacy", "legacy"), ("shadow", "shadow")):
+            if env is None:
+                os.environ.pop("PHOSPHOR_QUEUE_DESTINATION", None)
+            else:
+                os.environ["PHOSPHOR_QUEUE_DESTINATION"] = env
+            be = types.SimpleNamespace(name="linux", key=lambda *a, **k: None)
+            ctx = types.SimpleNamespace(be=be, mode="agent", ollama=False, label="agent", ocr=lambda *a, **k: None, log_view_mode=lambda: "agent",
+                                        shot=lambda *a, **k: None)
+            r = cases.Result("mode_proof", "agent")
+            cases.c_mode_proof(ctx, r)
+            assert r.metrics.get("queue_destination") == want, (env, r.metrics)
+            assert not r.fails, r.fails
+    finally:
+        if saved is None:
+            os.environ.pop("PHOSPHOR_QUEUE_DESTINATION", None)
+        else:
+            os.environ["PHOSPHOR_QUEUE_DESTINATION"] = saved
+    # macOS passes the variable through `open --env`
+    assert appmod.passthrough_env({"PHOSPHOR_QUEUE_DESTINATION": "legacy", "HOME": "/x"}) == {"PHOSPHOR_QUEUE_DESTINATION": "legacy"}
+    assert appmod.passthrough_env({"APPCI_APP_ENV": "FOO=1,BAR=2", "FOO": "1"}) == {"FOO": "1"}
+    assert appmod.passthrough_env({}) == {}
+    # the shadow counter
+    log = ("2026 DEBUG input_order kh_dest_disagree row=D7 legacy=pty table=editor flags=x\n"
+           "2026 DEBUG input_order kh_dest_disagree row=P1a legacy=dropped table=held flags=x expected=OD5\n"
+           "2026 DEBUG input_order keydown key=a\n")
+    assert cases.dest_disagreements(log) == (2, 1) and cases.dest_disagreements("") == (0, 0)
+
+
+@check
 def case_name_validation():
     import run
     reg = {"a", "b"}

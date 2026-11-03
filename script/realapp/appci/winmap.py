@@ -112,3 +112,15 @@ def tier_plan(platform, tier, mode, pane, smoke):
     names = [n for n in smoke if o["cases"] is None or n in o["cases"]]
     names = [n for n in names if n not in FIX_ONLY_IN or (mode, pane) in FIX_ONLY_IN[n]]
     return names, o
+
+
+# #1532: the fix tier runs the app in its DEFAULT destination mode (table). Run again with PHOSPHOR_QUEUE_DESTINATION=legacy (the shipped kill
+# switch) and the tier narrows to this list: the cases whose routing the table decides (paste, Tab+Enter, Ctrl-C, both ssh hand-overs, the
+# routing table), so the legacy chain is exercised in the real app for roughly a third of the smoke time. Each name must be in cases.SMOKE
+# (selftest). Shadow (PHOSPHOR_QUEUE_DESTINATION=shadow) runs the whole smoke list and the run fails on any untagged kh_dest_disagree line.
+KILL_SWITCH_SMOKE = ("mode_proof", "paste_instant_enter", "tab_enter", "ctrl_c_d", "ssh_connect_typing", "ssh_enter_then_immediate_command", "routing_table")
+
+
+def smoke_for(dest, smoke):
+    """The smoke case names for destination mode `dest` ('table' | 'shadow' | 'legacy')."""
+    return tuple(n for n in smoke if n in KILL_SWITCH_SMOKE) if dest == "legacy" else tuple(smoke)

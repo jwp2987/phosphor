@@ -17,6 +17,17 @@ exec "%(bin)s" >> "%(run)s/app.stdout" 2>&1
 '''
 
 
+# #1532: environment variables that must reach the app under test even where the launcher does not inherit os.environ (macOS `open --env`).
+# Linux and Windows pass the whole environment. APPCI_APP_ENV="K=V,K2=V2" (run.py) sets more of them for one run.
+PASSTHROUGH_ENV = ("PHOSPHOR_QUEUE_DESTINATION", "PHOSPHOR_CONPTY_ENTER_HOLD")
+
+
+def passthrough_env(environ=None):
+    environ = os.environ if environ is None else environ
+    keys = list(PASSTHROUGH_ENV) + [kv.split("=", 1)[0] for kv in environ.get("APPCI_APP_ENV", "").split(",") if "=" in kv]
+    return {k: environ[k] for k in keys if k in environ and environ[k] != ""}
+
+
 class App:
     def __init__(self, run, home, binary, display="wayland"):
         self.run, self.home, self.bin, self.display = run, home, binary, display
@@ -114,6 +125,8 @@ class MacApp:
                      ("PA_CTL", os.path.join(self.run, "ctl")),
                      ("RUST_LOG", "warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
+            env_args += ["--env", "%s=%s" % (k, v)]
+        for k, v in passthrough_env().items():
             env_args += ["--env", "%s=%s" % (k, v)]
         # exactly ONE instance per pass: refuse to launch over a leftover of this job's bundle (it would share the window/dialog state)
         left = self._instances()
