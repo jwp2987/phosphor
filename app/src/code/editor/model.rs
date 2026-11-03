@@ -773,7 +773,7 @@ impl CodeEditorModel {
         if crate::alloc::trim_after_large_open_enabled() {
             log::debug!(target: "editor_memory", "editor_memory trim_after_open");
             ctx.background_executor()
-                .spawn(async { crate::alloc::trim_free_memory() })
+                .spawn(async { crate::alloc::trim_free_memory_timed("open") })
                 .detach();
         }
     }

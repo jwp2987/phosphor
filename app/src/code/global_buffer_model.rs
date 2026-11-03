@@ -485,9 +485,13 @@ impl GlobalBufferModel {
         self.trim_on_drop_of.extend(trim_for);
         ctx.spawn(async {}, move |me, _, ctx| {
             me.remove_deallocated_buffers(ctx);
+            // A FileId whose buffer is already unregistered will never see its drop event here
+            // (it was pruned above, or never loaded): forget it so the set cannot grow stale.
+            let registered = &me.buffers;
+            me.trim_on_drop_of.retain(|id| registered.contains_key(id));
             if trim {
                 ctx.background_executor()
-                    .spawn(async { crate::alloc::trim_free_memory() })
+                    .spawn(async { crate::alloc::trim_free_memory_timed("close") })
                     .detach();
             }
         });
@@ -524,7 +528,7 @@ impl GlobalBufferModel {
                 );
                 if trim {
                     ctx.background_executor()
-                        .spawn(async { crate::alloc::trim_free_memory() })
+                        .spawn(async { crate::alloc::trim_free_memory_timed("close") })
                         .detach();
                 }
             },

@@ -138,6 +138,16 @@ pub(crate) fn trim_free_memory() {
 )))]
 pub(crate) fn trim_free_memory() {}
 
+/// [`trim_free_memory`] plus one `input_order hop=heap_trim why=<why> ms=<ms> t=<end>` line (only while
+/// input-order logging is on), so the appci editor_memory trim A/B can judge the UI items that ran
+/// DURING the trim (#1607). `why` is `open` (after a file-sized layout) or `close`.
+pub(crate) fn trim_free_memory_timed(why: &'static str) {
+    let start = std::time::Instant::now();
+    trim_free_memory();
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    warpui::input_order::log_hop("heap_trim", || format!("why={why} ms={ms:.2}"));
+}
+
 /// Kill switch for [`trim_free_memory`]: `PHOSPHOR_HEAP_TRIM=0` turns every heap trim off (close
 /// and open alike). Read once.
 #[allow(dead_code)]
