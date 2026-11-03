@@ -18,7 +18,7 @@ use super::search_item::CodeSearchItem;
 use crate::ai::outline::{OutlineStatus, RepoOutlines, RepoOutlinesEvent};
 use crate::search::ai_context_menu::mixer::AIContextMenuSearchableAction;
 use crate::search::data_source::{Query, QueryResult};
-use crate::search::files::model::FileSearchModel;
+use crate::search::files::model::git_changed_files_async;
 use crate::search::mixer::{
     AsyncDataSource, BoxFuture, DataSourceRunError, DataSourceRunErrorWrapper,
 };
@@ -166,24 +166,17 @@ impl CodeSymbolCache {
         (i, batch)
     }
 
-    pub fn get_git_changed_files(&self, app: &AppContext) -> HashSet<String> {
-        let Some(git_repo_path) = app
-            .windows()
+    /// The git repo root for the active window's local session, if any. Cheap and main-thread
+    /// only; the `git status` itself runs asynchronously via [`git_changed_files_async`] (#1312).
+    pub fn active_git_repo_path(&self, app: &AppContext) -> Option<PathBuf> {
+        app.windows()
             .state()
             .active_window
             .and_then(|window_id| ActiveSession::as_ref(app).path_if_local(window_id))
             .and_then(|current_dir| {
                 DetectedRepositories::as_ref(app).get_root_for_path(Path::new(current_dir))
             })
-        else {
-            return HashSet::new();
-        };
-
-        FileSearchModel::as_ref(app)
-            .get_git_changed_files(&git_repo_path)
-            .unwrap_or_default()
     }
-
 }
 
 #[derive(Debug)]
@@ -235,19 +228,23 @@ impl AsyncDataSource for CodeCursorDataSource {
             let init = spawner
                 .spawn(move |cache, ctx| {
                     let (repo_path, total) = cache.ensure_symbols_cached(ctx)?;
-                    let git_changed_files = if init_query.is_empty() {
-                        cache.get_git_changed_files(ctx)
+                    let git_repo_path = if init_query.is_empty() {
+                        cache.active_git_repo_path(ctx)
                     } else {
-                        HashSet::new()
+                        None
                     };
-                    Some((repo_path, total, git_changed_files))
+                    Some((repo_path, total, git_repo_path))
                 })
                 .await
                 .map_err(map_err)?;
 
-            let Some((repo_path, total, git_changed_files)) = init else {
+            let Some((repo_path, total, git_repo_path)) = init else {
                 return Ok(Vec::new());
             };
+
+            // `git status` runs off the main thread (#1312); empty set when there is no repo
+            // (or for a non-empty query), same as before.
+            let git_changed_files = git_changed_files_async(git_repo_path).await;
 
             // We can't actually perform the search off of the main thread
             // (because we don't have access to the code data we need for searching).

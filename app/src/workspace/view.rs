@@ -5760,7 +5760,7 @@ impl Workspace {
                     }
                 }
 
-                crate::util::file::open_file_path_in_external_editor(line_col, path.clone(), ctx);
+                self.open_in_external_editor_setting(line_col, path.clone(), ctx);
             }
             FileTarget::CodeEditor(layout) => {
                 // `open_code` refuses a huge file (#1329) without statting on the UI thread.
@@ -5821,12 +5821,7 @@ impl Workspace {
                 {
                     ctx.open_file_path_from_file_tree(&path);
                 } else {
-                    crate::util::file::open_file_path_with_editor(
-                        line_col,
-                        path.clone(),
-                        None,
-                        ctx,
-                    );
+                    self.open_with_system_default_editor(line_col, path.clone(), ctx);
                 }
             }
             // #706: `CodeSource::FileTree` is the one origin permitted to reach the OS default
@@ -5871,15 +5866,81 @@ impl Workspace {
             ctx.open_file_path_in_explorer(&resolved.path);
             return;
         }
-        if crate::util::file::external_editor::open_file_path_in_default_editor_only(
-            line_col,
-            &resolved.path,
-            ctx,
-        ) {
-            return;
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            // #1318: the XDG default-editor lookup shells out to `xdg-mime` (up to ~500 ms), so
+            // resolve it off the UI thread and finish the open in the callback.
+            let editor_path = resolved.path;
+            ctx.spawn(
+                crate::util::file::external_editor::default_editor_for_file(editor_path.clone()),
+                move |me, editor, ctx| {
+                    if crate::util::file::external_editor::open_file_path_in_resolved_editor_only(
+                        line_col,
+                        &editor_path,
+                        editor,
+                    ) {
+                        return;
+                    }
+                    let open_as_preview = false;
+                    me.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
+                },
+            );
         }
-        let open_as_preview = false;
-        self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        {
+            if crate::util::file::external_editor::open_file_path_in_default_editor_only(
+                line_col,
+                &resolved.path,
+                ctx,
+            ) {
+                return;
+            }
+            let open_as_preview = false;
+            self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
+        }
+    }
+
+    /// Opens `path` in the editor chosen in settings, or the system default when none is chosen.
+    /// On Linux/FreeBSD the system-default lookup (`xdg-mime`) runs off the UI thread (#1318).
+    fn open_in_external_editor_setting(
+        &mut self,
+        line_col: Option<LineAndColumnArg>,
+        path: PathBuf,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let chosen = match *EditorSettings::as_ref(ctx).open_file_editor {
+            crate::util::file::external_editor::settings::EditorChoice::ExternalEditor(editor) => {
+                Some(editor)
+            }
+            _ => None,
+        };
+        match chosen {
+            Some(editor) => {
+                crate::util::file::open_file_path_with_editor(line_col, path, Some(editor), ctx)
+            }
+            None => self.open_with_system_default_editor(line_col, path, ctx),
+        }
+    }
+
+    /// Opens `path` in the system-default editor, falling back to the OS handler. On
+    /// Linux/FreeBSD the `xdg-mime` lookup runs off the UI thread (#1318).
+    fn open_with_system_default_editor(
+        &mut self,
+        line_col: Option<LineAndColumnArg>,
+        path: PathBuf,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            ctx.spawn(
+                crate::util::file::external_editor::default_editor_for_file(path.clone()),
+                move |_, editor, ctx| {
+                    crate::util::file::open_file_path_with_editor(line_col, path, editor, ctx);
+                },
+            );
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+        crate::util::file::open_file_path_with_editor(line_col, path, None, ctx);
     }
 
     fn handle_left_panel_event(&mut self, event: &LeftPanelEvent, ctx: &mut ViewContext<Self>) {
