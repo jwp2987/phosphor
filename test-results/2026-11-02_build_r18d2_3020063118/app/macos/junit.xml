@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-macos" tests="35" failures="6" skipped="2">
+<testcase classname="terminal" name="mode_proof" time="3.90">
+</testcase>
+<testcase classname="terminal" name="cadence" time="7.50">
+</testcase>
+<testcase classname="terminal" name="key_loss_control" time="40.10">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="77.80">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="68.10">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="25.70">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="250.30">
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="36.10">
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="9.90">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="8.10">
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="137.30">
+<failure message="Enter to command start: Phosphor overhead 9.77 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 9.77 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.49 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="29.70">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="72.90">
+</testcase>
+<testcase classname="terminal" name="routing_table" time="57.20">
+<failure message="'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']">'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']</failure>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="34.60">
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="43.00">
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="6.50">
+</testcase>
+<testcase classname="agent" name="mode_proof" time="3.00">
+</testcase>
+<testcase classname="agent" name="cadence" time="7.60">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="66.70">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="7.90">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="25.60">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="249.80">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="35.80">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="10.10">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="8.00">
+</testcase>
+<testcase classname="agent" name="latency_enter" time="137.10">
+<failure message="Enter to command start: Phosphor overhead 9.50 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 9.50 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.22 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines</failure>
+</testcase>
+<testcase classname="agent" name="latency_key_log" time="30.10">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="agent" name="latency_paint" time="72.80">
+<failure message="Key to paint: Phosphor overhead 7.72 ms over Terminal.app (.command via open) exceeds the 2 ms budget">Key to paint: Phosphor overhead 7.72 ms over Terminal.app (.command via open) exceeds the 2 ms budget
+Key to paint: kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session</failure>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="22.70">
+<failure message="the screen kept changing 6 s after Ctrl-C (4 distinct frames in 5): the stream did not stop">the screen kept changing 6 s after Ctrl-C (4 distinct frames in 5): the stream did not stop</failure>
+</testcase>
+<testcase classname="agent" name="routing_table" time="57.90">
+<failure message="'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']">'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']</failure>
+</testcase>
+<testcase classname="agent" name="shell_fish" time="34.50">
+</testcase>
+<testcase classname="agent" name="shell_nu" time="43.10">
+</testcase>
+<testcase classname="agent" name="md_viewer" time="6.50">
+</testcase>
+</testsuite>

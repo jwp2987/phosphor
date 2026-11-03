@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="appci-windows" tests="64" failures="19" skipped="13">
+<testcase classname="terminal" name="mode_proof" time="1.30">
+</testcase>
+<testcase classname="terminal" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal" name="cadence" time="6.00">
+</testcase>
+<testcase classname="terminal" name="enter_loss_control" time="96.70">
+</testcase>
+<testcase classname="terminal" name="fast_typing" time="52.50">
+</testcase>
+<testcase classname="terminal" name="paste_instant_enter" time="5.30">
+</testcase>
+<testcase classname="terminal" name="tab_enter" time="18.20">
+</testcase>
+<testcase classname="terminal" name="ctrl_c_d" time="1229.10">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]); reference: 4 misses
+Phosphor stopped the sleep on 0 samples; reference conhost (powershell.exe): Ctrl-C stopped it on 0 of 4 samples
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_connect_typing" time="42.20">
+<failure message="ssh_connect_typing (gap 0.1 s): T153_8vpgec never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:38:05">ssh_connect_typing (gap 0.1 s): T153_8vpgec never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:38:05 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -&gt; ok | 16:38:05 session shell None pty | 16:38:05 conpty shell pid 6552 | 16:38:06 conpty first output after 0.47 s: 68 bytes | 16:38:07 conpty output ended: 195 bytes sent to the client in total | 16:38:10 connection closed: authenticated=False channels=1; fakesshd.stderr:   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054)
+remote shell received 5/6 typed-ahead commands exactly (missing 1)
+remote rec.log lacks the exact typed command for some trials</failure>
+</testcase>
+<testcase classname="terminal" name="ssh_enter_then_immediate_command" time="12.60">
+</testcase>
+<testcase classname="terminal" name="ssh_nested_typeahead" time="33.40">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T163_v68aku never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:38:48 connect from ('127.0.0.1', 50531) | 16:38:48 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -&gt; ok | 16:38:48 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -&gt; ok | 16:38:48 session shell None pty | 16:38:48 conpty shell pid 15344 | 16:38:48 conpty first output after 0.45 s: 68 bytes; fakesshd.stderr:   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054)</failure>
+</testcase>
+<testcase classname="terminal" name="latency_enter" time="122.50">
+<failure message="Enter to command start: Phosphor overhead 86.47 ms over conhost (powershell.exe) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 86.47 ms over conhost (powershell.exe) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 1.27 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines</failure>
+</testcase>
+<testcase classname="terminal" name="latency_key_log" time="0.00">
+<skipped message="not run in the PowerShell pane: types into a running `cat &gt; /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="terminal" name="shell_fish" time="0.00">
+<skipped message="not run in the PowerShell pane: fish as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="shell_nu" time="0.00">
+<skipped message="not run in the PowerShell pane: nu as a subshell of bash: Git Bash pane only (skips itself when not installed)"/>
+</testcase>
+<testcase classname="terminal" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="mode_proof" time="1.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="cadence" time="6.00">
+</testcase>
+<testcase classname="terminal@gitbash" name="key_loss_control" time="33.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="enter_loss_control" time="56.40">
+</testcase>
+<testcase classname="terminal@gitbash" name="fast_typing" time="48.60">
+</testcase>
+<testcase classname="terminal@gitbash" name="paste_instant_enter" time="17.20">
+<failure message="pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')">pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="tab_enter" time="14.80">
+</testcase>
+<testcase classname="terminal@gitbash" name="ctrl_c_d" time="175.30">
+<failure message="Ctrl-C: Phosphor overhead 20.10 ms over conhost (bash) exceeds the 20 ms budget">Ctrl-C: Phosphor overhead 20.10 ms over conhost (bash) exceeds the 20 ms budget
+Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 4/33 sample lines reached the shell NOT exactly as typed; e.g. characters REORDERED (a character moved: "'" came before 'b'): typed 'bash -c \'trap "date +%s.%N &gt;&gt; cc.txt; exit" INT; sleep 30\'; echo AFTER2 &gt;&gt; cc.txt', shell received '\'bash -c trap "date +%s.%N &gt;&gt; cc.txt; exit" INT; sleep 30\'; echo AFTER2 &gt;&gt; cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write; reference: 0/33 (the reference kept every line: the corruption is Phosphor-side, the same character loss/move as fast_typing)
+Ctrl-C: same trap/timestamp command typed in both terminals; reference measured after Phosphor in the same session; absolute Phosphor median 87.01 ms includes the input-tool spawn (harness floor 0.13080000644549727 ms)
+Ctrl-C: n=26 &lt; 30 samples (smoke/scaled run): numbers are indicative only
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_connect_typing" time="42.50">
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_enter_then_immediate_command" time="25.50">
+<failure message="ssh_enter_then_immediate_command: T194_duje2j never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:48:">ssh_enter_then_immediate_command: T194_duje2j never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 16:48:47 connect from ('127.0.0.1', 50894) | 16:48:47 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -&gt; ok | 16:48:47 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -&gt; ok | 16:48:47 session shell None pty | 16:48:47 conpty shell pid 1048 | 16:48:47 conpty first output after 0.53 s: 68 bytes; fakesshd.stderr: Traceback (most recent call last): |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2043, in run |     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host; PROBE: Git Bash pane: the ControlMaster probe with the wrapper's options FAILED before the case (C:\Program Files\Git\usr\bin\ssh.exe cannot start a ControlMaster, exit 255: mux_client_request_session: read from master failed: Connection reset by peer Failed to connect to new control master); the app's bash ssh wrapper starts `-o ControlMaster=yes ... -N -f` on every ssh, so a real Git Bash user's ssh is expected to fail the same way (candidate APP finding: no fallback to plain ssh when the master cannot start)
+remote shell received 1/2 immediately-typed commands exactly: ['T192_vu0hbl']</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="ssh_nested_typeahead" time="7.90">
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_enter" time="68.20">
+<failure message="Enter to command start: Phosphor overhead 16.97 ms over conhost (bash) exceeds the 2 ms budget">Enter to command start: Phosphor overhead 16.97 ms over conhost (bash) exceeds the 2 ms budget
+app share of Enter-&gt;start: enter_begin -&gt; pty_write median 0.88 ms (from the app's input_order log); the remaining overhead is shell/ConPTY side
+Enter to command start: reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_key_log" time="12.00">
+<skipped message="NO-REFERENCE (not a pass): NO-REFERENCE: key to frame: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="latency_paint" time="0.50">
+<skipped message="kl3 (ScreenCaptureKit) is macOS only; no key-&gt;paint read-back exists on this platform, so there is nothing to compare"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="routing_table" time="44.80">
+<failure message="'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']">'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']</failure>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_fish" time="0.50">
+<skipped message="package fish (apt install fish) not installed (looked on PATH and in ~/.local/bin, /home/<user>/.local/bin, /opt/homebrew/bin, /usr/local/bin, ~/.cargo/bin, /snap/bin)"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="shell_nu" time="0.50">
+<skipped message="package nushell (not in Ubuntu repos: github.com/nushell/nushell release tarball, or `cargo install nu --locked`; Mac: brew install nushell) not installed (looked on PATH and in ~/.local/bin, /home/<user>"/>
+</testcase>
+<testcase classname="terminal@gitbash" name="md_viewer" time="0.50">
+<skipped message="no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows"/>
+</testcase>
+<testcase classname="agent" name="mode_proof" time="0.20">
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="fast_typing" time="21.90">
+</testcase>
+<testcase classname="agent" name="paste_instant_enter" time="5.30">
+</testcase>
+<testcase classname="agent" name="tab_enter" time="18.10">
+</testcase>
+<testcase classname="agent" name="ctrl_c_d" time="1087.90">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- PowerShell: Ctrl-C did not stop the sleep (no stamp within 6 s, or one that predates the key) on 33 of 33 samples (indexes [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="agent" name="left_agent_mode_after_ctrl_c_d" time="0.00">
+<failure message="after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape">after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent" name="ssh_connect_typing" time="48.20">
+</testcase>
+<testcase classname="agent" name="ssh_enter_then_immediate_command" time="12.80">
+</testcase>
+<testcase classname="agent" name="ssh_nested_typeahead" time="33.00">
+<failure message="the line typed behind a nested ssh ran exactly once remotely: []">the line typed behind a nested ssh ran exactly once remotely: []
+ssh_nested_typeahead (inner): T85_39yn2q never reached the REMOTE file (ssh did not give a remote shell in front), `exit` NOT typed; stopping (sshd.log, phosphor.log). Test host: sshd.log: 17:12:21 connect from ('127.0.0.1', 51255) | 17:12:21 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -&gt; ok | 17:12:21 auth publickey user=Winters key=ssh-ed25519 c99bfbd87087aa50c07fd22a42bc3679 -&gt; ok | 17:12:21 session shell None pty | 17:12:21 conpty shell pid 13964 | 17:12:22 conpty first output after 0.61 s: 68 bytes; fakesshd.stderr:     self._check_banner() |   File "C:\Users\<user>\AppData\Local\phosphor-ci\python312\Lib\site-packages\paramiko\transport.py", line 2231, in _check_banner |     raise SSHException( | paramiko.ssh_exception.SSHException: Error reading SSH protocol banner[WinError 10054] An existing connection was forcibly closed by the remote host | Socket exception: An existing connection was forcibly closed by the remote host (10054) | Socket exception: An existing connection was forcibly closed by the remote host (10054)</failure>
+</testcase>
+<testcase classname="agent" name="agent_stream_cancel" time="0.00">
+<skipped message="not run in the PowerShell pane: uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)"/>
+</testcase>
+<testcase classname="agent" name="routing_table" time="0.00">
+<skipped message="not run in the PowerShell pane: asserts what the shell received from rec.log: runs in the Git Bash pane"/>
+</testcase>
+<testcase classname="agent@gitbash" name="mode_proof" time="0.20">
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="fast_typing" time="19.10">
+<failure message="ft0: shell received 31 commands, not the typed ones (first mismatch: &quot;echo t1_ieqh524yng &gt;&gt; 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run/home/<user>/proof_agent_gitbash.txt'&quot;) -- di">ft0: shell received 31 commands, not the typed ones (first mismatch: "echo t1_ieqh524yng &gt;&gt; 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run/home/<user>/proof_agent_gitbash.txt'") -- differs (31 typed, 122 received characters): typed 'echo t2_5by1a2rogu &gt;&gt; r_ft0.txt', shell received "echo t1_ieqh524yng &gt;&gt; 'C:/gl/b/07xLPX_fG/0/winters-phosphor/phosphor/appci-out/windows/run"; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="paste_instant_enter" time="11.90">
+<failure message="pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')">pasted lines reached the shell exactly: 5/6 byte-exact (first mismatch: 'count 5 vs 6')</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="tab_enter" time="25.00">
+<failure message="Tab+Enter: completed file has 1/12 expected lines">Tab+Enter: completed file has 1/12 expected lines</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="ctrl_c_d" time="111.50">
+<failure message="Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 14/33 sample lines reached the shell NOT exactly as typed; e.g. differs (81 typed, 80 received characters): typed 'bash -c \'tr">Ctrl-C / command-after-Ctrl-C delivered fewer than 33 times -- Phosphor: 14/33 sample lines reached the shell NOT exactly as typed; e.g. differs (81 typed, 80 received characters): typed 'bash -c \'trap "date +%s.%N &gt;&gt; cc.txt; exit" INT; sleep 30\'; echo AFTER1 &gt;&gt; cc.txt', shell received 'cbash -c \'trap "date +%s.%N &gt;&gt;c.txt; exit" INT; sleep 30\'; echo AFTER1 &gt;&gt; cc.txt'; the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write
+fix tier, agent mode (winmap.FIX_TIER): Ctrl-C delivery and line integrity only; the overhead budget is judged in terminal mode
+Ctrl-D half not run on Windows: Ctrl-D is not end-of-input in PowerShell, and under ConPTY an msys cat/bash has not been validated to see it as EOF (docs/testing.md 2.8); the Ctrl-C half above ran</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="left_agent_mode_after_ctrl_c_d" time="0.00">
+<failure message="after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape">after ctrl_c_d the pane shows a TERMINAL session, not agent view; the app is relaunched (fresh agent session) so later agent cases measure agent mode. Candidate APP finding if the case typed no Escape.</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="key_delivery" time="0.00">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_connect_typing" time="42.60">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_enter_then_immediate_command" time="10.50">
+</testcase>
+<testcase classname="agent@gitbash" name="ssh_nested_typeahead" time="7.80">
+</testcase>
+<testcase classname="agent@gitbash" name="agent_stream_cancel" time="62.30">
+<failure message="no model request ('[byop] opening stream') within 60 s of the prompt's Enter; prompt not routed to the agent or provider unreachable">no model request ('[byop] opening stream') within 60 s of the prompt's Enter; prompt not routed to the agent or provider unreachable</failure>
+</testcase>
+<testcase classname="agent@gitbash" name="routing_table" time="44.20">
+<failure message="'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']">'find the bug in main.rs' (ambiguous) expected agent, went to shell (surface AgentConversation, rule evidence-in-conversation (#1183)); shell received ['find the bug in main.rs']</failure>
+</testcase>
+<testcase classname="-" name="restore" time="0.00">
+</testcase>
+</testsuite>
