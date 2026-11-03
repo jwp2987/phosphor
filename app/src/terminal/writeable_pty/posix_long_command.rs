@@ -30,13 +30,23 @@ pub(super) const MIN_WRAPPED_BYTES_BRACKETED: usize = 512 * 1024;
 
 /// Whether `command` should be sent through [`wrapper_line`], given whether the shell has
 /// bracketed paste turned on.
+///
+/// With bracketed paste only a MULTI-LINE command is wrapped (#1191). The quadratic cost the
+/// larger size guards against is readline's here-doc/multi-line paste handling; a command on one
+/// line has none. Measured on a 1 MB single line: pasted as it is, the shell had it in 48-52 ms
+/// (xterm, same payload), while the wrapper's 1.3 MB base64 line took 1.3-1.8 s to reach the
+/// shell (3 MB: 4.3-5.4 s, vs 140 ms) and made the terminal parse the echo of the longer line
+/// and then the command again for the display override.
 pub(super) fn needs_wrapper_for(command: &str, bracketed_paste: bool) -> bool {
-    let min = if bracketed_paste {
-        MIN_WRAPPED_BYTES_BRACKETED
-    } else {
-        MIN_WRAPPED_BYTES
-    };
-    command.len() >= min
+    if bracketed_paste {
+        return command.len() >= MIN_WRAPPED_BYTES_BRACKETED && has_line_break(command);
+    }
+    command.len() >= MIN_WRAPPED_BYTES
+}
+
+/// Whether `command` spans more than one line (`\n` or `\r`).
+fn has_line_break(command: &str) -> bool {
+    command.bytes().any(|b| b == b'\n' || b == b'\r')
 }
 
 /// Whether `command` should be sent through [`wrapper_line`] for a shell without bracketed paste.
