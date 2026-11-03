@@ -3148,6 +3148,10 @@ pub struct TerminalView {
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
+    /// The connect window was released (by a path with no event handler of its own) while keys
+    /// are held: the next key or turn hands them over before judging anything else. Cleared by
+    /// any hand-over run (`deliver_ssh_typeahead_if_ready`).
+    ssh_handover_after_release: bool,
     /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
     /// own submit), until the block it started is seen starting.
     ssh_submit_user_origin: Option<bool>,
@@ -5020,6 +5024,7 @@ impl TerminalView {
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
+            ssh_handover_after_release: false,
             ssh_submit_user_origin: None,
             running_block_user_submitted: false,
             young_enter_released: true,
@@ -11266,6 +11271,7 @@ impl TerminalView {
         source: &'static str,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.ssh_handover_after_release = false;
         if !self.ssh_typeahead_holding {
             return false;
         }
