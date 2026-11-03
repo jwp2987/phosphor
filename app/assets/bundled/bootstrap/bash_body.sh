@@ -1624,8 +1624,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
                     command ssh "${@:1}"
                     return
                 fi
-                # Own it only if a master really answers there: a file at the path is not proof.
-                if warp_ssh_mux_command check "$control_path"; then
+                # Own it only if a master really answers there. #1172: the socket we just waited for IS the proof: the
+                # path was verified empty above, so a socket there can only be this master's, and `-f` returns only after
+                # it listens. That saves the `-O check` helper (sh, ssh, a watchdog subshell and its sleep: five
+                # processes) on the critical path. WARP_SSH_VERIFY_MASTER=1 restores the answer-from-the-master check.
+                if [[ -S "${control_path/#\~/$HOME}" && ! -L "${control_path/#\~/$HOME}" ]] && { [[ "${WARP_SSH_VERIFY_MASTER:-0}" != "1" ]] || warp_ssh_mux_command check "$control_path"; }; then
                     warp_owns_master=1
                     control_master_mode="no"
                 fi
@@ -1824,7 +1827,8 @@ esac
                     builtin read -r -d '' WARP_SSH_PROBE_CACHE < "$probe_file" 2>/dev/null || :
                 fi
             fi
-            now=$(command -p date +%s)
+            # #1172: $EPOCHSECONDS (bash >= 5.0) instead of a `date` fork.
+            now=${EPOCHSECONDS:-$(command -p date +%s)}
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
                 l_ts="${line##*|}"

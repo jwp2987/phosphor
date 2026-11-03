@@ -999,8 +999,12 @@ if test "$WARP_IS_LOCAL_SHELL_SESSION" = "1"
                 command ssh $argv
                 return
             end
-            # Own it only if a master really answers there: a file at the path is not proof.
-            if warp_ssh_mux_command check "$control_path"
+            # Own it only if a master really answers there. #1172: the socket we just waited for IS the proof: the
+            # path was verified empty above, so a socket there can only be this master's, and `-f` returns only
+            # after it listens. That saves the `-O check` helper (five processes) on the critical path.
+            # WARP_SSH_VERIFY_MASTER=1 restores the answer-from-the-master check.
+            set -l warp_socket_now (string replace -r '^~' -- "$HOME" "$control_path")
+            if begin; test -S "$warp_socket_now"; and not test -L "$warp_socket_now"; and begin; test "$WARP_SSH_VERIFY_MASTER" != "1"; or warp_ssh_mux_command check "$control_path"; end; end
                 set warp_owns_master 1
                 set control_master_mode no
             end

@@ -1704,7 +1704,7 @@ fn ssh_wrapper_decides_after_connecting_over_one_master() {
                 ),
             };
             // The stub records every invocation (arguments one per line after a `CALL` marker),
-            // fails -G, and otherwise behaves like ssh would:
+            // answers -G with a minimal resolved config, and otherwise behaves like ssh would:
             //   -O check -> 0 when a master listens on the ControlPath, else 255;
             //   -O exit  -> tells that master to exit (it unlinks its socket), or 255 ($EXIT_FAILS
             //               or no master);
@@ -1763,7 +1763,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$OUT"; done
 p=
 for a in "$@"; do case "$a" in ControlPath=*) p="${a#ControlPath=}"; case "$p" in "~"*) p="$HOME${p#\~}";; esac;; esac; done
 case " $* " in
-  *" -G "*) exit 1;;
+  *" -G "*) printf 'user u\nhostname h\nport 22\n'; exit 0;;
   *" -O check "*) python3 "$MUX" check "$p"; exit $?;;
   *" -O exit "*) test -n "$EXIT_FAILS" && exit 255; python3 "$MUX" exit "$p"; exit $?;;
   *" -N "*)
@@ -1916,6 +1916,23 @@ exit 0
                 checks_before_master,
                 usize::from(!case.pre.is_empty()),
                 "{name}/{}: an occupied ControlPath is checked (once) before anything else: {recorded:?}",
+                case.name
+            );
+            // #1172: the connect adds as few processes over plain ssh as it can. ONE `ssh -G` per
+            // wrapped ssh (none when the wrapper runs the plain ssh before reading any config), and
+            // an `-O check` only where the answer is needed: for an occupied ControlPath before the
+            // master starts, never again once the master has been started and its socket is there.
+            let g_calls = all_calls.len() - calls.len();
+            assert_eq!(
+                g_calls,
+                usize::from(case.name != "msys2"),
+                "{name}/{}: ssh -G runs once: {recorded:?}",
+                case.name
+            );
+            let total_checks = calls.iter().filter(|c| c.contains("-O\ncheck\n")).count();
+            assert_eq!(
+                total_checks, checks_before_master,
+                "{name}/{}: no -O check after the master is started: {recorded:?}",
                 case.name
             );
             if case.session == "unwrapped" {
