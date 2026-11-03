@@ -601,6 +601,11 @@ def main():
         return True
 
     print("pipeline", pid, "tier", tier, flush=True)
+    # r18e4: the Mac and Windows builds have `needs: []` and run on their own machines; holding them behind a check-linux that
+    # waits for the busy box left those machines idle for hours. Start them now (a compile error fails them on their own).
+    for p in (MAC, WIN):
+        if p in plats and p not in reuse and BUILD[p] not in SKIP and play(BUILD[p]):
+            print("%s: started %s without waiting for check-linux (own machine)" % (time.strftime("%H:%M"), BUILD[p]), flush=True)
     if reuse and all(p in reuse for p in plats):
         # every platform tests an app-identical earlier build: that commit's compile check already passed, so do not queue
         # the app tests behind a check-linux that waits for the box
