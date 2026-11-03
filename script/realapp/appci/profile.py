@@ -6,7 +6,11 @@ import os, random, shutil, subprocess, sys
 
 
 def _wr(path, text):
-    """write text with LF line endings on every OS (a Windows text-mode write would make CRLF shell scripts and rc files)"""
+    """write text with LF line endings on every OS (a Windows text-mode write would make CRLF shell scripts and rc files). Creates the parent
+    directory (#1550's .refzdot/ was never created: every pass crashed in prof.build, caught by the #1414 diagnostic run)."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
     with open(path, "w", newline="\n") as f:
         f.write(text)
 

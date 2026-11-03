@@ -4,6 +4,7 @@
 # Covers the parsers and registries the verdicts hang on: Ctx.lines / stamps / parse_t / key_frame_pairs, the app-log readers (log_view_mode,
 # mode_now's log-first rule, log_since), Profile.commands, routing classification, case-name validation, tier_plan, and the registry
 # consistency checks (SMOKE, winmap, FIX_TIER name only registered cases: a renamed case used to drop out of smoke silently).
+import os
 import json, os, subprocess, sys, tempfile, shutil, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -444,6 +445,18 @@ def ssh_trial_plan_and_loss_report():
     o = cases.loss_report(1, 40)
     assert o["rate"] == 0.025 and o["upper_bound"] > 0.11
     assert cases.loss_report(0, 150)["upper_bound"] < 0.025 and "needs" not in cases.loss_report(0, 150)["text"]
+
+
+@check
+def profile_build_writes_every_file_in_a_fresh_dir():
+    # r18d4 diag: #1550 wrote .refzdot/.zshrc into a directory nobody created; every pass crashed in prof.build. Build both modes offline.
+    import tempfile
+    import profile as P
+    for mode in ("terminal", "agent"):
+        d = tempfile.mkdtemp()
+        pr = P.Profile(os.path.join(d, "run"))
+        pr.build(mode, None, "gpt-oss:20b")
+        assert os.path.exists(os.path.join(pr.ref_zdot, ".zshrc")) and os.path.exists(pr.ref_rc), mode
 
 
 def main():
