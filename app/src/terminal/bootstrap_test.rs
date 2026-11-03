@@ -3604,7 +3604,7 @@ fn strip_local_only_block_drops_exactly_the_marked_lines() {
     let script: Cow<'static, [u8]> = Cow::Borrowed(
         b" a\n : __warp_local_only_begin\n ssh()\n : __warp_local_only_end\n b\n",
     );
-    assert_eq!(strip_local_only_block(script).as_ref(), b" a\n b\n");
+    assert_eq!(&*strip_local_only_block(script), &b" a\n b\n"[..]);
     // A missing, doubled or reversed marker leaves the script alone.
     for bad in [
         &b" a\n : __warp_local_only_begin\n b\n"[..],
@@ -3614,7 +3614,7 @@ fn strip_local_only_block_drops_exactly_the_marked_lines() {
         b" plain\n",
     ] {
         let input: Cow<'static, [u8]> = Cow::Owned(bad.to_vec());
-        assert_eq!(strip_local_only_block(input).as_ref(), bad);
+        assert_eq!(&*strip_local_only_block(input), bad);
     }
 }
 

@@ -14119,7 +14119,7 @@ fn test_enter_queue_voided_enter_keeps_the_typed_text_in_the_editor() {
 /// predates the paste, which End must not read: it waits for a layout laid out after the paste).
 #[test]
 fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
-    use crate::editor::soft_wrap::FrameLayouts;
+    use crate::editor::FrameLayouts;
     use crate::terminal::input_queue::DestinationMode;
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
 
@@ -14211,7 +14211,7 @@ fn test_cursor_keys_behind_a_large_paste_apply_after_the_whole_paste() {
 /// next layout and the text typed behind it waits too; nothing is lost or reordered. Both modes.
 #[test]
 fn test_live_end_after_an_edit_waits_for_the_next_layout() {
-    use crate::editor::soft_wrap::FrameLayouts;
+    use crate::editor::FrameLayouts;
     use crate::terminal::input_queue::DestinationMode;
 
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {

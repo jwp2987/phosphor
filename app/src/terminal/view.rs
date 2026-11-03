@@ -12151,6 +12151,8 @@ impl TerminalView {
                     .ssh_connect_gate
                     .as_ref()
                     .is_some_and(|gate| gate.user_submitted),
+            // Set by the caller from the focus snap it has already taken (#1552, Fable F9).
+            settled_ai_focus: false,
         }
     }
 

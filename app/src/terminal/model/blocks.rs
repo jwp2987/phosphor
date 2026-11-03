@@ -593,6 +593,9 @@ fn run_deferred_restore_job(
             config.is_inverted,
             config.obfuscate_secrets,
             config.is_ai_ugc_telemetry_enabled,
+            // Its own cell, shared with nobody: the scratch list's selection must never reach the
+            // pane's key facts (#1411), for the same reason its events go nowhere.
+            KeyModelCell::default(),
         );
         // A panic parsing one block must not strand the blocks after it as blank placeholders.
         let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

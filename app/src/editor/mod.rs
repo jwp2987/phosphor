@@ -3,6 +3,10 @@ pub mod autosuggestion_ignore_view;
 mod soft_wrap;
 mod view;
 
+// Tests outside the editor build frame layouts to stand in for a render (#1389); the module stays private.
+#[cfg(test)]
+pub(crate) use soft_wrap::FrameLayouts;
+
 /// Consumers of the editor should only interface with the view.
 /// They should _not_ be able to interface with the internal
 /// details of the editor (e.g. the [`Buffer`]).
