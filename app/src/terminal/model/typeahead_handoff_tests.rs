@@ -3956,6 +3956,18 @@ fn a_cooked_shell_in_front_holds_only_while_the_stream_is_unapplied() {
     let mut inner = seq_after_submit(ShellPromptFact::Unknown);
     type_and_flush(&mut inner, b"explain");
     assert_eq!(inner.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+
+    // The written command's own Preexec not yet parsed (R2b): the cooked shell in front may be
+    // about to read it; the window, as for the line editor.
+    let probe = RawReadProbe::new(ShellPromptFact::ShellCooked, Some(false));
+    let mut pending = seq_after_submit(ShellPromptFact::ShellCooked);
+    probe.install(&mut pending);
+    type_and_flush(&mut pending, b"explain");
+    assert_eq!(pending.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        pending.young_hold_evidence(),
+        Some(YoungHoldEvidence::TimingWindow)
+    );
 }
 
 /// The decision table for the barrier itself, through a real [`PtyStreamBarrier`]: only equal
@@ -4947,7 +4959,7 @@ fn every_hold_names_a_release_that_is_satisfiable_when_it_engages() {
                                                 Probe::Fact(
                                                     ShellPromptFact::LineEditorReading,
                                                     Some(true)
-                                                )
+                                                ) | Probe::Fact(ShellPromptFact::ShellCooked, _)
                                             )),
                                     "the window only where nothing can be asked, or while the \
                                      written command's own Preexec is pending: {label}"

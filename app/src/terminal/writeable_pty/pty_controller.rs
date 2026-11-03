@@ -897,11 +897,15 @@ impl<T: EventLoopSender> PtyController<T> {
                 // Decide again whether or not a request was waiting: after a `DrainAndWait` the
                 // reset is what hands input back to the editor.
                 // (In the prompt-sequence path other events retry a wait that is not about the counts.)
-                // #1614: never while a young hold is live. The decision can end such a hold as
-                // typeahead (no binding, a committed delivery), and a timer must not write keys;
-                // the hold has its own event releases and the hand-back cap.
-                if did_reset && (diverged || !seq_mode) && !young_hold_live {
-                    me.retry_typeahead_handoff_request(ctx);
+                if did_reset && (diverged || !seq_mode) {
+                    if young_hold_live {
+                        // #1614: not now (a timer must not end the hold as typeahead: the
+                        // decision's no-binding and committed-delivery branches would); decide on
+                        // the next flushed write, or when the hold's own end asks for it.
+                        me.handoff_request_waiting = true;
+                    } else {
+                        me.retry_typeahead_handoff_request(ctx);
+                    }
                 }
             },
         );

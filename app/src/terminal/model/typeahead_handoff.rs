@@ -2695,6 +2695,12 @@ impl TypeaheadHandoff {
             {
                 Some(YoungHoldEvidence::RequestDue)
             }
+            // The written command's own Preexec has not been parsed: the cooked shell in front may
+            // be the one about to read it (as for the line editor above); the window, released by
+            // the command's Precmd.
+            ShellPromptFact::ShellCooked if self.own_preexec_pending && !counts_say_prompt => {
+                window()
+            }
             // A line unanswered and the stream not applied up to now: its Precmd may be in it;
             // the barrier's next publish decides. Applied (or no barrier), nothing says a prompt
             // is coming: delivered, as to a cooked `read x`.
@@ -2908,10 +2914,12 @@ impl TypeaheadHandoff {
                 });
                 StreamApplied::RetryRequest
             }
-            // The written command's own Preexec is still to come (the editor read the typed line
-            // before the command, or the command's Preexec is late): the hold keeps waiting, for
-            // that Preexec (which does not end it) and the Precmd that makes the request due.
-            Some(YoungHoldEvidence::TimingWindow) => StreamApplied::Nothing,
+            // The written command's own Preexec is still to come (window), or the barrier is gone
+            // from the probe (no barrier: the Precmd decides): the hold keeps waiting for that
+            // Preexec (which does not end it) and the Precmd that makes the request due.
+            Some(YoungHoldEvidence::TimingWindow | YoungHoldEvidence::PrecmdMaybeInFlight) => {
+                StreamApplied::Nothing
+            }
             None => {
                 self.end_young_hold_as_typeahead();
                 warpui::input_order::log_hop("young_hold_reevaluated", || {

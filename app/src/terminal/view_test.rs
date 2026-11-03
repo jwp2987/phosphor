@@ -20554,6 +20554,43 @@ fn a_late_interactive_event_for_a_finished_block_does_not_mark_the_shell_interac
     })
 }
 
+/// #1614 (review C2): the cap's hand-back asks the controller for the request decision once the
+/// hold is gone (a decision now can only commit the editor or write the request, never held keys):
+/// the decision the stale-count timer had to skip while the hold lived runs, so the pane does not
+/// stay pty-owned with the handed-back text in the editor. Nothing is written to the pty.
+#[test]
+fn a_young_hold_hand_back_asks_for_the_request_decision() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            young_enter_setup(view);
+            hold_a_young_enter(view, &pty_writes, ctx);
+            assert_eq!(*retries.borrow(), 0, "a window hold asks for nothing when it opens");
+            let token = view.paste_queue.queue.borrow().gates()[0].token;
+            view.on_paste_queue_give_up(token, ctx);
+            assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+        });
+        assert_eq!(*retries.borrow(), 1, "the hand-back asks for the decision once");
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a timer wrote to the pty: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
 /// #1614 (review R2): the shell started a command after a young Enter was held (a Preexec parsed
 /// after the hold opened, not the written command's own): the Enter and the keys behind it are
 /// that command's typeahead, written as one write on the Preexec event itself, with no give-up
