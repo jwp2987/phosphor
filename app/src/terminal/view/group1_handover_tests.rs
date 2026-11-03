@@ -545,3 +545,234 @@ fn an_agent_write_does_not_overtake_user_bytes_waiting_in_the_queue() {
         );
     })
 }
+
+/// A finished user block, as the input's block-completed handler receives it (#1596 tests).
+fn kept_text_block_completed_for_test() -> crate::terminal::event::BlockCompletedEvent {
+    use crate::terminal::event::{BlockCompletedEvent, BlockType, UserBlockCompleted};
+    use crate::terminal::model::block::{BlockId, SerializedBlock};
+    use crate::terminal::model::terminal_model::BlockIndex;
+    use std::sync::Arc;
+    BlockCompletedEvent {
+        block_latency_data: None,
+        block_type: BlockType::User(UserBlockCompleted::new_for_test(
+            BlockIndex::zero(),
+            Arc::new(SerializedBlock::new_for_test(b"ssh host".to_vec(), vec![])),
+            "ssh host".to_owned(),
+            "ssh host".to_owned(),
+            String::new(),
+            String::new(),
+            false,
+            None,
+            0,
+            0,
+        )),
+        num_secrets_obfuscated: 0,
+        block_index: BlockIndex::zero(),
+        eviction_stamp: Default::default(),
+        block_id: BlockId::new(),
+        session_id: None,
+        restored_block_was_local: None,
+    }
+}
+
+/// The ssh block ends: the view drops the banner, the input runs its end-of-block hand-back.
+fn end_kept_text_block_for_test(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    use crate::terminal::model::block::BlockId;
+    view.ssh_kept_text_block_ended(ctx);
+    view.input.update(ctx, |input, ctx| {
+        input.set_deferred_ops_latest_block_for_test(BlockId::new());
+        input.handle_block_completed_event(kept_text_block_completed_for_test(), ctx);
+    });
+}
+
+const KEPT_TEXT: &str = "echo hi\nls";
+
+/// A pane whose ssh block runs, with text the ssh hand-back kept for it (#1596).
+fn kept_text_pane_for_test(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    register_local_session_for_ssh_test(view, ctx);
+    view.model
+        .lock()
+        .simulate_long_running_block("ssh host", "");
+    view.model
+        .lock()
+        .block_list()
+        .active_block()
+        .interactive_latch()
+        .force(true);
+    assert!(view.is_long_running());
+    view.hand_back_unexecuted_ssh_text(KEPT_TEXT.to_owned(), ctx);
+}
+
+fn click_kept_text_banner(
+    app: &mut App,
+    terminal: &ViewHandle<TerminalView>,
+    action: crate::terminal::view::ssh_kept_text_banner::SshKeptTextBannerAction,
+) {
+    use warpui::TypedActionView as _;
+    let banner = terminal
+        .read(&*app, |view, _| view.ssh_kept_text_banner())
+        .expect("the kept-text banner is up");
+    banner.update(app, |banner, ctx| banner.handle_action(&action, ctx));
+}
+
+/// #1596: text kept while the ssh block runs is shown in a banner over that block, whole, with
+/// its char count; it is not in the editor and nothing is written.
+#[test]
+fn kept_ssh_text_is_shown_in_a_banner_over_the_running_block() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                kept_text_pane_for_test(view, ctx);
+                let banner = view
+                    .ssh_kept_text_banner()
+                    .unwrap_or_else(|| panic!("{mode:?}: a banner is up"));
+                let active = view.model.lock().active_block_id().clone();
+                let banner = banner.as_ref(ctx);
+                assert_eq!(banner.text(), KEPT_TEXT, "{mode:?}");
+                assert_eq!(banner.block_id(), &active, "{mode:?}: over the ssh block");
+                assert!(banner.title().contains("(10 chars)"), "{mode:?}");
+                assert_eq!(banner.note(), None, "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).handed_back_text_for_test(),
+                    Some(KEPT_TEXT),
+                    "{mode:?}: the input still keeps it"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// #1596: "Type into session" writes exactly the kept text, each line break as Enter, once; the
+/// banner and the kept text are gone, so the block's end hands nothing back.
+#[test]
+fn type_into_session_writes_the_kept_text_once() {
+    use crate::terminal::view::ssh_kept_text_banner::SshKeptTextBannerAction;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| kept_text_pane_for_test(view, ctx));
+            click_kept_text_banner(
+                &mut app,
+                &terminal,
+                SshKeptTextBannerAction::TypeIntoSession,
+            );
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            assert_eq!(
+                pty_writes.borrow().concat(),
+                b"echo hi\rls".to_vec(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
+                assert_eq!(view.input.as_ref(ctx).handed_back_text_for_test(), None);
+                // A second click (no banner) and the block's end deliver nothing again.
+                view.type_ssh_kept_text_into_session(ctx);
+                end_kept_text_block_for_test(view, ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            assert_eq!(
+                pty_writes.borrow().concat(),
+                b"echo hi\rls".to_vec(),
+                "{mode:?}: written once"
+            );
+        })
+    }
+}
+
+/// #1596: "Discard" drops the kept text: nothing is written, the banner goes, and the block's end
+/// hands nothing back.
+#[test]
+fn discard_drops_the_kept_text_and_writes_nothing() {
+    use crate::terminal::view::ssh_kept_text_banner::SshKeptTextBannerAction;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| kept_text_pane_for_test(view, ctx));
+            click_kept_text_banner(&mut app, &terminal, SshKeptTextBannerAction::Discard);
+            terminal.update(&mut app, |view, ctx| {
+                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
+                assert_eq!(view.input.as_ref(ctx).handed_back_text_for_test(), None);
+                end_kept_text_block_for_test(view, ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// #1596: the block ends with the banner up: the banner goes and the existing end-of-block
+/// hand-back puts the text into the editor, guarded, unchanged; a late "Type into session" finds
+/// nothing, so nothing is delivered twice.
+#[test]
+fn block_end_with_the_banner_up_hands_the_text_back_once() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                kept_text_pane_for_test(view, ctx);
+                assert!(view.ssh_kept_text_banner().is_some(), "{mode:?}");
+                end_kept_text_block_for_test(view, ctx);
+                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    KEPT_TEXT,
+                    "{mode:?}"
+                );
+                assert!(
+                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
+                    "{mode:?}"
+                );
+                view.type_ssh_kept_text_into_session(ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    KEPT_TEXT,
+                    "{mode:?}"
+                );
+            });
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}

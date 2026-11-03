@@ -33,6 +33,7 @@ mod shell_terminated_banner;
 mod wakeup_redraw;
 use wakeup_redraw::{FooterFingerprint, RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
+pub(crate) mod ssh_kept_text_banner;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
 mod tab_metadata;
@@ -11660,9 +11661,13 @@ impl TerminalView {
             );
             self.input
                 .update(ctx, |input, _| input.stash_handed_back_text(text));
+            // #1596: the kept text is shown over the running ssh block, with "Type into session"
+            // (the user's click writes it) and "Discard"; at the block's end it comes back into
+            // the input as before.
+            self.show_ssh_kept_text_banner(ctx);
             self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was kept, not run; it will be in the \
-                 input when the running command ends",
+                "Text typed while the SSH session connected was kept, not run; it is shown above \
+                 the input until the running command ends",
                 ctx,
             );
             return;
@@ -17442,6 +17447,9 @@ impl TerminalView {
 
                 if let BlockType::User(user_completed) = &block_completed_event.block_type {
                     self.on_user_block_completed(&block_completed_event.block_id, ctx);
+                    // #1596: the kept-text banner goes with the block; the input's own
+                    // end-of-block hand-back restores the text.
+                    self.ssh_kept_text_block_ended(ctx);
                     // #1609: any user block ending returns the pty to the local shell, whether or
                     // not an ssh gate is still open.
                     self.log_ssh_pty_owner(false, "block_completed");
