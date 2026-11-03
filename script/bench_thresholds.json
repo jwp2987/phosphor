@@ -4,6 +4,7 @@
     "pane_queue/idle_key": 20000,
     "pane_queue/gate_open_offer_drain": 1000000,
     "destination_for": 200000,
+    "table_decide": 200000,
     "handoff/young_submit_decision": 10000,
     "handoff/key_facts_load": 10000,
     "handoff/pane_handoff_read": 10000,
