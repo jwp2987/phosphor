@@ -3676,17 +3676,46 @@ def ui_items(text):
     return out
 
 
-def ui_window_max(items, t0, seconds=5.0, after_largest=False):
-    """(max ms, count >= 4 ms budget, skipped load-frame ms) over the UI items in [t0, t0 + seconds]. after_largest: the window starts after the
-    largest item at/after t0 (the load's own layout frame after an open), so what is measured is what follows it, where a trim would stall"""
-    xs = sorted(i for i in items if i[0] >= t0)
+def ui_window_max(items, t0, seconds=5.0, after_largest=False, t_end=None):
+    """(max ms, count >= 4 ms budget, skipped load-frame ms) over the UI items in [t0, min(t0 + seconds, t_end)]. after_largest: the window
+    starts after the largest item in that window (the load's own layout frame after an open). t_end bounds the window so items of a later phase
+    (the close) can neither enter it nor be taken for the load frame. A trim's own stall is judged separately (ui_trim_max), since it can be the
+    largest item."""
+    end = t0 + seconds if t_end is None else min(t0 + seconds, t_end)
+    xs = sorted(i for i in items if t0 <= i[0] <= end)
     skipped = None
     if after_largest and xs:
         big = max(xs, key=lambda i: i[1])
-        skipped, t0 = big[1], big[0]
+        skipped = big[1]
         xs = [i for i in xs if i[0] > big[0]]
-    xs = [i for i in xs if i[0] <= t0 + seconds]
     return (max((i[1] for i in xs), default=0.0), sum(1 for i in xs if i[1] >= UI_BUDGET_MS), skipped)
+
+
+_HEAP_TRIM_RE = re.compile(r"input_order hop=heap_trim why=(\w+) ms=(\d+(?:\.\d+)?)")
+
+
+def heap_trims(text):
+    """[(end epoch_s, ms, why)] of the app's `input_order hop=heap_trim why=<open|close> ms=<ms> t=<end>` lines (app/src/alloc.rs
+    trim_free_memory_timed: one per heap trim, logged when it finishes)"""
+    out = []
+    for line in text.splitlines():
+        m = _HEAP_TRIM_RE.search(line)
+        t = re.search(r" t=(\d+(?:\.\d+)?)", line) if m else None
+        if m and t:
+            out.append((float(t.group(1)) / 1000.0, float(m.group(2)), m.group(1)))
+    return out
+
+
+def ui_trim_max(items, trims, why, pad_s=0.25):
+    """max ms of the UI items (each logged when it ENDS) that ended while a `why` trim ran, or within pad_s after it: [end - ms, end + pad_s].
+    0.0 when none did (no UI item over 4 ms during the trim)"""
+    worst = 0.0
+    for end, ms, w in trims:
+        if w != why:
+            continue
+        lo, hi = end - ms / 1000.0, end + pad_s
+        worst = max([worst] + [i[1] for i in items if lo <= i[0] <= hi])
+    return worst
 
 
 UI_BUDGET_MS = 4.0     # owner perf budget: UI work <= 4 ms (warn 16)
@@ -3753,25 +3782,31 @@ def editor_trim_ab(ctx, r, palette, path):
                 break
             time.sleep(5.5)
             txt = ctx.log_since(off)
-            items = ui_items(txt)
+            items, trims = ui_items(txt), heap_trims(txt)
             if not items:
                 r.note("trim A/B %s: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)" % name)
-            o_max, o_over, load_ms = ui_window_max(items, t_open, after_largest=True)
+            o_max, o_over, load_ms = ui_window_max(items, t_open, after_largest=True, t_end=t_close)
             c_max, c_over, _ = ui_window_max(items, t_close)
             res[name] = dict(open_max_ms=o_max, open_over=o_over, load_frame_ms=load_ms, close_max_ms=c_max, close_over=c_over,
-                             audit=ui_item_audit(txt))
+                             trim_open_max_ms=ui_trim_max(items, trims, "open"), trim_close_max_ms=ui_trim_max(items, trims, "close"),
+                             trims=[(w, ms) for _, ms, w in trims], audit=ui_item_audit(txt))
             ctx.reset()
     finally:
         if not editor_mem_relaunch(ctx, {}):
             r.check(False, "trim A/B: the app reached no prompt after relaunching with the default environment")
     r.metric("trim_ab", res)
-    for name, ctrl, side in (("trim_after_open", "default", "open"), ("default", "no_trim", "close")):
-        if name in res and ctrl in res:
-            got, base = res[name]["%s_max_ms" % side], res[ctrl]["%s_max_ms" % side]
-            r.check(not (got > UI_BUDGET_MS and got > base + 1.0), "trim A/B: %s puts a %.1f ms UI item in the 5 s after %s (> %.0f ms budget; %s: %.1f ms)" % (
-                name, got, side, UI_BUDGET_MS, ctrl, base))
-            if got > UI_BUDGET_MS:
-                r.note("trim A/B %s/%s: max UI item %.1f ms is over the %.0f ms budget, but so is its control %s (%.1f ms)" % (name, side, got, UI_BUDGET_MS, ctrl, base))
+    if "trim_after_open" in res and not any(w == "open" for w, _ in res["trim_after_open"]["trims"]):
+        r.check(False, "trim A/B: PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 logged no 'heap_trim why=open' (the opt-in trim did not run, or the build predates it)")
+    # each trim is judged by the UI items that ran DURING it, against the same phase of the variant without that trim
+    for name, ctrl, key, ctrl_key, what in (("trim_after_open", "default", "trim_open_max_ms", "open_max_ms", "the open trim"),
+                                           ("default", "no_trim", "trim_close_max_ms", "close_max_ms", "the close trim")):
+        if name not in res or ctrl not in res:
+            continue
+        got, base = res[name][key], res[ctrl][ctrl_key]
+        if base > UI_BUDGET_MS:
+            r.note("trim A/B: the control %s is itself over the %.0f ms UI budget after %s (%.1f ms)" % (ctrl, UI_BUDGET_MS, ctrl_key.split("_")[0], base))
+        r.check(not (got > UI_BUDGET_MS and got > base + 1.0), "trim A/B: %s put a %.1f ms UI item on screen while it ran (> %.0f ms budget; control %s: %.1f ms)" % (
+            what, got, UI_BUDGET_MS, ctrl, base))
 
 
 @case("editor_memory_7mb", modes=("terminal",), order=85, gui=True)

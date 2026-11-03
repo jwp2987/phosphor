@@ -981,6 +981,16 @@ def editor_memory_breakdown_close_and_cycles():
         assert cases.ui_window_max(items, t, after_largest=True) == (6.5, 1, 250.0), cases.ui_window_max(items, t, after_largest=True)
         assert cases.ui_window_max(items, t) == (250.0, 2, None), cases.ui_window_max(items, t)
         assert cases.ui_window_max([], t) == (0.0, 0, None)
+        # a bigger item after t_close must not move the open window (r18 re-review)
+        later = items + [(t + 6.0, 900.0, "frame")]
+        assert cases.ui_window_max(later, t, after_largest=True, t_end=t + 5.5) == (6.5, 1, 250.0), cases.ui_window_max(later, t, after_largest=True, t_end=t + 5.5)
+        # heap trims: the UI items that ended during [end - ms, end + 0.25 s]
+        trim_log = "z input_order hop=heap_trim why=open ms=500.00 t=%.3f\nz input_order hop=heap_trim why=close ms=10.00 t=%.3f\n" % ((t + 2.1) * 1000, (t + 8.0) * 1000)
+        trims = cases.heap_trims(trim_log)
+        assert trims == [(t + 2.1, 500.0, "open"), (t + 8.0, 10.0, "close")], trims
+        assert cases.ui_trim_max(items, trims, "open") == 6.5            # the 6.5 ms frame at t+2.0 ended inside the open trim
+        assert cases.ui_trim_max(items, trims, "close") == 9.0           # the 9 ms action at t+8.0 ended at the close trim's end
+        assert cases.ui_trim_max(items, [], "open") == 0.0
         assert cases.ui_item_audit(logtxt)["max_ms"] == 250.0 and cases.ui_items("input_order hop=ui_item what=frame ms=9 t=1") == []
         sent = []
         be = types.SimpleNamespace(key=lambda k: sent.append(k), type=lambda *a, **k: sent.append(("type", a)))
