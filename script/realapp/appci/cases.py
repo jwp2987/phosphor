@@ -122,9 +122,9 @@ def enter_segments(lines, t0):
       enter_to_write_ms        `hop=enter_begin` -> the `pty_write` of the line (> 10 bytes; handoff writes excluded)
       write_to_first_read_ms   that write -> the first `pty_read` after it (the shell's first answer: echo/Preexec OSC); the app logs this as
                                `since_write_ms` on the pty_read line
-      write_to_preexec_ms      only if the log has a preexec hop line (`hop=preexec_received`); the app does NOT log one today (it stamps
-                               ShellSignal::Preexec into an atomic that pty_write lines print as since_preexec_ms, which is the age at the
-                               NEXT write), so this key is absent and the report says an app log hop is needed.
+      write_to_preexec_ms      from the app's `hop=preexec_received` line (input_order::note_shell_signal(Preexec), #1583 W3). Builds before
+                               that line existed only stamped an atomic (since_preexec_ms on the NEXT write), so there the key is absent and
+                               the report says so.
     Lines before wall time t0 are ignored."""
     seg = {"enter_to_write_ms": [], "write_to_first_read_ms": [], "write_to_preexec_ms": []}
     pending, wrote, read_seen = None, None, True
@@ -1936,6 +1936,41 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None):
     return ds
 
 
+def host_load():
+    """#1583 W4: the host's logical CPU count and, where the OS reports it, the 1-minute load average (contention on a shared VM/box is
+    the first suspect for a latency gap). {cpus, load1?, load_per_cpu?}"""
+    out = {"cpus": os.cpu_count()}
+    try:
+        l1 = os.getloadavg()[0]
+        out["load1"] = round(l1, 2)
+        if out["cpus"]:
+            out["load_per_cpu"] = round(l1 / out["cpus"], 2)
+    except (AttributeError, OSError):        # Windows: no load average
+        pass
+    return out
+
+
+def gitbash_fork_ms(n=40):
+    """#1583 G1: Git Bash's fork+exec cost on this host, ms per `/usr/bin/true` (median of 3 runs of n), measured with Git for Windows' own
+    bash.exe outside the app. msys fork is emulated and slow; when it is tens of ms, Phosphor's shell hooks (which fork) explain the Git Bash
+    gap by themselves. None off Windows / without Git Bash / on error."""
+    import winapi
+    gb = winapi.git_bash()
+    if not gb:
+        return None
+    runs = []
+    for _ in range(3):
+        t0 = time.time()
+        try:
+            p = subprocess.run([gb, "--noprofile", "--norc", "-c", "for i in $(seq %d); do /usr/bin/true; done" % n], capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if p.returncode:
+            return None
+        runs.append((time.time() - t0) * 1000.0 / n)
+    return round(statistics.median(runs), 2)
+
+
 @case("latency_enter", order=41, gui=True)
 def c_lat_enter(ctx, r):
     """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
@@ -1944,6 +1979,12 @@ def c_lat_enter(ctx, r):
     n, warm = ctx.count_lat(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
     pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
     r.metric("pane_shell", pane_sh or "unknown")
+    r.metric("host_load", host_load())          # #1583 W4
+    if ctx.win and ctx.pane == "gitbash":
+        fk = gitbash_fork_ms()                   # #1583 G1
+        if fk is not None:
+            r.metric("gitbash_fork_ms", fk)
+            r.note("G1: Git Bash fork+exec costs %.1f ms per process on this host (outside the app); every forking shell hook adds about that" % fk)
     t_lat0 = time.time()
     # #1514: A/B/A/B interleaving in blocks when the reference can stay open next to Phosphor (Linux, macOS); otherwise (Windows, no reference, a focus
     # failure) the sequential mode below. Which one ran is recorded (metrics.measurement_mode, lat record measurement_mode).
@@ -1983,7 +2024,7 @@ def c_lat_enter(ctx, r):
         if "write_to_first_read_ms" in segs:
             r.note("shell side: pty_write -> first pty_read median %.2f ms (n=%s)" % (segs["write_to_first_read_ms"], segs.get("write_to_first_read_n")))
         if "write_to_preexec_ms" not in segs:
-            r.note("write -> preexec NOT measurable: the app log has no preexec hop; needs an app log line `hop=preexec_received` (note_shell_signal(Preexec) only stamps an atomic)")
+            r.note("write -> preexec NOT measurable: no `hop=preexec_received` line in the app log (a build older than #1583 W3, input-order logging off, or the shell sent no preexec)")
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))      # hard floor; a PASS verdict needs 90 % (lat.evaluate expected=)
     ctx.reset()

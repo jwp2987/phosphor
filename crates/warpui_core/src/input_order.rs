@@ -133,11 +133,22 @@ fn epoch_ms() -> u64 {
 }
 
 /// Stamps `signal` as having just happened. One atomic store when input-order logging is on,
-/// nothing when it is off.
+/// nothing when it is off. A `Preexec` also logs `hop=preexec_received` (#1583 W3): the stamp
+/// alone only shows up as `since_preexec_ms` on the NEXT pty write, so the Enter latency split
+/// (pty write of the line -> the shell's preexec) could not be measured from the log.
 pub fn note_shell_signal(signal: ShellSignal) {
     if enabled() {
         SHELL_SIGNAL_MS[signal.index()].store(epoch_ms(), Ordering::Relaxed);
+        if signal == ShellSignal::Preexec {
+            log::debug!(target: TARGET, "{}", preexec_line());
+        }
     }
+}
+
+/// `input_order hop=preexec_received signal=preexec t=...` (#1583 W3; parsed by the appci
+/// harness's `enter_segments`).
+fn preexec_line() -> String {
+    hop_line("preexec_received", "signal=preexec")
 }
 
 /// `since_precmd_ms=12 since_preexec_ms=none ...`: how long ago each shell-ready signal was last
@@ -415,6 +426,16 @@ mod tests {
         assert!(
             frame.starts_with("input_order frame layout=false t="),
             "{frame}"
+        );
+    }
+
+    #[test]
+    fn the_preexec_line_is_the_hop_the_latency_split_parses() {
+        // script/realapp/appci/cases.py enter_segments matches `hop=preexec_received` and ` t=`.
+        let line = preexec_line();
+        assert!(
+            line.starts_with("input_order hop=preexec_received signal=preexec t="),
+            "{line}"
         );
     }
 
