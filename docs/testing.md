@@ -253,6 +253,9 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_BOOTSTRAP_TIMED=1` | timer-based subshell setup instead of the event-driven one (#1354) |
 | `PHOSPHOR_SSH_COUNTED_BOOTSTRAP=0`, `PHOSPHOR_LOCAL_COUNTED_BOOTSTRAP=0` | here-document bootstrap instead of the counted raw read (#1226) |
 | `PHOSPHOR_SSH_SPECULATIVE_CONNECT=0`, `PHOSPHOR_SSH_EARLY_BOOTSTRAP=0` | old probe-then-connect / bootstrap-after-connect order (#1266) |
+| `PHOSPHOR_SSH_EARLY_FLUSH_KNOWN=0` | stash the bootstrap until `check_binary` returns even for a host already known to have the extension (#1172) |
+| `WARP_SSH_PROBE_TTL=<seconds>` | lifetime of the cached non-POSIX probe verdict (default 600; 0 disables the cache); the cache file is shared by bash, zsh and fish tabs (#1172) |
+| `WARP_SSH_VERIFY_MASTER=1` | run the `-O check` after the owned master starts instead of trusting the socket test (#1172) |
 | `PHOSPHOR_SSH_CHUNKED_RESPONSES=0` (client), `PHOSPHOR_REMOTE_SERVER_CHUNKED_RESPONSES` (daemon) | whole-frame responses as from an older daemon |
 | `PHOSPHOR_SSH_LEGACY_MAX_INFLIGHT`, `PHOSPHOR_SSH_LEGACY_COMMAND_TIMEOUT_SECS`, `PHOSPHOR_SSH_HISTORY_MAX_LINES` | tuning of the legacy (no remote extension) ssh executor and history fetch |
 | `PHOSPHOR_ROUTING_V1=1` | pre-#1234 agent/terminal routing rule set, to rule the redesign in or out |

@@ -177,6 +177,15 @@ so your own ssh config always wins. A session with the remote-server extension
 connected is already un-obscured by OpenSSH itself (it only obscures while a
 single session channel is open). Applies to new tabs.
 
+Notes on the two OpenSSH latency defaults (#1172). `ObscureKeystrokeTiming` is only
+applied by OpenSSH while exactly one session channel is open, so the cost above shows
+up on plain `ssh` and on a managed session whose extension has not connected yet, and
+disappears once the extension's second channel exists. The wrapper's `IPQoS` pin
+(`af21 af21`, which stops the extension channel from marking the connection "bulk")
+only applies when `ssh -G` reports OpenSSH's old default `af21 cs1`. OpenSSH 10.1 and
+later report a different default, so there the pin is a no-op and nothing needs to be
+configured; the code is left in place for older clients.
+
 `warpify.ssh.reuse_existing_control_master` (default `false`) makes the wrapper
 attach to a live ControlMaster you already run for that host — resolved with
 `ssh -G` and probed with `ssh -O check` — instead of creating a Phosphor-owned
