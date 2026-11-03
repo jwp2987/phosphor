@@ -58,10 +58,8 @@ $tokens = $null; $errors = $null
 foreach ($e in $errors) { "  line $($e.Extent.StartLineNumber): $($e.Message)" }
 PS1
 
-# Pre-existing broken file found by the first run of this gate (it starts mid-way through a C# here-string, the
-# Add-Type header is gone). It lives in script/realapp/ (owned by the harness work), so it is listed, loudly, instead
-# of fixed here. Delete the entry when the file is fixed or removed.
-KNOWN_UNPARSEABLE=(script/realapp/windows/hooks/host_remote.ps1)
+# Files that are known not to parse, with a reason. Empty: host_remote.ps1 (#1556) was deleted, nothing referenced it.
+KNOWN_UNPARSEABLE=(/dev/null/none) # never matches; an empty array trips set -u on bash 3.2
 
 status=0
 n_parsed=0
