@@ -8,7 +8,7 @@
 #    cargo-deny is present, that one is used with a warning (a fetch outage is not a code failure).
 # 2. advisories: the RustSec DB is fetched first (`cargo deny fetch db`). When the fetch fails and the cached
 #    DB in $CARGO_HOME/advisory-dbs was last refreshed by this script less than MAX_STALE_DAYS ago, the check
-#    runs against the cache (`--disable-fetch`) and says so loudly; a real finding still fails the job. With no
+#    runs against the cache (root `--offline`; `check --disable-fetch` is gone since 0.20) and says so loudly; a real finding still fails the job. With no
 #    cache, or a cache older than that, the job fails (script/ci/ci_seq.py classifies the trace as NETWORK-FAIL).
 # Bump CARGO_DENY_VERSION by hand, in its own commit, after reading the cargo-deny changelog.
 set -euo pipefail
@@ -42,10 +42,12 @@ licenses)
 advisories)
     if cargo deny fetch db; then
         touch "$stamp"
-        cargo deny -L error check --disable-fetch advisories   # just fetched: no second network round trip
+        # just fetched. cargo-deny 0.20 removed `check --disable-fetch` (PR#881); its replacement, the root `--offline`,
+        # also forbids cargo's own crate downloads, so the online check (one more DB fetch) is the safe call here.
+        cargo deny -L error check advisories
     elif [[ -f "$stamp" ]] && [[ -n "$(find "$stamp" -mtime "-$MAX_STALE_DAYS" 2>/dev/null)" ]]; then
         echo "cargo_deny: WARNING the advisory DB fetch failed; checking against the CACHED DB (last fetched $(date -r "$stamp" -u +%FT%TZ), < $MAX_STALE_DAYS days). New advisories since then are NOT seen." >&2
-        cargo deny -L error check --disable-fetch advisories
+        cargo deny -L error --offline check advisories   # 0.20: root --offline replaces check --disable-fetch (PR#881)
     else
         echo "cargo_deny: ERROR the advisory DB fetch failed and there is no cached DB fetched in the last $MAX_STALE_DAYS days (failed to fetch)" >&2
         exit 1
