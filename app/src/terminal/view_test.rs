@@ -19221,6 +19221,136 @@ fn ssh_submit_origin_is_consumed_by_the_block_it_started() {
     })
 }
 
+/// #1579 review, both modes: a user submit whose block is IN-BAND consumes its origin there. It
+/// used to be consumed only past the in-band early return, so it leaked to the next block: a raw
+/// ssh nothing submitted (an agent's, typed into a program) armed a window marked as the user's,
+/// and the agent-view editor's keys were taken into its hold. They stay in the editor.
+#[test]
+fn ssh_origin_of_an_in_band_submit_does_not_leak_to_a_later_raw_block() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+                // The user's submit starts an in-band block.
+                submit_command(view, "ls", ctx);
+                view.handle_terminal_event(
+                    &ModelEvent::AfterBlockStarted {
+                        block_id: BlockId::from("in-band-1579".to_string()),
+                        command: "ls".to_owned(),
+                        is_for_in_band_command: true,
+                    },
+                    ctx,
+                );
+                // A later block nothing submitted runs ssh (raw, recognised at preexec).
+                view.model.lock().simulate_long_running_block("myssh", "");
+                view.note_block_started_for_ssh();
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.model.lock().publish_key_facts();
+                view.arm_ssh_connect_gate_at_preexec(ctx);
+                assert!(
+                    view.ssh_connect_gate
+                        .as_ref()
+                        .is_some_and(|gate| !gate.user_submitted),
+                    "{mode:?}: armed, and not the user's"
+                );
+                for c in "next".chars() {
+                    pane_typed(view, &c.to_string(), true, ctx);
+                }
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: not held");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "next",
+                    "{mode:?}: the keys stay in the editor"
+                );
+            });
+            assert!(pty_writes.borrow().is_empty(), "{mode:?}");
+        })
+    }
+}
+
+/// #1571 review, both modes: the first-Precmd wait cap is a TIMER. It used to deliver the held
+/// line (Enter included) to a session that could not take it; it now hands the keys back to the
+/// editor as text, not run, with the Enter guard, and writes nothing.
+#[test]
+fn ssh_first_precmd_wait_cap_hands_the_keys_back_and_writes_nothing() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("echo hi", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held");
+                // The remote's first prompt released the gate, but its session is not registered
+                // (the shell refuses a command): the hand-over waits (#1572).
+                view.ssh_remote_prompt_seen = true;
+                release_ssh_gate_for_test(view);
+                assert!(!view.deliver_ssh_typeahead_if_ready("precmd", ctx));
+                assert!(view.ssh_typeahead_holding, "{mode:?}: still held");
+                // The registration never comes: the cap fires.
+                view.ssh_typeahead_precmd_wait_since = Instant::now()
+                    .checked_sub(SSH_TYPEAHEAD_PRECMD_WAIT_CAP + Duration::from_millis(1));
+                view.deliver_ssh_typeahead_if_ready("give_up", ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}: the hold ended");
+            });
+            // The hand-back may be a deferred queue operation: let it run.
+            for _ in 0..100 {
+                let back = terminal.read(&app, |view, ctx| {
+                    view.input.as_ref(ctx).buffer_text(ctx).contains("echo hi")
+                });
+                if back {
+                    break;
+                }
+                warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+            }
+            terminal.read(&app, |view, ctx| {
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                assert!(
+                    view.input
+                        .as_ref(ctx)
+                        .buffer_text(ctx)
+                        .starts_with("echo hi"),
+                    "{mode:?}: handed back as text"
+                );
+                assert!(
+                    view.input.as_ref(ctx).ssh_handover_enter_guard_armed(),
+                    "{mode:?}: the first Enter on it is held"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: the timer wrote nothing: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}
+
 /// #1571 / #1572, agent mode, nested ssh, the readiness event delayed past the user's SECOND Enter:
 /// in a just-connected remote whose session is not registered yet (the shell refuses a command),
 /// the user types `ssh fake` + Enter, then `echo T` + Enter, before `SessionBootstrapped`. The
@@ -20176,8 +20306,9 @@ fn ssh_held_keys_keep_order_and_fallback_text_follows_edits() {
     assert_eq!(held.unexecuted_text(), "");
 }
 
-/// #1113 / #1292: held text is never concatenated with what the editor holds: with a non-empty
-/// editor it is discarded, with an empty one it is shown.
+/// #1113 / #1292: held text is never concatenated with what the editor holds. With an empty
+/// editor it is shown; with a non-empty one it used to be DISCARDED (lost keys, #1571 review): it
+/// now goes on a line of its own after that text, never glued into it, the Enter guard armed.
 #[test]
 fn ssh_held_line_is_never_glued_to_existing_editor_text() {
     App::test((), |mut app| async move {
@@ -20192,7 +20323,8 @@ fn ssh_held_line_is_never_glued_to_existing_editor_text() {
             view.ssh_typeahead_holding = true;
             view.ssh_hold_push(HeldInput::from_chars("hello "), ctx);
             view.finish_ssh_typeahead(ctx);
-            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "world");
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "world\nhello ");
+            assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
             assert!(view.ssh_held_is_empty());
             view.input.update(ctx, |input, ctx| {
                 input.clear_buffer_and_reset_undo_stack(ctx)

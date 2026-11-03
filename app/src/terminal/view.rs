@@ -11299,8 +11299,26 @@ impl TerminalView {
         };
         if awaiting_first_precmd && !delivery_waits_for_first_precmd(awaiting_first_precmd, waited)
         {
-            // The registration the held Enter waits for never came: the keys are delivered anyway.
+            // The registration the held keys wait for never came. A timer never delivers (it
+            // wrote the held line, Enter included, into a session that could not take it): the
+            // keys are handed back to the editor as text, not run, with the Enter guard (#1571
+            // review).
             self.note_ssh_give_up("first_precmd_wait_cap");
+            warpui::input_order::log_key_hop("kh_finish_begin", || {
+                format!(
+                    "source={source} give_up=first_precmd_wait_cap held_bytes={}",
+                    self.ssh_held_bytes()
+                )
+            });
+            self.set_ssh_typeahead_holding(false);
+            self.ssh_paste_to_hold = false;
+            self.ssh_typeahead_precmd_wait_since = None;
+            if self.ssh_held_is_empty() {
+                self.ssh_hold_clear();
+            } else {
+                self.ssh_hold_hand_back_unexecuted_text(ctx);
+            }
+            return true;
         }
         if delivery_waits_for_first_precmd(awaiting_first_precmd, waited) {
             warpui::input_order::log_key_hop("kh_handover_waits", || {
@@ -11454,32 +11472,37 @@ impl TerminalView {
         }
         // The ssh hand-back ends the line the held text belonged to.
         self.request_queue_pin_clear();
-        // Whatever happens to the text below, an Enter typed in the same burst must not run what
-        // the user meant for the remote machine on this one.
-        let existing = self.input.as_ref(ctx).buffer_text(ctx);
-        let handed_back_into_editor = !self.is_long_running() && existing.is_empty();
-        let baseline = if handed_back_into_editor {
-            text.clone()
-        } else {
-            existing
-        };
-        self.input
-            .update(ctx, |input, _| input.arm_ssh_handover_enter_guard(baseline));
-        // Never concatenated with anything: only into an EMPTY editor that is showing.
-        if self.is_long_running() || !self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
-            log::warn!(
-                "ssh typeahead: {} handed-back char(s) cannot go into the editor (busy or not \
-                 empty); discarded with a toast (#1566)",
+        // Never discarded, never concatenated into a line (#1566 discarded here; the Fable review
+        // of #1571 asked for no loss). Whatever happens below, an Enter typed in the same burst
+        // must not run what the user meant for the remote machine on this one: the hand-back's
+        // Enter guard covers the text wherever it lands.
+        if self.is_long_running() {
+            // A command owns the pty: the text waits on the input and comes back into the editor
+            // when that block completes (`Input::restore_handed_back_text`), guard armed then.
+            log::info!(
+                "ssh typeahead: {} handed-back char(s) kept until the running block ends",
                 text.chars().count()
             );
+            self.input
+                .update(ctx, |input, _| input.stash_handed_back_text(text));
             self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was discarded, not run",
+                "Text typed while the SSH session connected was kept, not run; it will be in the \
+                 input when the running command ends",
                 ctx,
             );
             return;
         }
-        self.input
-            .update(ctx, |input, ctx| input.replace_buffer_content(&text, ctx));
+        let existing = self.input.as_ref(ctx).buffer_text(ctx);
+        let restored = if existing.is_empty() {
+            text
+        } else {
+            // Something is in the editor already: the text goes on a line of its own after it.
+            format!("{existing}\n{text}")
+        };
+        self.input.update(ctx, |input, ctx| {
+            input.replace_buffer_content(&restored, ctx);
+            input.arm_ssh_handover_enter_guard(restored.clone());
+        });
         self.show_ssh_typing_toast(
             "Text typed while the SSH session connected is in the input, not run; press Enter to run it",
             ctx,
@@ -13140,6 +13163,8 @@ impl TerminalView {
             SessionsEvent::SessionInitialized { .. } => {
                 self.ssh_observe_for_wakeup(ctx);
                 self.handle_session_initialized(ctx);
+                // #1571: an Enter held for an unready shell retries on every readiness event.
+                self.retry_held_unready_enter("session_initialized", ctx);
             }
             SessionsEvent::SessionBootstrapped(event) => {
                 // The remote session is registered: the machine sees the pending session gone.
@@ -17074,10 +17099,12 @@ impl TerminalView {
                     self.update_focused_terminal_info(ctx);
                 }
 
+                // #1579: before the in-band early return, so the origin of a submit whose block
+                // is in-band is consumed by that block and never leaks to a later one.
+                self.note_block_started_for_ssh();
                 if *is_for_in_band_command {
                     return;
                 }
-                self.note_block_started_for_ssh();
 
                 // The command a submitted Enter ran has started: the pty takes keys now (#1353).
                 self.settle_enter_queue(ctx);

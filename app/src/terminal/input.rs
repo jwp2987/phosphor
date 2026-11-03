@@ -4,6 +4,7 @@ mod classic;
 mod cli_agent;
 mod common;
 mod enter_queue;
+pub(crate) use enter_queue::text_of_entries_typed_after;
 pub mod conversations;
 pub mod decorations;
 pub mod inline_history;
@@ -2221,6 +2222,10 @@ pub struct Input {
     /// we snapshot the current input contents here so we can restore them after the command
     /// completes and the buffer would normally be cleared.
     input_contents_before_prompt_chip_command: Option<String>,
+    /// Text the ssh hand-back could not put into the editor because a command was running
+    /// (`TerminalView::hand_back_unexecuted_ssh_text`): restored, never run, when a block completes
+    /// ([`Self::restore_handed_back_text`]).
+    handed_back_text: Option<String>,
 
     /// The multi-prompt queued-prompts panel, present only when
     /// [`FeatureFlag::QueueSlashCommand`] is enabled. Rendered between the warping indicator
@@ -3967,6 +3972,7 @@ impl Input {
             slash_command_data_source,
             ephemeral_message_model,
             input_contents_before_prompt_chip_command: None,
+            handed_back_text: None,
             queued_prompts_panel,
         };
 
@@ -14672,6 +14678,42 @@ impl Input {
     /// to this editor, unexecuted, because the ssh connect ended without a remote shell.
     /// `baseline` is the editor text the hand-back left; the guard only applies while the line
     /// still starts with it.
+    /// Keeps handed-back ssh text that could not go into the editor (a command runs) until a block
+    /// completes. Several hand-backs are kept, each on its own line.
+    pub(crate) fn stash_handed_back_text(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        self.handed_back_text = Some(match self.handed_back_text.take() {
+            Some(earlier) => format!("{earlier}\n{text}"),
+            None => text,
+        });
+    }
+
+    /// Puts the stashed handed-back text into the editor, after whatever it holds on a line of
+    /// its own, with the hand-back's Enter guard armed over the whole buffer: it is shown, never
+    /// run, and the first Enter on it is held.
+    fn restore_handed_back_text(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(text) = self.handed_back_text.take() else {
+            return;
+        };
+        let existing = self.editor.as_ref(ctx).buffer_text(ctx);
+        let restored = if existing.is_empty() {
+            text
+        } else {
+            format!("{existing}\n{text}")
+        };
+        self.editor
+            .update(ctx, |editor, ctx| editor.set_buffer_text(&restored, ctx));
+        self.is_editor_empty_on_last_edit = false;
+        self.arm_ssh_handover_enter_guard(restored);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handed_back_text_for_test(&self) -> Option<&str> {
+        self.handed_back_text.as_deref()
+    }
+
     pub(crate) fn arm_ssh_handover_enter_guard(&mut self, baseline: String) {
         // #1456: nothing handed back means nothing to protect; an empty baseline would match every
         // later line (`starts_with("")`) and swallow the first Enter of whatever is typed next.
@@ -16175,6 +16217,9 @@ impl Input {
                     self.deferred_remote_operations.latest_block_id = latest_block_id;
                 }
             }
+            // Text an ssh hand-back kept while this command ran comes back now, after the text the
+            // user typed meanwhile, not run.
+            self.restore_handed_back_text(ctx);
 
             // Make sure the viewer's interaction state is correct based on their role.
             // We may have locked up their input if they tried to execute a command.

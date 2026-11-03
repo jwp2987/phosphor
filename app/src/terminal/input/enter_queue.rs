@@ -275,6 +275,15 @@ impl Input {
     /// [`Self::open_enter_gate`] for a spec the caller built (#1571: the unready Enter's gate,
     /// whose give-up is the input's own hand-back timer, not the queue's release).
     fn open_enter_gate_with(&mut self, spec: GateSpec, ctx: &mut ViewContext<Self>) {
+        if let Some(existing) = self.enter_gate.filter(|gate| gate.held_unready) {
+            // Never expected: every Enter behind a held unready one queues behind its gate. The
+            // new gate replaces it in the input's bookkeeping; the old one stays on the queue.
+            log::error!(
+                "input queue: an Enter gate opened while an unready Enter's gate (key {}) is held \
+                 (#1571)",
+                existing.key
+            );
+        }
         let (id, kind) = (spec.key, spec.kind);
         let queue = self.enter_queue_handle(ctx);
         if queue.is_draining() {
@@ -471,25 +480,37 @@ impl Input {
              handed back to the input, not run (#1571)"
         );
         warpui::input_order::log_hop("enter_held_give_up", || format!("by={why}"));
+        let held_behind = self.enter_gate_held_len(ctx);
         self.clear_held_unready_enter();
         self.enter_gate = None;
         let queue = self.enter_queue_handle(ctx);
-        let typed_after = match queue.try_lock_ordered() {
+        let taken = match queue.try_lock_ordered() {
             Some(mut guard) => {
                 let mut host = InputQueueHost::new(self, ctx);
-                let taken = guard.close_gate_taking(&mut host, gate.kind, gate.key);
-                text_of_entries_typed_after(&taken)
+                Some(guard.close_gate_taking(&mut host, gate.kind, gate.key))
             }
             None => {
                 // Busy: the take and the insert are one deferred operation (the text typed behind
-                // the gate comes back into the editor, #1446).
+                // the gate comes back into the editor, #1446), at the cursor: put it at the end of
+                // the held line, on a line of its own.
+                if held_behind > 0 {
+                    let line = self.editor.as_ref(ctx).buffer_text(ctx);
+                    if !line.is_empty() {
+                        self.editor.update(ctx, |editor, ctx| {
+                            editor.set_buffer_text(&format!("{line}\n"), ctx)
+                        });
+                    }
+                }
                 queue.defer(crate::terminal::input_queue::Deferred::VoidEnterGate {
                     kind: gate.kind,
                     key: gate.key,
                 });
-                String::new()
+                None
             }
         };
+        let typed_after = taken.map_or_else(String::new, |taken| {
+            text_of_entries_typed_after(&taken, |id| self.take_paste_payload_text(id))
+        });
         if !typed_after.is_empty() {
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
             let text = if line.is_empty() {
@@ -499,6 +520,12 @@ impl Input {
             };
             self.editor
                 .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+            // Several lines in one buffer submit as ONE command: the first Enter on the handed-back
+            // text is held with the "check the line" toast (the ssh hand-back's guard).
+            self.arm_ssh_handover_enter_guard(text);
+        } else {
+            let line = self.editor.as_ref(ctx).buffer_text(ctx);
+            self.arm_ssh_handover_enter_guard(line);
         }
         if ctx.has_singleton_model::<ToastStack>() {
             let window_id = ctx.window_id();
@@ -512,6 +539,15 @@ impl Input {
         }
         // Edits that waited behind the line apply now.
         self.flush_deferred_programmatic_edits(ctx);
+    }
+
+    /// The text of the editor paste `id` whose content waits here (a ready paste taken out of the
+    /// queue without being delivered, #1446 / #1571), removed.
+    pub(crate) fn take_paste_payload_text(&mut self, id: u64) -> Option<String> {
+        self.paste_refused.remove(&id);
+        self.paste_payloads
+            .remove(&id)
+            .map(|(_, content)| content.plain_text)
     }
 
     /// The gate [`Self::open_enter_gate`] could not open because the queue was delivering the
@@ -799,11 +835,24 @@ impl Input {
 /// #1571: what the entries typed behind an Enter held for an unready shell spell, as editor text:
 /// text as typed, each Enter a line break, the tty editing keys applied to the text before them
 /// (Backspace, ^U, ^W). Cursor keys have no text form and are left out. Nothing here is run.
-fn text_of_entries_typed_after(entries: &[InputEntry]) -> String {
+/// Also what the view's deferred `VoidEnterGate` gives back (#1446): every queued kind with a text
+/// form keeps it, pastes included. A ready paste's content usually waits in its owner's map, not
+/// in the entry (`Some(empty)` is the "read" marker): `paste_text` takes it from there by id.
+pub(crate) fn text_of_entries_typed_after(
+    entries: &[InputEntry],
+    mut paste_text: impl FnMut(u64) -> Option<String>,
+) -> String {
     let mut text = String::new();
     for entry in entries {
         match &entry.kind {
             EntryKind::Text(typed) => text.push_str(typed),
+            EntryKind::Paste {
+                paste_id,
+                payload: Some(bytes),
+            } => match paste_text(*paste_id) {
+                Some(pasted) => text.push_str(&pasted),
+                None => text.push_str(&String::from_utf8_lossy(bytes)),
+            },
             EntryKind::Enter => text.push('\n'),
             EntryKind::Held { class, text: held } => match *class {
                 HELD_TYPED | HELD_PASTE => text.push_str(held),
