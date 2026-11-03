@@ -335,9 +335,13 @@ struct ChildHandle {
     cancelled: std::sync::atomic::AtomicBool,
 }
 
-/// Kills the render child if the awaiting caller goes away first (#1479): the asset is no
-/// longer wanted (its view closed, its source changed), and a runaway render would otherwise
-/// keep a core busy until it finished on its own. Disarmed once the result is in.
+/// Kills the render child if the awaiting future is dropped before the result or the deadline
+/// arrives, so the child never outlives the future that owns it. Disarmed once either arrives.
+///
+/// Scope (#1479): in the app the fetch future is detached (`AssetCache::load_asynchronously`
+/// spawns it and calls `detach()`), so closing the view or changing the diagram's source does
+/// NOT drop it; this guard fires only when the executor drops the task (teardown). A render
+/// nobody wants any more still runs until it finishes or the 8 s deadline kills it.
 struct KillChildOnDrop(Option<Arc<ChildHandle>>);
 
 impl KillChildOnDrop {
