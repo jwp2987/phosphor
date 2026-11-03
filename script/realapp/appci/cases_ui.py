@@ -315,13 +315,30 @@ def c_palette(ctx, r):
     ctx.be.key(K(ctx, "palette"))
     time.sleep(0.8)
     t = ctx.ocr("palette_open")
+    # r18e9 (macOS): the caret overlays the first letter of the placeholder, so OCR read "earch for a command" and the exact-phrase check failed on a palette that WAS
+    # open (shots/agent_palette_open.png). Match the placeholder's tail; the palette's own command rows are the second, independent proof it opened.
+    cmd_names = ("split pane", "new tab", "new window", "open settings", "keybinding", "zoom", "reload")
     if t is not None:
-        r.check("search for a command" in " ".join(t.lower().split()), "palette did not open: 'Search for a command' not on screen (see shots/*palette_open.png)")
+        flat = " ".join(t.lower().split())
+        shown = [n for n in cmd_names if n in flat]
+        opened = bool(re.search(r"\w{0,3}earch for a comm|for a command", flat)) or len(shown) >= 3
+        r.metric("palette_open_markers", dict(placeholder=bool(re.search(r"for a command", flat)), command_rows=shown))
+        r.check(opened, "palette did not open: neither 'Search for a command' (tail) nor >=3 command rows %s on screen (see shots/*palette_open.png)" % (list(cmd_names),))
+    else:
+        shown = []
     ctx.be.type("zzqqxxnothing", 15)
     time.sleep(0.6)
     t2 = ctx.ocr("palette_noresults")
     if t2 is not None:
-        r.check("no results" in " ".join(t2.lower().split()), "nonsense filter did not show 'No results found'")
+        # r18e9: a nonsense filter now shows a "Create zzqqxxnothing..." row instead of "No results found" (shots/agent_palette_noresults.png). The real claim is
+        # "the filter matched no COMMAND": none of the command names the unfiltered palette listed may still be on screen. Control: they were listed unfiltered.
+        flat2 = " ".join(t2.lower().split())
+        left = [n for n in cmd_names if n in flat2]
+        r.metric("palette_nonsense_command_rows", left)
+        r.check(not left, "nonsense filter still lists command rows %s (see shots/*palette_noresults.png)" % left)
+        r.check("no results" in flat2 or "create" in flat2 or "zzqqxx" in flat2, "nonsense filter shows neither 'No results', a 'Create ...' row nor the typed filter: the palette may have lost the keys")
+        if t is not None and not shown:
+            r.note("control: no command row was readable in the UNFILTERED palette, so 'no command rows after the filter' is weak evidence here (OCR)")
     ctx.be.keys(["ctrl+a", "BackSpace"], delay_ms=30) if not mac(ctx) else ctx.be.keys(["cmd+a", "BackSpace"], delay_ms=30)
     ctx.be.type("split pane right", 15)
     time.sleep(0.8)
