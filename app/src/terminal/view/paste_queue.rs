@@ -935,8 +935,12 @@ impl TerminalView {
     pub(super) fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = self.paste_queue.queue.clone();
         // A cap is one-shot: firing while the queue is busy must not consume it (#1417). It runs
-        // again, whole, once the queue is free (the handler is token-guarded).
-        if queue.try_peek().is_none() {
+        // again, whole, once the queue is free (the handler is token-guarded). "Busy" includes a
+        // reader's peek: the hand-back below needs the queue locked, and re-arming a timer for it
+        // (#1584) would strand the cap until that fires instead of at the next operation.
+        let peekable = queue.try_peek().is_some();
+        let busy = !peekable || queue.try_lock().is_none();
+        if busy {
             queue.defer(Deferred::GiveUpCap(token));
             return;
         }
@@ -2636,7 +2640,14 @@ impl TerminalView {
                 let mut host = PtyQueueHost::new(self, ctx);
                 guard.on_gate_event(&mut host, kind, key);
             }
-            Deferred::GiveUpCap(token) => self.on_paste_queue_give_up(token, ctx),
+            Deferred::GiveUpCap(token) => {
+                // A peek still out: the handler would only defer it again, so give it back.
+                let locked = queue.try_lock().is_some();
+                if !locked {
+                    return Err(Deferred::GiveUpCap(token));
+                }
+                self.on_paste_queue_give_up(token, ctx)
+            }
             Deferred::PasteRead { id, ok } => {
                 if !self.complete_queued_paste_read(id, ok, ctx) {
                     return Err(Deferred::PasteRead { id, ok });

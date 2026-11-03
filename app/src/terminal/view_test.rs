@@ -16710,6 +16710,14 @@ fn typeahead_handoff_returns_an_unfinished_held_line_to_the_editor_when_the_subm
             assert!(pty_writes.borrow().is_empty());
             view.handle_typeahead_report_with_handoff(ctx);
 
+            // #1571: the test view is not ready for a command, so the Enter that ran nothing is
+            // held as a gate (a refused Enter of an unready shell); the unfinished line is the
+            // text typed after it and reaches the editor behind it -- not before, not lost, and
+            // never written to the pty -- when the hold hands back.
+            assert!(view.input.as_ref(ctx).unready_enter_gate_open());
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            view.input
+                .update(ctx, |input, ctx| input.give_up_unready_enter("test", ctx));
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls -l");
             assert_eq!(
                 view.model.lock().typeahead_handoff().state(),
@@ -23835,6 +23843,9 @@ fn a_line_delivered_to_the_shell_as_final_stays_in_the_shell() {
                     // What `hand_held_ssh_typeahead_to_unbootstrapped_remote` records.
                     handoff.note_committed_delivery();
                     handoff.on_precmd();
+                    // The user's Enter below comes after the young-Enter window (#933): inside it
+                    // the Enter is held for the prompt and the mark ends when it is released.
+                    handoff.age_last_activity_for_test();
                     assert_eq!(
                         handoff.on_line_editor_active(true, true),
                         ActiveDecision::Drain,
@@ -23918,6 +23929,14 @@ fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
                 });
 
                 // With the user's Enter deferred behind the report: it runs as a shell command.
+                // The first line was written to the pty, which clears its report (pty_controller.rs,
+                // hand-off engage); this test captures the command instead of writing it, so it
+                // clears it the same way (reports accumulate per line: `store_shell_report` appends).
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .early_output_mut()
+                    .clear_typeahead_for_new_command();
                 lock_input_in_ai_mode(view, ctx);
                 hold_after_deferred_enter(view);
                 store_shell_report(view, "echo T93");
