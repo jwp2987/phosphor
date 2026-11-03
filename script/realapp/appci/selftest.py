@@ -574,6 +574,27 @@ def injector_accounting_parse_and_join():
     assert injacct.account([], log, "x") == (None, None)
 
 
+@check
+def lifecycle_full_log_line_and_incremental_report():
+    """r18d8: the first failing message / NO-REFERENCE reason is logged in full; results.json exists after every emit"""
+    import run as runmod
+    long = "x" * 500
+    line = runmod.row_log_line(dict(mode="agent", name="c", status="fail", detail=[long, "n" * 400]))
+    assert long in line and len(line) < len(long) + 260, len(line)
+    line = runmod.row_log_line(dict(mode="terminal", name="latency_enter", status="noref", detail=["interleaved 24 blocks", "NO-REFERENCE: " + long]))
+    assert "NO-REFERENCE: " + long in line, line[:100]
+    d = tempfile.mkdtemp()
+    try:
+        open(os.path.join(d, "results.jsonl"), "w").write(json.dumps(dict(name="a", mode="terminal", status="pass", seconds=1, detail=[])) + "\n")
+        a = types.SimpleNamespace(platform="linux-wayland", backend="wayland", app_display="wayland", seed=1)
+        runmod.write_partial_report(d, a)
+        doc = json.load(open(os.path.join(d, "results.json")))
+        assert doc["summary"]["pass"] == 1 and doc["meta"].get("partial") == "1", doc
+        assert os.path.exists(os.path.join(d, "summary.md")) and os.path.exists(os.path.join(d, "junit.xml"))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     failed = 0
     for f in CHECKS:

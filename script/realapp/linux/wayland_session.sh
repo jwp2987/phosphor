@@ -32,7 +32,15 @@ while [ $# -gt 0 ]; do case "$1" in
 case "$MODE" in wayland|xwayland|x11) ;; *) echo "bad --mode $MODE" >&2; exit 2;; esac
 OUT=${OUT:-${CI_PROJECT_DIR:-$PWD}/appci-out/$MODE}
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
-PIDS="$OUT/pids"; : > "$PIDS"
+PIDS="$OUT/pids"
+# r18d8: reap what an EARLIER killed job left behind BEFORE this job truncates its own pidfile (a job killed by the runner's timeout left
+# sway, the app, foot, the wtype holder and the test sshd running; the after_script teardown only knew the CURRENT job's dir). Exact
+# recorded PIDs only, command-line checked against the old dir (teardown.sh), never by name.
+"$HERE/../teardown.sh" "$OUT" 2>&1 | sed 's/^/[session] stale: /'         # this dir's own pidfiles, if the checkout kept them
+"$HERE/../teardown.sh" --stale 2>&1 | sed 's/^/[session] stale: /'          # anything carrying a dead session's APPCI_SESSION marker
+: > "$PIDS"
+# every process this session starts inherits the marker (the reaper above identifies leftovers by it; script pid:job id:mode)
+export APPCI_SESSION="$$:${CI_JOB_ID:-manual}:$MODE"
 log() { echo "[session $MODE] $*" | tee -a "$OUT/session.log"; }
 need=()
 for t in python3 dbus-run-session; do command -v $t >/dev/null || need+=("$t"); done
@@ -61,6 +69,24 @@ teardown() {
   true
 }
 trap teardown EXIT
+# r18d8: GitLab's job timeout/cancel signals only this bash; python (run.py) used to keep running for 2 more minutes and its rows were
+# lost. On TERM/INT/HUP: signal run.py's process group (the exact pgid it was started with, below), give it time to flush results.json
+# and stop the app, then exit (the EXIT trap runs teardown over every recorded PID).
+RUNPID=""
+on_signal() {
+  local sig=$1
+  trap '' TERM INT HUP
+  log "caught $sig: stopping run.py (process group ${RUNPID:-none}), then teardown"
+  if [ -n "$RUNPID" ]; then
+    kill -TERM -- "-$RUNPID" 2>/dev/null || kill -TERM "$RUNPID" 2>/dev/null
+    for _ in $(seq 1 60); do kill -0 "$RUNPID" 2>/dev/null || break; sleep 0.5; done
+    kill -0 "$RUNPID" 2>/dev/null && { log "run.py ignored TERM for 30 s: KILL"; kill -KILL -- "-$RUNPID" 2>/dev/null || kill -KILL "$RUNPID" 2>/dev/null; }
+  fi
+  exit $((128 + ${2:-15}))
+}
+trap 'on_signal TERM 15' TERM
+trap 'on_signal INT 2' INT
+trap 'on_signal HUP 1' HUP
 
 # ---- the build under test
 if [ -z "$BIN" ] && [ -n "$DIST" ]; then
@@ -166,9 +192,13 @@ log "session up: renderer=$RENDERER WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} DISPLAY
 { echo "== uname"; uname -srm; echo "== dri"; ls -l /dev/dri 2>&1; echo "== vulkan"; vulkaninfo --summary 2>&1 | head -20; } > "$OUT/gpu.txt" 2>&1
 
 RUNDIR="$OUT/run"; mkdir -p "$RUNDIR"
-python3 "$APPCI/run.py" --run "$RUNDIR" --bin "$BIN" --backend "$BACKEND" --app-display "$APPDISP" --modes "$SMODES" \
-  --cases "$CASES" --skip "$SKIP" --platform "linux-$MODE"
-RC=$?
+# r18d8: run.py in its OWN process group (setsid; in a non-interactive shell the background child is not a group leader, so setsid execs
+# in place and $! is the pgid), recorded in $PIDS so the teardown and the next job's stale-reaper find it. `wait` is interruptible by the traps.
+setsid python3 "$APPCI/run.py" --run "$RUNDIR" --bin "$BIN" --backend "$BACKEND" --app-display "$APPDISP" --modes "$SMODES" \
+  --cases "$CASES" --skip "$SKIP" --platform "linux-$MODE" &
+RUNPID=$!
+echo "runpy $RUNPID" >> "$PIDS"
+wait "$RUNPID"; RC=$?
 cp "$OUT/sway."*.log "$OUT/gpu.txt" "$RUNDIR/logs/" 2>/dev/null
 log "done rc=$RC; results in $RUNDIR/results.json"
 exit $RC

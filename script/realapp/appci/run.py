@@ -142,7 +142,17 @@ def main():
     if not a.report_only and not a.backend:
         ap.error("the following arguments are required: --backend")
     import signal
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))     # cancelled job: unwind through the finally blocks (app.stop, sshd.stop)
+    def on_term(signum, _frame):
+        # r18d8: a timed-out/cancelled job SIGTERMs us; flush results.json/summary.md/junit from the rows so far BEFORE unwinding (the
+        # unwinding itself can take a while: app.stop, sshd.stop), then exit through the finally blocks.
+        signal.signal(signum, signal.SIG_IGN)      # a second signal must not interrupt the flush
+        print("[appci] signal %d: flushing results, then unwinding" % signum, flush=True)
+        write_partial_report(os.path.abspath(a.run), a)
+        signal.signal(signum, on_term)
+        sys.exit(143)
+    signal.signal(signal.SIGTERM, on_term)     # cancelled job: unwind through the finally blocks (app.stop, sshd.stop)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, on_term)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, lambda *_: sys.exit(143))    # Windows: how a cancelled runner job stops us
     run = os.path.abspath(a.run)
@@ -179,7 +189,8 @@ def main():
         with open(resf, "a") as f:
             f.write(json.dumps(row) + "\n")
         emitted.add((row["mode"], row["name"]))
-        print("[%s] %-24s %s %s" % (row["mode"], row["name"], row["status"].upper(), "; ".join(row["detail"])[:200]), flush=True)
+        print(ci_env.redact(row_log_line(row), ollama_url), flush=True)
+        write_partial_report(run, a)      # r18d8: a killed job still leaves every finished row in results.json/summary.md/junit.xml
 
     be = None if sim else backend.make(a.backend)
     if be:
@@ -301,7 +312,8 @@ def main():
                 ctx.t_case0 = t0
                 k_start = len(be.calls) if getattr(be, "calls", None) is not None else None     # injector accounting (#1509)
                 status = "pass"
-                disarm = arm_case_timeout(case_timeout)
+                # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
+                disarm = arm_case_timeout(max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if c["name"] == "soak" else case_timeout)
                 try:
                     if sim and c["gui"]:
                         raise cases.Skip("needs a GUI backend")
@@ -642,6 +654,40 @@ def keep_instance_log(run, mode, prof, backend_name, ollama_url, n, app=None):
     open(os.path.join(logs, "phosphor.%d.log" % n), "w").write(t)
 
 
+def row_log_line(row):
+    """r18d8: the job-log line of a finished case. The first failing message (or, for a no-reference row, the NO-REFERENCE reason)
+    is printed IN FULL (the runner log used to show only 200 characters); the remaining detail stays capped at 200."""
+    det = [str(d) for d in (row.get("detail") or [])]
+    head = "[%s] %-24s %s" % (row["mode"], row["name"], row["status"].upper())
+    if not det:
+        return head
+    first = det[0]
+    if row["status"] == "noref":
+        first = next((d for d in det if d.startswith("NO-REFERENCE")), first)
+    rest = [d for d in det if d is not first]
+    line = head + " " + first
+    if rest:
+        line += "; " + "; ".join(rest)[:200]
+    return line
+
+
+def write_partial_report(run, a):
+    """r18d8: regenerate results.json / summary.md / junit.xml from results.jsonl after EVERY case (report.py output and exit status
+    are ignored here; finish() still writes the final report and decides the exit code). Never raises."""
+    try:
+        subprocess.run(report_cmd(run, a, str(profile.Profile.owner_note)) + ["partial=1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    except Exception:
+        pass
+
+
+def report_cmd(run, a, note):
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [sys.executable, os.path.join(here, "report.py"), run, "platform=" + a.platform, "backend=" + a.backend,
+            "app_display=" + a.app_display, "seed=%d" % a.seed, "commit=" + os.environ.get("CI_COMMIT_SHORT_SHA", "local"),
+            "owner_settings=" + note, "tier=" + (os.environ.get("APPCI_TIER") or "full"),
+            "scale=" + os.environ.get("APPCI_SCALE", "1")]
+
+
 def finish(run, a, code, write_meta=True):
     here = os.path.dirname(os.path.abspath(__file__))
     note = str(profile.Profile.owner_note)
@@ -653,10 +699,7 @@ def finish(run, a, code, write_meta=True):
             pass
     else:
         note = getattr(a, "owner_note", note)
-    rc = subprocess.run([sys.executable, os.path.join(here, "report.py"), run, "platform=" + a.platform, "backend=" + a.backend,
-                         "app_display=" + a.app_display, "seed=%d" % a.seed, "commit=" + os.environ.get("CI_COMMIT_SHORT_SHA", "local"),
-                         "owner_settings=" + note, "tier=" + (os.environ.get("APPCI_TIER") or "full"),
-                         "scale=" + os.environ.get("APPCI_SCALE", "1")]).returncode
+    rc = subprocess.run(report_cmd(run, a, note)).returncode
     return max(code, rc)
 
 

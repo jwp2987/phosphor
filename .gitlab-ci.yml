@@ -913,11 +913,16 @@ usage-test-macos:
   when: manual
   allow_failure: true
   resource_group: little-thing-gui
-  timeout: 90m
+  # r18d8: GitLab `timeout:` is static per job. The full tier (APPCI_TIER=full: candidate/release) of app-test-linux-wayland runs both modes
+  # (terminal alone ~75 min, soak 2 x ~70 min) plus the xwayland pass and was killed at 90 min; 4h fits it. The fix tier (smoke) is not
+  # lengthened: it ends by itself in well under 90 min, so the larger limit only matters for a hung job.
+  timeout: 4h
   variables:
     GIT_DEPTH: "1"
   artifacts:
     name: appci-$CI_JOB_NAME
+    # r18d8: always, so a job killed at the timeout or cancelled still uploads every finished row (results.json/summary.md/junit.xml are
+    # rewritten after every case) and the shots/logs of finished cases
     when: always
     expire_in: 7 days
     paths:
@@ -928,6 +933,8 @@ usage-test-macos:
       - appci-out/*/run/logs/
       - appci-out/*/session.log
       - appci-out/*/results.jsonl
+      - appci-out/*/run/results.jsonl
+      - appci-out/*/run/soak_samples.csv
       - appci-out/reused_build.json
     reports:
       junit: appci-out/*/run/junit.xml
