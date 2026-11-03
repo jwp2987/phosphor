@@ -578,3 +578,10 @@ mod tests {
 #[cfg(test)]
 #[path = "table_enum_tests.rs"]
 pub(in crate::terminal::input_queue) mod table_enum_tests;
+
+// The table-vs-legacy equivalence check (#1529) for the fuzz target: under `cfg(test)` it is
+// `table_enum_tests::equiv`; a `dev-support` build (cargo-fuzz, benches) has no test cfg, so the
+// same file is compiled here and `Op::DecideEquiv` runs the check in the fuzzer too.
+#[cfg(all(feature = "dev-support", not(test)))]
+#[path = "table_equiv_tests.rs"]
+pub(in crate::terminal::input_queue) mod table_equiv_dev;

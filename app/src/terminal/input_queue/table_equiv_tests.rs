@@ -29,6 +29,11 @@
 //! `PtyBytes`, `Held` and `EditorKey` (legacy answers by kind alone and there is no single table
 //! class for them); the line-run pin (`apply_pin` has its own tests in `table_tests.rs`).
 //! Built by assignment, so a field added to `RouteFacts` or `DestFacts` does not break this file.
+//!
+//! Also compiled without `cfg(test)` for `dev-support` builds (`facts::table_equiv_dev`), so the
+//! fuzz target's `Op::DecideEquiv` runs [`check_live_facts`]; there the `#[test]` walkers are
+//! absent and the helpers only they use are dead, hence the allow.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
 use crate::terminal::input_queue::table::{Class, DropWhy, Intent, Outcome, decide};
 use crate::terminal::input_queue::{
