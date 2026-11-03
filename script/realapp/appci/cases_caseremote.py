@@ -39,7 +39,13 @@ def connect(ctx, host="fake", timeout=90):
 
 
 def leave(ctx, timeout=15):
-    """`exit` in the remote shell, wait for the LOCAL shell's next prompt"""
+    """`exit` in the remote shell, wait for the LOCAL shell's next prompt. r18e9 (macOS remote_session_*): when the remote steps had failed this `exit` ran in the pane's
+    LOCAL shell and closed the pane (then "APP DIED"). The pane is proven REMOTE by a probe first; otherwise `exit` is NOT typed (ctx.left_unproven says why)."""
+    where = ctx.where_now()
+    if where != "remote":
+        ctx.left_unproven = where
+        return False
+    ctx.left_unproven = None
     before = ctx.prompts()
     ctx.be.type("exit", 12, enter=True)
     return bool(ctx.until(lambda: ctx.prompts() > before, timeout, step=0.1))
@@ -184,7 +190,10 @@ def remote_session(ctx, r, variant):
     exact(r, "[%s] Ctrl-C reached the REMOTE command and the remote shell continued" % variant, ["INT", "AFTER"], ctx.lines(f, remote=True))
     # ---- 7. back to local: the next local command runs locally, never remotely
     ok = leave(ctx)
-    r.check(ok, "[%s] no local prompt after `exit` from the remote shell" % variant)
+    r.check(ok, "[%s] no local prompt after `exit` from the remote shell" % variant if ctx.left_unproven is None else
+            "[%s] the pane is not provably REMOTE (probe ran in: %s), so `exit` was NOT typed (it would close the local pane)" % (variant, ctx.left_unproven))
+    if ctx.left_unproven is not None:
+        ctx.reset()
     tok = ctx.tok(8).lower()
     lmark = ctx.cmd_mark()
     ctx.be.type("echo %s >> %s_back.txt" % (tok, tag), 12, enter=True)
@@ -202,7 +211,8 @@ def remote_session(ctx, r, variant):
         ctx.until(lambda: ctx.lines(tag + "_m.txt", remote=True), 8)
         exact(r, "[%s] second session: remote command ran remotely" % variant, [tok], ctx.lines(tag + "_m.txt", remote=True))
         r.check(not ctx.lines(tag + "_m.txt"), "[%s] second session: remote command ran LOCALLY" % variant)
-        leave(ctx)
+        if not leave(ctx):
+            r.check(False, "[%s] second session: not provably remote (probe ran in: %s), `exit` NOT typed" % (variant, ctx.left_unproven))
     ext_hits = [l for l in ctx.log_since(log_off).splitlines() if re.search(r"remote.?server|ssh.?extension|warpif", l, re.I)]
     r.metric("app_log_ssh_ext_lines", len(ext_hits))
     for l in ext_hits[:6]:
@@ -542,6 +552,7 @@ def make_shell_case(key):
             time.sleep(0.5)
             r.note("%s found at %s (not on the pane's PATH): its directory was added to PATH in the pane" % (key, path))
         cmd = "pwsh -NoLogo -NoProfile" if key == "pwsh" else binary
+        shells0 = ctx.shell_count()       # r18e9: `exit` below is typed only when the subshell is provably in front (macOS shell_zsh closed the pane)
         ctx.be.type(cmd, 12, enter=True)
         time.sleep(wait)
         ready = False
@@ -624,6 +635,11 @@ def make_shell_case(key):
         got = ctx.until(lambda: ctx.lines(h), 6)
         exact(r, "%s: Ctrl-C ended the long command and the shell ran the next line (within ~7 s, not after the 30 s sleep)" % key, [tok], got or [])
         # exit back to the pane's bash
+        if key != "pwsh" and ctx.in_subshell(shells0) is False:      # pwsh is not in Ctx.SHELLS: its count never rises
+            r.check(False, "%s: no extra shell under the app any more (count %s, was %s before it started), so `%s` was NOT typed (it would close the pane's own shell)" % (
+                key, ctx.shell_count(), shells0, ex))
+            ctx.reset()
+            return
         ctx.be.type(ex, 12, enter=True)
         time.sleep(2.0)
         tok = ctx.tok(8).lower()

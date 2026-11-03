@@ -383,6 +383,7 @@ def main():
                 dead = app.death() if hasattr(app, "death") else (None if app is None or app.alive() else "APP DIED during/after this case (crash): see logs/app.stdout")
                 if dead:
                     status = "fail"
+                    dead = classify_death(dead, ctx, t0, log_off)
                     r.fails.append(dead)
                     emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence,
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
@@ -562,6 +563,32 @@ def main():
         finish(run, a, 143)
         raise SystemExit(crashed_exit)
     return finish(run, a, 1 if exit_fail else 0)
+
+
+CRASH_RX = re.compile(r"panicked at|\bSIGSEGV\b|\bSIGABRT\b|\bSIGBUS\b|fatal runtime error|stack overflow|Segmentation fault|EXC_BAD_ACCESS", re.I)
+
+
+def classify_death(dead, ctx, t0, log_off):
+    """r18e9 (macOS remote_session_*, shell_zsh): the case's trailing `exit` ran in the pane's own shell, the pane closed, the app quit, and the harness reported
+    "APP DIED". Name a pane closed by the case's own `exit` (no panic/signal/crash report in the case's app-log slice, window-close line present) as that, a
+    HARNESS defect of the case, never a crash; keep the crash wording otherwise and say what was checked."""
+    try:
+        sl = ctx.log_since(log_off) if log_off is not None else ""
+        crash = [l for l in sl.splitlines() if CRASH_RX.search(l)][:3]
+        reports = []
+        if sys.platform == "darwin":       # a real crash leaves a report; a clean quit does not
+            import glob
+            reports = [p for p in glob.glob(os.path.expanduser("~/Library/Logs/DiagnosticReports/*hosphor*")) if os.path.getmtime(p) >= t0 - 5]
+        closing = [l for l in sl.splitlines() if re.search(r"will close|window.*clos|all windows closed", l, re.I)][:1]
+        if crash or reports:
+            return "%s; crash evidence: %s" % (dead, "; ".join([c[:160] for c in crash] + reports))
+        if ctx.last_typed_exit_since(t0) and closing:
+            return ("PANE CLOSED BY THE CASE'S OWN `exit` (harness defect, NOT an app crash): the last text the case typed was `exit`, the app logged %r, and the case's app-log slice "
+                    "has no panic/SIGSEGV/SIGABRT/crash report. Underlying: %s" % (closing[0][:160], dead))
+        return "%s; no panic/signal/crash report found in the case's app-log slice (%d chars) or DiagnosticReports%s" % (
+            dead, len(sl), "; the case's last typed text was `exit` but no window-close line was logged" if ctx.last_typed_exit_since(t0) else "")
+    except Exception as e:
+        return "%s (death classification failed: %r)" % (dead, e)
 
 
 def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None):

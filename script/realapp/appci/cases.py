@@ -183,7 +183,10 @@ class Ctx:
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
         self.ctrlc_ts = []            # wall time of every Ctrl-C the harness sent (r18d2: see reset())
+        self.left_unproven = None     # leave(): where the probe ran when the pane was NOT provably remote (no `exit` typed)
+        self.typed_log = []           # (time, text) of every be.type() (r18e9: tells "the case's own `exit` closed the pane" from an app death)
         self._wrap_ctrlc(be)
+        self._wrap_type(be)
         try:
             be.inject_log = os.path.join(run, "inject.log")
             os.makedirs(os.path.join(run, "logs"), exist_ok=True)
@@ -560,6 +563,28 @@ class Ctx:
                 return _orig(spec, *a, **k)
             setattr(be, name, wrapped)
         be._ctrlc_wrapped = self
+
+    def _wrap_type(self, be):
+        """r18e9: remember what be.type() sent and when (the last few only), so a pane that vanished right after a typed `exit` is named as the case's own doing"""
+        if getattr(be, "_type_wrapped", None) is self or not hasattr(be, "type"):
+            return
+        orig, log = be.type, self.typed_log
+
+        def typed(text, *a, _orig=orig, **k):
+            log.append((time.time(), str(text)))
+            del log[:-20]
+            return _orig(text, *a, **k)
+        be.type = typed
+        be._type_wrapped = self
+
+    def last_typed_exit_since(self, t0):
+        """True when the case's LAST typed text was `exit` (at or after t0)"""
+        return bool(self.typed_log) and self.typed_log[-1][0] >= t0 and self.typed_log[-1][1].strip() == "exit"
+
+    def in_subshell(self, base):
+        """True/False/None: more shells under the app than `base` (a shell_count() taken before the subshell started). `exit` is typed only on True"""
+        now = self.shell_count()
+        return None if base is None or now is None else now > base
 
     def double_ctrlc_since(self, t0):
         """True when two Ctrl-C went out within the exit-confirmation window after t0: in an EMPTY agent conversation that is how the app is told to

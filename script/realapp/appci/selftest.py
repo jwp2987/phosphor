@@ -720,6 +720,21 @@ def r18e9_windows_reference_has_own_ps_history():
     assert "HistorySavePath" in body and "-NoExit" in body, "the PowerShell reference needs its own history file"
 
 
+@check
+def r18e9_pane_closed_by_own_exit_is_not_an_app_death():
+    """r18e9: a pane closed by the case's own `exit` is named so; a panic keeps the crash wording"""
+    import run as runmod
+    class C:
+        def __init__(s, log, ex): s.log, s.ex = log, ex
+        def log_since(s, off): return s.log
+        def last_typed_exit_since(s, t0): return s.ex
+    t0 = time.time() - 1
+    m = runmod.classify_death("APP DIED: pid 1 is gone", C("13:51:34 enter_begin buffer=\"exit\"\n13:51:34 WindowId(0) will close\n", True), t0, 0)
+    assert "OWN `exit`" in m and "NOT an app crash" in m, m
+    m = runmod.classify_death("APP DIED: pid 1 is gone", C("thread 'main' panicked at x.rs:1\nWindowId(0) will close", True), t0, 0)
+    assert "OWN" not in m and "crash evidence" in m, m
+
+
 def main():
     failed = 0
     for f in CHECKS:
