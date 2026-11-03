@@ -202,6 +202,9 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
             f["handed_back"].append((int(m.group(1)), m.group(2)))
         elif "handed-back char(s) kept until the running block ends" in l:
             f["handed_back"].append((None, "stashed_until_block_end"))
+        m = re.search(r"hop=ssh_kept_text action=(\w+)", l)
+        if m:
+            f.setdefault("kept_banner", []).append(m.group(1))
     f["typed"] = "".join(typed)
     if typed:
         f["app_saw_line"] = expected in f["typed"]
@@ -238,7 +241,9 @@ def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
     elif f["refused"]:
         why = "#1332: the delivered Enter was REFUSED (can_execute_command false / HistoryNotAppendable)"
     elif any(d == "stashed_until_block_end" for _, d in f["handed_back"]):
-        why = "#1596: the held text was handed back and KEPT until the ssh block ends (no visible holding area)"
+        kb = f.get("kept_banner") or []
+        why = ("#1596: the held text was handed back and KEPT until the ssh block ends (%s)"
+               % ("kept-text banner: %s" % ",".join(kb) if kb else "NO kept-text banner shown"))
     elif f["handed_back"]:
         why = "held text handed back to the editor as text (%s), not run remotely" % f["handed_back"]
     elif f["remote"] is None and not f["hold_seen"]:
