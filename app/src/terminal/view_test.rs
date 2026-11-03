@@ -19928,6 +19928,13 @@ fn ssh_in_the_agent_view_on_an_unready_shell_is_routed_to_the_shell_and_held_not
                 );
                 assert!(input.shell_unready_for_submit(ctx), "{mode:?}: unready");
                 editor_text(view, "ssh fake", ctx);
+            });
+            // The typed text and the Enter are separate key events, as they are for a user: the
+            // text's `Edited` event reaches the input (and requests its detection) when the update
+            // above ends. In ONE update the editor's `Enter` (emitted directly) is delivered
+            // before that `Edited` (it needs a model -> view hop), so the Enter saw a buffer no
+            // detection had been requested for and took the inherited AI type.
+            terminal.update(&mut app, |view, ctx| {
                 editor_key(view, EditorAction::Enter, ctx);
             });
             for _ in 0..200 {
