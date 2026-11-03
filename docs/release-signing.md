@@ -1,7 +1,7 @@
 # Release signing and notarization: current state and what it needs
 
-Status (#1515): **nothing we publish is signed or notarized by a trusted identity**, and no signing credentials exist in
-CI. This page says what is checked today and exactly what the owner must supply to change that. Nothing here invents or
+Status (#1515): **nothing we publish is signed or notarized by a trusted identity** yet: the signing steps exist in CI but
+no credentials do. This page says what is checked today and exactly what the owner must supply to change that. Nothing here invents or
 assumes a secret.
 
 ## What is verified today (`script/ci/verify_artifacts.sh` / `.ps1`)
@@ -21,39 +21,62 @@ after signing is in place.
 Not covered (still manual, see `docs/testing.md` section 5): Gatekeeper first-launch behaviour (`app_test.sh` strips
 quarantine), SmartScreen, `dpkg -i` on a real system, and install/upgrade/uninstall cases.
 
-## What the owner must provide to enable signing
+## How signing is wired (done; waiting on credentials)
+
+`release-macos-arm64` and `release-windows-x86_64` in `.gitlab-ci.yml` sign **only when every variable below exists**.
+With any of them missing they do exactly what they did before (macOS: ad-hoc `--selfsign`; Windows: unsigned) and
+`verify_artifacts` keeps only reporting. When signing ran, the job sets `PHOSPHOR_REQUIRE_SIGNED=1` so an invalid
+signature fails the release before `upload_package`, and macOS additionally runs `xcrun stapler validate` on the DMG.
+`script/macos/bundle` itself has no Warp team id, identity or `WARP_*` variable any more (they were Warp's
+`2BBY89MBSN`, the zach@warp.dev notarization account and `WARP_NOTARIZATION_PASSWORD` / `WARP_DEVELOPER_ID_CERT_PASSWORD`
+/ `WARP_CODESIGN_KEYCHAIN_PASSWORD`); with no identity it signs ad-hoc (`codesign -s -`), `--nosign` skips signing.
+`script/Entitlements.plist` no longer claims Warp's App Group (`2BBY89MBSN.dev.warp`); that group belongs to Warp's
+team and cannot be claimed by a Phosphor-signed app.
+
+**Untested.** This was written without a Mac, a certificate or a pipeline run. The first signed run must be a
+deliberate, watched one (manual job on `main`, or a throwaway `v*` tag) before any real release depends on it.
+
+## What the owner must create and provide
 
 All as GitLab CI/CD variables on `winters-phosphor/phosphor`, **Protected** (so only `main`, `build/*`, `v*` pipelines
-see them), **Masked** where the value allows it, and **Hidden** for files. None of these may go in the repo, `ci.env`
-or a job log.
+see them), **Masked** where the value allows it. None of these may go in the repo, `ci.env` or a job log. Names are
+exactly as the scripts read them.
 
 ### macOS (Developer ID signing + notarization)
 
 Requires a paid Apple Developer Program membership.
 
-1. A **Developer ID Application** certificate and its private key, exported as a `.p12`, base64-encoded:
-   `APPLE_DEVELOPER_ID_CERT_P12_B64` (file or masked variable) and `APPLE_DEVELOPER_ID_CERT_PASSWORD` (masked).
-2. A throwaway keychain password for the job's temporary keychain: `CODESIGN_KEYCHAIN_PASSWORD` (masked; any random value).
-3. Notarization credentials for `xcrun notarytool`: the **Apple ID** (`NOTARIZATION_APPLE_ID`), an **app-specific
-   password** created at appleid.apple.com (`NOTARIZATION_PASSWORD`, masked), and the **Team ID** (`APPLE_TEAM_ID`).
-   Better than passing them each time: store a notarytool profile once on the Mac runner
-   (`xcrun notarytool store-credentials phosphor-notary --apple-id ... --team-id ... --password ...`) and have the job
-   use `--keychain-profile phosphor-notary`; then only the profile name is a variable and the secret stays in the runner
-   user's keychain.
-4. Code changes needed: `script/macos/bundle`'s `--codesign` path still reads `WARP_*` variable names and hard-codes
-   Warp's team id (`APPLE_TEAM_ID="2BBY89MBSN"`, line ~733); it must be switched to the variables above, the
-   `release-macos-arm64` job must call it with `--codesign` instead of `--selfsign`, and `script/ci/verify_artifacts.sh`
-   should then run with `PHOSPHOR_REQUIRE_SIGNED=1` plus `xcrun stapler validate`.
-5. The Mac runner needs a GUI (Aqua) session for create-dmg's Finder step, or `PHOSPHOR_DMG_SKIP_JENKINS=1` as today.
+1. In the Apple Developer portal create a **Developer ID Application** certificate (not "Apple Development"). Export it
+   with its private key from Keychain Access as a `.p12`, then `base64 -i cert.p12 | tr -d '\n'`.
+   * `PHOSPHOR_DEVELOPER_ID_CERT`: that base64 text (masked).
+   * `PHOSPHOR_DEVELOPER_ID_CERT_PASSWORD`: the password chosen at export (masked).
+   * `PHOSPHOR_APPLE_SIGNING_IDENTITY`: the certificate's common name, e.g. `Developer ID Application: Your Name (ABCDE12345)`.
+   * `PHOSPHOR_APPLE_TEAM_ID`: the 10-character Team ID (Membership page).
+2. `PHOSPHOR_CODESIGN_KEYCHAIN_PASSWORD`: any random string (masked); it only protects the throwaway keychain the job
+   creates and deletes.
+3. Notarization, either:
+   * `PHOSPHOR_NOTARIZATION_APPLE_ID` (the Apple ID email) and `PHOSPHOR_NOTARIZATION_PASSWORD`, an **app-specific
+     password** made at appleid.apple.com (masked); or
+   * preferred: once, on the Mac runner as the runner user, run
+     `xcrun notarytool store-credentials phosphor-notary --apple-id ... --team-id ... --password ...` (or an App Store
+     Connect API key via `--key/--key-id/--issuer`), then set only `PHOSPHOR_NOTARY_PROFILE=phosphor-notary`. The secret
+     then stays in that user's keychain and never enters GitLab.
+4. The Mac runner needs a GUI (Aqua) session for create-dmg's Finder step, or `PHOSPHOR_DMG_SKIP_JENKINS=1` as today.
+5. A manual `release-macos-arm64` run on `main` also signs if the variables are visible to `main` (they are, when
+   protected). Delete or unprotect the variables if you do not want dry runs to use the certificate.
 
 ### Windows (Authenticode)
 
-1. A code-signing certificate (OV, or EV to avoid SmartScreen reputation warm-up) as a `.pfx`, base64-encoded:
-   `WINDOWS_CODESIGN_PFX_B64` and `WINDOWS_CODESIGN_PFX_PASSWORD` (masked). An EV or cloud HSM certificate cannot be
-   exported; then the variable is the vendor's signing-service credentials instead.
-2. `SIGN_TOOL_CMD`: the `signtool sign ...` command line `script/windows/bundle.ps1` already accepts (it passes it to
-   Inno Setup as `/Scodesign=`). The job would materialize the `.pfx` to a temp file, set `SIGN_TOOL_CMD`, and delete it in
-   `after_script`. A timestamp server URL (RFC 3161) must be part of the command, or signatures expire with the cert.
+1. A code-signing certificate (OV, or EV to avoid SmartScreen reputation warm-up) as a `.pfx`:
+   * `WINDOWS_CODESIGN_PFX_B64`: `base64` of the `.pfx` (masked).
+   * `WINDOWS_CODESIGN_PFX_PASSWORD`: its password (masked).
+   * `WINDOWS_CODESIGN_TIMESTAMP_URL`: your CA's RFC 3161 timestamp server URL. Required, and deliberately has no
+     default here: without a timestamp the signature dies with the certificate.
+2. The release job writes the `.pfx` to `%TEMP%`, builds `SIGN_TOOL_CMD` (`signtool sign /fd SHA256 /td SHA256 /tr <url>
+   /f <pfx> /p <password> $f`, which `script/windows/bundle.ps1` hands to Inno Setup) and deletes the `.pfx` in
+   `after_script`. `signtool.exe` (Windows SDK) must be on the Windows runner's `PATH`.
+3. EV certificates and cloud HSMs (Azure Trusted Signing, DigiCert KeyLocker) cannot be exported as a `.pfx`; if that is
+   your choice, say so and `SIGN_TOOL_CMD` will be set from the vendor's tool instead.
 
 ### Linux
 
