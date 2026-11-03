@@ -2513,11 +2513,14 @@ pub(crate) fn routes_off_thread(buffer_text: &str) -> bool {
 /// one-off-word shortcut need when no parse describes the buffer, at a cost bounded by the window,
 /// not the text. `None` for a buffer whose window holds only whitespace.
 pub(crate) fn head_word_from_text(buffer_text: &str) -> Option<String> {
-    let mut end = buffer_text.len().min(MAX_SYNC_ROUTING_BYTES);
-    while !buffer_text.is_char_boundary(end) {
+    // Leading whitespace first: a paste opening with 4 KiB+ of blank lines still has a head word
+    // (review of #1604); `trim_start` is linear only in that whitespace.
+    let text = buffer_text.trim_start();
+    let mut end = text.len().min(MAX_SYNC_ROUTING_BYTES);
+    while !text.is_char_boundary(end) {
         end -= 1;
     }
-    buffer_text[..end]
+    text[..end]
         .split_whitespace()
         .next()
         .map(|word| word.chars().take(256).collect())

@@ -1754,6 +1754,11 @@ fn a_short_line_without_a_parse_is_classified_from_its_text() {
     }
     assert_eq!(head_word_from_text("  echo hi"), Some("echo".to_owned()));
     assert_eq!(head_word_from_text("   \n\t "), None);
+    // More than the 4 KiB window of leading blank lines still finds the head.
+    assert_eq!(
+        head_word_from_text(&format!("{}echo hi", " \n".repeat(3000))),
+        Some("echo".to_owned())
+    );
     let no_whitespace = "x".repeat(10 * 1024 * 1024);
     let started = std::time::Instant::now();
     let head = head_word_from_text(&no_whitespace).expect("a word");
