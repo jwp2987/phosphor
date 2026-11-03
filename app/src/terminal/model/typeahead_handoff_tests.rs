@@ -2581,6 +2581,60 @@ fn a_young_enter_is_held_or_written_by_what_the_shell_is_doing_not_by_elapsed_ti
     );
 }
 
+/// A session with no platform sample whose counts say the prompt is back, then a command starts
+/// (a Preexec parsed after that Precmd).
+fn unsampled_command_started_after_prompt(markers: bool) -> TypeaheadHandoff {
+    let mut handoff = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut handoff, b"explain");
+    handoff.on_precmd();
+    handoff.on_precmd_seq(Some(7), Some(3));
+    if markers {
+        assert!(handoff.on_line_editor_reading(Some(7), Some(3)));
+    }
+    handoff.on_preexec(false);
+    handoff.age_last_activity_for_test();
+    handoff.young_line = false;
+    handoff
+}
+
+/// #1390: with live markers a Preexec parsed after the counts' Precmd means a command runs, so a
+/// young Enter is for it and is written, not held until a prompt that is not coming. Without
+/// markers (an older bootstrap) the counts still decide, as before.
+#[test]
+fn with_live_markers_a_running_command_is_not_held_for_a_prompt_on_an_unsampled_session() {
+    let mut running = unsampled_command_started_after_prompt(true);
+    assert_eq!(running.shell_activity(), ShellActivity::Running);
+    assert_eq!(running.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert!(!running.has_young_hold());
+    // The peek (destination table) agrees with the commit.
+    let peek = unsampled_command_started_after_prompt(true);
+    assert_eq!(
+        peek.peek_user_bytes_route(b"\r", true, Instant::now()),
+        UserBytesRoute::WriteCounted
+    );
+
+    // No markers: the counts say the prompt is back, held by event as before.
+    let mut no_markers = unsampled_command_started_after_prompt(false);
+    assert_eq!(no_markers.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(
+        no_markers.young_hold_wait(Instant::now()),
+        EVENT_HOLD_GIVE_UP
+    );
+}
+
+/// #1390: the stream lags the shell, so Running never turns a held Enter into a delivery while a
+/// line is outstanding: that case still takes the window (a hold the timer only hands back).
+#[test]
+fn an_outstanding_line_with_live_markers_still_takes_the_window_hold() {
+    let mut handoff = seq_after_submit(ShellPromptFact::Unknown);
+    handoff.on_line_editor_reading(Some(7), Some(1));
+    handoff.on_preexec(false);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+    type_and_flush(&mut handoff, b"explain");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_ne!(handoff.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+}
+
 #[test]
 fn a_line_begun_while_the_line_editor_reads_is_young_whatever_the_time() {
     let mut handoff = seq_after_submit(ShellPromptFact::LineEditorReading);

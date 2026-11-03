@@ -2327,11 +2327,33 @@ impl TypeaheadHandoff {
                 // prompt: the Enter is for that program, not a line the app has yet to notice.
                 ShellPromptFact::NotAtPrompt => None,
                 ShellPromptFact::LineEditorReading => Some(true),
+                // #1390: with no sample (ssh, ConPTY, unsampled macOS) and a shell that sends
+                // line-editor markers, the ordered stream says what the shell is doing. A
+                // Preexec parsed after the last Precmd is newer than the counts that said the
+                // prompt was back: a command runs, so the Enter is for it, not a line to hold
+                // for a prompt (an event hold would wait for the command to end). Only that
+                // direction is used: the stream lags the shell, so "Running" never extends a
+                // hold, and an outstanding line still takes the window (a hold the timer
+                // hands back, never a delivery it decides).
+                ShellPromptFact::Unknown if self.stream_says_command_running() => {
+                    if precmds_seen >= enters_written {
+                        None
+                    } else {
+                        in_window().then_some(false)
+                    }
+                }
                 ShellPromptFact::Unknown if precmds_seen >= enters_written => Some(true),
                 ShellPromptFact::Unknown => in_window().then_some(false),
             };
         }
         (in_window() && !self.foreground_probe.foreground_is_plain_program()).then_some(false)
+    }
+
+    /// Whether this session's shell sends line-editor markers and the last thing its ordered
+    /// stream said is that a command started ([`ShellActivity::Running`], a Preexec parsed after
+    /// the last Precmd). Never true for a shell without markers (the window path stays).
+    fn stream_says_command_running(&self) -> bool {
+        self.line_editor_markers_live && self.shell_activity == ShellActivity::Running
     }
 
     /// Whether the first byte of a line typed now began before the app could know the shell was at
@@ -2352,6 +2374,11 @@ impl TypeaheadHandoff {
         match self.foreground_probe.prompt_fact() {
             ShellPromptFact::NotAtPrompt => false,
             ShellPromptFact::LineEditorReading => true,
+            // #1390: see `should_hold_young_enter`; a Preexec newer than the counts means the
+            // line is typed into a running command, not at a prompt.
+            ShellPromptFact::Unknown if self.stream_says_command_running() => {
+                precmds_seen < enters_written && window
+            }
             ShellPromptFact::Unknown if precmds_seen >= enters_written => true,
             ShellPromptFact::Unknown => window,
         }
