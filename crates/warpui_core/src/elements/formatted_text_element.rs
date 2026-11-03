@@ -1666,6 +1666,9 @@ impl Element for FormattedTextElement {
             let (quote_depth, line) = line.unquote();
             let mut res = Vec::new();
             let (font_size, texts, indent, line_type) = match line {
+                // `unquote` returns the innermost line, never another quote; skip rather than panic if a nested
+                // quote ever reaches here.
+                FormattedTextLine::BlockQuote { .. } => continue,
                 FormattedTextLine::Heading(header) => (
                     self.heading_to_font_size_multipliers
                         .get_multiplier(header.heading_size)
