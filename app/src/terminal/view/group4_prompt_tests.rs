@@ -155,6 +155,7 @@ fn pane_enter_with_focus(
             chars: "\r".to_owned(),
             is_composing: false,
             will_type: false,
+            key_without_modifiers: None,
         },
     };
     view.on_pane_key_event(

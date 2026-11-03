@@ -717,6 +717,22 @@ impl CLISubagentController {
         });
     }
 
+    /// Hands the active command from the agent to the user.
+    ///
+    /// This is the first Ctrl-C on an agent-driven command (`UserTakeOverReason::Stop`), and it
+    /// takes the model's lock -- so with the pty reader inside the model it waits for the slice
+    /// (#1411). The wait is kept on purpose rather than moved into the model inbox: the take-over
+    /// is only the first of the model locks this ^C takes. `should_cancel_conversation` (true for
+    /// Stop) cancels the conversation's actions, and a shell-command action locks the model to
+    /// find its block; the `UpdatedControl` event the view handles then locks it twice more
+    /// (`redetermine_terminal_focus_for_user_takeover`, `is_agent_tagged_in`). Posting the
+    /// take-over for the reader to apply would not make the ^C faster, and it would emit
+    /// `UpdatedControl` -- "the user has the pty" -- before the model said so, so a key routed on
+    /// that event could still find the agent in control. The one thing a stale copy could do is
+    /// worse than the wait: without the publish below, a second ^C in the same slice read the
+    /// published copy ("agent in control"), came back here, hit `InvalidTakeOver` and sent
+    /// nothing -- a lost interrupt. So the key facts are republished under the lock that changed
+    /// them, and the next key sees the user in control.
     pub fn switch_control_to_user(&self, reason: UserTakeOverReason, ctx: &mut ModelContext<Self>) {
         let should_cancel_conversation = reason.should_cancel_conversation();
         let change_reason = ControlChangeReason::for_user_takeover(&reason);
@@ -732,6 +748,9 @@ impl CLISubagentController {
         let action_id = active_block.requested_command_action_id().cloned();
         let conversation_id = active_block.ai_conversation_id();
         let agent_has_control = active_block.is_agent_in_control();
+        // The key path reads "agent in control" from the published copy when the pty reader
+        // holds the model: publish the change under the lock that made it (#1411).
+        terminal_model.publish_key_facts();
         // Conversation cancellation potentially takes a lock on terminal model if the
         // cancelled action is a shell command action, so we have to drop the terminal
         // model lock before actually cancelling the conversation.
@@ -785,6 +804,9 @@ impl CLISubagentController {
         }
         let action_id = active_block.requested_command_action_id().cloned();
         let agent_has_control = active_block.is_agent_in_control();
+        // As in `switch_control_to_user`: the next Ctrl-C must see the agent in control again
+        // from the published copy, so it takes control over instead of interrupting (#1411).
+        terminal_model.publish_key_facts();
         drop(terminal_model);
         if let Some(agent_view_controller) = &self.agent_view_controller {
             agent_view_controller.update(ctx, |controller, ctx| {

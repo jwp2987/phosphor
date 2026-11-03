@@ -13,6 +13,7 @@ fn new_alt_screen(size: SizeInfo) -> AltScreen {
         1_000, /* max_scroll_limit */
         ChannelEventListener::new_for_test(),
         ObfuscateSecrets::No,
+        KeyModelCell::default(),
     )
 }
 
@@ -129,4 +130,38 @@ fn a_cloned_grid_handler_carries_the_same_renderable_state() {
         assert_eq!(clone.row(row), original.row(row), "row {row}");
     }
     assert_eq!(clone.row(1).expect("row 1 exists")[0].c, 'w');
+}
+
+/// The parser drops an alt-screen selection the scroll region carries out, with no event: the key
+/// path's copy is told at that moment, so a Ctrl-C in the same slice does not copy nothing (#1411).
+#[test]
+fn a_selection_scrolled_out_by_the_parser_leaves_the_published_copy() {
+    let copy = KeyModelCell::default();
+    let size = default_size();
+    let mut screen = AltScreen::new(
+        size,
+        1_000, /* max_scroll_limit */
+        ChannelEventListener::new_for_test(),
+        ObfuscateSecrets::No,
+        copy.clone(),
+    );
+    screen.start_selection(Point::new(0, 1), SelectionType::Simple, Side::Left);
+    screen.update_selection(Point::new(0, 3), Side::Right);
+    assert!(screen.selection().is_some());
+    assert!(copy.load_exact_modes().has_alt_screen_selection);
+
+    // Output on the bottom row scrolls the screen one line per linefeed; the selection on the top
+    // row leaves the scroll region with the first and is dropped.
+    ansi::Handler::goto(&mut screen, VisibleRow(size.rows() - 1), 0);
+    for _ in 0..size.rows() {
+        ansi::Handler::linefeed(&mut screen);
+    }
+    assert!(
+        screen.selection().is_none(),
+        "the parser dropped the selection"
+    );
+    assert!(
+        !copy.load_exact_modes().has_alt_screen_selection,
+        "and the copy says so, with no event"
+    );
 }

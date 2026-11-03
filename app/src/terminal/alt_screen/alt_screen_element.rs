@@ -83,6 +83,8 @@ pub struct AltScreenElement {
 
     /// Used to save the position of the active cursor.
     terminal_view_id: EntityId,
+    /// The published key modes (#1411): a modifier key event is encoded without the model's lock.
+    key_model: crate::terminal::model::key_facts::KeyModelCell,
 
     pane_state: SplitPaneState,
     active_session_state: ActiveSessionState,
@@ -133,6 +135,7 @@ impl AltScreenElement {
             is_terminal_focused: terminal_view_render_context.is_terminal_focused,
             is_terminal_selecting: terminal_view_render_context.is_terminal_selecting,
             terminal_view_id: terminal_view_render_context.terminal_view_id,
+            key_model: terminal_view_render_context.key_model.clone(),
             selection_range,
             size: None,
             bounds: None,
@@ -941,6 +944,11 @@ impl Element for AltScreenElement {
                 {
                     return false;
                 }
+                // #1411: the pane key sink has already translated this key (see the block list
+                // element); translating it again would take the model's lock.
+                if self.sink_has_seen_keys(ctx) {
+                    return false;
+                }
                 if let Some(escape_sequence) = (KeystrokeWithDetails {
                     keystroke,
                     key_without_modifiers: details.key_without_modifiers.as_deref(),
@@ -1038,8 +1046,10 @@ impl Element for AltScreenElement {
             Event::ModifierKeyChanged { key_code, state } => {
                 if self.is_terminal_focused {
                     let is_press = matches!(state, KeyState::Pressed);
+                    // The modes as published (the model's lock is the pty reader's while it parses).
+                    let modes = self.key_model.eager_modes().unwrap_or_default();
                     if let Some(escape_sequence) = maybe_kitty_keyboard_escape_sequence(
-                        self.model.lock().deref(),
+                        &modes,
                         key_code,
                         is_press,
                     ) {

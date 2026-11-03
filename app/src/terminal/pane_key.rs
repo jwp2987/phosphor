@@ -61,6 +61,11 @@ pub struct PaneFocusFacts {
     /// The pane holds the keys typed during an ssh connect as one ordered hold. Every key of the
     /// pane joins it through the terminal, whichever of its views has focus (#1400).
     pub ssh_hold_active: bool,
+    /// Focus is on a settled AI block or action card (#1095): a pane child that binds none of the
+    /// control keys, so a control key typed there is the terminal's (#1552, Fable B1/F9). Any
+    /// other pane child with focus (a pending approval card, an AI block awaiting confirmation,
+    /// the ssh choice card, a question card) binds its own Enter/Tab/Escape and keeps them.
+    pub settled_ai_focus: bool,
 }
 
 /// What kind of key event is being routed.
@@ -103,18 +108,19 @@ pub fn key_target(class: KeyClass, facts: &PaneFocusFacts) -> KeyTarget {
                 KeyTarget::Terminal
             }
         }
-        // The editor's control keys are its keybindings, and a terminal that has focus itself
-        // translates its keys into escape sequences (that needs the terminal's modes, which the
-        // element has): both stay with the elements. What nothing in the elements takes is a
-        // control key typed in a focus gap (#1332, #1394, #1552): typed keys in the gap are
-        // delivered through the terminal's routing (above), so the Enter that ends their line
-        // must follow them there instead of leaving through the element tree to the input's
-        // (The sink in `on_pane_key_event` narrows this gap to a settled AI target or the ssh
-        // hold: any other pane child with focus binds its own control keys.)
-        // keybinding on an empty editor. The terminal's table then decides: the pty, the
-        // editor's submit, or a drop that puts focus back on the input.
+        // The editor's control keys are its keybindings: they stay with the editor. A control key
+        // typed while the terminal itself has focus is the terminal's (#1411): the sink translates
+        // it into bytes from the published terminal modes and routes it like the typed keys, so
+        // no element needs the model's lock to do it. In a focus gap only the ssh hold (#1332,
+        // #1394) or a settled AI target (#1552) takes it, to follow the typed keys of the gap
+        // through the terminal's routing (#1397) instead of leaving through the element tree to
+        // the input's keybinding on an empty editor; any other pane child with focus binds its
+        // own control keys. The terminal's table then decides: the pty, the editor's submit, or
+        // a drop that puts focus back on the input.
         KeyClass::Control => {
-            if !facts.editor_focused && !facts.terminal_focused {
+            if facts.editor_focused {
+                KeyTarget::NotMine
+            } else if facts.terminal_focused || facts.ssh_hold_active || facts.settled_ai_focus {
                 KeyTarget::Terminal
             } else {
                 KeyTarget::NotMine

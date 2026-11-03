@@ -6,6 +6,7 @@ use super::find::RegexDFAs;
 use super::grid::RespectDisplayedOutput;
 use super::image_map::StoredImageMetadata;
 use super::index::Direction;
+use super::key_facts::KeyModelCell;
 use super::kitty::{KittyAction, KittyResponse};
 use super::secrets::RespectObfuscatedSecrets;
 use super::selection::{ExpandedSelectionRange, ScrollDelta};
@@ -62,6 +63,9 @@ pub struct AltScreen {
     pub bg_color_sampler: Arc<Mutex<ColorSampler>>,
 
     event_proxy: ChannelEventListener,
+    /// Where "the alt screen has a selection" is published for the key path the moment it changes
+    /// (#1411); shared with the terminal model.
+    key_model: KeyModelCell,
 }
 
 impl AltScreen {
@@ -70,6 +74,7 @@ impl AltScreen {
         max_scroll_limit: usize,
         event_proxy: ChannelEventListener,
         obfuscate_secrets: ObfuscateSecrets,
+        key_model: KeyModelCell,
     ) -> Self {
         let grid_handler = GridHandler::new(
             size_info,
@@ -87,6 +92,7 @@ impl AltScreen {
             smart_select_override: None,
             bg_color_sampler: Arc::new(Mutex::new(ColorSampler::new())),
             event_proxy,
+            key_model,
         }
     }
 
@@ -236,12 +242,14 @@ impl AltScreen {
 
     fn set_selection(&mut self, value: Selection) {
         self.selection = Some(value);
+        self.key_model.store_alt_screen_selection(true);
         self.event_proxy
             .send_terminal_event(TerminalEvent::TextSelectionChanged);
     }
 
     pub fn clear_selection(&mut self) {
         self.selection = None;
+        self.key_model.store_alt_screen_selection(false);
         self.event_proxy
             .send_terminal_event(TerminalEvent::TextSelectionChanged);
     }
@@ -353,6 +361,10 @@ impl AltScreen {
                 self.grid_storage().columns(),
             )
         });
+        // The parser drops a selection the scroll region carried out, with no event: the key
+        // path's copy is told here, so a Ctrl-C in this slice does not copy nothing (#1411).
+        self.key_model
+            .store_alt_screen_selection(self.selection.is_some());
     }
 
     fn ansi_handler(&mut self) -> &mut (impl ansi::Handler + use<>) {

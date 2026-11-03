@@ -58,6 +58,7 @@ use super::typed_echo::{EchoGrid, EchoMatch, EchoPoint, EchoRun, TypedEcho};
 use super::grid::grid_handler::{FragmentBoundary, GridHandler, PossiblePath};
 use super::grid::RespectDisplayedOutput;
 use super::image_map::StoredImageMetadata;
+use super::key_facts::KeyModelCell;
 use super::kitty::{KittyAction, KittyResponse};
 use super::rich_content::RichContentType;
 use super::secrets::RespectObfuscatedSecrets;
@@ -341,6 +342,11 @@ pub struct BlockList {
 
     /// The event proxy that proxies terminal events (such as wakeups) to the view.
     event_proxy: ChannelEventListener,
+
+    /// Where "the block list has a selection" is published for the key path the moment it
+    /// changes (#1411); shared with the terminal model. Every write to `selection` goes through
+    /// `set_selection` / `take_selection` so the bit is exact.
+    key_model: KeyModelCell,
 
     /// The current block list selection.
     /// Do not set this value directly - use [`Self::set_selection`] and [`Self::clear_selection`] instead.
@@ -865,6 +871,7 @@ impl BlockList {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
         is_ai_ugc_telemetry_enabled: bool,
+        key_model: KeyModelCell,
     ) -> Self {
         Self::new_with_lazy_restore_min_bytes(
             restored_blocks,
@@ -878,6 +885,7 @@ impl BlockList {
             is_inverted,
             obfuscate_secrets,
             is_ai_ugc_telemetry_enabled,
+            key_model,
             lazy_restore_min_bytes_from_env(),
         )
     }
@@ -897,6 +905,7 @@ impl BlockList {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
         is_ai_ugc_telemetry_enabled: bool,
+        key_model: KeyModelCell,
         lazy_restore_min_bytes: Option<usize>,
     ) -> Self {
         let mut block_list = Self::new_internal(
@@ -910,6 +919,7 @@ impl BlockList {
             is_inverted,
             obfuscate_secrets,
             is_ai_ugc_telemetry_enabled,
+            key_model,
         );
         block_list.initialize(restored_blocks, lazy_restore_min_bytes);
         block_list
@@ -947,6 +957,7 @@ impl BlockList {
         is_inverted: bool,
         obfuscate_secrets: ObfuscateSecrets,
         is_ai_ugc_telemetry_enabled: bool,
+        key_model: KeyModelCell,
     ) -> Self {
         let bootstrap_stage = BootstrapStage::RestoreBlocks;
         let block_heights = SumTree::new();
@@ -970,6 +981,7 @@ impl BlockList {
             block_eviction_suppressed: false,
             eviction_protected_block_ids: HashSet::new(),
             event_proxy: event_proxy.clone(),
+            key_model,
             selection: None,
             rich_content_selections: Vec::new(),
             smart_select_override: None,
@@ -5331,7 +5343,7 @@ impl ansi::Handler for BlockList {
                     self.block_heights = SumTree::new();
                 }
                 // Clear existing selection.
-                self.selection.take();
+                self.take_selection();
 
                 // Remove the active gap since it was removed from the block heights sum tree.
                 self.active_gap.take();

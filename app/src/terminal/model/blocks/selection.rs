@@ -448,7 +448,7 @@ impl BlockList {
     /// Used to update an existing selection's tail to a new BlockListPoint (and an associated `side`).
     /// Must have an existing selection to update - otherwise, this is a no-op (use start_selection first).
     pub fn update_selection(&mut self, point: BlockListPoint, side: Side) {
-        let Some(mut selection) = self.selection.take() else {
+        let Some(mut selection) = self.take_selection() else {
             return;
         };
 
@@ -494,7 +494,7 @@ impl BlockList {
     ) -> Option<BlockListPoint> {
         let tail = match self.expand_selection(semantic_selection, inverted_blocklist) {
             Some(selection) => selection.tail().within_grid_point,
-            None => match self.selection.take() {
+            None => match self.take_selection() {
                 None => return None,
                 Some(mut selection) => {
                     // In this case, there's an underlying selection that spans an empty range
@@ -517,7 +517,7 @@ impl BlockList {
             },
         };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         let tail_point = tail.get();
         let grid = match self.block_at(tail.block_index) {
@@ -581,7 +581,7 @@ impl BlockList {
     ) -> Option<BlockListPoint> {
         let tail = match self.expand_selection(semantic_selection, inverted_blocklist) {
             Some(selection) => selection.tail().within_grid_point,
-            None => match self.selection.take() {
+            None => match self.take_selection() {
                 None => return None,
                 Some(mut selection) => {
                     // In this case, there's an underlying selection that spans an empty range
@@ -604,7 +604,7 @@ impl BlockList {
             },
         };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         let tail_point = tail.get();
         let grid = match self.block_at(tail.block_index) {
@@ -677,7 +677,7 @@ impl BlockList {
                 None => return None,
             };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         // If the selection spans exactly one line, ensure the tail is at the beginning
         // This is custom logic to make sure that shift-down on a selected line grabs
@@ -763,7 +763,7 @@ impl BlockList {
                 None => return None,
             };
 
-        let mut selection = self.selection.take()?;
+        let mut selection = self.take_selection()?;
 
         // If the selection spans exactly one line, ensure the tail is at the end.
         // This is custom logic to make sure that shift-down on a selected line grabs
@@ -908,10 +908,21 @@ impl BlockList {
     }
 
     pub fn clear_selection(&mut self) {
-        self.selection = None;
+        self.take_selection();
         self.rich_content_selections.clear();
         self.event_proxy
             .send_terminal_event(TerminalEvent::TextSelectionChanged);
+    }
+
+    /// Takes the selection out, telling the key path's copy there is none (#1411). Every write to
+    /// `selection` goes through this or [`Self::set_selection`]: a method that takes the
+    /// selection to move it and then does not put it back (a truncation, a reflow, a stale
+    /// block index) has still left the copy exact, so a Ctrl-C that finds the parser inside the
+    /// model never copies a selection the parser just dropped.
+    pub(super) fn take_selection(&mut self) -> Option<BlockListSelection> {
+        let selection = std::mem::take(&mut self.selection);
+        self.key_model.store_block_list_selection(false);
+        selection
     }
 
     /// Records that the given rich content (AI) block view currently has an
@@ -932,7 +943,7 @@ impl BlockList {
             // Otherwise the point selection doesn't involve this block (e.g. a
             // stale command-block selection elsewhere); a fresh rich content
             // selection supersedes it (single-selection semantics).
-            self.selection = None;
+            self.take_selection();
         }
         self.rich_content_selections = vec![view_id];
         self.event_proxy
@@ -1259,7 +1270,7 @@ impl BlockList {
 
     pub(super) fn update_selection_after_height_change(&mut self) {
         let max_height = self.block_heights.summary().height;
-        if let Some(mut selection) = self.selection.take() {
+        if let Some(mut selection) = self.take_selection() {
             let start_point = selection.start_anchor().point;
             let mut end_point = selection.end_anchor().point;
 
@@ -1299,7 +1310,7 @@ impl BlockList {
         old_height: Lines,
         new_height: Lines,
     ) -> bool {
-        let Some(mut selection) = self.selection.take() else {
+        let Some(mut selection) = self.take_selection() else {
             return true;
         };
         let bottom = top + old_height;
@@ -1360,7 +1371,7 @@ impl BlockList {
             }
 
             if end.in_same_block_and_grid(&active_block_location) {
-                if let Some(mut selection) = self.selection.take() {
+                if let Some(mut selection) = self.take_selection() {
                     selection.end_anchor().point.row = max(
                         selection.end_anchor().point.row - 1.into_lines(),
                         Lines::zero(),
@@ -1387,6 +1398,7 @@ impl BlockList {
 
     fn set_selection(&mut self, value: BlockListSelection) {
         self.selection = Some(value);
+        self.key_model.store_block_list_selection(true);
         self.event_proxy
             .send_terminal_event(TerminalEvent::TextSelectionChanged);
     }

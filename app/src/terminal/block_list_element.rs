@@ -858,6 +858,8 @@ pub struct BlockListElement {
 
     /// Used to save the position of the active cursor.
     terminal_view_id: EntityId,
+    /// The published key modes (#1411): a modifier key event is encoded without the model's lock.
+    key_model: crate::terminal::model::key_facts::KeyModelCell,
 
     pane_state: SplitPaneState,
 
@@ -1126,6 +1128,7 @@ impl BlockListElement {
             find_model,
             input_mode,
             terminal_view_id: terminal_view_render_context.terminal_view_id,
+            key_model: terminal_view_render_context.key_model.clone(),
             size_info: terminal_view_render_context.size_info,
             scroll_position: terminal_view_render_context.scroll_position,
             is_terminal_focused: terminal_view_render_context.is_terminal_focused,
@@ -5208,6 +5211,12 @@ impl Element for BlockListElement {
                 if !self.terminal_focused_now(ctx) {
                     return false;
                 }
+                // #1411: with the pane key sink on, the sink has already translated this key (from
+                // the published terminal modes, without the model's lock) and delivered it or
+                // declined it. Translating it again here would wait for the pty reader.
+                if self.sink_has_seen_keys(ctx) {
+                    return false;
+                }
 
                 // We need to handle ctrl-d as a one-off here as it has special behavior.
                 // It should really be a binding, but we don't want this behavior
@@ -5325,8 +5334,10 @@ impl Element for BlockListElement {
             Event::ModifierKeyChanged { key_code, state } => {
                 if self.is_terminal_focused {
                     let is_press = matches!(state, KeyState::Pressed);
+                    // The modes as published (the model's lock is the pty reader's while it parses).
+                    let modes = self.key_model.eager_modes().unwrap_or_default();
                     if let Some(escape_sequence) = maybe_kitty_keyboard_escape_sequence(
-                        self.model.lock().deref(),
+                        &modes,
                         key_code,
                         is_press,
                     ) {

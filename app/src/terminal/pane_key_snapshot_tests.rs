@@ -22,19 +22,21 @@ macro_rules! snap {
 fn pane_key_target_table() {
     let mut rows = Vec::new();
     for class in [KeyClass::Typed, KeyClass::Control, KeyClass::Composition] {
-        for bits in 0..16u8 {
+        for bits in 0..32u8 {
             let facts = PaneFocusFacts {
                 in_text_field: bits & 1 != 0,
                 editor_focused: bits & 2 != 0,
                 terminal_focused: bits & 4 != 0,
                 ssh_hold_active: bits & 8 != 0,
+                settled_ai_focus: bits & 16 != 0,
             };
             rows.push(format!(
-                "{class:?} text_field={} editor={} terminal={} ssh_hold={} -> {:?}",
+                "{class:?} text_field={} editor={} terminal={} ssh_hold={} settled_ai={} -> {:?}",
                 facts.in_text_field,
                 facts.editor_focused,
                 facts.terminal_focused,
                 facts.ssh_hold_active,
+                facts.settled_ai_focus,
                 key_target(class, &facts)
             ));
         }
