@@ -593,9 +593,7 @@ licenses:
     max: 2
     when: [script_failure, runner_system_failure]
   script:
-    - ./script/install_cargo_binstall
-    - cargo binstall --force -y cargo-deny
-    - cargo deny -L error check licenses sources
+    - ./script/ci/cargo_deny licenses   # #1518: pinned cargo-deny, installed only when missing
     - ./script/check_license_config_sync
 
 # RustSec gate (#1076): fails on any vulnerability, unsound or unmaintained
@@ -613,9 +611,7 @@ advisories:
     max: 2
     when: [script_failure, runner_system_failure]
   script:
-    - ./script/install_cargo_binstall
-    - cargo binstall --force -y cargo-deny
-    - cargo deny -L error check advisories
+    - ./script/ci/cargo_deny advisories   # #1518: pinned cargo-deny; a failed DB fetch falls back to a < 7-day-old cached DB, loudly
 
 # warp + warp_tui lib tests, gated on CHANGE not on redness
 # (script/check_test_failures + known_test_failures.txt). BOTH crates in ONE
