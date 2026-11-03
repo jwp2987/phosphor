@@ -587,6 +587,10 @@ pub struct InputQueue {
     /// The last drain stopped at an entry its host does not handle (see [`Host::handles`]); the
     /// entry is still at the head. Cleared by the next drain.
     foreign_stop: bool,
+    /// The last drain yielded after delivering an entry ([`Host::yield_after`], #1421): nothing
+    /// is delivered until [`InputQueue::resume_after_yield`], which runs on a later turn after
+    /// the yielding entry's effects (e.g. the connect window a submit arms) were applied.
+    yielded: bool,
     /// A signal is being applied (its gates resolved, what they held delivered): deliveries made
     /// meanwhile are a flush ([`FollowUps::flushing`]).
     in_signal: bool,
@@ -615,6 +619,7 @@ impl InputQueue {
             line_pin: None,
             give_ups: 0,
             foreign_stop: false,
+            yielded: false,
             in_signal: false,
             foreign_waker: None,
         }
@@ -1183,6 +1188,15 @@ impl InputQueue {
         self.drain(host);
     }
 
+    /// Continue a drain that yielded after a delivered entry ([`Host::yield_after`]). The ONLY way
+    /// a yielded drain continues: called by the waker's handler on a later turn, after the
+    /// yielding entry's effects were applied. Offers, gate events, focus changes and give-ups
+    /// during the yield only mutate the queue (FIFO order is unchanged).
+    pub fn resume_after_yield<H: Host>(&mut self, host: &mut H) {
+        self.yielded = false;
+        self.drain(host);
+    }
+
     fn close_gates<H: Host>(
         &mut self,
         host: &mut H,
@@ -1217,6 +1231,9 @@ impl InputQueue {
     /// delivered. Triggered by an arrival, a gate-closing event, a give-up, a focus change or a
     /// signal; never polled.
     fn drain<H: Host>(&mut self, host: &mut H) {
+        if self.yielded {
+            return;
+        }
         self.foreign_stop = false;
         while let Some(head) = self.entries.front() {
             if self.is_blocked(head.id) {
@@ -1245,6 +1262,7 @@ impl InputQueue {
             self.deliver_entry(host, &entry);
             if !self.entries.is_empty() && host.yield_after(&entry) {
                 self.foreign_stop = true;
+                self.yielded = true;
                 if let Some(waker) = &self.foreign_waker {
                     let _ = waker.try_send(());
                 }

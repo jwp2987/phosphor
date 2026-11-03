@@ -26548,3 +26548,8 @@ fn legacy_mode_does_not_feed_the_ssh_phase_machine() {
         });
     });
 }
+
+// Group 1 (hand-over / yield / gate fixes). Declared here, not at the tail of `view.rs`, so the
+// module sees this file's private test helpers through `use super::*`.
+#[path = "view/group1_handover_tests.rs"]
+mod group1_handover_tests;

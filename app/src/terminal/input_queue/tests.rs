@@ -40,6 +40,8 @@ struct MockHost {
     /// What goes back to the front instead of the delivered entry itself when it is requeued
     /// (`Host::requeued_entry`): the entry delivered some other way, only its held part remains.
     requeue_as: HashMap<EntryId, EntryKind>,
+    /// `Host::yield_after` answers true for the entry with this id (#1421, #1558).
+    yield_after_ids: Vec<EntryId>,
 }
 
 enum ScriptedFollow {
@@ -105,6 +107,10 @@ impl Host for MockHost {
             return DeliverOutcome::OpensGate(GateSpec::new(GateKind::HandoffReport, entry.id.0));
         }
         DeliverOutcome::Delivered
+    }
+
+    fn yield_after(&mut self, entry: &InputEntry) -> bool {
+        self.yield_after_ids.contains(&entry.id)
     }
 
     fn discarded(&mut self, entry: &InputEntry, why: DiscardReason) {
@@ -1861,4 +1867,43 @@ fn an_owner_change_edge_clears_the_line_pin_at_the_next_lock() {
         pane.peek().has_line_pin(),
         "a focus flip never splits a line"
     );
+}
+
+/// Group 1 / 1e: a drain that yielded after a delivered entry continues ONLY through
+/// `resume_after_yield`; an offer, a focus change or an unrelated gate event during the yield
+/// only mutates the queue (no merged-command hole), and FIFO order is kept.
+#[test]
+fn a_yielded_drain_delivers_nothing_until_it_is_resumed() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    let gate = q.open_gate(&mut h, GateSpec::new(GateKind::SshConnect, 1));
+    let a = q.offer(&mut h, text("a"));
+    let b = q.offer(&mut h, text("b"));
+    let c = q.offer(&mut h, text("c"));
+    let _ = gate;
+    h.yield_after_ids.push(a);
+    assert!(q.on_gate_event(&mut h, GateKind::SshConnect, 1));
+    assert_eq!(
+        h.delivered_ids(),
+        vec![a.0],
+        "the first is delivered, then the drain yields"
+    );
+    assert!(q.pending_foreign(), "a yielded drain stays pending");
+
+    q.on_focus_changed(&mut h);
+    let d = q.offer(&mut h, text("d"));
+    q.on_gate_event(&mut h, GateKind::HandoffReport, 99);
+    assert_eq!(
+        h.delivered_ids(),
+        vec![a.0],
+        "nothing is delivered during the yield"
+    );
+
+    q.resume_after_yield(&mut h);
+    assert_eq!(
+        h.delivered_ids(),
+        vec![a.0, b.0, c.0, d.0],
+        "FIFO after the resume"
+    );
+    assert!(!q.pending_foreign());
 }
