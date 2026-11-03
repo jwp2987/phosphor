@@ -1,7 +1,7 @@
 {
  "lines": [
   "Running with gitlab-runner 19.5.1 (f411f264)",
-  "Running on little-thing...",
+  "Running on <runner>...",
   "Running on CPU: Intel(R) Core(TM) i7-8700B CPU @ 3.20GHz (avx, avx2)",
   "[prune_target] ci-fuzz: 2928M -> 2928M (freed 0M), disk free 211467M -> 211467M",
   "$ ./script/agent-cargo ci-mutants-core mutants -p warpui_core --no-shuffle --cargo-test-arg=--features --cargo-test-arg=tui --file crates/warpui_core/src/clipboard.rs --file crates/warpui_core/src/cli",

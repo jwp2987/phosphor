@@ -18,6 +18,9 @@ SECRET = [("gitlab token", re.compile(r"glpat-[A-Za-z0-9_-]{16,}")), ("github to
 HOME_RX = re.compile(r"(?i)(/home/|/Users/|[A-Z]:\\Users\\)[^/\\\s\"']+")
 # `uname -a` and `id` output (#1516): kernel line carries the hostname, id carries the user name and every group.
 UNAME_RX = re.compile(r"(?m)^(Linux|Darwin|FreeBSD) +\S+( +\d[^\n]*)")
+# GitLab's job-trace header names the runner's host ("Running on <host>..."). The collector runs on the coordinator's machine, whose
+# _local_values() do not know the runner's host name (r18d8: the box's name reached 4 committed heavy-job summaries).
+RUNNER_HOST_RX = re.compile(r"Running on (?!CPU\b)[A-Za-z0-9][A-Za-z0-9._-]*\.\.\.")
 ID_RX = re.compile(r"uid=\d+\([^)]*\) +gid=\d+\([^)]*\)(?: +groups=[^\n]*)?")
 CONFIG_VARS = ["PHOSPHOR_BOX_SSH", "PHOSPHOR_BOX_HOST", "PHOSPHOR_MAC_SSH", "PHOSPHOR_WIN_SSH", "WINUSER", "APPCI_OLLAMA_URL"]
 SAFE_IPS = ("127.", "0.0.0.0", "255.", "169.254.", "192.0.2.", "198.51.100.")   # loopback, mask, link-local, RFC 5737 docs (NOT 203.0.113.x: the owner's boxes live there)
@@ -62,6 +65,7 @@ def scrub(text):
         text = text.replace(v, "<redacted-endpoint>")
     text = IPV4.sub(lambda m: m.group(1) if m.group(1).startswith(SAFE_IPS) else "<ip>", text)
     text = UNAME_RX.sub(lambda m: m.group(1) + " <host>" + m.group(2), text)
+    text = RUNNER_HOST_RX.sub("Running on <runner>...", text)
     text = ID_RX.sub("uid=<id> gid=<id> groups=<redacted>", text)
     text = HOME_RX.sub(lambda m: m.group(1) + "<user>", text)
     for name, rx in SECRET:

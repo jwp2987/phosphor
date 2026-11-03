@@ -1,7 +1,7 @@
 {
  "lines": [
   "Running with gitlab-runner 19.5.1 (f411f264)",
-  "Running on little-thing...",
+  "Running on <runner>...",
   "Running on CPU: Intel(R) Core(TM) i7-8700B CPU @ 3.20GHz (avx, avx2)",
   "Removing fuzz/Cargo.lock",
   "[prune_target] ci-fuzz: 2928M -> 2928M (freed 0M), disk free 254306M -> 254306M",

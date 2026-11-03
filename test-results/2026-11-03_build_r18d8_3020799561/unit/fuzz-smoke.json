@@ -1,7 +1,7 @@
 {
  "lines": [
   "Running with gitlab-runner 19.5.1 (f411f264)",
-  "Running on little-thing...",
+  "Running on <runner>...",
   "Running on CPU: Intel(R) Core(TM) i7-8700B CPU @ 3.20GHz (avx, avx2)",
   "$ command -v cargo-fuzz >/dev/null || ./script/install_cargo_binstall",
   "$ command -v cargo-fuzz >/dev/null || cargo binstall --force -y cargo-fuzz",
