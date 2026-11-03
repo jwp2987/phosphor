@@ -57,6 +57,10 @@ use crate::terminal::model::typeahead_handoff::{
 };
 use crate::terminal::paste_sequencer::PasteFailure;
 
+/// #1577: the toast shown when a timer handed the keys held behind a gate back to the input.
+const GATE_GIVE_UP_TOAST: &str = "Input was waiting too long, so it was not sent; what you typed is in the input. Check it, \
+     then press Enter.";
+
 /// A warning line for a pane closed while it still held input (#1441): entries and bytes queued
 /// or held (typed keys, ssh-held typeahead, pastes), pastes still being read from the clipboard
 /// and pastes read but not delivered. Counts only, never content. `None` when nothing was lost.
@@ -1730,21 +1734,69 @@ impl TerminalView {
         gone: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.hand_back_gate_keys_inner(
+            GateKind::LineEditorActive,
+            hold_id,
+            Some(token),
+            gone,
+            "prompt_hold_cap",
+            ctx,
+        );
+    }
+
+    /// #1577 (GROUP 2): a timer gave up on gate `kind`/`key`. The gate is closed and what waited
+    /// behind it comes back to the editor as visible text (the Enter a newline), the next Enter is
+    /// consumed once with the "check the line" toast (the ssh hand-back's guard), and the editor
+    /// takes input over. Nothing is written to the pty and nothing is run. Logged with counts only.
+    pub(super) fn hand_back_gate_keys(
+        &mut self,
+        kind: GateKind,
+        key: u64,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.hand_back_gate_keys_inner(kind, key, None, false, why, ctx);
+    }
+
+    fn hand_back_gate_keys_inner(
+        &mut self,
+        kind: GateKind,
+        key: u64,
+        retry_token: Option<GateToken>,
+        gone: bool,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let hold_id = key;
+        let prompt_hold = kind == GateKind::LineEditorActive;
         let queue = self.paste_queue.queue.clone();
         let entries = {
             let Some(mut guard) = queue.try_lock() else {
                 // Busy: decided again shortly, never written meanwhile.
-                self.rearm_prompt_hold_cap(token, Duration::from_millis(100), ctx);
+                match retry_token {
+                    Some(token) => {
+                        self.rearm_prompt_hold_cap(token, Duration::from_millis(100), ctx)
+                    }
+                    // Busy: asked again shortly (a hand-back, never a write).
+                    None => {
+                        ctx.spawn(
+                            Timer::after(Duration::from_millis(100)),
+                            move |me, _, ctx| me.hand_back_gate_keys(kind, key, why, ctx),
+                        );
+                    }
+                }
                 return;
             };
             let mut host = PtyQueueHost::new(self, ctx);
-            guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
+            guard.close_gate_taking(&mut host, kind, key)
         };
-        let committed = {
+        let committed = if prompt_hold {
             let mut handoff = self.handoff.write();
             handoff.expire_queued_prompt_hold(hold_id);
             handoff.finish_queued_prompt_hold(hold_id);
             !gone && handoff.try_commit_at_prompt()
+        } else {
+            false
         };
         if committed {
             self.handle_typeahead_handoff_changed(ctx);
@@ -1770,18 +1822,36 @@ impl TerminalView {
             // stale gate (`gone`) too.
             self.input
                 .update(ctx, |input, _| input.submit_next_enter_as_shell_command());
+            if !prompt_hold {
+                // A timer handed several keys back as one buffer: the first Enter on it is held
+                // with the "check the line" toast, never run (#1577).
+                self.input.update(ctx, |input, ctx| {
+                    let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
+                    input.arm_ssh_handover_enter_guard(buffer);
+                });
+            }
         }
         log::warn!(
-            "typeahead prompt hold {hold_id} gave up: {chunks} chunk(s), {bytes} byte(s) handed \
-             back to the editor as text (gone={gone}, committed={committed}); nothing written to \
-             the pty"
+            "input queue: gate {kind:?} {hold_id} gave up ({why}): {chunks} chunk(s), {bytes} \
+             byte(s) handed back to the editor as text (gone={gone}, committed={committed}); \
+             nothing written to the pty"
         );
         warpui::input_order::log_hop("prompt_hold_handed_back", || {
             format!(
-                "hold={hold_id} chunks={chunks} bytes={bytes} chars={chars} gone={gone} \
-                 committed={committed}"
+                "hold={hold_id} kind={kind:?} why={why} chunks={chunks} bytes={bytes} \
+                 chars={chars} gone={gone} committed={committed}"
             )
         });
+        if !prompt_hold && inserted && ctx.has_singleton_model::<crate::workspace::ToastStack>() {
+            let window_id = ctx.window_id();
+            crate::workspace::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    crate::view_components::DismissibleToast::error(GATE_GIVE_UP_TOAST.to_string()),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
         self.note_editor_took_over();
         self.redetermine_terminal_focus(ctx);
         ctx.emit(Event::RetryTypeaheadHandoffRequest);
