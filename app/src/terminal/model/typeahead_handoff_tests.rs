@@ -3562,3 +3562,26 @@ fn the_shell_line_holds_typed_text_from_a_delivered_key_until_enter_or_a_kill() 
     untracked.note_untracked_line_bytes();
     assert!(untracked.shell_line_may_hold_typed_text());
 }
+
+/// F7 (#1595): PSReadLine does not bind ^U, so on PowerShell a raw ^U leaves the line dirty in the
+/// hand-off's accounting; ^C still ends the line, and every other shell keeps ^U as a kill.
+#[test]
+fn ctrl_u_is_not_a_line_kill_on_powershell() {
+    let mut handoff = after_submit();
+    handoff.set_ctrl_u_kills_line(false);
+    type_and_flush(&mut handoff, b"ec");
+    assert!(handoff.shell_line_may_hold_typed_text());
+    type_and_flush(&mut handoff, b"\x15");
+    assert!(
+        handoff.shell_line_may_hold_typed_text(),
+        "^U left the PowerShell line dirty"
+    );
+    type_and_flush(&mut handoff, b"\x03");
+    assert!(!handoff.shell_line_may_hold_typed_text(), "^C still ends it");
+
+    let mut posix = after_submit();
+    posix.set_ctrl_u_kills_line(true);
+    type_and_flush(&mut posix, b"ec");
+    type_and_flush(&mut posix, b"\x15");
+    assert!(!posix.shell_line_may_hold_typed_text());
+}

@@ -1002,6 +1002,17 @@ fn on_shell_determined<S: TerminalSurface>(
 
     #[cfg(windows)]
     let shell_launch_data_for_hold = shell_launch_data.clone();
+    // F7 (#1595): PowerShell's PSReadLine does not bind ^U as a line kill, so the hand-off must
+    // not count a raw ^U as having cleaned the line there.
+    let ctrl_u_kills_line = !matches!(
+        &shell_launch_data,
+        ShellLaunchData::Executable { shell_type, .. } | ShellLaunchData::MSYS2 { shell_type, .. }
+            if matches!(shell_type, crate::terminal::shell::ShellType::PowerShell)
+    );
+    model
+        .lock()
+        .typeahead_handoff_mut()
+        .set_ctrl_u_kills_line(ctrl_u_kills_line);
     manager.view.update(ctx, |surface, ctx| {
         surface.on_shell_determined(ctx);
         surface.on_active_shell_launch_data_updated(Some(shell_launch_data), ctx);
