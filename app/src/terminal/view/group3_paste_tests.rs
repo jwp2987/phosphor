@@ -60,10 +60,12 @@ fn editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold() {
                         assert!(view.ssh_typeahead_holding);
                     }
                     DestinationMode::Legacy | DestinationMode::Shadow => {
-                        assert!(
-                            buffer.contains('X'),
-                            "legacy keeps the editor insert: {buffer:?}"
-                        );
+                        // The kill switch does not follow the line, but at this instant the
+                        // entries still wait behind the connect hold exactly as in Table: the
+                        // paste has not reached the editor yet (it would be delivered, as an
+                        // editor insert, only when the hold hands over). Nothing is typed into
+                        // the local editor ahead of the line.
+                        assert_eq!(buffer, "", "nothing reached the local editor yet");
                     }
                 }
             });

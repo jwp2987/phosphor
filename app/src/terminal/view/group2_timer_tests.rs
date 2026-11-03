@@ -280,7 +280,15 @@ fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
                         ActiveDecision::SendRequest
                     );
                     handoff.note_untracked_line_bytes();
+                    // The Enter is deferred behind the outstanding request (the report deferral);
+                    // that request's report misses the untracked bytes, so the Enter stays
+                    // deferred behind an UNCOVERED report and arms the patience timer (#1104;
+                    // `defer_enter` arms it directly only from the editor-owned state).
                     assert!(handoff.defer_enter());
+                    assert_eq!(
+                        handoff.on_report(),
+                        crate::terminal::model::typeahead_handoff::ReportDisposition::InsertKeepDeferred
+                    );
                     handoff
                         .take_uncovered_deferral_started()
                         .expect("the patience timer is armed")
@@ -325,7 +333,11 @@ fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
                 submit_command(view, "ssh host", ctx);
                 view.typed_characters_on_terminal("echo hi", ctx);
                 assert!(view.ssh_typeahead_holding);
+                // The remote prompt was seen: its first Precmd is processed and the session can take
+                // a command (#1572). Without that the hand-over waits on the readiness predicate
+                // (its own 15 s cap), which is not what this test is about.
                 view.ssh_remote_prompt_seen = true;
+                first_precmd_processed_for_test(view, ctx);
                 let gate = view.ssh_connect_gate.as_mut().unwrap();
                 gate.armed_at =
                     Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);

@@ -935,8 +935,12 @@ impl InputQueue {
         let id = entry.id;
         if matches!(entry.kind, EntryKind::Signal(_)) {
             self.handle_signal(host, entry);
-        } else if self.is_idle() {
+        } else if self.is_idle() && self.head_is_handled(host, &entry) {
             // Fast path: nothing held, nothing queued; deliver inline without touching the deque.
+            // Only an entry this host can deliver: one it cannot (a pty entry offered through the
+            // editor's host of a shared queue) takes the queued path below, where the drain stops
+            // at it as a foreign entry and the host that can continues it (`Host::handles`,
+            // #1580) -- delivering it inline here handed the editor a pty entry it drops.
             self.deliver_entry(host, &entry);
             self.drain(host);
         } else if self.entries.len() >= self.max_entries {
