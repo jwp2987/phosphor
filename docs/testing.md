@@ -275,6 +275,7 @@ claims (#1353, #1404); only a doc comment in `app/src/terminal/input_queue/mod.r
 | `PHOSPHOR_EDITOR_P5=0` | editor: no parked line chunks (#1340 P5); every dehydrated line is an individual tree item again, the P4 representation |
 | `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1` | editor (#1607): OPT-IN heap trim after a file-sized layout (off by default: a trim takes the allocator's locks and its UI cost is unmeasured; `editor_memory_7mb` A/Bs it with `APPCI_EDITOR_MEM_TRIM_AB=1`) |
 | `PHOSPHOR_HEAP_TRIM=0` | no heap trim at all (glibc `malloc_trim`, macOS `malloc_zone_pressure_relief`; the close-time trims included) |
+| `PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0` | agent answers (#1267): keep every fenced code block's editor for the life of its block (default: an AI block more than 6 rich-content entries from the visible ones drops the editors that hold no user state and renders those snippets as plain code blocks; within 2 entries they are rebuilt from the kept text; log `editor_memory agent_code_recycled` / `agent_code_rebuilt` at debug) |
 | `PHOSPHOR_CODE_PANE_KEEP_ON_CLOSE=1`, `PHOSPHOR_FILE_PANE_KEEP_ON_CLOSE=1` | keep closed code/file pane editors alive through the undo-close grace (pre-#1340) |
 | `PHOSPHOR_LAZY_RESTORE=0`, `PHOSPHOR_LAZY_REFLOW=0` | eager restore / reflow of blocks (#1303) |
 | `PHOSPHOR_ALT_FILE_LINKS=0` | alt-screen TUIs treated as editors (no file hover scan) |

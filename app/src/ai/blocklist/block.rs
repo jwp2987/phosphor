@@ -1105,9 +1105,90 @@ pub struct AIBlock {
 }
 
 pub(crate) struct EmbeddedCodeEditorView {
-    view: ViewHandle<CodeEditorView>,
+    /// `None` while recycled (#1267): the block is far off screen and the snippet renders from its
+    /// own text; [`AIBlock::restore_code_editors`] builds the editor again from `recycled`.
+    view: Option<ViewHandle<CodeEditorView>>,
     language: Option<ProgrammingLanguage>,
     length: usize,
+    /// What a recycled editor is rebuilt from.
+    recycled: Option<RecycledCodeEditor>,
+}
+
+/// The state a recycled code-block editor is rebuilt from (#1267). Only editors without user
+/// state are recycled, so text, language (kept beside it) and starting line are all there is.
+pub(crate) struct RecycledCodeEditor {
+    code: String,
+    starting_line_number: Option<usize>,
+}
+
+impl EmbeddedCodeEditorView {
+    pub(crate) fn new(
+        view: ViewHandle<CodeEditorView>,
+        language: Option<ProgrammingLanguage>,
+        length: usize,
+    ) -> Self {
+        Self {
+            view: Some(view),
+            language,
+            length,
+            recycled: None,
+        }
+    }
+}
+
+/// Drops every editor in `views` that holds no user state ([`CodeEditorView::holds_user_state`]),
+/// keeping its snippet text and starting line for the rebuild (#1267). Returns how many were dropped.
+pub(crate) fn recycle_embedded_editors(
+    views: &mut [EmbeddedCodeEditorView],
+    app: &AppContext,
+) -> usize {
+    let mut dropped = 0;
+    for embedded_view in views.iter_mut() {
+        let Some(view) = embedded_view.view.as_ref() else {
+            continue;
+        };
+        let editor = view.as_ref(app);
+        if editor.holds_user_state(app) {
+            continue;
+        }
+        let recycled = RecycledCodeEditor {
+            code: editor.text(app).into_string(),
+            starting_line_number: editor.starting_line_number(),
+        };
+        embedded_view.recycled = Some(recycled);
+        embedded_view.view = None;
+        dropped += 1;
+    }
+    dropped
+}
+
+/// Takes what each recycled editor in `views` is rebuilt from: (index, kept state, language).
+pub(crate) fn take_recycled_editors(
+    views: &mut [EmbeddedCodeEditorView],
+) -> Vec<(usize, RecycledCodeEditor, Option<ProgrammingLanguage>)> {
+    views
+        .iter_mut()
+        .enumerate()
+        .filter_map(|(index, embedded_view)| {
+            let recycled = embedded_view.recycled.take()?;
+            Some((index, recycled, embedded_view.language.clone()))
+        })
+        .collect()
+}
+
+/// Kill switch for recycling off-screen code-block editors (#1267):
+/// `PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0` keeps every editor for the life of its block. Read once.
+pub(crate) fn code_editor_recycling_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE")
+                .ok()
+                .map(|v| v.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("0") | Some("false") | Some("off")
+        )
+    })
 }
 
 impl AIBlock {
@@ -2837,7 +2918,22 @@ impl AIBlock {
     ) {
         match self.code_editor_views.get_mut(index) {
             Some(embedded_view) => {
-                embedded_view.view.update(ctx, |view, ctx| {
+                let Some(handle) = embedded_view.view.clone() else {
+                    // Recycled while off screen (#1267) and the stream moved on: rebuild it from
+                    // the full current text, which is what a fresh editor is built from anyway.
+                    let starting_line_number = Self::code_starting_line_number(source);
+                    embedded_view.recycled = None;
+                    embedded_view.language = language.clone();
+                    embedded_view.length = code.len();
+                    let view =
+                        self.build_code_editor_view(code, language, starting_line_number, ctx);
+                    if let Some(embedded_view) = self.code_editor_views.get_mut(index) {
+                        embedded_view.view = Some(view);
+                    }
+                    ctx.notify();
+                    return;
+                };
+                handle.update(ctx, |view, ctx| {
                     // The language and starting line number may not be specified in the output for the first iteration.
                     // Only set the language/starting line number the first time that they are specified or if they change.
                     if embedded_view.language != *language {
@@ -2884,67 +2980,145 @@ impl AIBlock {
                 });
             }
             None => {
-                let view = ctx.add_typed_action_view(|ctx| {
-                    CodeEditorView::new(
-                        self.shell_launch_data.clone().map(|data| data.into()),
-                        None,
-                        CodeEditorRenderOptions::new(VerticalExpansionBehavior::InfiniteHeight),
-                        ctx,
-                    )
-                    .with_can_show_diff_ui(false)
-                });
-                view.update(ctx, |view, ctx| {
-                    view.set_starting_line_number({
-                        source.as_ref().and_then(|s| match s {
-                            CodeSource::Link { range_start, .. } => {
-                                range_start.as_ref().map(|ls| ls.line_num)
-                            }
-                            _ => None,
-                        })
-                    });
-                    view.set_show_current_line_highlights(false, ctx);
-                    view.set_interaction_state(InteractionState::Selectable, ctx);
-                    let state = InitialBufferState::plain_text(code);
-                    view.reset(state, ctx);
-
-                    // Apply language immediately on initial creation so restored blocks get syntax highlighting.
-                    if let Some(ext) = language.as_ref().and_then(|lang| lang.to_extension()) {
-                        let fake_path_string = format!("snippet.{ext}");
-                        let fake_path = std::path::Path::new(&fake_path_string);
-                        view.set_language_with_path(fake_path, ctx);
-                    }
-
-                    ctx.notify();
-                });
-                ctx.subscribe_to_view(&view, |me, view, event, ctx| match event {
-                    CodeEditorEvent::SelectionChanged => {
-                        // If there's an ongoing text selection, clear all other selections within the
-                        // `AIBlock`'s view sub-hierarchy to ensure only one component has a selection at a time.
-                        // The `is_some` check is necessary because `CodeEditorEvent::SelectionChanged` is
-                        // also emitted when the editor's selection is cleared via external means
-                        // (i.e. when a text selection is made outside the `CodeEditorView`).
-                        if let Some(selected_text) = view.as_ref(ctx).selected_text(ctx) {
-                            me.maybe_copy_on_select(selected_text, ctx);
-                            me.clear_other_selections(Some(view.id()), ctx.window_id(), ctx);
-                            ctx.emit(AIBlockEvent::ChildViewTextSelected);
-                        }
-                    }
-                    CodeEditorEvent::CopiedEmptyText => {
-                        ctx.emit(AIBlockEvent::CopiedEmptyText);
-                    }
-                    #[cfg(windows)]
-                    CodeEditorEvent::WindowsCtrlC { .. } => {
-                        ctx.emit(AIBlockEvent::WindowsCtrlC);
-                    }
-                    _ => {}
-                });
-                self.code_editor_views.push(EmbeddedCodeEditorView {
+                let starting_line_number = Self::code_starting_line_number(source);
+                let view = self.build_code_editor_view(code, language, starting_line_number, ctx);
+                self.code_editor_views.push(EmbeddedCodeEditorView::new(
                     view,
-                    language: language.clone(),
-                    length: code.len(),
-                });
+                    language.clone(),
+                    code.len(),
+                ));
             }
         }
+    }
+
+    /// The first line number a linked snippet shows, from its source.
+    fn code_starting_line_number(source: &Option<CodeSource>) -> Option<usize> {
+        source.as_ref().and_then(|s| match s {
+            CodeSource::Link { range_start, .. } => range_start.as_ref().map(|ls| ls.line_num),
+            _ => None,
+        })
+    }
+
+    /// Builds the read-only editor of one fenced code block: the first build and the rebuild of a
+    /// recycled one (#1267) go through here, so a rebuilt editor is configured exactly like the
+    /// original (text, language, starting line, selectable, no current-line highlight, the same
+    /// event subscription that copy-on-select and the one-selection rule rely on).
+    fn build_code_editor_view(
+        &mut self,
+        code: &str,
+        language: &Option<ProgrammingLanguage>,
+        starting_line_number: Option<usize>,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<CodeEditorView> {
+        let view = ctx.add_typed_action_view(|ctx| {
+            CodeEditorView::new(
+                self.shell_launch_data.clone().map(|data| data.into()),
+                None,
+                CodeEditorRenderOptions::new(VerticalExpansionBehavior::InfiniteHeight),
+                ctx,
+            )
+            .with_can_show_diff_ui(false)
+        });
+        view.update(ctx, |view, ctx| {
+            view.set_starting_line_number(starting_line_number);
+            view.set_show_current_line_highlights(false, ctx);
+            view.set_interaction_state(InteractionState::Selectable, ctx);
+            let state = InitialBufferState::plain_text(code);
+            view.reset(state, ctx);
+
+            // Apply language immediately on initial creation so restored blocks get syntax highlighting.
+            if let Some(ext) = language.as_ref().and_then(|lang| lang.to_extension()) {
+                let fake_path_string = format!("snippet.{ext}");
+                let fake_path = std::path::Path::new(&fake_path_string);
+                view.set_language_with_path(fake_path, ctx);
+            }
+
+            ctx.notify();
+        });
+        ctx.subscribe_to_view(&view, |me, view, event, ctx| match event {
+            CodeEditorEvent::SelectionChanged => {
+                // If there's an ongoing text selection, clear all other selections within the
+                // `AIBlock`'s view sub-hierarchy to ensure only one component has a selection at a time.
+                // The `is_some` check is necessary because `CodeEditorEvent::SelectionChanged` is
+                // also emitted when the editor's selection is cleared via external means
+                // (i.e. when a text selection is made outside the `CodeEditorView`).
+                if let Some(selected_text) = view.as_ref(ctx).selected_text(ctx) {
+                    me.maybe_copy_on_select(selected_text, ctx);
+                    me.clear_other_selections(Some(view.id()), ctx.window_id(), ctx);
+                    ctx.emit(AIBlockEvent::ChildViewTextSelected);
+                }
+            }
+            CodeEditorEvent::CopiedEmptyText => {
+                ctx.emit(AIBlockEvent::CopiedEmptyText);
+            }
+            #[cfg(windows)]
+            CodeEditorEvent::WindowsCtrlC { .. } => {
+                ctx.emit(AIBlockEvent::WindowsCtrlC);
+            }
+            _ => {}
+        });
+        view
+    }
+
+    /// #1267: drops the editors of this block's fenced code blocks while the block is far off
+    /// screen (the caller decides "far"; see `TerminalView::recycle_ai_code_editors`). Each one keeps
+    /// its snippet text, language and starting line, and the block renders it through the plain code
+    /// block meanwhile (the same path an over-budget snippet uses; copy / open / run work there).
+    /// Never for an unfinished block (its editors still receive the stream), and never for an
+    /// editor that holds user state: focus, a selection or a drag in progress, an open find bar, or
+    /// a horizontal scroll. Returns how many editors were dropped. Kill switch
+    /// `PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0`.
+    pub fn recycle_code_editors(&mut self, ctx: &mut ViewContext<Self>) -> usize {
+        if !code_editor_recycling_enabled() || !self.is_finished() {
+            return 0;
+        }
+        let dropped = recycle_embedded_editors(&mut self.code_editor_views, ctx);
+        if dropped > 0 {
+            log::debug!(
+                target: "editor_memory",
+                "editor_memory agent_code_recycled block={:?} dropped={dropped}",
+                ctx.view_id()
+            );
+            ctx.notify();
+        }
+        dropped
+    }
+
+    /// #1267: rebuilds every recycled code-block editor of this block from its kept snippet text,
+    /// language and starting line. Returns how many were rebuilt.
+    pub fn restore_code_editors(&mut self, ctx: &mut ViewContext<Self>) -> usize {
+        let recycled = take_recycled_editors(&mut self.code_editor_views);
+        let rebuilt = recycled.len();
+        for (index, recycled, language) in recycled {
+            let view = self.build_code_editor_view(
+                &recycled.code,
+                &language,
+                recycled.starting_line_number,
+                ctx,
+            );
+            if let Some(embedded_view) = self.code_editor_views.get_mut(index) {
+                embedded_view.view = Some(view);
+            }
+        }
+        if rebuilt > 0 {
+            log::debug!(
+                target: "editor_memory",
+                "editor_memory agent_code_rebuilt block={:?} rebuilt={rebuilt}",
+                ctx.view_id()
+            );
+            ctx.notify();
+        }
+        rebuilt
+    }
+
+    /// Number of code-block editors alive / recycled in this block (tests and diagnostics).
+    pub fn code_editor_counts(&self) -> (usize, usize) {
+        let alive = self
+            .code_editor_views
+            .iter()
+            .filter(|e| e.view.is_some())
+            .count();
+        (alive, self.code_editor_views.len() - alive)
     }
 
     pub fn current_todo_list<'a>(&'a self, app: &'a AppContext) -> Option<&'a AIAgentTodoList> {
@@ -4158,7 +4332,8 @@ impl AIBlock {
             || self
                 .code_editor_views
                 .iter()
-                .any(|editor| editor.view.as_ref(app).is_selecting())
+                .filter_map(|editor| editor.view.as_ref())
+                .any(|view| view.as_ref(app).is_selecting())
     }
 
     /// This block's file diff cards (CodeDiffViews), newest first — the order
@@ -4725,7 +4900,8 @@ impl AIBlock {
     pub fn selected_text(&self, ctx: &AppContext) -> Option<String> {
         self.code_editor_views
             .iter()
-            .find_map(|editor_view| editor_view.view.as_ref(ctx).selected_text(ctx))
+            .filter_map(|editor_view| editor_view.view.as_ref())
+            .find_map(|view| view.as_ref(ctx).selected_text(ctx))
             .or_else(|| {
                 self.requested_commands
                     .values()
@@ -4827,16 +5003,18 @@ impl AIBlock {
             return;
         }
 
-        for editor_view in self.code_editor_views.iter() {
+        for editor_view in self
+            .code_editor_views
+            .iter()
+            .filter_map(|e| e.view.as_ref())
+        {
             // Don't clear selections for the view that triggered this change.
-            if source_view_id.is_some_and(|entity_id| editor_view.view.id() == entity_id)
-                && editor_view.view.window_id(ctx) == source_window_id
+            if source_view_id.is_some_and(|entity_id| editor_view.id() == entity_id)
+                && editor_view.window_id(ctx) == source_window_id
             {
                 continue;
             }
-            editor_view
-                .view
-                .update(ctx, |view, ctx| view.clear_selection(ctx));
+            editor_view.update(ctx, |view, ctx| view.clear_selection(ctx));
         }
 
         for command in self.requested_commands.values() {

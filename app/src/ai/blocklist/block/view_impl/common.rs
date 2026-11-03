@@ -1599,10 +1599,12 @@ pub fn render_text_sections<V: View, A: Action>(
                 language,
                 source,
             } => {
+                // `None` also while the block's editor is recycled (#1267): the snippet then
+                // renders from its own text through the plain code block.
                 let mut editor_view = props
                     .embedded_code_editor_views
                     .get(*props.starting_code_section_index)
-                    .map(|view| &view.view);
+                    .and_then(|view| view.view.as_ref());
                 // An over-budget block renders its first lines through the plain code block
                 // (the embedded editor holds the whole text) with the same show-full button.
                 let mut shown_code: &str = code;

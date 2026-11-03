@@ -564,3 +564,172 @@ fn empty_enter_hint_follows_focus_and_pending_card() {
         Some("Press Enter again to apply")
     );
 }
+
+// ---------------------------------------------------------------- #1267 code-block editor recycling
+
+mod code_editor_recycling {
+    use warp_core::ui::appearance::Appearance;
+    use warp_editor::content::buffer::InitialBufferState;
+    use warp_editor::render::element::VerticalExpansionBehavior;
+    use warpui::platform::WindowStyle;
+    use warpui::{App, TypedActionView, ViewHandle, WindowId};
+
+    use super::super::{EmbeddedCodeEditorView, recycle_embedded_editors, take_recycled_editors};
+    use crate::AuthStateProvider;
+    use crate::cloud_object::model::persistence::ObjectStoreModel;
+    use crate::code::editor::view::{
+        CodeEditorRenderOptions, CodeEditorView, CodeEditorViewAction,
+    };
+    use crate::editor::InteractionState;
+    use crate::notebooks::editor::keys::NotebookKeybindings;
+    use crate::settings_view::keybindings::KeybindingChangedNotifier;
+    use crate::terminal::view::{AICodeRecycleAction, ai_code_recycle_action};
+    use crate::test_util::settings::initialize_settings_for_tests;
+    use crate::vim_registers::VimRegisters;
+    use crate::workspace::{ActiveSession, sync_inputs::SyncedInputState};
+    use crate::workspaces::user_workspaces::UserWorkspaces;
+
+    /// The singletons a `CodeEditorView` needs (as in `code/editor/view/view_tests.rs`) and a window.
+    fn init(app: &mut App) -> WindowId {
+        initialize_settings_for_tests(app);
+        app.add_singleton_model(|_| Appearance::mock());
+        app.add_singleton_model(|_| SyncedInputState::mock());
+        app.add_singleton_model(|_| VimRegisters::new());
+        app.add_singleton_model(|_| KeybindingChangedNotifier::mock());
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(ObjectStoreModel::mock);
+        app.add_singleton_model(|_| ActiveSession::default());
+        app.add_singleton_model(NotebookKeybindings::new);
+        app.add_singleton_model(|ctx| UserWorkspaces::mock(vec![], ctx));
+        let (window, _root) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            CodeEditorView::new(
+                None,
+                None,
+                CodeEditorRenderOptions::new(VerticalExpansionBehavior::InfiniteHeight),
+                ctx,
+            )
+        });
+        window
+    }
+
+    /// A snippet editor configured like `AIBlock::build_code_editor_view` builds one.
+    fn snippet(
+        app: &mut App,
+        window: WindowId,
+        code: &str,
+        line: Option<usize>,
+    ) -> ViewHandle<CodeEditorView> {
+        let view = app.add_typed_action_view(window, |ctx| {
+            CodeEditorView::new(
+                None,
+                None,
+                CodeEditorRenderOptions::new(VerticalExpansionBehavior::InfiniteHeight),
+                ctx,
+            )
+            .with_can_show_diff_ui(false)
+        });
+        let code = code.to_string();
+        view.update(app, move |view, ctx| {
+            view.set_starting_line_number(line);
+            view.set_show_current_line_highlights(false, ctx);
+            view.set_interaction_state(InteractionState::Selectable, ctx);
+            view.reset(InitialBufferState::plain_text(&code), ctx);
+        });
+        view
+    }
+
+    const CODE_A: &str = "fn main() {\n    println!(\"a\");\n}\n";
+    const CODE_B: &str = "let x = 1;\r\nlet y = 2;";
+
+    #[test]
+    fn far_blocks_recycle_near_blocks_rebuild_with_hysteresis() {
+        assert_eq!(ai_code_recycle_action(0), AICodeRecycleAction::Rebuild);
+        assert_eq!(ai_code_recycle_action(2), AICodeRecycleAction::Rebuild);
+        assert_eq!(ai_code_recycle_action(3), AICodeRecycleAction::Keep);
+        assert_eq!(ai_code_recycle_action(6), AICodeRecycleAction::Keep);
+        assert_eq!(ai_code_recycle_action(7), AICodeRecycleAction::Recycle);
+        assert_eq!(
+            ai_code_recycle_action(usize::MAX),
+            AICodeRecycleAction::Recycle
+        );
+    }
+
+    #[test]
+    fn an_off_screen_editor_is_dropped_and_rebuilt_with_identical_text() {
+        App::test((), |mut app| async move {
+            let window = init(&mut app);
+            let a = snippet(&mut app, window, CODE_A, Some(41));
+            let b = snippet(&mut app, window, CODE_B, None);
+            let text_a = a.read(&app, |view, ctx| view.text(ctx).into_string());
+            let text_b = b.read(&app, |view, ctx| view.text(ctx).into_string());
+            let mut views = vec![
+                EmbeddedCodeEditorView::new(a, None, CODE_A.len()),
+                EmbeddedCodeEditorView::new(b, None, CODE_B.len()),
+            ];
+
+            let dropped = app.read(|ctx| recycle_embedded_editors(&mut views, ctx));
+            assert_eq!(dropped, 2);
+            assert!(
+                views
+                    .iter()
+                    .all(|v| v.view.is_none() && v.recycled.is_some())
+            );
+            // Nothing is left to drop a second time.
+            assert_eq!(app.read(|ctx| recycle_embedded_editors(&mut views, ctx)), 0);
+
+            let recycled = take_recycled_editors(&mut views);
+            assert_eq!(recycled.len(), 2);
+            assert!(views.iter().all(|v| v.recycled.is_none()));
+            let (index, kept, _) = &recycled[0];
+            assert_eq!((*index, kept.starting_line_number), (0, Some(41)));
+            assert_eq!(kept.code, text_a);
+            assert_eq!(recycled[1].1.code, text_b);
+
+            // The rebuild is built from the kept state exactly like the original.
+            for (index, kept, _) in recycled {
+                let rebuilt = snippet(&mut app, window, &kept.code, kept.starting_line_number);
+                let (text, line) = rebuilt.read(&app, |view, ctx| {
+                    (view.text(ctx).into_string(), view.starting_line_number())
+                });
+                assert_eq!(
+                    text,
+                    if index == 0 {
+                        text_a.clone()
+                    } else {
+                        text_b.clone()
+                    }
+                );
+                assert_eq!(line, kept.starting_line_number);
+                views[index].view = Some(rebuilt);
+            }
+            assert!(views.iter().all(|v| v.view.is_some()));
+        });
+    }
+
+    #[test]
+    fn a_selected_or_focused_editor_is_never_dropped() {
+        App::test((), |mut app| async move {
+            let window = init(&mut app);
+            let selected = snippet(&mut app, window, CODE_A, None);
+            let focused = snippet(&mut app, window, CODE_B, None);
+            let plain = snippet(&mut app, window, CODE_A, None);
+            selected.update(&mut app, |view, ctx| {
+                view.handle_action(&CodeEditorViewAction::SelectAll, ctx);
+            });
+            focused.update(&mut app, |view, ctx| view.focus(ctx));
+            assert!(selected.read(&app, |view, ctx| view.holds_user_state(ctx)));
+            assert!(focused.read(&app, |view, ctx| view.holds_user_state(ctx)));
+            assert!(!plain.read(&app, |view, ctx| view.holds_user_state(ctx)));
+
+            let mut views = vec![
+                EmbeddedCodeEditorView::new(selected, None, CODE_A.len()),
+                EmbeddedCodeEditorView::new(focused, None, CODE_B.len()),
+                EmbeddedCodeEditorView::new(plain, None, CODE_A.len()),
+            ];
+            let dropped = app.read(|ctx| recycle_embedded_editors(&mut views, ctx));
+            assert_eq!(dropped, 1, "only the editor without user state goes");
+            assert!(views[0].view.is_some() && views[1].view.is_some());
+            assert!(views[2].view.is_none());
+        });
+    }
+}

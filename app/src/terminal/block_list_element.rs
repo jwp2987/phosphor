@@ -3466,6 +3466,23 @@ impl BlockListElement {
         selections
     }
 
+    /// #1267: hands the visible rich-content view ids to the terminal view when they changed since
+    /// the last layout, so it can recycle the code-block editors of AI blocks far off screen.
+    /// Skipped (never blocks or panics) when the shared render context is borrowed elsewhere.
+    fn report_visible_rich_content(&self) {
+        let visible = self.visible_rich_content_views();
+        let Ok(mut ai) = self.ai_render_context.try_borrow_mut() else {
+            return;
+        };
+        if ai.last_visible_rich_content == visible {
+            return;
+        }
+        if let Some(tx) = &ai.visible_rich_content_tx {
+            let _ = tx.try_send(visible.clone());
+        }
+        ai.last_visible_rich_content = visible;
+    }
+
     /// Returns all rich text view ids that are currently visible in the viewport.
     ///
     /// This function examines the currently visible items in the blocklist,
@@ -4058,6 +4075,7 @@ impl Element for BlockListElement {
 
         self.visible_blocks = Some(viewport_iter.visible_block_range());
         self.visible_items = Some(Rc::new(visible_items));
+        self.report_visible_rich_content();
         self.subshell_flags = subshell_flags;
         self.label_elements.clear();
         // Read under the same model lock as the indices above, so actions built from these

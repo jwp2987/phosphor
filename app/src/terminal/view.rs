@@ -2418,6 +2418,33 @@ pub enum AIContextInclusionState {
     Active,
 }
 
+/// #1267: AI blocks more than this many rich-content entries from the nearest visible one have
+/// their code-block editors recycled.
+pub(crate) const AI_CODE_RECYCLE_DISTANCE: usize = 6;
+/// #1267: AI blocks at most this many rich-content entries from a visible one get recycled
+/// code-block editors rebuilt (before they scroll into view, when scrolling step by step).
+pub(crate) const AI_CODE_REBUILD_DISTANCE: usize = 2;
+
+/// What [`TerminalView::recycle_ai_code_editors`] does with one AI block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AICodeRecycleAction {
+    Recycle,
+    Rebuild,
+    Keep,
+}
+
+/// The decision for an AI block `distance` rich-content entries from the nearest visible one; the
+/// gap between the two distances is hysteresis, so a block at the edge does not flip each layout.
+pub(crate) fn ai_code_recycle_action(distance: usize) -> AICodeRecycleAction {
+    if distance > AI_CODE_RECYCLE_DISTANCE {
+        AICodeRecycleAction::Recycle
+    } else if distance <= AI_CODE_REBUILD_DISTANCE {
+        AICodeRecycleAction::Rebuild
+    } else {
+        AICodeRecycleAction::Keep
+    }
+}
+
 pub struct BlocklistAIRenderContext {
     /// The set of `BlockId`s corresponding to blocks to be included or previously included as AI
     /// context.
@@ -2440,6 +2467,13 @@ pub struct BlocklistAIRenderContext {
 
     /// `true` if there is pending context selected text attached.
     pub has_pending_context_selected_text: bool,
+
+    /// #1267: after a layout whose set of visible rich-content views changed, the block list
+    /// element sends that set here; the terminal view recycles the code-block editors of AI blocks
+    /// far from it and rebuilds the ones that came near again. Event-driven, no timer.
+    pub visible_rich_content_tx: Option<Sender<Vec<EntityId>>>,
+    /// The set last sent on `visible_rich_content_tx` (compared so an unchanged layout sends nothing).
+    pub last_visible_rich_content: Vec<EntityId>,
 }
 
 impl BlocklistAIRenderContext {
@@ -4590,6 +4624,13 @@ impl TerminalView {
             BlocklistAIStatusBarEvent::Stop => me.ctrl_c(ctx),
         });
 
+        let (visible_rich_content_tx, visible_rich_content_rx) =
+            async_channel::unbounded::<Vec<EntityId>>();
+        let _ = ctx.spawn_stream_local(
+            visible_rich_content_rx,
+            Self::recycle_ai_code_editors,
+            |_, _| {},
+        );
         let ai_render_context = Rc::new(RefCell::new(BlocklistAIRenderContext {
             block_ids: HashMap::from_iter([
                 (
@@ -4609,6 +4650,8 @@ impl TerminalView {
                 .as_ref(ctx)
                 .pending_context_selected_text()
                 .is_some(),
+            visible_rich_content_tx: Some(visible_rich_content_tx),
+            last_visible_rich_content: Vec::new(),
         }));
 
         ctx.subscribe_to_model(&ai_context_model, Self::handle_ai_context_model_event);
@@ -29191,6 +29234,56 @@ impl TerminalView {
         self.ai_block_metadata_for_current_thread(&conversation_id, ctx)
             .next()
             .and_then(|ai_metadata| ai_metadata.ai_block_handle.as_ref(ctx).finish_reason())
+    }
+
+    /// #1267: recycles the code-block editors of AI blocks far from the visible rich content and
+    /// rebuilds those of blocks that are near it again. "Far" / "near" count rich-content entries
+    /// (display order) from the nearest visible one: more than [`AI_CODE_RECYCLE_DISTANCE`] drops,
+    /// at most [`AI_CODE_REBUILD_DISTANCE`] rebuilds, so scrolling back rebuilds a block before it
+    /// is on screen and a jump straight to it rebuilds it on the next layout (rendering its
+    /// snippets as plain code blocks for that one frame). With no rich content visible nothing is
+    /// recycled: there is no distance to measure. `AIBlock::recycle_code_editors` keeps every
+    /// editor with user state. Kill switch `PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0`.
+    fn recycle_ai_code_editors(&mut self, visible: Vec<EntityId>, ctx: &mut ViewContext<Self>) {
+        if !crate::ai::blocklist::block::code_editor_recycling_enabled() {
+            return;
+        }
+        let visible_positions: Vec<usize> = self
+            .rich_content_views
+            .iter()
+            .enumerate()
+            .filter(|(_, rich_content)| visible.contains(&rich_content.view_id()))
+            .map(|(position, _)| position)
+            .collect();
+        if visible_positions.is_empty() {
+            return;
+        }
+        let blocks: Vec<(usize, ViewHandle<AIBlock>)> = self
+            .rich_content_views
+            .iter()
+            .enumerate()
+            .filter_map(|(position, rich_content)| {
+                rich_content
+                    .ai_block_metadata()
+                    .map(|metadata| (position, metadata.ai_block_handle.clone()))
+            })
+            .collect();
+        for (position, block) in blocks {
+            let distance = visible_positions
+                .iter()
+                .map(|visible| visible.abs_diff(position))
+                .min()
+                .unwrap_or(usize::MAX);
+            match ai_code_recycle_action(distance) {
+                AICodeRecycleAction::Recycle => {
+                    block.update(ctx, |block, ctx| block.recycle_code_editors(ctx));
+                }
+                AICodeRecycleAction::Rebuild => {
+                    block.update(ctx, |block, ctx| block.restore_code_editors(ctx));
+                }
+                AICodeRecycleAction::Keep => {}
+            }
+        }
     }
 
     fn ai_block_handle_by_view_id(&self, view_id: EntityId) -> Option<&ViewHandle<AIBlock>> {
