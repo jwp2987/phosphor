@@ -1,0 +1,9 @@
+{
+ "failing_lines": [
+  "error: unexpected argument '--disable-fetch' found",
+  "ERROR: Job failed: exit status 2"
+ ],
+ "job": "advisories",
+ "status": "failed",
+ "duration": 5.04224
+}
