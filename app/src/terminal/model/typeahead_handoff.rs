@@ -2315,7 +2315,7 @@ impl TypeaheadHandoff {
                 self.ssh_owns_tty,
                 self.young_line,
                 self.prompt_seq_mode(),
-                self.prompt_fact(),
+                self.sample_prompt_fact(),
                 self.young_hold_id,
                 warpui::input_order::describe_bytes_escaped(bytes)
             )
