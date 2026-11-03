@@ -352,6 +352,20 @@ diag-windows:
     - '& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property displayName'
     - rustup show
 
+# Windows PowerShell 5.1 parse gate (#1507): every harness/build/CI/bundled .ps1 parsed by the VM's own 5.1 parser, plus
+# after_job.ps1/restore.ps1 -Check (an after_script that does not parse fails silently). ~10 s. Manual here because the VM is
+# not always up (an automatic job would leave every pipeline pending); it also runs as the FIRST before_script step of
+# app-test-windows(-reuse), so no Windows app run starts on scripts 5.1 cannot parse.
+guards-windows:
+  extends: .windows_job
+  stage: test
+  when: manual
+  allow_failure: true
+  timeout: 10m
+  script:
+    - .\script\ci\parse_ps1.ps1
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
 # cargo check for the Windows-only code paths, with the same bin, features and
 # profile the installer build uses (script/windows/bundle.ps1 -CHECK_ONLY).
 check-windows:
@@ -1002,6 +1016,8 @@ app-test-windows:
       artifacts: false
   before_script:
     - !reference [.windows_job, before_script]
+    - .\script\ci\parse_ps1.ps1   # #1507: 5.1 parse gate first
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
     - .\script\ci\fetch_build.ps1 -ThisPipeline
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   script:
@@ -1069,6 +1085,8 @@ app-test-windows-reuse:
   needs: []
   before_script:
     - !reference [.windows_job, before_script]
+    - .\script\ci\parse_ps1.ps1   # #1507: 5.1 parse gate first
+    - if ($LASTEXITCODE) { exit $LASTEXITCODE }
     - .\script\ci\fetch_build.ps1
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
   after_script:

@@ -4,8 +4,12 @@
 #    path or command line lies under this job's appci-out dir (PID-reuse safe). Never by name. Never the GitLab runner.
 # 2. If this job made a backup (%USERPROFILE%\appci-bak\<CI_JOB_ID>\meta.json) and no restore has run for it yet (no restore.log),
 #    runs restore.ps1 for that backup and prints its steps. Always exits 0: it must not mask the job's own result.
-param([string]$Out = "appci-out\windows")
+# -Check (#1507): parse + bind only; prints "after_job: check ok" and exits 0 without touching processes or backups. The
+#    Windows parse gate (script/ci/parse_ps1.ps1) runs it under 5.1 before a job, because an after_script that fails to parse
+#    fails silently (after_script results never fail the job).
+param([string]$Out = "appci-out\windows", [switch]$Check)
 $ErrorActionPreference = "Continue"
+if ($Check) { Write-Output "after_job: check ok"; exit 0 }
 $outFull = (Resolve-Path $Out -ErrorAction SilentlyContinue).Path
 if ($outFull) {
   foreach ($f in @("$outFull\run\pids", "$outFull\pids")) {

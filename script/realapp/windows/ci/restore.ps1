@@ -5,8 +5,11 @@
 # app_test.ps1 in %USERPROFILE%\appci-bak\<CI_JOB_ID> (outside the job dir so a later git clean cannot delete it; newest 3 are kept):
 # meta.json, md5_pre.txt, data_local\, data_roaming\, uninstall.reg, handler.reg, path_pre.txt, lnk0.lnk, lnk1.lnk.
 # Returns an array of objects { step; ok; detail }; ok=$false rows are failures. Never stops the GitLab runner or any process.
-param([string]$Bak = "")
+# -Check (#1507): parse + bind only; returns one row { step = "check"; ok = $true } and restores nothing (used by the 5.1 parse gate,
+# script/ci/parse_ps1.ps1, so a restore.ps1 that cannot run is found before a job needs it).
+param([string]$Bak = "", [switch]$Check)
 $ErrorActionPreference = "Continue"
+if ($Check) { [pscustomobject]@{ step = "check"; ok = $true; detail = "restore.ps1 parses and binds" }; return }
 if (-not $Bak) { $d = Get-ChildItem (Join-Path $env:USERPROFILE "appci-bak") -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($d) { $Bak = $d.FullName } }
 if (-not $Bak -or -not (Test-Path "$Bak\meta.json")) { [pscustomobject]@{ step = "backup"; ok = $false; detail = "no backup with meta.json found (Bak='$Bak')" }; return }
 $meta = Get-Content "$Bak\meta.json" -Raw | ConvertFrom-Json
