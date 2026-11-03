@@ -500,7 +500,7 @@ use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionPar
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::key_facts::{
     InputBoxFacts, KeyFacts, KeyFactsCell, KeyModelCell, KeyModelSnapshot, ModelCommand,
-    ModelInbox, block_id_hash,
+    ModelInbox, block_id_hash, output_tail_is_input_prompt, output_tail_is_shell_prompt,
 };
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
@@ -38152,38 +38152,6 @@ fn output_has_visible_text(output: &str) -> bool {
     output
         .chars()
         .any(|c| !c.is_whitespace() && !c.is_control())
-}
-
-/// Whether the last line of `output` reads as a prompt for the user's input (#1032): a question
-/// or a request ending in `:` / `?`, a `[y/n]` choice, or one that names a secret. The shell's
-/// own `$ ` / `% ` prompt is deliberately not one. Callers check that the line is unterminated.
-fn output_tail_is_input_prompt(output: &str) -> bool {
-    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
-        return false;
-    };
-    let line = line.trim_end();
-    if !output_has_visible_text(line) {
-        return false;
-    }
-    let lower = line.to_lowercase();
-    line.ends_with(':')
-        || line.ends_with('?')
-        || lower.ends_with("[y/n]")
-        || lower.ends_with("(y/n)")
-        || ["password", "passphrase", "passcode", "secret"]
-            .iter()
-            .any(|word| lower.contains(word))
-}
-
-/// Whether the last line of `output` has the shape of a shell's own prompt: it ends in `$`, `#`,
-/// `%`, `>` or the chevron `❯` (after the prompt's trailing space). Callers check that the line is
-/// unterminated and not a credential-style prompt (`output_tail_is_input_prompt`) (#1561).
-fn output_tail_is_shell_prompt(output: &str) -> bool {
-    let Some(line) = output.trim_end_matches('\n').rsplit('\n').next() else {
-        return false;
-    };
-    let line = line.trim_end();
-    output_has_visible_text(line) && line.ends_with(['$', '#', '%', '>', '\u{276f}'])
 }
 
 /// Whether a deferred subshell setup (#1032) may be written now: the prompt text is gone from

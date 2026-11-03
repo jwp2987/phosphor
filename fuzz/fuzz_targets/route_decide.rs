@@ -140,6 +140,7 @@ fn facts(u: &mut Unstructured) -> RouteFacts {
     f.ssh_route_forward = flag(u);
     f.ssh_pre_init_abort = flag(u);
     f.ssh_sigint_applies = flag(u);
+    f.ssh_prompt_is_shell = flag(u);
     f.focus = focus(u);
     f.approval_card = flag(u);
     f.ai_awaiting_confirmation = flag(u);

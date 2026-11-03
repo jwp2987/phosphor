@@ -717,6 +717,10 @@ fn decide_content(i: &Intent, f: &RouteFacts) -> Plan {
         && matches!(i.origin, Origin::Keyboard | Origin::Editor | Origin::Held)
         && let SshPhase::PromptUp { prompt_gen } = f.ssh
         && i.stamp.is_before(prompt_gen)
+        // A held input reaching a SHELL's prompt (a nested ssh whose inner shell came up while
+        // the hand-over drained, #1575) was held for exactly that shell: delivered, not dropped.
+        // A credential-shaped prompt still drops it (it may be a password typed blind).
+        && !(i.origin == Origin::Held && f.ssh_prompt_is_shell)
     {
         return drop_plan(DropWhy::StaleBeforePrompt, Row::H4, Effects::NONE);
     }

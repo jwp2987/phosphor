@@ -347,6 +347,8 @@ impl TerminalView {
                 pending_now.is_some(),
             )
             .is_some(),
+            // Latched by the pty reader at publish; no grid read, no lock here.
+            ssh_prompt_is_shell: snapshot.unterminated_is_shell,
             ssh_sigint_applies: !snapshot.has_pending_ssh_session
                 && pending_now.is_none()
                 && gate.is_some_and(|g| !g.block_done),

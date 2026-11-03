@@ -192,6 +192,46 @@ fn h4_a_key_stamped_before_the_prompt_is_dropped_and_one_at_or_after_it_goes_on(
 }
 
 #[test]
+fn h4_a_held_input_reaching_a_shell_prompt_is_delivered_not_dropped() {
+    // #1575: a nested ssh's inner shell comes up while the hand-over drains; what was held for
+    // that connect belongs to that shell. Only HELD inputs are exempt, and only for a shell prompt.
+    let shell_prompt = RouteFacts {
+        ssh: SshPhase::PromptUp { prompt_gen: 5 },
+        ssh_prompt_is_shell: true,
+        ..running()
+    };
+    let credential_prompt = RouteFacts {
+        ssh_prompt_is_shell: false,
+        ..shell_prompt
+    };
+    for class in [Class::Typed, Class::Enter, Class::Seq, Class::Paste] {
+        let held = from(class, Origin::Held).stamped(at(4, FocusSnap::Terminal));
+        let delivered = plan(held, shell_prompt);
+        assert_ne!(delivered.row, Row::H4, "{class:?} held for the shell");
+        assert!(
+            !matches!(delivered.outcome, Outcome::Drop(_)),
+            "{class:?}: {:?}",
+            delivered.outcome
+        );
+        // A credential-shaped prompt still drops it (a password typed blind).
+        let dropped = plan(held, credential_prompt);
+        assert_eq!(
+            (dropped.outcome, dropped.row),
+            (drop_of(DropWhy::StaleBeforePrompt), Row::H4),
+            "{class:?} held for a credential prompt"
+        );
+        // Live keys stamped before a shell prompt are still stale.
+        for origin in [Origin::Keyboard, Origin::Editor] {
+            let live = plan(
+                from(class, origin).stamped(at(4, FocusSnap::Terminal)),
+                shell_prompt,
+            );
+            assert_eq!(live.row, Row::H4, "{class:?}/{origin:?}");
+        }
+    }
+}
+
+#[test]
 fn h2_the_setup_dialog_swallows_typing_but_not_sequences() {
     let dialog = RouteFacts {
         ssh_dialog_up: true,
@@ -1874,6 +1914,7 @@ fn arb_facts() -> impl Strategy<Value = RouteFacts> {
             ssh_route_forward: a[27],
             ssh_pre_init_abort: a[28],
             ssh_sigint_applies: a[29],
+            ssh_prompt_is_shell: a[30],
             focus: focus_of(b[0] as usize),
             approval_card: b[1],
             ai_awaiting_confirmation: b[2],
