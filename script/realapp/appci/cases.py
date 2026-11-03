@@ -54,6 +54,25 @@ class Result:
         raise Skip(msg)
 
 
+def dest_mode(env=None):
+    """The destination mode the app under test runs in (#1532): PHOSPHOR_QUEUE_DESTINATION as the app parses it
+    (input_queue/facts.rs DestinationMode::parse): unset / empty = table (the default), shadow, table, anything else = legacy (the kill switch).
+    The app inherits this process's environment (Linux, Windows) or gets the variable passed through (macOS, app.passthrough_env), so this is
+    the mode it runs in; the app itself logs no startup line for it."""
+    v = (os.environ if env is None else env).get("PHOSPHOR_QUEUE_DESTINATION")
+    v = "" if v is None else v.strip()
+    if not v:
+        return "table"
+    return v if v in ("shadow", "table") else "legacy"
+
+
+def dest_disagreements(text):
+    """(all, untagged) counts of `kh_dest_disagree` lines in an app log (#1528). Shadow mode logs one per difference between the legacy chain and
+    the table; a line carrying `expected=<tag>` is a known cause (OD1 OD5 OD7 B3 B7 B13 B14), an untagged one is a regression."""
+    ls = [l for l in text.splitlines() if "kh_dest_disagree" in l]
+    return len(ls), len([l for l in ls if " expected=" not in l])
+
+
 def pct(xs, p):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(len(xs) * p))] if xs else None
@@ -540,6 +559,8 @@ def c_mode_proof(ctx, r):
     logged = ctx.log_view_mode()       # #1568: the app's own view-mode log line, read before any key too (None on a build without it)
     if logged is not None:
         r.metric("log_view_mode", logged)
+    # #1532: which destination logic the app under test runs (the fix tier's kill-switch pass runs with PHOSPHOR_QUEUE_DESTINATION=legacy)
+    r.metric("queue_destination", dest_mode())
     if ctx.mode != "agent":
         # r18cx (macOS): this Escape is the agent view's own "esc: go back to terminal", so in the agent pass it left agent mode and every
         # "agent" case after it ran in a terminal session (owner photo). Only the terminal pass sends it.

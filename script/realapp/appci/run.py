@@ -187,8 +187,13 @@ def main():
                 emit(dict(name="preflight", mode=m, status="fail", detail=problems, seconds=0))
             return finish(run, a, 2)
     explicit_cases = bool(a.cases)
+    for kv in os.environ.get("APPCI_APP_ENV", "").split(","):       # #1532: extra environment for the app under test, "K=V,K2=V2" (Linux/Windows inherit it, macOS via app.passthrough_env)
+        if "=" in kv:
+            os.environ[kv.split("=", 1)[0]] = kv.split("=", 1)[1]
+    dest = cases.dest_mode()
+    print("destination mode of the app under test: PHOSPHOR_QUEUE_DESTINATION=%s (effective %s)" % (os.environ.get("PHOSPHOR_QUEUE_DESTINATION", "<unset>"), dest), flush=True)
     if not a.cases and os.environ.get("APPCI_TIER") == "smoke":
-        a.cases = ",".join(cases.SMOKE)
+        a.cases = ",".join(winmap.smoke_for(dest, cases.SMOKE))       # legacy (the kill switch): the narrowed list, see winmap.KILL_SWITCH_SMOKE
     reg = {c["name"] for c in cases.CASES}
     bad_names = unknown_case_names(a.cases, reg) + unknown_case_names(a.skip, reg)
     if bad_names:       # #1508: an unknown name is an error, never an empty (green) selection
@@ -432,11 +437,21 @@ def main():
                     shutil.copytree(os.path.join(os.environ["LOCALAPPDATA"], "phosphor"), os.path.join(run, "data_" + label.replace("@", "_")), dirs_exist_ok=True)
                 except Exception:
                     pass
+            dest_log = None
             for src, dst in ((log_src(prof, a.backend, app), "phosphor.log"), (run + "/app.stdout", "app.stdout"),
                              (run + "/ssh/sshd.log", "sshd.log"), (run + "/ssh/fakesshd.stderr", "fakesshd.stderr")):
                 if os.path.exists(src):
                     t = ci_env.redact(app_log_text(src) if dst == "phosphor.log" else open(src, errors="replace").read(), ollama_url)   # the endpoint never reaches an artifact
                     open(os.path.join(logs, dst), "w").write(t)
+                    if dst == "phosphor.log":
+                        dest_log = t
+            if dest == "shadow" and dest_log is not None:
+                # #1528: the shadow comparison's consumer in the real app: every untagged kh_dest_disagree line is a regression
+                total, untagged = cases.dest_disagreements(dest_log)
+                emit(dict(name="dest_disagree", mode=label, status="fail" if untagged else "pass", seconds=0,
+                          detail=["%d untagged kh_dest_disagree line(s) (%d total, tagged ones are known causes) in the app log" % (untagged, total)],
+                          metrics={"queue_destination": dest, "dest_disagree": total, "dest_disagree_untagged": untagged}, shots=[]))
+                exit_fail = exit_fail or bool(untagged)
             if os.path.exists(run + "/app.stdout"):
                 os.remove(run + "/app.stdout")
         if crashed_exit is not None:
