@@ -63,6 +63,20 @@ def overhead_verdict(overhead, se, budget, pane_shell=None, ref_shell=None, z=2.
     return "inconclusive"
 
 
+def block_drift(xs, ys=None, z=2.0):
+    """Sequential-measurement drift (#1514; true A/B/A/B interleaving is not done): compare the median of the first half of a series with the
+    median of the second half. -> (drift_ms, significant): significant when |drift| > z * SE of that difference. None when < 8 samples.
+    Slow drift (thermal, GC, background load) between the Phosphor series and the later reference series shows up as a half-to-half move."""
+    xs = list(xs or [])
+    if len(xs) < 8:
+        return None
+    h = len(xs) // 2
+    a, b = xs[:h], xs[h:]
+    se = median_diff_se(b, a)
+    d = statistics.median(b) - statistics.median(a)
+    return round(d, 2), bool(se is not None and abs(d) > z * se)
+
+
 def warmup():
     return int(os.environ.get("APPCI_WARMUP", "3"))
 
@@ -123,13 +137,37 @@ def load_baseline(platform):
     return "ok", d.get("metrics", {})
 
 
+def changed_since(prev_doc, rows):
+    """#1513: case status changes against the previous build's results.json -> list of (kind, "mode/case", old, new), kind in
+    NEW-FAILURE | FIXED | MISSING | NEW-CASE | CHANGED. Informational (no exit-code effect). A case present before and absent now is MISSING (a vanished
+    case reads like a pass otherwise). No previous doc -> []."""
+    if not prev_doc:
+        return []
+    key = lambda c: "%s/%s" % (c.get("mode", ""), c["name"])
+    old = {key(c): c.get("status") for c in prev_doc.get("cases", []) if "name" in c}
+    new = {key(c): c.get("status") for c in rows if "name" in c}
+    out = []
+    for k in sorted(set(old) | set(new)):
+        o, n = old.get(k), new.get(k)
+        if o is None:
+            out.append(("NEW-CASE", k, None, n))
+        elif n is None:
+            out.append(("MISSING", k, o, None))
+        elif o != n:
+            out.append(("NEW-FAILURE" if n == "fail" else "FIXED" if o == "fail" else "CHANGED", k, o, n))
+    return out
+
+
 def load_prev():
     d = load_json(os.environ.get("APPCI_PREV_RESULTS", ""))
     return flat_lat(d) if d else {}
 
 
-def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None, pane_shell=None, ref_shell=None):
+def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None, pane_shell=None, ref_shell=None,
+             expected=None, resolution_ms=None):
     """phos/ref: sample lists (warm-up already dropped). remeasure: callable returning a fresh phos sample list, or None.
+    expected: samples the case asked for (a PASS needs >= 90 % of them AND >= min_n, #1514); resolution_ms: the measurement's time quantum
+    (a PASS is withheld when it exceeds budget/2). Both only ever turn a pass into 'inconclusive', never a fail into a pass.
     Returns the latency record (see header)."""
     ps = summarize(phos)
     rec = {"phosphor": ps, "reference": summarize(ref) if ref else None, "reference_name": ref_name if ref else None,
@@ -155,6 +193,26 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
         base = ps["p50"]
         rec["overhead_ms"] = round(base - (floor or 0.0), 2) if base is not None else None
         bv = "pass" if rec["overhead_ms"] is not None and rec["overhead_ms"] <= budget_ms else "fail"
+    # #1514: thin evidence is never a pass. Fails stay fails.
+    why = []
+    if ps["n"] < min_n():
+        why.append("n=%d < %d samples" % (ps["n"], min_n()))
+    if expected and ps["n"] < 0.9 * expected:
+        why.append("only %d of %d samples (< 90 %%)" % (ps["n"], expected))
+    if resolution_ms and kind in ("overhead", "absolute") and resolution_ms > budget_ms / 2.0:
+        why.append("resolution-limited: time quantum %.2f ms > half the %g ms budget" % (resolution_ms, budget_ms))
+        rec["resolution_ms"] = round(resolution_ms, 2)
+    if kind == "overhead" and ref and ps["n"] >= 8:
+        for tag, series in (("Phosphor", phos), ("reference", ref)):
+            dr = block_drift(series)
+            if dr and dr[1] and abs(dr[0]) > budget_ms / 2.0:
+                why.append("%s series drifted %+.2f ms between its halves (sequential A-then-B measurement)" % (tag, dr[0]))
+            if dr:
+                rec.setdefault("drift_ms", {})[tag.lower()] = dr[0]
+    if why and bv == "pass":
+        bv = "inconclusive"
+        rec["insufficient"] = why
+        rec["notes"].append("INCONCLUSIVE, not a pass: " + "; ".join(why))
     rec["budget_verdict"] = bv
     # regression against previous build and the committed baseline
     prev = load_prev().get(rid)
@@ -163,6 +221,11 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
     rec["prev"] = None
     rec["baseline"] = {"status": bst}
     pv, bsv = "none", ("pending" if bst == "pending" else "none")
+    if prev and (prev.get("phosphor") or {}).get("p50") is not None and (prev["phosphor"].get("n") or 0) < min_n():
+        # #1513: a previous run with too few samples (e.g. the app crashed mid-run) is not a representative reference
+        rec["notes"].append("previous build ignored: its record has n=%s < %d samples" % (prev["phosphor"].get("n"), min_n()))
+        rec["prev"] = {"ignored": "n=%s < %d" % (prev["phosphor"].get("n"), min_n())}
+        prev = None
     if prev and (prev.get("phosphor") or {}).get("p50") is not None:
         pv, dm, dp = regress(ps["p50"], prev["phosphor"]["p50"])
         rec["prev"] = {"p50": prev["phosphor"]["p50"], "p95": prev["phosphor"].get("p95"), "delta_ms": dm, "delta_pct": dp, "verdict": pv}

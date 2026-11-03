@@ -591,7 +591,8 @@ def finish(run, a, code, write_meta=True):
         note = getattr(a, "owner_note", note)
     rc = subprocess.run([sys.executable, os.path.join(here, "report.py"), run, "platform=" + a.platform, "backend=" + a.backend,
                          "app_display=" + a.app_display, "seed=%d" % a.seed, "commit=" + os.environ.get("CI_COMMIT_SHORT_SHA", "local"),
-                         "owner_settings=" + note]).returncode
+                         "owner_settings=" + note, "tier=" + (os.environ.get("APPCI_TIER") or "full"),
+                         "scale=" + os.environ.get("APPCI_SCALE", "1")]).returncode
     return max(code, rc)
 
 
