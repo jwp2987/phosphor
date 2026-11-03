@@ -127,16 +127,28 @@ def lat_checks(r, rec, label):
 
 
 def enter_segments(lines, t0):
-    """app log lines -> the split of Enter->command-start the APP can see, medians in ms (#1583 W3):
+    """app log lines -> the split of Enter->command-start the APP can see, medians in ms (#1583 W3, #1606):
+      event_age_ms             `hop=mac_enter stage=app_send_event ... age_ms=` (macOS, #1606): the OS's own timestamp of the Return key-down ->
+                               the app dequeuing it on the main thread. Large = the main thread was busy (rendering) when the key arrived.
+      event_to_enter_ms        that app_send_event line -> `hop=enter_begin` (AppKit routing + keystroke matching on the main thread)
       enter_to_write_ms        `hop=enter_begin` -> the `pty_write` of the line (> 10 bytes; handoff writes excluded)
+      submit_bookkeeping_ms    `hop=try_execute_done` -> `hop=enter_submit_done` (#1606): post-submit model updates that run before the queued
+                               ExecuteCommand effect reaches the pty (agent mode measured ~0.7 ms here in r18e4)
+      effect_flush_ms          `hop=enter_submit_done` -> `hop=write_command`
       write_to_first_read_ms   that write -> the first `pty_read` after it (the shell's first answer: echo/Preexec OSC); the app logs this as
                                `since_write_ms` on the pty_read line
       write_to_preexec_ms      from the app's `hop=preexec_received` line (input_order::note_shell_signal(Preexec), #1583 W3). Builds before
                                that line existed only stamped an atomic (since_preexec_ms on the NEXT write), so there the key is absent and
-                               the report says so.
+                               the report says so. This is when the APP parsed the hook, after any wait for the model lock (below), not
+                               when the shell sent it: the shell-side times come from the stamp file (enter_split_summary).
+      pty_lock_wait_ms         per Enter, the summed `hop=pty_lock_wait waited_ms=` between the write and the preexec parse (#1606): output
+                               answering the Enter waited for the model lock the UI held while building a frame (0 when none was logged)
     Lines before wall time t0 are ignored."""
-    seg = {"enter_to_write_ms": [], "write_to_first_read_ms": [], "write_to_preexec_ms": []}
+    keys = ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms", "write_to_first_read_ms",
+            "write_to_preexec_ms", "pty_lock_wait_ms")
+    seg = {k: [] for k in keys}
     pending, wrote, read_seen = None, None, True
+    sent, executed, submitted, lock_wait = None, None, None, None
     for l in lines:
         m = re.search(r" t=(\d+(?:\.\d+)?)", l)
         if not m:
@@ -144,26 +156,106 @@ def enter_segments(lines, t0):
         t = float(m.group(1))
         if t / 1000.0 < t0:
             continue
-        if "hop=enter_begin" in l:
+        if "stage=app_send_event" in l:
+            sent = t
+            a = re.search(r" age_ms=(-?\d+(?:\.\d+)?)", l)
+            if a and 0 <= float(a.group(1)) < 10000:
+                seg["event_age_ms"].append(float(a.group(1)))
+        elif "hop=enter_begin" in l:
             pending = t
+            if sent is not None:
+                seg["event_to_enter_ms"].append(t - sent)
+            sent, executed, submitted = None, None, None
+        elif "hop=try_execute_done" in l and pending is not None:
+            executed = t
+        elif "hop=enter_submit_done" in l and executed is not None:
+            seg["submit_bookkeeping_ms"].append(t - executed)
+            submitted, executed = t, None
+        elif "hop=write_command" in l and submitted is not None:
+            seg["effect_flush_ms"].append(t - submitted)
+            submitted = None
         elif "hop=preexec_received" in l and wrote is not None:
             seg["write_to_preexec_ms"].append(t - wrote)
-            wrote = None
+            seg["pty_lock_wait_ms"].append(lock_wait or 0.0)
+            wrote, lock_wait = None, None
+        elif "hop=pty_lock_wait" in l and wrote is not None:
+            w = re.search(r"waited_ms=(\d+(?:\.\d+)?)", l)
+            if w:
+                lock_wait = (lock_wait or 0.0) + float(w.group(1))
         elif "pty_write bytes=" in l and "handoff" not in l:
             nb = re.search(r"pty_write bytes=(\d+)", l)
             if nb and int(nb.group(1)) > 10 and pending is not None:
                 seg["enter_to_write_ms"].append(t - pending)
-                wrote, pending, read_seen = t, None, False
+                wrote, pending, read_seen, lock_wait = t, None, False, None
         elif wrote is not None and not read_seen and " pty_read bytes=" in l:
             sw = re.search(r"since_write_ms=(\d+(?:\.\d+)?)", l)
             seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
             read_seen = True          # only the FIRST read after a write counts; `wrote` stays for a later preexec hop
     out = {}
-    for k, v in seg.items():
-        if isinstance(v, list) and v:
+    for k in keys:
+        v = seg[k]
+        if v:
             out[k] = round(statistics.median(v), 2)
             out[k.replace("_ms", "_n")] = len(v)
     return out
+
+
+def os_key_ages(lines, t0, t1=None, enter=None, ctrl=None):
+    """#1606: `input_order hop=os_key_event age_ms=X enter=.. ctrl=..` lines (macOS, every key-down) in [t0, t1] wall seconds -> the ages in
+    ms (how long each key queued between the OS stamping it and the app's main thread dequeuing it). enter/ctrl filter on the flags when set."""
+    out = []
+    for l in lines:
+        if "hop=os_key_event" not in l:
+            continue
+        m = re.search(r" age_ms=(-?\d+(?:\.\d+)?) enter=(true|false) ctrl=(true|false) t=(\d+(?:\.\d+)?)", l)
+        if not m:
+            continue
+        t = float(m.group(4)) / 1000.0
+        if t < t0 or (t1 is not None and t > t1):
+            continue
+        if enter is not None and (m.group(2) == "true") != enter:
+            continue
+        if ctrl is not None and (m.group(3) == "true") != ctrl:
+            continue
+        a = float(m.group(1))
+        if 0 <= a < 10000:              # a clock mismatch gives nonsense; never let it into a median
+            out.append(a)
+    return out
+
+
+def ctrl_c_app_split(lines, t0):
+    """#1606: the app-side split of the Ctrl-C presses since wall time t0, from the app log: ctrl_event_age (os_key_event ctrl=true: how long the
+    key queued before the main thread dequeued it), key_to_write (`hop=ctrl_c_keydown` -> `hop=ctrl_c_pty_write`), and the nextDrawable waits
+    (`hop=drawable_wait`) logged in the same window: a main thread blocked in nextDrawable is the suspect when the event age is large."""
+    key_to_write, waits, k = [], [], None
+    for l in lines:
+        m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+        if not m or float(m.group(1)) / 1000.0 < t0:
+            continue
+        t = float(m.group(1))
+        if "hop=ctrl_c_keydown" in l:
+            k = t
+        elif "hop=ctrl_c_pty_write" in l and k is not None:
+            key_to_write.append(t - k)
+            k = None
+        elif "hop=drawable_wait" in l:
+            w = re.search(r"wait_ms=(\d+(?:\.\d+)?)", l)
+            if w:
+                waits.append(float(w.group(1)))
+    out = {}
+    for name, v in (("ctrl_event_age_ms", os_key_ages(lines, t0, ctrl=True)), ("key_to_write_ms", key_to_write), ("drawable_wait_ms", waits)):
+        st_ = age_stats(v)
+        if st_:
+            out[name] = st_
+    return out
+
+
+def age_stats(ages):
+    """os_key_ages -> {n, p50, p95, max} (ms) or None"""
+    if not ages:
+        return None
+    xs = sorted(ages)
+    return dict(n=len(xs), p50=round(statistics.median(xs), 2), p95=round(xs[min(len(xs) - 1, int(len(xs) * 0.95))], 2), max=round(xs[-1], 2))
 
 
 class Ctx:
@@ -443,10 +535,14 @@ class Ctx:
     def app_enter_segments(self, t0):
         """the app-log split of one Enter (#1583 W3) since wall time t0: {enter_to_write_ms, write_to_first_read_ms, write_to_preexec_ms?}, medians
         (+ n). Empty without a trace. See enter_segments for the rules."""
+        return enter_segments(self.app_log_lines(), t0)
+
+    def app_log_lines(self):
+        """every line of the app's log for this launch, including the in-session rotations (oldest first); [] without a log"""
         import glob
         src = self.log_path
         if not src:
-            return {}
+            return []
         parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
         lines = []
         for f in parts:
@@ -454,7 +550,11 @@ class Ctx:
                 lines += open(f, errors="replace").read().splitlines()
             except OSError:
                 continue
-        return enter_segments(lines, t0)
+        return lines
+
+    def app_key_ages(self, t0, t1=None, enter=None, ctrl=None):
+        """#1606: os_key_ages over the app log since wall time t0 (macOS builds with the os_key_event hop; [] elsewhere)"""
+        return os_key_ages(self.app_log_lines(), t0, t1, enter=enter, ctrl=ctrl)
 
     def app_saw_line(self, want, t0):
         """True: every character of `want` is in the app's own typed-character log, in order and contiguous (the key ARRIVED and was routed);
@@ -1225,6 +1325,7 @@ def ctrlc_flood(ctx, r, n, warm):
     confounded run order / drift with the overhead. When the reference cannot be kept open next to Phosphor the row is NOREF (Phosphor's own numbers
     only, reason recorded), never a verdict against a sequentially measured reference."""
     ctx.reset()
+    t_flood0 = time.time()
     ref = ref_terminal(ctx)
     fl, rs, okf, mode, fallback, blocks = [], [], False, "sequential", None, None
     if ref and ref.switch and lat.interleave_enabled():
@@ -1262,6 +1363,10 @@ def ctrlc_flood(ctx, r, n, warm):
         ctx.reset()
     record_interleave(r, mode, blocks, fallback)
     r.metric("ctrl_c_flood_ms", stats(fl))
+    cs = ctrl_c_app_split(ctx.app_log_lines(), t_flood0)          # #1606: where Phosphor's share of the flood Ctrl-C goes
+    if cs:
+        r.metric("ctrl_c_flood_app_split", cs)
+        r.note("Ctrl-C under flood, app side (#1606): " + "; ".join("%s p50 %s max %s (n=%d)" % (k[:-3], v["p50"], v["max"], v["n"]) for k, v in cs.items()))
     if rs:
         r.metric("reference_ctrl_c_flood_ms", stats(rs))
         r.metric("reference", ref.name)
@@ -2148,14 +2253,17 @@ def stamp_line(ctx):
         return "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
     if ctx.be.name == "mac":
         if lat.shell_base(pane_shell(ctx)) == "zsh":
-            return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME > lat_%d"
+            # #1606: the rc's preexec / zle-line-finish times follow the stamp (enter_to_start reads the first field as the stamp)
+            return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px-} ${__pa_lf-} > lat_%d"
         return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d"
     return "date +%%s.%%N > lat_%d"
 
 
-def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None):
+def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, split=None):
     """stamp/d (#1532 latency_enter_ssh): the stamp line and the directory its lat_<i> files land in, when they are not the local pane's
-    (stamp_line(ctx), ctx.W): over ssh the REMOTE shell writes them into the remote home."""
+    (stamp_line(ctx), ctx.W): over ssh the REMOTE shell writes them into the remote home.
+    split (#1606): a list that receives one dict per captured sample, epoch seconds: t0 (harness, before the injector starts), post (the
+    injector's own post time of the Return, macOS htype2 only), stamp, and from the zsh rc lf (zle-line-finish) and px (last preexec hook)."""
     ds = []
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
@@ -2172,8 +2280,12 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None):
         ctx.be.key("Return")
         ctx.until(lambda: os.path.exists(f) and os.path.getsize(f) > 5, 3, step=0.001)
         try:
-            v = float(open(f, errors="replace").read().replace("\x00", "").strip())
+            fields = open(f, errors="replace").read().replace("\x00", "").split()
+            v = float(fields[0])
             ds.append(((v / 1000.0 if v > 1e11 else v) - t0) * 1000)       # PowerShell stamps UTC milliseconds
+            if split is not None:
+                split.append(dict(t0=t0, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_float_or_none(fields, 1),
+                                  lf=_float_or_none(fields, 2)))
         except Exception:
             pass
         if i == 2 and not ds:
@@ -2183,6 +2295,48 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None):
             break
         time.sleep(0.2)
     return ds
+
+
+def _float_or_none(fields, i):
+    try:
+        return float(fields[i])
+    except (IndexError, ValueError):
+        return None
+
+
+def injector_post_wall(ctx):
+    """#1606: wall time (epoch s) at which the injector itself posted the last special key of its last call (macOS htype2 K-line, converted
+    with its T0 mach/epoch pair), or None (another backend, or no record)"""
+    calls = getattr(ctx.be, "calls", None)
+    if not calls:
+        return None
+    w = calls[-1].get("post_wall") or []
+    return w[-1] if w else None
+
+
+def _med(xs):
+    xs = [x for x in xs if x is not None]
+    return round(statistics.median(xs), 2) if xs else None
+
+
+def enter_split_summary(samples):
+    """#1606: one side's enter_to_start split dicts -> medians in ms (+ n) of
+      t0_to_post        harness start -> the injector's post of Return (the input-tool spawn: the same for both sides; sanity only)
+      post_to_lf        the post -> zle-line-finish: key delivery, the terminal's own work, the pty write and the line editor reading and
+                        accepting the line (Phosphor writes the whole line at Enter; a plain terminal's shell already has it)
+      lf_to_px          zle-line-finish -> the last preexec hook: every preexec hook before it (Phosphor's bootstrap hooks; none in the reference)
+      px_to_stamp       the last preexec hook -> the stamp: the command itself (should match between the sides)
+      post_to_stamp     the whole of it without the input-tool spawn
+    A key is absent when no sample had both ends (no post time off macOS, no lf/px from a non-zsh shell)."""
+    def d(a, b):
+        return [(x[b] - x[a]) * 1000.0 for x in samples if x.get(a) is not None and x.get(b) is not None and 0 <= x[b] - x[a] < 1]
+    out = {"n": len(samples)}
+    for k, a, b in (("t0_to_post_ms", "t0", "post"), ("post_to_lf_ms", "post", "lf"), ("lf_to_px_ms", "lf", "px"), ("px_to_stamp_ms", "px", "stamp"),
+                    ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px")):
+        v = _med(d(a, b))
+        if v is not None:
+            out[k] = v
+    return out
 
 
 def host_load():
@@ -2220,6 +2374,28 @@ def gitbash_fork_ms(n=40):
     return round(statistics.median(runs), 2)
 
 
+def record_enter_split(r, splits, segs):
+    """#1606: the per-hop split of Enter -> command start for both sides, as the metric `enter_split_ms` {phosphor, reference, delta} and one
+    note. The SAME shell clock (the rc's zle-line-finish / last-preexec times, enter_split_summary) on both sides, so a gap in post_to_lf
+    is key delivery + terminal + line-editor ingest, a gap in lf_to_px is preexec hooks, a gap in px_to_stamp would be the command itself.
+    Phosphor's post_to_lf is then split further by the app log (segs: event_age, event_to_enter, enter_to_write). The shell-side medians
+    include each interleaved block's discarded lead sample (the sampler cannot see which one run_interleaved drops)."""
+    sp = {side: enter_split_summary(v) for side, v in splits.items() if v}
+    if not sp:
+        return
+    if "phosphor" in sp and "reference" in sp:
+        sp["delta"] = {k: round(sp["phosphor"][k] - sp["reference"][k], 2) for k in sp["phosphor"]
+                       if k.endswith("_ms") and k in sp["reference"]}
+    app = {k: segs[k] for k in ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms",
+                                "pty_lock_wait_ms") if k in segs}
+    if app:
+        sp["phosphor_app"] = app
+    r.metric("enter_split_ms", sp)
+    if "delta" in sp:
+        r.note("Enter split (Phosphor - reference, medians ms, #1606): " + ", ".join("%s %+.2f" % (k[:-3], v) for k, v in sp["delta"].items()) +
+               ("; Phosphor app: " + ", ".join("%s %.2f" % (k[:-3], v) for k, v in app.items()) if app else ""))
+
+
 @case("latency_enter", order=41, gui=True)
 def c_lat_enter(ctx, r):
     """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
@@ -2238,15 +2414,17 @@ def c_lat_enter(ctx, r):
     # #1514: A/B/A/B interleaving in blocks when the reference can stay open next to Phosphor (Linux, macOS); otherwise (Windows, no reference, a focus
     # failure) the sequential mode below. Which one ran is recorded (metrics.measurement_mode, lat record measurement_mode).
     ds, rs, ref, mode, fallback, blocks, tried = None, [], None, "sequential", None, None, False
+    splits = {"phosphor": [], "reference": []}      # #1606: per-sample shell-side split (enter_to_start split=)
     if not ctx.win and lat.interleave_enabled():
         ref, tried = ref_terminal(ctx), True
         if ref and ref.switch:
             try:
                 time.sleep(2.5)
-                ds, rs, blocks = run_interleaved(ctx, ref, n, warm, lambda side, cnt: enter_to_start(ctx, cnt))
+                ds, rs, blocks = run_interleaved(ctx, ref, n, warm, lambda side, cnt: enter_to_start(ctx, cnt, split=splits[side]))
                 mode = "interleaved"
             except RuntimeError as e:
                 ds, rs, blocks = None, [], None
+                splits = {"phosphor": [], "reference": []}
                 fallback = "interleaving failed, fell back to sequential: %s" % str(e)[:160]
         elif ref:
             fallback = "this backend cannot keep both windows"
@@ -2256,7 +2434,7 @@ def c_lat_enter(ctx, r):
             except RuntimeError:
                 pass
     if ds is None:
-        ds = enter_to_start(ctx, n + warm)[warm:]
+        ds = enter_to_start(ctx, n + warm, split=splits["phosphor"])[warm:]
     record_interleave(r, mode, blocks, fallback)
     r.metric("enter_to_start_ms", stats(ds))
     segs = ctx.app_enter_segments(t_lat0)
@@ -2290,7 +2468,7 @@ def c_lat_enter(ctx, r):
                 if ref.switch:
                     ref.switch("reference")
                 time.sleep(2.5)
-                rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5))[warm:]      # overall cap: a dead reference cannot hang the case
+                rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5), split=splits["reference"])[warm:]      # overall cap: a dead reference cannot hang the case
             ctx.reset()
             if ctx.win and rs:
                 # #1583 W1: the SAME stamp line delivered to the reference as ONE burst (0 ms between characters), then Enter. Phosphor writes the whole
@@ -2317,6 +2495,7 @@ def c_lat_enter(ctx, r):
             r.note("NO-COMPARE: pane shell %s != reference shell %s; the overhead is not judged" % (pane_sh, ctx.ref_shell))
     else:
         r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
+    record_enter_split(r, splits, segs)
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
@@ -2480,6 +2659,7 @@ def c_lat_paint(ctx, r):
         r.skip("no Phosphor window rect from System Events")
     ctx.be.guard()
     n, warm = ctx.count_lat(30), lat.warmup()
+    t_paint0 = time.time()
     # #1514: A/B/A/B blocks with Terminal.app kept open next to Phosphor (each window sampled at its own rect); sequential when interleaving is
     # off, there is no reference/rect, or a focus guard fails. The mode that ran is recorded.
     ds, rs, ref, mode, fallback, blocks, tried = None, [], None, "sequential", None, None, False
@@ -2507,6 +2687,16 @@ def c_lat_paint(ctx, r):
     record_interleave(r, mode, blocks, fallback)
     ctx.reset()
     r.metric("key_to_paint_ms", stats(ds))
+    # #1606/#1491: how long Phosphor's key-downs queued before its main thread took them (the app's share of key->paint that is not its own
+    # handling), and the nextDrawable waits in the same window
+    kl = ctx.app_log_lines()
+    ka = age_stats(os_key_ages(kl, t_paint0, enter=False, ctrl=False))
+    if ka:
+        r.metric("key_event_age_ms", ka)
+    dw = age_stats([float(m.group(1)) for m in re.finditer(r"hop=drawable_wait wait_ms=(\d+(?:\.\d+)?) key_frame=\S+ t=(\d+)", "\n".join(kl))
+                    if float(m.group(2)) / 1000.0 >= t_paint0])
+    if dw:
+        r.metric("drawable_wait_ms", dw)
     r.check(len(ds) >= 20, "only %d key->paint samples from kl3 (capture region or Screen Recording permission wrong)" % len(ds))
     if ref is None and not tried:
         ref = ref_terminal(ctx)

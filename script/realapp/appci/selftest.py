@@ -307,6 +307,38 @@ def enter_segment_split():
 
 
 @check
+def enter_split_attributes_every_hop():
+    # #1606: the app-side hops of one Enter, in the shape the app logs them (r18e4 agent mode, abbreviated)
+    L = ["input_order hop=mac_enter stage=app_send_event keycode=36 ts=1.0 age_ms=4.250 event_window=1 key_window=1 key_window_class=WarpWindow t=1000.0",
+         "input_order hop=enter_begin deferred=false buffer=\"x\" input_type=Shell t=1000.9", "input_order hop=try_execute_done executed=true took_ms=0.0 t=1001.2",
+         "input_order hop=enter_submit_done since_submit_ms=0.70 t=1001.9", "input_order hop=write_command  t=1002.0", "input_order pty_write bytes=71 t=1002.2",
+         "input_order pty_read bytes=420 since_write_ms=1.4 t=1003.6", "input_order hop=pty_lock_wait waited_ms=1.50 buffered=0 t=1005.1",
+         "input_order hop=preexec_received signal=preexec t=1005.2"]
+    s = cases.enter_segments(L, 0)
+    assert s["event_age_ms"] == 4.25 and s["event_to_enter_ms"] == 0.9 and s["enter_to_write_ms"] == 1.3, s
+    assert s["submit_bookkeeping_ms"] == 0.7 and s["effect_flush_ms"] == 0.1, s
+    assert s["write_to_preexec_ms"] == 3.0 and s["pty_lock_wait_ms"] == 1.5, s
+    # a build without the new hops gives exactly the old keys (absent, never zero)
+    old = [l for l in L if "age_ms" not in l and "enter_submit_done" not in l and "pty_lock_wait" not in l]
+    s = cases.enter_segments(old, 0)
+    assert "event_age_ms" not in s and "submit_bookkeeping_ms" not in s and s["pty_lock_wait_ms"] == 0.0, s
+    # the shell-side split: post 0, zle-line-finish +2 ms, last preexec +3 ms, stamp +3.5 ms; a stale px (> 1 s) is dropped, not averaged in
+    sp = cases.enter_split_summary([dict(t0=99.8, post=100.0, lf=100.002, px=100.003, stamp=100.0035),
+                                    dict(t0=199.8, post=200.0, lf=200.002, px=198.0, stamp=200.0035)])
+    assert sp["post_to_lf_ms"] == 2.0 and sp["lf_to_px_ms"] == 1.0 and sp["px_to_stamp_ms"] == 0.5 and sp["post_to_stamp_ms"] == 3.5, sp
+    assert round(sp["t0_to_post_ms"]) == 200 and sp["n"] == 2, sp
+    assert cases.enter_split_summary([dict(t0=1.0, post=None, lf=None, px=None, stamp=1.2)]) == {"n": 1}
+    # key-event ages: flags filter, a nonsense (negative) age is dropped
+    K = ["input_order hop=os_key_event age_ms=0.300 enter=false ctrl=false t=1000.0", "input_order hop=os_key_event age_ms=40.000 enter=false ctrl=true t=1001.0",
+         "input_order hop=os_key_event age_ms=-5.000 enter=false ctrl=true t=1002.0", "input_order hop=os_key_event age_ms=2.000 enter=true ctrl=false t=1003.0"]
+    assert cases.os_key_ages(K, 0, ctrl=True) == [40.0] and cases.os_key_ages(K, 0, enter=False, ctrl=False) == [0.3]
+    assert cases.os_key_ages(K, 1.0025) == [2.0]
+    cs = cases.ctrl_c_app_split(K + ["input_order hop=ctrl_c_keydown powershell_setup_hold=Off t=1001.1", "input_order hop=ctrl_c_pty_write bytes=1 t=1001.4",
+                                     "input_order hop=drawable_wait wait_ms=18.00 key_frame=false t=1000.5"], 0)
+    assert cs["ctrl_event_age_ms"]["p50"] == 40.0 and abs(cs["key_to_write_ms"]["p50"] - 0.3) < 1e-6 and cs["drawable_wait_ms"]["max"] == 18.0, cs
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])
