@@ -24,7 +24,7 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPCI="$HERE/../appci"
-MODE=wayland DIST="" BIN="" OUT="" SMODES="terminal,agent" CASES="" SKIP=""
+MODE=wayland DIST="" BIN="" OUT="" SMODES="${APPCI_MODES:-terminal,agent}" CASES="${APPCI_CASES:-}" SKIP=""   # APPCI_MODES / APPCI_CASES: play-time narrowing for a diagnostic run (#1414)
 while [ $# -gt 0 ]; do case "$1" in
   --mode) MODE=$2; shift 2;; --dist) DIST=$2; shift 2;; --bin) BIN=$2; shift 2;; --out) OUT=$2; shift 2;;
   --modes) SMODES=$2; shift 2;; --cases) CASES=$2; shift 2;; --skip) SKIP=$2; shift 2;;
