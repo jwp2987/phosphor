@@ -245,7 +245,7 @@ def remote_stamp_line(ctx):
 def c_lat_enter_ssh(ctx, r):
     """#1532: Enter -> command start INSIDE an ssh session, Phosphor vs plain ssh in the reference terminal (same session, same remote shell,
     same keys/cadence/stamp line), verdict on the overhead against the owner's ssh budget (plain ssh +/- 1 ms, APPCI_SSH_ENTER_BUDGET_MS).
-    Sequential (Phosphor, then the reference). The stamp files land in the remote home, so the measurement includes the ssh round trip on
+    A/B/A/B interleaved in blocks (both windows hold an ssh session); NOREF when that is impossible. The stamp files land in the remote home, so the measurement includes the ssh round trip on
     BOTH sides and cancels out of the overhead."""
     need_ssh(ctx, r)
     import lat
@@ -264,37 +264,61 @@ def c_lat_enter_ssh(ctx, r):
         r.check(False, "after ssh fake, a probe line did not reach the REMOTE home: not measuring Enter latency in an unknown shell")
         ctx.reset()
         return
-    ds = enter_to_start(ctx, n + warm, stamp=stamp, d=rhome)[warm:]
+    # r18e0 follow-up: A/B/A/B blocks (cases.run_interleaved, as latency_enter): BOTH windows hold an open ssh session to the same sshd, then Phosphor and the
+    # plain-ssh reference alternate in blocks. A reference measured after Phosphor confounded run order / drift with the overhead (7.56 +/- 2.49 ms in r18e0).
+    # Where the reference cannot be kept open next to Phosphor the row is NOREF (Phosphor's numbers only, the reason recorded), never a sequential verdict.
+    from cases import run_interleaved, close_ref, record_interleave
+    ref, mode, fallback, blocks, ds, rs = ref_terminal(ctx), "sequential", None, None, [], []
+    if ref and ref.switch and lat.interleave_enabled():
+        ref_note(ctx, r)
+        try:
+            ref.switch("reference")
+            time.sleep(2.5)
+            if connect(ctx) is None:
+                fallback = "reference: plain `ssh fake` gave no remote prompt within 90 s"
+            else:
+                try:
+                    ds, rs, blocks = run_interleaved(ctx, ref, n, warm, lambda side, cnt: enter_to_start(ctx, cnt, budget_s=max(60, cnt * 2.5), stamp=stamp, d=rhome))
+                    mode = "interleaved"
+                except RuntimeError as e:
+                    ds, rs, blocks = [], [], None
+                    fallback = "interleaving failed: %s" % str(e)[:160]
+                ref.switch("reference")
+                ctx.be.type("exit", 12, enter=True)       # leave the reference's ssh (its window is closed below)
+                time.sleep(1.0)
+        except RuntimeError as e:
+            fallback = fallback or "reference focus failed: %s" % str(e)[:160]
+        finally:
+            close_ref(ref)
+        time.sleep(1.0)      # focus returns to Phosphor
+        try:
+            ctx.be.refocus()
+        except RuntimeError:
+            pass
+    else:
+        fallback = ("no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else "")) if not ref else \
+            "this backend cannot keep both windows, or interleaving is disabled (APPCI_LAT_INTERLEAVE=0)"
+        if ref:
+            ref.close()
+            time.sleep(1.0)
+    if mode != "interleaved":
+        ds = enter_to_start(ctx, n + warm, stamp=stamp, d=rhome)[warm:]       # NOREF: Phosphor alone
+        rs = []
     left = ctx.leave_remote(r, "latency_enter_ssh", "lat_ready", tok, base)
+    record_interleave(r, mode, blocks, fallback)
     r.metric("ssh_enter_to_start_ms", stats(ds))
+    if rs:
+        r.metric("reference_ssh_enter_to_start_ms", stats(rs))
+        r.metric("reference", ref.name)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured over ssh" % (len(ds), n))
     if not left:
         return
-    ctx.reset()
-    rs, ref = [], ref_terminal(ctx)
-    if ref:
-        ref_note(ctx, r)
-        try:
-            if ref.switch:
-                ref.switch("reference")
-            time.sleep(2.5)
-            if connect(ctx) is None:
-                r.note("reference: plain `ssh fake` gave no remote prompt within 90 s; no control measured")
-            else:
-                rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5), stamp=stamp, d=rhome)[warm:]
-                ctx.be.type("exit", 12, enter=True)
-                time.sleep(1.0)
-        finally:
-            ref.close()
-        time.sleep(1.0)      # focus returns to Phosphor
-        r.metric("reference_ssh_enter_to_start_ms", stats(rs))
-        r.metric("reference", ref.name)
-    else:
-        r.note("no reference terminal available for the plain-ssh control%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
         rec = lat.evaluate("%s/latency_enter_ssh/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_SSH_ENTER_BUDGET_MS", "1")), "overhead",
-                           plat(), ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n, mode="sequential",
-                           notes=["both sides type into the SAME remote shell over ssh to the harness's local sshd; reference measured after Phosphor (sequential)"])
+                           plat(), ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n, mode=mode,
+                           notes=["both sides type into the SAME remote shell over ssh to the harness's local sshd; " +
+                                  ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
+                                   else "NOREF: the reference was not interleaved (%s), so no overhead is judged" % fallback)])
         r.metrics.setdefault("lat", {})["ssh_enter_to_start"] = rec
         lat_checks(r, rec, "Enter to command start over ssh")
     ctx.reset()
@@ -331,15 +355,47 @@ def c_ssh_hang(ctx, r):
             ctx.rm(f)
             tok = ctx.tok(6)
             lmark = ctx.cmd_mark()
+            # r18e0 follow-up: when did the ssh client exist? A line typed AFTER a refused ssh already exited correctly runs locally; only a line typed while the
+            # ssh was alive (and not yet failed) must be held. The poller records the ssh's presence by its -p <port> so the verdict rests on timing, not on a guess.
+            seen = []         # (wall time, alive)
+            pstop = threading.Event()
+
+            def poll_ssh(port=port):
+                while not pstop.is_set():
+                    seen.append((time.time(), ps_has_port(port)))
+                    time.sleep(0.05)
+            pth = threading.Thread(target=poll_ssh, daemon=True)
+            pth.start()
+            t_ssh = time.time()
             ctx.be.type("ssh -o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=no -p %d 127.0.0.1" % port, 12, enter=True)
             time.sleep(0.15)
+            t_first = time.time()
             ctx.be.type("echo MUSTNOT_%s >> %s" % (tok, f), 15, enter=True)
+            t_last = time.time()
             time.sleep(wait / 2)
             ctx.shot("hang_%s_mid" % label)
             time.sleep(wait / 2)
-            r.check(not ctx.lines(f), "[%s host] the line typed behind ssh ran LOCALLY: %r" % (label, ctx.lines(f)))
-            r.check(not any("MUSTNOT_" + tok in c for c in ctx.cmds_since(lmark)),
-                    "[%s host] the LOCAL shell received the line typed behind ssh: %r" % (label, ctx.cmds_since(lmark)))
+            pstop.set()
+            pth.join(2)
+            alive_ts = [t for t, a in seen if a]
+            t_exit = next((t for t, a in seen if not a and alive_ts and t > alive_ts[0]), None)
+            gate = ctx.app_hop_lines(re.compile(r"hop=kh_hold_(?:entry|exit)\b|hop=kh_iq_(?:hold|release)\b.*Q7_ssh_typeahead|ssh hold:"), t_first - 0.5)
+            r.note("[%s host] timing: ssh started t0; ssh client first seen %s, exited %s; first MUSTNOT key +%.2f s, last MUSTNOT key +%.2f s; app ssh gate lines after the first key: %d" % (
+                label, ("+%.2f s" % (alive_ts[0] - t_ssh)) if alive_ts else "never (exited before the first 50 ms poll or never started)",
+                ("+%.2f s" % (t_exit - t_ssh)) if t_exit else "not observed", t_first - t_ssh, t_last - t_ssh, len(gate)))
+            exited_before_key = (t_exit is not None and t_exit < t_first) or not alive_ts
+            if exited_before_key:
+                # the ssh was already gone when the first key was typed: running locally is correct, so the 'held' property was not exercised
+                r.no_reference("UNVERIFIABLE [%s host]: the ssh client had %s before the first MUSTNOT key, so a local run of the line is correct and says nothing about the hold" % (
+                    label, "already exited" if alive_ts else "not been seen"))
+            else:
+                r.check(not ctx.lines(f), "[%s host] the line typed behind ssh ran LOCALLY: %r (ssh alive at the first key; exit %s)" % (
+                    label, ctx.lines(f), ("+%.2f s" % (t_exit - t_ssh)) if t_exit else "not observed"))
+                r.check(not any("MUSTNOT_" + tok in c for c in ctx.cmds_since(lmark)),
+                        "[%s host] the LOCAL shell received the line typed behind ssh: %r" % (label, ctx.cmds_since(lmark)))
+                if not gate:
+                    r.no_reference("UNVERIFIABLE [%s host]: no kh_hold_*/ssh hold line in the app log after the first MUSTNOT key (key trace off or rotated: %s); the line not running locally is not proven to be the app's hold" % (
+                        label, "input_order lines present" if ctx.app_hop_lines(re.compile(r"input_order "), t_first - 0.5) else "NO input_order lines at all"))
             ctx.reset()
             tok2 = ctx.tok(6).lower()
             ctx.be.type("echo %s >> %s" % (tok2, f), 12, enter=True)
@@ -352,6 +408,15 @@ def c_ssh_hang(ctx, r):
             c.close()
         srv.close()
     ctx.reset()
+
+
+def ps_has_port(port):
+    """is an ssh client for 127.0.0.1 -p <port> running (matched on the args)"""
+    try:
+        out = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(re.match(r"(\S*/)?ssh\s.*-p\s*%d\b" % port, l) for l in out.splitlines())
 
 
 def ps_has(host):

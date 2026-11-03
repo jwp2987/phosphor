@@ -48,13 +48,19 @@ def hexs(b):
     return "None" if b is None else b.hex()
 
 
+def dbg(s):
+    """repr() ESCAPES non-printing characters (a real ZWJ prints as the two-character text \\u200d), which made a correct ZWJ look like a typed backslash sequence in r18e0.
+    Always show the UTF-8 hex next to the repr so the characters actually received are unambiguous."""
+    return "%r [utf8 %s]" % (s, s.encode("utf-8", "surrogatepass").hex())
+
+
 def check_file(ctx, r, name, text, label, timeout=12):
     """the effect file holds exactly text + newline in UTF-8"""
     want = (text + "\n").encode("utf-8")
     ctx.until(lambda: (fbytes(ctx, name) or b"") != b"" and len(fbytes(ctx, name)) >= len(want), timeout)
     time.sleep(0.3)
     got = fbytes(ctx, name)
-    return r.check(got == want, "%s: file bytes %s, expected %s (text %r)" % (label, hexs(got), want.hex(), text))
+    return r.check(got == want, "%s: file bytes %s, expected %s (text %s)" % (label, hexs(got), want.hex(), dbg(text)))
 
 
 def check_cmd(ctx, r, mark, want_cmd, label):
@@ -63,7 +69,8 @@ def check_cmd(ctx, r, mark, want_cmd, label):
     if not have:
         r.note("%s: rec.log empty (hook not run), effect file checked only" % label)
         return
-    r.check(want_cmd in have, "%s: shell received %r, expected %r" % (label, have[-3:], want_cmd))
+    # exact string, compared as UTF-8 bytes (a ZWJ or variation selector must not be dropped, escaped or normalised on the way)
+    r.check(want_cmd in have, "%s: shell received %s, expected %s" % (label, " | ".join(dbg(h) for h in have[-3:]), dbg(want_cmd)))
 
 
 # ---------------------------------------------------------------- wide characters, typed

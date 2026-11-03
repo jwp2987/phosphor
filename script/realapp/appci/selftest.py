@@ -642,6 +642,27 @@ def lifecycle_full_log_line_and_incremental_report():
         shutil.rmtree(d, ignore_errors=True)
 
 
+@check
+def mac_close_key_empty_never_crashes_and_latency_guards():
+    """r18e0 follow-up: an empty close key SKIPs soak (never be.key('')); the edit cases skip with precise reasons; median_se / per-side n are
+    recorded; an implausibly FASTER reference is NOREF (no-compare), never a PASS; dbg() shows the hex of a ZWJ."""
+    import cases_robust as cr, cases_caseintl as ci, lat
+    assert "cmd-shift-W" in cr.NO_CLOSE_WHY and "D-Bus" in cr.SKIP_EDITOR_WHY and "Cmd-Q" in cr.SKIP_QUIT_WHY
+    ph = [30.0 + (i % 5) for i in range(30)]
+    ref = [60.0 + (i % 5) for i in range(30)]
+    rec = lat.evaluate("x/y", ph, ref, 5.0, "overhead", "macos", ref_name="T", expected=30, mode="interleaved", implausible_neg_ms=5.0)
+    assert rec["budget_verdict"] == "no-compare" and rec.get("implausible"), rec
+    assert rec["per_side"]["phosphor"]["n"] == 30 and rec["per_side"]["reference"]["se_median_ms"] is not None, rec["per_side"]
+    rec2 = lat.evaluate("x/y", ph, ph, 5.0, "overhead", "macos", ref_name="T", expected=30, mode="interleaved", implausible_neg_ms=5.0)
+    assert not rec2.get("implausible"), rec2
+    assert "e29d8d" not in ci.dbg("a") and "e2808d" in ci.dbg("a\u200db"), ci.dbg("a\u200db")
+    assert ci.WIDE[3][1].count("\u200d") == 2        # the family sequence really contains two U+200D scalars
+    res = cases.Result("t", "terminal")
+    if res is not None:
+        res.unverifiable("trace missing")
+        assert res.noref and "UNVERIFIABLE" in res.noref[0] and not res.fails
+
+
 def main():
     failed = 0
     for f in CHECKS:
