@@ -253,6 +253,12 @@ async fn render_bounded(source: String, timeout: Duration) -> anyhow::Result<Byt
     let slot = RenderSlot::acquire(&LIVE_RENDERS, MAX_CONCURRENT_RENDERS).ok_or_else(|| {
         anyhow::anyhow!("too many diagram renders are already running; showing the source")
     })?;
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(exe) = SUBPROCESS_RENDERER.get() {
+        let mut command = std::process::Command::new(exe);
+        command.arg(MERMAID_WORKER_SUBCOMMAND);
+        return render_in_subprocess(command, source, timeout, slot).await;
+    }
     let (tx, rx) = async_channel::bounded(1);
     std::thread::Builder::new()
         .name("mermaid-render".into())
@@ -276,6 +282,182 @@ async fn render_bounded(source: String, timeout: Duration) -> anyhow::Result<Byt
                 "rendering the diagram took longer than {timeout:?}"
             ))
         }
+    }
+}
+
+/// The hidden `warp_cli` worker subcommand that runs [`run_render_worker`]. Must match
+/// `WorkerCommand::MermaidRender`'s clap name.
+pub const MERMAID_WORKER_SUBCOMMAND: &str = "mermaid-render";
+/// The largest SVG we accept back from the renderer process.
+const MAX_MERMAID_SVG_BYTES: usize = 32 * 1024 * 1024;
+
+/// The executable to re-run as the render worker. Unset (tests, benches, embedders that do not
+/// dispatch the worker subcommand) means render in-process.
+#[cfg(not(target_family = "wasm"))]
+static SUBPROCESS_RENDERER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Renders every diagram in a short-lived child process (`exe mermaid-render`, source on stdin,
+/// SVG on stdout) from now on. A stack overflow in the renderer is a process abort that nothing
+/// in-process can contain (#1557); in a child it only fails that diagram, which then takes the
+/// source fallback. `exe` must dispatch [`MERMAID_WORKER_SUBCOMMAND`] to [`run_render_worker`].
+/// Only the first call has an effect.
+#[cfg(not(target_family = "wasm"))]
+pub fn use_subprocess_renderer(exe: std::path::PathBuf) {
+    let _ = SUBPROCESS_RENDERER.set(exe);
+}
+
+/// The render worker's body: read the diagram source from stdin, write its SVG to stdout. An
+/// error (or a crash, which the parent sees as a failed exit) means "show the source". Runs the
+/// render on a big-stack thread, the same defence in depth as the in-process path.
+#[cfg(not(target_family = "wasm"))]
+pub fn run_render_worker() -> anyhow::Result<()> {
+    use std::io::{Read as _, Write as _};
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(MAX_MERMAID_SOURCE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    let source = String::from_utf8(bytes)?;
+    check_render_limits(&source)?;
+    let svg = std::thread::Builder::new()
+        .name("mermaid-render".into())
+        .stack_size(MERMAID_RENDER_STACK_BYTES)
+        .spawn(move || mermaid_to_svg::render_mermaid_to_svg(&source, None))?
+        .join()
+        .map_err(|_| anyhow::anyhow!("the diagram renderer panicked"))??;
+    let mut out = std::io::stdout().lock();
+    out.write_all(svg.as_bytes())?;
+    out.flush()?;
+    Ok(())
+}
+
+/// State shared between the host thread and the awaiting caller so the caller can kill the child
+/// at the deadline.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Default)]
+struct ChildHandle {
+    child: std::sync::Mutex<Option<std::process::Child>>,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ChildHandle {
+    fn kill(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Ok(mut guard) = self.child.lock()
+            && let Some(child) = guard.as_mut()
+        {
+            let _ = child.kill();
+        }
+    }
+}
+
+/// Runs `command` as the render worker: `source` on its stdin, SVG back on its stdout, bounded
+/// by `timeout` and `MAX_MERMAID_SVG_BYTES`. The UI never blocks: all pipe I/O and the wait run
+/// on a helper thread; the caller awaits a channel. A crash, non-zero exit, oversize or timeout
+/// is an `Err` (the source fallback), and the child is killed and reaped.
+#[cfg(not(target_family = "wasm"))]
+async fn render_in_subprocess(
+    mut command: std::process::Command,
+    source: String,
+    timeout: Duration,
+    slot: RenderSlot,
+) -> anyhow::Result<Bytes> {
+    use std::process::Stdio;
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let handle = Arc::new(ChildHandle::default());
+    let (tx, rx) = async_channel::bounded(1);
+    let host = handle.clone();
+    std::thread::Builder::new()
+        .name("mermaid-render-host".into())
+        .spawn(move || {
+            let _slot = slot;
+            let _ = tx.send_blocking(run_worker_process(command, source, &host));
+        })
+        .map_err(|e| anyhow::anyhow!("could not start the diagram renderer: {e}"))?;
+    match rx.recv().with_timeout(timeout).await {
+        Ok(Ok(result)) => result.map(Bytes::from),
+        Ok(Err(_)) => Err(anyhow::anyhow!("the diagram renderer stopped unexpectedly")),
+        Err(_) => {
+            handle.kill();
+            log::warn!("mermaid render exceeded {timeout:?}; showing the source instead");
+            Err(anyhow::anyhow!(
+                "rendering the diagram took longer than {timeout:?}"
+            ))
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn run_worker_process(
+    mut command: std::process::Command,
+    source: String,
+    handle: &ChildHandle,
+) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read as _, Write as _};
+    let mut child = command
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("could not start the diagram renderer process: {e}"))?;
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    {
+        let mut guard = handle
+            .child
+            .lock()
+            .map_err(|_| anyhow::anyhow!("diagram renderer state poisoned"))?;
+        if handle.cancelled.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("diagram render was cancelled");
+        }
+        *guard = Some(child);
+    }
+    // Written from its own thread so a child that stops reading cannot deadlock us against a
+    // full stdout pipe; a write error just means the child already exited.
+    if let Some(mut stdin) = stdin {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(source.as_bytes());
+        });
+    }
+    let mut svg = Vec::new();
+    let read = match stdout {
+        Some(stdout) => stdout
+            .take(MAX_MERMAID_SVG_BYTES as u64 + 1)
+            .read_to_end(&mut svg),
+        None => Ok(0),
+    };
+    let oversize = svg.len() > MAX_MERMAID_SVG_BYTES;
+    if oversize || read.is_err() {
+        handle.kill();
+    }
+    let status = {
+        let mut guard = handle
+            .child
+            .lock()
+            .map_err(|_| anyhow::anyhow!("diagram renderer state poisoned"))?;
+        guard.take().map(|mut child| child.wait())
+    };
+    if oversize {
+        anyhow::bail!("diagram renderer output is too large ({MAX_MERMAID_SVG_BYTES} byte limit)");
+    }
+    read.map_err(|e| anyhow::anyhow!("could not read the diagram renderer output: {e}"))?;
+    match status {
+        Some(Ok(status)) if status.success() && !svg.is_empty() => Ok(svg),
+        Some(Ok(status)) => Err(anyhow::anyhow!(
+            "the diagram renderer process failed ({status}); showing the source"
+        )),
+        Some(Err(e)) => Err(anyhow::anyhow!(
+            "could not wait for the diagram renderer: {e}"
+        )),
+        None => Err(anyhow::anyhow!("diagram render was cancelled")),
     }
 }
 
@@ -506,5 +688,84 @@ mod render_limit_tests {
         }
         let err = render(&source, Duration::from_millis(1)).expect_err("budget of 1 ms");
         assert!(err.to_string().contains("took longer"), "{err}");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod subprocess_tests {
+    use super::*;
+
+    fn sh(script: &str) -> std::process::Command {
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(script);
+        command
+    }
+
+    fn run(script: &str, source: &str, timeout: Duration) -> anyhow::Result<Bytes> {
+        static LIVE: AtomicUsize = AtomicUsize::new(0);
+        let slot = RenderSlot::acquire(&LIVE, 1000).expect("slot");
+        futures_lite::future::block_on(render_in_subprocess(
+            sh(script),
+            source.to_string(),
+            timeout,
+            slot,
+        ))
+    }
+
+    #[test]
+    fn svg_comes_back_from_the_child() {
+        let svg = run("cat", "<svg>ok</svg>", Duration::from_secs(5)).expect("renders");
+        assert_eq!(&svg[..], b"<svg>ok</svg>");
+    }
+
+    /// #1557: the child dying by signal (what a stack overflow does) fails that one diagram.
+    #[test]
+    fn a_child_that_aborts_is_an_error_not_a_crash() {
+        let err = run("kill -SEGV $$", "x", Duration::from_secs(5)).expect_err("crash");
+        assert!(err.to_string().contains("failed"), "{err}");
+        let err = run("kill -ABRT $$", "x", Duration::from_secs(5)).expect_err("abort");
+        assert!(err.to_string().contains("failed"), "{err}");
+    }
+
+    #[test]
+    fn a_failing_or_silent_child_is_an_error() {
+        assert!(run("echo partial; exit 1", "x", Duration::from_secs(5)).is_err());
+        assert!(run("exit 0", "x", Duration::from_secs(5)).is_err(), "empty output");
+    }
+
+    #[test]
+    fn a_hung_child_is_killed_at_the_deadline() {
+        let started = std::time::Instant::now();
+        let err = run("sleep 60", "x", Duration::from_millis(200)).expect_err("timeout");
+        assert!(err.to_string().contains("took longer"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_child_flooding_stdout_is_cut_off() {
+        let err = run("yes", "x", Duration::from_secs(20)).expect_err("oversize");
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn a_large_source_does_not_deadlock_a_child_that_ignores_stdin() {
+        let source = "A".repeat(MAX_MERMAID_SOURCE_BYTES);
+        let svg = run("echo '<svg/>'", &source, Duration::from_secs(5)).expect("renders");
+        assert!(String::from_utf8_lossy(&svg).contains("<svg/>"));
+    }
+
+    #[test]
+    fn a_missing_executable_is_an_error() {
+        static LIVE: AtomicUsize = AtomicUsize::new(0);
+        let slot = RenderSlot::acquire(&LIVE, 1000).expect("slot");
+        let command = std::process::Command::new("/nonexistent/phosphor");
+        let err = futures_lite::future::block_on(render_in_subprocess(
+            command,
+            "x".into(),
+            Duration::from_secs(5),
+            slot,
+        ))
+        .expect_err("spawn fails");
+        assert!(err.to_string().contains("could not start"), "{err}");
     }
 }

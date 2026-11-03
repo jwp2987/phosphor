@@ -301,6 +301,12 @@ pub enum WorkerCommand {
     #[clap(hide = true)]
     RemoteServerDaemon(RemoteServerIdentityArgs),
 
+    /// Render one mermaid diagram: source on stdin, SVG on stdout. Run in a child process so a
+    /// stack overflow in the renderer (an abort) cannot take the app down (#1557).
+    #[cfg(not(target_family = "wasm"))]
+    #[clap(hide = true)]
+    MermaidRender,
+
     /// Run a headless ripgrep search worker.
     #[cfg(not(target_family = "wasm"))]
     #[clap(hide = true)]

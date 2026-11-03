@@ -750,6 +750,14 @@ pub fn run() -> Result<()> {
     // Ensure feature flags are initialized before parsing command-line arguments.
     init_feature_flags();
 
+    // Mermaid diagrams render in a child process of this binary (`mermaid-render`), so a stack
+    // overflow in the renderer fails one diagram instead of aborting the app (#1557). If the
+    // executable path is unavailable, rendering stays in-process.
+    #[cfg(not(target_family = "wasm"))]
+    if let Ok(exe) = std::env::current_exe() {
+        warp_editor::content::mermaid_diagram::use_subprocess_renderer(exe);
+    }
+
     // The bundled Warp Control wrapper injects the hidden `--warpctrl` flag, which
     // selects a separate argument parser and never falls through to the normal
     // Oz/GUI parser below. Oz subcommands are part of that normal parser and
@@ -872,6 +880,10 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
             init_common(&LaunchMode::RemoteServerDaemon, None)?;
             crate::remote_server::run_daemon(args.identity_key.clone())
         }
+        #[cfg(not(target_family = "wasm"))]
+        warp_cli::WorkerCommand::MermaidRender => {
+            warp_editor::content::mermaid_diagram::run_render_worker()
+        }
         warp_cli::WorkerCommand::RipgrepSearch {
             parent,
             ignore_case,
@@ -907,6 +919,9 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
 /// `warp_tui`.
 #[cfg(feature = "tui")]
 pub fn run_tui(api_key: Option<String>, mount: TuiMountFn) -> Result<()> {
+    if let Ok(exe) = std::env::current_exe() {
+        warp_editor::content::mermaid_diagram::use_subprocess_renderer(exe);
+    }
     run_internal(LaunchMode::Tui { mount, api_key })
 }
 
