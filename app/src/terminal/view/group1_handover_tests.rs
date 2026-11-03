@@ -101,3 +101,70 @@ fn an_agent_write_after_a_silent_release_schedules_the_handover() {
         assert!(!written.contains("echo QW"), "{written:?}");
     })
 }
+
+/// #1575: the inner shell's prompt appears while the hand-over drain is yielded after the nested
+/// `ssh other` Enter. The input delivered next (`echo B`) must not split from the held line: it
+/// joins the hold, and the hand-over runs on the next turn, in typed order. The line reaches the
+/// inner shell once and never the editor or a local run. Legacy runs only to prove it does not
+/// panic.
+#[test]
+fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell() {
+    for mode in [DestinationMode::Table, DestinationMode::Legacy] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("ssh other", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                view.typed_characters_on_terminal("echo B", ctx);
+                view.keydown_on_terminal("\r", ctx);
+                if mode == DestinationMode::Table {
+                    assert_eq!(view.ssh_held_count(), 4);
+                }
+                view.ssh_remote_prompt_seen = true;
+                first_precmd_processed_for_test(view, ctx);
+                release_ssh_gate_for_test(view);
+                view.deliver_ssh_typeahead_if_ready("precmd", ctx);
+                // The inner prompt becomes visible before the drain continues.
+                view.model.lock().process_bytes("inner$ ");
+                view.ssh_observe(ctx);
+            });
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            if mode != DestinationMode::Table {
+                return;
+            }
+            terminal.read(&app, |view, ctx| {
+                let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+                assert_eq!(writes.matches("echo B").count(), 1, "{writes:?}");
+                let at = writes.find("echo B").unwrap_or(0);
+                assert!(writes[at..].contains('\r'), "{writes:?}");
+                assert!(
+                    !view.input.as_ref(ctx).buffer_text(ctx).contains("echo B"),
+                    "the editor took the line"
+                );
+                assert!(
+                    !executed.borrow().iter().any(|c| c.contains("echo B")),
+                    "{:?}",
+                    executed.borrow()
+                );
+                assert!(!view.ssh_typeahead_holding);
+            });
+        })
+    }
+}

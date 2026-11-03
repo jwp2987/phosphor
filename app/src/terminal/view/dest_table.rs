@@ -282,6 +282,32 @@ impl TerminalView {
         // drops nothing (no pending session, no setup, a seen line of text).
         let prompt_up = matches!(facts.ssh, SshPhase::PromptUp { .. });
         if self.ssh_typeahead_holding && prompt_up && !signal {
+            if self.paste_queue.queue.is_draining() {
+                // Mid-drain (#1575): this input joins the hold; the hand-over runs on the next
+                // turn, out of any key, so the held line is not split from the input being
+                // delivered.
+                if !self.ssh_prompt_handover_scheduled {
+                    self.ssh_prompt_handover_scheduled = true;
+                    ctx.spawn(async {}, |me, _, ctx| {
+                        me.ssh_prompt_handover_scheduled = false;
+                        if me.ssh_typeahead_holding && !me.paste_queue.queue.is_draining() {
+                            let still_prompt = matches!(
+                                me.build_route_facts(QueueFacts::default(), ctx).ssh,
+                                SshPhase::PromptUp { .. }
+                            );
+                            if still_prompt {
+                                me.discard_held_ssh_typeahead_for_prompt(ctx);
+                            } else {
+                                me.deliver_ssh_typeahead_if_ready("prompt_after_drain", ctx);
+                            }
+                        }
+                    });
+                }
+                let mut facts = facts;
+                // H3: held behind the connect gate, requeued mid-drain (#1415).
+                facts.ssh = SshPhase::Holding;
+                return facts;
+            }
             self.discard_held_ssh_typeahead_for_prompt(ctx);
             return self.build_route_facts(queue, ctx);
         }

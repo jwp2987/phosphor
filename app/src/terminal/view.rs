@@ -3152,6 +3152,8 @@ pub struct TerminalView {
     /// are held: the next key or turn hands them over before judging anything else. Cleared by
     /// any hand-over run (`deliver_ssh_typeahead_if_ready`).
     ssh_handover_after_release: bool,
+    /// #1575: a next-turn hand-over for a shell prompt that appeared mid-drain is scheduled.
+    ssh_prompt_handover_scheduled: bool,
     /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
     /// own submit), until the block it started is seen starting.
     ssh_submit_user_origin: Option<bool>,
@@ -5025,6 +5027,7 @@ impl TerminalView {
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
             ssh_handover_after_release: false,
+            ssh_prompt_handover_scheduled: false,
             ssh_submit_user_origin: None,
             running_block_user_submitted: false,
             young_enter_released: true,
@@ -11167,8 +11170,8 @@ impl TerminalView {
         if had_keys && self.ssh_prompt_is_unmanaged_shell_prompt() {
             if self.paste_queue.queue.is_draining() {
                 log::warn!(
-                    "ssh typeahead: a shell prompt is up but the input queue is mid-drain; handing \
-                     {} held input(s) back to the editor as text (#1561)",
+                    "ssh typeahead: unexpected since #1575: a shell prompt is up but the input queue \
+                     is mid-drain; handing {} held input(s) back to the editor as text (#1561)",
                     self.ssh_held_count()
                 );
                 self.ssh_remote_prompt_seen = false;
