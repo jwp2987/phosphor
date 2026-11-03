@@ -146,12 +146,15 @@ fn heap_trim_enabled() -> bool {
     *ENABLED.get_or_init(|| env_flag_enabled(std::env::var("PHOSPHOR_HEAP_TRIM").ok().as_deref()))
 }
 
-/// Kill switch for the trim after a large file was laid out in an editor (#1607):
-/// `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=0` keeps the open path as before (trim on close only). Read once.
+/// Opt-in for the trim after a large file was laid out in an editor (#1607):
+/// `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1` enables it; unset keeps the open path as it was (trim on
+/// close only). Off by default because a trim takes the allocator's arena / magazine locks while it
+/// walks the heap, and a UI-thread allocation that waits on them is a stall nobody has measured
+/// yet; the appci editor_memory case A/Bs it (`hop=ui_item` maxima after open). Read once.
 pub(crate) fn trim_after_large_open_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        env_flag_enabled(
+        env_flag_opted_in(
             std::env::var("PHOSPHOR_EDITOR_TRIM_AFTER_OPEN")
                 .ok()
                 .as_deref(),
@@ -164,6 +167,14 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
     !matches!(
         value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
         Some("0") | Some("false") | Some("off")
+    )
+}
+
+/// A default-off switch: only `1` / `true` / `on` enable it.
+fn env_flag_opted_in(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1") | Some("true") | Some("on")
     )
 }
 
@@ -198,7 +209,7 @@ mod tests;
 
 #[cfg(test)]
 mod switch_tests {
-    use super::env_flag_enabled;
+    use super::{env_flag_enabled, env_flag_opted_in};
 
     #[test]
     fn trim_switches_default_on_and_turn_off_only_on_an_explicit_off() {
@@ -208,5 +219,16 @@ mod switch_tests {
         assert!(!env_flag_enabled(Some("0")));
         assert!(!env_flag_enabled(Some(" off ")));
         assert!(!env_flag_enabled(Some("FALSE")));
+    }
+
+    #[test]
+    fn trim_after_open_is_opt_in() {
+        assert!(!env_flag_opted_in(None));
+        assert!(!env_flag_opted_in(Some("")));
+        assert!(!env_flag_opted_in(Some("0")));
+        assert!(!env_flag_opted_in(Some("yes please")));
+        assert!(env_flag_opted_in(Some("1")));
+        assert!(env_flag_opted_in(Some(" ON ")));
+        assert!(env_flag_opted_in(Some("true")));
     }
 }

@@ -111,6 +111,20 @@ static SLOW_MODEL_UPDATE: warp_util::slow_log::SlowLog = warp_util::slow_log::Sl
     UI_SLOW_THRESHOLD,
     warp_util::slow_log::DEFAULT_WINDOW,
 );
+/// Logs `input_order hop=ui_item what=<what> ms=<ms>` for a UI-thread item (a frame's layout +
+/// paint, or one outermost effects flush) that took at least 1 ms, only while input-order logging
+/// is on. The appci `editor_memory_7mb` case reads the maxima in the seconds after a file opens or
+/// closes against the 4 ms UI budget, to A/B the heap trims (#1607); a stall on an allocator lock
+/// held by a trim shows here.
+fn log_ui_item(what: &str, start: Instant) {
+    if crate::input_order::enabled() {
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        if ms >= 1.0 {
+            crate::input_order::log_hop("ui_item", || format!("what={what} ms={ms:.2}"));
+        }
+    }
+}
+
 static SLOW_FRAME: warp_util::slow_log::SlowLog = warp_util::slow_log::SlowLog::new(
     "frame layout+paint",
     UI_SLOW_THRESHOLD,
@@ -3369,6 +3383,7 @@ impl AppContext {
         let slow_start = Instant::now();
         let usage_start = warp_util::slow_log::ThreadUsage::now();
         let scene = self.build_scene_inner(window_id, window);
+        log_ui_item("frame", slow_start);
         SLOW_FRAME.finish(slow_start, || format!("window {window_id:?}"));
         let wall = slow_start.elapsed();
         if wall >= FROZEN_FRAME.threshold() {
@@ -4136,6 +4151,7 @@ impl AppContext {
 
         if !self.flushing_effects && self.pending_flushes == 0 {
             self.flushing_effects = true;
+            let flush_start = Instant::now();
 
             self.remove_dropped_items();
 
@@ -4170,6 +4186,7 @@ impl AppContext {
 
             self.flushing_effects = false;
             self.update_windows();
+            log_ui_item("effects", flush_start);
         }
     }
 

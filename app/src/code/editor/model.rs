@@ -739,15 +739,15 @@ impl CodeEditorModel {
     }
 
     /// A file-sized delta was just laid out (#1607). Logs where the editor's memory is
-    /// (`editor_memory` target, info) and hands the freed transients of the load (the read text,
+    /// (`editor_memory` target, debug: the walk only runs when that is enabled) and, opted in with
+    /// `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1`, hands the freed transients of the load (the read text,
     /// the formatted-text copy, the delta's styled blocks, the per-line layout tasks) back to the
-    /// OS on a worker; kill switch `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=0`. Once per large delta,
-    /// never per frame.
+    /// OS on a worker. Once per large delta, never per frame.
     fn after_large_layout(&self, ctx: &mut ModelContext<Self>) {
-        if log::log_enabled!(target: "editor_memory", log::Level::Info) {
+        if log::log_enabled!(target: "editor_memory", log::Level::Debug) {
             let buffer = self.content.as_ref(ctx).memory_stats();
             let render = self.render_state.as_ref(ctx).memory_stats();
-            log::info!(
+            log::debug!(
                 target: "editor_memory",
                 "editor_memory open text_bytes={} lines={} buffer_items={} buffer_leaves={} buffer_nodes_bytes={} buffer_item_size={} undo_entries={} render_items={} render_nodes_bytes={} parked_chunks={} parked_lines={} parked_bytes={} hydrated={} dehydrated={} frame_bytes={} source_bytes={} other_items={} syntax_trees={}",
                 buffer.text_bytes,
@@ -771,6 +771,7 @@ impl CodeEditorModel {
             );
         }
         if crate::alloc::trim_after_large_open_enabled() {
+            log::debug!(target: "editor_memory", "editor_memory trim_after_open");
             ctx.background_executor()
                 .spawn(async { crate::alloc::trim_free_memory() })
                 .detach();
