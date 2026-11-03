@@ -331,9 +331,12 @@ fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
             terminal.update(&mut app, |view, ctx| {
                 register_local_session_for_ssh_test(view, ctx);
                 submit_command(view, "ssh host", ctx);
-                // The user's own Enter on `ssh host` emits ExecuteCommand: setup, not the timer.
-                // Only what happens from here on is the give-up's.
-                writes.borrow_mut().clear();
+            });
+            // The user's own Enter on `ssh host` emitted ExecuteCommand (delivered when the update
+            // above ended, as every emit is): setup, not the timer. Only what happens from here on
+            // is the give-up's.
+            writes.borrow_mut().clear();
+            terminal.update(&mut app, |view, ctx| {
                 view.typed_characters_on_terminal("echo hi", ctx);
                 assert!(view.ssh_typeahead_holding);
                 // The remote prompt was seen: its first Precmd is processed and the session can take
