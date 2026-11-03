@@ -446,6 +446,17 @@ impl<'a, 'b> PtyQueueHost<'a, 'b> {
                     super::dest_table::note_legacy_chain_delivery();
                     self.view.deliver_ssh_held(*class, text, self.ctx);
                 }
+                // #1571: a held Enter that reached a shell not ready yet opened the gate of that
+                // Enter while this drain delivered it: what is still queued behind it waits for
+                // that gate, in order, instead of being delivered into the held line.
+                if self.view.paste_queue.requeue_request.is_none()
+                    && let Some(spec) = self
+                        .view
+                        .input
+                        .update(self.ctx, |input, _| input.take_stashed_gate())
+                {
+                    return DeliverOutcome::OpensGate(spec);
+                }
             }
             other => log::warn!(
                 "input queue: pty paste queue was handed an entry it does not deliver: {other:?}"

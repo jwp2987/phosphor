@@ -169,7 +169,10 @@ pub use facts::{
     DestinationMode, FocusSnap, GateMask, PaneRouteState, PsPhase, QueueFacts, RouteFacts,
     SshPhase, Stamp, SubshellPhase, destination_mode,
 };
-pub use gates::{Gate, GateKind, GateSignalPlan, GateSpec, GateToken, SignalPlan, signal_plan};
+pub use gates::{
+    Gate, GateKind, GateSignalPlan, GateSpec, GateToken, SignalPlan, UNREADY_ENTER_KEY_FLAG,
+    is_unready_enter_key, signal_plan,
+};
 pub use pane::{
     Deferred, GateKeysThen, PaneQueue, PasteOwner, PowershellKeysThen, SshDropThen,
     is_editor_paste_id,
@@ -802,6 +805,14 @@ impl InputQueue {
     /// Whether any gate of `kind` is open.
     pub fn has_gate_kind(&self, kind: GateKind) -> bool {
         self.gates.iter().any(|gate| gate.kind == kind)
+    }
+
+    /// Whether an Enter the shell could not take yet holds the queue (#1571,
+    /// [`is_unready_enter_key`]).
+    pub fn has_unready_enter_gate(&self) -> bool {
+        self.gates
+            .iter()
+            .any(|gate| gate.kind == GateKind::EnterVerdict && is_unready_enter_key(gate.key))
     }
 
     /// Entries and content bytes queued, for trace lines (counts only, never content). A paste

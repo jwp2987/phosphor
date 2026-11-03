@@ -19118,6 +19118,270 @@ fn ssh_run_by_the_agent_does_not_take_the_agent_view_editor_keys() {
     }
 }
 
+/// #1579: in `legacy` mode (the kill switch) a connect window armed at PREEXEC (an ssh the
+/// submitted text did not show, e.g. an alias) had `user_submitted=false`, so with the agent-view
+/// editor focused the keys typed while it connected went into the editor until a terminal-routed
+/// key opened the hold: the #1565 symptom, back for this case. The window now inherits the origin
+/// of the submit that started its block: the keys are held for the remote and reach it once, after
+/// its prompt. Legacy and Table.
+#[test]
+fn ssh_window_armed_at_preexec_for_a_users_submit_holds_the_agent_view_editor_keys() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+                // The user submits a command whose text is not an ssh command (an alias): the
+                // submit arms nothing.
+                submit_command(view, "myssh", ctx);
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: the submit's text is not ssh"
+                );
+                // Its preexec: the block starts and the warpify state shows ssh running.
+                view.model.lock().simulate_long_running_block("myssh", "");
+                view.note_block_started_for_ssh();
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.model.lock().publish_key_facts();
+                view.arm_ssh_connect_gate_at_preexec(ctx);
+                assert!(
+                    view.ssh_connect_gate
+                        .as_ref()
+                        .is_some_and(|gate| gate.user_submitted),
+                    "{mode:?}: armed at preexec, and the user's (the submit's origin)"
+                );
+                for c in "echo T".chars() {
+                    let outcome = pane_typed(view, &c.to_string(), true, ctx);
+                    assert_eq!(outcome, PaneKeyOutcome::Consumed, "{mode:?}");
+                }
+                assert!(view.ssh_typeahead_holding, "{mode:?}: held for the remote");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing reached the agent view's editor"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing written yet"
+                );
+                // The remote shell shows its first prompt.
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T").count(),
+                1,
+                "{mode:?}: the typed line reaches the remote shell exactly once: {written:?}"
+            );
+        })
+    }
+}
+
+/// #1579 control: the origin is consumed by the block it started. A block nothing submitted (the
+/// next one, started by typing into a program) does not inherit an earlier user submit.
+#[test]
+fn ssh_submit_origin_is_consumed_by_the_block_it_started() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "myssh", ctx);
+            view.note_block_started_for_ssh();
+            assert!(view.running_block_user_submitted);
+            view.note_block_started_for_ssh();
+            assert!(
+                !view.running_block_user_submitted,
+                "a block nothing submitted is not the user's"
+            );
+        });
+    })
+}
+
+/// #1571 / #1572, agent mode, nested ssh, the readiness event delayed past the user's SECOND Enter:
+/// in a just-connected remote whose session is not registered yet (the shell refuses a command),
+/// the user types `ssh fake` + Enter, then `echo T` + Enter, before `SessionBootstrapped`. The
+/// second Enter used to be refused too and re-hold the merged buffer, which the readiness event
+/// ran as `ssh fakeecho T` (#1564). Now the first Enter is a gate: `ssh fake` runs once, alone, at
+/// the readiness event; `echo T` + Enter wait behind it and then join the nested connect's hold,
+/// reaching the inner shell exactly once, after its prompt. Legacy and Table.
+#[test]
+fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shell() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.agent_view_controller().update(ctx, |controller, ctx| {
+                    controller
+                        .try_enter_agent_view(
+                            None,
+                            AgentViewEntryOrigin::Input {
+                                was_prompt_autodetected: false,
+                            },
+                            ctx,
+                        )
+                        .expect("Should be able to enter agent view")
+                });
+                // The remote's prompt is up (Precmd in) but its session is not registered with
+                // the history yet: the shell refuses a command (#1572's window).
+                view.model
+                    .lock()
+                    .block_list_mut()
+                    .active_block_for_test()
+                    .set_session_id(SessionId::from(9001));
+                view.input.update(ctx, |input, ctx| {
+                    input.ai_input_model().update(ctx, |ai_input, ctx| {
+                        ai_input.set_input_config(
+                            InputConfig {
+                                input_type: InputType::Shell,
+                                is_locked: true,
+                            },
+                            true, /* is_input_buffer_empty */
+                            ctx,
+                        );
+                    });
+                });
+                editor_text(view, "ssh fake", ctx);
+                editor_key(view, EditorAction::Enter, ctx);
+            });
+            // The Enter's submit may go through its verdict wait: let it settle on its gate.
+            for _ in 0..200 {
+                let held = terminal.read(&app, |view, ctx| {
+                    view.input.as_ref(ctx).unready_enter_gate_open()
+                });
+                if held {
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+            }
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    view.input.as_ref(ctx).has_held_unready_enter()
+                        && view.input.as_ref(ctx).unready_enter_gate_open(),
+                    "{mode:?}: the refused Enter is held, as a gate"
+                );
+                // The next line and its Enter, before the readiness event.
+                editor_text(view, "echo T", ctx);
+                editor_key(view, EditorAction::Enter, ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ssh fake",
+                    "{mode:?}: nothing merged into the held line"
+                );
+            });
+            assert!(
+                executed.borrow().is_empty(),
+                "{mode:?}: nothing ran before the shell was ready: {:?}",
+                executed.borrow()
+            );
+            // The readiness event (`SessionBootstrapped`: the session's history is appendable).
+            terminal.update(&mut app, |view, ctx| {
+                first_precmd_processed_for_test(view, ctx);
+                view.deliver_ssh_typeahead_if_ready("session_bootstrapped", ctx);
+                view.retry_held_unready_enter("session_bootstrapped", ctx);
+            });
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: the held line ran once, alone"
+            );
+            // The nested ssh starts (it takes the pty): what was typed after it is released into
+            // its connect hold, in order.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                view.settle_enter_queue(ctx);
+            });
+            for _ in 0..200 {
+                let released = terminal.read(&app, |view, ctx| {
+                    !view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+                        && view.ssh_held_bytes() >= "echo T\r".len()
+                });
+                if released {
+                    break;
+                }
+                warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
+            }
+            terminal.update(&mut app, |view, ctx| {
+                assert!(
+                    view.ssh_typeahead_holding,
+                    "{mode:?}: held for the inner host"
+                );
+                assert!(
+                    pty_writes.borrow().is_empty(),
+                    "{mode:?}: nothing typed reached the tty before the inner prompt: {:?}",
+                    pty_writes.borrow()
+                );
+                // The inner (unmanaged) shell's prompt: the #1561 rule delivers the held line.
+                view.model.lock().process_bytes("Last login: Mon\r\n");
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T").count(),
+                1,
+                "{mode:?}: the second line reaches the inner shell exactly once: {written:?}"
+            );
+            assert!(
+                written.contains("echo T\r"),
+                "{mode:?}: in order, its Enter after it: {written:?}"
+            );
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: never `ssh fakeecho T`, nothing run locally twice"
+            );
+        })
+    }
+}
+
 /// #1348: no timing. Keys held when a password / host-key prompt appears are discarded; keys typed
 /// after it (even the very next instant, which the old 200 ms burst rule dropped as a "tail")
 /// go straight to the prompt, like plain ssh. Replaces `ssh_prompt_mid_burst_discards_the_tail_too`.

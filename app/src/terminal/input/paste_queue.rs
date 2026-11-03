@@ -295,6 +295,20 @@ impl Input {
     /// The give-up cap of paste `token` fired. A no-op if the reader's result already closed it.
     fn on_paste_queue_give_up(&mut self, token: GateToken, ctx: &mut ViewContext<Self>) {
         let queue = self.editor.as_ref(ctx).paste_hold().queue();
+        // #1571: the net of a verdict gate that now holds an Enter refused by an unready shell
+        // (its retag found the queue busy). Releasing it would deliver the keys behind the held
+        // line (an Enter among them would submit a merged buffer): it hands the line back instead.
+        if let Some(gate) = self.enter_gate.filter(|gate| gate.held_unready) {
+            let ours = queue.try_peek().is_some_and(|queue| {
+                queue.gates().iter().any(|open| {
+                    open.token == token && open.kind == gate.kind && open.key == gate.key
+                })
+            });
+            if ours {
+                self.give_up_unready_enter("verdict_gate_net", ctx);
+                return;
+            }
+        }
         // #1353 phase 6 (INP-A4): a paste that gives up on its clipboard read signals the reader's
         // cancel flag, so the blocked-reader count and the log reflect an abandoned read.
         #[cfg(not(target_family = "wasm"))]
