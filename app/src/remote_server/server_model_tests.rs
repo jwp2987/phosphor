@@ -17,6 +17,8 @@ use super::super::protocol::RequestId;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
 use super::{ConnectionId, HandlerOutcome, PendingFileOps, ServerModel};
+#[cfg(feature = "local_fs")]
+use crate::code_review::git_status_update::GitStatusMetadata;
 // SearchRemoteCodebase (TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5): the
 // event-bridge half of the daemon handler, and its pure message-building helpers.
 #[cfg(feature = "local_fs")]
@@ -45,6 +47,8 @@ fn test_model() -> ServerModel {
         diff_state_pending_responses: HashMap::new(),
         #[cfg(feature = "local_fs")]
         git_status_models: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        last_pushed_git_status: HashMap::new(),
         #[cfg(feature = "local_fs")]
         github_repo_models: HashMap::new(),
         #[cfg(feature = "local_fs")]
@@ -1312,4 +1316,64 @@ fn initialize_confirms_chunked_responses_only_when_the_client_asked() {
     assert!(super::chunked_responses_enabled_from_env(None));
     assert!(!super::chunked_responses_enabled_from_env(Some("0")));
     assert!(!super::chunked_responses_enabled_from_env(Some("no")));
+}
+
+#[cfg(feature = "local_fs")]
+fn git_status_metadata(branch: &str, additions: usize) -> GitStatusMetadata {
+    GitStatusMetadata {
+        current_branch_name: branch.to_owned(),
+        main_branch_name: "main".to_owned(),
+        stats_against_head: crate::code_review::diff_state::DiffStats {
+            files_changed: 1,
+            total_additions: additions,
+            total_deletions: 0,
+        },
+        branch_tracking_status: crate::context_chips::display_chip::GitBranchTrackingStatus::new(
+            branch.to_owned(),
+            None,
+            0,
+            0,
+        ),
+    }
+}
+
+// #1268: an unchanged model-driven git-status push is dropped; a change, and any explicit
+// snapshot request (the first push after a connect), is sent.
+#[cfg(feature = "local_fs")]
+#[test]
+fn unchanged_git_status_push_is_dropped_but_changes_and_forced_pushes_go() {
+    let mut last = HashMap::new();
+    let repo = StandardizedPath::try_new("/repo").unwrap();
+    let a = git_status_metadata("main", 1);
+
+    // Nothing sent yet: the first push goes.
+    assert!(super::record_git_status_push(&mut last, &repo, &a, false));
+    // Same metadata again: dropped.
+    assert!(!super::record_git_status_push(&mut last, &repo, &a, false));
+    // A forced request (a client connecting or reconnecting) is sent even though unchanged.
+    assert!(super::record_git_status_push(&mut last, &repo, &a, true));
+    // A real change goes, then is itself deduplicated.
+    let b = git_status_metadata("main", 2);
+    assert!(super::record_git_status_push(&mut last, &repo, &b, false));
+    assert!(!super::record_git_status_push(&mut last, &repo, &b, false));
+    // Another repo has its own last-pushed value.
+    let other = StandardizedPath::try_new("/other").unwrap();
+    assert!(super::record_git_status_push(&mut last, &other, &b, false));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn evicting_a_repo_forgets_its_last_pushed_git_status() {
+    let mut model = test_model();
+    let conn = uuid::Uuid::new_v4();
+    let repo = StandardizedPath::try_new("/repo").unwrap();
+    model.subscribe_git_status(conn, &repo);
+    model
+        .last_pushed_git_status
+        .insert(repo.clone(), git_status_metadata("main", 1));
+
+    model.unsubscribe_git_status(conn);
+
+    // A later re-subscribe must not be deduplicated against a stale value.
+    assert!(!model.last_pushed_git_status.contains_key(&repo));
 }

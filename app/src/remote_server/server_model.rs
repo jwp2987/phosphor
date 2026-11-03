@@ -131,7 +131,7 @@ use super::server_buffer_tracker::{PendingBufferRequestKind, ServerBufferTracker
 #[cfg(feature = "local_fs")]
 use crate::code::global_buffer_model::{GlobalBufferModel, GlobalBufferModelEvent};
 #[cfg(feature = "local_fs")]
-use crate::code_review::git_status_update::{GitRepoModels, GitRepoStatusModel};
+use crate::code_review::git_status_update::{GitRepoModels, GitRepoStatusModel, GitStatusMetadata};
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::GitHubRepoModel;
 #[cfg(feature = "local_fs")]
@@ -453,6 +453,13 @@ pub struct ServerModel {
     /// `MetadataChanged` event to broadcast a `GitStatusPush`.
     #[cfg(feature = "local_fs")]
     git_status_models: HashMap<StandardizedPath, ModelHandle<GitRepoStatusModel>>,
+    /// The metadata last broadcast as a `GitStatusPush`, per repo (#1268). A model-driven push
+    /// whose metadata equals this is dropped: the watcher ticks far more often than the status
+    /// changes, and every duplicate wakes the link and every client for nothing. Explicit
+    /// snapshot requests (a client connecting, reconnecting or navigating) bypass the check, so
+    /// the first push after a connect is always sent. Cleared with the repo's model.
+    #[cfg(feature = "local_fs")]
+    last_pushed_git_status: HashMap<StandardizedPath, GitStatusMetadata>,
     /// Per-repo local GitHub-info models tracked on the daemon, keyed by repo
     /// path. Ported from the pin's `github_repo_models` field. Populated by
     /// `subscribe_to_github_info_updates` on an `UpdateGitHubPrInfo` /
@@ -604,6 +611,8 @@ impl ServerModel {
             diff_state_pending_responses: HashMap::new(),
             #[cfg(feature = "local_fs")]
             git_status_models: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            last_pushed_git_status: HashMap::new(),
             #[cfg(feature = "local_fs")]
             github_repo_models: HashMap::new(),
             #[cfg(feature = "local_fs")]
@@ -3776,6 +3785,7 @@ impl ServerModel {
             self.git_status_subscribers.remove(repo);
             self.github_repo_models.remove(repo);
             self.git_status_models.remove(repo);
+            self.last_pushed_git_status.remove(repo);
         }
     }
 
@@ -3814,7 +3824,7 @@ impl ServerModel {
 
         let path_for_sub = repo_path.clone();
         ctx.subscribe_to_model(&handle, move |me, _event, ctx| {
-            me.push_git_status(&path_for_sub, ctx);
+            me.push_git_status(&path_for_sub, false, ctx);
         });
 
         self.git_status_models.insert(repo_path.clone(), handle);
@@ -3824,15 +3834,33 @@ impl ServerModel {
     /// Silent when the model does not exist yet or has not computed metadata:
     /// the client re-asks on `HostConnected`, and the watcher tick will push
     /// as soon as there is something to push.
+    ///
+    /// `force`: a client asked for (or just navigated into) this snapshot, so it is sent even
+    /// if unchanged. Model-driven pushes pass `false` and are dropped when the metadata equals
+    /// the last one sent (#1268).
     #[cfg(feature = "local_fs")]
-    fn push_git_status(&mut self, repo_path: &StandardizedPath, ctx: &mut ModelContext<Self>) {
+    fn push_git_status(
+        &mut self,
+        repo_path: &StandardizedPath,
+        force: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let Some(handle) = self.git_status_models.get(repo_path) else {
             return;
         };
         let Some(metadata) = handle.as_ref(ctx).metadata(ctx) else {
             return;
         };
-        let proto_metadata = git_status_metadata_to_proto(metadata);
+        let metadata = metadata.clone();
+        if !record_git_status_push(
+            &mut self.last_pushed_git_status,
+            repo_path,
+            &metadata,
+            force,
+        ) {
+            return;
+        }
+        let proto_metadata = git_status_metadata_to_proto(&metadata);
         self.send_server_message(
             None,
             None,
@@ -3868,7 +3896,7 @@ impl ServerModel {
             self.subscribe_git_status(conn_id, &std_path);
             self.subscribe_to_git_status_updates(&std_path, ctx);
         }
-        self.push_git_status(&std_path, ctx);
+        self.push_git_status(&std_path, true, ctx);
     }
 
     /// Subscribes the daemon to per-repo local GitHub info updates. On first
@@ -4197,7 +4225,7 @@ impl ServerModel {
                         {
                             me.subscribe_git_status(conn_id_for_response, &root_path);
                             me.subscribe_to_git_status_updates(&root_path, ctx);
-                            me.push_git_status(&root_path, ctx);
+                            me.push_git_status(&root_path, true, ctx);
                         }
                     } else {
                         me.unsubscribe_git_status(conn_id_for_response);
@@ -5265,6 +5293,22 @@ fn search_remote_codebase_error_response_from_error(error: RetrieveFileError) ->
         ),
     };
     search_remote_codebase_error_response(code, message)
+}
+
+/// Whether a git-status push for `repo` should go out, recording `metadata` as the last one
+/// sent when it does. A forced push always goes; otherwise only a change does (#1268).
+#[cfg(feature = "local_fs")]
+fn record_git_status_push(
+    last: &mut HashMap<StandardizedPath, GitStatusMetadata>,
+    repo: &StandardizedPath,
+    metadata: &GitStatusMetadata,
+    force: bool,
+) -> bool {
+    if !force && last.get(repo) == Some(metadata) {
+        return false;
+    }
+    last.insert(repo.clone(), metadata.clone());
+    true
 }
 
 #[cfg(test)]
