@@ -12103,6 +12103,19 @@ impl TerminalView {
         self.paste_queue.queue.route_state().note_focus(focus_snap);
         let facts = self.pane_focus_facts(key_ctx, ctx);
         let target = pane_key::key_target(class, &facts);
+        // #1552: the control-key gap the sink closes is a settled AI target (or the ssh hold). Any
+        // other pane child with focus (a pending approval card, an AI block awaiting confirmation,
+        // the ssh choice card, a question card, ...) binds its own Enter/Tab/Escape: the key stays
+        // with it.
+        let target = if class == KeyClass::Control
+            && target == KeyTarget::Terminal
+            && !facts.ssh_hold_active
+            && focus_snap != input_queue::FocusSnap::SettledAiTarget
+        {
+            KeyTarget::NotMine
+        } else {
+            target
+        };
         warpui::input_order::log_key_hop("kh_pane_key", || {
             format!(
                 "seq={} class={class:?} target={target:?} editor_focused={} terminal_focused={} \
@@ -12542,7 +12555,7 @@ impl TerminalView {
         // stopped at a foreign entry or yielded, ops in the mailbox) go out BEFORE the agent's
         // bytes. The agent bytes themselves are never held behind a gate (REFUSED, not held).
         self.flush_deferred_queue_ops(ctx);
-        self.on_pane_queue_needs_drain(ctx);
+        self.continue_stopped_drain(ctx);
         warpui::input_order::log_key_hop("kh_agent_write", || {
             format!(
                 "bytes={} queued={}",

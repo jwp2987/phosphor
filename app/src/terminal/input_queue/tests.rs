@@ -1869,6 +1869,28 @@ fn an_owner_change_edge_clears_the_line_pin_at_the_next_lock() {
     );
 }
 
+/// F2 (#1580): the agent write continues a stopped drain with `poke`; a poke while the drain is
+/// yielded delivers nothing (only `resume_after_yield` continues a yield).
+#[test]
+fn a_poke_during_a_yield_delivers_nothing() {
+    let mut q = InputQueue::new();
+    let mut h = MockHost::new();
+    let _gate = q.open_gate(&mut h, GateSpec::new(GateKind::SshConnect, 1));
+    let a = q.offer(&mut h, text("a"));
+    let b = q.offer(&mut h, text("b"));
+    h.yield_after_ids.push(a);
+    assert!(q.on_gate_event(&mut h, GateKind::SshConnect, 1));
+    assert_eq!(h.delivered_ids(), vec![a.0]);
+    q.poke(&mut h);
+    assert_eq!(
+        h.delivered_ids(),
+        vec![a.0],
+        "a poke does not resume a yield"
+    );
+    q.resume_after_yield(&mut h);
+    assert_eq!(h.delivered_ids(), vec![a.0, b.0]);
+}
+
 /// Group 1 / 1e: a drain that yielded after a delivered entry continues ONLY through
 /// `resume_after_yield`; an offer, a focus change or an unrelated gate event during the yield
 /// only mutates the queue (no merged-command hole), and FIFO order is kept.

@@ -181,12 +181,21 @@ fn enter_in_a_focus_gap_follows_the_typed_keys_to_the_running_command() {
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = record_all_pty_writes(&mut app, &terminal);
-            let outcome = terminal.update(&mut app, |view, ctx| {
+            // Focus is on a REAL settled card: the sink only closes the control-key gap for a
+            // settled AI target (or the ssh hold); a pane child with its own bindings keeps its keys.
+            let (card, _ai_block, action_id, conversation_id) =
+                setup_mcp_tool_card(&mut app, &terminal);
+            finish_action_for_test(&mut app, &terminal, &action_id, conversation_id);
+            terminal.update(&mut app, |view, ctx| {
                 register_local_session_for_ssh_test(view, ctx);
                 view.model.lock().simulate_long_running_block("cat", "");
                 // Typed keys in the gap go to the pty (#1397) ...
                 assert_eq!(pane_typed_in_gap(view, "a", ctx), PaneKeyOutcome::Consumed);
-                pane_enter_with_focus(view, Vec::new(), ctx)
+            });
+            terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+            let outcome = terminal.update(&mut app, |view, ctx| {
+                let chain = vec![view.view_id, card.id()];
+                pane_enter_with_focus(view, chain, ctx)
             });
             assert_eq!(outcome, PaneKeyOutcome::Consumed, "the Enter is the pane's");
             assert_eq!(flat_bytes(&pty_writes), b"a\r".to_vec());
@@ -229,9 +238,16 @@ fn enter_in_a_focus_gap_at_an_idle_prompt_writes_and_runs_nothing() {
             initialize_app_for_terminal_view(&mut app);
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let (card, _ai_block, action_id, conversation_id) =
+                setup_mcp_tool_card(&mut app, &terminal);
+            finish_action_for_test(&mut app, &terminal, &action_id, conversation_id);
             terminal.update(&mut app, |view, ctx| {
                 register_local_session_for_ssh_test(view, ctx);
-                pane_enter_with_focus(view, Vec::new(), ctx);
+            });
+            terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+            terminal.update(&mut app, |view, ctx| {
+                let chain = vec![view.view_id, card.id()];
+                pane_enter_with_focus(view, chain, ctx);
             });
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             terminal.read(&app, |view, ctx| {
@@ -239,4 +255,47 @@ fn enter_in_a_focus_gap_at_an_idle_prompt_writes_and_runs_nothing() {
             });
         });
     }
+}
+
+/// #1552: a PENDING approval card binds its own Enter (approve): the sink leaves the key to the
+/// card, writes nothing and does not move focus to the input.
+#[test]
+fn enter_on_a_pending_approval_card_stays_with_the_card() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        let (card, _ai_block, _action_id, _conversation_id) =
+            setup_mcp_tool_card(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+        });
+        terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        let outcome = terminal.update(&mut app, |view, ctx| {
+            let chain = vec![view.view_id, card.id()];
+            pane_enter_with_focus(view, chain, ctx)
+        });
+        assert_eq!(outcome, PaneKeyOutcome::NotMine);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+        });
+    });
+}
+
+/// #1552: an unknown pane child with focus (not a settled AI target) keeps its control keys.
+#[test]
+fn enter_on_an_unknown_pane_child_stays_with_the_child() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        let outcome = terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            let chain = vec![view.view_id, EntityId::new()];
+            pane_enter_with_focus(view, chain, ctx)
+        });
+        assert_eq!(outcome, PaneKeyOutcome::NotMine);
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
 }

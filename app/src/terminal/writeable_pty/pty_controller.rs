@@ -8,6 +8,7 @@ use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::AIAgentPtyWriteMode;
 use crate::terminal::input::CommandExecutionSource;
+use crate::terminal::model::block::BlockId;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::early_output::TypeaheadMode;
 use crate::terminal::model::key_facts::{ModelCommand, ModelInbox};
@@ -237,6 +238,10 @@ pub struct PtyController<T: EventLoopSender> {
     /// nothing and the command is typed instead). At most one: a second command is typed while it
     /// is set.
     file_insert_pending: Option<String>,
+    /// The id of the active block (the prompt's) when the chord was written; a Precmd for that
+    /// same block is not evidence the chord was lost (B2). Set and cleared with
+    /// `file_insert_pending`.
+    file_insert_block: Option<BlockId>,
     #[cfg(test)]
     fast_insert_off_for_test: bool,
     /// One-shot: the retype after `CommandFileFailed` must be typed, not sent as the chord again.
@@ -611,6 +616,7 @@ impl<T: EventLoopSender> PtyController<T> {
             pipe_sessions: Default::default(),
             command_pipe: None,
             file_insert_pending: None,
+            file_insert_block: None,
             force_typed_command: false,
             #[cfg(test)]
             fast_insert_off_for_test: false,
@@ -2137,12 +2143,20 @@ impl<T: EventLoopSender> PtyController<T> {
             && long_command_file::can_insert_via_pipe(&command)
         {
             // The pipe exists before the chord is written, so the shell cannot connect early.
-            if let Some(pipe) = self.serve_on_pipe(session_id, &command) {
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command, false) {
                 self.command_pipe = Some(pipe);
                 warpui::input_order::log_hop("pwsh_command_via_pipe", || {
                     format!("bytes={}", command.len())
                 });
                 self.file_insert_pending = Some(command);
+                self.file_insert_block = Some(
+                    self.terminal_model
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .id()
+                        .clone(),
+                );
                 return TypedCommand::FileChord;
             }
         }
@@ -2154,11 +2168,10 @@ impl<T: EventLoopSender> PtyController<T> {
             && self.runs_long_commands_from_file
             && is_user_command
             && !force_typed
-            && self.file_insert_pending.is_none()
             && self.fast_insert_on()
             && long_command_file::needs_launcher(&command)
         {
-            if let Some(pipe) = self.serve_on_pipe(session_id, &command) {
+            if let Some(pipe) = self.serve_on_pipe(session_id, &command, true) {
                 self.long_command_pipe = Some(pipe);
                 let launcher = long_command_file::LAUNCHER_LINE.to_owned();
                 // The shell echoes and reports the launcher; the block header, tab title and
@@ -2198,17 +2211,24 @@ impl<T: EventLoopSender> PtyController<T> {
         long_command_file::fast_insert_enabled()
     }
 
-    /// Closes the pipes of earlier commands (the name is a first-instance create, so it has to be
-    /// free) and serves `command` on the session's pipe. `None`: type it instead.
+    /// Closes the previous pipe of the same slot (the name is a first-instance create, so it has
+    /// to be free) and serves `command` on the session's pipe. The insert chord and the long
+    /// command launcher have a slot each (the launcher's name has a `-long` suffix), so a long
+    /// command can follow an outstanding chord without being typed raw. `None`: type it instead.
     #[cfg(not(target_family = "wasm"))]
     fn serve_on_pipe(
         &mut self,
         session_id: Option<u64>,
         command: &str,
+        long: bool,
     ) -> Option<command_pipe::CommandPipe> {
-        let name = session_id.and_then(command_pipe::lookup_pipe_name)?;
-        self.command_pipe = None;
-        self.long_command_pipe = None;
+        let mut name = session_id.and_then(command_pipe::lookup_pipe_name)?;
+        if long {
+            name.push_str("-long");
+            self.long_command_pipe = None;
+        } else {
+            self.command_pipe = None;
+        }
         command_pipe::CommandPipe::serve(&name, command)
     }
 
@@ -2221,6 +2241,7 @@ impl<T: EventLoopSender> PtyController<T> {
             warpui::input_order::log_hop("pwsh_command_file_failed_ignored", String::new);
             return;
         };
+        self.file_insert_block = None;
         warpui::input_order::log_hop("pwsh_command_file_failed_retype", || {
             format!("bytes={}", command.len())
         });
@@ -2240,16 +2261,32 @@ impl<T: EventLoopSender> PtyController<T> {
 
     /// A Precmd while a chord is outstanding means no Preexec came (it clears the chord): retype.
     fn on_precmd_with_chord_outstanding(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.file_insert_pending.is_some() {
-            warpui::input_order::log_hop("pwsh_precmd_without_preexec", String::new);
-            self.on_command_file_failed(ctx);
+        if self.file_insert_pending.is_none() {
+            return;
         }
+        let active = self
+            .terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .id()
+            .clone();
+        if self.file_insert_block.as_ref() == Some(&active) {
+            // The Precmd of the prompt the chord was written at (queued before the write, or a
+            // generator command's): not evidence the chord was lost. Retyping here could run the
+            // command twice.
+            warpui::input_order::log_hop("pwsh_precmd_same_prompt_chord_kept", String::new);
+            return;
+        }
+        warpui::input_order::log_hop("pwsh_precmd_without_preexec", String::new);
+        self.on_command_file_failed(ctx);
     }
 
     /// Forgets an outstanding insert chord (its command ran, or its write was refused before it
     /// reached the pty) and closes its pipe.
     fn clear_file_insert(&mut self) {
         self.file_insert_pending = None;
+        self.file_insert_block = None;
         self.command_pipe = None;
     }
 
@@ -2321,7 +2358,11 @@ impl<T: EventLoopSender> PtyController<T> {
                     )),
                     // Exactly the two chord bytes: no kill-buffer prefix (the handler reverts
                     // the line), no command text, no Enter.
+                    #[cfg(not(target_family = "wasm"))]
                     TypedCommand::FileChord => Cow::Borrowed(long_command_file::INSERT_CHORD),
+                    // Never produced on wasm (`command_to_type` has no pipe there).
+                    #[cfg(target_family = "wasm")]
+                    TypedCommand::FileChord => Cow::Borrowed(&b"\x1b3"[..]),
                 };
                 (bytes, true, on_write_fn, false)
             }

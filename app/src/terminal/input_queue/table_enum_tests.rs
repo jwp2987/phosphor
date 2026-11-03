@@ -765,20 +765,24 @@ fn base_points() -> [Point; 3] {
         flags: [true, false, false, false, false],
         stamp: Stamp::UNSTAMPED,
     };
-    let mut running = RouteFacts::default();
-    running.model_consistent = true;
-    running.handoff_known = true;
-    running.long_running = true;
-    running.active_block_started = true;
-    running.session_pending_or_bootstrapped = true;
-    running.is_bootstrapped = true;
-    let mut prompt = RouteFacts::default();
-    prompt.model_consistent = true;
-    prompt.handoff_known = true;
-    prompt.session_pending_or_bootstrapped = true;
-    prompt.is_bootstrapped = true;
-    prompt.input_box_visible = true;
-    prompt.editor_focused = true;
+    let running = RouteFacts {
+        model_consistent: true,
+        handoff_known: true,
+        long_running: true,
+        active_block_started: true,
+        session_pending_or_bootstrapped: true,
+        is_bootstrapped: true,
+        ..RouteFacts::default()
+    };
+    let prompt = RouteFacts {
+        model_consistent: true,
+        handoff_known: true,
+        session_pending_or_bootstrapped: true,
+        is_bootstrapped: true,
+        input_box_visible: true,
+        editor_focused: true,
+        ..RouteFacts::default()
+    };
     [point(RouteFacts::default()), point(running), point(prompt)]
 }
 
