@@ -912,3 +912,45 @@ fn no_kept_text_banner_over_a_block_the_hold_was_not_for() {
         })
     }
 }
+
+/// #1596 final check: a hold opened before preexec records the submit-time block, which can differ
+/// from the block that runs ssh; preexec corrects it (`note_ssh_running_block`, as for the gate),
+/// so the banner shows over the running block.
+#[test]
+fn preexec_moves_the_hold_block_to_the_running_ssh_block() {
+    use crate::terminal::model::block::BlockId;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                // The hold opened before preexec, on a block that is not the one running ssh.
+                view.ssh_hold_block_id = Some(BlockId::new());
+                view.ssh_typeahead_holding = true;
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh host", "");
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .interactive_latch()
+                    .force(true);
+                let running = view.model.lock().active_block_id().clone();
+                assert_ne!(view.ssh_hold_block_id.as_ref(), Some(&running));
+                // Preexec of the ssh command.
+                view.note_ssh_running_block(running.clone());
+                assert_eq!(view.ssh_hold_block_id.as_ref(), Some(&running), "{mode:?}");
+                view.ssh_typeahead_holding = false;
+                view.hand_back_unexecuted_ssh_text(KEPT_TEXT.to_owned(), ctx);
+                let banner = view
+                    .ssh_kept_text_banner()
+                    .unwrap_or_else(|| panic!("{mode:?}: the banner is up"));
+                assert_eq!(banner.as_ref(ctx).block_id(), &running, "{mode:?}");
+            });
+        })
+    }
+}

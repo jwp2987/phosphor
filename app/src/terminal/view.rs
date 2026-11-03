@@ -11679,6 +11679,11 @@ impl TerminalView {
             let active_block = self.model.lock().active_block_id().clone();
             if self.ssh_hold_block_id.as_ref() == Some(&active_block) {
                 self.show_ssh_kept_text_banner(ctx);
+                self.show_ssh_typing_toast(
+                    "Text typed while the SSH session connected was kept, not run; it is shown \
+                     above the input until the running command ends",
+                    ctx,
+                );
             } else {
                 warpui::input_order::log_hop("ssh_kept_text", || {
                     format!(
@@ -11686,12 +11691,12 @@ impl TerminalView {
                         self.ssh_hold_block_id.is_some()
                     )
                 });
+                self.show_ssh_typing_toast(
+                    "Text typed while the SSH session connected was kept, not run; it will be in \
+                     the input when the running command ends",
+                    ctx,
+                );
             }
-            self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was kept, not run; it is shown above \
-                 the input until the running command ends",
-                ctx,
-            );
             return;
         }
         let existing = self.input.as_ref(ctx).buffer_text(ctx);
@@ -11797,6 +11802,18 @@ impl TerminalView {
     /// #1579: a block started (its preexec): it is the user's when the submit that preceded it was
     /// the user's own. Consumed here, so a later block nothing submitted (typed into a program,
     /// run by a script) never inherits it.
+    /// Preexec of an ssh command: the block that actually runs ssh is the one preexec fired for,
+    /// which can differ from the submit-time block the gate (and a hold opened before preexec)
+    /// recorded. Both are corrected to it, so the #1596 kept-text banner goes over that block.
+    fn note_ssh_running_block(&mut self, running_block_id: BlockId) {
+        if self.ssh_typeahead_holding {
+            self.ssh_hold_block_id = Some(running_block_id.clone());
+        }
+        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+            gate.block_id = Some(running_block_id);
+        }
+    }
+
     fn note_block_started_for_ssh(&mut self) {
         self.running_block_user_submitted = self.ssh_submit_user_origin.take().unwrap_or(false);
     }
@@ -17751,9 +17768,7 @@ impl TerminalView {
                                     .set_pending_ssh_host(warpify_command.to_string(), ssh_host);
                                 // The block that actually runs ssh is the one preexec fired for.
                                 let running_block_id = self.model.lock().active_block_id().clone();
-                                if let Some(gate) = self.ssh_connect_gate.as_mut() {
-                                    gate.block_id = Some(running_block_id);
-                                }
+                                self.note_ssh_running_block(running_block_id);
                                 self.model.lock().start_notify_on_end_of_ssh_login();
                                 // #1424 step 7: the event that shows ssh running arms the window
                                 // (and its give-up deadline) in `table` mode, not the next key;

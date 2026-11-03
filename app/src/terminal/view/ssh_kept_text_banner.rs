@@ -275,8 +275,6 @@ impl TypedActionView for SshKeptTextBanner {
     }
 }
 
-/// The note shown when "Type into session" is refused because the ssh block the text was kept
-/// for is no longer the running command.
 /// The note shown when "Type into session" is refused because the session is still connecting
 /// (a hold or a remote bootstrap is in progress: the write would bypass it) or the text joins two
 /// hand-backs (its line break would submit a line nobody entered).
@@ -284,6 +282,8 @@ pub(crate) const REFUSED_NOTE: &str = "This text was not typed: the session is s
     or it joins text from two hand-backs. It comes back into the input when the running command \
     ends.";
 
+/// The note shown when "Type into session" is refused because the ssh block the text was kept
+/// for is no longer the running command.
 pub(crate) const NOT_RUNNING_NOTE: &str = "The SSH session this text was typed for is no longer \
     the running command, so it was not typed anywhere. It stays here and comes back into the \
     input when the running command ends.";
