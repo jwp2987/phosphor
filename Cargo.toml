@@ -178,7 +178,7 @@ lazy_static = "1.4.0"
 libc = "0.2.81"
 line-ending = "1.4.0"
 log = { version = "0.4", features = ["serde", "std"] }
-mermaid_to_svg = { git = "https://github.com/warpdotdev/mermaid-to-svg.git", rev = "8d3f789c2eb49335d7bf247a06bb649f59b6d4ed" }
+mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git", rev = "02c13c28bf0c751ee9d54b1f5e8877ba51a5f135" }
 mime_guess = "2.0"
 minimp4 = "0.1.2"
 nix = { version = "0.26.4", default-features = false, features = ["signal"] }
@@ -360,8 +360,8 @@ vec1 = { version = "1.8.0", features = ["serde"] }
 version-compare = "0.1"
 vte = { git = "https://github.com/warpdotdev/vte.git", rev = "4b399c87b63ba88f45709edaa6383fc519f6c900", default-features = false }
 walkdir = "2"
-warp-workflows = { git = "https://github.com/warpdotdev/workflows", rev = "793a98ddda6ef19682aed66364faebd2829f0e01" }
-warp_multi_agent_api = { git = "https://github.com/warpdotdev/warp-proto-apis.git", rev = "f0028fa6d05db1ba63726eaf6f8d33ab17abe37b" }
+warp-workflows = { git = "https://github.com/warpdotdev/workflows", rev = "4d483f3268651b54c3ec07542f0f35dca7e49ce8" }
+warp_multi_agent_api = { git = "https://github.com/warpdotdev/warp-proto-apis.git", rev = "8320a94875bce9e730d9bfc4abda1544279e5db3" }
 wasm-bindgen = "0.2.89"
 wasm-bindgen-futures = "0.4.42"
 web-sys = { version = "0.3.69", features = [
@@ -405,7 +405,7 @@ rayon = "1.10.0"
 sha2 = "0.10"
 shell-escape = "0.1.5"
 shellexpand = "3.1.1"
-warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatures.git", rev = "d3725aa42375cc229699c87be2b38f9d9f07080f", default-features = false }
+warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatures.git", rev = "48fd7aa5b7b4d99f5db57d1c5a25c47c05567fcf", default-features = false }
 # Fork of warpdotdev/winit@a4e0ecb5 (which upstream Warp pinned) carrying TWO
 # extra commits:
 # - 9a0788c3: rust-windowing/winit#4453, "fix(windows): use registry value to
@@ -608,13 +608,13 @@ opt-level = "s"
 # CoreText font-descriptor NSArray on every call. The fix is not yet in any
 # crates.io release; the latest published `core-text` (21.1.0) was cut from
 # a commit that predates the merge.
-core-foundation = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
-core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
-core-graphics = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
-core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
+core-foundation = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
+core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
+core-graphics = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
+core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
 objc = { git = "https://github.com/warpdotdev/rust-objc.git", rev = "5b656827fa9f863ef0eb22e444a3fedac009e78a" }
 pathfinder_simd = { git = "https://github.com/warpdotdev/pathfinder.git", rev = "34128a129ca6aee168fbc5060a4f21b4f7e486a9" }
-yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "51684719d0102ca85ff4b21cec39877a0c669e19" }
+yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "0aed385b7f0f1c89b709ea054a90313312ed0afb" }
 
 tikv-jemallocator = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
 tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }

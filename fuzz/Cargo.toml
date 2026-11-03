@@ -22,7 +22,7 @@ warp = { path = "../app", features = ["dev-support"] }
 # Renamed so the extern crate name does not collide with the `markdown_parser` fuzz binary.
 md = { package = "markdown_parser", path = "../crates/markdown_parser" }
 # Same pin as the root workspace (Cargo.toml `mermaid_to_svg`).
-mermaid_to_svg = { git = "https://github.com/warpdotdev/mermaid-to-svg.git", rev = "8d3f789c2eb49335d7bf247a06bb649f59b6d4ed" }
+mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git", rev = "02c13c28bf0c751ee9d54b1f5e8877ba51a5f135" }
 
 [workspace]
 members = ["."]
@@ -31,13 +31,13 @@ members = ["."]
 # the root's patches do not apply here, and `warpui` needs the vendored arboard's API (r18d8: the
 # fuzz build failed on arboard::ClipboardFormats). Keep the two tables identical.
 [patch.crates-io]
-core-foundation = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
-core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
-core-graphics = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
-core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "6f844cf1a1a18e25b70fcdf1bcdc458555bd2eff" }
+core-foundation = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
+core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
+core-graphics = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
+core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
 objc = { git = "https://github.com/warpdotdev/rust-objc.git", rev = "5b656827fa9f863ef0eb22e444a3fedac009e78a" }
 pathfinder_simd = { git = "https://github.com/warpdotdev/pathfinder.git", rev = "34128a129ca6aee168fbc5060a4f21b4f7e486a9" }
-yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "51684719d0102ca85ff4b21cec39877a0c669e19" }
+yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "0aed385b7f0f1c89b709ea054a90313312ed0afb" }
 tikv-jemallocator = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
 tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
 genai = { path = "../lib/rust-genai" }
