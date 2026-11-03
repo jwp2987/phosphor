@@ -23388,6 +23388,9 @@ fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
+                // A bootstrapped pane always has a session; without one Legacy would route the
+                // typed key to the editor (`should_write_typed_chars_to_pty`).
+                register_local_session_for_ssh_test(view, ctx);
                 conpty_enter_window_running_command(view);
                 // A line, its Enter and the start of the next line, one key event each.
                 for key in b"echo A" {
