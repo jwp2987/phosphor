@@ -1829,12 +1829,15 @@ esac
             fi
             # #1172: $EPOCHSECONDS (bash >= 5.0) instead of a `date` fork.
             now=${EPOCHSECONDS:-$(command -p date +%s)}
+            # #1172: WARP_SSH_PROBE_TTL (seconds) overrides the 10-minute lifetime; 0 turns the cache off.
+            local ttl=600
+            [[ "${WARP_SSH_PROBE_TTL-}" =~ ^[0-9]+$ ]] && ttl=$WARP_SSH_PROBE_TTL
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
                 l_ts="${line##*|}"
                 rest="${line%|*}"
                 l_key="${rest%|*}"
-                if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < 600 )); then
+                if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < ttl )); then
                     kept+="$line"$'\n'
                     if [[ "$l_key" == "$key" ]]; then
                         verdict="${rest##*|}"

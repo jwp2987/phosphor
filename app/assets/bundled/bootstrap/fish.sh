@@ -1174,14 +1174,28 @@ esac
             warp_ssh_remote_is_non_posix "$control_path" $argv
             return
         end
+        # #1172: as in bash, share the cache between tabs and restarts through a private file next to
+        # the pane sockets (key and lifetime rules unchanged; only the memory is shared).
+        set -l probe_file ""
+        if test -n "$SSH_SOCKET_DIR"
+            set probe_file (string replace -r '^~' -- $HOME "$SSH_SOCKET_DIR")/phosphor-ssh-probe-cache
+            if test (count $warp_ssh_probe_cache) -eq 0; and test -r "$probe_file"
+                set -g warp_ssh_probe_cache (string match -r -- '.+' <$probe_file 2>/dev/null)
+            end
+        end
         set -l now (command date +%s)
+        # WARP_SSH_PROBE_TTL (seconds) overrides the 10-minute lifetime; 0 turns the cache off.
+        set -l ttl 600
+        if string match -q -r '^[0-9]+$' -- "$WARP_SSH_PROBE_TTL"
+            set ttl $WARP_SSH_PROBE_TTL
+        end
         set -l kept
         set -l verdict ""
         for entry in $warp_ssh_probe_cache
             set -l parts (string split -r -m 2 '|' -- $entry)
             test (count $parts) -eq 3; or continue
             string match -q -r '^[0-9]+$' -- $parts[3]; or continue
-            if test $now -ge $parts[3]; and test (math $now - $parts[3]) -lt 600
+            if test $now -ge $parts[3]; and test (math $now - $parts[3]) -lt $ttl
                 set -a kept $entry
                 if test "$parts[1]" = "$key"
                     set verdict $parts[2]
@@ -1199,6 +1213,11 @@ esac
         set -l probe_rc $status
         if test -n "$warp_ssh_probe_verdict"
             set -ga warp_ssh_probe_cache "$key|$warp_ssh_probe_verdict|$now"
+            if test -n "$probe_file"
+                # Best effort and private (the file names hosts); a failed write only costs a probe.
+                # umask in a child: fish's own umask builtin would change the user's shell.
+                printf '%s\n' $warp_ssh_probe_cache | command sh -c 'umask 077; exec cat >"$1"' sh "$probe_file" 2>/dev/null
+            end
         end
         return $probe_rc
     end

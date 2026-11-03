@@ -1560,13 +1560,26 @@ esac
           local now line rest l_ts l_key
           local kept=""
           local verdict=""
+          # #1172: as in bash, share the cache between tabs and restarts through a private file next to
+          # the pane sockets (the key and lifetime rules are unchanged; only the memory is shared).
+          # `$(<file)` is a zsh builtin read, no fork.
+          local probe_file=""
+          if [[ -n "${SSH_SOCKET_DIR-}" ]]; then
+              probe_file="${SSH_SOCKET_DIR/#\~/$HOME}/phosphor-ssh-probe-cache"
+              if [[ -z "${WARP_SSH_PROBE_CACHE-}" && -r "$probe_file" ]]; then
+                  WARP_SSH_PROBE_CACHE=$(<"$probe_file") 2>/dev/null || :
+              fi
+          fi
           now=$(command -p date +%s)
+          # WARP_SSH_PROBE_TTL (seconds) overrides the 10-minute lifetime; 0 turns the cache off.
+          local ttl=600
+          [[ "${WARP_SSH_PROBE_TTL-}" =~ ^[0-9]+$ ]] && ttl=$WARP_SSH_PROBE_TTL
           while IFS= read -r line; do
               [[ -z "$line" ]] && continue
               l_ts="${line##*|}"
               rest="${line%|*}"
               l_key="${rest%|*}"
-              if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < 600 )); then
+              if [[ "$l_ts" =~ ^[0-9]+$ ]] && (( now >= l_ts && now - l_ts < ttl )); then
                   kept+="$line"$'\n'
                   if [[ "$l_key" == "$key" ]]; then
                       verdict="${rest##*|}"
@@ -1582,6 +1595,10 @@ esac
           warp_ssh_remote_is_non_posix "$control_path" "$@" || probe_rc=$?
           if [[ -n "$warp_ssh_probe_verdict" ]]; then
               WARP_SSH_PROBE_CACHE="$kept$key|$warp_ssh_probe_verdict|$now"$'\n'
+              if [[ -n "$probe_file" ]]; then
+                  # Best effort and private (the file names hosts); a failed write only costs a probe.
+                  ( umask 077; printf '%s' "$WARP_SSH_PROBE_CACHE" > "$probe_file" ) 2>/dev/null || :
+              fi
           fi
           return $probe_rc
       }
