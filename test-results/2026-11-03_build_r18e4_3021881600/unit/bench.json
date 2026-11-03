@@ -1,14 +1,14 @@
 {
  "lines": [
   "Running with gitlab-runner 19.5.1 (f411f264)",
-  "Running on little-thing...",
+  "Running on <runner>...",
   "Running on CPU: Intel(R) Core(TM) i7-8700B CPU @ 3.20GHz (avx, avx2)",
   "[prune_target] ci-fuzz: 12893M -> 12893M (freed 0M), disk free 174722M -> 174722M",
-  "Running benches/ansi_bench.rs (/home/gitlab-runner/.phosphor-build/targets/ci-bench/release/deps/ansi_bench-732a446934716798)",
+  "Running benches/ansi_bench.rs (/home/<user>/.phosphor-build/targets/ci-bench/release/deps/ansi_bench-732a446934716798)",
   "Benchmarking ansi/mixed_1mb_in_4k_reads: Collecting 20 samples in estimated 6.1084 s (80 iterations)",
   "time:   [76.032 ms 76.478 ms 76.902 ms]",
   "time:   [-0.2017% +0.5711% +1.3561%] (p = 0.16 > 0.05)",
-  "Running benches/key_path_bench.rs (/home/gitlab-runner/.phosphor-build/targets/ci-bench/release/deps/key_path_bench-648d5ed1afb4689f)",
+  "Running benches/key_path_bench.rs (/home/<user>/.phosphor-build/targets/ci-bench/release/deps/key_path_bench-648d5ed1afb4689f)",
   "Benchmarking pane_queue/idle_key: Collecting 100 samples in estimated 5.0002 s (118M iterations)",
   "pane_queue/idle_key     time:   [42.852 ns 43.072 ns 43.297 ns]",
   "Benchmarking pane_queue/gate_open_offer_drain: Collecting 100 samples in estimated 5.0196 s (1.1M iterations)",

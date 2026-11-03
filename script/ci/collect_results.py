@@ -50,6 +50,11 @@ def trace(job_id):
     return [PREFIX.sub("", ANSI.sub("", l)).rstrip() for l in t.splitlines()]
 
 
+def dump_scrubbed(obj, path):
+    """unit/*.json carry trace text (bench/fuzz-smoke: cargo's 'Running on <host>...'): scrubbed like every other file (r18e4: the box host name reached the guards job)"""
+    open(path, "w").write(results_scrub.scrub(json.dumps(obj, indent=1)))
+
+
 def sanitize(ref):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", ref).strip("_")
 
@@ -471,21 +476,21 @@ def main():
             if base in UNIT_JOBS or n.startswith("integration-linux"):
                 u = parse_unit(trace(j["id"]))
                 u.update(job=n, status=j["status"], duration=j.get("duration"))
-                json.dump(u, open(os.path.join(d, "unit", sanitize(n) + ".json"), "w"), indent=1)
+                dump_scrubbed(u, os.path.join(d, "unit", sanitize(n) + ".json"))
                 man["unit"][n] = {k: u[k] for k in u if k not in ("notes",)} if False else u
             elif n == "check-linux":
                 c = parse_check(trace(j["id"]))
                 c.update(status=j["status"], duration=j.get("duration"))
                 man["compile"] = c
-                json.dump(c, open(os.path.join(d, "unit", "check-linux.json"), "w"), indent=1)
+                dump_scrubbed(c, os.path.join(d, "unit", "check-linux.json"))
             elif base in NUMBERS_JOBS:
                 x = parse_numbers(trace(j["id"]))
                 x.update(job=n, status=j["status"], duration=j.get("duration"))
-                json.dump(x, open(os.path.join(d, "unit", sanitize(n) + ".json"), "w"), indent=1)
+                dump_scrubbed(x, os.path.join(d, "unit", sanitize(n) + ".json"))
             elif n in GUARD_JOBS or n in ("check-macos", "check-windows"):
                 g = parse_guards(trace(j["id"]), j["status"])
                 g.update(job=n, status=j["status"], duration=j.get("duration"))
-                json.dump(g, open(os.path.join(d, "unit", sanitize(n) + ".json"), "w"), indent=1)
+                dump_scrubbed(g, os.path.join(d, "unit", sanitize(n) + ".json"))
             elif n.startswith("app-test-"):
                 got = collect_app(j, os.path.join(d, "app"), man["notes"])
                 if not got:
