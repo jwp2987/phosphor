@@ -20525,7 +20525,8 @@ fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
 }
 
 /// #1614: a late `CommandBecameInteractive` for a block whose prompt is already back (the model
-/// thread ran ahead of the main thread) must not mark the shell's next line as a program's.
+/// thread ran ahead of the main thread) must not mark the shell's next line as a program's: the
+/// event names an older block than the one running, or a block that never started.
 #[test]
 fn a_late_interactive_event_for_a_finished_block_does_not_mark_the_shell_interactive() {
     App::test((), |mut app| async move {
@@ -20533,17 +20534,68 @@ fn a_late_interactive_event_for_a_finished_block_does_not_mark_the_shell_interac
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            let stale_block_id = view.model.lock().active_block_id().clone();
-            // The block is not started (its prompt is back / it never ran): the event is stale.
+            // A command runs now; the event is for the block before it.
+            young_enter_setup(view);
+            let running = view.model.lock().active_block_id().clone();
+            let older = BlockId::from("precmd-older-block-1614".to_string());
+            assert_ne!(older, running);
             view.handle_terminal_event(
-                &ModelEvent::CommandBecameInteractive {
-                    block_id: stale_block_id,
-                },
+                &ModelEvent::CommandBecameInteractive { block_id: older },
                 ctx,
             );
             assert!(!view.model.lock().typeahead_handoff().command_interactive());
+            // The running block's own event does mark it.
+            view.handle_terminal_event(
+                &ModelEvent::CommandBecameInteractive { block_id: running },
+                ctx,
+            );
+            assert!(view.model.lock().typeahead_handoff().command_interactive());
         });
     })
+}
+
+/// #1614 (review R2): the shell started a command after a young Enter was held (a Preexec parsed
+/// after the hold opened, not the written command's own): the Enter and the keys behind it are
+/// that command's typeahead, written as one write on the Preexec event itself, with no give-up
+/// involved. Legacy and Table.
+#[test]
+fn a_young_hold_is_written_as_typeahead_on_the_preexec_event() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                // The written command's own Preexec was parsed before the line was typed.
+                view.model.lock().typeahead_handoff_mut().on_preexec(false);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                // The shell starts a line it already had (model thread), then the event reaches
+                // the view.
+                view.model.lock().typeahead_handoff_mut().on_preexec(true);
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Preexec), ctx);
+                assert!(
+                    !young_gate_open(view),
+                    "{mode:?}: the hold ended on the event"
+                );
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing handed back"
+                );
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"\rx".to_vec()],
+                "{mode:?}: the Enter and the key behind it, one write, typed order"
+            );
+        });
+    }
 }
 
 /// The remote session came up and its bootstrap ended: the next `Precmd` is its first prompt.

@@ -2287,6 +2287,53 @@ mod typeahead_handoff {
         });
     }
 
+    /// #1614 (review R3, the timer rule): the stale-count give-up never ends a live young hold.
+    /// Its retry of the request decision is skipped while the hold lives (the hold has its own
+    /// event releases and the hand-back cap); run by this timer, the decision could otherwise
+    /// write the held keys (the no-binding and committed-delivery ends) or a request.
+    #[test]
+    fn the_stale_count_reset_leaves_a_live_young_hold_to_its_own_events() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"frob");
+            // The Enter is held (the view's queue carries it; here only the hand-off's record).
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+                assert!(handoff.take_young_hold_started().is_some());
+            }
+            // The decision waits (the block runs) and arms the stale-count reset.
+            line_editor_becomes_active(&mut app, &harness);
+            assert!(harness.model.lock().typeahead_handoff().young_hold_queued());
+            // Meanwhile a delivery was committed to the shell's line: a decision run now would
+            // end the hold as typeahead (`committed_delivery`), which only an event may do.
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_committed_delivery();
+
+            Timer::after(Duration::from_millis(400)).await;
+            {
+                let model = harness.model.lock();
+                let handoff = model.typeahead_handoff();
+                assert!(
+                    handoff.young_hold_queued(),
+                    "the timer left the hold to its events"
+                );
+                assert!(!handoff.young_hold_end_pending(), "no end from a timer");
+                assert!(handoff.is_pty_owned());
+            }
+            assert!(
+                !written(&harness).contains(&REQUEST.to_vec()),
+                "no request from the timer"
+            );
+        });
+    }
+
     /// A command that would be rejected or coalesced right now is not held: it takes the
     /// normal path, with the same outcome as without the hand-off.
     #[test]
