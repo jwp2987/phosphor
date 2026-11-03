@@ -2,6 +2,8 @@
 # app_test.ps1's finally block (which runs restore.ps1) may never run because the job's process tree was killed.
 # 1. Stops only processes this job recorded in appci-out\windows\run\pids ("<kind> <pid>" lines), and only when that PID's executable
 #    path or command line lies under this job's appci-out dir (PID-reuse safe). Never by name. Never the GitLab runner.
+# 3. (#1517) Removes %USERPROFILE%\WINPUSH.lock only when app_test.ps1 wrote it for THIS job (its text carries "pipeline=<id> job=<CI_JOB_ID> ");
+#    a lock held by another job or by a hand-run agent is left alone. A cancelled job would otherwise block the next run for 30 min.
 # 2. If this job made a backup (%USERPROFILE%\appci-bak\<CI_JOB_ID>\meta.json) and no restore has run for it yet (no restore.log),
 #    runs restore.ps1 for that backup and prints its steps. Always exits 0: it must not mask the job's own result.
 param([string]$Out = "appci-out\windows")
@@ -30,6 +32,17 @@ if ($env:CI_JOB_ID) {
     foreach ($r in $rr) { Write-Output ("after_job restore {0,-14} {1} {2}" -f $r.step, $(if ($r.ok) { "ok" } else { "FAILED" }), $r.detail) }
   } else {
     Write-Output "after_job: restore already done (or no backup for job $env:CI_JOB_ID)"
+  }
+}
+# lock last: after the restore, so the next job never sees a half-restored machine as free
+if ($env:CI_JOB_ID) {
+  $lock = Join-Path $env:USERPROFILE "WINPUSH.lock"
+  if (Test-Path $lock) {
+    $txt = [string](Get-Content $lock -Raw -ErrorAction SilentlyContinue)
+    if ($txt -match ("(^|\s)job=" + [regex]::Escape($env:CI_JOB_ID) + "(\s|$)")) {
+      Remove-Item $lock -Force -ErrorAction SilentlyContinue
+      Write-Output "after_job: removed WINPUSH.lock (it was this job's)"
+    } else { Write-Output "after_job: WINPUSH.lock left alone (not this job's: $($txt.Trim()))" }
   }
 }
 exit 0

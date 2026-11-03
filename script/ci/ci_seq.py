@@ -202,6 +202,17 @@ def self_test():
     f, _, _ = derive([t + "input_queue/destination.rs"])
     if "input_queue::destination" in f:
         bad += 1; print("FAIL destination.rs still maps to the empty input_queue::destination")
+    # #1517: play() response checking and the per-job running deadline
+    for resp, want_err in [({"id": 1, "status": "pending"}, False), ({"id": 1, "status": "created"}, False), ({"message": "400 Bad request"}, True),
+                           ({"error": "403 Forbidden"}, True), (None, True), ([], True), ({"id": 1, "status": "manual"}, True)]:
+        ok = bool(play_error(resp)) == want_err
+        bad += 0 if ok else 1
+        print("%s play_error(%r) -> %r" % ("ok  " if ok else "FAIL", resp, play_error(resp)))
+    yml = "build-x:\n  stage: b\n  timeout: 90m\nother:\n  timeout: 3h\n"
+    for nm, want in [("build-x", 5400), ("other", 10800), ("absent", 18000)]:
+        got = job_timeout_s(nm, yml)
+        bad += 0 if got == want else 1
+        print("%s job_timeout_s(%s) = %d" % ("ok  " if got == want else "FAIL", nm, got))
     print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
     return 1 if bad else 0
 
@@ -316,6 +327,30 @@ def api(path, method="GET", variables=None):
         return None
 
 
+def play_error(resp):
+    """None when a play API response means the job was started; else why not. glab api prints GitLab's JSON error body
+    ({"message": ...}) on a refused call, and None/non-dict means no usable answer at all."""
+    if not isinstance(resp, dict):
+        return "no usable response from the GitLab API (%r)" % (resp,)
+    if resp.get("message") or resp.get("error"):
+        return str(resp.get("message") or resp.get("error"))
+    if resp.get("status") in (None, "manual", "failed", "canceled"):
+        return "job did not leave 'manual' (status %r)" % resp.get("status")
+    return None
+
+
+def job_timeout_s(name, yml=None):
+    """The job's `timeout:` from .gitlab-ci.yml in seconds (the first one in the job's block); 5 h if not found."""
+    try:
+        txt = yml if yml is not None else open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".gitlab-ci.yml")).read()
+        m = re.search(r"^%s:\s*\n(?:(?!\S).*\n)*?\s+timeout:\s*(\d+)\s*([mhs])" % re.escape(name), txt, re.M)
+        if m:
+            return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600}[m.group(2)]
+    except OSError:
+        pass
+    return 5 * 3600
+
+
 def main():
     ap = argparse.ArgumentParser(description="Drive a GitLab pipeline through a test tier; see the header of script/ci/ci_seq.py and docs/testing.md")
     ap.add_argument("ref", nargs="?", default="")
@@ -334,6 +369,8 @@ def main():
     ap.add_argument("--derive-env", nargs=3, metavar=("BEFORE", "HEAD", "SUITE"), help="CI use: print RUN_SUITE/TEST_FILTER shell assignments for BEFORE..HEAD (SUITE = linux|core|rest)")
     ap.add_argument("--pending-timeout", type=float, default=20, metavar="MIN",
                     help="a job still 'pending' (no runner picked it up) after this many minutes is reported RUNNER-OFFLINE and the run continues (default 20)")
+    ap.add_argument("--running-factor", type=float, default=2.0, metavar="X",
+                    help="a job still 'running' after X times its own .gitlab-ci.yml timeout is reported RUNNING-DEADLINE and the run continues (default 2)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan (filter, suites, platforms) and exit")
     a = ap.parse_args()
     if a.self_test:
@@ -353,6 +390,7 @@ def main():
     ref, tier = a.ref, a.tier
     SKIP = set(a.skip_pos) | set(a.skip)
     PENDING_LIMIT[0] = a.pending_timeout * 60
+    RUNNING_FACTOR[0] = a.running_factor
 
     sh("git", "fetch", "-q", "origin", check=True)
     base = resolve_base(ref, a.base)
@@ -422,6 +460,7 @@ def main():
 
     def wait(name):
         pending_since = None
+        running_since = None
         while True:
             s = jobs().get(name, {}).get("status", "missing")
             if s in ("success", "failed", "canceled", "missing", "skipped"):
@@ -438,13 +477,31 @@ def main():
                     return RUNNER_OFFLINE
             else:
                 pending_since = None
+            # #1517: a job that stays 'running' far past its own `timeout:` (a wedged runner, a lost connection GitLab never noticed)
+            # must not block the run forever either: give up after RUNNING_FACTOR x the job's yaml timeout (--running-factor)
+            if s == "running":
+                running_since = running_since or time.time()
+                lim = job_timeout_s(name) * RUNNING_FACTOR[0]
+                if time.time() - running_since > lim:
+                    print("%s: RUNNING-DEADLINE (still running after %.0f min = %.1fx its %.0f min timeout); continuing without it" % (
+                        name, (time.time() - running_since) / 60, RUNNING_FACTOR[0], job_timeout_s(name) / 60), flush=True)
+                    timeline[name] = (RUNNING_DEADLINE, None)
+                    return RUNNING_DEADLINE
+            else:
+                running_since = None
             time.sleep(60)
 
     def play(name, variables=None):
         j = jobs().get(name)
         if not j or j["status"] != "manual":
             return False                                   # already played/run or absent: never re-run
-        api("projects/%s/jobs/%d/play" % (PROJECT, j["id"]), "POST", variables)
+        resp = api("projects/%s/jobs/%d/play" % (PROJECT, j["id"]), "POST", variables)
+        err = play_error(resp)
+        if err:      # #1517: a refused play used to read as started and the run then waited on a job that never ran
+            sys.stderr.write("ERROR: play %s (job %s) failed: %s\n" % (name, j["id"], err))
+            timeline[name] = ("play-failed", None)
+            summary(timeline, t_start); collect_hint(pid, a.collect)
+            sys.exit(2)
         return True
 
     print("pipeline", pid, "tier", tier, flush=True)
@@ -547,6 +604,8 @@ def collect_hint(pid, auto):
 
 TIER_SKIP = "skipped by tier"
 RUNNER_OFFLINE = "RUNNER-OFFLINE"
+RUNNING_DEADLINE = "RUNNING-DEADLINE"
+RUNNING_FACTOR = [2.0]             # set from --running-factor
 NETWORK_FAIL = "NETWORK-FAIL"
 PENDING_LIMIT = [20 * 60]          # seconds; set from --pending-timeout
 NETWORK_JOBS = ("licenses", "advisories")   # need the network (advisory DB / licence sources / cargo-binstall); automatic, not allow_failure
@@ -604,6 +663,8 @@ def verdict(name, status):
         return "PASS"
     if status == RUNNER_OFFLINE:
         return "OFFLINE"
+    if status == RUNNING_DEADLINE:
+        return "TIMEOUT"
     if status == NETWORK_FAIL:
         return "NETWORK"
     if name.startswith(("bench", "mutants", "fuzz")):
