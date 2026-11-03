@@ -20925,7 +20925,8 @@ impl TerminalView {
             Timer::after(SUBSHELL_BOOTSTRAP_STALL_CEILING),
             move |me, _, ctx| me.note_subshell_setup_waiting(announced_at, ctx),
         );
-        // Whatever the user typed meanwhile is delivered at the latest when the hold limit passes.
+        // Whatever the user typed meanwhile is HANDED BACK to the input when the hold limit passes: a
+        // timer never writes held keys to the pty (#1577, owner rule).
         ctx.spawn(
             Timer::after(SUBSHELL_SETUP_TYPED_HOLD_LIMIT),
             move |me, _, ctx| {
@@ -20937,9 +20938,9 @@ impl TerminalView {
                 ) {
                     log::warn!(
                         "subshell setup did not finish within the typed-input hold limit; \
-                         delivering the held keys"
+                         handing the held keys back to the input"
                     );
-                    me.release_subshell_setup_held_bytes(ctx);
+                    me.give_up_setup_gates_to_editor("hold_limit", ctx);
                 }
             },
         );
