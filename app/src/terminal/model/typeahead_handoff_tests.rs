@@ -4237,6 +4237,11 @@ fn read_x_finished_then_the_next_enter_is_held_only_for_a_request_that_is_due() 
         type_and_flush(&mut handoff, b"printf x"),
         UserBytesRoute::WriteCounted
     );
+    assert_eq!(
+        probe.asked(),
+        vec!["sample"],
+        "the line's first byte samples whether it is young; the barrier is not asked"
+    );
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
     let id = handoff.take_young_hold_started().expect("a hold started");
     assert_eq!(

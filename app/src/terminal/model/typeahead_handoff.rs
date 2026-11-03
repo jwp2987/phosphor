@@ -2616,7 +2616,10 @@ impl TypeaheadHandoff {
     /// * The block latch said the running command is interactive, or the sample says a plain
     ///   program or a password read owns the tty: the Enter is that program's. Delivered.
     /// * The sample says the shell's own line editor reads (`LineEditorReading`):
-    ///   - the counts agree the prompt is back: the request is due ([`YoungHoldEvidence::RequestDue`]);
+    ///   - the counts agree the prompt is back: the request is due
+    ///     ([`YoungHoldEvidence::RequestDue`]), unless they agree only through a continuation
+    ///     prompt inside a running command ([`Self::continuation_inside_running_command`]), which
+    ///     the barrier decides as below;
     ///   - the counts queue a line but the barrier says the stream is applied: either the raw tty
     ///     is a running command's read (last hook a Preexec, no marker since, #1392: delivered) or
     ///     the counts are stale and the request is due;
@@ -2661,22 +2664,27 @@ impl TypeaheadHandoff {
             // A plain program in the foreground means the shell is waiting on it, not at a
             // prompt: the Enter is for that program, not a line the app has yet to notice.
             ShellPromptFact::NotAtPrompt => None,
-            ShellPromptFact::LineEditorReading if counts_say_prompt => {
+            // A continuation prompt the counts took as the answer to a line, shown after a
+            // Preexec with no Precmd since (zle inside a running `vared`): the block runs, so no
+            // request can be sent before it ends and "the request is due" is no evidence. The
+            // barrier below decides, as for the running command's other reads.
+            ShellPromptFact::LineEditorReading
+                if counts_say_prompt && !self.continuation_inside_running_command() =>
+            {
                 Some(YoungHoldEvidence::RequestDue)
             }
-            // #1392: the raw tty is a command's read (`read -k`, `read -n1`), not the line
-            // editor: the hook account is provably current and says a command runs, so no
-            // prompt is coming for this Enter. It is written to the pty, where that read
-            // takes it -- what the hold's give-up would have done 2 s later.
-            ShellPromptFact::LineEditorReading
-                if self.raw_tty_belongs_to_running_command(enters_written, precmds_seen) =>
-            {
-                None
-            }
-            // The counts queue a line, the shell's own editor reads: the barrier, asked last,
-            // tells "the Precmd that answers it is still in the stream" from "it never comes".
+            // The counts queue a line, the shell's own editor reads: the barrier, asked last and
+            // once, tells "the Precmd that answers it is still in the stream" from "it never
+            // comes".
             ShellPromptFact::LineEditorReading => match self.foreground_probe.stream_drained() {
                 Some(false) => Some(YoungHoldEvidence::PrecmdInFlight),
+                // #1392: the raw tty is a command's read (`read -k`, `read -n1`, zle inside
+                // `vared`), not the line editor: the stream is applied up to a moment after the
+                // sample (a shell writes its prompt's Precmd before its line editor makes the tty
+                // raw, so that Precmd would have been applied) and the last hook parsed is a
+                // Preexec, so a command runs and no prompt is coming for this Enter. It is
+                // written to the pty, where that read takes it -- what the hold's give-up would
+                // have done 2 s later. Every condition is an ordered fact; none is a time.
                 Some(true) if self.raw_tty_is_a_running_commands_read() => None,
                 // The written command's Preexec has not been parsed: the editor sampled reading
                 // may be the one that has not read the command yet (the input direction is not
@@ -2730,28 +2738,14 @@ impl TypeaheadHandoff {
         }
     }
 
-    /// #1392: whether a raw tty sampled with the shell's group in front (the sample says
-    /// [`ShellPromptFact::LineEditorReading`]) belongs to a command the shell runs -- a builtin raw
-    /// read such as zsh `read -k` or bash `read -n1` -- and not to its line editor. Asked only
-    /// AFTER that sample was taken.
-    ///
-    /// The same pair (raw tty, a stream that says Running) is also the #933 race: the shell is
-    /// back at its line editor but its Precmd / marker are still in the pty buffer or unparsed.
-    /// The two are told apart by the reader-side barrier: a shell writes its prompt's Precmd
-    /// before its line editor makes the tty raw, so once the stream is drained up to a moment
-    /// after the sample, that Precmd would have been applied. Only then does "the last hook
-    /// parsed was a Preexec, and no marker since" prove that a command, not the editor, reads.
-    /// The line counts must agree: a line written is still unanswered (`precmds_seen <
-    /// enters_written`), so the Preexec is that line's. A Preexec with every line answered
-    /// (bash 3.2 runs its DEBUG-trap preexec for a `bind -x` key at the prompt) proves nothing.
-    /// Every condition is an ordered fact; none is a time.
-    fn raw_tty_belongs_to_running_command(&self, enters_written: u32, precmds_seen: u32) -> bool {
-        precmds_seen < enters_written
-            && self.stream_says_command_running()
-            // A Precmd the block lifecycle ignored did not reset `shell_activity`.
-            && self.last_parsed_hook == Some(ParsedShellHook::Preexec)
-            // Last: the barrier must be checked after the sample (the match scrutinee).
-            && self.foreground_probe.stream_drained() == Some(true)
+    /// Whether the shell's line editor shows a continuation prompt inside a running command: the
+    /// last marker is a continuation prompt ([`ShellActivity::Continuation`]) and the last hook
+    /// parsed is a Preexec with no Precmd since ([`Self::raw_tty_is_a_running_commands_read`]),
+    /// so the block lifecycle is not at a prompt. Its re-baselining of the counts
+    /// ([`Self::on_continuation_prompt`]) then says nothing about a prompt being back.
+    fn continuation_inside_running_command(&self) -> bool {
+        self.shell_activity == ShellActivity::Continuation
+            && self.raw_tty_is_a_running_commands_read()
     }
 
     /// Whether this session's shell sends line-editor markers and the last thing its ordered

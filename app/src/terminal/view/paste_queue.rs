@@ -1715,10 +1715,11 @@ impl TerminalView {
         self.input
             .update(ctx, |input, _| input.clear_handoff_enter_hold());
         // #1614: the hold is gone, so a decision now cannot write held keys (it can only commit
-        // the editor, write the request or drain writes already decided); it re-runs what the
-        // stale-count timer had to skip while the hold lived, so the pane does not stay pty-owned
-        // with the handed-back text sitting in the editor.
-        ctx.emit(Event::RetryTypeaheadHandoffRequest);
+        // the editor, write the request or drain writes already decided). `hand_back_gate_keys`
+        // asks for it (`RetryTypeaheadHandoffRequest`) once the keys are in the editor, re-running
+        // what the stale-count timer had to skip while the hold lived, so the pane does not stay
+        // pty-owned with the handed-back text sitting in the editor. Not emitted here as well:
+        // that asked twice, and, with the queue busy, before the keys were handed back.
     }
 
     fn young_hold_gate_has_key(&self, hold_id: u64) -> bool {
