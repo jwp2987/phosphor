@@ -202,6 +202,19 @@ def self_test():
     f, _, _ = derive([t + "input_queue/destination.rs"])
     if "input_queue::destination" in f:
         bad += 1; print("FAIL destination.rs still maps to the empty input_queue::destination")
+    # #1527: a .gitlab-ci.yml change to a build job builds that platform (build_changed injects what ci_build_platforms would find)
+    for files, changed, want in (
+        ([".gitlab-ci.yml"], {WIN}, [WIN]),
+        ([".gitlab-ci.yml"], set(), [LINUX]),
+        ([".gitlab-ci.yml", "docs/testing.md"], {MAC, WIN}, [MAC, WIN]),
+        ([".gitlab-ci.yml", "app/src/terminal/view.rs"], {WIN}, [LINUX, MAC, WIN]),
+        ([".gitlab-ci.yml", "script/windows/bundle.ps1"], {LINUX}, [LINUX, WIN]),
+        (["script/ci/ci_seq.py"], {WIN}, [LINUX]),          # no yml change: build_changed is never consulted
+    ):
+        got = platforms_from(files, build_changed=changed)
+        if got != want:
+            bad += 1
+        print("%s platforms_from(%s, build job changed %s) -> %s" % ("ok  " if got == want else "FAIL", files, sorted(changed), got))
     print("self-test: %s" % ("FAILED (%d)" % bad if bad else "all passed"))
     return 1 if bad else 0
 
@@ -223,8 +236,39 @@ def derive_env(before, head, suite):
     return 0
 
 
-def platforms_from(files):
-    code = [f for f in files if not DOC_ONLY.match(f) and not re.match(r"^(script/ci/|\.gitlab-ci\.yml|script/(check|precheck|state|test_))", f)]
+def ci_build_platforms(base, ref):
+    """#1527: the platforms whose BUILD job definition (the job block plus the template it extends) differs in .gitlab-ci.yml between
+    base and ref. A yml edit that changes, say, build-windows-x86_64's env must build Windows, not only the linux default."""
+    out = set()
+    for p, job in BUILD.items():
+        a, b = ci_blocks(base, job), ci_blocks(ref, job)
+        keep = (0, 2) if p == WIN else (0, 1)          # ci_blocks -> [job, .shim_github_env, .windows_job]
+        if [a[i] for i in keep] != [b[i] for i in keep]:
+            out.add(p)
+    return out
+
+
+def platforms_from(files, base=None, ref=None, build_changed=None):
+    """-> the platforms to build for a fix-tier change. script/ci/ and .gitlab-ci.yml are not app code, but when base/ref are given a
+    .gitlab-ci.yml change to a platform's build job adds that platform (#1527); when nothing else needs a build, exactly those platforms
+    are built. build_changed: injected ci_build_platforms result (self-test)."""
+    plats = platforms_from_files(files)
+    if ".gitlab-ci.yml" not in files or not (build_changed is not None or (base and ref)):
+        return plats
+    extra = build_changed if build_changed is not None else ci_build_platforms(base, ref)
+    if not extra:
+        return plats
+    if not app_code(files):
+        return sorted(extra)
+    return sorted(set(plats) | extra)
+
+
+def app_code(files):
+    return [f for f in files if not DOC_ONLY.match(f) and not re.match(r"^(script/ci/|\.gitlab-ci\.yml|script/(check|precheck|state|test_))", f)]
+
+
+def platforms_from_files(files):
+    code = app_code(files)
     if not code:
         return [LINUX]
     if all(WIN_ONLY.search(f) for f in code):
@@ -360,7 +404,7 @@ def main():
     filt, suites, plats = "", {"linux", "core", "rest"}, [LINUX, MAC, WIN]
     if tier == "fix":
         filt, suites, why = derive(files)
-        plats = [p for p in a.platforms.split(",") if p] or platforms_from(files)
+        plats = [p for p in a.platforms.split(",") if p] or platforms_from(files, base, gitref(ref))
         if a.tests:
             filt = a.tests; suites = set(suites) | {"linux"}
         print("base %s..%s: %d files changed" % (base[:10], ref, len(files)))
