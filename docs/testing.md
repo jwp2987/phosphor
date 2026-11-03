@@ -445,6 +445,24 @@ Run lifecycle (r18d8, Linux CI; `job 17686762542` was killed at the 90 min timeo
   every process of this user whose `/proc/PID/environ` carries `APPCI_SESSION=<session pid>:<job id>:<mode>` (exported by the session
   script; all its sway/app/foot/wtype-holder/sshd children inherit it) when that session pid is dead. Exact PIDs, group-leader
   by group, never by name; a live concurrent session is untouched; what it reaped is logged as `[session] stale: ...`.
+- **Self-deadline (r18e0, all platforms).** `appci/deadline.py`: `run.py` reads the job's budget (`APPCI_DEADLINE_S`, else GitLab's
+  `CI_JOB_TIMEOUT`, seconds) and the job start (`CI_JOB_STARTED_AT`, else its own start) and logs `[deadline] ...` at start. Before EACH case
+  (and each pass, so a late pass obeys it too) it requires `time left >= max(10 min, that case's own timeout) + 5 min` (report, teardown,
+  upload). Otherwise the case is not started: it gets a `status=skip` row `not run: job time budget (N min left, M min needed ...)`, the
+  decision is logged once as `[deadline] ... STOP starting cases`, and a pass with no budget left does not even launch the app. The run
+  then finishes normally (report, artifacts). No budget variable (a local run): never stops itself. Caveat: if the runner enforces a
+  `maximum_timeout` below the job's `timeout:`, `CI_JOB_TIMEOUT` may not reflect it; export `APPCI_DEADLINE_S` then.
+  `app-test-macos` and `app-test-windows` (and their `-reuse` jobs, which extend them) have `timeout: 4h` like Linux; the fix tier still
+  ends early on its own.
+- **Per-row evidence in the job log.** Under a row, `    evidence:` lines: `mode_proof` prints `log_view_mode`, `ocr_agent_markers`,
+  `ocr_terminal_hint`, `queue_destination`; any case whose app log shows Enters prints `enter_route: N Enter(s) ...: Shell=a AI=b [sequence]`
+  (from `hop=enter_begin input_type=`, this case's log window only); every latency row prints `host load after the case: loadavg1=.. cpus=..`
+  (also `metrics.host_load`). The `summary.md` table prints the first detail in full (rest capped at 160) and launch-error lines are not cut.
+- **Cleanup evidence (all platforms).** Per pass `run.py` prints `teardown[<label>]:` lines: app pid stopped/gone, test sshd, scratch dirs
+  (`home`, `ctl`, `rctl`, `refctl`, `rhome`) removed, and a leftover-process audit (processes whose command line names the run dir). macOS
+  adds `teardown: Terminal.app reference pid N quit ...` (refterm_mac) and `cleanup:` lines from `mac/ci/app_test.sh` (run.py/app/caffeinate/
+  DMG, then the audit); `teardown.sh` (after_script) prints per-pid outcomes, survivors and other processes naming the out dir;
+  Windows `after_job.ps1` prints recorded pids stopped/gone/not-ours, leftover processes and removed scratch dirs.
 - **Job log.** Each row's FIRST failing message (or a `noref` row's `NO-REFERENCE` reason) is printed in full; the rest of the detail
   stays capped at 200 characters; the Ollama endpoint is redacted as before.
 

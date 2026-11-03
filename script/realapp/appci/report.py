@@ -17,6 +17,15 @@ if os.path.exists(p):
                 rows.append(json.loads(l))
             except ValueError:
                 pass
+def row_detail_cell(det):
+    """summary table cell: the FIRST detail (the first failing message) IN FULL, the rest capped at 160 chars (r18e0 cut everything at 160)"""
+    det = [str(d) for d in det]
+    if not det:
+        return ""
+    cell_ = det[0] + ("; " + "; ".join(det[1:])[:160] if len(det) > 1 else "")
+    return cell_.replace("|", "/").replace("\n", " ")
+
+
 cnt = {"pass": 0, "fail": 0, "skip": 0, "noref": 0}   # noref = a latency case with no reference terminal: NOT a pass, not a failure (#1499)
 for r in rows:
     cnt[r["status"]] = cnt.get(r["status"], 0) + 1
@@ -28,7 +37,7 @@ for r in rows:
     x.append('<testcase classname=%s name=%s time="%.2f">' % (quoteattr(r.get("mode", "")), quoteattr(r["name"]), r.get("seconds", 0)))
     d = escape("\n".join(r.get("detail", [])))
     if r["status"] == "fail":
-        x.append("<failure message=%s>%s</failure>" % (quoteattr((r.get("detail") or ["failed"])[0][:200]), d))
+        x.append("<failure message=%s>%s</failure>" % (quoteattr((r.get("detail") or ["failed"])[0]), d))
     elif r["status"] == "noref":
         x.append("<skipped message=%s/>" % quoteattr("NO-REFERENCE (not a pass): " + (r.get("detail") or [""])[0][:180]))
     elif r["status"] == "skip":
@@ -39,7 +48,7 @@ open(os.path.join(run, "junit.xml"), "w").write("\n".join(x))
 m = ["# App test results (%s)" % ", ".join("%s=%s" % kv for kv in meta.items()), "", "pass %(pass)d, fail %(fail)d, skip %(skip)d, no-reference %(noref)d (not passes)" % cnt, "",
      "| mode | case | status | detail |", "|---|---|---|---|"]
 for r in rows:
-    m.append("| %s | %s | %s | %s |" % (r.get("mode", ""), r["name"], r["status"].upper(), "; ".join(r.get("detail", []))[:160].replace("|", "/")))
+    m.append("| %s | %s | %s | %s |" % (r.get("mode", ""), r["name"], r["status"].upper(), row_detail_cell(r.get("detail", []))))
 def f(x, nd=1):
     return "-" if x is None else ("%.*f" % (nd, x))
 

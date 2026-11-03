@@ -19,13 +19,23 @@ if ($outFull) {
     foreach ($l in Get-Content $f) {
       $w = $l -split '\s+'; if ($w.Count -lt 2 -or $w[1] -notmatch '^\d+$') { continue }
       $p = Get-CimInstance Win32_Process -Filter "ProcessId = $($w[1])" -ErrorAction SilentlyContinue
-      if (-not $p) { continue }
+      if (-not $p) { Write-Output "after_job: recorded $($w[0]) pid $($w[1]) already gone"; continue }
       $where = "$($p.ExecutablePath) $($p.CommandLine)"
       if ($where -like "*$outFull*") {
         & taskkill.exe /PID $p.ProcessId /T /F 2>&1 | Out-Null
         Write-Output "after_job: stopped $($w[0]) pid $($p.ProcessId)"
-      }
+      } else { Write-Output "after_job: recorded $($w[0]) pid $($w[1]) is alive but not ours (PID reuse): left alone" }
     }
+  }
+}
+# audit: processes (other than this script) whose executable path or command line names this job's out dir, and the leftover scratch dirs
+if ($outFull) {
+  $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and "$($_.ExecutablePath) $($_.CommandLine)" -like "*$outFull*" -and "$($_.CommandLine)" -notlike "*after_job.ps1*" })
+  if ($left.Count) { Write-Output "after_job: leftover processes naming ${outFull}:"; foreach ($l in $left) { Write-Output ("after_job:   pid {0} {1}" -f $l.ProcessId, ("$($l.CommandLine)".Substring(0, [Math]::Min(160, "$($l.CommandLine)".Length)))) } }
+  else { Write-Output "after_job: leftover processes naming ${outFull}: none" }
+  foreach ($d in @("home", "ctl", "rctl", "refctl", "rhome")) {
+    $dd = Join-Path $outFull "run\$d"
+    if (Test-Path $dd) { Remove-Item $dd -Recurse -Force -ErrorAction SilentlyContinue; Write-Output ("after_job: scratch dir run\{0} {1}" -f $d, $(if (Test-Path $dd) { "COULD NOT BE REMOVED" } else { "removed" })) }
   }
 }
 if ($env:CI_JOB_ID) {

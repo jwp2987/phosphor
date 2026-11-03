@@ -985,7 +985,7 @@ app-test-macos:
   when: manual
   allow_failure: true
   resource_group: mac-gui
-  timeout: 90m
+  timeout: 4h   # r18e0: the full tier (both modes, soak) was killed at 90m with ~47 cases unrun; run.py also stops itself early (appci/deadline.py, CI_JOB_TIMEOUT)
   needs:
     - job: build-macos-arm64
       artifacts: false
@@ -1019,7 +1019,7 @@ app-test-windows:
   when: manual
   allow_failure: true
   resource_group: windows-gui
-  timeout: 90m
+  timeout: 4h   # r18e0: the full tier (both modes, soak) was killed at 90m with ~47 cases unrun; run.py also stops itself early (appci/deadline.py, CI_JOB_TIMEOUT)
   needs:
     - job: build-windows-x86_64
       artifacts: false
