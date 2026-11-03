@@ -327,6 +327,21 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let _key_path = KeyPathScope::enter(&self.key_path_depth);
+        let (plan, facts) = self.decide_delivery(input, origin, stamp, ctx);
+        self.execute_table_plan(input, &plan, &facts, ctx);
+    }
+
+    /// The decision half of [`Self::deliver_via_table`]: the plan and facts the table gives
+    /// `input` delivered by the queue. The caller holds the key-path scope and executes the plan
+    /// (#1585: an editor paste is decided here and keeps its own delivery when the table says
+    /// editor).
+    pub(super) fn decide_delivery(
+        &mut self,
+        input: Replayed<'_>,
+        origin: Origin,
+        stamp: Stamp,
+        ctx: &mut ViewContext<Self>,
+    ) -> (Plan, RouteFacts) {
         if matches!(input, Replayed::Typed(_)) {
             self.reprobe_interactive_latch_on_key();
         }
@@ -351,7 +366,7 @@ impl TerminalView {
                 plan.effects
             )
         });
-        self.execute_table_plan(input, &plan, &facts, ctx);
+        (plan, facts)
     }
 
     /// Executes `plan` for `input` with the leaf writers legacy ends in.

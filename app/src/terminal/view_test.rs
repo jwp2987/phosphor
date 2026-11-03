@@ -26574,3 +26574,8 @@ fn legacy_mode_does_not_feed_the_ssh_phase_machine() {
 // module sees this file's private test helpers through `use super::*`.
 #[path = "view/group1_handover_tests.rs"]
 mod group1_handover_tests;
+
+// Group 3 (editor paste behind an Enter gate, committed delivery). Declared here for the same
+// reason as group 1.
+#[path = "view/group3_paste_tests.rs"]
+mod group3_paste_tests;

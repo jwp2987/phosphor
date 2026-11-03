@@ -541,6 +541,14 @@ impl Input {
         self.flush_deferred_programmatic_edits(ctx);
     }
 
+    /// The text of the editor paste `id` whose content waits here, left in place (#1585: the
+    /// view asks the table where the paste goes before it takes it).
+    pub(crate) fn peek_paste_payload_text(&self, id: u64) -> Option<String> {
+        self.paste_payloads
+            .get(&id)
+            .map(|(_, content)| content.plain_text.clone())
+    }
+
     /// The text of the editor paste `id` whose content waits here (a ready paste taken out of the
     /// queue without being delivered, #1446 / #1571), removed.
     pub(crate) fn take_paste_payload_text(&mut self, id: u64) -> Option<String> {
