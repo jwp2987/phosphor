@@ -1706,8 +1706,8 @@ case "'${SHELL##*/}'" in
       HISTIGNORE=" *"
       WARP_SESSION_ID='$remote_session_id'
       WARP_HONOR_PS1="'$WARP_HONOR_PS1'"
-      _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)
-      _user=$(command -v whoami >/dev/null 2>&1 && command whoami 2>/dev/null || echo $USER)
+      _hostname=${HOSTNAME:-$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n)}
+      _user=${USER:-$(command -v whoami >/dev/null 2>&1 && command whoami 2>/dev/null || echo $USER)}
       _ju=${_user//\\/\\\\}; _ju=${_ju//\"/\\\"}; _jh=${_hostname//\\/\\\\}; _jh=${_jh//\"/\\\"}; for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 127; do printf -v _o %03o $_i; printf -v _c "\\$_o"; printf -v _h "\\\\u%04x" $_i; _ju=${_ju//$_c/$_h}; _jh=${_jh//$_c/$_h}; done
       _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_ju" "$_jh" | command -p od -An -v -tx1 | command -p tr -d " \n")'"
       WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@
