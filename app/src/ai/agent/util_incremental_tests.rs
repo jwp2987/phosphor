@@ -17,6 +17,11 @@ const CORPUS: &[&str] = &[
     "```python path=/src/app.py start=10\ndef f():\n    return 1\n```\n",
     "```mermaid\ngraph TD\n  A --> B\n```\ntext after diagram\n",
     "```bash\nunterminated fence\nstill code\n",
+    "~~~rust\nfn main() {}\n~~~\nafter\n",
+    "~~~mermaid\ngraph TD\n  A --> B\n~~~\ntext after diagram\n",
+    "~~~md\n```rust\nlet x = 1;\n```\n~~~\nafter\n",
+    "~~~~\n~~~\nstill code\n~~~~\nafter\n",
+    "~~~bash\nunterminated tilde fence\nstill code\n",
     "```\n```\nempty code block\n",
     "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\nOutro\n",
     "Intro\n| A | B |\n| --- | --- |\n| 1 | 2 |\nnot a row\n",
@@ -283,4 +288,35 @@ fn a_piece_ending_in_a_blank_line_keeps_resuming_while_a_table_streams() {
         while_table_streamed <= 64 * chunks,
         "parsed {while_table_streamed} Markdown bytes over {chunks} table chunks"
     );
+}
+
+#[test]
+fn tilde_fences_stream_like_full_conversion() {
+    let inputs = [
+        "Intro\n\n~~~rust\nfn main() {}\n~~~\n\nAfter\n",
+        "~~~mermaid\ngraph TD\n  A --> B\n~~~\n",
+        "~~~md\n```rust\nlet x = 1;\n```\n~~~\nafter\n",
+        "~~~~\n~~~\nstill code\n~~~~\nafter\n",
+        "~~~bash\nunterminated tilde fence\nstill code",
+    ];
+    for text in inputs {
+        assert_streams_like_full_conversion(text, char_boundaries(text));
+        assert_streams_like_full_conversion(text, random_boundaries(text, 7, 5));
+    }
+}
+
+#[test]
+fn unterminated_tilde_fence_streams_as_open_code() {
+    let mut parser = IncrementalTextSections::default();
+    let mut sections = Vec::new();
+    parser.update("before\n~~~python\nx = 1\n", &mut sections);
+    assert!(matches!(
+        sections.last(),
+        Some(AIAgentTextSection::Code { code, .. }) if code == "x = 1"
+    ));
+    parser.update("before\n~~~python\nx = 1\n```\ny = 2\n", &mut sections);
+    assert!(matches!(
+        sections.last(),
+        Some(AIAgentTextSection::Code { code, .. }) if code == "x = 1\n```\ny = 2"
+    ));
 }

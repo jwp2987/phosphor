@@ -278,3 +278,62 @@ fn extracts_multiple_mermaid_code_blocks_in_order() {
         _ => panic!("expected second section to be MermaidDiagram"),
     }
 }
+
+#[test]
+fn tilde_fence_is_a_code_block() {
+    let sections = parse_markdown_into_text_and_code_sections("~~~rust\nfn main() {}\n~~~\nafter");
+    assert_eq!(sections.len(), 2);
+    match &sections[0] {
+        AIAgentTextSection::Code { code, language, .. } => {
+            assert_eq!(code, "fn main() {}");
+            assert!(language.is_some());
+        }
+        _ => panic!("expected code section"),
+    }
+    assert!(matches!(sections[1], AIAgentTextSection::PlainText { .. }));
+}
+
+#[test]
+fn tilde_mermaid_fence_is_a_mermaid_section() {
+    let sections = parse_markdown_into_text_and_code_sections("~~~mermaid\ngraph TD\nA --> B\n~~~");
+    assert_eq!(sections.len(), 1);
+    match &sections[0] {
+        AIAgentTextSection::MermaidDiagram { diagram } => {
+            assert_eq!(diagram.source, "graph TD\nA --> B");
+        }
+        _ => panic!("expected mermaid diagram section"),
+    }
+}
+
+#[test]
+fn backtick_fence_inside_tilde_fence_is_code_text() {
+    let sections =
+        parse_markdown_into_text_and_code_sections("~~~md\n```rust\nlet x = 1;\n```\n~~~\nafter");
+    assert_eq!(sections.len(), 2);
+    match &sections[0] {
+        AIAgentTextSection::Code { code, .. } => {
+            assert_eq!(code, "```rust\nlet x = 1;\n```");
+        }
+        _ => panic!("expected code section"),
+    }
+}
+
+#[test]
+fn closing_fence_must_match_character_and_length() {
+    // A shorter tilde run and a backtick run do not close a four-tilde fence.
+    let sections = parse_markdown_into_text_and_code_sections("~~~~\na\n~~~\n```\nb\n~~~~\nafter");
+    match &sections[0] {
+        AIAgentTextSection::Code { code, .. } => assert_eq!(code, "a\n~~~\n```\nb"),
+        _ => panic!("expected code section"),
+    }
+}
+
+#[test]
+fn unterminated_tilde_fence_is_a_code_block() {
+    let sections = parse_markdown_into_text_and_code_sections("~~~bash\nls\nstill code");
+    assert_eq!(sections.len(), 1);
+    assert!(matches!(
+        &sections[0],
+        AIAgentTextSection::Code { code, .. } if code == "ls\nstill code"
+    ));
+}
