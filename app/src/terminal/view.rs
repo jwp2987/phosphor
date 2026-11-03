@@ -12219,12 +12219,21 @@ impl TerminalView {
         if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
             return true;
         }
+        // #1051: a Ctrl-C during a PowerShell subshell setup has its own row in the terminal's
+        // routing, as for the typed keys (review R3).
+        if chars == "\u{3}" && self.powershell_setup_hold != PowerShellSetupHold::Off {
+            return true;
+        }
         if !abort && self.holds_keys_for_powershell_subshell_setup() {
             return true;
         }
         let snapshot = self.read_key_snapshot();
-        let agent_owns_key = !abort && snapshot.agent_owns_pty;
-        (snapshot.is_long_running() && !agent_owns_key)
+        // The agent drives the command: every key from the input gap stays with the input, the
+        // abort keys too, as before #1552 (a) (review R2).
+        if snapshot.agent_owns_pty {
+            return false;
+        }
+        snapshot.is_long_running()
             || self.typeahead_handoff_routes_keys_to_pty()
             || self.forwards_keys_during_subshell_bootstrap(abort)
     }
@@ -12286,9 +12295,12 @@ impl TerminalView {
         // text field), with no card or other pane child holding it, sends control keys through
         // the terminal's routing like the typed keys of the same gap. An unknown pane child
         // (`gap_leaf == "other"`) or a card keeps its own Enter (Fable B1).
+        // An open menu of the input (voltron, a chip menu) binds its own Enter/Escape: a key
+        // typed inside the input while one is open stays with it (review R1).
         facts.input_gap_focus = matches!(gap_leaf, "input_view" | "in_input")
             && !facts.in_text_field
-            && focus_snap == input_queue::FocusSnap::Other;
+            && focus_snap == input_queue::FocusSnap::Other
+            && !(gap_leaf == "in_input" && self.input.as_ref(ctx).has_open_menu(ctx));
         let target = pane_key::key_target(class, &facts);
         warpui::input_order::log_key_hop("kh_pane_key", || {
             format!(

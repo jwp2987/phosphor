@@ -8552,6 +8552,21 @@ impl Input {
         ctx.focus_self();
     }
 
+    /// #1552: whether a menu of the input that binds its own Enter/Escape is open: voltron, a chip
+    /// menu of the prompt, or a chip menu of the agent input footer (the views `on_focus` hands
+    /// self-focus to). A key typed with focus inside the input while one is open is that menu's.
+    pub fn has_open_menu(&self, ctx: &AppContext) -> bool {
+        self.is_voltron_open
+            || self.prompt_render_helper.has_open_chip_menu(ctx)
+            || self.agent_input_footer.as_ref(ctx).has_open_chip_menu(ctx)
+    }
+
+    /// Test seam (#1552): marks voltron open without building it.
+    #[cfg(test)]
+    pub(crate) fn set_voltron_open_for_test(&mut self, open: bool) {
+        self.is_voltron_open = open;
+    }
+
     pub fn input_type(&self, app: &AppContext) -> InputType {
         self.ai_input_model.as_ref(app).input_type()
     }

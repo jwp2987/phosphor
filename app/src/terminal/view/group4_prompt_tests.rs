@@ -489,19 +489,31 @@ fn enter_with_focus_on_the_input_view_during_an_agent_command_never_reaches_the_
             let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
             let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
-            let (typed, enter) = terminal.update(&mut app, |view, ctx| {
+            // Also the hand-off's writes (`WriteHandoffUserBytesToPty`), review R2.
+            let all_pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let (typed, enter, ctrl_c, ctrl_d) = terminal.update(&mut app, |view, ctx| {
                 assert!(view.agent_owns_command_pty());
                 let chain = vec![view.view_id, view.input.id()];
                 let typed = pane_typed_with_focus(view, "a", chain.clone(), ctx);
-                let enter = pane_enter_with_focus(view, chain, ctx);
-                (typed, enter)
+                let enter = pane_enter_with_focus(view, chain.clone(), ctx);
+                // The abort keys stay with the input too, as before #1552 (a) (review R2).
+                let ctrl_c = pane_control_with_focus(view, "ctrl-c", "\u{3}", chain.clone(), ctx);
+                let ctrl_d = pane_control_with_focus(view, "ctrl-d", "\u{4}", chain, ctx);
+                (typed, enter, ctrl_c, ctrl_d)
             });
             assert_eq!(typed, PaneKeyOutcome::Consumed, "{mode:?}");
             assert_eq!(enter, PaneKeyOutcome::NotMine, "{mode:?}");
+            assert_eq!(ctrl_c, PaneKeyOutcome::NotMine, "{mode:?}");
+            assert_eq!(ctrl_d, PaneKeyOutcome::NotMine, "{mode:?}");
             assert!(
                 pty_writes.borrow().is_empty(),
                 "no user byte may reach the agent's command: {:?}",
                 pty_writes.borrow()
+            );
+            assert!(
+                all_pty_writes.borrow().is_empty(),
+                "no user byte may reach the agent's command: {:?}",
+                all_pty_writes.borrow()
             );
             terminal.read(&app, |view, ctx| {
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "a");
@@ -532,6 +544,148 @@ fn the_prompt_after_a_long_running_command_hands_focus_back_only_from_a_gap() {
             assert!(
                 !view.focus_hand_back_at_prompt,
                 "the Precmd consumes the mark"
+            );
+        });
+    });
+}
+
+/// A control key press (`keystroke`, all control `chars`) delivered to the pane's key sink with
+/// `focus_chain` focused.
+fn pane_control_with_focus(
+    view: &mut TerminalView,
+    keystroke: &str,
+    chars: &str,
+    focus_chain: Vec<EntityId>,
+    ctx: &mut ViewContext<TerminalView>,
+) -> PaneKeyOutcome {
+    let key = PaneKey {
+        seq: 0,
+        kind: PaneKeyKind::KeyDown {
+            keystroke: warpui::keymap::Keystroke::parse(keystroke).expect("keystroke parses"),
+            chars: chars.to_owned(),
+            is_composing: false,
+            will_type: false,
+            key_without_modifiers: None,
+        },
+    };
+    view.on_pane_key_event(
+        &key,
+        &PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text: false,
+        },
+        ctx,
+    )
+}
+
+/// #1552 (a), review R1: an open menu of the input (voltron here; a chip menu of the prompt or of
+/// the agent footer the same) binds its own Enter/Escape. With a long command running and focus
+/// inside the input on that menu, the Enter stays with the menu: nothing reaches the pty.
+#[test]
+fn enter_inside_the_input_with_an_open_menu_stays_with_the_menu() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let (enter, escape) = terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.model.lock().simulate_long_running_block("cat", "");
+                view.input
+                    .update(ctx, |input, _| input.set_voltron_open_for_test(true));
+                let chain = vec![view.view_id, view.input.id(), EntityId::new()];
+                let enter = pane_enter_with_focus(view, chain.clone(), ctx);
+                let escape = pane_control_with_focus(view, "escape", "\u{1b}", chain, ctx);
+                (enter, escape)
+            });
+            assert_eq!(enter, PaneKeyOutcome::NotMine, "{mode:?}");
+            assert_eq!(escape, PaneKeyOutcome::NotMine, "{mode:?}");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    }
+}
+
+/// #1552 (a), review R3: a Ctrl-C typed from the input view during a PowerShell subshell setup
+/// takes the setup's own Ctrl-C row of the terminal's routing (#1051), as a typed key would,
+/// instead of being left to the input.
+#[test]
+fn ctrl_c_from_the_input_view_during_a_powershell_setup_takes_the_setup_row() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let outcome = terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.powershell_setup_hold = PowerShellSetupHold::Setup;
+                assert!(view.input_gap_control_key_follows_pty("\u{3}", ctx));
+                let chain = vec![view.view_id, view.input.id()];
+                pane_control_with_focus(view, "ctrl-c", "\u{3}", chain, ctx)
+            });
+            assert_eq!(outcome, PaneKeyOutcome::Consumed, "{mode:?}");
+        });
+    }
+}
+
+/// #1552 (b), review R4: a long-running block's `AfterBlockCompleted` marks the hand-back, and
+/// its Precmd moves focus out of a gap inside the input (voltron's view, the menu since closed)
+/// to the input's editor.
+#[test]
+fn the_prompt_after_a_long_running_command_moves_focus_out_of_a_gap() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            // `Input::on_focus` hands self-focus to voltron while it is open.
+            view.input
+                .update(ctx, |input, _| input.set_voltron_open_for_test(true));
+            ctx.focus(&view.input);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.input
+                .update(ctx, |input, _| input.set_voltron_open_for_test(false));
+            assert!(
+                !view.input.as_ref(ctx).editor().is_focused(ctx),
+                "focus is in a gap inside the input"
+            );
+            // What `AfterBlockCompleted` does for a block that went long-running.
+            view.did_notify_long_running = true;
+            view.focus_hand_back_at_prompt |= view.did_notify_long_running;
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(!view.focus_hand_back_at_prompt);
+        });
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                view.input.as_ref(ctx).editor().is_focused(ctx),
+                "the Precmd handed focus back to the editor"
+            );
+        });
+    });
+}
+
+/// #1552 (b), review R4: the find bar is never a gap: with the hand-back marked, the Precmd
+/// leaves focus on it.
+#[test]
+fn the_prompt_after_a_long_running_command_leaves_the_find_bar_focused() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            ctx.focus(&view.find_bar);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(view.find_bar.is_self_or_child_focused(ctx));
+            view.focus_hand_back_at_prompt = true;
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(!view.focus_hand_back_at_prompt);
+        });
+        terminal.update(&mut app, |view, ctx| {
+            assert!(
+                view.find_bar.is_self_or_child_focused(ctx),
+                "the find bar keeps focus"
             );
         });
     });
