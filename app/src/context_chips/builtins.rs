@@ -300,6 +300,13 @@ const GIT_ENV: &[(&str, &str)] = &[("GIT_OPTIONAL_LOCKS", "0")];
 pub(crate) const GIT_BRANCHES_FOR_CORRECTIONS_COMMAND: &str =
     "git --no-optional-locks branch --no-color";
 
+/// The one listing of every git alias that the completer's alias lookups are answered from
+/// (#1342). On Windows it was still a `powershell.exe -EncodedCommand` per repository and
+/// config change; it is a single git program, so it is run directly as well. PowerShell passes
+/// `'^alias.'` to git as `^alias.`, so the direct argument is the same text.
+pub(crate) const GIT_ALIAS_LISTING_COMMAND: &str =
+    "git --no-optional-locks config --get-regexp '^alias.'";
+
 /// Recognises the PowerShell chip commands that run at prompts and are only external programs,
 /// so the local executor can start those programs itself instead of a `pwsh -NoProfile` process
 /// (#1230): a pwsh start costs 140-250 ms and ~0.25 s of CPU on Linux and several times that on
@@ -317,6 +324,13 @@ pub(crate) fn direct_powershell_invocation(command: &str) -> Option<DirectPlan> 
         return Some(DirectPlan::Single(DirectInvocation {
             program: "git",
             args: &["--no-optional-locks", "branch", "--no-color"],
+            env: GIT_ENV,
+        }));
+    }
+    if command == GIT_ALIAS_LISTING_COMMAND {
+        return Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "config", "--get-regexp", "^alias."],
             env: GIT_ENV,
         }));
     }

@@ -23,9 +23,9 @@
 //! (`InputQueue::on_focus_changed`), which clears the line pin.
 //!
 //! The legacy fields stay (they are removed in step 8). Until then the machine runs next to
-//! them: in `shadow` mode `kh_ssh_phase_disagree` reports a difference between the two phases; in
-//! `table` mode the machine's phase is the one the facts carry and the key path no longer
-//! refreshes the gate.
+//! them: in `table` mode (the default since 2026-11-02) the machine's phase is the one the facts
+//! carry and the key path no longer refreshes the gate; in `shadow` mode `kh_ssh_phase_disagree`
+//! reports a difference between the two phases.
 
 use super::facts::SshPhase;
 
