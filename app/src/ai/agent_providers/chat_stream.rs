@@ -8260,6 +8260,7 @@ pub async fn generate_byop_output(
                     params.codebase_context_enabled,
                     &params.codebase_symbols,
                     tools::codebase_runtime::codebase_unavailable_reason(&params.session_context),
+                    params.codebase_index_note,
                 );
 
                 let result_content = serde_json::to_string(&result_json)
@@ -9029,6 +9030,7 @@ fn dispatch_byop_codebase_tool(
     codebase_context_enabled: bool,
     symbols: &[tools::codebase_runtime::CodebaseSymbol],
     unavailable: Option<&'static str>,
+    index_note: Option<&'static str>,
 ) -> Value {
     use tools::codebase_runtime;
     if !codebase_context_enabled {
@@ -9044,7 +9046,10 @@ fn dispatch_byop_codebase_tool(
     }
     match serde_json::from_str::<codebase_runtime::SearchCodebaseArgs>(args_str) {
         Ok(args) => {
-            let out = codebase_runtime::run_search_codebase(args, symbols);
+            let mut out = codebase_runtime::run_search_codebase(args, symbols);
+            // Says why the index is empty or incomplete, so `no_index` / `no_matches` is not
+            // read as "the repository has no such symbol" (#1276).
+            out.note = index_note.map(str::to_owned);
             codebase_runtime::search_output_to_json(&out)
         }
         Err(e) => codebase_runtime::error_to_json(&anyhow::anyhow!("invalid_arguments: {e}")),

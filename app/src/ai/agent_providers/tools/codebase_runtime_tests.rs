@@ -256,3 +256,57 @@ fn symbol_cache_rebuilds_only_on_version_or_repo_change() {
     assert_eq!(builds.get(), 3, "different repo: rebuilt");
     assert_eq!(other[0].name, "other");
 }
+
+/// #1276: every index state that leaves the snapshot empty or incomplete has a note that says
+/// why; a complete index has none.
+#[test]
+fn codebase_index_state_notes_explain_empty_or_partial_results() {
+    assert!(
+        CodebaseIndexState::Disabled
+            .note()
+            .unwrap()
+            .contains("outline_codebase_symbols_for_at_context_menu")
+    );
+    assert!(
+        CodebaseIndexState::NoRepository
+            .note()
+            .unwrap()
+            .contains("no git repository")
+    );
+    assert!(
+        CodebaseIndexState::Building
+            .note()
+            .unwrap()
+            .contains("still being built")
+    );
+    assert!(
+        CodebaseIndexState::Failed
+            .note()
+            .unwrap()
+            .contains("failed")
+    );
+    assert!(
+        CodebaseIndexState::Partial
+            .note()
+            .unwrap()
+            .contains("partial")
+    );
+    assert_eq!(CodebaseIndexState::Complete.note(), None);
+}
+
+/// #1276: the note is serialized only when present.
+#[test]
+fn search_output_note_is_serialized_only_when_present() {
+    let mut out = run_search_codebase(
+        SearchCodebaseArgs {
+            query: "anything".to_owned(),
+            max_results: None,
+        },
+        &[],
+    );
+    assert_eq!(out.status, "no_index");
+    assert!(search_output_to_json(&out).get("note").is_none());
+    out.note = CodebaseIndexState::Building.note().map(str::to_owned);
+    let json = search_output_to_json(&out);
+    assert!(json["note"].as_str().unwrap().contains("still being built"));
+}

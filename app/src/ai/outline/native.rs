@@ -37,7 +37,8 @@ pub enum RepoOutlinesEvent {
     OutlinesUpdated(PathBuf),
 }
 
-const MAX_REPO_FILE_SIZE_LIMIT: usize = 5000;
+/// The most files an outline parses; a larger repository gets a partial outline.
+pub const MAX_REPO_FILE_SIZE_LIMIT: usize = 5000;
 
 /// Source of outline versions. Global (not per-model) so a version never repeats across
 /// `RepoOutlines` instances, which keeps version-keyed caches correct in tests and on
@@ -244,6 +245,16 @@ impl RepoOutlines {
     /// feed the (cloud) codebase semantic-search feature. That feature is not
     /// present in this fork, so outlines are driven solely by the local @ context
     /// menu symbol setting.
+    /// Whether outlines are built at all (indexing allowed and the "outline codebase symbols
+    /// for @ context menu" setting on). When false, no repository ever gets an outline, so
+    /// readers can say why instead of reporting an empty index (#1276).
+    pub fn outlines_enabled(&self, app: &warpui::AppContext) -> bool {
+        self.indexing_enabled
+            && *InputSettings::as_ref(app)
+                .outline_codebase_symbols_for_at_context_menu
+                .value()
+    }
+
     fn should_build_outlines(&self, ctx: &ModelContext<Self>) -> bool {
         self.indexing_enabled
             && *InputSettings::as_ref(ctx)
