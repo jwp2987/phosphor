@@ -1139,6 +1139,68 @@ fn test_pane_group_restore_loop_keeps_orchestration_topology_and_materializes_ch
     });
 }
 
+/// #1103: "Restart shell" replaces a pane whose shell exited with the pane session restoration
+/// builds from its snapshot, in its place: the same session uuid, a live model, focus on the new
+/// pane, and the text left in the dead pane's editor handed back to the new editor (never
+/// written to the new shell). A pane whose shell is still alive is left alone. (Which blocks are
+/// carried over is `blocks_test::test_serialized_blocks_for_shell_restart_*`.)
+#[test]
+fn test_restart_exited_shell_replaces_the_pane_in_place() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+            let terminal_pane_id = pane_id.as_terminal_pane_id().expect("terminal pane");
+            let old_uuid = panes
+                .terminal_session_by_id(pane_id)
+                .expect("terminal pane")
+                .session_uuid();
+            let old_view = panes
+                .terminal_view_from_pane_id(pane_id, ctx)
+                .expect("terminal view");
+
+            // A live shell is never restarted.
+            assert!(!panes.restart_exited_shell(terminal_pane_id, ctx));
+            assert!(panes.has_pane_id(pane_id));
+
+            old_view.update(ctx, |view, ctx| {
+                view.input().update(ctx, |input, ctx| {
+                    input.replace_buffer_content("typed before the shell died", ctx);
+                });
+                view.model
+                    .lock()
+                    .exit(crate::terminal::model::terminal_model::ExitReason::ShellProcessExited);
+            });
+
+            assert!(panes.restart_exited_shell(terminal_pane_id, ctx));
+            assert!(!panes.has_pane_id(pane_id));
+
+            let new_pane_id = panes.focused_pane_id(ctx);
+            assert_ne!(new_pane_id, pane_id);
+            let new_pane = panes
+                .terminal_session_by_id(new_pane_id)
+                .expect("the replacement is a terminal pane");
+            assert_eq!(new_pane.session_uuid(), old_uuid);
+            let new_view = new_pane.terminal_view(ctx);
+            assert_ne!(new_view.id(), old_view.id());
+            let new_view = new_view.as_ref(ctx);
+            assert!(!new_view.model.lock().has_exited());
+            assert_eq!(
+                new_view.input().as_ref(ctx).buffer_text(ctx),
+                "typed before the shell died"
+            );
+
+            // The new pane's shell is alive: asking again does nothing.
+            let new_terminal_pane_id = new_pane_id.as_terminal_pane_id().expect("terminal pane");
+            assert!(!panes.restart_exited_shell(new_terminal_pane_id, ctx));
+            assert!(panes.has_pane_id(new_pane_id));
+        });
+    });
+}
+
 #[test]
 fn test_active_session_id_reset_on_last_pane_close() {
     App::test((), |mut app| async move {

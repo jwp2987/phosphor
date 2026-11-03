@@ -2877,6 +2877,29 @@ impl BlockList {
         &self.blocks
     }
 
+    /// The blocks a pane whose shell is restarted in place carries over to its new session
+    /// (jwp2987/phosphor#1103), serialized the way session restoration reads them: every
+    /// restored block whose content has loaded, and every command run in this session, including
+    /// the one that was still running when the shell died. Bootstrap, background, static and
+    /// in-band blocks are left out, as persistence leaves them out, and so is a prompt at which
+    /// no command was started.
+    pub fn serialized_blocks_for_shell_restart(&self) -> Vec<SerializedBlockListItem> {
+        self.blocks
+            .iter()
+            .filter(|block| {
+                !block.is_for_in_band_command
+                    && !block.is_static()
+                    && !block.is_background()
+                    && !block.is_restore_pending()
+                    && !block.is_restore_failed()
+                    && (block.is_restored()
+                        || (block.bootstrap_stage() == BootstrapStage::PostBootstrapPrecmd
+                            && !block.is_command_empty()))
+            })
+            .map(|block| SerializedBlockListItem::from(SerializedBlock::from(block)))
+            .collect()
+    }
+
     /// The widest `size().columns` among the blocks that are currently rendered, or `None`
     /// when no block is visible under the current transcript scope.
     ///

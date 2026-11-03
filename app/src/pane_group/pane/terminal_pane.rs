@@ -70,6 +70,11 @@ pub struct TerminalPane {
     /// within a couple of seconds of launch would otherwise permanently reset
     /// every not-yet-loaded restored tab to a default `~` session.
     restored_state: Option<RestoredTerminalState>,
+
+    /// Set while a shell restarted in place (#1103) hands this pane's session uuid to its
+    /// replacement: the pane closed by the swap must not delete the blocks saved under it, which
+    /// the replacement now owns. See [`PaneGroup::restart_exited_shell`].
+    keep_persisted_blocks_on_close: std::cell::Cell<bool>,
 }
 
 /// The parts of a [`TerminalPaneSnapshot`] that only the shell can report
@@ -111,7 +116,13 @@ impl TerminalPane {
             pane_configuration,
             view,
             restored_state: None,
+            keep_persisted_blocks_on_close: std::cell::Cell::new(false),
         }
+    }
+
+    /// See [`Self::keep_persisted_blocks_on_close`].
+    pub(in crate::pane_group) fn set_keep_persisted_blocks_on_close(&self, keep: bool) {
+        self.keep_persisted_blocks_on_close.set(keep);
     }
 
     /// Records the persisted state this pane was restored from, so a snapshot
@@ -364,7 +375,11 @@ impl PaneContent for TerminalPane {
                 history_model
                     .clear_conversations_in_terminal_view(self.terminal_view(ctx).id(), ctx);
             });
-            self.delete_blocks(ctx);
+            // A shell restarted in place (#1103) hands the uuid, and the blocks saved under it,
+            // to the pane that replaces this one.
+            if !self.keep_persisted_blocks_on_close.get() {
+                self.delete_blocks(ctx);
+            }
             // Stop the pty and its process tree (local shell, ssh client/ControlMaster). The
             // pane is gone for good, so nothing may keep running behind it (#980).
             let views = self
@@ -683,6 +698,14 @@ fn handle_terminal_view_event(
                 // saved session still has the tab) or just cancelled (jwp2987/phosphor#1103).
                 if warpui::platform::session_end_gate::keep_exited_pane_open() {
                     log::info!("Keeping the pane of an exited shell open: Windows session end");
+                    // Windows killed the shell itself, so what ran in it is gone; if the session
+                    // end is cancelled the user can restart the shell in place from the banner.
+                    // Only their click does it (#1103).
+                    if let Some(terminal_view) =
+                        group.terminal_view_from_pane_id(terminal_pane_id, ctx)
+                    {
+                        terminal_view.update(ctx, |view, ctx| view.offer_shell_restart(ctx));
+                    }
                     return;
                 }
 
@@ -705,6 +728,17 @@ fn handle_terminal_view_event(
             }
             Event::CloseRequested => {
                 group.close_pane_with_confirmation(pane_id, ctx);
+            }
+            Event::RestartExitedShellRequested => {
+                if !group.restart_exited_shell(terminal_pane_id, ctx) {
+                    // Nothing was replaced: offer the button again rather than leave a dead pane
+                    // with no way forward.
+                    if let Some(terminal_view) =
+                        group.terminal_view_from_pane_id(terminal_pane_id, ctx)
+                    {
+                        terminal_view.update(ctx, |view, ctx| view.offer_shell_restart(ctx));
+                    }
+                }
             }
             Event::Pane(pane_event) => group.handle_pane_event(pane_id, pane_event, ctx),
             Event::BlockListCleared => {

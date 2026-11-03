@@ -27631,3 +27631,53 @@ fn corrections_fetch_branches_only_for_a_checkout_pathspec_error() {
         "Switched to branch 'main'"
     ));
 }
+
+/// #1103: the shell-exited banner offers "Restart shell" only when the pane group asks for it
+/// (it kept the pane because Windows ended the shell for a session end), never while the shell is
+/// alive or for an ordinary exit; one click asks the pane group for one restart, and a second
+/// click (or one queued behind the first) asks nothing more.
+#[test]
+fn shell_exited_banner_offers_restart_and_one_click_requests_one_restart() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let restart_requests = Rc::new(RefCell::new(0usize));
+        let requests = restart_requests.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if matches!(event, Event::RestartExitedShellRequested) {
+                    *requests.borrow_mut() += 1;
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            // A live shell has nothing to restart.
+            view.offer_shell_restart(ctx);
+            assert!(!view.is_shell_restart_offered());
+            view.handle_action(&TerminalAction::RestartExitedShell, ctx);
+
+            view.is_login_shell_bootstrapped = true;
+            let reason = crate::terminal::model::terminal_model::ExitReason::ShellProcessExited;
+            view.model.lock().exit(reason);
+            view.handle_terminal_event(&ModelEvent::Exit { reason }, ctx);
+            // An ordinary exit: the banner has no button.
+            assert!(
+                view.inline_banners_state
+                    .shell_process_terminated_banner
+                    .is_some()
+            );
+            assert!(!view.is_shell_restart_offered());
+
+            view.offer_shell_restart(ctx);
+            assert!(view.is_shell_restart_offered());
+            // Offering twice keeps one button.
+            view.offer_shell_restart(ctx);
+            assert!(view.is_shell_restart_offered());
+
+            view.handle_action(&TerminalAction::RestartExitedShell, ctx);
+            assert!(!view.is_shell_restart_offered());
+            view.handle_action(&TerminalAction::RestartExitedShell, ctx);
+        });
+        assert_eq!(*restart_requests.borrow(), 1);
+    })
+}
