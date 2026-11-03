@@ -13,6 +13,24 @@ use crate::ai::{
 
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 
+/// Sorts a document's deltas into document order. Overlapping ranges are an error (the second
+/// edit was matched against text the first one replaces).
+fn order_document_deltas(deltas: &mut [DiffDelta]) -> Result<(), String> {
+    deltas.sort_by_key(|d| (d.replacement_line_range.start, d.replacement_line_range.end));
+    for pair in deltas.windows(2) {
+        if pair[1].replacement_line_range.start < pair[0].replacement_line_range.end {
+            return Err(format!(
+                "two edits overlap (lines {}-{} and {}-{}); combine them into one edit",
+                pair[0].replacement_line_range.start,
+                pair[0].replacement_line_range.end,
+                pair[1].replacement_line_range.start,
+                pair[1].replacement_line_range.end,
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub struct EditDocumentsExecutor;
 
 impl EditDocumentsExecutor {
@@ -105,6 +123,18 @@ impl EditDocumentsExecutor {
             }
         }
 
+        // The document editor applies a document's deltas in one forward pass over the original
+        // lines, so they must be in document order and must not overlap. The model may list two
+        // edits to one document in any order (#1278).
+        let mut document_deltas = document_deltas;
+        for (document_id, deltas) in document_deltas.iter_mut() {
+            if let Err(message) = order_document_deltas(deltas) {
+                error_messages.push(format!(
+                    "Could not apply the diffs to document {document_id}: {message}"
+                ));
+            }
+        }
+
         // If any diffs failed, don't apply any deltas.
         // This result will be sent to the LLM as an error, so we don't want partial applications since they agent won't know about them.
         if !error_messages.is_empty() {
@@ -151,3 +181,7 @@ impl EditDocumentsExecutor {
 impl Entity for EditDocumentsExecutor {
     type Event = ();
 }
+
+#[cfg(test)]
+#[path = "edit_documents_tests.rs"]
+mod tests;

@@ -288,6 +288,17 @@ pub async fn run_webfetch(client: &reqwest::Client, args: FetchArgs) -> Result<F
     response_to_fetch_output(resp, &args.url, &format).await
 }
 
+/// `Err` when adding `incoming` bytes to a body already `have` bytes long passes the size limit.
+fn check_body_growth(have: usize, incoming: usize) -> std::result::Result<(), String> {
+    if have.saturating_add(incoming) > MAX_RESPONSE_SIZE {
+        Err(format!(
+            "Response too large (more than {MAX_RESPONSE_SIZE} bytes limit)"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Shared Response → FetchOutput conversion logic.
 ///
 /// Called by both `run_webfetch` and test helper functions, to avoid duplicating status
@@ -329,13 +340,15 @@ async fn response_to_fetch_output(
         }
     }
 
-    let bytes = resp.bytes().await.context("read response body")?;
-    if bytes.len() > MAX_RESPONSE_SIZE {
-        bail!(
-            "Response too large ({} bytes > {} bytes limit)",
-            bytes.len(),
-            MAX_RESPONSE_SIZE
-        );
+    // Read chunk by chunk so a chunked (no Content-Length) body is refused as soon as it passes
+    // the limit instead of being buffered in full first (#1278).
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.context("read response body")? {
+        if let Err(message) = check_body_growth(bytes.len(), chunk.len()) {
+            bail!(message);
+        }
+        bytes.extend_from_slice(&chunk);
     }
 
     // Image → base64 attachment
@@ -767,6 +780,19 @@ mod webfetch_tests;
 #[cfg(test)]
 #[path = "websearch_tests.rs"]
 mod websearch_tests;
+
+#[cfg(test)]
+mod body_limit_tests {
+    use super::*;
+
+    #[test]
+    fn body_growth_stops_at_the_limit() {
+        assert!(check_body_growth(0, MAX_RESPONSE_SIZE).is_ok());
+        assert!(check_body_growth(MAX_RESPONSE_SIZE - 1, 1).is_ok());
+        assert!(check_body_growth(MAX_RESPONSE_SIZE, 1).is_err());
+        assert!(check_body_growth(usize::MAX, 1).is_err());
+    }
+}
 
 #[cfg(test)]
 mod ssrf_ip_tests {
