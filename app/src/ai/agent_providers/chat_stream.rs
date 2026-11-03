@@ -9158,7 +9158,12 @@ async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enab
         },
     };
     if tool_name == tools::webfetch::TOOL_NAME {
-        match serde_json::from_str::<web_runtime::FetchArgs>(args_str) {
+        // Coerced against the schema on a strict-parse failure, like every registry tool
+        // (#1278): a stringified `timeout` is not worth a retry round trip.
+        match tools::coerce::parse_with_coerce::<web_runtime::FetchArgs>(
+            args_str,
+            tools::webfetch::WEBFETCH.parameters,
+        ) {
             Ok(args) => match web_runtime::run_webfetch(&client, args).await {
                 Ok(out) => web_runtime::fetch_output_to_json(&out),
                 Err(e) => {
@@ -9173,7 +9178,10 @@ async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enab
         }
     } else {
         // websearch
-        match serde_json::from_str::<web_runtime::SearchToolArgs>(args_str) {
+        match tools::coerce::parse_with_coerce::<web_runtime::SearchToolArgs>(
+            args_str,
+            tools::websearch::WEBSEARCH.parameters,
+        ) {
             Ok(args) => {
                 let api_key = std::env::var("EXA_API_KEY").ok();
                 match web_runtime::run_websearch(&client, args, api_key.as_deref(), None).await {

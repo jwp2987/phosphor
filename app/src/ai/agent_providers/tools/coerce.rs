@@ -37,6 +37,23 @@ pub fn coerce_args_against_schema(args_str: &str, schema: &Value) -> Option<Stri
     serde_json::to_string(&value).ok()
 }
 
+/// Parses `args_str` strictly as `T`; when that fails, retries once with the arguments coerced
+/// against `schema`, the same rescue `parse_incoming_tool_call` gives registry tools. For the
+/// locally intercepted tools (webfetch / websearch / todowrite) that parse their own arguments
+/// (#1278). A failed retry returns the ORIGINAL error, which names what the model sent.
+pub fn parse_with_coerce<T: serde::de::DeserializeOwned>(
+    args_str: &str,
+    schema: impl FnOnce() -> Value,
+) -> serde_json::Result<T> {
+    match serde_json::from_str::<T>(args_str) {
+        Ok(parsed) => Ok(parsed),
+        Err(e) => match coerce_args_against_schema(args_str, &schema()) {
+            Some(coerced) => serde_json::from_str::<T>(&coerced).map_err(|_| e),
+            None => Err(e),
+        },
+    }
+}
+
 fn coerce_value(value: &mut Value, schema: &Value, changed: &mut bool) {
     let Some(ty) = schema.get("type").and_then(|t| t.as_str()) else {
         // No type declared in the schema: for an object type, try recursing into
@@ -231,6 +248,42 @@ mod tests {
         assert_eq!(v["is_read_only"], json!(true));
         assert_eq!(v["is_risky"], json!(false));
         assert_eq!(v["uses_pager"], json!(false));
+    }
+
+    /// #1278: a stringified number is rescued by the schema; a strict parse still wins, and an
+    /// unrescuable value reports the original error.
+    #[test]
+    fn parse_with_coerce_rescues_stringified_numbers() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Args {
+            url: String,
+            #[serde(default)]
+            timeout: Option<u64>,
+        }
+        let schema = || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "timeout": {"type": "integer"}
+                },
+                "required": ["url"]
+            })
+        };
+        let rescued: Args =
+            parse_with_coerce(r#"{"url":"https://a","timeout":"30"}"#, schema).unwrap();
+        assert_eq!(
+            rescued,
+            Args {
+                url: "https://a".into(),
+                timeout: Some(30)
+            }
+        );
+        let strict: Args = parse_with_coerce(r#"{"url":"https://a"}"#, schema).unwrap();
+        assert_eq!(strict.timeout, None);
+        let err = parse_with_coerce::<Args>(r#"{"url":"https://a","timeout":"soon"}"#, schema)
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid type"), "{err}");
     }
 
     #[test]

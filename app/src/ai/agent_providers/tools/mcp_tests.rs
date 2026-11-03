@@ -299,3 +299,48 @@ mod result_rendering {
         assert!(value["contents"][1]["omitted"].is_string());
     }
 }
+
+/// #1278: an MCP call whose arguments stringify a value against the tool's own input schema
+/// is corrected before it reaches the server; matching arguments pass through untouched.
+#[test]
+fn mcp_call_arguments_are_coerced_against_the_tool_schema() {
+    let schema: serde_json::Map<String, serde_json::Value> = json!({
+        "type": "object",
+        "properties": {
+            "n": { "type": "integer" },
+            "label": { "type": "string" }
+        }
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let server = mk_server(
+        "id-a",
+        "server-a",
+        vec![Tool::new("count", "counts", Arc::new(schema))],
+        vec![],
+    );
+    let name = function_name(&server, "count");
+    let ctx = MCPContext {
+        #[allow(deprecated)]
+        resources: vec![],
+        #[allow(deprecated)]
+        tools: vec![],
+        servers: vec![server],
+    };
+    let args_of = |arguments: &str| {
+        let tool = super::parse_mcp_tool_call(&name, arguments, Some(&ctx)).unwrap();
+        let warp_multi_agent_api::message::tool_call::Tool::CallMcpTool(call) = tool else {
+            panic!("expected CallMcpTool");
+        };
+        serde_json::Value::Object(super::prost_struct_to_json(&call.args.unwrap()))
+    };
+    assert_eq!(
+        args_of(r#"{"n":"42","label":"x"}"#),
+        json!({"n": 42.0, "label": "x"})
+    );
+    assert_eq!(
+        args_of(r#"{"n":7,"label":"y"}"#),
+        json!({"n": 7.0, "label": "y"})
+    );
+}
