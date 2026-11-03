@@ -1137,14 +1137,21 @@ impl EmbeddedCodeEditorView {
 }
 
 /// Drops every editor in `views` that holds no user state ([`CodeEditorView::holds_user_state`]),
-/// keeping its snippet text and starting line for the rebuild (#1267). Returns how many were dropped.
+/// keeping `codes[index]` (the ORIGINAL snippet text of that code section, which the rebuild uses;
+/// an editor's own `text()` is a re-serialisation that can normalise line endings) and its starting
+/// line (#1267). An editor whose section text is not in `codes` is kept. Returns how many were
+/// dropped.
 pub(crate) fn recycle_embedded_editors(
     views: &mut [EmbeddedCodeEditorView],
+    codes: &[String],
     app: &AppContext,
 ) -> usize {
     let mut dropped = 0;
-    for embedded_view in views.iter_mut() {
+    for (index, embedded_view) in views.iter_mut().enumerate() {
         let Some(view) = embedded_view.view.as_ref() else {
+            continue;
+        };
+        let Some(code) = codes.get(index) else {
             continue;
         };
         let editor = view.as_ref(app);
@@ -1152,7 +1159,7 @@ pub(crate) fn recycle_embedded_editors(
             continue;
         }
         let recycled = RecycledCodeEditor {
-            code: editor.text(app).into_string(),
+            code: code.clone(),
             starting_line_number: editor.starting_line_number(),
         };
         embedded_view.recycled = Some(recycled);
@@ -1160,6 +1167,87 @@ pub(crate) fn recycle_embedded_editors(
         dropped += 1;
     }
     dropped
+}
+
+/// The editor of one fenced code block, before configuration: read-only snippet view, infinite
+/// height, no diff UI. The first build, a rebuild after recycling (#1267) and the tests all start here.
+pub(crate) fn new_snippet_editor(
+    shell_launch_data: Option<ShellLaunchData>,
+    ctx: &mut ViewContext<CodeEditorView>,
+) -> CodeEditorView {
+    CodeEditorView::new(
+        shell_launch_data.map(|data| data.into()),
+        None,
+        CodeEditorRenderOptions::new(VerticalExpansionBehavior::InfiniteHeight),
+        ctx,
+    )
+    .with_can_show_diff_ui(false)
+}
+
+/// Gives a snippet editor its text, language and starting line, selectable, without the
+/// current-line highlight (the configuration every code-block editor gets).
+pub(crate) fn configure_snippet_editor(
+    view: &mut CodeEditorView,
+    code: &str,
+    language: &Option<ProgrammingLanguage>,
+    starting_line_number: Option<usize>,
+    ctx: &mut ViewContext<CodeEditorView>,
+) {
+    view.set_starting_line_number(starting_line_number);
+    view.set_show_current_line_highlights(false, ctx);
+    view.set_interaction_state(InteractionState::Selectable, ctx);
+    let state = InitialBufferState::plain_text(code);
+    view.reset(state, ctx);
+
+    // Apply language immediately on initial creation so restored blocks get syntax highlighting.
+    if let Some(ext) = language.as_ref().and_then(|lang| lang.to_extension()) {
+        let fake_path_string = format!("snippet.{ext}");
+        let fake_path = std::path::Path::new(&fake_path_string);
+        view.set_language_with_path(fake_path, ctx);
+    }
+
+    ctx.notify();
+}
+
+/// Rebuilds every recycled editor in `views` with `build(code, language, starting line)` from the
+/// state kept at recycling (#1267). Returns how many were rebuilt.
+pub(crate) fn restore_embedded_editors(
+    views: &mut [EmbeddedCodeEditorView],
+    mut build: impl FnMut(
+        &str,
+        &Option<ProgrammingLanguage>,
+        Option<usize>,
+    ) -> ViewHandle<CodeEditorView>,
+) -> usize {
+    let recycled = take_recycled_editors(views);
+    let rebuilt = recycled.len();
+    for (index, recycled, language) in recycled {
+        let view = build(&recycled.code, &language, recycled.starting_line_number);
+        if let Some(embedded_view) = views.get_mut(index) {
+            embedded_view.view = Some(view);
+        }
+    }
+    rebuilt
+}
+
+/// A stream update reached a recycled editor (#1267): rebuild it with `build` from the update's
+/// full text, language and starting line, dropping the kept state. Returns whether it rebuilt
+/// (false for an editor that is not recycled, which the caller updates in place).
+pub(crate) fn rebuild_recycled_for_stream(
+    embedded_view: &mut EmbeddedCodeEditorView,
+    code: &str,
+    language: &Option<ProgrammingLanguage>,
+    starting_line_number: Option<usize>,
+    build: impl FnOnce(&str, &Option<ProgrammingLanguage>, Option<usize>) -> ViewHandle<CodeEditorView>,
+) -> bool {
+    if embedded_view.view.is_some() {
+        return false;
+    }
+    embedded_view.recycled = None;
+    embedded_view.language = language.clone();
+    embedded_view.length = code.len();
+    embedded_view.view = Some(build(code, language, starting_line_number));
+    true
 }
 
 /// Takes what each recycled editor in `views` is rebuilt from: (index, kept state, language).
@@ -1181,14 +1269,21 @@ pub(crate) fn take_recycled_editors(
 pub(crate) fn code_editor_recycling_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        !matches!(
+        recycling_flag_enabled(
             std::env::var("PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE")
                 .ok()
-                .map(|v| v.trim().to_ascii_lowercase())
                 .as_deref(),
-            Some("0") | Some("false") | Some("off")
         )
     })
+}
+
+/// The value of `PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE` -> enabled: default on, `0` / `false` / `off`
+/// turn it off.
+pub(crate) fn recycling_flag_enabled(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("0") | Some("false") | Some("off")
+    )
 }
 
 impl AIBlock {
@@ -2916,21 +3011,30 @@ impl AIBlock {
         source: &Option<CodeSource>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if self
+            .code_editor_views
+            .get(index)
+            .is_some_and(|embedded_view| embedded_view.view.is_none())
+        {
+            // Recycled while off screen (#1267) and the stream moved on: rebuild it from the full
+            // current text, which is what a fresh editor is built from anyway.
+            let shell_launch_data = self.shell_launch_data.clone();
+            let starting_line_number = Self::code_starting_line_number(source);
+            rebuild_recycled_for_stream(
+                &mut self.code_editor_views[index],
+                code,
+                language,
+                starting_line_number,
+                |code, language, line| {
+                    Self::build_code_editor_view(shell_launch_data, code, language, line, ctx)
+                },
+            );
+            ctx.notify();
+            return;
+        }
         match self.code_editor_views.get_mut(index) {
             Some(embedded_view) => {
                 let Some(handle) = embedded_view.view.clone() else {
-                    // Recycled while off screen (#1267) and the stream moved on: rebuild it from
-                    // the full current text, which is what a fresh editor is built from anyway.
-                    let starting_line_number = Self::code_starting_line_number(source);
-                    embedded_view.recycled = None;
-                    embedded_view.language = language.clone();
-                    embedded_view.length = code.len();
-                    let view =
-                        self.build_code_editor_view(code, language, starting_line_number, ctx);
-                    if let Some(embedded_view) = self.code_editor_views.get_mut(index) {
-                        embedded_view.view = Some(view);
-                    }
-                    ctx.notify();
                     return;
                 };
                 handle.update(ctx, |view, ctx| {
@@ -2981,7 +3085,13 @@ impl AIBlock {
             }
             None => {
                 let starting_line_number = Self::code_starting_line_number(source);
-                let view = self.build_code_editor_view(code, language, starting_line_number, ctx);
+                let view = Self::build_code_editor_view(
+                    self.shell_launch_data.clone(),
+                    code,
+                    language,
+                    starting_line_number,
+                    ctx,
+                );
                 self.code_editor_views.push(EmbeddedCodeEditorView::new(
                     view,
                     language.clone(),
@@ -3004,36 +3114,15 @@ impl AIBlock {
     /// original (text, language, starting line, selectable, no current-line highlight, the same
     /// event subscription that copy-on-select and the one-selection rule rely on).
     fn build_code_editor_view(
-        &mut self,
+        shell_launch_data: Option<ShellLaunchData>,
         code: &str,
         language: &Option<ProgrammingLanguage>,
         starting_line_number: Option<usize>,
         ctx: &mut ViewContext<Self>,
     ) -> ViewHandle<CodeEditorView> {
-        let view = ctx.add_typed_action_view(|ctx| {
-            CodeEditorView::new(
-                self.shell_launch_data.clone().map(|data| data.into()),
-                None,
-                CodeEditorRenderOptions::new(VerticalExpansionBehavior::InfiniteHeight),
-                ctx,
-            )
-            .with_can_show_diff_ui(false)
-        });
+        let view = ctx.add_typed_action_view(|ctx| new_snippet_editor(shell_launch_data, ctx));
         view.update(ctx, |view, ctx| {
-            view.set_starting_line_number(starting_line_number);
-            view.set_show_current_line_highlights(false, ctx);
-            view.set_interaction_state(InteractionState::Selectable, ctx);
-            let state = InitialBufferState::plain_text(code);
-            view.reset(state, ctx);
-
-            // Apply language immediately on initial creation so restored blocks get syntax highlighting.
-            if let Some(ext) = language.as_ref().and_then(|lang| lang.to_extension()) {
-                let fake_path_string = format!("snippet.{ext}");
-                let fake_path = std::path::Path::new(&fake_path_string);
-                view.set_language_with_path(fake_path, ctx);
-            }
-
-            ctx.notify();
+            configure_snippet_editor(view, code, language, starting_line_number, ctx);
         });
         ctx.subscribe_to_view(&view, |me, view, event, ctx| match event {
             CodeEditorEvent::SelectionChanged => {
@@ -3072,7 +3161,8 @@ impl AIBlock {
         if !code_editor_recycling_enabled() || !self.is_finished() {
             return 0;
         }
-        let dropped = recycle_embedded_editors(&mut self.code_editor_views, ctx);
+        let codes = self.code_section_texts(ctx);
+        let dropped = recycle_embedded_editors(&mut self.code_editor_views, &codes, ctx);
         if dropped > 0 {
             log::debug!(
                 target: "editor_memory",
@@ -3084,22 +3174,32 @@ impl AIBlock {
         dropped
     }
 
+    /// The text of every fenced code section of this block's output, in the order the editors are
+    /// indexed (the order `handle_updated_output` streams them in). The original snippet text, not a
+    /// re-serialisation of an editor buffer, so a rebuilt editor gets exactly what the first got.
+    fn code_section_texts(&self, app: &AppContext) -> Vec<String> {
+        let Some(output) = self.model.status(app).output_to_render() else {
+            return Vec::new();
+        };
+        let output = output.get();
+        output
+            .all_text()
+            .flat_map(|text| text.sections.iter())
+            .filter_map(|section| match section {
+                AIAgentTextSection::Code { code, .. } => Some(code.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// #1267: rebuilds every recycled code-block editor of this block from its kept snippet text,
     /// language and starting line. Returns how many were rebuilt.
     pub fn restore_code_editors(&mut self, ctx: &mut ViewContext<Self>) -> usize {
-        let recycled = take_recycled_editors(&mut self.code_editor_views);
-        let rebuilt = recycled.len();
-        for (index, recycled, language) in recycled {
-            let view = self.build_code_editor_view(
-                &recycled.code,
-                &language,
-                recycled.starting_line_number,
-                ctx,
-            );
-            if let Some(embedded_view) = self.code_editor_views.get_mut(index) {
-                embedded_view.view = Some(view);
-            }
-        }
+        let shell_launch_data = self.shell_launch_data.clone();
+        let rebuilt =
+            restore_embedded_editors(&mut self.code_editor_views, |code, language, line| {
+                Self::build_code_editor_view(shell_launch_data.clone(), code, language, line, ctx)
+            });
         if rebuilt > 0 {
             log::debug!(
                 target: "editor_memory",

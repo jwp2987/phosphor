@@ -2426,6 +2426,38 @@ pub(crate) const AI_CODE_RECYCLE_DISTANCE: usize = 6;
 /// code-block editors rebuilt (before they scroll into view, when scrolling step by step).
 pub(crate) const AI_CODE_REBUILD_DISTANCE: usize = 2;
 
+/// #1267: the recycling plan for one layout. `rich` is every rich-content entry in display order as
+/// (view id, is an AI block); `visible` the rich-content views the last layout showed. Returns
+/// (position in `rich`, action) for each AI block, by its distance in entries from the nearest
+/// visible one ([`ai_code_recycle_action`]). Empty when nothing is visible: there is no distance to
+/// measure, so nothing is recycled.
+pub(crate) fn ai_code_recycle_plan(
+    rich: &[(EntityId, bool)],
+    visible: &[EntityId],
+) -> Vec<(usize, AICodeRecycleAction)> {
+    let visible_positions: Vec<usize> = rich
+        .iter()
+        .enumerate()
+        .filter(|(_, (id, _))| visible.contains(id))
+        .map(|(position, _)| position)
+        .collect();
+    if visible_positions.is_empty() {
+        return Vec::new();
+    }
+    rich.iter()
+        .enumerate()
+        .filter(|(_, (_, is_ai_block))| *is_ai_block)
+        .map(|(position, _)| {
+            let distance = visible_positions
+                .iter()
+                .map(|visible| visible.abs_diff(position))
+                .min()
+                .unwrap_or(usize::MAX);
+            (position, ai_code_recycle_action(distance))
+        })
+        .collect()
+}
+
 /// What [`TerminalView::recycle_ai_code_editors`] does with one AI block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AICodeRecycleAction {
@@ -29421,33 +29453,24 @@ impl TerminalView {
         if !crate::ai::blocklist::block::code_editor_recycling_enabled() {
             return;
         }
-        let visible_positions: Vec<usize> = self
+        let rich: Vec<(EntityId, bool)> = self
             .rich_content_views
             .iter()
-            .enumerate()
-            .filter(|(_, rich_content)| visible.contains(&rich_content.view_id()))
-            .map(|(position, _)| position)
-            .collect();
-        if visible_positions.is_empty() {
-            return;
-        }
-        let blocks: Vec<(usize, ViewHandle<AIBlock>)> = self
-            .rich_content_views
-            .iter()
-            .enumerate()
-            .filter_map(|(position, rich_content)| {
-                rich_content
-                    .ai_block_metadata()
-                    .map(|metadata| (position, metadata.ai_block_handle.clone()))
+            .map(|rich_content| {
+                (
+                    rich_content.view_id(),
+                    rich_content.ai_block_metadata().is_some(),
+                )
             })
             .collect();
-        for (position, block) in blocks {
-            let distance = visible_positions
-                .iter()
-                .map(|visible| visible.abs_diff(position))
-                .min()
-                .unwrap_or(usize::MAX);
-            match ai_code_recycle_action(distance) {
+        for (position, action) in ai_code_recycle_plan(&rich, &visible) {
+            let Some(block) = self.rich_content_views[position]
+                .ai_block_metadata()
+                .map(|metadata| metadata.ai_block_handle.clone())
+            else {
+                continue;
+            };
+            match action {
                 AICodeRecycleAction::Recycle => {
                     block.update(ctx, |block, ctx| block.recycle_code_editors(ctx));
                 }
