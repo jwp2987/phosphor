@@ -378,7 +378,6 @@ pub fn error_to_json(e: &anyhow::Error) -> Value {
 /// The active-repo outline lookup is intentionally kept inline here rather than shared
 /// with `codebase_runtime::collect_codebase_symbols` — the two request-snapshot builders
 /// stay decoupled, and the outline handle borrows `app` for only the duration of the call.
-#[cfg(not(target_family = "wasm"))]
 pub fn collect_relevant_files_snapshot(
     app: &warpui::AppContext,
     terminal_view_id: Option<warpui::EntityId>,

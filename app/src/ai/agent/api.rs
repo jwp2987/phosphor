@@ -279,7 +279,6 @@ pub(crate) fn collect_user_rules(
 
 pub type Event = Result<warp_multi_agent_api::ResponseEvent, Arc<AIApiError>>;
 
-#[cfg(not(target_family = "wasm"))]
 pub type ResponseStream = Pin<Box<dyn Stream<Item = Event> + Send + 'static>>;
 
 // The WASM version of this type has no bound on `Send`, which is an unnecessary bound when

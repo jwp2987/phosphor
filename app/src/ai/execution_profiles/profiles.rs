@@ -53,7 +53,6 @@ impl fmt::Display for ClientProfileId {
 #[derive(Clone, Debug)]
 pub struct AIExecutionProfileInfo {
     id: ClientProfileId,
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     sync_id: Option<SyncId>,
     data: AIExecutionProfile,
 }
@@ -64,7 +63,6 @@ impl AIExecutionProfileInfo {
     }
 
     /// The Zap Drive sync ID of this profile, if it has been synced.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn sync_id(&self) -> Option<SyncId> {
         self.sync_id
     }
@@ -523,7 +521,6 @@ impl AIExecutionProfilesModel {
     }
 
     /// Look up a local client profile ID from its cloud sync ID.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn get_profile_id_by_sync_id(&self, sync_id: &SyncId) -> Option<ClientProfileId> {
         self.profile_id_to_sync_id
             .iter()

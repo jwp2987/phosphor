@@ -753,7 +753,6 @@ pub fn run() -> Result<()> {
     // Mermaid diagrams render in a child process of this binary (`mermaid-render`), so a stack
     // overflow in the renderer fails one diagram instead of aborting the app (#1557). If the
     // executable path is unavailable, rendering stays in-process.
-    #[cfg(not(target_family = "wasm"))]
     if let Ok(exe) = std::env::current_exe() {
         warp_editor::content::mermaid_diagram::use_subprocess_renderer(exe);
     }
@@ -880,7 +879,6 @@ fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
             init_common(&LaunchMode::RemoteServerDaemon, None)?;
             crate::remote_server::run_daemon(args.identity_key.clone())
         }
-        #[cfg(not(target_family = "wasm"))]
         warp_cli::WorkerCommand::MermaidRender => {
             warp_editor::content::mermaid_diagram::run_render_worker()
         }

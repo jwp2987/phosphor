@@ -351,7 +351,6 @@ impl FileDiff {
 /// After the above two conditions are all met, we can emit the Accepted event with all of the diffs.
 /// This tracks which diffs have been computed.
 #[derive(Clone, Debug)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub struct SavingDiffs {
     pending_diffs: Vec<DiffApplicationState>,
 }
@@ -391,7 +390,6 @@ impl SavingDiffs {
 
 /// The status of saving a file.
 #[derive(Clone, Debug, Default)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 enum SaveStatus {
     #[default]
     Pending,
@@ -451,7 +449,6 @@ impl RevertingDiffs {
 
     /// Records the outcome of write `idx`. Returns `false`, changing nothing,
     /// for a write this attempt is not waiting on.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn write_resolved(&mut self, idx: usize, reverted: bool) -> bool {
         if !self.in_flight.remove(&idx) {
             return false;
@@ -494,7 +491,6 @@ impl RevertWriteGenerations {
     /// Records a fresh generation for a write just put in flight for `idx`,
     /// superseding whatever generation (if any) `idx` previously held, and
     /// returns it.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn dispatched(&mut self, idx: usize) -> u64 {
         let generation = self.next;
         self.next = self.next.wrapping_add(1);
@@ -511,7 +507,6 @@ impl RevertWriteGenerations {
     /// for a stale generation, one whose write has since resolved (and, if a
     /// later attempt dispatched a new write for the same `idx`, been
     /// superseded by a newer generation this returns `false` for too).
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn is_current(&self, idx: usize, generation: u64) -> bool {
         self.current(idx) == Some(generation)
     }
@@ -553,7 +548,6 @@ fn files_to_revert<'a>(
 
 /// The diff application state for a single file.
 #[derive(Clone, Debug, Default)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 struct DiffApplicationState {
     computed_diff: Option<Rc<DiffResult>>,
     save_status: SaveStatus,
@@ -604,7 +598,6 @@ impl CodeDiffState {
     /// Records the outcome of the revert write for pending diff `idx`.
     /// Returns `false`, changing nothing, outside [`Self::Reverting`] or for a
     /// write the revert in progress is not waiting on.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn record_revert_write(&mut self, idx: usize, reverted: bool) -> bool {
         match self {
             CodeDiffState::Reverting(reverting) => reverting.write_resolved(idx, reverted),
@@ -720,7 +713,6 @@ pub struct CodeDiffView {
     identifiers: AIIdentifiers,
     edit_format_kind: RequestFileEditsFormatKind,
     /// `False` until a user makes the first edit to one of the diffs in the view.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     user_edited_file_contents: bool,
     /// The ID of the pane that opened this code diff view.
     /// Used to return to the original pane after editing.
@@ -875,26 +867,21 @@ impl CodeDiffView {
         file_path_for_error: String,
         ctx: &mut ViewContext<Self>,
     ) {
-        #[cfg(not(target_family = "wasm"))]
         let file_path_clone = file_path_for_error;
         #[cfg(target_family = "wasm")]
         let _ = file_path_for_error;
-        #[cfg(not(target_family = "wasm"))]
         let window_id = ctx.window_id();
 
         ctx.subscribe_to_view(diff_view, move |me, _, event, ctx| match event {
             InlineDiffViewEvent::DiffStatusUpdated => {
                 ctx.notify();
             }
-            #[cfg(not(target_family = "wasm"))]
             InlineDiffViewEvent::FileLoaded => {
                 ctx.notify();
             }
-            #[cfg(not(target_family = "wasm"))]
             InlineDiffViewEvent::FileSaved => {
                 me.handle_save_completed(idx, None, ctx);
             }
-            #[cfg(not(target_family = "wasm"))]
             InlineDiffViewEvent::FailedToSave { error } => {
                 crate::safe_error!(
                     safe: ("Failed to save file for accepted AgentMode diffs"),
@@ -1265,7 +1252,6 @@ impl CodeDiffView {
                 });
 
                 // On non-WASM, register the file with FileModel for save support.
-                #[cfg(not(target_family = "wasm"))]
                 {
                     let session_type = &self.diff_session_type;
                     let original_content = diff.base.content.clone();
@@ -2770,7 +2756,6 @@ impl CodeDiffView {
     /// we need to have separate handlers for diff calculation and save completed.
     /// The diffs applied for each CodeEditorView are received individually.
     /// Store this diff, and try to emit the diffs saved event.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn accepted_file_diff_computed(
         &mut self,
         file_idx: usize,
@@ -2789,7 +2774,6 @@ impl CodeDiffView {
     /// we need to have separate handlers for diff calculation and save completed.
     /// The save state for each CodeEditorView are received individually.
     /// Update the accepted diff state, and try to emit the diffs saved event.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn handle_save_completed(
         &mut self,
         file_idx: usize,
@@ -2820,7 +2804,6 @@ impl CodeDiffView {
 
     /// Check if we have all pending diffs computed and saved.
     /// Emit the SavedAcceptedDiffs event if so.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn try_emit_diffs_saved(&mut self, ctx: &mut ViewContext<Self>) {
         if let CodeDiffState::Accepted(state) = &mut self.state {
             let is_complete = state
@@ -3826,7 +3809,6 @@ fn file_context_range_to_editor_range(range: Range<usize>) -> Range<usize> {
 /// verbatim rather than prefixed with the same path a second time. Every other
 /// variant either has no path or hides it behind an unhelpful `Display`, so
 /// those are wrapped with the file being saved.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn save_failure_toast_message(file_path: &str, error: &FileSaveError) -> String {
     match error {
         FileSaveError::Other(message) => message.clone(),

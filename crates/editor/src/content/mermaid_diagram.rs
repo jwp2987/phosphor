@@ -253,7 +253,6 @@ async fn render_bounded(source: String, timeout: Duration) -> anyhow::Result<Byt
     let slot = RenderSlot::acquire(&LIVE_RENDERS, MAX_CONCURRENT_RENDERS).ok_or_else(|| {
         anyhow::anyhow!("too many diagram renders are already running; showing the source")
     })?;
-    #[cfg(not(target_family = "wasm"))]
     if let Some(exe) = SUBPROCESS_RENDERER.get() {
         let mut command = std::process::Command::new(exe);
         command.arg(MERMAID_WORKER_SUBCOMMAND);
@@ -293,7 +292,6 @@ const MAX_MERMAID_SVG_BYTES: usize = 32 * 1024 * 1024;
 
 /// The executable to re-run as the render worker. Unset (tests, benches, embedders that do not
 /// dispatch the worker subcommand) means render in-process.
-#[cfg(not(target_family = "wasm"))]
 static SUBPROCESS_RENDERER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
 /// Renders every diagram in a short-lived child process (`exe mermaid-render`, source on stdin,
@@ -301,7 +299,6 @@ static SUBPROCESS_RENDERER: std::sync::OnceLock<std::path::PathBuf> = std::sync:
 /// in-process can contain (#1557); in a child it only fails that diagram, which then takes the
 /// source fallback. `exe` must dispatch [`MERMAID_WORKER_SUBCOMMAND`] to [`run_render_worker`].
 /// Only the first call has an effect.
-#[cfg(not(target_family = "wasm"))]
 pub fn use_subprocess_renderer(exe: std::path::PathBuf) {
     let _ = SUBPROCESS_RENDERER.set(exe);
 }
@@ -309,7 +306,6 @@ pub fn use_subprocess_renderer(exe: std::path::PathBuf) {
 /// The render worker's body: read the diagram source from stdin, write its SVG to stdout. An
 /// error (or a crash, which the parent sees as a failed exit) means "show the source". Runs the
 /// render on a big-stack thread, the same defence in depth as the in-process path.
-#[cfg(not(target_family = "wasm"))]
 pub fn run_render_worker() -> anyhow::Result<()> {
     use std::io::{Read as _, Write as _};
     let mut bytes = Vec::new();
@@ -333,14 +329,12 @@ pub fn run_render_worker() -> anyhow::Result<()> {
 
 /// State shared between the host thread and the awaiting caller so the caller can kill the child
 /// at the deadline.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Default)]
 struct ChildHandle {
     child: std::sync::Mutex<Option<std::process::Child>>,
     cancelled: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl ChildHandle {
     fn kill(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -356,7 +350,6 @@ impl ChildHandle {
 /// by `timeout` and `MAX_MERMAID_SVG_BYTES`. The UI never blocks: all pipe I/O and the wait run
 /// on a helper thread; the caller awaits a channel. A crash, non-zero exit, oversize or timeout
 /// is an `Err` (the source fallback), and the child is killed and reaped.
-#[cfg(not(target_family = "wasm"))]
 async fn render_in_subprocess(
     mut command: std::process::Command,
     source: String,
@@ -396,7 +389,6 @@ async fn render_in_subprocess(
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn run_worker_process(
     mut command: std::process::Command,
     source: String,

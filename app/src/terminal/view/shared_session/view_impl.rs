@@ -345,7 +345,6 @@ impl TerminalView {
                 old_abort_handle.abort();
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if self.active_viewer_driven_size.is_some() {
             self.restore_pty_to_sharer_size(ctx);
         }
@@ -956,7 +955,6 @@ impl TerminalView {
 
     /// Restores the PTY to the sharer's own terminal size by refreshing
     /// through the normal resize pipeline.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn restore_pty_to_sharer_size(&mut self, ctx: &mut ViewContext<Self>) {
         self.active_viewer_driven_size = None;
         self.refresh_size(ctx);
@@ -964,7 +962,6 @@ impl TerminalView {
 
     /// Resizes the sharer's terminal to match the viewer's reported size,
     /// going through the normal view/model/PTY resize pipeline.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn resize_from_viewer_report(
         &mut self,
         viewer_size: WindowSize,

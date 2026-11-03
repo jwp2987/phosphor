@@ -232,7 +232,6 @@ pub fn codebase_unavailable_reason(
 /// `ai_context_menu::code::data_source::CodeSymbolCache::ensure_symbols_cached`. Returns an
 /// empty vec when no repository is detected or its outline isn't `Complete` yet (the tool then
 /// reports a graceful `no_index` status). Pure local: no cloud, no proto, no server API.
-#[cfg(not(target_family = "wasm"))]
 pub fn collect_codebase_symbols(
     app: &warpui::AppContext,
     session_context: &crate::ai::blocklist::SessionContext,
@@ -291,15 +290,12 @@ pub fn collect_codebase_symbols(
 /// Single-slot cache of the collected symbols keyed by (repo root, outline version). The
 /// version (`RepoOutlines::version`) changes on every outline mutation, so a hit is never
 /// stale.
-#[cfg(not(target_family = "wasm"))]
 static SYMBOL_CACHE: SymbolCache = SymbolCache::new();
 
-#[cfg(not(target_family = "wasm"))]
 pub(crate) struct SymbolCache {
     slot: std::sync::Mutex<Option<(std::path::PathBuf, u64, std::sync::Arc<Vec<CodebaseSymbol>>)>>,
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl SymbolCache {
     pub(crate) const fn new() -> Self {
         Self {

@@ -1,11 +1,9 @@
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::terminal::model::session::active_session::ActiveSession;
 use futures::{FutureExt, future::BoxFuture};
 use warpui::{Entity, EntityId, ModelContext, ModelHandle};
 
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::{
     agent::{AIAgentActionResultType, ReadMCPResourceResult},
     blocklist::{
@@ -13,7 +11,6 @@ use crate::ai::{
         action_model::{AIAgentAction, AIAgentActionType},
     },
 };
-#[cfg(not(target_family = "wasm"))]
 use warpui::SingletonEntity;
 
 pub struct ReadMCPResourceExecutor {
@@ -41,7 +38,6 @@ impl ReadMCPResourceExecutor {
             false
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             let ExecuteActionInput {
                 action:
@@ -83,7 +79,6 @@ impl ReadMCPResourceExecutor {
             ActionExecution::<()>::InvalidAction
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             let ExecuteActionInput { action, .. } = input;
             let AIAgentAction {
@@ -167,7 +162,6 @@ impl Entity for ReadMCPResourceExecutor {
 
 /// The error the model sees when a resource read ran out of time. Says the outcome is unknown
 /// and not to retry on its own, like a timed-out tool call (`mcp::tool_call`).
-#[cfg(not(target_family = "wasm"))]
 pub(crate) fn read_resource_timeout_error(timeout: std::time::Duration) -> rmcp::ServiceError {
     rmcp::ServiceError::McpError(rmcp::model::ErrorData::internal_error(
         format!(
@@ -180,7 +174,6 @@ pub(crate) fn read_resource_timeout_error(timeout: std::time::Duration) -> rmcp:
 }
 
 /// Handles the result of a read_resource request, converting it to an AIAgentActionResultType.
-#[cfg(not(target_family = "wasm"))]
 fn handle_read_resource_result(
     res: Result<rmcp::model::ReadResourceResult, rmcp::ServiceError>,
 ) -> AIAgentActionResultType {

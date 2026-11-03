@@ -36,14 +36,12 @@ pub(crate) const DEFAULT_AGENT_EVENT_FAILURES_BEFORE_ERROR_LOG: usize = 5;
 /// still matters if a real client is ever wired back in.
 // Only consumed by `bounded_run_ids`'s caller in `parent_bridge.rs`, so it is
 // otherwise dead code on the wasm target.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) const DEFAULT_AUTH_ERROR_GIVE_UP_FAILURES: usize = 3;
 
 /// Total wall-clock time a bounded listener keeps retrying, measured from the
 /// first failure since the last successful open/event, before it gives up. Set
 /// larger than the proactive reconnect window so healthy streams are never
 /// affected; it only bounds sustained failure.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) const DEFAULT_AGENT_EVENT_MAX_RETRY_DURATION: Duration = Duration::from_secs(30 * 60);
 
 /// Configuration for the shared agent-event stream driver.
@@ -103,7 +101,6 @@ impl AgentEventDriverConfig {
     /// permanently rejected shuts down instead of reconnecting indefinitely.
     // Only called by `parent_bridge.rs`'s message-bridge listener, so it is
     // otherwise dead code on the wasm target.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn bounded_run_ids(run_ids: Vec<String>, since_sequence: i64) -> Self {
         Self {
             auth_error_give_up_failures: Some(DEFAULT_AUTH_ERROR_GIVE_UP_FAILURES),
@@ -217,7 +214,6 @@ impl AgentEventSource for AgentEventStreamClientEventSource {
                                 "SSE stream error: invalid status code {status_code}: {body}"
                             ))
                         }
-                        #[cfg(not(target_family = "wasm"))]
                         reqwest_eventsource::Error::Transport(err) => {
                             anyhow::Error::new(err).context("SSE stream error")
                         }

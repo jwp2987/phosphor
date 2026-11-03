@@ -77,7 +77,6 @@ pub enum SyncQueueResult {
 impl SyncQueueTaskTrait for SyncTask {
     type Error = Error;
     type Result = SyncQueueResult;
-    #[cfg(not(target_arch = "wasm32"))]
     type Fut = Pin<Box<dyn Future<Output = Result<Self::Result, Self::Error>> + Send>>;
     #[cfg(target_arch = "wasm32")]
     type Fut = Pin<Box<dyn Future<Output = Result<Self::Result, Self::Error>>>>;

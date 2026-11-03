@@ -1,11 +1,9 @@
 use std::path::Path;
 
 use string_offset::ByteOffset;
-#[cfg(not(target_family = "wasm"))]
 use warp_util::standardized_path::StandardizedPath;
 
 mod naive;
-#[cfg(not(target_family = "wasm"))]
 mod semantic;
 
 /// Number of lines per chunk when chunking naively. While there's no guarantee
@@ -99,7 +97,6 @@ pub fn chunk_code<'a>(code: &'a str, path: &'a Path) -> Vec<Fragment<'a>> {
 
 /// Attempts to chunk code semantically, returning [`None`] if the code
 /// could not be chunked for any reason.
-#[cfg(not(target_family = "wasm"))]
 fn try_chunk_code_semantically<'a>(code: &'a str, path: &'a Path) -> Option<Vec<Fragment<'a>>> {
     // A path that cannot be standardized (not absolute, or not valid UTF-8)
     // falls back to naive chunking rather than panicking or guessing.

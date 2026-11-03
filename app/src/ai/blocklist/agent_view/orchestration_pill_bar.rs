@@ -1728,7 +1728,6 @@ fn render_pill(
     // The 3-dot overflow menu offers pane-management actions (open in new
     // pane / tab, focus pane) that don't apply to the single-pane web
     // viewer. Suppress the dots on WASM so the menu can never open.
-    #[cfg(not(target_family = "wasm"))]
     let show_overflow_button = matches!(kind, PillKind::Child);
     #[cfg(target_family = "wasm")]
     let show_overflow_button = {

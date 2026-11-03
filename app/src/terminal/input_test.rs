@@ -13508,7 +13508,6 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
     });
 }
 
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn export_error_message_names_the_failure() {
     let path = std::path::Path::new("/nonexistent-dir/out.md");

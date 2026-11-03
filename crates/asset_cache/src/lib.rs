@@ -172,7 +172,6 @@ fn get_file_path_for_asset(url: &Url, cache_dir: &Path) -> PathBuf {
     cache_dir.join(filename)
 }
 
-#[cfg(not(target_family = "wasm"))]
 async fn persist_bytes(bytes: &Bytes, file: &Path) {
     use async_fs::{OpenOptions, create_dir_all};
     use futures::AsyncWriteExt;

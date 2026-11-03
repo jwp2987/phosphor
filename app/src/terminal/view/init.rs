@@ -401,7 +401,6 @@ pub fn init(app: &mut AppContext) {
         .with_custom_action(CustomAction::FocusInput)
         .with_context_predicate(id!("Terminal")),
         // Paste is not rebindable on the web.
-        #[cfg(not(target_family = "wasm"))]
         EditableBinding::new(
             "terminal:paste",
             crate::t!("keybinding-desc-terminal-paste"),

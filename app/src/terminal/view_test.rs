@@ -15120,7 +15120,6 @@ fn stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop() {
 }
 
 /// What a pty-bound paste scenario does.
-#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, Copy, Debug)]
 enum PtyPasteScenario {
     /// The read answers after the keys were typed.
@@ -15137,7 +15136,6 @@ enum PtyPasteScenario {
 
 /// Runs one pty-paste scenario on the queue path and returns every byte that reached the pty, in
 /// order (#1353 phase 1).
-#[cfg(not(target_family = "wasm"))]
 async fn pty_paste_bytes(app: &mut App, scenario: PtyPasteScenario) -> Vec<u8> {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
     initialize_app_for_terminal_view(app);
@@ -15251,7 +15249,6 @@ async fn pty_paste_bytes(app: &mut App, scenario: PtyPasteScenario) -> Vec<u8> {
 
 /// #1353 phase 1: a slow clipboard read with keys (and an Enter) typed behind it. The keys wait for
 /// the read, the paste goes out first, then `ls\r`: typed order. Same bytes on the legacy path.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_paste_with_keys_and_enter_behind_a_slow_read_delivers_in_typed_order() {
     App::test((), move |mut app| async move {
@@ -15261,7 +15258,6 @@ fn pty_paste_with_keys_and_enter_behind_a_slow_read_delivers_in_typed_order() {
 }
 
 /// #1353 phase 1: a read that fails writes no paste, keeps the typing, in order, on both paths.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_paste_failed_read_keeps_the_typing_in_order() {
     App::test((), move |mut app| async move {
@@ -15272,7 +15268,6 @@ fn pty_paste_failed_read_keeps_the_typing_in_order() {
 
 /// #1382: a clipboard over the paste cap writes nothing (never a truncated paste) and the typing
 /// behind it follows in order, on both paths.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_paste_over_the_size_cap_is_refused_and_the_typing_kept() {
     App::test((), move |mut app| async move {
@@ -15283,7 +15278,6 @@ fn pty_paste_over_the_size_cap_is_refused_and_the_typing_kept() {
 
 /// #1353 phase 1: Ctrl-C during a pending paste cancels it; earlier typing goes first, the abort
 /// last, and the cancelled read never writes on either path.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_paste_ctrl_c_during_a_pending_read_cancels_it() {
     App::test((), move |mut app| async move {
@@ -15295,7 +15289,6 @@ fn pty_paste_ctrl_c_during_a_pending_read_cancels_it() {
 /// #1353 phase 1 / #1577: the backstop gives up once, hands the keys behind the paste back to the
 /// editor (the scenario asserts the editor's text) and the reader's late answer writes nothing.
 /// Only the key typed before the paste reaches the pty.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_paste_backstop_gives_up_then_the_late_result_is_ignored() {
     App::test((), move |mut app| async move {
@@ -15306,7 +15299,6 @@ fn pty_paste_backstop_gives_up_then_the_late_result_is_ignored() {
 
 /// #1353 phase 1: with nothing pending, keys neither allocate a queue entry nor change the queue:
 /// the idle fast path leaves the queue idle after every write.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_keys_with_no_paste_pending_leave_the_queue_idle() {
     App::test((), |mut app| async move {
@@ -15618,7 +15610,6 @@ fn ctrl_c_during_the_subshell_bootstrap_waits_for_its_last_line() {
 
 /// #1353 phase 2: a paste read that is still pending when the bootstrap starts, with keys typed
 /// behind it, reaches the shell after the bootstrap's last line, paste first, then the keys, once.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn paste_during_the_subshell_bootstrap_then_keys_arrive_in_order_after_it() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};

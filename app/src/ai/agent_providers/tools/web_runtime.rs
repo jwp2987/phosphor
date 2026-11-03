@@ -28,7 +28,6 @@ use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -184,10 +183,8 @@ fn validate_url_not_internal(url_str: &str) -> Result<()> {
 ///
 /// Only available for non-WASM targets: reqwest's `dns` module and
 /// `ClientBuilder::dns_resolver` aren't exposed to WebAssembly.
-#[cfg(not(target_arch = "wasm32"))]
 struct SsrfSafeResolver;
 
-#[cfg(not(target_arch = "wasm32"))]
 impl reqwest::dns::Resolve for SsrfSafeResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         let host = name.as_str().to_owned();
@@ -249,7 +246,6 @@ pub fn build_ssrf_safe_client() -> Result<reqwest::Client> {
         .pool_idle_timeout(Duration::from_secs(30));
     // Only non-WASM targets get the SSRF-safe DNS resolver; WebAssembly doesn't expose
     // reqwest's DNS module.
-    #[cfg(not(target_arch = "wasm32"))]
     let builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
     builder.build().context("build SSRF-safe reqwest client")
 }

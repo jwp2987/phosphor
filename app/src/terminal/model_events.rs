@@ -45,7 +45,6 @@ use crate::{send_telemetry_from_ctx, TelemetryEvent};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SshRemoteServerSupport {
     Enabled,
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     Disabled,
 }
 

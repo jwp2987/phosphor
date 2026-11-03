@@ -227,7 +227,6 @@ fn codebase_unavailable_reason_names_remote_and_unknown_cwd() {
 }
 
 /// #1276: the symbol list is rebuilt only when the outline version changes.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn symbol_cache_rebuilds_only_on_version_or_repo_change() {
     use std::cell::Cell;

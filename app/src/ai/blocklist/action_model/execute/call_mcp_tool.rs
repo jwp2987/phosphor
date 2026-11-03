@@ -3,9 +3,7 @@ use crate::terminal::model::session::active_session::ActiveSession;
 use futures::{FutureExt, future::BoxFuture};
 use warpui::{Entity, EntityId, ModelContext, ModelHandle};
 
-#[cfg(not(target_family = "wasm"))]
 use super::get_server_output_id;
-#[cfg(not(target_family = "wasm"))]
 use crate::{
     TelemetryEvent,
     ai::{
@@ -15,11 +13,8 @@ use crate::{
     },
     send_telemetry_from_app_ctx,
 };
-#[cfg(not(target_family = "wasm"))]
 use itertools::Itertools;
-#[cfg(not(target_family = "wasm"))]
 use uuid::Uuid;
-#[cfg(not(target_family = "wasm"))]
 use warpui::SingletonEntity;
 
 pub struct CallMCPToolExecutor {
@@ -47,7 +42,6 @@ impl CallMCPToolExecutor {
             false
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             let ExecuteActionInput {
                 action:
@@ -85,7 +79,6 @@ impl CallMCPToolExecutor {
             ActionExecution::<()>::InvalidAction
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             let server_output_id = get_server_output_id(input.conversation_id, ctx);
             let conversation_id = input.conversation_id;
@@ -312,7 +305,6 @@ fn coerce_value_against_schema(value: &mut serde_json::Value, schema: &serde_jso
 mod tests;
 
 /// Handles the result of a call_tool request, converting it to an AIAgentActionResultType.
-#[cfg(not(target_family = "wasm"))]
 fn handle_call_tool_result(
     res: Result<rmcp::model::CallToolResult, rmcp::ServiceError>,
     server_output_id: Option<crate::ai::blocklist::action_model::execute::ServerOutputId>,

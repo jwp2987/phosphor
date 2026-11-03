@@ -1612,7 +1612,6 @@ impl TerminalManagerTrait for TerminalManager<TerminalView> {
         // The pane's own `shutdown_for_discard` cannot run for a window that is gone (its
         // views are not updatable), so deregister the remote-server sessions from the model:
         // that stops the `ssh ... remote-server-proxy` and exits an owned ControlMaster.
-        #[cfg(not(target_family = "wasm"))]
         if crate::features::FeatureFlag::SshRemoteServer.is_enabled() {
             let session_ids = {
                 let model = self.model.lock();

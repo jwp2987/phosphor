@@ -334,7 +334,6 @@ fn test_resize_shared_session_viewer_independent_of_sharer() {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn test_on_session_share_ended_restores_size_after_viewer_driven_resize() {
     App::test((), |mut app| async move {
