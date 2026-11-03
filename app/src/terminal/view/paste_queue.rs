@@ -1586,15 +1586,34 @@ impl TerminalView {
                 if self.young_hold_gate_has_key(hold_id) {
                     // The gate outlived a hold with no recorded end: never lose what was typed.
                     log::warn!(
-                        "input queue: young hold {hold_id} is gone but its gate is open; writing its keys"
+                        "input queue: young hold {hold_id} is gone but its gate is open; handing \
+                         its keys back to the editor"
                     );
-                    self.release_young_hold_keys(hold_id, false, ctx);
+                    self.hand_back_young_hold_keys(hold_id, "young_hold_gone", ctx);
                 }
             }
+            // #1577: the cap is a give-up, and a timer never writes user bytes to the pty: the
+            // held Enter and the keys behind it come back to the editor as text (the Enter a
+            // newline, the next Enter consumed once with a toast). The event-driven ends
+            // (`drain_young_hold_ends`: a command, the report) still write them as typeahead.
             YoungHoldExpiry::Release => {
-                self.release_young_hold_keys(hold_id, true, ctx);
+                self.hand_back_young_hold_keys(hold_id, "young_hold_cap", ctx);
             }
         }
+    }
+
+    /// The give-up of young hold `hold_id` as a hand-back (#1577), then the hand-off's own
+    /// bookkeeping: the hold ended without a write.
+    fn hand_back_young_hold_keys(
+        &mut self,
+        hold_id: u64,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.handoff.write().finish_young_hold_handed_back(hold_id);
+        self.hand_back_gate_keys(GateKind::PromptSeen, hold_id, why, ctx);
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
     }
 
     fn young_hold_gate_has_key(&self, hold_id: u64) -> bool {

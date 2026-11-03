@@ -231,3 +231,27 @@ fn bootstrap_write_gate_cap_hands_the_held_keys_back_once_the_lines_are_out() {
         });
     }
 }
+
+/// A4 (#1577): a young Enter hold whose prompt never comes hands the Enter and the keys behind it
+/// back to the editor (guard armed, nothing written), in both destination modes.
+#[test]
+fn young_hold_cap_hands_the_enter_and_keys_back_with_the_guard_armed() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                assert!(view.write_user_bytes_to_pty(b"\r".to_vec(), ctx));
+                assert!(view.write_user_bytes_to_pty(b"ls".to_vec(), ctx));
+                assert!(young_gate_open(view), "the Enter is held");
+                let token = gate_token_of(view, input_queue::GateKind::PromptSeen);
+                view.on_paste_queue_give_up(token, ctx);
+            });
+            assert_handed_back(&terminal, &app, &writes, "\nls");
+        });
+    }
+}

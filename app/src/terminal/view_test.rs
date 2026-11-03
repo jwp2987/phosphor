@@ -24142,10 +24142,12 @@ fn hold_a_young_enter(
     );
 }
 
-/// No prompt came: the give-up (the gate's cap on the queue path, the window timer on the other)
-/// writes the Enter and the key behind it as typeahead, in typed order, once.
+/// No prompt came: the give-up (the gate's cap) HANDS the held Enter and the key behind it back
+/// to the editor as text, once, and writes nothing. (Owner rule 2026-11-01, #1577: a timer may
+/// close a segment and hand text back, never write to a pty. This test asserted the old
+/// typeahead write; the event-driven ends still write, see the tests below.)
 #[test]
-fn a_young_enter_and_its_keys_are_written_as_typeahead_when_no_prompt_comes() {
+fn a_young_enter_and_its_keys_are_handed_back_when_no_prompt_comes() {
     App::test((), move |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -24161,11 +24163,16 @@ fn a_young_enter_and_its_keys_are_written_as_typeahead_when_no_prompt_comes() {
             assert!(!young_gate_open(view));
             assert!(view.paste_queue.queue.borrow().is_idle());
             assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "\nx",
+                "the Enter (a newline) and the key, in typed order, once"
+            );
         });
-        assert_eq!(
-            *pty_writes.borrow(),
-            vec![b"\rx".to_vec()],
-            "one write, in typed order"
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a timer wrote to the pty: {:?}",
+            pty_writes.borrow()
         );
     });
 }
