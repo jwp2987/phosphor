@@ -168,3 +168,36 @@ def git_dirs():
         return []
     root = os.path.dirname(os.path.dirname(b))
     return [d for d in (os.path.join(root, "bin"), os.path.join(root, "usr", "bin")) if os.path.isdir(d)]
+
+
+def ctrl_c_ignored():
+    """#1570: whether THIS process ignores Ctrl-C (CONSOLE_IGNORE_CTRL_C in its process parameters: set by CREATE_NEW_PROCESS_GROUP or
+    SetConsoleCtrlHandler(NULL, TRUE), and inherited by every child, so a reference terminal or an app this harness starts inherits it).
+    True/False, or None when it cannot be read. Read from the PEB (no API returns it)."""
+    try:
+        ntdll = ctypes.WinDLL("ntdll")
+
+        class PBI(ctypes.Structure):
+            _fields_ = [("ExitStatus", ctypes.c_void_p), ("PebBaseAddress", ctypes.c_void_p), ("AffinityMask", ctypes.c_void_p),
+                        ("BasePriority", ctypes.c_void_p), ("UniqueProcessId", ctypes.c_void_p), ("InheritedFromUniqueProcessId", ctypes.c_void_p)]
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        ntdll.NtQueryInformationProcess.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wt.ULONG, ctypes.c_void_p]
+        pbi = PBI()
+        if ntdll.NtQueryInformationProcess(kernel32.GetCurrentProcess(), 0, ctypes.byref(pbi), ctypes.sizeof(pbi), None) != 0 or not pbi.PebBaseAddress:
+            return None
+        wide = ctypes.sizeof(ctypes.c_void_p) == 8
+        params = ctypes.c_void_p.from_address(pbi.PebBaseAddress + (0x20 if wide else 0x10)).value
+        if not params:
+            return None
+        return bool(ctypes.c_uint32.from_address(params + (0x18 if wide else 0x14)).value & 1)
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def set_ctrl_c_ignored(ignored):
+    """SetConsoleCtrlHandler(NULL, ignored): sets or clears this process's ignore-Ctrl-C flag (children started afterwards inherit it). -> success"""
+    try:
+        kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wt.BOOL]
+        return bool(kernel32.SetConsoleCtrlHandler(None, bool(ignored)))
+    except (OSError, AttributeError):
+        return False

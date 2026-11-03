@@ -1285,6 +1285,15 @@ def c_ctrl(ctx, r):
     lat_ms = lat_ms[warm:]
     r.metric("ctrl_c_ms", stats(lat_ms))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
+    if ctx.win:
+        # #1570: whether this harness (and so the app it started) inherited "ignore Ctrl-C" from the runner. The app clears it for its shells
+        # (PHOSPHOR_CONPTY_CTRL_C_RESET); with it set and the app's reset off, no PowerShell in the pane can be interrupted.
+        import winapi
+        ign = winapi.ctrl_c_ignored()
+        r.metric("harness_ctrl_c_ignored", ign)
+        r.metric("app_conpty_ctrl_c_reset", os.environ.get("PHOSPHOR_CONPTY_CTRL_C_RESET", "default(on)"))
+        if ign:
+            r.note("#1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells")
     # (the delivered-count verdict is below, after the reference ran, so it can say whether the reference lost any sample line)
     # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp
     # command's cost, which cancel in the overhead; the owner budget (Ctrl-C <= 20 ms) is judged on that overhead.
@@ -1314,6 +1323,8 @@ def c_ctrl(ctx, r):
             time.sleep(1.0)
             r.metric("reference_ctrl_c_ms", stats(rs))
             r.metric("reference", ref.name)
+            if ctx.win:
+                r.metric("reference_ctrl_c_flag", getattr(ctx, "ref_ctrl_c", None))
         elif not short:
             r.note("no reference: absolute only (Ctrl-C): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
         if short:
@@ -1739,7 +1750,21 @@ def ref_terminal_windows(ctx):
     else:
         argv, name, flags = sh, "conhost (%s)" % shname, 0x00000010           # CREATE_NEW_CONSOLE
     before = {w[0] for w in winapi.top_windows(None)}
-    proc = subprocess.Popen(argv, cwd=ctx.W, env=env, creationflags=flags, stdin=subprocess.DEVNULL if want_wt else None)
+    # #1570: a process started in a new process group (this job, by the runner) ignores Ctrl-C and every child inherits that, so the conhost reference
+    # could not be interrupted either (r18cz, r18e4: NO-CONTROL). A real user's conhost receives Ctrl-C: start the reference with the flag cleared
+    # (restored right after), so the control measures conhost, not the runner. The app clears it for its own shells (PHOSPHOR_CONPTY_CTRL_C_RESET).
+    # APPCI_WIN_REF_CTRL_C=inherit keeps the inherited flag (the old behaviour).
+    ignored = winapi.ctrl_c_ignored()
+    ctx.harness_ctrl_c_ignored = ignored
+    clear = bool(ignored) and os.environ.get("APPCI_WIN_REF_CTRL_C", "enable").lower() != "inherit"
+    if clear:
+        winapi.set_ctrl_c_ignored(False)
+    try:
+        proc = subprocess.Popen(argv, cwd=ctx.W, env=env, creationflags=flags, stdin=subprocess.DEVNULL if want_wt else None)
+    finally:
+        if clear:
+            winapi.set_ctrl_c_ignored(True)
+    ctx.ref_ctrl_c = "cleared" if clear else ("inherited-ignored" if ignored else ("not-ignored" if ignored is False else "unknown"))
     ctx.ref_proc = proc
     ctx.ref_shell = shname
     hwnd, wpid = None, None
