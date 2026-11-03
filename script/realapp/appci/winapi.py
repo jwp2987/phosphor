@@ -190,7 +190,7 @@ def ctrl_c_ignored():
         if not params:
             return None
         return bool(ctypes.c_uint32.from_address(params + (0x18 if wide else 0x14)).value & 1)
-    except (OSError, AttributeError, ValueError):
+    except (OSError, AttributeError, ValueError, NameError):        # NameError: off Windows `kernel32` is not defined
         return None
 
 
@@ -199,5 +199,5 @@ def set_ctrl_c_ignored(ignored):
     try:
         kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wt.BOOL]
         return bool(kernel32.SetConsoleCtrlHandler(None, bool(ignored)))
-    except (OSError, AttributeError):
+    except (OSError, AttributeError, NameError):
         return False

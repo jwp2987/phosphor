@@ -1324,24 +1324,30 @@ def ctrlc_flood(ctx, r, n, warm):
 def c_ctrl(ctx, r):
     ctx.rm("cd.txt", "cd2.txt")
     n, warm = ctx.count_lat(30), lat.warmup()
-    t_cc0 = time.time()
-    hook_marks = ctx.pwsh_hook_timing(True)          # #1401: Windows PowerShell pane only
-    try:
-        lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
-    finally:
-        if hook_marks:
-            ctx.pwsh_hook_timing(False)
+    lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
     lat_ms = lat_ms[warm:]
     if ctx.win and ctx.pane == "powershell":
+        # #1401: the gated samples above ran with the hook timing marks OFF; the ^C split comes from a separate, ungated batch with them on,
+        # and only when Ctrl-C works at all (a miss costs a 36 s wait).
+        r.metric("pwsh_hook_timing_during_samples", False)
         import pwsh_timing
-        try:
-            marks_text = open(hook_marks, errors="replace").read() if hook_marks else ""
-        except OSError:
-            marks_text = ""
-        cs = pwsh_timing.ctrl_c_segments(marks_text, ctx.app_log_all_lines(), t_cc0 * 1000.0)
-        r.metric("ctrl_c_segments_ms", cs or dict(unavailable=True))
+        cs, hook_marks, t_cc0 = {}, None, time.time()
+        if lat_ms:
+            hook_marks = ctx.pwsh_hook_timing(True)
+        if hook_marks:
+            try:
+                ctrlc_samples(ctx, 5, "cc_marks.txt", budget_s=60, bail_after=2)      # 5: the first may run before the shell reads `.on`
+            finally:
+                ctx.pwsh_hook_timing(False)
+            time.sleep(0.5)
+            try:
+                marks_text = open(hook_marks, errors="replace").read()
+            except OSError:
+                marks_text = ""
+            cs = pwsh_timing.ctrl_c_segments(marks_text, ctx.app_log_all_lines(), t_cc0 * 1000.0)
+        r.metric("ctrl_c_segments_ms", cs or dict(unavailable=True, why="Ctrl-C stopped nothing" if not lat_ms else "no marks"))
         if cs:
-            r.note("^C split (#1401, medians ms): ^C write -> PowerShell prompt %s, -> LineEditorReading %s; app: line editor ready %s, active %s, "
+            r.note("^C split (#1401, separate ungated batch with the marks on, medians ms): ^C write -> PowerShell prompt %s, -> LineEditorReading %s; app: line editor ready %s, active %s, "
                    "next command written %s, its Preexec %s"
                    % tuple(cs.get(k, "-") for k in ("ctrl_c_to_prompt", "ctrl_c_to_reading", "line_editor_ready_after_ctrl_c",
                                                      "line_editor_active_after_ctrl_c", "command_written_after_ctrl_c", "preexec_after_ctrl_c")))
@@ -1828,6 +1834,9 @@ def ref_terminal_windows(ctx):
         if clear:
             winapi.set_ctrl_c_ignored(True)
     ctx.ref_ctrl_c = "cleared" if clear else ("inherited-ignored" if ignored else ("not-ignored" if ignored is False else "unknown"))
+    if want_wt and clear and any(winapi.proc_name(w[1]) == "windowsterminal.exe" for w in winapi.top_windows(None) if w[0] in before):
+        # wt.exe hands the tab to an already running Windows Terminal, whose process (and the shell it starts) never saw the cleared flag
+        ctx.ref_ctrl_c = "unknown (wt reused)"
     ctx.ref_proc = proc
     ctx.ref_shell = shname
     hwnd, wpid = None, None
@@ -2344,29 +2353,7 @@ def c_lat_enter(ctx, r):
             except RuntimeError:
                 pass
     if ds is None:
-        hook_marks = ctx.pwsh_hook_timing(True)          # #1401: Windows PowerShell pane only; off again right after the Phosphor samples
-        try:
-            ds = enter_to_start(ctx, n + warm)[warm:]
-        finally:
-            if hook_marks:
-                ctx.pwsh_hook_timing(False)
-        if hook_marks:
-            time.sleep(0.5)                              # the last command's marks are written out at its next prompt
-            stamps = []
-            for i in range(n + warm):
-                try:
-                    v = float(open(os.path.join(ctx.W, "lat_%d" % i), errors="replace").read().replace("\x00", "").strip())
-                    stamps.append(v if v > 1e11 else v * 1000.0)
-                except (OSError, ValueError):
-                    pass
-            hs = ctx.pwsh_hook_segments(hook_marks, t_lat0, stamps)
-            r.metric("pwsh_hook_segments_ms", hs or dict(unavailable=True, marks_file=hook_marks))
-            if hs:
-                r.note("PowerShell side of Enter->start (#1401, medians ms): app write->chord handler %s, pipe read %s, insert %s, AcceptLine %s, "
-                       "line->Preexec OSC %s, OSC->app %s, Preexec tail %s, hook->command start %s; next prompt: precmd %s, render %s, maintenance+marker %s"
-                       % tuple(hs.get(k, "-") for k in ("app_write_to_handler", "handler_pipe_read", "handler_insert", "accept_line", "readline_to_preexec",
-                                                         "preexec_osc_to_app", "preexec_tail", "hook_to_command_start", "prompt_precmd", "prompt_render",
-                                                         "readline_maintenance")))
+        ds = enter_to_start(ctx, n + warm)[warm:]
     record_interleave(r, mode, blocks, fallback)
     r.metric("enter_to_start_ms", stats(ds))
     segs = ctx.app_enter_segments(t_lat0)
@@ -2387,6 +2374,35 @@ def c_lat_enter(ctx, r):
             r.note("shell side: pty_write -> first pty_read median %.2f ms (n=%s)" % (segs["write_to_first_read_ms"], segs.get("write_to_first_read_n")))
         if "write_to_preexec_ms" not in segs:
             r.note("write -> preexec NOT measurable: no `hop=preexec_received` line in the app log (a build older than #1583 W3, input-order logging off, or the shell sent no preexec)")
+    if ctx.win and ctx.pane == "powershell":
+        # #1401: the gated samples (and the app segments above) ran with the hook timing marks OFF (the `.on` switch file never existed). The per-hop split comes
+        # from a SEPARATE, ungated batch with the marks on, so the marks' own cost never reaches a verdict.
+        r.metric("pwsh_hook_timing_during_samples", False)
+        nm = max(10, n // 3)
+        t_marks0 = time.time()
+        hook_marks = ctx.pwsh_hook_timing(True)
+        if hook_marks:
+            try:
+                enter_to_start(ctx, nm + warm + 1, budget_s=max(45, (nm + warm + 1) * 2.5))     # +1: the shell reads `.on` at a prompt, so the first may be unmarked
+            finally:
+                ctx.pwsh_hook_timing(False)
+            time.sleep(0.5)                              # the last command's marks are written out at its next prompt
+            stamps = []
+            for i in range(nm + warm + 1):
+                try:
+                    v = float(open(os.path.join(ctx.W, "lat_%d" % i), errors="replace").read().replace("\x00", "").strip())
+                    stamps.append(v if v > 1e11 else v * 1000.0)
+                except (OSError, ValueError):
+                    pass
+            hs = ctx.pwsh_hook_segments(hook_marks, t_marks0, stamps)
+            r.metric("pwsh_hook_segments_ms", hs or dict(unavailable=True, marks_file=hook_marks))
+            if hs:
+                r.note("PowerShell side of Enter->start (#1401, separate ungated batch of %d with the marks on, medians ms): app write->chord handler %s, "
+                       "pipe read %s, insert %s, AcceptLine %s, line->Preexec OSC %s, OSC->app %s, Preexec tail %s, hook->command start %s; next prompt: "
+                       "precmd %s, render %s, maintenance+marker %s"
+                       % ((nm,) + tuple(hs.get(k, "-") for k in ("app_write_to_handler", "handler_pipe_read", "handler_insert", "accept_line", "readline_to_preexec",
+                                                         "preexec_osc_to_app", "preexec_tail", "hook_to_command_start", "prompt_precmd", "prompt_render",
+                                                         "readline_maintenance"))))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))      # hard floor; a PASS verdict needs 90 % (lat.evaluate expected=)
     ctx.reset()
