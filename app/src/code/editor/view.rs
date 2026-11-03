@@ -2664,4 +2664,4 @@ impl CodeEditorView {
 }
 
 #[cfg(test)]
-mod view_tests;
+pub(crate) mod view_tests;

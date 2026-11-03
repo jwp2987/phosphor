@@ -568,39 +568,22 @@ fn empty_enter_hint_follows_focus_and_pending_card() {
 // ---------------------------------------------------------------- #1267 code-block editor recycling
 
 mod code_editor_recycling {
-    use warp_core::ui::appearance::Appearance;
     use warp_editor::content::buffer::InitialBufferState;
     use warp_editor::render::element::VerticalExpansionBehavior;
     use warpui::platform::WindowStyle;
     use warpui::{App, TypedActionView, ViewHandle, WindowId};
 
     use super::super::{EmbeddedCodeEditorView, recycle_embedded_editors, take_recycled_editors};
-    use crate::AuthStateProvider;
-    use crate::cloud_object::model::persistence::ObjectStoreModel;
+    use crate::code::editor::view::view_tests::init_code_editor_test_singletons;
     use crate::code::editor::view::{
         CodeEditorRenderOptions, CodeEditorView, CodeEditorViewAction,
     };
     use crate::editor::InteractionState;
-    use crate::notebooks::editor::keys::NotebookKeybindings;
-    use crate::settings_view::keybindings::KeybindingChangedNotifier;
     use crate::terminal::view::{AICodeRecycleAction, ai_code_recycle_action};
-    use crate::test_util::settings::initialize_settings_for_tests;
-    use crate::vim_registers::VimRegisters;
-    use crate::workspace::{ActiveSession, sync_inputs::SyncedInputState};
-    use crate::workspaces::user_workspaces::UserWorkspaces;
 
     /// The singletons a `CodeEditorView` needs (as in `code/editor/view/view_tests.rs`) and a window.
     fn init(app: &mut App) -> WindowId {
-        initialize_settings_for_tests(app);
-        app.add_singleton_model(|_| Appearance::mock());
-        app.add_singleton_model(|_| SyncedInputState::mock());
-        app.add_singleton_model(|_| VimRegisters::new());
-        app.add_singleton_model(|_| KeybindingChangedNotifier::mock());
-        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
-        app.add_singleton_model(ObjectStoreModel::mock);
-        app.add_singleton_model(|_| ActiveSession::default());
-        app.add_singleton_model(NotebookKeybindings::new);
-        app.add_singleton_model(|ctx| UserWorkspaces::mock(vec![], ctx));
+        init_code_editor_test_singletons(app);
         let (window, _root) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
             CodeEditorView::new(
                 None,
