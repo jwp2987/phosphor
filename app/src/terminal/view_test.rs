@@ -15267,8 +15267,7 @@ fn pty_cursor_keys_behind_a_large_pending_paste_follow_it_in_order() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         for size in [100 * 1024usize, 1024 * 1024] {
             App::test((), move |mut app| async move {
-                let _mode =
-                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
                 initialize_app_for_terminal_view(&mut app);
                 let terminal = add_window_with_terminal(&mut app, None);
                 let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -15293,7 +15292,14 @@ fn pty_cursor_keys_behind_a_large_pending_paste_follow_it_in_order() {
                     assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
                     view.start_background_paste_with_backstop(reader, None, false, None, ctx);
                     assert!(view.paste_pending(), "the read is pending");
-                    for key in [&b"x"[..], b"y", b"\x1b[D", b"z", b"\x1b[F", b"!"] {
+                    for key in [
+                        &b"x"[..],
+                        b"y",
+                        b"\x1b[D",
+                        b"z",
+                        b"\x1b[F",
+                        b"!",
+                    ] {
                         assert!(view.write_user_bytes_to_pty(key.to_vec(), ctx));
                     }
                 });

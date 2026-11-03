@@ -2081,8 +2081,8 @@ proptest! {
                 if !f.subshell_awaiting_answer
                     && ((!f.gates.is_empty() && !f.gates.all_within(&[GateKind::SshConnect]))
                         || setup_held
-                        || f.mailbox_non_empty
-                        || (f.queued && f.gates.is_empty()))
+                        // A delivering entry is never held behind the queue it is being drained from.
+                        || (!i.delivering && (f.mailbox_non_empty || (f.queued && f.gates.is_empty()))))
                 {
                     prop_assert!(plan.outcome.is_hold(), "{:?}", plan);
                 }
