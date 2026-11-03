@@ -992,6 +992,14 @@ const LIVE_COMMAND_DURATION_REPAINT_INTERVAL: Duration = Duration::from_secs(1);
 /// be empty strings — Warp's docs site does not apply to this fork — which made
 /// every banner's "More info" a dead link (issue #632). The manual is this
 /// fork's documentation, so they point at it.
+/// Whether command corrections could use the repository's branch list for this finished command
+/// (#1342). Only the `git checkout <typo>` rule reads it: the input mentions `checkout` and the
+/// output is git's "pathspec ... did not match" error. This is a superset of that rule's own test
+/// (no regex, case-insensitive), so a skipped list can never change a correction.
+fn command_corrections_may_need_git_branches(input: &str, output: &str) -> bool {
+    input.contains("checkout") && output.to_ascii_lowercase().contains("pathspec")
+}
+
 fn known_issues_url() -> String {
     links::manual_url(links::MANUAL_TROUBLESHOOTING)
 }
@@ -20643,7 +20651,11 @@ impl TerminalView {
             session_metadata.set_functions(session.function_names());
             session_metadata.set_builtins(session.builtin_names());
             session_metadata.set_platform_type(session.host_info().platform_type());
-            if let Some(working_dir) = working_dir {
+            // #1342: the branch list feeds only the `git checkout <typo>` rule; any other
+            // command skips the `git branch` spawn (the first command after a `cd` paid it).
+            if let Some(working_dir) =
+                working_dir.filter(|_| command_corrections_may_need_git_branches(input, output))
+            {
                 git_branches = Some(
                     session
                         .git_branches_for_command_corrections(working_dir)
