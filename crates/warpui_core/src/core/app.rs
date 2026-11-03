@@ -4747,7 +4747,7 @@ impl AppContext {
                 keystroke,
                 chars,
                 is_composing,
-                ..
+                details,
             } => {
                 note_event_and_is_ime_commit(false, false);
                 let printable = !chars.is_empty() && !chars.chars().all(|c| c.is_control());
@@ -4756,6 +4756,7 @@ impl AppContext {
                     chars: chars.clone(),
                     is_composing: *is_composing,
                     will_type: printable && !keystroke.cmd,
+                    key_without_modifiers: details.key_without_modifiers.clone(),
                 }
             }
             Event::TypedCharacters { chars } => PaneKeyKind::Typed {

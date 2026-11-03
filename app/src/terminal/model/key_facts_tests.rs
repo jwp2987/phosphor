@@ -487,3 +487,71 @@ fn unterminated_since_is_the_gen_it_became_true_and_clears_when_it_stops() {
     // A new block forgets it.
     assert_eq!(sticky.observe(2, 31, || true, || false), (true, None));
 }
+
+// ---- #1411: the published key modes translate a key like the model does ----
+
+fn up_arrow_bytes(modes: &PublishedKeyModes) -> Option<Vec<u8>> {
+    use crate::terminal::model::escape_sequences::{KeystrokeWithDetails, ToEscapeSequence};
+    let keystroke = warpui::keymap::Keystroke::parse("up").expect("up parses");
+    KeystrokeWithDetails {
+        keystroke: &keystroke,
+        key_without_modifiers: None,
+        chars: Some(""),
+    }
+    .to_escape_sequence(modes)
+}
+
+#[test]
+fn published_key_modes_answer_only_the_modes_they_hold() {
+    let none = PublishedKeyModes::default();
+    let app_cursor = PublishedKeyModes {
+        app_cursor: true,
+        ..PublishedKeyModes::default()
+    };
+    assert!(app_cursor.is_term_mode_set(TermMode::APP_CURSOR));
+    assert!(!none.is_term_mode_set(TermMode::APP_CURSOR));
+    assert!(!app_cursor.is_term_mode_set(TermMode::KEYBOARD_PROTOCOL));
+    assert!(!app_cursor.is_term_mode_set(TermMode::KEYBOARD_REPORT_ALL_AS_ESCAPE));
+    // A mode the key path never asks about reads as unset.
+    assert!(!app_cursor.is_term_mode_set(TermMode::ALTERNATE_SCROLL));
+    let kitty = PublishedKeyModes {
+        keyboard_protocol: true,
+        report_all_as_escape: true,
+        ..PublishedKeyModes::default()
+    };
+    assert!(kitty.is_term_mode_set(TermMode::KEYBOARD_PROTOCOL));
+    assert!(kitty.is_term_mode_set(TermMode::KEYBOARD_REPORT_ALL_AS_ESCAPE));
+    assert!(!kitty.is_term_mode_set(TermMode::KEYBOARD_DISAMBIGUATE_ESCAPE));
+}
+
+#[test]
+fn an_arrow_is_csi_or_ss3_by_the_published_application_cursor_mode() {
+    assert_eq!(
+        up_arrow_bytes(&PublishedKeyModes::default()),
+        Some(b"\x1b[A".to_vec())
+    );
+    assert_eq!(
+        up_arrow_bytes(&PublishedKeyModes {
+            app_cursor: true,
+            ..PublishedKeyModes::default()
+        }),
+        Some(b"\x1bOA".to_vec())
+    );
+}
+
+#[test]
+fn the_ignore_bootstrapping_flag_is_never_dropped_by_a_full_inbox() {
+    let inbox = ModelInbox::with_capacity(1);
+    assert!(inbox.post(ModelCommand::TypedAhead(vec![1])));
+    assert!(
+        !inbox.post(ModelCommand::TypedAhead(vec![2])),
+        "data is dropped past the cap"
+    );
+    assert!(inbox.post(ModelCommand::IgnoreBootstrappingMessages));
+    let taken = inbox.take();
+    assert!(
+        taken
+            .iter()
+            .any(|command| matches!(command, ModelCommand::IgnoreBootstrappingMessages))
+    );
+}

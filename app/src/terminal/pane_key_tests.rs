@@ -51,51 +51,55 @@ fn ssh_hold_takes_typed_text_even_when_the_editor_has_focus() {
 }
 
 #[test]
-fn control_keys_stay_with_the_elements_except_in_a_focus_gap() {
-    // The terminal with focus translates its own keys; the editor's are its bindings.
-    let terminal = PaneFocusFacts {
-        terminal_focused: true,
-        ssh_hold_active: true,
-        ..facts()
-    };
-    assert_eq!(key_target(KeyClass::Control, &terminal), KeyTarget::NotMine);
-    let editor = PaneFocusFacts {
-        editor_focused: true,
-        ssh_hold_active: true,
-        ..facts()
-    };
-    assert_eq!(key_target(KeyClass::Control, &editor), KeyTarget::NotMine);
+fn control_keys_follow_focus_the_terminal_and_the_editor_keep_theirs() {
+    // #1411: a control key typed while the terminal has focus is translated and routed by the sink,
+    // with or without an ssh hold; the editor's are its bindings, hold or not.
+    for ssh_hold_active in [false, true] {
+        let terminal = PaneFocusFacts {
+            terminal_focused: true,
+            ssh_hold_active,
+            ..facts()
+        };
+        assert_eq!(
+            key_target(KeyClass::Control, &terminal),
+            KeyTarget::Terminal
+        );
+        let editor = PaneFocusFacts {
+            editor_focused: true,
+            ssh_hold_active,
+            settled_ai_focus: true,
+            ..facts()
+        };
+        assert_eq!(key_target(KeyClass::Control, &editor), KeyTarget::NotMine);
+    }
     // A focus gap during the hold (#1332/#1394): the sink delivers it.
     let gap = PaneFocusFacts {
         ssh_hold_active: true,
         ..facts()
     };
     assert_eq!(key_target(KeyClass::Control, &gap), KeyTarget::Terminal);
-    // #1552: a focus gap without a hold is the same gap: the control key follows the typed
-    // keys of the gap through the terminal.
-    assert_eq!(key_target(KeyClass::Control, &facts()), KeyTarget::Terminal);
+    // #1552: a settled AI block or card has focus: the control key follows the typed keys of the
+    // gap through the terminal.
+    let settled = PaneFocusFacts {
+        settled_ai_focus: true,
+        ..facts()
+    };
+    assert_eq!(key_target(KeyClass::Control, &settled), KeyTarget::Terminal);
+    // Fable B1: any other pane child with focus (a pending approval card, a question card, the ssh
+    // choice card) binds its own Enter/Tab/Escape, and without a hold the key stays with it.
+    assert_eq!(key_target(KeyClass::Control, &facts()), KeyTarget::NotMine);
     // A text field has every key first.
     let text_field = PaneFocusFacts {
         in_text_field: true,
+        terminal_focused: true,
+        ssh_hold_active: true,
+        settled_ai_focus: true,
         ..facts()
     };
     assert_eq!(
         key_target(KeyClass::Control, &text_field),
         KeyTarget::NotMine
     );
-    // Editor or terminal focus, no hold: the elements.
-    for focus in [
-        PaneFocusFacts {
-            editor_focused: true,
-            ..facts()
-        },
-        PaneFocusFacts {
-            terminal_focused: true,
-            ..facts()
-        },
-    ] {
-        assert_eq!(key_target(KeyClass::Control, &focus), KeyTarget::NotMine);
-    }
 }
 
 #[test]
@@ -444,6 +448,7 @@ mod model {
                     editor_focused: s.editor_focused && !s.in_text_field,
                     terminal_focused: s.terminal_focused,
                     ssh_hold_active: s.ssh_hold_active,
+                    settled_ai_focus: false,
                 };
                 match key_target(KeyClass::Typed, &facts) {
                     KeyTarget::Editor => editor.push(seq),

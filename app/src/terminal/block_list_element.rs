@@ -5208,6 +5208,12 @@ impl Element for BlockListElement {
                 if !self.terminal_focused_now(ctx) {
                     return false;
                 }
+                // #1411: with the pane key sink on, the sink has already translated this key (from
+                // the published terminal modes, without the model's lock) and delivered it or
+                // declined it. Translating it again here would wait for the pty reader.
+                if self.sink_has_seen_keys(ctx) {
+                    return false;
+                }
 
                 // We need to handle ctrl-d as a one-off here as it has special behavior.
                 // It should really be a binding, but we don't want this behavior

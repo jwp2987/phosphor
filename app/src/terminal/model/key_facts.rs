@@ -28,6 +28,7 @@ use warpui_core::sync_shim::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}
 use super::block::interactive_latch::InteractiveLatch;
 use super::block::interactive_prompt_candidate;
 use super::early_output::TypeaheadMode;
+use super::escape_sequences::ModeProvider;
 use super::grid::grid_handler::TermMode;
 use super::session::SessionId;
 use super::terminal_model::TerminalModel;
@@ -205,6 +206,12 @@ pub struct KeyModelSnapshot {
     /// The program set application cursor keys mode (DECCKM): arrows are `ESC O A`, not `ESC [ A`
     /// (#1440: `terminal_up`/`down`, Home/End no longer lock the model for it).
     pub app_cursor: bool,
+    /// The modes a key's escape sequence is built from (#1411): the pane key sink translates a key
+    /// down into bytes from this copy, without the model's lock.
+    pub key_modes: PublishedKeyModes,
+    /// The active block is executing a command (`Block::is_executing`): the sink's rule for a key
+    /// typed while an input method composes (#1411).
+    pub active_block_executing: bool,
     /// What `TerminalView::is_input_box_visible` reads from the model (#1440).
     pub input_box: InputBoxFacts,
     /// The publication this snapshot belongs to (#1424): the model's `facts_gen` when it was
@@ -227,6 +234,61 @@ pub struct KeyModelSnapshot {
     /// it was typed blind. Exact for the last `OUTPUT_TAIL_ROWS` rows, like the view's own
     /// `active_output_ends_in_unterminated_text`.
     pub unterminated_since_gen: Option<u64>,
+}
+
+/// The terminal modes `KeystrokeWithDetails::to_escape_sequence` asks about (application cursor
+/// keys and the kitty keyboard protocol's flags), copied from the model when it publishes (#1411).
+/// A [`ModeProvider`] for the key path, so translating a key down never takes the model's lock.
+/// It answers only the modes it holds; any other mode reads as unset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PublishedKeyModes {
+    pub app_cursor: bool,
+    /// `TermMode::KEYBOARD_PROTOCOL` (the composite the model answers for).
+    pub keyboard_protocol: bool,
+    pub disambiguate_escape: bool,
+    pub report_event_types: bool,
+    pub report_alternate_keys: bool,
+    pub report_all_as_escape: bool,
+    pub report_associated_text: bool,
+}
+
+impl PublishedKeyModes {
+    pub fn from_model(model: &TerminalModel) -> Self {
+        Self {
+            app_cursor: model.is_term_mode_set(TermMode::APP_CURSOR),
+            keyboard_protocol: model.is_term_mode_set(TermMode::KEYBOARD_PROTOCOL),
+            disambiguate_escape: model.is_term_mode_set(TermMode::KEYBOARD_DISAMBIGUATE_ESCAPE),
+            report_event_types: model.is_term_mode_set(TermMode::KEYBOARD_REPORT_EVENT_TYPES),
+            report_alternate_keys: model.is_term_mode_set(TermMode::KEYBOARD_REPORT_ALTERNATE_KEYS),
+            report_all_as_escape: model.is_term_mode_set(TermMode::KEYBOARD_REPORT_ALL_AS_ESCAPE),
+            report_associated_text: model
+                .is_term_mode_set(TermMode::KEYBOARD_REPORT_ASSOCIATED_TEXT),
+        }
+    }
+}
+
+impl ModeProvider for PublishedKeyModes {
+    fn is_term_mode_set(&self, mode: TermMode) -> bool {
+        let asked = mode.bits();
+        let is = |known: TermMode| asked == known.bits();
+        if is(TermMode::APP_CURSOR) {
+            self.app_cursor
+        } else if is(TermMode::KEYBOARD_PROTOCOL) {
+            self.keyboard_protocol
+        } else if is(TermMode::KEYBOARD_DISAMBIGUATE_ESCAPE) {
+            self.disambiguate_escape
+        } else if is(TermMode::KEYBOARD_REPORT_EVENT_TYPES) {
+            self.report_event_types
+        } else if is(TermMode::KEYBOARD_REPORT_ALTERNATE_KEYS) {
+            self.report_alternate_keys
+        } else if is(TermMode::KEYBOARD_REPORT_ALL_AS_ESCAPE) {
+            self.report_all_as_escape
+        } else if is(TermMode::KEYBOARD_REPORT_ASSOCIATED_TEXT) {
+            self.report_associated_text
+        } else {
+            false
+        }
+    }
 }
 
 /// The rows of output the unterminated-text test looks at (the view's `OUTPUT_TAIL_ROWS`).
@@ -368,6 +430,8 @@ impl KeyModelSnapshot {
             agent_owns_pty,
             interactive_latch: Some(active_block.interactive_latch().clone()),
             app_cursor: model.is_term_mode_set(TermMode::APP_CURSOR),
+            key_modes: PublishedKeyModes::from_model(model),
+            active_block_executing: active_block.is_executing(),
             input_box: InputBoxFacts::from_model(model),
             facts_gen,
             is_bootstrapped: model.block_list().is_bootstrapped(),
@@ -506,6 +570,10 @@ pub enum ModelCommand {
     /// Bytes the user typed, for a shared session this pane drives to relay to its viewers
     /// (`TerminalModel::send_write_to_pty_events_for_shared_session`).
     SharedSessionWrite(Vec<u8>),
+    /// The user wrote EOT to a command that is not the shell's own prompt (^D with no input box):
+    /// the model ignores the bootstrapping messages that command's session would still send
+    /// (`TerminalModel::ignore_bootstrapping_messages`, #1111). A flag, never dropped.
+    IgnoreBootstrappingMessages,
 }
 
 /// The most commands the inbox keeps (#1442). A key leaves at most ~3 (typed-ahead record, user
@@ -569,6 +637,12 @@ impl ModelInbox {
                     *kept_ctrl_c |= *ctrl_c;
                     return true;
                 }
+                commands.push(command);
+                self.pending.store(true, Ordering::Release);
+                return true;
+            }
+            // A one-way flag: dropping it would let a dying session's bootstrap run (#1111).
+            if matches!(command, ModelCommand::IgnoreBootstrappingMessages) {
                 commands.push(command);
                 self.pending.store(true, Ordering::Release);
                 return true;

@@ -468,6 +468,7 @@ use crate::server::telemetry::{
 use crate::session_management::{CommandContext, SessionNavigationPromptElements};
 use crate::terminal::ShellHost;
 use crate::terminal::alt_screen::alt_screen_element::AltScreenElement;
+use crate::terminal::block_list_element::is_agent_shortcut_enter;
 use crate::terminal::block_list_element::{
     BlockListElement, BlockListMouseStates, BlockSelectAction, BlockTextSelectAction,
     SnackbarHeaderState, ToolbeltButtonTooltip, render_hoverable_block_button,
@@ -481,6 +482,7 @@ use crate::terminal::event_listener::Wakeup;
 use crate::terminal::find::{BlockGridMatch, BlockListMatch, TerminalFindModel};
 use crate::terminal::input::{InputState, MenuPositioning, MenuPositioningProvider};
 use crate::terminal::keys::TerminalKeybindings;
+use crate::terminal::meta_shortcuts::handle_keystroke_despite_composing;
 #[cfg(unix)]
 use crate::terminal::model::block::InteractivePromptCandidate;
 use crate::terminal::model::block::interactive_prompt_candidate;
@@ -490,7 +492,9 @@ use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
 };
 use crate::terminal::model::blocks::{BlockFilter, BlockList, EvictedBlocks};
-use crate::terminal::model::escape_sequences::{self, C1, EscCodes, ToEscapeSequence};
+use crate::terminal::model::escape_sequences::{
+    self, C1, EscCodes, KeystrokeWithDetails, ToEscapeSequence,
+};
 use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::index::{Point, Side};
@@ -9805,11 +9809,9 @@ impl TerminalView {
     fn user_write_ctrl_c_to_pty(&mut self, ctx: &mut ViewContext<Self>) {
         // #1178: every stop / Escape / ^C path ends here, so a command that then exits 130 was
         // interrupted rather than reporting 130 by itself.
-        self.model
-            .lock()
-            .block_list_mut()
-            .active_block_mut()
-            .mark_interrupted_by_ctrl_c();
+        // Left in the model's inbox (it applies it before it parses the next bytes), so the ^C
+        // never waits for the pty reader (#1411).
+        self.leave_user_wrote_in_model_inbox(false, true);
         if self.ssh_pre_init_abort_bytes().is_none() && self.ssh_connect_sigint_applies() {
             ctx.emit(Event::SigintForegroundToPty);
             return;
@@ -10402,6 +10404,8 @@ impl TerminalView {
     }
 
     fn ctrl_d(&mut self, ctx: &mut ViewContext<Self>) {
+        // A key being handled: its model reads come from the key snapshot (#1411).
+        let _key_path = KeyPathScope::enter(&self.key_path_depth);
         // #1111: not into an ssh connect that is still starting (before the lock below).
         if self.ssh_connect_holds_eot() {
             self.note_ssh_interrupt_held(ctx);
@@ -10410,18 +10414,20 @@ impl TerminalView {
         // #1111: an EOT written while an ssh connect is armed must never make the app ignore the
         // remote's hooks (that left an unmanaged remote shell behind).
         let ssh_connecting = self.ssh_connect_gate.is_some();
-        let arc = self.model.clone();
-        let mut model = arc.lock();
+        // #1411: nothing here waits for the pty reader. The facts come from the key snapshot (the
+        // exact state when the model is free, else the copy of its last parse), the hand-off
+        // through its own handle, and the one write into the model is left in its inbox.
+        let snapshot = self.read_key_snapshot();
 
         // Only write EOT to the PTY if the input box is not visible, which would
         // happen iff there is a long-running block. The one exception is when
         // the PTY is still bootstrapping, in which case the input would be shown
         // but we still want EOT written to the PTY in case there is a program
         // waiting for input during bootstrapping (e.g. omz update).
-        if !self.is_input_box_visible(&model, ctx)
-            || !model.block_list().is_bootstrapped()
+        if !self.is_input_box_visible_with(&snapshot.input_box, ctx)
+            || !snapshot.is_bootstrapped
             || (FeatureFlag::TypeaheadHandoff.is_enabled()
-                && model.typeahead_handoff().ctrl_d_reaches_a_reader())
+                && self.handoff.read().ctrl_d_reaches_a_reader())
         {
             // This is relevant for the case where the user enters CTRL-d while the
             // ssh wrapper command is being run. The EOT character doesn't stop
@@ -10431,12 +10437,12 @@ impl TerminalView {
             // prevent it from being processed, we keep state and clear it on
             // the next precmd (i.e. when the command completes).
             if !ssh_connecting {
-                model.ignore_bootstrapping_messages();
+                self.model_inbox
+                    .post(ModelCommand::IgnoreBootstrappingMessages);
+                if let Some(mut model) = self.model.try_lock() {
+                    model.apply_inbox();
+                }
             }
-
-            // Drop the model before writing bytes to the pty, otherwise we
-            // get a deadlock.  This model locking is a bit of a mess.
-            drop(model);
             self.write_user_bytes_to_pty(&[escape_sequences::C0::EOT][..], ctx);
         }
     }
@@ -12086,8 +12092,12 @@ impl TerminalView {
         // the key itself.
         let class = match &key.kind {
             PaneKeyKind::Typed { chars, .. } if !chars.is_empty() => KeyClass::Typed,
+            // #1411: every key down while the terminal itself has focus is the sink's to translate
+            // (arrows, Ctrl-letters, Alt-keys, kitty-protocol keys have no control characters);
+            // elsewhere a key down is the sink's only when it is all control characters.
             PaneKeyKind::KeyDown { chars, .. }
-                if !chars.is_empty() && chars.chars().all(|c| c.is_control()) =>
+                if key_ctx.is_focused_exactly(self.view_id)
+                    || (!chars.is_empty() && chars.chars().all(|c| c.is_control())) =>
             {
                 KeyClass::Control
             }
@@ -12101,21 +12111,13 @@ impl TerminalView {
         // focus chain is only known here, so it is noted now. Nothing decides on it yet.
         let focus_snap = self.pane_focus_snap(key_ctx, ctx);
         self.paste_queue.queue.route_state().note_focus(focus_snap);
-        let facts = self.pane_focus_facts(key_ctx, ctx);
+        let mut facts = self.pane_focus_facts(key_ctx, ctx);
+        // #1552 / Fable B1: a control key typed in a focus gap is the terminal's only for a settled
+        // AI target (or the ssh hold); any other pane child with focus (a pending approval card, an
+        // AI block awaiting confirmation, the ssh choice card, a question card) binds its own
+        // Enter/Tab/Escape and keeps the key. The table decides on the fact (Fable F9).
+        facts.settled_ai_focus = focus_snap == input_queue::FocusSnap::SettledAiTarget;
         let target = pane_key::key_target(class, &facts);
-        // #1552: the control-key gap the sink closes is a settled AI target (or the ssh hold). Any
-        // other pane child with focus (a pending approval card, an AI block awaiting confirmation,
-        // the ssh choice card, a question card, ...) binds its own Enter/Tab/Escape: the key stays
-        // with it.
-        let target = if class == KeyClass::Control
-            && target == KeyTarget::Terminal
-            && !facts.ssh_hold_active
-            && focus_snap != input_queue::FocusSnap::SettledAiTarget
-        {
-            KeyTarget::NotMine
-        } else {
-            target
-        };
         warpui::input_order::log_key_hop("kh_pane_key", || {
             format!(
                 "seq={} class={class:?} target={target:?} editor_focused={} terminal_focused={} \
@@ -12141,6 +12143,29 @@ impl TerminalView {
                 let editor = self.input.as_ref(ctx).editor().clone();
                 editor.update(ctx, |editor, ctx| editor.pane_typed(chars, ctx));
             }
+            // The terminal has focus itself (#1411): the key is translated into bytes here, from the
+            // modes the model published, and routed like a typed key.
+            (
+                KeyTarget::Terminal,
+                PaneKeyKind::KeyDown {
+                    keystroke,
+                    chars,
+                    is_composing,
+                    key_without_modifiers,
+                    ..
+                },
+            ) if facts.terminal_focused => {
+                if !self.terminal_key_down(
+                    keystroke,
+                    chars,
+                    key_without_modifiers.as_deref(),
+                    *is_composing,
+                    ctx,
+                ) {
+                    return PaneKeyOutcome::NotMine;
+                }
+            }
+            // A focus gap (the ssh hold, a settled AI target): the control characters as typed.
             (KeyTarget::Terminal, PaneKeyKind::KeyDown { chars, .. }) => {
                 self.keydown_on_terminal(chars, ctx)
             }
@@ -12175,6 +12200,69 @@ impl TerminalView {
             (KeyTarget::Editor, PaneKeyKind::KeyDown { .. }) => return PaneKeyOutcome::NotMine,
         }
         PaneKeyOutcome::Consumed
+    }
+
+    /// A key down while the terminal view itself has focus (#1411): what the block list element
+    /// and the alt-screen element did with it under the model's lock, from the published key
+    /// snapshot instead (the exact state when the model is free, else the copy of its last parse;
+    /// never a wait for the pty reader). Returns whether the key was taken; an untaken key (no
+    /// escape sequence, not control characters) continues to the elements, as before.
+    ///
+    /// The rules are the elements': the block list's Ctrl-D one-off, its composing rule (a key
+    /// pressed while an input method composes is ignored unless it is a meta-letter and a command
+    /// is executing), the agent shortcut Enter; the alt screen's composing rule has no command
+    /// check and no agent shortcut. The escape sequence then goes to
+    /// `control_sequence_on_terminal`, any other control character to `keydown_on_terminal`.
+    fn terminal_key_down(
+        &mut self,
+        keystroke: &Keystroke,
+        chars: &str,
+        key_without_modifiers: Option<&str>,
+        is_composing: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let snapshot = self.read_key_snapshot();
+        let alt_screen = snapshot.input_box.alt_screen_active;
+        if !alt_screen && keystroke.normalized() == "ctrl-d" {
+            // The binding of Ctrl-D has special behaviour (see `ctrl_d`).
+            self.ctrl_d(ctx);
+            return true;
+        }
+        let may_translate = if alt_screen {
+            !is_composing || handle_keystroke_despite_composing(keystroke)
+        } else {
+            !is_composing
+                || (handle_keystroke_despite_composing(keystroke)
+                    && snapshot.active_block_executing)
+        };
+        if !may_translate {
+            return false;
+        }
+        let escape_sequence = (KeystrokeWithDetails {
+            keystroke,
+            key_without_modifiers,
+            chars: Some(chars),
+        })
+        .to_escape_sequence(&snapshot.key_modes);
+        if !alt_screen
+            && is_agent_shortcut_enter(keystroke)
+            && (escape_sequence.is_some()
+                || (!chars.is_empty() && chars.chars().all(|c| c.is_control())))
+        {
+            // Same acceptance rule as the plain paths below; the view decides whether this is the
+            // SSH banner's "Use agent" shortcut (#976).
+            self.agent_shortcut_enter(chars, escape_sequence.as_deref(), ctx);
+            return true;
+        }
+        if let Some(escape_sequence) = escape_sequence {
+            self.control_sequence_on_terminal(&escape_sequence, ctx);
+            return true;
+        }
+        if !chars.is_empty() && chars.chars().all(|c| c.is_control()) {
+            self.keydown_on_terminal(chars, ctx);
+            return true;
+        }
+        false
     }
 
     /// Text for the terminal destination: delivered by the pane key sink (a typed key or an IME

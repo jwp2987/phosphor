@@ -941,6 +941,11 @@ impl Element for AltScreenElement {
                 {
                     return false;
                 }
+                // #1411: the pane key sink has already translated this key (see the block list
+                // element); translating it again would take the model's lock.
+                if self.sink_has_seen_keys(ctx) {
+                    return false;
+                }
                 if let Some(escape_sequence) = (KeystrokeWithDetails {
                     keystroke,
                     key_without_modifiers: details.key_without_modifiers.as_deref(),

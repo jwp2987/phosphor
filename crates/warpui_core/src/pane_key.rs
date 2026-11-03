@@ -32,6 +32,9 @@ pub enum PaneKeyKind {
         chars: String,
         is_composing: bool,
         will_type: bool,
+        /// The key without any modifier (including Shift), as the platform reports it: the kitty
+        /// keyboard protocol encodes a key by it (#1411: the sink translates the key itself).
+        key_without_modifiers: Option<String>,
     },
     /// Printable text. `ime_commit` marks the commit of an IME composition (it follows the
     /// [`PaneKeyKind::ClearMarkedText`] that ends the composition), as opposed to a plain key.

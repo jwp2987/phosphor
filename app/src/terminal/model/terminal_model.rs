@@ -1918,6 +1918,7 @@ impl TerminalModel {
                 ModelCommand::SharedSessionWrite(bytes) => {
                     self.send_write_to_pty_events_for_shared_session(bytes)
                 }
+                ModelCommand::IgnoreBootstrappingMessages => self.ignore_bootstrapping_messages(),
                 ModelCommand::TypedAhead(bytes) => {
                     // #1033: the tty echoes these keys wherever the output is when they arrive;
                     // record them so that echo can be told from output. A full-screen program
