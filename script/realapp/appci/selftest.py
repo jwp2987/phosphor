@@ -219,6 +219,9 @@ def overhead_se_and_no_compare():
     assert rec["budget_verdict"] == "no-compare" and rec["verdict"] == "no-compare" and lat.RANK["no-compare"] == 1
     rec = lat.evaluate("x", [20.0] * 40, [10.0] * 40, 2.0, "overhead", "linux", pane_shell="bash", ref_shell="bash")
     assert rec["budget_verdict"] == "fail" and rec["overhead_se_ms"] == 0.0
+    # the record keeps both shells (metrics), and a reference-less record has no shell verdict
+    rec = lat.evaluate("x", [20.0] * 40, [], 2.0, "overhead", "linux", pane_shell="zsh", ref_shell=None)
+    assert rec["verdict"] == "no-reference"
     noisy_a = [10 + (i % 7) * 4 for i in range(30)]
     noisy_b = [8 + (i % 5) * 5 for i in range(30)]
     rec = lat.evaluate("x", noisy_a, noisy_b, 2.0, "overhead", "linux", pane_shell="bash", ref_shell="bash")

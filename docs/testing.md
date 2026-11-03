@@ -516,7 +516,7 @@ budget, previous build, baseline, verdict, n).
   difference (fixed seed). `FAIL` only when `overhead - 2*SE > budget`; `PASS` only when `overhead + 2*SE <= budget`; anything between is
   `INCONCLUSIVE` (reported with the numbers; the case status is `noref`, never a pass; take more samples). n=30 medians with a 12 ms spread
   have a ~2.3 ms SE, larger than the 2 ms Enter budget, so `latency_enter` now takes 60 samples (`ctx.count(60)`). Pane and reference shells
-  are recorded (`pane_shell`, `reference_shell`); when they differ the verdict is `NO-COMPARE` (never PASS/FAIL).
+  are recorded as case metrics (`pane_shell`, `reference_shell`) and in the latency record (`pane_shell`, `reference_shell`); when they differ the verdict is `NO-COMPARE` (never PASS/FAIL).
   macOS `latency_enter` stamps with the pane shell's builtin when it is zsh (`zmodload zsh/datetime; print -r -- $EPOCHREALTIME`), the same line in
   Terminal.app; only bash 3.2 keeps the perl stamp.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).

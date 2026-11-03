@@ -1296,6 +1296,7 @@ def ref_terminal_windows(ctx):
     before = {w[0] for w in winapi.top_windows(None)}
     proc = subprocess.Popen(argv, cwd=ctx.W, env=env, creationflags=flags, stdin=subprocess.DEVNULL if want_wt else None)
     ctx.ref_proc = proc
+    ctx.ref_shell = shname
     hwnd, wpid = None, None
     for _ in range(60):
         time.sleep(0.4)
@@ -1348,10 +1349,21 @@ def pane_shell(ctx):
     return path or None
 
 
+def pane_shell_id(ctx):
+    """The shell in Phosphor's pane for the verdict's shell-identity check: Windows by pane kind, elsewhere asked of the pane (pane_shell). None = unknown."""
+    if ctx.win:
+        return {"powershell": "powershell", "gitbash": "bash"}.get(ctx.pane)
+    try:
+        return pane_shell(ctx)
+    except Exception:
+        return None
+
+
 def ref_terminal(ctx):
     """Linux: foot (Wayland) when installed, else xterm (via XWayland under the Wayland session, native under X11).
     macOS: Terminal.app, driven by the same cliclick/osascript path as Phosphor. None when there is no reference."""
     home = ctx.prof.home
+    ctx.ref_shell = None        # set by whichever path launches a reference: the shell it runs (recorded in the latency metrics, #1583)
     if ctx.win:
         return ref_terminal_windows(ctx)
     if ctx.be.name == "mac":
@@ -1420,6 +1432,7 @@ def ref_terminal(ctx):
     else:
         return None
     proc = subprocess.Popen(argv, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ctx.ref_shell = "bash"
     ctx.prof.ref_active = True
     ctx.be.guard_override = dict(pids={proc.pid}, names=names)
 
@@ -1656,6 +1669,8 @@ def c_lat_enter(ctx, r):
     Verdict is on OVERHEAD (Phosphor median - reference median) against the owner's 2 ms budget; both include one input-tool spawn,
     which cancels. No reference terminal -> verdict 'no-reference' (absolute numbers only). Also checked build-to-build (lat.py)."""
     n, warm = ctx.count(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
+    pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
+    r.metric("pane_shell", pane_sh or "unknown")
     t_lat0 = time.time()
     ds = enter_to_start(ctx, n + warm)[warm:]
     r.metric("enter_to_start_ms", stats(ds))
@@ -1682,11 +1697,15 @@ def c_lat_enter(ctx, r):
         time.sleep(1.0)   # focus returns to Phosphor before any re-measure
         r.metric("reference_enter_to_start_ms", stats(rs))
         r.metric("reference", ref.name)
+        r.metric("reference_shell", getattr(ctx, "ref_shell", None) or "unknown")
+        if lat.shell_base(pane_sh) and lat.shell_base(getattr(ctx, "ref_shell", None)) and lat.shell_base(pane_sh) != lat.shell_base(ctx.ref_shell):
+            r.note("NO-COMPARE: pane shell %s != reference shell %s; the overhead is not judged" % (pane_sh, ctx.ref_shell))
     else:
         r.note("no reference terminal available (need xterm+DISPLAY / foot / Terminal.app)%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
+                           pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
                            notes=["reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
         r.metrics.setdefault("lat", {})["enter_to_start"] = rec
         lat_checks(r, rec, "Enter to command start")
