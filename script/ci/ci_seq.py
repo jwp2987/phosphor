@@ -111,11 +111,54 @@ def input_path_test(f):
     return None
 
 
+def app_file_terms(f):
+    """app/<path> -> (set of test-name regexes, whole_warp, reasons). The mapping derive() applies to a changed app file."""
+    if not f.startswith("app/"):
+        return set(), False, []
+    m = re.match(r"^app/src/(.+)$", f)
+    segs = m.group(1).split("/") if m else []
+    if segs and segs[0] in ("benches",) or f.startswith("app/benches/"):
+        return set(), False, []                            # benches are not tests
+    if not f.endswith(".rs"):
+        return set(), True, ["%s -> whole warp package (non-Rust app file)" % f]
+    ip = input_path_test(f)
+    if ip:
+        return {ip}, False, ["%s -> test(/%s/) (input-path override)" % (f, ip)]
+    segs = [re.sub(r"\.rs$", "", x) for x in segs]
+    if "tests" in segs[:-1]:
+        segs = segs[:segs.index("tests")]          # input_queue/tests/ops.rs -> input_queue
+    if segs and segs[-1] in ("mod", "tests", "lib", "main"):
+        segs = segs[:-1]
+    segs = [re.sub(r"_(snapshot|model)$", "", re.sub(r"_tests?$", "", x)) for x in segs]
+    if len(segs) >= 2 and segs[0] != "":
+        name = "::".join(segs[-2:]) if len(segs) > 2 else "::".join(segs)
+        return {name}, False, ["%s -> test(/%s/)" % (f, name)]
+    if len(segs) == 1:
+        return {segs[0]}, False, ["%s -> test(/%s/)" % (f, segs[0])]
+    return set(), True, ["%s -> whole warp package" % f]
+
+
+# A changed library crate pulls in the app modules that USE it (#1504): app/src files naming `<crate>::` are mapped like changed app files.
+# More users than this and the whole warp package runs (a crate that much of the app uses is not a narrow change).
+DEPENDENT_FILES_CAP = 40
+
+
+def app_dependents(pkg):
+    """-> app/src/*.rs paths that name the crate `pkg` (`use pkg::`, `pkg::x`), via git grep on the working tree; None if grep failed."""
+    ident = pkg.replace("-", "_")
+    r = subprocess.run(["git", "grep", "-l", "-E", r"(^|[^A-Za-z0-9_:])%s::" % re.escape(ident), "--", "app/src/*.rs", "app/src/**/*.rs"],
+                       capture_output=True, text=True)
+    if r.returncode not in (0, 1):
+        return None
+    return sorted({l for l in r.stdout.splitlines() if l})
+
+
 def derive(files):
     """-> (test-linux filterset or '', set of suites to run among {'linux','core','rest'}, reasons).
     Only test-linux (the ~50 min suite) is filtered; warpui-core (~2 min) and workspace-rest (~4 min) run whole, but only when touched."""
     names = crate_names()
     app_tests, linux_pk, suites, why = set(), set(), set(), []
+    dependents_done = set()
     whole_warp = root_change = False
     for f in files:
         if DOC_ONLY.match(f):
@@ -129,32 +172,25 @@ def derive(files):
             elif p == "warp_tui":
                 suites.add("linux"); linux_pk.add(p); why.append("%s -> package(warp_tui)" % f)
             else:
-                suites.add("rest"); why.append("%s -> package(%s): workspace-rest suite (dependents inside warp are NOT filtered in; pass --tests to add them)" % (f, p))
+                suites.add("rest"); why.append("%s -> package(%s): workspace-rest suite" % (f, p))
+                if p in dependents_done:
+                    continue
+                dependents_done.add(p)
+                users = app_dependents(p)
+                if users is None or len(users) > DEPENDENT_FILES_CAP:
+                    suites.add("linux"); whole_warp = True
+                    why.append("%s -> whole warp: %s" % (f, "git grep for its users failed" if users is None else "%d app files use %s" % (len(users), p)))
+                elif users:
+                    suites.add("linux")
+                    for u in users:
+                        terms, whole, _ = app_file_terms(u)
+                        app_tests |= terms; whole_warp = whole_warp or whole
+                    why.append("%s -> %d app file(s) using %s mapped like changed app files" % (f, len(users), p))
             continue
         if f.startswith("app/"):
             suites.add("linux")
-            m = re.match(r"^app/src/(.+)$", f)
-            segs = m.group(1).split("/") if m else []
-            if segs and segs[0] in ("benches",) or f.startswith("app/benches/"):
-                continue                                   # benches are not tests
-            if not f.endswith(".rs"):
-                whole_warp = True; why.append("%s -> whole warp package (non-Rust app file)" % f); continue
-            ip = input_path_test(f)
-            if ip:
-                app_tests.add(ip); why.append("%s -> test(/%s/) (input-path override)" % (f, ip)); continue
-            segs = [re.sub(r"\.rs$", "", x) for x in segs]
-            if "tests" in segs[:-1]:
-                segs = segs[:segs.index("tests")]          # input_queue/tests/ops.rs -> input_queue
-            if segs and segs[-1] in ("mod", "tests", "lib", "main"):
-                segs = segs[:-1]
-            segs = [re.sub(r"_(snapshot|model)$", "", re.sub(r"_tests?$", "", x)) for x in segs]
-            if len(segs) >= 2 and segs[0] != "":
-                name = "::".join(segs[-2:]) if len(segs) > 2 else "::".join(segs)
-                app_tests.add(name); why.append("%s -> test(/%s/)" % (f, name))
-            elif len(segs) == 1:
-                app_tests.add(segs[0]); why.append("%s -> test(/%s/)" % (f, segs[0]))
-            else:
-                whole_warp = True; why.append("%s -> whole warp package" % f)
+            terms, whole, w = app_file_terms(f)
+            app_tests |= terms; whole_warp = whole_warp or whole; why += w
             continue
         if re.match(r"^(Cargo\.(toml|lock)|rust-toolchain|\.cargo/config|\.config/)", f):
             root_change = True; why.append("%s -> workspace-wide (nothing filtered)" % f)
@@ -190,6 +226,9 @@ def self_test():
         ([t + "blockgrid_thing/foo.rs"], ["test(/"], {"linux"}),
         (["docs/testing.md"], [], set()),
         (["Cargo.lock"], [], {"linux", "core", "rest"}),
+        # #1504: a crate change pulls in the app modules that use it (few users: their modules; many: the whole warp package)
+        (["crates/sum_tree/src/lib.rs"], ["(package(warp) & (test(/"], {"linux", "rest"}),
+        (["crates/warp_core/src/lib.rs"], ["package(warp) | package(warp_tui)"], {"linux", "rest"}),
     ]
     bad = 0
     for files, must, suites in cases:
