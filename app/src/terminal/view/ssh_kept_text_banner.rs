@@ -47,6 +47,12 @@ pub(crate) fn kept_text_preview(text: &str) -> String {
     }
 }
 
+/// How many lines "Type into session" would RUN: each line break is sent as Enter, the last line
+/// is typed but not run.
+pub(crate) fn kept_text_lines_that_run(text: &str) -> usize {
+    text.replace("\r\n", "\n").matches('\n').count()
+}
+
 /// The bytes "Type into session" writes for the kept text: the text as typed, each line break as
 /// the Enter that made it (`\r`, what the key sends). No Enter is added after the last line: the
 /// user reviews it in the session and presses Enter there.
@@ -73,6 +79,9 @@ pub struct SshKeptTextBanner {
     text: String,
     /// Why "Type into session" did not write, once it was refused.
     note: Option<String>,
+    /// The text joins two hand-backs: the line break between them is not one the user typed, so
+    /// typing it would submit a line nobody entered. "Type into session" is refused.
+    merged: bool,
     type_mouse_state: MouseStateHandle,
     discard_mouse_state: MouseStateHandle,
 }
@@ -83,6 +92,7 @@ impl SshKeptTextBanner {
             block_id,
             text,
             note: None,
+            merged: false,
             type_mouse_state: MouseStateHandle::default(),
             discard_mouse_state: MouseStateHandle::default(),
         }
@@ -100,6 +110,15 @@ impl SshKeptTextBanner {
         self.note.as_deref()
     }
 
+    pub fn merged(&self) -> bool {
+        self.merged
+    }
+
+    /// A second hand-back joined the text (see `merged`).
+    pub fn mark_merged(&mut self) {
+        self.merged = true;
+    }
+
     pub fn set_text(&mut self, text: String, ctx: &mut ViewContext<Self>) {
         self.text = text;
         ctx.notify();
@@ -110,11 +129,18 @@ impl SshKeptTextBanner {
         ctx.notify();
     }
 
-    /// The banner's title line, with the char count of the whole kept text.
+    /// The banner's title line, with the char count of the whole kept text and the number of
+    /// lines "Type into session" would run (line breaks past the preview's cut are counted too).
     pub(crate) fn title(&self) -> String {
         let n = self.text.chars().count();
+        let runs = kept_text_lines_that_run(&self.text);
+        let runs = match runs {
+            0 => "no line runs when typed".to_owned(),
+            1 => "1 line runs when typed".to_owned(),
+            k => format!("{k} lines run when typed"),
+        };
         format!(
-            "Text typed while the SSH session connected was kept, not run ({n} char{})",
+            "Text typed while the SSH session connected was kept, not run ({n} char{}; {runs})",
             if n == 1 { "" } else { "s" }
         )
     }
@@ -251,6 +277,13 @@ impl TypedActionView for SshKeptTextBanner {
 
 /// The note shown when "Type into session" is refused because the ssh block the text was kept
 /// for is no longer the running command.
+/// The note shown when "Type into session" is refused because the session is still connecting
+/// (a hold or a remote bootstrap is in progress: the write would bypass it) or the text joins two
+/// hand-backs (its line break would submit a line nobody entered).
+pub(crate) const REFUSED_NOTE: &str = "This text was not typed: the session is still connecting, \
+    or it joins text from two hand-backs. It comes back into the input when the running command \
+    ends.";
+
 pub(crate) const NOT_RUNNING_NOTE: &str = "The SSH session this text was typed for is no longer \
     the running command, so it was not typed anywhere. It stays here and comes back into the \
     input when the running command ends.";
@@ -283,6 +316,7 @@ impl TerminalView {
             if banner.as_ref(ctx).block_id() == &block_id {
                 // A second hand-back for the same block: the input keeps both, the banner shows both.
                 banner.update(ctx, |banner, ctx| {
+                    banner.mark_merged();
                     banner.set_text(text, ctx);
                     banner.set_note(None, ctx);
                 });
@@ -354,14 +388,28 @@ impl TerminalView {
             return;
         };
         let banner_block = banner.as_ref(ctx).block_id().clone();
+        let merged = banner.as_ref(ctx).merged();
         let running = self.is_long_running();
         let active_block = self.model.lock().active_block_id().clone();
-        if !running || active_block != banner_block {
+        let same_block = active_block == banner_block;
+        // A nested connect or a remote bootstrap still in progress: the write would bypass the
+        // ssh hold (`write_user_bytes_to_pty` does not join it).
+        let connecting =
+            self.ssh_typeahead_holding || self.model_facts().pending_session_id.is_some();
+        if !running || !same_block || merged || connecting {
             warpui::input_order::log_hop("ssh_kept_text", || {
-                format!("action=type_refused running={running} same_block=false")
+                format!(
+                    "action=type_refused running={running} same_block={same_block} \
+                     merged={merged} connecting={connecting}"
+                )
             });
+            let note = if merged || connecting {
+                REFUSED_NOTE
+            } else {
+                NOT_RUNNING_NOTE
+            };
             banner.update(ctx, |banner, ctx| {
-                banner.set_note(Some(NOT_RUNNING_NOTE.to_owned()), ctx)
+                banner.set_note(Some(note.to_owned()), ctx)
             });
             return;
         }

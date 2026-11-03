@@ -27,3 +27,14 @@ fn typed_bytes_send_each_line_break_as_enter_and_add_none() {
     assert_eq!(kept_text_bytes("ls\npwd"), b"ls\rpwd".to_vec());
     assert_eq!(kept_text_bytes("ls\r\npwd"), b"ls\rpwd".to_vec());
 }
+
+#[test]
+fn lines_that_run_count_every_line_break_but_not_the_last_line() {
+    assert_eq!(kept_text_lines_that_run("echo hi"), 0);
+    assert_eq!(kept_text_lines_that_run("ls\npwd"), 1);
+    assert_eq!(kept_text_lines_that_run("a\r\nb\nc"), 2);
+    // Past the preview's cut too.
+    let long = format!("{}\nrm x", "x".repeat(KEPT_TEXT_PREVIEW_CHARS + 5));
+    assert!(!kept_text_preview(&long).contains('⏎'));
+    assert_eq!(kept_text_lines_that_run(&long), 1);
+}

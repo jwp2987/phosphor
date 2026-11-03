@@ -600,6 +600,8 @@ fn kept_text_pane_for_test(view: &mut TerminalView, ctx: &mut ViewContext<Termin
         .interactive_latch()
         .force(true);
     assert!(view.is_long_running());
+    // The hold this text comes from was opened for this (the ssh) block.
+    view.ssh_hold_block_id = Some(view.model.lock().active_block_id().clone());
     view.hand_back_unexecuted_ssh_text(KEPT_TEXT.to_owned(), ctx);
 }
 
@@ -635,7 +637,13 @@ fn kept_ssh_text_is_shown_in_a_banner_over_the_running_block() {
                 let banner = banner.as_ref(ctx);
                 assert_eq!(banner.text(), KEPT_TEXT, "{mode:?}");
                 assert_eq!(banner.block_id(), &active, "{mode:?}: over the ssh block");
-                assert!(banner.title().contains("(10 chars)"), "{mode:?}");
+                assert!(
+                    banner
+                        .title()
+                        .contains("(10 chars; 1 line runs when typed)"),
+                    "{mode:?}: {}",
+                    banner.title()
+                );
                 assert_eq!(banner.note(), None, "{mode:?}");
                 assert_eq!(
                     view.input.as_ref(ctx).handed_back_text_for_test(),
@@ -773,6 +781,134 @@ fn block_end_with_the_banner_up_hands_the_text_back_once() {
                 "{mode:?}: {:?}",
                 pty_writes.borrow()
             );
+        })
+    }
+}
+
+/// #1596 review B1: a second hand-back for the same block joins the kept text with a line break
+/// nobody typed; "Type into session" would submit it, so it is refused: nothing is written, and at
+/// the block's end the editor holds both texts.
+#[test]
+fn type_into_session_is_refused_for_text_joined_from_two_hand_backs() {
+    use crate::terminal::view::ssh_kept_text_banner::{REFUSED_NOTE, SshKeptTextBannerAction};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                kept_text_pane_for_test(view, ctx);
+                view.hand_back_unexecuted_ssh_text("echo b".to_owned(), ctx);
+                let banner = view.ssh_kept_text_banner().expect("one banner");
+                assert!(banner.as_ref(ctx).merged(), "{mode:?}");
+                assert_eq!(banner.as_ref(ctx).text(), "echo hi\nls\necho b", "{mode:?}");
+            });
+            click_kept_text_banner(
+                &mut app,
+                &terminal,
+                SshKeptTextBannerAction::TypeIntoSession,
+            );
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                let banner = view.ssh_kept_text_banner().expect("still up");
+                assert_eq!(banner.as_ref(ctx).note(), Some(REFUSED_NOTE), "{mode:?}");
+                end_kept_text_block_for_test(view, ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "echo hi\nls\necho b",
+                    "{mode:?}: both texts come back into the editor"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+        })
+    }
+}
+
+/// #1596 review B2: while the session is still connecting (a nested ssh hold, a remote bootstrap)
+/// the pty write would bypass the hold: "Type into session" is refused and the text stays kept.
+#[test]
+fn type_into_session_is_refused_while_the_session_is_connecting() {
+    use crate::terminal::view::ssh_kept_text_banner::{REFUSED_NOTE, SshKeptTextBannerAction};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                kept_text_pane_for_test(view, ctx);
+                // A nested connect holds keys now.
+                view.ssh_typeahead_holding = true;
+            });
+            click_kept_text_banner(
+                &mut app,
+                &terminal,
+                SshKeptTextBannerAction::TypeIntoSession,
+            );
+            for _ in 0..16 {
+                futures_lite::future::yield_now().await;
+            }
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                let banner = view.ssh_kept_text_banner().expect("still up");
+                assert_eq!(banner.as_ref(ctx).note(), Some(REFUSED_NOTE), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).handed_back_text_for_test(),
+                    Some(KEPT_TEXT),
+                    "{mode:?}: still kept"
+                );
+            });
+        })
+    }
+}
+
+/// #1596 review (4): a hand-back for a block other than the one the ssh hold was opened for (a
+/// late one, now over a local command) shows no banner; the text is still kept for the block end.
+#[test]
+fn no_kept_text_banner_over_a_block_the_hold_was_not_for() {
+    use crate::terminal::model::block::BlockId;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.model.lock().simulate_long_running_block("sleep 9", "");
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .interactive_latch()
+                    .force(true);
+                view.ssh_hold_block_id = Some(BlockId::new());
+                view.hand_back_unexecuted_ssh_text("echo hi".to_owned(), ctx);
+                assert!(view.ssh_kept_text_banner().is_none(), "{mode:?}");
+                assert_eq!(
+                    view.input.as_ref(ctx).handed_back_text_for_test(),
+                    Some("echo hi"),
+                    "{mode:?}"
+                );
+            });
         })
     }
 }
