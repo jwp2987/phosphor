@@ -92,6 +92,31 @@ pub struct AgentMessageBar {
     figma_detected: bool,
 }
 
+/// `PHOSPHOR_SKIP_REDUNDANT_AGENT_MSGBAR_RENDER=0` restores a re-render on every buffer event in
+/// shell mode (#1491).
+fn skip_redundant_render_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !std::env::var("PHOSPHOR_SKIP_REDUNDANT_AGENT_MSGBAR_RENDER")
+            .is_ok_and(|value| value == "0")
+    })
+}
+
+/// Whether a buffer edit needs the bar re-rendered (#1491). Every read of the buffer by the bar
+/// and its message producers is an emptiness check (the Figma chip's text check notifies on its
+/// own when its answer changes); the input mode, its lock, the slash-command state and ephemeral
+/// messages notify the bar through their own subscriptions. So in shell mode a keystroke that
+/// leaves the buffer non-empty cannot change the bar, yet it re-rendered it on every key (the
+/// agent-mode twin of the terminal message bar's per-key render, measured at about a frame of
+/// key->paint in r18ci).
+fn buffer_event_needs_render(
+    empty_state_changed: bool,
+    in_shell_mode: bool,
+    skip_redundant: bool,
+) -> bool {
+    empty_state_changed || (in_shell_mode && !skip_redundant)
+}
+
 impl Entity for AgentMessageBar {
     type Event = ();
 }
@@ -146,7 +171,11 @@ impl AgentMessageBar {
                 .update(ctx, |m, ctx| m.try_dismiss_explicit_message(ctx));
             let empty_state_changed = old.is_empty() != new.is_empty();
             let in_shell_mode = !me.input_model.as_ref(ctx).is_ai_input_enabled();
-            if empty_state_changed || in_shell_mode {
+            if buffer_event_needs_render(
+                empty_state_changed,
+                in_shell_mode,
+                skip_redundant_render_enabled(),
+            ) {
                 ctx.notify();
             }
             me.update_figma_detected(ctx);
@@ -966,3 +995,7 @@ impl MessageProvider<AgentMessageArgs<'_>> for MisrouteRecoveryMessageProducer {
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "agent_message_bar_tests.rs"]
+mod tests;

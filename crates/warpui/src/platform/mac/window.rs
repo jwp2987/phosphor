@@ -1514,6 +1514,18 @@ extern "C-unwind" fn warp_log_enter(
     warpui_core::input_order::log_enter("mac_enter", &to_string(stage), || to_string(detail));
 }
 
+/// Logs how long a key-down queued between the OS stamping it and `-[NSApplication sendEvent:]`
+/// dequeuing it on the main thread (#1606), as `input_order hop=os_key_event age_ms=...`. Called
+/// for every key-down; flags only, never the key.
+#[unsafe(no_mangle)]
+extern "C-unwind" fn warp_note_key_event(
+    age_ms: f64,
+    is_enter: std::ffi::c_int,
+    is_ctrl: std::ffi::c_int,
+) {
+    warpui_core::input_order::log_os_key_event(age_ms, is_enter != 0, is_ctrl != 0);
+}
+
 /// Returns whether this event was handled.
 #[unsafe(no_mangle)]
 extern "C-unwind" fn warp_handle_view_event(

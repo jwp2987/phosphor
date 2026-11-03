@@ -768,6 +768,13 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
   # is the same bytes `od` prints. A long message (the Bootstrapped hook is tens of KB) goes to
   # `od`, which beats a shell loop at that size. emulate -L zsh makes the loop immune to the
   # user's options (ksharrays, shwordsplit, errreturn, printexitvalue...).
+  #
+  # Phosphor (#1606): one `printf -v` over every byte ("'c" is the byte's value under nomultibyte)
+  # instead of a shell loop: the loop cost ~270 us per Preexec message (x86 zsh 5.9), the printf
+  # ~60 us, and the Preexec message is on the Enter -> command start path. Same output byte for
+  # byte (empty, quotes, %, backslashes, NUL, multibyte and invalid UTF-8 checked). A zsh without
+  # `printf -v` (older than 5.3) falls back to the loop; PHOSPHOR_ZSH_HEX_LOOP=1 (exactly) forces the
+  # loop. Pinned byte for byte against `od` by script/test_zsh_hex_encoder.
   __warp_hex_encode_to () {
     emulate -L zsh
     setopt nomultibyte
@@ -775,6 +782,22 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
     if (( ${#s} > 2048 )); then
       typeset -g __warp_hex=$(warp_hex_encode_string "$s")
       return 0
+    fi
+    if [[ -z $s ]]; then
+      typeset -g __warp_hex=
+      return 0
+    fi
+    if [[ ${PHOSPHOR_ZSH_HEX_LOOP-} != 1 ]]; then
+      local -a __warp_hex_bytes
+      __warp_hex_bytes=("'"${(s::)^s})
+      # A zsh without `printf -v` (< 5.3) takes "-v" as the FORMAT, prints it and returns 0: discard
+      # stdout and require two hex digits per byte (${#s} counts bytes under nomultibyte), else
+      # fall through to the loop.
+      if builtin printf -v out '%02x' "${__warp_hex_bytes[@]}" >/dev/null 2>&1 && (( ${#out} == 2 * ${#s} )); then
+        typeset -g __warp_hex=$out
+        return 0
+      fi
+      out=
     fi
     for c in ${(s::)s}; do
       out+=${(l:2::0:)${$(( [##16] #c ))}}
