@@ -398,12 +398,29 @@ fn a_session_without_a_registered_pipe_name_is_typed() {
     });
 }
 
+/// A Precmd for the prompt the chord was written at (queued before the write, or a generator
+/// command's) keeps the chord; a Precmd of a NEW prompt means no Preexec came and retypes once (B2).
 #[test]
 fn a_precmd_without_a_preexec_retypes_once_and_a_preexec_first_retypes_nothing() {
     App::test((), |mut app| async move {
         let rig = rig(&mut app, 9_100_009, true);
         rig.controller.update(&mut app, |controller, ctx| {
             controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+            // The same prompt's Precmd: not a lost chord.
+            controller.on_precmd_with_chord_outstanding(ctx);
+        });
+        assert_eq!(rig.sender.messages.lock().len(), 1, "only the chord");
+        rig.controller.read(&app, |controller, _| {
+            assert_eq!(controller.file_insert_pending.as_deref(), Some("Get-Date"));
+        });
+
+        // A new block (a new prompt) starts without a Preexec having answered the chord.
+        rig.controller.update(&mut app, |controller, ctx| {
+            {
+                let mut model = controller.terminal_model.lock();
+                model.simulate_long_running_block("other", "");
+                model.finish_block();
+            }
             controller.on_precmd_with_chord_outstanding(ctx);
             // A second Precmd has nothing outstanding.
             controller.on_precmd_with_chord_outstanding(ctx);
@@ -414,6 +431,10 @@ fn a_precmd_without_a_preexec_retypes_once_and_a_preexec_first_retypes_nothing()
             assert_eq!(payload(&messages[1]), b"\x1b2".to_vec());
             assert_eq!(payload(&messages[2]), typed_bytes("Get-Date")[2..].to_vec());
         }
+        rig.controller.read(&app, |controller, _| {
+            assert!(controller.file_insert_pending.is_none());
+            assert!(controller.file_insert_block.is_none());
+        });
 
         // Normal flow: Preexec clears the chord, the Precmd after the command retypes nothing.
         let normal = self::rig(&mut app, 9_100_010, true);

@@ -8,6 +8,7 @@ use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::AIAgentPtyWriteMode;
 use crate::terminal::input::CommandExecutionSource;
+use crate::terminal::model::block::BlockId;
 use crate::terminal::model::completions::ShellCompletion;
 use crate::terminal::model::early_output::TypeaheadMode;
 use crate::terminal::model::key_facts::{ModelCommand, ModelInbox};
@@ -237,6 +238,10 @@ pub struct PtyController<T: EventLoopSender> {
     /// nothing and the command is typed instead). At most one: a second command is typed while it
     /// is set.
     file_insert_pending: Option<String>,
+    /// The id of the active block (the prompt's) when the chord was written; a Precmd for that
+    /// same block is not evidence the chord was lost (B2). Set and cleared with
+    /// `file_insert_pending`.
+    file_insert_block: Option<BlockId>,
     #[cfg(test)]
     fast_insert_off_for_test: bool,
     /// One-shot: the retype after `CommandFileFailed` must be typed, not sent as the chord again.
@@ -611,6 +616,7 @@ impl<T: EventLoopSender> PtyController<T> {
             pipe_sessions: Default::default(),
             command_pipe: None,
             file_insert_pending: None,
+            file_insert_block: None,
             force_typed_command: false,
             #[cfg(test)]
             fast_insert_off_for_test: false,
@@ -2143,6 +2149,14 @@ impl<T: EventLoopSender> PtyController<T> {
                     format!("bytes={}", command.len())
                 });
                 self.file_insert_pending = Some(command);
+                self.file_insert_block = Some(
+                    self.terminal_model
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .id()
+                        .clone(),
+                );
                 return TypedCommand::FileChord;
             }
         }
@@ -2221,6 +2235,7 @@ impl<T: EventLoopSender> PtyController<T> {
             warpui::input_order::log_hop("pwsh_command_file_failed_ignored", String::new);
             return;
         };
+        self.file_insert_block = None;
         warpui::input_order::log_hop("pwsh_command_file_failed_retype", || {
             format!("bytes={}", command.len())
         });
@@ -2240,16 +2255,32 @@ impl<T: EventLoopSender> PtyController<T> {
 
     /// A Precmd while a chord is outstanding means no Preexec came (it clears the chord): retype.
     fn on_precmd_with_chord_outstanding(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.file_insert_pending.is_some() {
-            warpui::input_order::log_hop("pwsh_precmd_without_preexec", String::new);
-            self.on_command_file_failed(ctx);
+        if self.file_insert_pending.is_none() {
+            return;
         }
+        let active = self
+            .terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .id()
+            .clone();
+        if self.file_insert_block.as_ref() == Some(&active) {
+            // The Precmd of the prompt the chord was written at (queued before the write, or a
+            // generator command's): not evidence the chord was lost. Retyping here could run the
+            // command twice.
+            warpui::input_order::log_hop("pwsh_precmd_same_prompt_chord_kept", String::new);
+            return;
+        }
+        warpui::input_order::log_hop("pwsh_precmd_without_preexec", String::new);
+        self.on_command_file_failed(ctx);
     }
 
     /// Forgets an outstanding insert chord (its command ran, or its write was refused before it
     /// reached the pty) and closes its pipe.
     fn clear_file_insert(&mut self) {
         self.file_insert_pending = None;
+        self.file_insert_block = None;
         self.command_pipe = None;
     }
 
