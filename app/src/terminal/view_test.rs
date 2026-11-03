@@ -20389,6 +20389,118 @@ fn ssh_complete_line_typed_during_connect_is_delivered_at_the_first_prompt() {
     })
 }
 
+/// #1609 (r18e0, `ssh_connect_typing`, gap 0.0 s): `ssh fake` + Enter, then at once a line + Enter,
+/// before any preexec, any output or any prompt. The line is held (never written to the pty, never
+/// run) until the remote shell's prompt shows, then delivered exactly once, in order, with its
+/// Enter, to the remote shell. Legacy and Table.
+#[test]
+fn ssh_line_typed_at_once_after_the_ssh_enter_is_held_and_delivered_once_to_the_remote() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh fake", ctx);
+                // Immediately, key by key, before the shell's preexec or any output.
+                for key in "echo T1609".chars() {
+                    view.typed_characters_on_terminal(&key.to_string(), ctx);
+                }
+                view.keydown_on_terminal("\r", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}: the line is held");
+                assert_eq!(
+                    view.ssh_held_bytes(),
+                    "echo T1609\r".len(),
+                    "{mode:?}: held exactly as typed"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: nothing reached the local pty before the prompt: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(*executed.borrow(), ["ssh fake".to_owned()]);
+            // The ssh starts (preexec), still no output: the hold goes on.
+            terminal.update(&mut app, |view, ctx| {
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh fake", "");
+                view.warpify_state
+                    .set_pending_ssh_host("ssh fake".to_owned(), Some("fake".to_owned()));
+                assert!(view.ssh_typeahead_holding, "{mode:?}: still held");
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: still nothing local: {:?}",
+                pty_writes.borrow()
+            );
+            // The remote (unmanaged) shell's prompt: the held line goes to it, once.
+            terminal.update(&mut app, |view, ctx| {
+                view.model.lock().process_bytes("user@fake:~$ ");
+                view.model.lock().publish_key_facts();
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
+                assert!(view.ssh_held_is_empty(), "{mode:?}: handed over");
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            let written = String::from_utf8_lossy(&written).into_owned();
+            assert_eq!(
+                written.matches("echo T1609").count(),
+                1,
+                "{mode:?}: delivered exactly once: {written:?}"
+            );
+            assert!(
+                written.starts_with("echo T1609\r"),
+                "{mode:?}: in order, its Enter after it: {written:?}"
+            );
+            assert_eq!(
+                *executed.borrow(),
+                ["ssh fake".to_owned()],
+                "{mode:?}: nothing ran in the local shell"
+            );
+        })
+    }
+}
+
+/// #1609: the local typeahead hand-off is told an ssh owns the pty from its submit until its block
+/// ends, so an Enter typed into it is not held as a young line of the local shell; a command that
+/// is not ssh never sets it.
+#[test]
+fn ssh_submit_tells_the_handoff_the_tty_belongs_to_ssh_until_the_block_ends() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            submit_command(view, "ls -l", ctx);
+            assert!(!view.handoff.read().ssh_owns_tty());
+            submit_command(view, "ssh fake", ctx);
+            assert!(view.handoff.read().ssh_owns_tty());
+            let block_id = view.model.lock().active_block_id().clone();
+            view.apply_block_completed_to_ssh_gate(&block_id, 0);
+            assert!(!view.handoff.read().ssh_owns_tty());
+            submit_command(view, "ssh fake", ctx);
+            assert!(view.handoff.read().ssh_owns_tty());
+            submit_command(view, "echo hi", ctx);
+            assert!(!view.handoff.read().ssh_owns_tty());
+        });
+    })
+}
+
 /// The remote session came up and its bootstrap ended: the next `Precmd` is its first prompt.
 fn remote_first_prompt_is_next_for_test(view: &mut TerminalView) {
     let gate = view.ssh_connect_gate.as_mut().expect("gate armed");

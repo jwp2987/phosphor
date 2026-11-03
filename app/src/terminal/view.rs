@@ -11696,9 +11696,13 @@ impl TerminalView {
             gate.block_id = Some(block_id);
             gate.user_submitted = user_submitted;
             self.ssh_connect_gate = Some(gate);
+            // #1609: from this submit until the ssh block ends the pty belongs to ssh and the
+            // remote shell: an Enter typed into it is not held as a young line of the local shell.
+            self.handoff.write().set_ssh_owns_tty(true);
         } else {
             // A different command now owns the pty: a stale gate must not eat its typing.
             self.ssh_connect_gate = None;
+            self.handoff.write().set_ssh_owns_tty(false);
         }
         self.ssh_edge(input_queue::SshEdge::Submitted {
             ssh: self.ssh_connect_gate.is_some(),
@@ -11920,6 +11924,8 @@ impl TerminalView {
     /// Applies a finished user block to the gate (#983). Only the armed block's completion
     /// counts; the observation of the announced remote runs first so a managed remote is known.
     fn apply_block_completed_to_ssh_gate(&mut self, block_id: &BlockId, exit_code: i32) {
+        // #1609: a user block ended: the pty is the local shell's again.
+        self.handoff.write().set_ssh_owns_tty(false);
         let applies =
             |gate: &SshConnectGate| gate.block_id.as_ref().is_none_or(|id| id == block_id);
         if !self.ssh_connect_gate.as_ref().is_some_and(applies) {

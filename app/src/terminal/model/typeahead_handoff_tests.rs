@@ -3882,3 +3882,37 @@ fn the_barrier_changes_nothing_for_the_other_samples() {
     assert_ne!(handoff.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
     assert_eq!(probe.asked(), vec!["sample"]);
 }
+
+/// #1609: an Enter typed on a line the user began right after submitting `ssh` is for the ssh
+/// session. The local shell's counts (one line written, no Precmd yet) would make it a "young"
+/// line, held for a local prompt that never comes, whose give-up hands the line back to the editor
+/// instead of the remote shell.
+#[test]
+fn an_enter_typed_while_an_ssh_owns_the_tty_is_not_held_as_a_young_enter() {
+    // Control: the same sequence without ssh is held (#933).
+    let mut handoff = young_after_submit();
+    type_and_flush(&mut handoff, b"echo T");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert!(handoff.take_young_hold_started().is_some());
+
+    let mut handoff = young_after_submit();
+    handoff.set_ssh_owns_tty(true);
+    assert_eq!(
+        type_and_flush(&mut handoff, b"echo T"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.take_young_hold_started(), None, "no hold, no timer");
+    // The peek the destination table's shadow takes agrees.
+    assert_eq!(
+        handoff.peek_user_bytes_route(b"\r", true, Instant::now()),
+        UserBytesRoute::WriteCounted
+    );
+
+    // When the ssh block ends the local shell owns the pty again: the young hold applies.
+    let mut handoff = young_after_submit();
+    handoff.set_ssh_owns_tty(true);
+    handoff.set_ssh_owns_tty(false);
+    type_and_flush(&mut handoff, b"echo T");
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+}
