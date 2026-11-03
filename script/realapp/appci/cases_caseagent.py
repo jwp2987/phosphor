@@ -259,10 +259,13 @@ SHELL_LINES = ["ls -la", "git status", "grep foo foo.txt", "echo hello world", "
                "print -r -- $EPOCHREALTIME > lat_0", "notacmd_x $HOME/x", "xyz_nocmd > out_nc.txt", "foo_nocmd --bar | grep x"]
 PROSE_LINES = ["what does this error mean", "how do I undo my last git commit", "explain why the build is failing", "why is my disk full",
                "can you summarize the changes in this repo", "please walk me through the failing test",
-               "what is 5 > 3", "can you show me how to use --verbose?", "explain $PATH to me"]
+               # r18e4: "what is 5 > 3" is NOT prose here: it carries a `>` (shell syntax, #1560 / #1183: `what` is an installed head on macOS, so the line is
+               # command evidence and runs in the shell). A prose twin without shell syntax stays in the table; the `>` line is judged as AMBIGUOUS below.
+               "is five bigger than three", "can you show me how to use --verbose?", "explain $PATH to me"]
 # installed head + English arguments: the documented rule (owner decision #964, #1183) decides by SURFACE, read from the routing log:
 # plain terminal (no conversation open) = Shell, inside an agent conversation with no command evidence = Agent
-AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log and tell me what is wrong"]
+AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log and tell me what is wrong",
+                   "what is 5 > 3"]
 # (plain terminal, inside an agent conversation); None = not pinned for that surface (the logged rule below still has to agree). r18d2: the #1183
 # evidence rule judges the LINE, not the conversation's history, and the table's own prose lines open a conversation in the terminal pane too, so the
 # expectation is per line:
@@ -285,7 +288,7 @@ def ambiguous_want(line, surface, rule):
         want = pinned[1] if surface == "AgentConversation" else pinned[0]
         if want:
             return want
-    if rule and rule.startswith("evidence-in-conversation"):
+    if rule and rule.startswith(("evidence-in-conversation", "shell-structure-unknown-head")):
         return "shell"
     if rule and rule.startswith("no-evidence-in-conversation"):
         return "agent"

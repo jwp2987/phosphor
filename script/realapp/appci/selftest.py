@@ -694,6 +694,23 @@ def mac_close_key_empty_never_crashes_and_latency_guards():
         assert res.noref and "UNVERIFIABLE" in res.noref[0] and not res.fails
 
 
+@check
+def r18e4_flood_zwj_routing_hang_fixes():
+    import cases_robust as cr
+    # 1: the endless producer runs until the stop file exists and never has a fixed end
+    cmd = cr.endless_flood("seq", "stopf", 1000, 2)
+    assert "while [ ! -e stopf ]" in cmd and "seq 1 500000" in cmd and "-lt 2" in cmd, cmd
+    assert "yes | head" in cr.endless_flood("yes", "s")
+    # 2: the zsh rc records raw history (fc -l prints a ZWJ as the text \\u200d), and the case text holds the real code point
+    assert "history[$((HISTCMD-1))]" in profile.ZSHRC and "fc -ln -1" in profile.ZSHRC
+    import cases_caseintl as ci2
+    assert "\\u200d" not in ci2.WIDE[3][1] and "\u200d" in ci2.WIDE[3][1] and "\\" not in ci2.WIDE[3][1]
+    # 4: `what is 5 > 3` is shell-syntax/evidence, judged as ambiguous (shell by rule), not prose-to-agent
+    assert "what is 5 > 3" not in ca.PROSE_LINES and "what is 5 > 3" in ca.AMBIGUOUS_LINES
+    assert ca.ambiguous_want("what is 5 > 3", "AgentConversation", "shell-structure-unknown-head (#1560)") == "shell"
+    assert ca.ambiguous_want("what is 5 > 3", "AgentConversation", "evidence-in-conversation (#1183)") == "shell"
+
+
 def main():
     failed = 0
     for f in CHECKS:

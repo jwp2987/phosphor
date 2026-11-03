@@ -533,13 +533,13 @@ SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor op
 - `quit_24_tabs` (86, #1410): `APPCI_QUIT_TABS` (24) streaming tabs + a second window, quit key; the app must be gone within
   `APPCI_QUIT_BOUND_S` (10) s of the last confirm key, the app log must not contain `Failed to send Shutdown`, and no process whose cwd is
   under the profile may outlive the app (orphan check). Repeated `APPCI_QUIT_REPEAT` (2) times (the original failure was 1 in 3).
-- `flood_typed_line` (60): `yes | head -n 2e6` and `seq 1 5e6` (scaled by `APPCI_SCALE`) with a line typed at 10-25 ms/key + Enter while
+- `flood_typed_line` (60): an endless `yes | head` / `seq` producer loop (r18e4: it runs until the case touches a stop file after the typing, and at least 2e6 / 5e6 lines (scaled by `APPCI_SCALE`) and 4 s, so it outlasts the typing on any machine) with a line typed at 10-25 ms/key + Enter while
   it runs: the line runs exactly once, only after the flood (shell-side timestamps), rec.log shows exactly [flood, typed line]; fails if the
   flood ended before the typing did (then it tested nothing).
-- `flood_typing_latency` (61): tab A floods (`seq 1 8e6`), tab B reads raw keys at the pty (`ts_reader.py`): 80 chars at 15 ms/key arrive
+- `flood_typing_latency` (61): tab A floods (endless `seq` loop until the case touches a stop file after the typing), tab B reads raw keys at the pty (`ts_reader.py`): 80 chars at 15 ms/key arrive
   complete and in order; gap p50/p95/max are metrics, a stall above `APPCI_FLOOD_STALL_MS` (1000) fails. No reference terminal is measured, so
   no latency verdict against one is made.
-- `flood_scrollback_find` (62): a random uppercase marker is the first output line of a 300k-line flood; control: it is NOT on screen after
+- `flood_scrollback_find` (62): a random uppercase marker is the first output line of a flood of at least 300k lines AND 3 s (r18e4: a fast macOS finished 300k lines before the screen scrolled); control: it is NOT on screen after
   the flood; `ctrl+shift+f` + the marker + Enter must bring it on screen (OCR). SKIPs without tesseract (package `tesseract-ocr`).
 - `editor_edit_save` (70): opens a file in the code editor (`<bin> file://PATH` forwarded over the app's D-Bus session; the opener has no
   display in its env and is killed after 30 s), types an edit at 10-25 ms/key, `ctrl+s`, byte-exact on disk; undo xN + save = original, redo
@@ -1363,3 +1363,15 @@ directory user names, and token/key patterns, so collect on a machine that has t
 **Windows triage rules, r18co additions (#1488).** (6) The wedge probe judges by EFFECT, never by a prompt (the PowerShell pane has no prompt hook): a marker command appending to `alive_<tok>.txt` (looked up in the case dir and, in the PowerShell pane, the real home); only no effect after two tries (the second after Ctrl-C x3) is `pane_wedged_after_<case>`; an effect only after the retry is the passing row `pane_needed_ctrl_c_after_<case>` (Git Bash pane after `cadence`: the app's log shows typed keys written to the pty and the Enter taken by the empty input editor, no `kh_focus_input` after the long-running `ts_reader` exited; candidate app finding). The probe waits for its own line in rec.log so it cannot land in the next case's `cmds_since`. It also runs after `cadence`. (7) After the key proof the PowerShell pane is `Set-Location`'d into the case dir and verified by a relative marker file, retried 3 times (r18co: Ctrl-U typed while the proof's command was still returning became `^USet-Location`, the pane stayed in the real home and every PowerShell effect file landed outside the case dir). (8) `session.new_session_shell_override` is an enum: its TOML is `{ executable = "<path>" }`, not a bare string (r18co: 'Invalid value for new_session_shell_override').
 
 **Windows fix tier (`APPCI_TIER=smoke`), as data (`winmap.FIX_TIER` / `tier_plan`).** r18co took 70 min. Terminal mode runs the shared SMOKE list (the reference measurements: conhost enter control, Ctrl-C reference + remeasure, `latency_enter`, `key_loss_control` in the Git Bash pane only). Agent mode runs only `mode_proof`, `fast_typing` (gap 0 only, no enter control), `paste_instant_enter`, `tab_enter`, a short `ctrl_c_d` (delivery and line integrity; no reference, no remeasure, the overhead budget is judged in terminal mode) and the three ssh hand-over cases, once per pane. Cases per pass that actually run (`run.py --self-test` prints them): terminal/powershell 13, terminal/gitbash 17, agent/powershell 8, agent/gitbash 8. Expected duration, estimated from r18co per-case times (not yet measured): about 10 + 11 + 4.5 + 4.5 = about 30 min including launches and probes. The full tier (candidate, release) and an explicit `--cases` list are unchanged.
+
+## r18e4 harness accuracy fixes (macOS live run)
+
+- **Floods** (`flood_typed_line`, `flood_typing_latency`, `flood_scrollback_find`): fixed line counts finished before the typing on macOS. The producer is now an
+  endless loop (`cases_robust.endless_flood`) that runs until the case touches a stop file (after the typing) and at least a floor of lines/seconds; the "flood
+  ended before the typing finished" self-checks are kept.
+- **ZWJ "typed as literal text"** (`intl_wide_type` / `intl_wide_paste`) was a recorder bug, not the app: the zsh rc read the line with `fc -ln -1`, which prints a
+  non-printing character as the text `\u200d` (bytes 5c 75 32 30 30 64), while the effect file had the real U+200D. The rc now reads the raw `$history` entry.
+- **`ssh_hanging_host_not_local` refused arm**: a refused port exits in milliseconds, before the first key, so the ssh cannot be kept alive; the arm is UNVERIFIABLE
+  (NOREF) in that case and no longer fails the "usable afterwards" check because the line correctly ran locally. The hanging-host arm is the real hold test.
+- **`routing_table`**: `what is 5 > 3` carries shell syntax (`>`; `what` is an installed head on macOS), so it runs in the shell (#1183 / #1560). It moved from the
+  prose list to the ambiguous list (judged by the logged rule); a syntax-free prose line (`is five bigger than three`) took its place.

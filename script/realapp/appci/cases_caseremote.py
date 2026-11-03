@@ -385,10 +385,12 @@ def c_ssh_hang(ctx, r):
                 ("+%.2f s" % (t_exit - t_ssh)) if t_exit else "not observed", t_first - t_ssh, t_last - t_ssh, len(gate)))
             exited_before_key = (t_exit is not None and t_exit < t_first) or not alive_ts
             if exited_before_key:
+                unverifiable = True
                 # the ssh was already gone when the first key was typed: running locally is correct, so the 'held' property was not exercised
                 r.no_reference("UNVERIFIABLE [%s host]: the ssh client had %s before the first MUSTNOT key, so a local run of the line is correct and says nothing about the hold" % (
                     label, "already exited" if alive_ts else "not been seen"))
             else:
+                unverifiable = False
                 r.check(not ctx.lines(f), "[%s host] the line typed behind ssh ran LOCALLY: %r (ssh alive at the first key; exit %s)" % (
                     label, ctx.lines(f), ("+%.2f s" % (t_exit - t_ssh)) if t_exit else "not observed"))
                 r.check(not any("MUSTNOT_" + tok in c for c in ctx.cmds_since(lmark)),
@@ -400,7 +402,13 @@ def c_ssh_hang(ctx, r):
             tok2 = ctx.tok(6).lower()
             ctx.be.type("echo %s >> %s" % (tok2, f), 12, enter=True)
             ctx.until(lambda: ctx.lines(f), 8)
-            exact(r, "[%s host] the local shell is usable afterwards (and has none of the held line)" % label, [tok2], ctx.lines(f))
+            if unverifiable:
+                # r18e4: the ssh had already exited, so the MUSTNOT line correctly ran locally (a refused port exits in milliseconds, before the first key):
+                # it may be in the file; only the usability probe is judged, and it must be there exactly once
+                exact(r, "[%s host] the local shell is usable afterwards (ssh had already exited: the earlier line running locally is correct and ignored)" % label,
+                      [tok2], [l for l in ctx.lines(f) if l != "MUSTNOT_" + tok])
+            else:
+                exact(r, "[%s host] the local shell is usable afterwards (and has none of the held line)" % label, [tok2], ctx.lines(f))
     finally:
         stop.set()
         th.join(2)

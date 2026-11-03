@@ -53,7 +53,9 @@ PS1='%%~%%# '
 HISTFILE=$HOME/.zsh_history; HISTSIZE=200000; SAVEHIST=200000
 __pa_n=0
 __pa_rec() {
-  local c; c=$(fc -ln -1 2>/dev/null); c=${c#"${c%%%%[![:space:]]*}"}; c=${c//$'\n'/\\n}
+  local c; c=${history[$((HISTCMD-1))]};   # raw history text: `fc -l` prints a ZWJ / unprintable as the TEXT \\u200d (r18e4)
+  [[ -n $c ]] || c=$(fc -ln -1 2>/dev/null)
+  c=${c#"${c%%%%[![:space:]]*}"}; c=${c//$'\n'/\\n}
   if [[ $HISTCMD != $__pa_n ]]; then __pa_n=$HISTCMD; print -r -- "C"$'\t'"$EPOCHREALTIME"$'\t'"$c" >> "$PA_CTL/rec.log"; fi
   print -r -- "P"$'\t'"$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
 }
