@@ -307,3 +307,39 @@ fn uncovered_report_patience_keeps_the_text_instead_of_running_the_enter() {
         });
     }
 }
+
+/// A8 (#1577): the ssh connect window's give-up timer hands the held keys back as text even when
+/// the remote's prompt was seen (that prompt's own event hands over; a timer never delivers). The
+/// held `echo hi` shows in the input, not run, and nothing is written to the pty.
+#[test]
+fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("echo hi", ctx);
+                assert!(view.ssh_typeahead_holding);
+                view.ssh_remote_prompt_seen = true;
+                let gate = view.ssh_connect_gate.as_mut().unwrap();
+                gate.armed_at =
+                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+                view.ssh_give_up_fired(ctx);
+                assert!(!view.ssh_typeahead_holding);
+                assert!(!view.ssh_give_up_in_progress);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
+                assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+            });
+            assert!(
+                writes.borrow().is_empty(),
+                "a timer delivered to the pty: {:?}",
+                writes.borrow()
+            );
+        });
+    }
+}

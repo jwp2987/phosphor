@@ -3191,6 +3191,11 @@ pub struct TerminalView {
     /// The remote shell's first prompt was seen in this connect: the point where held keys are
     /// handed to it (#1292). Without it the connect failed and they become editor text.
     ssh_remote_prompt_seen: bool,
+    /// #1577: the connect window's give-up TIMER is running the hand-over right now
+    /// (`ssh_give_up_fired`). A timer never delivers held keys to a pty: `finish_ssh_typeahead`
+    /// hands them back as text even when the remote's prompt was seen (that prompt is an event
+    /// that itself hands over; seeing it here means the hand-over missed its window).
+    ssh_give_up_in_progress: bool,
     /// The pending session whose bootstrap-failed timer already fired (#983): input is never
     /// swallowed on behalf of a bootstrap that is known to be stuck.
     ssh_bootstrap_failed_session: Option<SessionId>,
@@ -5055,6 +5060,7 @@ impl TerminalView {
             young_enter_released: true,
             young_enter_wait_id: 0,
             ssh_remote_prompt_seen: false,
+            ssh_give_up_in_progress: false,
             ssh_bootstrap_failed_session: None,
             bootstrap_precmd_seen_session: None,
             bootstrap_grace_used_session: None,
@@ -11472,7 +11478,16 @@ impl TerminalView {
             warpui::input_order::log_key_hop("kh_finish_end", || "delivered=none".to_owned());
             return;
         }
-        if self.ssh_remote_prompt_seen {
+        if self.ssh_remote_prompt_seen && self.ssh_give_up_in_progress {
+            // #1577: the give-up timer never delivers; the held keys are handed back as text (the
+            // release that ended the window was already counted as a give-up).
+            warpui::input_order::log_key_hop("kh_finish_begin", || {
+                format!(
+                    "give_up=ceiling remote_prompt_seen=true held_bytes={}",
+                    self.ssh_held_bytes()
+                )
+            });
+        } else if self.ssh_remote_prompt_seen {
             self.log_ssh_typeahead_delivery(self.ssh_held_count());
             // #1353 phase 4: closing the `SshConnect` gate IS the delivery; the queue's one drain
             // writes the held inputs in typed order (the legacy buffer does it in a loop).
