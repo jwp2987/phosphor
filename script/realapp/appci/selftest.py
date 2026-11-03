@@ -190,6 +190,25 @@ def routing_classification():
 
 
 @check
+def agent_input_exact_log_judgement():
+    """#1510: the Rust Debug string in hop=enter_begin is unescaped and compared byte for byte"""
+    sent = 'please explain why "build 7f3a" isn\'t passing, it\'s odd (really)?'
+    log = 'input_order hop=enter_begin deferred=false buffer="please explain why \\"build 7f3a\\" isn\'t passing, it\'s odd (really)?" input_type=AI t=1\n'
+    rows = ca.enter_buffers(log)
+    assert rows == [(sent, "AI")], rows
+    assert ca.judge_agent_input(sent, rows) is None
+    assert "differs" in ca.judge_agent_input(sent + "x", rows) and "char" in ca.judge_agent_input("plAase" + sent, rows)
+    assert "routed as Shell" in ca.judge_agent_input(sent, [(sent, "Shell")]) and "no hop=enter_begin" in ca.judge_agent_input(sent, [])
+    assert ca.judge_agent_input("abcd", ca.enter_buffers("hop=enter_begin deferred=false buffer=<4 chars> input_type=AI")) is None
+    assert ca.judge_agent_input("abcd", ca.enter_buffers("hop=enter_begin deferred=false buffer=<3 chars> input_type=AI")) is not None
+    assert ca.unescape_rust_debug('"a\\n\\t\\\\ \\u{e9}"') == "a\n\t\\ \u00e9"
+    # a lost or doubled character is caught; the LAST Enter is the one judged (an earlier line is history)
+    assert ca.judge_agent_input("hi there", [("old", "Shell"), ("hi there", "AI")]) is None
+    assert ca.judge_agent_input("hi there", [("hi ther", "AI")]) is not None
+    assert "agent_input_exact" in {c["name"] for c in cases.CASES} and "agent_mode_switch" in cases.SMOKE
+
+
+@check
 def reference_forgiveness_is_capped():
     f = cases.forgiven_by_reference
     assert not f(30, 30, None) and not f(30, 30, dict(bad=0, exact_bad=0)), "a clean reference forgives nothing"

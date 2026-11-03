@@ -367,3 +367,147 @@ def c_routing_table(ctx, r):
     r.metric("routing_rows", results)
     r.metric("misroutes", len([x for x in results if x["want"] and x["want"] != x["got"]]))
     ctx.reset()
+
+
+# ---------------------------------------------------------------- agent input exactness and mid-session mode switches (#1510)
+# The app logs `hop=enter_begin deferred=.. buffer=<Debug string> input_type=Shell|AI` for every Enter (the text only because the harness
+# sets WARP_INPUT_ORDER_LOG_TEXT=1; without it `buffer=<N chars>`), so what the agent input HELD at Enter is machine-readable from the log:
+# byte-exact comparison with what was typed, no OCR. `hop=view_mode mode=agent|terminal` (Ctx.log_view_mode) names the view.
+ENTER_BUFFER_RE = re.compile(r'hop=enter_begin\b[^\n]*?\bbuffer=("(?:[^"\\]|\\.)*"|<\d+ chars>) input_type=(\w+)')
+_RUST_ESC = {"n": "\n", "r": "\r", "t": "\t", "0": "\0", "\\": "\\", '"': '"', "'": "'"}
+
+
+def unescape_rust_debug(s):
+    """Inverse of Rust's `{:?}` for a str: "..." with \\n \\r \\t \\0 \\\\ \\" \\' and \\u{hex}. Anything else is left as written."""
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1]
+    out, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c != "\\" or i + 1 >= len(s):
+            out.append(c); i += 1; continue
+        n = s[i + 1]
+        if n == "u" and s[i + 2:i + 3] == "{" and "}" in s[i + 3:]:
+            j = s.index("}", i + 3)
+            try:
+                out.append(chr(int(s[i + 3:j], 16))); i = j + 1; continue
+            except ValueError:
+                pass
+        out.append(_RUST_ESC.get(n, "\\" + n)); i += 2
+    return "".join(out)
+
+
+def enter_buffers(text):
+    """[(buffer, input_type)] for every `hop=enter_begin` line in an app-log excerpt. buffer is the exact text, or an int (its char count)
+    when the app was not told to log text."""
+    rows = []
+    for m in ENTER_BUFFER_RE.finditer(text):
+        b = m.group(1)
+        rows.append((int(re.match(r"<(\d+) chars>", b).group(1)) if b.startswith("<") else unescape_rust_debug(b), m.group(2)))
+    return rows
+
+
+def judge_agent_input(sent, rows):
+    """Failure text or None. The LAST Enter in `rows` must be the sent text, byte for byte, routed to the agent (input_type AI)."""
+    if not rows:
+        return "the app logged no hop=enter_begin line for the Enter (no log line to judge from)"
+    buf, typ = rows[-1]
+    if typ != "AI":
+        return "the Enter was routed as %s, not AI (the agent view did not take the prose line)" % typ
+    if isinstance(buf, int):
+        return None if buf == len(sent) else "the agent input held %d chars at Enter, %d were typed" % (buf, len(sent))
+    if buf != sent:
+        k = next((i for i, (a, b) in enumerate(zip(buf, sent)) if a != b), min(len(buf), len(sent)))
+        return "agent input differs from what was typed at char %d: typed %r, app held %r" % (k, sent, buf)
+    return None
+
+
+def wait_view_mode(ctx, want, timeout=6):
+    ctx.until(lambda: ctx.log_view_mode() == want, timeout)
+    return ctx.log_view_mode()
+
+
+def submit_prose(ctx, r, tag, sent, why):
+    """type `sent` (agent-bound prose) at the owner's rate, Enter in the same call; judge the Enter from the app log; stop the request."""
+    off, mark = ctx.log_size(), ctx.cmd_mark()
+    type_fast(ctx, sent)
+    ctx.until(lambda: enter_buffers(ctx.log_since(off)), 6)
+    rows = enter_buffers(ctx.log_since(off))
+    err = judge_agent_input(sent, rows)
+    r.check(err is None, "%s: %s" % (why, err))
+    r.check(not [c for c in ctx.cmds_since(mark) if sent[:20] in c], "%s: the prose line reached the SHELL: %r" % (why, ctx.cmds_since(mark)[:2]))
+    ctx.shot(tag)
+    ctx.be.key("ctrl+c")                 # one Ctrl-C: stops a started request (two inside 1 s would leave the agent view)
+    ctx.ctrlc_ts.append(time.time())
+    time.sleep(0.6)
+    return rows
+
+
+@case("agent_input_exact", modes=("agent",), order=47, gui=True)
+def c_agent_input_exact(ctx, r):
+    """Prose typed into the AGENT view at 10-25 ms/key arrives in the agent input byte for byte (quotes, apostrophe, punctuation, a nonce),
+    proven from the app's own `hop=enter_begin buffer=.. input_type=AI` line, not OCR; the shell must receive nothing. Needs no model."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.skip("no app log at %s: the agent input at Enter cannot be read" % ctx.log_path)
+    if ctx.log_view_mode() is None:
+        r.skip("the app log has no hop=view_mode line (a build older than #1568): the view cannot be proven")
+    r.check(ctx.log_view_mode() == "agent", "agent view expected but the log says hop=view_mode mode=%s" % ctx.log_view_mode())
+    ctx.reset()
+    for i, sent in enumerate(["please explain why \"build %s\" isn't passing, it's odd (really)?" % ctx.tok(6),
+                              "what does error code %d mean when the linker says: cannot find -lfoo_%s" % (ctx.rng.randint(100, 999), ctx.tok(4))]):
+        submit_prose(ctx, r, "agent_input_exact_%d" % i, sent, "prose #%d" % (i + 1))
+    r.check(ctx.log_view_mode() == "agent", "the view left agent mode during the case (hop=view_mode says %s)" % ctx.log_view_mode())
+    ctx.reset()
+
+
+@case("agent_mode_switch", order=49, gui=True)
+def c_agent_mode_switch(ctx, r):
+    """Switch agent <-> terminal inside one session and check the ROUTING after each switch, from the app log: Escape leaves the agent view
+    (hop=view_mode mode=terminal), the new-conversation chord (Ctrl+Shift+Enter, Cmd+Enter on macOS) enters it again. In the terminal view a
+    shell line reaches the shell exactly; in the agent view a prose line reaches the agent input exactly and not the shell. The case ends in
+    the mode it started in, and fails if it cannot get back (later cases would otherwise silently run in the wrong view)."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.skip("no app log at %s: the view mode cannot be read" % ctx.log_path)
+    start = ctx.log_view_mode()
+    if start is None:
+        r.skip("the app log has no hop=view_mode line (a build older than #1568): the view cannot be proven")
+    chord = "cmd+Return" if ctx.be.name == "mac" else "ctrl+shift+Return"
+    to_agent = lambda: ctx.be.key(chord)
+    to_term = lambda: ctx.be.key("Escape")
+
+    def in_terminal(step):
+        ctx.reset()
+        off, mark = ctx.log_size(), ctx.cmd_mark()
+        line = "echo sw_%s_%s" % (step, ctx.tok(6))
+        type_fast(ctx, line)
+        got = ctx.until(lambda: [c for c in ctx.cmds_since(mark) if c == line], 5)
+        rows = enter_buffers(ctx.log_since(off))
+        r.check(bool(got), "%s: the shell never received %r (shell got %r)" % (step, line, ctx.cmds_since(mark)[:2]))
+        r.check(not rows or rows[-1][1] == "Shell", "%s: in the terminal view the Enter was routed %s, not Shell" % (step, rows[-1][1] if rows else None))
+
+    def in_agent(step):
+        ctx.reset()
+        submit_prose(ctx, r, "agent_mode_switch_" + step, "please explain why the %s test run is failing, it's odd" % ctx.tok(6), step)
+
+    seq = [("terminal", to_term, in_terminal), ("agent", to_agent, in_agent)] if start == "agent" else [("agent", to_agent, in_agent), ("terminal", to_term, in_terminal)]
+    seq = seq * 2          # there and back, then there and back again
+    trail = [start]
+    try:
+        for i, (want, go, probe) in enumerate(seq):
+            go()
+            got = wait_view_mode(ctx, want)
+            trail.append(got)
+            if not r.check(got == want, "switch %d: expected hop=view_mode mode=%s after the key, the app log says %s" % (i + 1, want, got)):
+                break
+            ctx.shot("agent_mode_switch_%d_%s" % (i + 1, want))
+            probe("switch%d_%s" % (i + 1, want))
+    finally:
+        # always try to leave the session as found
+        for _ in range(2):
+            if ctx.log_view_mode() == start:
+                break
+            (to_agent if start == "agent" else to_term)()
+            wait_view_mode(ctx, start)
+        ctx.reset()
+    r.metric("view_mode_trail", trail)
+    r.check(ctx.log_view_mode() == start, "could not return to the %s view the case started in (log says %s): later cases would run in the wrong mode" % (start, ctx.log_view_mode()))
