@@ -43,10 +43,11 @@
 //! delivery returns.
 //!
 //! Still timing, because no signal exists: the young-Enter window and its round-trip learning where
-//! the platform can say nothing about the shell (ConPTY, a session with no sample, a shell the
-//! barrier is not installed for -- fish writes its Precmd after raw mode), the PS2 continued line
-//! (no Precmd, no Preexec) for a bootstrap that sends no line-editor markers, and every give-up
-//! above.
+//! the platform can say nothing about the shell (ConPTY, a session with no sample), the PS2
+//! continued line (no Precmd, no Preexec) for a bootstrap that sends no line-editor markers, and
+//! every give-up above. A shell the barrier is not installed for (fish writes its Precmd after raw
+//! mode) keeps the 2 s event hold of before #1614 when its editor is sampled reading
+//! ([`YoungHoldEvidence::PrecmdMaybeInFlight`], owner decision 2026-11-03).
 //!
 //! # The young-Enter hold engages on evidence, not on absence (#1614)
 //!
@@ -118,7 +119,13 @@ pub enum ShellPromptFact {
     /// The shell owns the foreground and its tty is raw: its line editor is reading a line, so the
     /// prompt's Precmd is already in the pty stream and will be parsed (an event).
     LineEditorReading,
-    /// Nothing is known (no probe, ssh, ConPTY, a cooked tty): the caller keeps its timing path.
+    /// #1614: the shell owns the foreground and its tty is cooked (canonical): its line editor is
+    /// not reading yet. Between a command's end and the line editor (the Precmd written,
+    /// `PROMPT_COMMAND` / PS1 substitutions running), or a cooked builtin (`read x`). With a line
+    /// unanswered and the stream not applied up to now, that Precmd may be in it.
+    ShellCooked,
+    /// Nothing is known (no probe, ConPTY), or another process group is in front (an inner shell,
+    /// `ssh`, `sudo -i`): the caller keeps its timing path where nothing is sampled.
     Unknown,
 }
 
@@ -835,10 +842,16 @@ pub enum YoungHoldEvidence {
     /// (#933 proper, or just the echo of the typed keys). The barrier's next publish decides again
     /// ([`TypeaheadHandoff::on_stream_applied`]): into [`Self::RequestDue`] or a delivery.
     PrecmdInFlight,
-    /// The platform can say nothing about the shell (ConPTY, a session with no sample, a sampled
-    /// shell with no barrier such as fish): the elapsed-time window of [`YOUNG_ENTER_WINDOW`], as
-    /// before #1614. The one remaining timing hold, kept as the documented special case; its
-    /// release is the prompt's Precmd (then the request) within the window, or a Preexec.
+    /// (B without a barrier) The sample says the shell's line editor reads and the counts say a
+    /// line is unanswered, but no barrier is installed for this shell (fish writes its Precmd
+    /// after raw mode, #1392), so whether that Precmd is still in the stream cannot be told. Held
+    /// as before #1614 (owner decision 2026-11-03): released by the Precmd, then the request and
+    /// the report; the 2 s hand-back cap is the net for counts that turn out stale.
+    PrecmdMaybeInFlight,
+    /// The platform can say nothing about the shell (ConPTY, a session with no sample): the
+    /// elapsed-time window of [`YOUNG_ENTER_WINDOW`], as before #1614. The one remaining timing
+    /// hold, kept as the documented special case; its release is the prompt's Precmd (then the
+    /// request) within the window, or a Preexec.
     TimingWindow,
 }
 
@@ -1495,7 +1508,11 @@ impl TypeaheadHandoff {
     pub fn young_hold_wait(&self, now: Instant) -> Duration {
         if matches!(
             self.young_hold_evidence,
-            Some(YoungHoldEvidence::RequestDue | YoungHoldEvidence::PrecmdInFlight)
+            Some(
+                YoungHoldEvidence::RequestDue
+                    | YoungHoldEvidence::PrecmdInFlight
+                    | YoungHoldEvidence::PrecmdMaybeInFlight
+            )
         ) {
             return EVENT_HOLD_GIVE_UP;
         }
@@ -2666,7 +2683,24 @@ impl TypeaheadHandoff {
                 // the barrier's), so nothing is proven stale; the window, released by the Precmd.
                 Some(true) if self.own_preexec_pending => window(),
                 Some(true) => Some(YoungHoldEvidence::RequestDue),
-                None => window(),
+                // No barrier for this shell (fish): held for the prompt as before #1614, the
+                // Precmd's request and report releasing it (owner decision 2026-11-03).
+                None => Some(YoungHoldEvidence::PrecmdMaybeInFlight),
+            },
+            // #1614: the shell's own group is in front with a cooked tty: between its Precmd and
+            // its line editor (`PROMPT_COMMAND`, PS1 substitutions), or a cooked builtin. The
+            // counts say the prompt is back: the request is due once the editor is active.
+            ShellPromptFact::ShellCooked
+                if counts_say_prompt && !self.stream_says_command_running() =>
+            {
+                Some(YoungHoldEvidence::RequestDue)
+            }
+            // A line unanswered and the stream not applied up to now: its Precmd may be in it;
+            // the barrier's next publish decides. Applied (or no barrier), nothing says a prompt
+            // is coming: delivered, as to a cooked `read x`.
+            ShellPromptFact::ShellCooked => match self.foreground_probe.stream_drained() {
+                Some(false) if !counts_say_prompt => Some(YoungHoldEvidence::PrecmdInFlight),
+                _ => None,
             },
             // #1390: with no sample and a shell that sends line-editor markers, the ordered
             // stream says what the shell is doing. A Preexec parsed after the last Precmd is
@@ -2680,9 +2714,11 @@ impl TypeaheadHandoff {
                 }
             }
             ShellPromptFact::Unknown if counts_say_prompt => Some(YoungHoldEvidence::RequestDue),
-            // An installed probe that sees neither the shell's editor nor a plain program: a
-            // login hop or inner shell in front, or the shell cooked in a builtin. No prompt of
-            // the hooked shell is in flight; a plain terminal delivers.
+            // An installed probe that sees another process group in front: a login hop (`ssh`,
+            // `sudo -i`) or an inner shell. No prompt of the hooked local shell is in flight; a
+            // plain terminal delivers. A warpified remote session's own Precmd/Preexec stream
+            // could drive a hold here; accepted as delivered for now (owner decision 2026-11-03;
+            // #1614 follow-up: remote Precmd/Preexec-driven hold).
             ShellPromptFact::Unknown if self.foreground_probe.samples_shell() => None,
             ShellPromptFact::Unknown => window(),
         }
@@ -2739,11 +2775,17 @@ impl TypeaheadHandoff {
             ShellPromptFact::LineEditorReading => true,
             // #1390: see `should_hold_young_enter`; a Preexec newer than the counts means the
             // line is typed into a running command, not at a prompt.
-            ShellPromptFact::Unknown if self.stream_says_command_running() => {
+            ShellPromptFact::Unknown | ShellPromptFact::ShellCooked
+                if self.stream_says_command_running() =>
+            {
                 precmds_seen < enters_written && window
             }
-            ShellPromptFact::Unknown if precmds_seen >= enters_written => true,
-            ShellPromptFact::Unknown => window,
+            ShellPromptFact::Unknown | ShellPromptFact::ShellCooked
+                if precmds_seen >= enters_written =>
+            {
+                true
+            }
+            ShellPromptFact::Unknown | ShellPromptFact::ShellCooked => window,
         }
     }
 

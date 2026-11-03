@@ -211,8 +211,10 @@ pub fn shell_provably_not_at_prompt(fd: RawFd, shell_pid: i32) -> bool {
 /// this. Under bash and zsh a line editor that reads has already had its prompt's Precmd written,
 /// so that Precmd is in the pty stream and will be parsed; fish sets raw BEFORE it fires
 /// `fish_prompt`, so there it may not be (#1392 installs its drained-stream veto for bash and zsh
-/// only). Anything else, including a failed query and a local
-/// tty in front of an `ssh`, is `Unknown`.
+/// only). `ShellCooked` (#1614): the shell's own group owns the foreground with a canonical tty:
+/// between a command's end and its line editor (`PROMPT_COMMAND`, PS1 substitutions), or a cooked
+/// builtin such as `read x`. Anything else, including a failed query and a local tty in front of
+/// an `ssh` or an inner shell (another process group), is `Unknown`.
 pub fn shell_prompt_fact(
     fd: RawFd,
     shell_pid: i32,
@@ -223,14 +225,15 @@ pub fn shell_prompt_fact(
     }
     // SAFETY: `tcgetpgrp` only reads the terminal's foreground group id.
     let pgid = unsafe { libc::tcgetpgrp(fd) };
-    if pgid > 0
-        && pgid == shell_pid
-        && fetch_termial_attributes(fd)
-            .is_ok_and(|termios| !termios.local_flags.contains(termios::LocalFlags::ICANON))
-    {
-        ShellPromptFact::LineEditorReading
-    } else {
-        ShellPromptFact::Unknown
+    if pgid <= 0 || pgid != shell_pid {
+        return ShellPromptFact::Unknown;
+    }
+    match fetch_termial_attributes(fd) {
+        Ok(termios) if !termios.local_flags.contains(termios::LocalFlags::ICANON) => {
+            ShellPromptFact::LineEditorReading
+        }
+        Ok(_) => ShellPromptFact::ShellCooked,
+        Err(_) => ShellPromptFact::Unknown,
     }
 }
 

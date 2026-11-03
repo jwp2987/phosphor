@@ -213,9 +213,10 @@ fuzz_target!(|data: &[u8]| {
             _ => {
                 // The platform's sample and barrier, as installed by the terminal manager: a fixed
                 // answer per installation, replaced by the next one.
-                let fact = match u.int_in_range(0..=2u8).unwrap_or(2) {
+                let fact = match u.int_in_range(0..=3u8).unwrap_or(3) {
                     0 => ShellPromptFact::NotAtPrompt,
                     1 => ShellPromptFact::LineEditorReading,
+                    2 => ShellPromptFact::ShellCooked,
                     _ => ShellPromptFact::Unknown,
                 };
                 let mut probe = ForegroundProbe::default().with_prompt_fact(Arc::new(move || fact));
