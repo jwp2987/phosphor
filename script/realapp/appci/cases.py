@@ -1279,13 +1279,49 @@ def ctrlc_flood(ctx, r, n, warm):
     r.check(okf and bool(fl), "Ctrl-C under flood: fewer than %d samples stopped `yes` and ran the trap" % (n + warm))
 
 
+_CC_KD_RE = re.compile(r'input_order keydown key="?[cC]"? ctrl=true\b.* t=(\d+(?:\.\d+)?)')
+_CC_HOP_RE = re.compile(r"input_order hop=(ctrl_c_keydown|ctrl_c_to_event_loop|ctrl_c_received|ctrl_c_pty_write)\b.* t=(\d+(?:\.\d+)?)")
+_CC_STAGES = ("keydown", "ctrl_c_keydown", "ctrl_c_to_event_loop", "ctrl_c_received", "ctrl_c_pty_write")
+
+
+def ctrl_c_segments(txt):
+    """#1408: the APP's share of Ctrl-C, from its own input_order lines, per press: `keydown key=c ctrl=true` (presenter) -> hop=ctrl_c_keydown
+    (TerminalView::ctrl_c) -> hop=ctrl_c_to_event_loop (PtyController) -> hop=ctrl_c_received (pty event loop) -> hop=ctrl_c_pty_write (write(2)
+    returned). -> dict(n, <segment>: stats ms, keydown_to_write: stats ms). A press is closed by its pty write; a stage logged twice before the write
+    keeps the first stamp. Whatever the reference terminal gap is beyond keydown_to_write is outside the app (injector, X server, signal delivery)."""
+    samples, cur = [], None
+    for line in txt.splitlines():
+        m = _CC_KD_RE.search(line)
+        if m:
+            cur = {"keydown": float(m.group(1))}
+            continue
+        m = _CC_HOP_RE.search(line)
+        if not m:
+            continue
+        stage, t = m.group(1), float(m.group(2))
+        if cur is None:
+            cur = {}
+        cur.setdefault(stage, t)
+        if stage == "ctrl_c_pty_write":
+            samples.append(cur)
+            cur = None
+    out = {"n": len(samples)}
+    for a, b in zip(_CC_STAGES, _CC_STAGES[1:]):
+        out["%s->%s" % (a, b)] = stats([x[b] - x[a] for x in samples if a in x and b in x])
+    out["keydown_to_write"] = stats([x["ctrl_c_pty_write"] - x["keydown"] for x in samples if "keydown" in x])
+    return out
+
+
 @case("ctrl_c_d", order=17)
 def c_ctrl(ctx, r):
     ctx.rm("cd.txt", "cd2.txt")
     n, warm = ctx.count_lat(30), lat.warmup()
+    cc_off = ctx.log_size()
     lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
     lat_ms = lat_ms[warm:]
     r.metric("ctrl_c_ms", stats(lat_ms))
+    if ctx.log_path and os.path.exists(ctx.log_path):
+        r.metric("ctrl_c_app_segments", ctrl_c_segments(ctx.log_since(cc_off)))     # #1408: where the app's share of each Ctrl-C goes
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     # (the delivered-count verdict is below, after the reference ran, so it can say whether the reference lost any sample line)
     # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp

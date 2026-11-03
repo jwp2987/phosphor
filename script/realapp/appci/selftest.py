@@ -521,6 +521,19 @@ def ui_item_audit_counts_items_over_budget():
 
 
 @check
+def ctrl_c_segments_split_the_app_share():
+    kd = lambda t: 'input_order keydown key="c" ctrl=true alt=false shift=false cmd=false t=%s seq=1\n' % t
+    hop = lambda h, t: "input_order hop=%s x=1 t=%s\n" % (h, t)
+    one = lambda t0: (kd(t0) + hop("ctrl_c_keydown", t0 + 0.5) + hop("ctrl_c_to_event_loop", t0 + 1.0) + hop("ctrl_c_received", t0 + 1.25)
+                      + hop("ctrl_c_received", t0 + 9) + hop("ctrl_c_pty_write", t0 + 2.0))
+    a = cases.ctrl_c_segments("junk\n" + one(1000.0) + one(2000.0) + hop("ctrl_c_keydown", 3000.0))
+    assert a["n"] == 2, a
+    assert a["keydown->ctrl_c_keydown"]["p50"] == 0.5 and a["ctrl_c_received->ctrl_c_pty_write"]["p50"] == 0.75, a
+    assert a["keydown_to_write"]["p50"] == 2.0, a
+    assert cases.ctrl_c_segments("")["n"] == 0
+
+
+@check
 def hanging_tcp_server_reports_connecting_then_closed():
     import socket
     srv = cases.HangingTcpServer()
