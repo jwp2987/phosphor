@@ -37,7 +37,7 @@ fn focus_change_during_a_yield_does_not_deliver() {
 
 /// 1d (ii): the connect window was released without an event handler (what
 /// `release_ssh_gate_for_test` does); the next live key hands the held text over FIRST (to the
-/// remote shell, whose prompt was seen) and is typed behind it: once, in typed order.
+/// remote shell's input, whose prompt was seen) and is typed behind it: once, in typed order.
 #[test]
 fn release_without_event_hands_over_before_the_next_key() {
     App::test((), |mut app| async move {
@@ -61,8 +61,16 @@ fn release_without_event_hands_over_before_the_next_key() {
             assert!(ssh_queue_is_idle(view));
             assert!(!view.ssh_handover_after_release);
         });
+        // The remote prompt was seen and its session is registered (first Precmd processed): the
+        // editor owns typing there (the sibling `ssh_editor_keys_typed_before_delivery_stay_behind_
+        // the_held_keys` ends in the editor and writes nothing to the pty), so the held text and
+        // the key typed behind it both land in the editor: once, in typed order, never run and
+        // never split between the editor and the pty.
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo QWERTY");
+        });
         let written = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
-        assert_eq!(written, "echo QWERTY");
+        assert_eq!(written, "", "nothing of the line reaches the pty");
     })
 }
 

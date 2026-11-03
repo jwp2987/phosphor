@@ -25,18 +25,24 @@ fn record_setup_and_pty_writes(
     seen
 }
 
-/// The pty owns input and the user's delivered keys `ec` sit in the shell's line.
+/// The pty owns input and the user's delivered keys `ec` sit in the shell's line. The command
+/// that was written is old enough that the keys are not a young line (#933): a young Enter is held
+/// for the prompt instead of reaching the shell's line, which would not end it.
 fn deliver_keys_to_an_unmanaged_prompt(view: &TerminalView) {
     let mut model = view.model.lock();
     let mut handoff = model.typeahead_handoff_mut();
     handoff.on_command_written();
+    handoff.age_last_activity_for_test();
     handoff.on_user_bytes(b"ec");
     handoff.on_user_write_flushed();
 }
 
+/// The user's `bytes` (an Enter, ^U) reach the shell's line and end it. Aged first like the
+/// keys: an Enter inside the young window is held for the prompt (#933), not written.
 fn end_the_line(view: &TerminalView, bytes: &[u8]) {
     let mut model = view.model.lock();
     let mut handoff = model.typeahead_handoff_mut();
+    handoff.age_last_activity_for_test();
     handoff.on_user_bytes(bytes);
     handoff.on_user_write_flushed();
 }
@@ -46,8 +52,8 @@ fn end_the_line(view: &TerminalView, bytes: &[u8]) {
 #[test]
 fn ssh_warpify_waits_for_a_line_holding_delivered_keys() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        // The warpify write reads the bundled probe script, so the test app needs the real assets.
-        App::test(crate::ASSETS, move |mut app| async move {
+        // The warpify write loads the bundled probe script from the asset cache.
+        App::test(crate::Assets, move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -88,8 +94,8 @@ fn ssh_warpify_waits_for_a_line_holding_delivered_keys() {
 #[test]
 fn ssh_warpify_on_a_clean_line_writes_at_once() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        // The warpify write reads the bundled probe script, so the test app needs the real assets.
-        App::test(crate::ASSETS, move |mut app| async move {
+        // The warpify write loads the bundled probe script from the asset cache.
+        App::test(crate::Assets, move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -266,14 +272,62 @@ fn enter_in_a_focus_gap_at_an_idle_prompt_writes_and_runs_nothing() {
 fn enter_on_a_pending_approval_card_stays_with_the_card() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(crate::notebooks::editor::keys::NotebookKeybindings::new);
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = record_all_pty_writes(&mut app, &terminal);
-        let (card, _ai_block, _action_id, _conversation_id) =
-            setup_mcp_tool_card(&mut app, &terminal);
+        // A card is the PENDING approval card only while its action is blocked in the action
+        // model on the terminal's active conversation (as in `typing_while_an_approval_card_is_
+        // focused_*`); a card without a queued action counts as settled, and the sink then
+        // rightly takes its Enter (#1552).
+        let (card, action_id, conversation_id, _) =
+            setup_requested_command_card(&mut app, &terminal);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+            history.set_active_conversation_id(conversation_id, terminal_view_id, ctx);
+        });
+        let action_model = terminal.read(&app, |view, _| view.ai_action_model.clone());
+        action_model.update(&mut app, |action_model, ctx| {
+            action_model.queue_action_for_test(
+                crate::ai::agent::AIAgentAction {
+                    id: action_id.clone(),
+                    task_id: TaskId::new("task".to_owned()),
+                    action: crate::ai::agent::AIAgentActionType::RequestCommandOutput {
+                        command: "sleep 100000".to_owned(),
+                        is_read_only: None,
+                        is_risky: None,
+                        rationale: None,
+                        uses_pager: None,
+                        wait_until_completion: true,
+                        citations: vec![],
+                    },
+                    requires_result: false,
+                },
+                conversation_id,
+                ctx,
+            );
+        });
+        for _ in 0..64 {
+            let is_blocked = action_model.read(&app, |action_model, _| {
+                action_model
+                    .get_action_status(&action_id)
+                    .is_some_and(|status| status.is_blocked())
+            });
+            if is_blocked {
+                break;
+            }
+            futures_lite::future::yield_now().await;
+        }
         terminal.update(&mut app, |view, ctx| {
             register_local_session_for_ssh_test(view, ctx);
         });
         terminal.update(&mut app, |_, ctx| ctx.focus(&card));
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.approval_card_view_id(ctx),
+                Some(card.id()),
+                "precondition: the card is the pending approval card"
+            );
+        });
         let outcome = terminal.update(&mut app, |view, ctx| {
             let chain = vec![view.view_id, card.id()];
             pane_enter_with_focus(view, chain, ctx)
