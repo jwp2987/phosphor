@@ -885,7 +885,7 @@ impl EventLoop {
                     // `on_will_terminate`'s give-up; arm it now and name where it is.
                     log::info!("Quit approved; leaving the event loop");
                     crate::platform::shutdown_progress::set_step("awaiting_loop_exit");
-                    crate::platform::shutdown_progress::arm_quit_give_up();
+                    crate::platform::shutdown_progress::arm_quit_give_up_before_will_terminate();
                     window_target.exit();
                 }
             }

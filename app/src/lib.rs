@@ -2799,8 +2799,9 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
                         // it stopped. The give-up now counts from the confirm, so a quit that
                         // stalls before `on_will_terminate` is bounded and named too.
                         log::info!("Quit confirmed in the quit dialog");
-                        warpui::platform::shutdown_progress::set_step("quit_confirmed");
-                        warpui::platform::shutdown_progress::arm_quit_give_up();
+                        use warpui::platform::shutdown_progress as quit_progress;
+                        quit_progress::set_step("quit_confirmed");
+                        quit_progress::arm_quit_give_up_before_will_terminate();
                         ctx.terminate_app(TerminationMode::ForceTerminate, None)
                     })
                     .on_show_processes(|ctx| on_close_app_cancelled(true, ctx))
