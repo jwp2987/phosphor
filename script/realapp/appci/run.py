@@ -775,9 +775,56 @@ def row_log_line(row):
     return line
 
 
+SSH_CM_RX = re.compile(r"ControlPath=(\S+)")
+
+
+def stop_ssh_controlmasters(label, run):
+    """r18e9 (macOS): 12 ssh ControlMaster clients naming the run dir outlived the pass (listed by the audit, never stopped; teardown said nothing was left). The app's ssh
+    wrapper starts `ssh -o ControlMaster=yes -o ControlPath=<p> ...` per connection. Ask each master to exit through ITS OWN control socket (`ssh -O exit`), and only when
+    that fails signal that exact PID, re-verified to still name the run dir. Never by process name. One line per client; never raises."""
+    if os.name == "nt":
+        return
+    try:
+        import signal
+        out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=30).stdout
+        for l in out.splitlines():
+            l = l.strip()
+            if not l or run not in l or "run.py" in l or l.startswith("%d " % os.getpid()):
+                continue
+            pid, _, cmd = l.partition(" ")
+            if not pid.isdigit() or not re.match(r"(\S*/)?ssh\s", cmd) or "ControlMaster" not in cmd:
+                continue
+            m = SSH_CM_RX.search(cmd)
+            how = "no ControlPath in its command line"
+            if m:
+                try:
+                    p = subprocess.run(["ssh", "-O", "exit", "-o", "ControlPath=" + m.group(1), "-o", "BatchMode=yes", "stopcm"], capture_output=True, text=True, timeout=15)
+                    how = "ssh -O exit via %s: rc=%d %s" % (m.group(1), p.returncode, (p.stderr or p.stdout).strip()[:80])
+                except Exception as e:
+                    how = "ssh -O exit failed to run: %r" % (e,)
+            time.sleep(0.5)
+            alive = subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout
+            if not alive.strip():
+                print("teardown[%s]: ssh ControlMaster pid %s stopped (%s)" % (label, pid, how), flush=True)
+                continue
+            if run in alive:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    time.sleep(1.0)
+                except Exception:
+                    pass
+                gone = not subprocess.run(["ps", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout.strip()
+                print("teardown[%s]: ssh ControlMaster pid %s %s (%s; then SIGTERM to that pid)" % (label, pid, "stopped" if gone else "STILL RUNNING", how), flush=True)
+            else:
+                print("teardown[%s]: ssh pid %s no longer names the run dir: left alone" % (label, pid), flush=True)
+    except Exception as e:
+        print("teardown[%s]: ssh ControlMaster cleanup failed: %r" % (label, e), flush=True)
+
+
 def cleanup_scratch(label, prof, run):
     """end-of-pass cleanup evidence (all platforms; the logs were copied above): remove the scratch HOME and ctl dirs, then audit for leftover
     processes whose command line names this run dir. Prints what it did; never raises."""
+    stop_ssh_controlmasters(label, run)
     try:
         gone, kept = [], []
         for d in (prof.home, prof.ctl, prof.rctl, prof.refctl, prof.rhome):

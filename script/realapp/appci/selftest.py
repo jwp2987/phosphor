@@ -756,6 +756,14 @@ def r18e9_injector_accounting_spans_relaunches():
         shutil.rmtree(d, ignore_errors=True)
 
 
+@check
+def r18e9_controlmaster_cleanup_parses_and_never_raises():
+    """r18e9: stop_ssh_controlmasters on a run dir nothing names is a silent no-op; the ControlPath regex reads the wrapper's option"""
+    import run as runmod
+    runmod.stop_ssh_controlmasters("t", "/nonexistent/appci-r18e9-" + str(os.getpid()))
+    assert runmod.SSH_CM_RX.search("/usr/bin/ssh -F x -o ControlMaster=yes -o ControlPath=/tmp/a/cm-1 -N -f h").group(1) == "/tmp/a/cm-1"
+
+
 def main():
     failed = 0
     for f in CHECKS:
