@@ -168,3 +168,38 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
         })
     }
 }
+
+/// #1578: the ssh gate vanished behind the view's back and an UNRELATED op waits in the mailbox.
+/// The next held key must re-open a gate (not be offered to a gateless queue and delivered at
+/// once, mid-connect).
+#[test]
+fn an_unrelated_deferred_op_does_not_make_a_missing_ssh_gate_look_alive() {
+    use crate::terminal::input_queue::{Deferred, GateKind};
+    for mode in [DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                submit_command(view, "ssh host", ctx);
+                view.typed_characters_on_terminal("a", ctx);
+                assert!(view.ssh_typeahead_holding, "{mode:?}");
+                let key = view.ssh_iq.gate.expect("the hold opened a gate");
+                {
+                    let q = view.paste_queue.queue.clone();
+                    let _host = paste_queue::PtyQueueHost::new(view, ctx);
+                    q.lock().drop_gate(GateKind::SshConnect, key);
+                }
+                view.paste_queue.queue.defer(Deferred::FocusChanged);
+                view.typed_characters_on_terminal("b", ctx);
+                assert!(ssh_gate_open(view), "{mode:?}: a gate was re-opened");
+                assert_eq!(view.ssh_held_count(), 1, "{mode:?}");
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+            });
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        })
+    }
+}

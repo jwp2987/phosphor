@@ -95,8 +95,8 @@ impl TerminalView {
     pub(super) fn ssh_hold_ensure_gate(&mut self, ctx: &mut ViewContext<Self>) {
         let queue = self.paste_queue.queue.clone();
         let gate_alive = self.ssh_iq.gate.is_some_and(|key| {
-            // A gate whose opening waits in the mailbox is alive too.
-            queue.has_deferred()
+            // A gate whose opening waits in the mailbox is alive too (that op, not any op: #1578).
+            queue.has_deferred_gate_open(GateKind::SshConnect, key)
                 || queue
                     .try_peek()
                     .is_some_and(|queue| queue.has_gate(GateKind::SshConnect, key))
