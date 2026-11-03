@@ -11634,7 +11634,24 @@ impl TerminalView {
         // of #1571 asked for no loss). Whatever happens below, an Enter typed in the same burst
         // must not run what the user meant for the remote machine on this one: the hand-back's
         // Enter guard covers the text wherever it lands.
-        if self.is_long_running() {
+        let long_running = self.is_long_running();
+        // #1596: where the handed-back text went and which end of the connect sent it there, so a
+        // run tells "kept until the ssh session ends" (no visible holding area) from "in the
+        // editor". Counts only, never the text.
+        warpui::input_order::log_hop("ssh_handed_back", || {
+            format!(
+                "chars={} dest={} remote_prompt_seen={} give_up={}",
+                text.chars().count(),
+                if long_running {
+                    "stashed_until_block_end"
+                } else {
+                    "editor"
+                },
+                self.ssh_remote_prompt_seen,
+                self.ssh_give_up_in_progress
+            )
+        });
+        if long_running {
             // A command owns the pty: the text waits on the input and comes back into the editor
             // when that block completes (`Input::restore_handed_back_text`), guard armed then.
             log::info!(

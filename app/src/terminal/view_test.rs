@@ -25089,6 +25089,37 @@ fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
     });
 }
 
+/// #1394: a key offered to the ssh hold while the queue is held OUTSIDE a delivery (an operation
+/// of the queue's host holds it) is held by the next operation, behind the keys held before it.
+/// It used to log "a key was not held" and drop the key: one character lost at the hand-over.
+#[test]
+fn ssh_key_offered_while_the_queue_is_busy_is_held_in_order() {
+    with_ssh_hold_path(move |view, ctx, pty_writes| {
+        submit_command(view, "ssh host", ctx);
+        view.typed_characters_on_terminal("ab", ctx);
+        assert!(view.ssh_typeahead_holding);
+        assert_eq!(view.ssh_held_bytes(), 2);
+        let queue = view.paste_queue.queue.clone();
+        {
+            let _busy = queue.borrow_mut();
+            assert!(!view.paste_queue.delivering);
+            assert_eq!(
+                view.ssh_hold_push(HeldInput::from_chars("c"), ctx),
+                SshTypeaheadPush::Held,
+                "held, not ignored"
+            );
+        }
+        view.flush_deferred_queue_ops(ctx);
+        assert_eq!(view.ssh_held_bytes(), 3, "the key joined the hold");
+        assert_eq!(
+            view.ssh_hold_take(),
+            vec![HeldInput::Typed("abc".to_owned())],
+            "in typed order, once"
+        );
+        assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+    });
+}
+
 /// #1421: `ssh other` + Enter typed during a connect, then `rm -rf x` + Enter. At the hand-over
 /// the first Enter submits the nested ssh; the text after it must be judged only once that
 /// command's connect gate is armed (the submit's event runs after the delivery returns), so it is
