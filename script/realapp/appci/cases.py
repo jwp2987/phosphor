@@ -96,6 +96,46 @@ def lat_checks(r, rec, label):
         r.note("%s: %s" % (label, n_))
 
 
+def enter_segments(lines, t0):
+    """app log lines -> the split of Enter->command-start the APP can see, medians in ms (#1583 W3):
+      enter_to_write_ms        `hop=enter_begin` -> the `pty_write` of the line (> 10 bytes; handoff writes excluded)
+      write_to_first_read_ms   that write -> the first `pty_read` after it (the shell's first answer: echo/Preexec OSC); the app logs this as
+                               `since_write_ms` on the pty_read line
+      write_to_preexec_ms      only if the log has a preexec hop line (`hop=preexec_received`); the app does NOT log one today (it stamps
+                               ShellSignal::Preexec into an atomic that pty_write lines print as since_preexec_ms, which is the age at the
+                               NEXT write), so this key is absent and the report says an app log hop is needed.
+    Lines before wall time t0 are ignored."""
+    seg = {"enter_to_write_ms": [], "write_to_first_read_ms": [], "write_to_preexec_ms": []}
+    pending, wrote, read_seen = None, None, True
+    for l in lines:
+        m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+        if not m:
+            continue
+        t = float(m.group(1))
+        if t / 1000.0 < t0:
+            continue
+        if "hop=enter_begin" in l:
+            pending = t
+        elif "hop=preexec_received" in l and wrote is not None:
+            seg["write_to_preexec_ms"].append(t - wrote)
+            wrote = None
+        elif "pty_write bytes=" in l and "handoff" not in l:
+            nb = re.search(r"pty_write bytes=(\d+)", l)
+            if nb and int(nb.group(1)) > 10 and pending is not None:
+                seg["enter_to_write_ms"].append(t - pending)
+                wrote, pending, read_seen = t, None, False
+        elif wrote is not None and not read_seen and " pty_read bytes=" in l:
+            sw = re.search(r"since_write_ms=(\d+(?:\.\d+)?)", l)
+            seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
+            read_seen = True          # only the FIRST read after a write counts; `wrote` stays for a later preexec hop
+    out = {}
+    for k, v in seg.items():
+        if isinstance(v, list) and v:
+            out[k] = round(statistics.median(v), 2)
+            out[k.replace("_ms", "_n")] = len(v)
+    return out
+
+
 class Ctx:
     def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
@@ -356,32 +396,23 @@ class Ctx:
     def app_enter_to_write_ms(self, t0):
         """median ms from the app's `enter_begin` hop to the `pty_write` that carries the line (>10 bytes) since wall time t0: the APP's own share
         of Enter->command-start, read from its input_order log (None without a trace). The rest is the shell/ConPTY side."""
+        return self.app_enter_segments(t0).get("enter_to_write_ms")
+
+    def app_enter_segments(self, t0):
+        """the app-log split of one Enter (#1583 W3) since wall time t0: {enter_to_write_ms, write_to_first_read_ms, write_to_preexec_ms?}, medians
+        (+ n). Empty without a trace. See enter_segments for the rules."""
         import glob
         src = self.log_path
         if not src:
-            return None
+            return {}
         parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
-        ds, pending = [], None
+        lines = []
         for f in parts:
             try:
-                lines = open(f, errors="replace").read().splitlines()
+                lines += open(f, errors="replace").read().splitlines()
             except OSError:
                 continue
-            for l in lines:
-                m = re.search(r" t=(\d+(?:\.\d+)?)", l)
-                if not m:
-                    continue
-                t = float(m.group(1))
-                if t / 1000.0 < t0:
-                    continue
-                if "hop=enter_begin" in l:
-                    pending = t
-                elif pending is not None and "pty_write bytes=" in l and "handoff" not in l:
-                    nb = re.search(r"pty_write bytes=(\d+)", l)
-                    if nb and int(nb.group(1)) > 10:
-                        ds.append(t - pending)
-                        pending = None
-        return round(statistics.median(ds), 2) if ds else None
+        return enter_segments(lines, t0)
 
     def app_saw_line(self, want, t0):
         """True: every character of `want` is in the app's own typed-character log, in order and contiguous (the key ARRIVED and was routed);
@@ -1674,13 +1705,21 @@ def c_lat_enter(ctx, r):
     t_lat0 = time.time()
     ds = enter_to_start(ctx, n + warm)[warm:]
     r.metric("enter_to_start_ms", stats(ds))
-    share = ctx.app_enter_to_write_ms(t_lat0)
+    segs = ctx.app_enter_segments(t_lat0)
+    share = segs.get("enter_to_write_ms")
     if share is not None:
         # r18cj (Windows Git Bash): Phosphor 95-100 ms vs the conhost reference 69 ms for the SAME bash.exe/rc/`date +%s.%N`/injector. The app's own part is this number
         # (Enter -> the pty write of the whole line); the rest of the overhead is after the write: the shell reading the line (the reference's keys were echoed as typed)
         # plus the shell hooks Phosphor's bootstrap adds. Reported so the overhead can be split instead of argued.
         r.metric("app_enter_to_pty_write_ms", share)
         r.note("app share of Enter->start: enter_begin -> pty_write median %.2f ms (from the app's input_order log); the remaining overhead is shell/ConPTY side" % share)
+    if segs:
+        # #1583 W3: the three segments per platform, as metrics (enter_begin->write, write->first pty_read, write->preexec)
+        r.metric("app_segments_ms", dict(segs, platform=plat()))
+        if "write_to_first_read_ms" in segs:
+            r.note("shell side: pty_write -> first pty_read median %.2f ms (n=%s)" % (segs["write_to_first_read_ms"], segs.get("write_to_first_read_n")))
+        if "write_to_preexec_ms" not in segs:
+            r.note("write -> preexec NOT measurable: the app log has no preexec hop; needs an app log line `hop=preexec_received` (note_shell_signal(Preexec) only stamps an atomic)")
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))
     ctx.reset()

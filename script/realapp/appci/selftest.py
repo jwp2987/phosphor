@@ -229,6 +229,20 @@ def overhead_se_and_no_compare():
 
 
 @check
+def enter_segment_split():
+    L = ["input_order hop=enter_begin t=1000.0", "input_order pty_write bytes=73 t=1000.5", "input_order pty_read bytes=434 since_write_ms=1.3 t=1001.8",
+         "input_order pty_read bytes=5 since_write_ms=9.0 t=1009.5", "input_order hop=enter_begin t=2000.0", "input_order pty_write bytes=3 t=2000.2",
+         "input_order pty_write bytes=73 t=2001.5", "input_order pty_read bytes=10 since_write_ms=2.1 t=2003.6"]
+    s = cases.enter_segments(L, 0)
+    assert s["enter_to_write_ms"] == 1.0 and s["enter_to_write_n"] == 2, s          # (0.5, 1.5) -> median 1.0
+    assert s["write_to_first_read_ms"] == 1.7 and s["write_to_first_read_n"] == 2, s   # only the FIRST read per write: 1.3, 2.1
+    assert "write_to_preexec_ms" not in s                                              # no hop in the log: absent, not zero
+    s = cases.enter_segments(L[:2] + ["input_order hop=preexec_received t=1004.5"], 0)
+    assert s["write_to_preexec_ms"] == 4.0, s
+    assert cases.enter_segments(L, 5000.0) == {}                                       # t0 is wall seconds: older lines ignored
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])

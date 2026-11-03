@@ -519,6 +519,10 @@ budget, previous build, baseline, verdict, n).
   are recorded as case metrics (`pane_shell`, `reference_shell`) and in the latency record (`pane_shell`, `reference_shell`); when they differ the verdict is `NO-COMPARE` (never PASS/FAIL).
   macOS `latency_enter` stamps with the pane shell's builtin when it is zsh (`zmodload zsh/datetime; print -r -- $EPOCHREALTIME`), the same line in
   Terminal.app; only bash 3.2 keeps the perl stamp.
+- **Where the Enter time goes (#1583 W3).** From the app's own `input_order` log `latency_enter` records `metrics.app_segments_ms`
+  (per platform): `enter_to_write_ms` (`hop=enter_begin` to the `pty_write` of the line), `write_to_first_read_ms` (that write to the first
+  `pty_read`, the app's `since_write_ms`), and `write_to_preexec_ms` only if the log carries a `hop=preexec_received` line. The app does not
+  log one today (Preexec is only stamped into an atomic), so that segment is absent and the case says an app log hop is needed.
 - **Verdicts.** `PASS`, `FAIL`, `WARN`, or `NO-REFERENCE` when no reference could be measured the same way (never shown as pass).
   `latency_key_log` is `NO-REFERENCE` everywhere today: it reads the app's own `input_order` clock (keydown to first frame) and no
   reference terminal exposes a comparable one; absolute numbers and the old CI sanity bounds (p50 <= 20 ms, p99 <= 60 ms) still apply.
