@@ -1400,6 +1400,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     }
     function warp_handle_dist_upgrade { __warp_run_relaxed __warp_handle_dist_upgrade_impl "$@"; }
 
+    # #1164: the bootstrap sent to an ssh session drops everything between the two `: __warp_local_only_*`
+    # lines (bootstrap::strip_local_only_block): the ssh wrapper below only ever runs in a local shell
+    # (WARP_IS_LOCAL_SHELL_SESSION=1), so on a remote host it was ~35 KB of dead function definitions
+    # typed or read through the pty. Keep the markers on their own lines and keep the block self-contained.
+    : __warp_local_only_begin
     # The SSH logic only applies to local sessions, because we don't yet have support for bootstrapping
     # recursive SSH sessions.
     if [[ ${WARP_IS_LOCAL_SHELL_SESSION:-} == "1" ]]; then
@@ -1916,6 +1921,7 @@ esac
         }
         function ssh { __warp_run_relaxed __warp_ssh_impl "$@"; }
     fi
+    : __warp_local_only_end
 
 
     # Send a precmd message to the terminal to differentiate between the warp
