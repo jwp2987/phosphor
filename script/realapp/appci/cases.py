@@ -2267,6 +2267,9 @@ def c_lat_enter(ctx, r):
         # plus the shell hooks Phosphor's bootstrap adds. Reported so the overhead can be split instead of argued.
         r.metric("app_enter_to_pty_write_ms", share)
         r.note("app share of Enter->start: enter_begin -> pty_write median %.2f ms (from the app's input_order log); the remaining overhead is shell/ConPTY side" % share)
+    if not segs:
+        r.metric("app_segments_ms", dict(unavailable=True, log_path=ctx.log_path, log_bytes=ctx.log_size(), platform=plat()))        # r18e9: say WHY the metric is absent
+        r.note("app segment metrics NOT available: no enter_begin -> pty_write pair in the app log %r (%d bytes) since the case started (stale log path after a relaunch, input-order logging off, or the Enters never reached the editor)" % (ctx.log_path, ctx.log_size()))
     if segs:
         # #1583 W3: the three segments per platform, as metrics (enter_begin->write, write->first pty_read, write->preexec)
         r.metric("app_segments_ms", dict(segs, platform=plat()))

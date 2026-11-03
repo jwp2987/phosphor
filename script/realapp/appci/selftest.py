@@ -784,6 +784,14 @@ def r18e9_enter_taint_splits_lost_from_uncovered():
         shutil.rmtree(d, ignore_errors=True)
 
 
+@check
+def r18e9_pty_write_cr_count():
+    """r18e9: per-case count of pty writes that carried a CR"""
+    import run as runmod
+    L = 'x input_order hop=pty_write_bytes class=UserCommand wrote=2 of_job=2 bytes="\\r" since_precmd_ms=1\nx input_order hop=pty_write_bytes class=UserKey wrote=2 of_job=2 bytes="\\x1b1" s=2\nx input_order hop=enter_begin deferred=false t=1\n'
+    assert runmod.pty_write_cr(L) == dict(writes=2, with_cr=1, enters=1), runmod.pty_write_cr(L)
+
+
 def main():
     failed = 0
     for f in CHECKS:

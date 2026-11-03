@@ -344,6 +344,17 @@ def main():
                 ctx.t_case0 = t0
                 ctx.extra_logs = []
                 k_start = len(be.calls) if getattr(be, "calls", None) is not None else None     # injector accounting (#1509)
+                if win and not os.environ.get("APPCI_APP_LOG"):
+                    # r18e9: ctx.log_path was resolved ONCE, at the first launch. After a relaunch (the death / pane_not_local / left-agent-mode branches) the new instance
+                    # writes a different file, so every later case read a stale or 0-byte log: no app_segments_ms metric on latency_enter, no kh_hold_entry for
+                    # ssh_failing_not_local (UNVERIFIABLE), no case log. Re-resolve it before each case and say when it moved.
+                    try:
+                        nl = app.find_log()
+                        if nl and nl != ctx.log_path:
+                            print("[appci] app log moved: %s -> %s (relaunched instance)" % (ctx.log_path, nl), flush=True)
+                            ctx.log_path = nl
+                    except Exception as e:
+                        print("[appci] app log re-resolve failed: %r" % (e,), flush=True)
                 log_off = ctx.log_size() if (ctx.log_path and not sim) else None      # job-log evidence: the app-side Enter destinations of THIS case
                 status = "pass"
                 try:       # r18e9: the app instance this case started on (a case that relaunches the app itself ends in a fresh TERMINAL session)
@@ -381,6 +392,15 @@ def main():
                             r.metrics["injector"] = acct
                     except Exception as e:
                         r.note("injector accounting failed: %r" % e)
+                if log_off is not None:       # r18e9: did the pty write carry '\r'? (an Enter the editor accepted whose write lacked the CR = dropped/held Enter, ssh_* on Windows)
+                    try:
+                        pw = pty_write_cr(ctx.log_since(log_off))
+                        if pw["enters"] or pw["writes"]:
+                            r.metrics["pty_write_cr"] = pw
+                            if pw["enters"] > pw["with_cr"]:
+                                r.note("pty writes: %(writes)d, of which carrying a CR (\\r): %(with_cr)d; Enter(s) the input editor started: %(enters)d (an Enter may ride in a multi-line write; a gap with held/handed-back Enters is the thing to look at)" % pw)
+                    except Exception as e:
+                        r.note("pty write CR count failed: %r" % (e,))
                 tainted = False
                 if a.backend == "mac" and not sim:       # r18e9: Returns macOS targeted at the app that its NSApplication never logged taint THIS case's row
                     import taint
@@ -417,6 +437,8 @@ def main():
                         be.guard()
                         proved = False       # a relaunched Windows pane needs its keys proven again (and its cwd set)
                     continue
+                if status != "fail" and win:       # r18e9: a PASSING case's app-log slice too (capped), so a validator can check a pass against the app's own hops
+                    save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=3_000_000)
                 if status == "fail":
                     exit_fail = True
                     if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
@@ -606,6 +628,24 @@ def main():
     return finish(run, a, 1 if exit_fail else 0)
 
 
+PTY_WRITE_RX = re.compile(r'hop=pty_write_bytes .*?bytes="((?:[^"\\]|\\.)*)"')
+
+
+def pty_write_cr(text):
+    """r18e9: {writes, with_cr, enters} from a case's app-log slice: hop=pty_write_bytes lines, how many carried a CR (`\\r` in the logged bytes), and the fresh
+    (not deferred) hop=enter_begin count. Both reports asked for it: an Enter the editor accepted but no pty write carried a CR."""
+    writes = with_cr = enters = 0
+    for l in text.splitlines():
+        m = PTY_WRITE_RX.search(l)
+        if m:
+            writes += 1
+            if "\\r" in m.group(1):
+                with_cr += 1
+        elif "hop=enter_begin deferred=false" in l:
+            enters += 1
+    return dict(writes=writes, with_cr=with_cr, enters=enters)
+
+
 CRASH_RX = re.compile(r"panicked at|\bSIGSEGV\b|\bSIGABRT\b|\bSIGBUS\b|fatal runtime error|stack overflow|Segmentation fault|EXC_BAD_ACCESS", re.I)
 
 
@@ -632,7 +672,7 @@ def classify_death(dead, ctx, t0, log_off):
         return "%s (death classification failed: %r)" % (dead, e)
 
 
-def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None):
+def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None, cap=12_000_000):
     """Windows: after a FAILED case, write the app-log lines since the case began (the log rotates and keeps only its newest part, so the
     failing case's key trace was gone by the end of the pass), plus the ssh server's log, to logs/<label>/case_<case>.log (#1488, r18cj)."""
     import ci_env
@@ -644,15 +684,17 @@ def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None):
             for l in app_log_text(src).splitlines():
                 if l[:20] >= cut or not l[:2] == "20":       # non-timestamped continuation lines ride with their neighbour
                     keep.append(l)
-        txt = "\n".join(keep)[:12_000_000]
+        txt = "\n".join(keep)
+        txt = txt[:cap] if cap >= 12_000_000 else txt[-cap:]       # a failing case keeps its start; a passing one its newest part
         sl = os.path.join(run, "ssh", "sshd.log")
-        if os.path.exists(sl):
+        if os.path.exists(sl) and cap >= 12_000_000:        # the ssh server log rides with FAILING cases only
             txt += "\n=== ssh/sshd.log ===\n" + open(sl, errors="replace").read()[-200_000:]
         logs = os.path.join(run, "logs", label)
         os.makedirs(logs, exist_ok=True)
-        open(os.path.join(logs, "case_%s.log" % case), "w").write(ci_env.redact(txt, ollama_url))
+        with open(os.path.join(logs, "case_%s.log" % case), "w", encoding="utf-8", errors="replace") as fh:      # r18e9: the cp1252 default crashed the whole run on U+FFFD
+            fh.write(ci_env.redact(txt, ollama_url))
     except Exception as e:          # evidence capture must never fail the run
-        print("save_case_log: %r" % (e,), flush=True)
+        print(("save_case_log: %r" % (e,)).encode("ascii", "backslashreplace").decode("ascii"), flush=True)
 
 
 def app_log_text(src):
