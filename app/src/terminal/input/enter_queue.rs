@@ -539,9 +539,10 @@ impl Input {
         warpui::input_order::log_key_hop("enter_verdict_give_up", || format!("editor {why}"));
         // The late verdict is dropped (as a submit would have): the next Enter, the user's own
         // say-so after the toast, submits on the Enter-time rules instead of waiting again for a
-        // classifier that may be stuck for good.
+        // classifier that may be stuck for good. A large buffer's verdict is kept instead (#1604):
+        // its job is linear and lands, and the next Enter waits for it or submits on it.
         self.ai_input_model
-            .update(ctx, |model, _| model.abandon_pending_detection());
+            .update(ctx, |model, _| model.abandon_pending_detection_after_give_up());
         if self.enter_gate.is_some() {
             self.give_up_enter_gate_to_editor(why, ctx);
             return;

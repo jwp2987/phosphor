@@ -1032,10 +1032,11 @@ fn test_truncate_for_model_cuts_at_a_char_boundary_and_drops_tokens_past_the_cut
 }
 
 /// #1604: the routing rules are linear in the text. `route` and the Enter-time predicates are
-/// timed on 1 MB and 10 MB of a shell line, a multi-line script and prose; each 10 MB run must
-/// cost at most `LINEAR_RATIO_CAP` times its 1 MB run (a quadratic step would cost ~100x) and
-/// finish under an absolute bound loose enough for a debug build. The release-build numbers, with
-/// their own limits, are the `routing/*` criterion benches (`app/benches/routing_bench.rs`).
+/// timed on 128 KiB and 1.28 MB (10x) of a shell line, a multi-line script and prose; each large
+/// run must cost at most `LINEAR_RATIO_CAP` times its small run (a quadratic step would cost
+/// ~100x) and finish under an absolute bound loose enough for a debug build under nextest's 60 s
+/// kill. The release-build numbers at 1 MB and 10 MB, with their own limits, are the `routing/*`
+/// criterion benches (`app/benches/routing_bench.rs`).
 #[test]
 fn test_routing_rules_are_linear_in_the_text() {
     use crate::util::routing::{
@@ -1044,7 +1045,8 @@ fn test_routing_rules_are_linear_in_the_text() {
     use std::time::{Duration, Instant};
 
     const LINEAR_RATIO_CAP: f64 = 30.0;
-    const ONE_MB: usize = 1024 * 1024;
+    const SMALL: usize = 128 * 1024;
+    const LARGE: usize = 10 * SMALL;
 
     fn context(surface: Surface) -> RoutingContext {
         RoutingContext {
@@ -1095,20 +1097,17 @@ fn test_routing_rules_are_linear_in_the_text() {
     }
 
     for kind in ["line", "script", "prose"] {
-        let one = time_all(&text_of(kind, ONE_MB));
-        let ten = time_all(&text_of(kind, 10 * ONE_MB));
-        let ratio = ten.as_secs_f64() / one.max(Duration::from_millis(5)).as_secs_f64();
+        let small = time_all(&text_of(kind, SMALL));
+        let large = time_all(&text_of(kind, LARGE));
+        let ratio = large.as_secs_f64() / small.max(Duration::from_millis(5)).as_secs_f64();
         assert!(
             ratio <= LINEAR_RATIO_CAP,
-            "{kind}: 10 MB took {ten:?}, 1 MB took {one:?} ({ratio:.1}x): a rule is super-linear"
+            "{kind}: 1.28 MB took {large:?}, 128 KiB took {small:?} ({ratio:.1}x): a rule is \
+             super-linear"
         );
         assert!(
-            one <= Duration::from_secs(10),
-            "{kind}: routing 1 MB took {one:?} (debug-build bound 10 s)"
-        );
-        assert!(
-            ten <= Duration::from_secs(100),
-            "{kind}: routing 10 MB took {ten:?} (debug-build bound 100 s)"
+            large <= Duration::from_secs(15),
+            "{kind}: routing 1.28 MB took {large:?} (debug-build bound 15 s)"
         );
     }
 }

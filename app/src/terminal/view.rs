@@ -820,7 +820,9 @@ const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
 
 /// How long a young line's Enter waits for a verdict that never arrives at all before it gives up
 /// (#1353 phase 3). A safety net for a lost signal, never how the wait normally ends; logged when
-/// it fires. The normal give-up is [`YOUNG_DETECTION_CAP`] of classifier compute. #1577: a give-up
+/// it fires. The normal give-up is
+/// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP) of
+/// classifier compute (grown with the text, #1604). #1577: a give-up
 /// with the input type undecided hands the line back to the editor (never submitted by the clock).
 const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
 
@@ -13925,7 +13927,9 @@ impl TerminalView {
 
     /// Waits for the verdict of the detection requested for a young line's exact text, then runs
     /// its deferred Enter (#933). It never submits on an inherited or default input type: if the
-    /// classifier does not answer (no verdict within [`YOUNG_DETECTION_CAP`]) the Enter submits on
+    /// classifier does not answer (no verdict within
+    /// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP),
+    /// grown with the text, #1604) the Enter submits on
     /// the Enter-time rules without it (#1174); it is never swallowed. With no classifier at all
     /// the text stays in the editor. Ctrl-C meanwhile cancels the Enter.
     fn submit_deferred_enter_after_detection(
@@ -14013,11 +14017,12 @@ impl TerminalView {
                     });
                     self.run_deferred_enter(true, ctx);
                 } else {
-                    // The late verdict is dropped: the next Enter is the user's say-so.
+                    // The late verdict is dropped: the next Enter is the user's say-so. (A large
+                    // buffer's is kept, #1604: the next Enter waits for it or submits on it.)
                     self.input.update(ctx, |input, ctx| {
                         input
                             .ai_input_model()
-                            .update(ctx, |model, _| model.abandon_pending_detection())
+                            .update(ctx, |model, _| model.abandon_pending_detection_after_give_up())
                     });
                     self.keep_deferred_enter_text_hand_back("young_verdict_cap", ctx);
                 }
@@ -14033,7 +14038,8 @@ impl TerminalView {
     /// Watches the detection a young line's Enter waits for (#1353 phase 3). Nothing polls: the
     /// wait is released by the verdict notification; when a stage of the classifier starts running
     /// on its compute clock, that event arms ONE give-up timer for the rest of
-    /// [`YOUNG_DETECTION_CAP`]; and one backstop ([`YOUNG_DETECTION_BACKSTOP`]) covers a verdict
+    /// [`YOUNG_DETECTION_CAP`](crate::terminal::model::typeahead_handoff::YOUNG_DETECTION_CAP)
+    /// (grown with the text, #1604); and one backstop ([`YOUNG_DETECTION_BACKSTOP`]) covers a verdict
     /// that never arrives. Both are token-guarded by the wait id and logged when they give up.
     /// (The clock has one stage-start receiver; if an editor Enter's wait takes it over meanwhile,
     /// the backstop still ends this wait.)

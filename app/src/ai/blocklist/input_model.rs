@@ -1365,6 +1365,22 @@ impl BlocklistAIInputModel {
         self.pending_detection_buffer = None;
     }
 
+    /// [`Self::abandon_pending_detection`] for an Enter the clock gave up on and handed back
+    /// (#1577) -- except for a buffer over the sync routing cap (#1604), whose request and job are
+    /// kept: its classification is linear and will land, and the next Enter must wait for it (or
+    /// submit on it once it has) rather than run an unclassified paste on the inherited type. A
+    /// typed line's late verdict is dropped as before, so the next Enter is the user's say-so.
+    pub fn abandon_pending_detection_after_give_up(&mut self) {
+        if self
+            .pending_detection_buffer
+            .as_deref()
+            .is_some_and(routes_off_thread)
+        {
+            return;
+        }
+        self.abandon_pending_detection();
+    }
+
     /// Marks detection for `buffer_text` as settled: whatever the input type is now is the
     /// verdict for that text.
     ///
@@ -1653,15 +1669,14 @@ impl BlocklistAIInputModel {
         // model classifier sees a bounded opening of it (`truncate_for_model`).
         let off_thread = routes_off_thread(&input.buffer_text);
 
+        // Without a parse (a buffer over the parse cap, or an Enter that beat the debounced parse)
+        // the head is read from the text, within a bounded window: a 10 MB buffer with no
+        // whitespace must not be scanned to its end for its first word.
         let first_token_str: Option<String> = input
             .parsed_tokens
             .first()
             .map(|t| t.token.as_str().to_owned())
-            .or_else(|| {
-                off_thread
-                    .then(|| input.buffer_text.split_whitespace().next().map(str::to_owned))
-                    .flatten()
-            });
+            .or_else(|| head_word_from_text(&input.buffer_text));
         let Some(first_token_str) = first_token_str else {
             // If the buffer is empty, short-circuit and leave input type unchanged.
             //
@@ -2491,6 +2506,21 @@ pub(crate) const MAX_SYNC_ROUTING_BYTES: usize = 4096;
 /// Whether `buffer_text` is routed in the background job rather than on the UI thread (#1604).
 pub(crate) fn routes_off_thread(buffer_text: &str) -> bool {
     buffer_text.len() > MAX_SYNC_ROUTING_BYTES
+}
+
+/// The first whitespace-separated word of `buffer_text`, read from its first
+/// [`MAX_SYNC_ROUTING_BYTES`] bytes and cut to 256 chars (#1604): what the denylist and the
+/// one-off-word shortcut need when no parse describes the buffer, at a cost bounded by the window,
+/// not the text. `None` for a buffer whose window holds only whitespace.
+pub(crate) fn head_word_from_text(buffer_text: &str) -> Option<String> {
+    let mut end = buffer_text.len().min(MAX_SYNC_ROUTING_BYTES);
+    while !buffer_text.is_char_boundary(end) {
+        end -= 1;
+    }
+    buffer_text[..end]
+        .split_whitespace()
+        .next()
+        .map(|word| word.chars().take(256).collect())
 }
 
 /// The longest buffer whose background routing job is started from the edit path, as the text is

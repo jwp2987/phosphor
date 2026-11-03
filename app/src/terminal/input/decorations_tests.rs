@@ -291,6 +291,67 @@ fn test_oversized_buffer_keeps_detection_pending_and_is_classified_in_the_backgr
     });
 }
 
+/// #1604 (review): the parse-less detection job is only for buffers the completer parse never
+/// runs on. For a short buffer whose parse has not landed (a young line's Enter, an Enter that
+/// beat the debounce) it starts nothing and leaves the request pending for the parse's verdict:
+/// a parse-less job would race the parse and settle the request without one.
+#[test]
+fn test_short_buffer_gets_no_parse_less_detection_job() {
+    use crate::ai::blocklist::InputConfig;
+    use crate::settings::AISettings;
+    use input_classifier::InputType;
+
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "/usr/bin");
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        warpui::r#async::Timer::after(std::time::Duration::from_millis(400)).await;
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.user_insert("echo hi; echo there", ctx);
+            assert!(!input.buffer_exceeds_background_job_cap(ctx));
+            let text = input.buffer_text(ctx);
+            input.ai_input_model().update(ctx, |model, _| {
+                model.abort_in_progress_detection();
+                model.note_detection_requested(text);
+            });
+            for at_enter in [false, true] {
+                input.start_detection_for_unparsed_buffer(at_enter, ctx);
+                assert!(
+                    !input.ai_input_model().as_ref(ctx).detection_job_in_flight(),
+                    "no parse-less job for a buffer under the parse cap (at_enter={at_enter})"
+                );
+                assert!(
+                    input.detection_pending_for_buffer(ctx),
+                    "the request waits for the parse's verdict (at_enter={at_enter})"
+                );
+            }
+        });
+    });
+}
+
 /// #1031: a new edit, a clear, and an oversized buffer each cancel the previous in-flight
 /// decoration job cooperatively (its cancel flag is set, so the CPU-bound parse stops at its
 /// next token), and only the newest job stays live.

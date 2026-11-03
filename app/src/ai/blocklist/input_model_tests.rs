@@ -1724,6 +1724,47 @@ fn huge_buffer_is_classified_like_a_short_one_in_the_background() {
     }
 }
 
+/// #1604 (review): a SHORT buffer with no parse (an Enter that beat the debounced parse, a test
+/// snapshot) is still classified, synchronously, from the head read out of the text: it must not
+/// be settled without a verdict (which left the inherited type to decide). The head window is
+/// bounded, so a huge buffer with no whitespace is not scanned to its end for its first word.
+#[test]
+fn a_short_line_without_a_parse_is_classified_from_its_text() {
+    for (text, expected) in [
+        ("echo PASTE-G1; echo PASTE-H1", InputType::Shell),
+        ("please explain why the build failed", InputType::AI),
+    ] {
+        App::test((), |mut app| async move {
+            let _agent_mode = FeatureFlag::AgentMode.override_enabled(true);
+            let start = if expected == InputType::Shell {
+                AI_UNLOCKED
+            } else {
+                SHELL_UNLOCKED
+            };
+            let input_model = build_autodetecting_input_model(&mut app, start);
+            request_detection(&mut app, &input_model, snapshot_without_parse(text));
+            input_model.read(&app, |model, ctx| {
+                assert_eq!(model.input_type(), expected, "{text:?}");
+                assert!(
+                    !model.is_detection_pending_for(text, ctx),
+                    "{text:?}: decided synchronously, under the sync cap"
+                );
+            });
+        });
+    }
+    assert_eq!(head_word_from_text("  echo hi"), Some("echo".to_owned()));
+    assert_eq!(head_word_from_text("   \n\t "), None);
+    let no_whitespace = "x".repeat(10 * 1024 * 1024);
+    let started = std::time::Instant::now();
+    let head = head_word_from_text(&no_whitespace).expect("a word");
+    assert_eq!(head.chars().count(), 256);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(100),
+        "{:?}: the head window is bounded",
+        started.elapsed()
+    );
+}
+
 /// #1604: the Enter's compute budget grows with the text it waits for, so a large paste's linear
 /// classification is waited for instead of handed back; a typed line's budget is unchanged.
 #[test]

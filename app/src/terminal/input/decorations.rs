@@ -496,15 +496,21 @@ impl Input {
     /// through the usual callback and settles the pending request, which releases an Enter
     /// waiting on it.
     ///
-    /// Starts nothing when detection is not requested for the current text, when a job is already
-    /// in flight for it, or -- unless `at_enter` -- when the buffer is over
-    /// `MAX_EAGER_ROUTING_BYTES` (the Enter starts that one; see `run_input_background_jobs`).
+    /// Starts nothing for a buffer under the parse cap (its completer parse delivers the verdict:
+    /// a parse-less job here would race it and settle the request without one), when detection is
+    /// not requested for the current text, when a job is already in flight for it, or -- unless
+    /// `at_enter` -- when the buffer is over `MAX_EAGER_ROUTING_BYTES` (the Enter starts that one;
+    /// see `run_input_background_jobs`).
     pub(crate) fn start_detection_for_unparsed_buffer(
         &mut self,
         at_enter: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        // The cached length first: a buffer too long for the eager start is not copied here.
+        // Cached lengths first: a buffer that is parsed, or too long for the eager start, is not
+        // copied here.
+        if !self.buffer_exceeds_background_job_cap(ctx) {
+            return;
+        }
         let len = self.editor.as_ref(ctx).buffer_size(ctx).as_usize();
         if !at_enter && len > crate::ai::blocklist::input_model::MAX_EAGER_ROUTING_BYTES {
             return;
