@@ -464,7 +464,7 @@ class Ctx:
             return None
         return want in got
 
-    SSH_HOP_RE = re.compile(r"kh_iq_(?:hold|release)\b.*Q7_ssh_typeahead|kh_hold_(?:entry|exit)\b|ssh hold:|apply_block_completed_to_ssh_gate|hop=hand_route|kh_handover|handoff_commit")
+    SSH_HOP_RE = re.compile(r"kh_iq_(?:hold|release)\b.*Q7_ssh_typeahead|kh_hold_(?:entry|exit)\b|kh_holding_set\b|gate_open kind=ssh_connect|ssh hold:|apply_block_completed_to_ssh_gate|hop=hand_route|kh_handover|handoff_commit")
 
     def app_hop_lines(self, rx, since):
         """[(wall_s or None, line)] of the app log lines (rotated chunks included, oldest first) matching `rx` whose t= is >= `since`"""
@@ -1649,7 +1649,7 @@ def c_ssh_fail(ctx, r):
         t_failed = time.time()
         time.sleep(6)
         ev = ctx.app_hop_lines(SSH_GATE_RX, t_type - 0.5)
-        first = next(((t, l) for t, l in ev if t is not None and t >= t_type and "kh_hold_entry" in l), None)
+        first = next(((t, l) for t, l in ev if t is not None and t >= t_type and ("kh_hold_entry" in l or "kh_holding_set holding=true" in l or "gate_open kind=ssh_connect" in l)), None)      # r18e9: other hops that prove the same hold
         rel = [(t, l) for t, l in ev if t is not None and ("kh_hold_exit" in l or "kh_iq_release" in l) and t >= t_type]
         r.note("ssh gate at the first MUSTNOT key: %s; first gate release/exit after it: %s; ssh failed (connection closed) %.2f s after typing began; listener-side typing window %.2f s" % (
             ("t=+%.3fs %s" % (first[0] - t_type, first[1]) if first else "no kh_hold_entry logged (app key trace off or rotated)"),
