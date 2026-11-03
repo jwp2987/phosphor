@@ -2806,7 +2806,7 @@ def c_editor_mem(ctx, r):
         time.sleep(1.5)
         ctx.be.type(path, 12)
         time.sleep(1.0)
-        ctx.be.key("enter")
+        ctx.be.key("Return")   # the keysym name every backend maps (wtype refused "enter": r18e0)
         opened = settle_rss(ctx)
         delta = opened - base
         ctx.shot("editor_mem_%s_open" % kind)
