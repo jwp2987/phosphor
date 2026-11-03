@@ -2126,3 +2126,74 @@ fn a_full_write_list_drops_the_newest_user_input_but_never_a_signal() {
 fn the_write_list_cap_is_far_above_a_long_gate_at_key_repeat_rate() {
     assert!(MAX_QUEUED_WRITES >= 180 * 60 * 5);
 }
+
+/// #1392: every byte the loop reads from the pty is counted for the stream barrier and published
+/// as applied once parsed, so after a pass that drained the pty the barrier says drained.
+#[test]
+fn the_stream_barrier_counts_every_read_byte_and_publishes_it_once_parsed() {
+    let (mut event_loop, _tx, _, _, _) = flood_harness(0x1000, 5);
+    let barrier = event_loop.stream_barrier.clone();
+    let mut state = State::default();
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let (mut can_read, mut can_write) = (true, true);
+    event_loop
+        .service_io(&mut state, &mut buf, &mut can_read, &mut can_write)
+        .expect("service_io");
+    assert!(!can_read);
+    assert_eq!(barrier.bytes_read(), 5 * 0x1000);
+    assert_eq!(barrier.bytes_applied(), 5 * 0x1000);
+    assert!(barrier.drained_with(|| Some(false)));
+    // The loop and the terminal model share one barrier (the hand-off's probe asks the model's).
+    assert!(Arc::ptr_eq(
+        &barrier,
+        &event_loop.terminal.lock().pty_stream_barrier()
+    ));
+}
+
+/// #1392: bytes a synchronized-output frame holds in the parser are not applied (a hook among
+/// them has not been handled), so the barrier is not drained until the frame ends.
+#[test]
+fn bytes_held_in_a_synchronized_output_frame_are_not_published_as_applied() {
+    let mut model = TerminalModel::mock(None, None);
+    let ledger = model.reply_ledger();
+    let barrier = PtyStreamBarrier::default();
+    let mut state = State::default();
+
+    let frame_open: &[u8] = b"\x1b[?2026hframe text";
+    barrier.begin_read();
+    barrier.end_read(frame_open.len());
+    parse_slice(&mut state, &mut model, &ledger, frame_open);
+    state.note_parsed(frame_open.len(), &barrier);
+    assert!(state.parser.sync_output_buffer_len().is_some());
+    assert_eq!(barrier.bytes_applied(), 0);
+    assert!(!barrier.drained_with(|| Some(false)));
+
+    let frame_close: &[u8] = b"\x1b[?2026l";
+    barrier.begin_read();
+    barrier.end_read(frame_close.len());
+    parse_slice(&mut state, &mut model, &ledger, frame_close);
+    state.note_parsed(frame_close.len(), &barrier);
+    assert_eq!(
+        barrier.bytes_applied(),
+        (frame_open.len() + frame_close.len()) as u64
+    );
+    assert!(barrier.drained_with(|| Some(false)));
+
+    // A frame ended by the loop's timeout (`finish_sync_output`) publishes too.
+    let open_again: &[u8] = b"\x1b[?2026hmore";
+    barrier.begin_read();
+    barrier.end_read(open_again.len());
+    parse_slice(&mut state, &mut model, &ledger, open_again);
+    state.note_parsed(open_again.len(), &barrier);
+    assert!(!barrier.drained_with(|| Some(false)));
+    let mut replies = Vec::new();
+    state.parser.finish_sync_output(
+        &mut model,
+        &mut ReplyWriter {
+            replies: &mut replies,
+            ledger: &ledger,
+        },
+    );
+    state.publish_applied(&barrier);
+    assert!(barrier.drained_with(|| Some(false)));
+}

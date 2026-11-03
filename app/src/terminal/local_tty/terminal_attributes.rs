@@ -232,6 +232,55 @@ pub fn shell_prompt_fact(
     }
 }
 
+/// Whether the pty master `fd` holds output the reader has not taken yet (#1392), for the stream
+/// barrier ([`crate::terminal::model::pty_stream_barrier::PtyStreamBarrier::drained_with`]).
+/// `Some(false)` only when the platform proves it empty; `None` when it cannot tell (an error, a
+/// hang-up, an unsupported platform), which the barrier treats as "not drained".
+///
+/// A zero-timeout `poll` first: it waits for nothing (no timer), and on Linux `n_tty_poll` flushes
+/// the pty's pending flip-buffer work into the line discipline before it answers, so bytes a slave
+/// `write` has already returned for are seen even if the kernel has not pushed them yet. Then the
+/// byte count, read in the direction the master reads:
+/// - Linux: `FIONREAD` (`TIOCINQ`), the master's line-discipline read count.
+/// - macOS: `TIOCOUTQ`; master and slave share one tty there and the master reads the slave's
+///   output queue (`FIONREAD` on the master counts the other direction). Unlike `poll`, it also
+///   counts output held back by `^S` flow control.
+/// - Anything else: `None`, so the barrier never says drained and today's behaviour stays.
+pub fn pty_master_has_unread(fd: RawFd) -> Option<bool> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid `pollfd`, a zero timeout; `poll` only writes `revents`.
+        let polled = unsafe { libc::poll(&mut pollfd, 1, 0) };
+        if polled < 0 || pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return None;
+        }
+        if pollfd.revents & libc::POLLIN != 0 {
+            return Some(true);
+        }
+        #[cfg(target_os = "linux")]
+        let request = libc::FIONREAD;
+        #[cfg(target_os = "macos")]
+        let request = libc::TIOCOUTQ;
+        let mut pending: libc::c_int = 0;
+        // SAFETY: both requests write one `int` through the pointer, which points at `pending`.
+        let result = unsafe { libc::ioctl(fd, request, &mut pending as *mut libc::c_int) };
+        if result != 0 {
+            return None;
+        }
+        Some(pending != 0)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = fd;
+        None
+    }
+}
+
 pub(crate) fn is_canonical_without_echo(flags: termios::LocalFlags) -> bool {
     flags.contains(termios::LocalFlags::ICANON) && !flags.contains(termios::LocalFlags::ECHO)
 }

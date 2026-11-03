@@ -3642,3 +3642,240 @@ fn ctrl_u_is_not_a_line_kill_on_powershell() {
     type_and_flush(&mut posix, b"\x15");
     assert!(!posix.shell_line_may_hold_typed_text());
 }
+
+// ---- #1392: a raw read after Preexec, told from the #933 race by the reader-side barrier -------
+
+/// What the probe of [`raw_read_handoff`] answers, and what it was asked, in order.
+#[derive(Clone)]
+struct RawReadProbe {
+    fact: ShellPromptFact,
+    /// What the barrier answers; `None`: no barrier installed.
+    drained: Option<Arc<std::sync::atomic::AtomicBool>>,
+    asked: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl RawReadProbe {
+    fn new(fact: ShellPromptFact, drained: Option<bool>) -> Self {
+        Self {
+            fact,
+            drained: drained.map(|value| Arc::new(std::sync::atomic::AtomicBool::new(value))),
+            asked: Arc::default(),
+        }
+    }
+
+    fn install(&self, handoff: &mut TypeaheadHandoff) {
+        let (fact, asked) = (self.fact, self.asked.clone());
+        let mut probe = ForegroundProbe::default().with_prompt_fact(Arc::new(move || {
+            asked.lock().unwrap().push("sample");
+            fact
+        }));
+        if let Some(drained) = self.drained.clone() {
+            let asked = self.asked.clone();
+            probe = probe.with_stream_drained(Arc::new(move || {
+                asked.lock().unwrap().push("barrier");
+                drained.load(Ordering::SeqCst)
+            }));
+        }
+        handoff.set_foreground_probe(probe);
+    }
+
+    fn asked(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.asked.lock().unwrap())
+    }
+}
+
+/// zsh `read -k` typed as the editor's command: the prompt's Precmd and `LineEditorReading` (when
+/// `markers`), the command written, its Preexec parsed, and a key typed into the running read.
+/// The platform then samples the shell's group in front with a raw tty.
+fn raw_read_handoff(probe: &RawReadProbe, markers: bool) -> TypeaheadHandoff {
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.set_prompt_seq_enabled(true);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    handoff.on_precmd_seq(Some(7), Some(1));
+    if markers {
+        assert!(handoff.on_line_editor_reading(Some(7), Some(1)));
+    }
+    probe.install(&mut handoff);
+    handoff.on_command_written();
+    handoff.note_shell_hook_parsed(ParsedShellHook::Preexec);
+    handoff.on_preexec(false);
+    type_and_flush(&mut handoff, b"y");
+    probe.asked();
+    handoff
+}
+
+/// The case #1392 is about: the hook account is provably current (the barrier is drained after
+/// the sample) and says a command runs, so the raw tty is that command's read. The Enter goes to
+/// the pty at once instead of waiting 2 s for a prompt that is not coming.
+#[test]
+fn a_raw_read_after_preexec_gets_the_enter_once_the_stream_is_provably_current() {
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let mut handoff = raw_read_handoff(&probe, true);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.has_young_hold());
+    assert_eq!(
+        probe.asked(),
+        vec!["sample", "barrier"],
+        "the barrier is checked AFTER the sample, never before"
+    );
+
+    // The peek (destination table) agrees with the commit.
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let peek = raw_read_handoff(&probe, true);
+    assert_eq!(
+        peek.peek_user_bytes_route(b"\r", true, Instant::now()),
+        UserBytesRoute::WriteCounted
+    );
+}
+
+/// The #933 race looks the same to the sample and the stream (raw tty, Running), but the shell's
+/// Precmd is still unread or unparsed: the barrier is not drained, so the Enter is held for that
+/// prompt exactly as before.
+#[test]
+fn an_undrained_stream_keeps_the_hold_for_the_prompt() {
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(false));
+    let mut handoff = raw_read_handoff(&probe, true);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(handoff.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+    assert_eq!(probe.asked(), vec!["sample", "barrier"]);
+
+    // No barrier installed (ConPTY, a platform that cannot look at the master): as before.
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, None);
+    let mut handoff = raw_read_handoff(&probe, true);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(handoff.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+}
+
+/// The decision table for the barrier itself, through a real [`PtyStreamBarrier`]: only equal
+/// counts AND an empty master let the Enter through.
+#[test]
+fn only_equal_counts_and_an_empty_master_let_the_enter_through() {
+    use crate::terminal::model::pty_stream_barrier::PtyStreamBarrier;
+    use std::sync::atomic::AtomicI64;
+
+    // `unread`: -1 the master cannot tell, else the byte count FIONREAD / TIOCOUTQ answers.
+    let route = |read: usize, applied: u64, unread: i64| {
+        let barrier = Arc::new(PtyStreamBarrier::default());
+        barrier.begin_read();
+        barrier.end_read(read);
+        barrier.publish_applied(applied);
+        let unread = Arc::new(AtomicI64::new(unread));
+        let mut handoff = raw_read_handoff(
+            &RawReadProbe::new(ShellPromptFact::LineEditorReading, None),
+            true,
+        );
+        handoff.set_foreground_probe(
+            ForegroundProbe::default()
+                .with_prompt_fact(Arc::new(|| ShellPromptFact::LineEditorReading))
+                .with_stream_drained(Arc::new(move || {
+                    barrier.drained_with(|| match unread.load(Ordering::SeqCst) {
+                        -1 => None,
+                        count => Some(count != 0),
+                    })
+                })),
+        );
+        handoff.on_user_bytes(b"\r")
+    };
+    // read == applied, nothing unread: the stream is current.
+    assert_eq!(route(512, 512, 0), UserBytesRoute::WriteCounted);
+    // read > applied: a Precmd may be read but not parsed yet.
+    assert_eq!(route(512, 400, 0), UserBytesRoute::Held);
+    // Bytes still on the master: a Precmd may not be read yet.
+    assert_eq!(route(512, 512, 37), UserBytesRoute::Held);
+    assert_eq!(route(512, 400, 37), UserBytesRoute::Held);
+    // The master cannot be asked.
+    assert_eq!(route(512, 512, -1), UserBytesRoute::Held);
+}
+
+/// The marker states: only "markers live, a Preexec is the last thing the stream said" lets the
+/// barrier decide. Every other account keeps the hold, and the barrier (a syscall) is not even
+/// asked.
+#[test]
+fn the_veto_needs_live_markers_and_a_preexec_as_the_last_hook() {
+    // No markers from this bootstrap: the account cannot say "running, not the editor".
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let mut handoff = raw_read_handoff(&probe, false);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(probe.asked(), vec!["sample"]);
+
+    // The prompt's Precmd applied after the Preexec (activity Prompt): the editor is back.
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let mut handoff = raw_read_handoff(&probe, true);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    handoff.on_precmd();
+    assert_eq!(handoff.shell_activity(), ShellActivity::Prompt);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(probe.asked(), vec!["sample"]);
+
+    // `LineEditorReading` after the Preexec: the editor said it reads.
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let mut handoff = raw_read_handoff(&probe, true);
+    handoff.on_line_editor_reading(Some(7), Some(2));
+    assert_eq!(handoff.shell_activity(), ShellActivity::Reading);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(probe.asked(), vec!["sample"]);
+
+    // A Preexec that no written line accounts for (every line answered by a Precmd): the
+    // counts disagree with "the written command runs", so the barrier is not asked.
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let mut handoff = raw_read_handoff(&probe, true);
+    handoff.note_shell_hook_parsed(ParsedShellHook::Precmd);
+    handoff.on_precmd();
+    handoff.note_shell_hook_parsed(ParsedShellHook::Preexec);
+    handoff.on_preexec(false);
+    assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+    assert!(!handoff.counts_diverged());
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_eq!(probe.asked(), vec!["sample"]);
+
+    // A continuation prompt after it (activity Continuation).
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let mut handoff = raw_read_handoff(&probe, true);
+    handoff.on_continuation_prompt();
+    assert_eq!(handoff.shell_activity(), ShellActivity::Continuation);
+    assert_ne!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert!(!probe.asked().contains(&"barrier"));
+}
+
+/// A Precmd (or CommandFinished) the block lifecycle ignored leaves the activity at Running, but
+/// the shell did go back to its prompt: the parsed-hook record voids the veto.
+#[test]
+fn a_precmd_the_lifecycle_ignored_still_voids_the_veto() {
+    for hook in [ParsedShellHook::Precmd, ParsedShellHook::CommandFinished] {
+        let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+        let mut handoff = raw_read_handoff(&probe, true);
+        handoff.note_shell_hook_parsed(hook);
+        assert_eq!(handoff.shell_activity(), ShellActivity::Running);
+        assert_eq!(
+            handoff.on_user_bytes(b"\r"),
+            UserBytesRoute::Held,
+            "{hook:?}"
+        );
+        assert_eq!(handoff.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+        assert_eq!(probe.asked(), vec!["sample"]);
+    }
+
+    // A new session forgets the record (and the markers) of the last one.
+    let probe = RawReadProbe::new(ShellPromptFact::LineEditorReading, Some(true));
+    let mut handoff = raw_read_handoff(&probe, true);
+    handoff.on_new_session();
+    assert_eq!(handoff.last_parsed_hook, None);
+}
+
+/// The veto only touches the `LineEditorReading` sample: a program in front still gets the Enter,
+/// and an unsampled session keeps the #1390 rules whatever the barrier says.
+#[test]
+fn the_barrier_changes_nothing_for_the_other_samples() {
+    let probe = RawReadProbe::new(ShellPromptFact::NotAtPrompt, Some(false));
+    let mut handoff = raw_read_handoff(&probe, true);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(probe.asked(), vec!["sample"]);
+
+    // Unknown + Running with the line outstanding: the window hold of #1390, barrier unasked.
+    let probe = RawReadProbe::new(ShellPromptFact::Unknown, Some(true));
+    let mut handoff = raw_read_handoff(&probe, true);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+    assert_ne!(handoff.young_hold_wait(Instant::now()), EVENT_HOLD_GIVE_UP);
+    assert_eq!(probe.asked(), vec!["sample"]);
+}

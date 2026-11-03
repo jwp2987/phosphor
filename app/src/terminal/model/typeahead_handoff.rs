@@ -25,7 +25,7 @@
 //!
 //! | decision | timing path (kept) | prompt-sequence path |
 //! |---|---|---|
-//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip | the line counts say the prompt is back, or the sampled shell state says its line editor is reading ([`ShellPromptFact`]); released by the request/report, give-up [`EVENT_HOLD_GIVE_UP`] |
+//! | young Enter held for a prompt? | 600 ms window since the last activity, hold sized by 3x the p90 round trip | the line counts say the prompt is back, or the sampled shell state says its line editor is reading ([`ShellPromptFact`]) -- unless the hook account, provably current by the reader-side barrier, says a command runs (a raw `read -k`, #1392); released by the request/report, give-up [`EVENT_HOLD_GIVE_UP`] |
 //! | line begun at an unnoticed prompt ("young line")? | began within the window | same facts |
 //! | hand-back after Ctrl-C at the prompt | 250 ms settle | prompt cycle shells: the cycle's Precmd; zsh: the report of a request written behind the interrupt; one 2 s logged give-up |
 //! | Enters consumed by a program | 250 ms quiet period | the finished command was interactive (latch, read on the model thread), the sampled state at decision time; one 5 s logged give-up |
@@ -128,6 +128,19 @@ pub enum ShellActivity {
     Running,
 }
 
+/// The last shell hook the parser met (#1392), whatever the block lifecycle then did with it: a
+/// Precmd the lifecycle ignores (a repeated or colliding one) still means the shell went back to
+/// its prompt, so it must void a "command running" account that the ignored hook did not reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParsedShellHook {
+    /// A Precmd (with or without completion metadata).
+    Precmd,
+    /// A CommandFinished.
+    CommandFinished,
+    /// A Preexec.
+    Preexec,
+}
+
 /// Asks the platform whether the shell provably cannot be at its prompt: a plain program such as
 /// `cat` owns the foreground, or a program is reading a password (canonical tty, echo off), in
 /// the top-level shell or a Phosphorized subshell. Unix only; where nothing is installed, or the
@@ -136,6 +149,10 @@ pub enum ShellActivity {
 pub struct ForegroundProbe {
     plain_program: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     prompt_fact: Option<Arc<dyn Fn() -> ShellPromptFact + Send + Sync>>,
+    /// The reader-side barrier (#1392): whether everything the shell wrote before the call has
+    /// been read from the pty and applied to the hook account (see
+    /// [`super::pty_stream_barrier::PtyStreamBarrier`]). Asked only AFTER [`Self::prompt_fact`].
+    stream_drained: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl ForegroundProbe {
@@ -143,6 +160,7 @@ impl ForegroundProbe {
         Self {
             plain_program: Some(probe),
             prompt_fact: None,
+            stream_drained: None,
         }
     }
 
@@ -155,8 +173,21 @@ impl ForegroundProbe {
         self
     }
 
+    /// Adds the reader-side barrier (#1392); see [`Self::stream_drained`].
+    pub fn with_stream_drained(mut self, probe: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.stream_drained = Some(probe);
+        self
+    }
+
     fn foreground_is_plain_program(&self) -> bool {
         self.plain_program.as_ref().is_some_and(|probe| probe())
+    }
+
+    /// Whether the pty stream is provably applied up to now: nothing the shell wrote before this
+    /// call is unread or unparsed. `false` when no barrier is installed (ConPTY, ssh-less remote
+    /// sessions, tests) or it cannot tell.
+    fn stream_drained(&self) -> bool {
+        self.stream_drained.as_ref().is_some_and(|probe| probe())
     }
 
     /// The sampled [`ShellPromptFact`]; without the richer probe, the plain-program answer alone.
@@ -174,7 +205,10 @@ impl ForegroundProbe {
 impl std::fmt::Debug for ForegroundProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
-            if self.plain_program.is_some() || self.prompt_fact.is_some() {
+            if self.plain_program.is_some()
+                || self.prompt_fact.is_some()
+                || self.stream_drained.is_some()
+            {
                 "ForegroundProbe(installed)"
             } else {
                 "ForegroundProbe(none)"
@@ -612,6 +646,8 @@ pub struct TypeaheadHandoff {
     /// events (not the logged give-ups, which stay as the net) account for the shell's line
     /// editor.
     line_editor_markers_live: bool,
+    /// The last shell hook parsed this session, applied or not (see [`ParsedShellHook`]).
+    last_parsed_hook: Option<ParsedShellHook>,
     /// Whether this session's input goes through ConPTY (Windows). There a held run of keys is
     /// written back one chunk per key event, never as one write with an embedded Enter, and no
     /// request is written while the user is still typing a line (see [`CONPTY_MIDLINE_QUIET`]).
@@ -1288,6 +1324,12 @@ impl TypeaheadHandoff {
         self.line_editor_markers_live
     }
 
+    /// The parser met a shell hook (model thread, in stream order, BEFORE the block lifecycle
+    /// decides whether to apply it), see [`ParsedShellHook`].
+    pub fn note_shell_hook_parsed(&mut self, hook: ParsedShellHook) {
+        self.last_parsed_hook = Some(hook);
+    }
+
     /// The command that just finished was interactive (a program read the keys typed into it)
     /// (model thread, before the Precmd that follows it).
     pub fn note_interactive_command_finished(&mut self) {
@@ -1391,6 +1433,7 @@ impl TypeaheadHandoff {
         self.shell_activity = ShellActivity::Unknown;
         self.reading_seq = None;
         self.line_editor_markers_live = false;
+        self.last_parsed_hook = None;
     }
 
     /// Records one measured round trip through the shell and the pty pipeline, in the rolling
@@ -2326,6 +2369,15 @@ impl TypeaheadHandoff {
                 // A plain program in the foreground means the shell is waiting on it, not at a
                 // prompt: the Enter is for that program, not a line the app has yet to notice.
                 ShellPromptFact::NotAtPrompt => None,
+                // #1392: the raw tty is a command's read (`read -k`, `read -n1`), not the line
+                // editor: the hook account is provably current and says a command runs, so no
+                // prompt is coming for this Enter. It is written to the pty, where that read
+                // takes it -- what the hold's give-up would have done 2 s later.
+                ShellPromptFact::LineEditorReading
+                    if self.raw_tty_belongs_to_running_command(enters_written, precmds_seen) =>
+                {
+                    None
+                }
                 ShellPromptFact::LineEditorReading => Some(true),
                 // #1390: with no sample (ssh, ConPTY, unsampled macOS) and a shell that sends
                 // line-editor markers, the ordered stream says what the shell is doing. A
@@ -2347,6 +2399,30 @@ impl TypeaheadHandoff {
             };
         }
         (in_window() && !self.foreground_probe.foreground_is_plain_program()).then_some(false)
+    }
+
+    /// #1392: whether a raw tty sampled with the shell's group in front (the sample says
+    /// [`ShellPromptFact::LineEditorReading`]) belongs to a command the shell runs -- a builtin raw
+    /// read such as zsh `read -k` or bash `read -n1` -- and not to its line editor. Asked only
+    /// AFTER that sample was taken.
+    ///
+    /// The same pair (raw tty, a stream that says Running) is also the #933 race: the shell is
+    /// back at its line editor but its Precmd / marker are still in the pty buffer or unparsed.
+    /// The two are told apart by the reader-side barrier: a shell writes its prompt's Precmd
+    /// before its line editor makes the tty raw, so once the stream is drained up to a moment
+    /// after the sample, that Precmd would have been applied. Only then does "the last hook
+    /// parsed was a Preexec, and no marker since" prove that a command, not the editor, reads.
+    /// The line counts must agree: a line written is still unanswered (`precmds_seen <
+    /// enters_written`), so the Preexec is that line's. A Preexec with every line answered
+    /// (bash 3.2 runs its DEBUG-trap preexec for a `bind -x` key at the prompt) proves nothing.
+    /// Every condition is an ordered fact; none is a time.
+    fn raw_tty_belongs_to_running_command(&self, enters_written: u32, precmds_seen: u32) -> bool {
+        precmds_seen < enters_written
+            && self.stream_says_command_running()
+            // A Precmd the block lifecycle ignored did not reset `shell_activity`.
+            && self.last_parsed_hook == Some(ParsedShellHook::Preexec)
+            // Last: the barrier must be checked after the sample (the match scrutinee).
+            && self.foreground_probe.stream_drained()
     }
 
     /// Whether this session's shell sends line-editor markers and the last thing its ordered
