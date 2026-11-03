@@ -1784,6 +1784,9 @@ impl AppContext {
         self.dispatch_global_action(name, arg);
 
         self.flush_effects();
+        crate::input_order::log_ui_item_if_over_budget("action", slow_start.elapsed(), || {
+            format!("name={name:?}")
+        });
         SLOW_ACTION.finish(slow_start, || format!("action {name:?}"));
         any_action_handled
     }
@@ -1871,6 +1874,9 @@ impl AppContext {
         }
 
         self.flush_effects();
+        crate::input_order::log_ui_item_if_over_budget("action", slow_start.elapsed(), || {
+            format!("typed={}", action.type_name())
+        });
         SLOW_ACTION.finish(slow_start, || {
             format!("typed action {}", action.type_name())
         });
@@ -3443,7 +3449,9 @@ impl AppContext {
 
             {
                 let mut presenter = presenter.borrow_mut();
+                let render_start = Instant::now();
                 presenter.invalidate(invalidation, self);
+                let render_elapsed = render_start.elapsed();
 
                 // Skip rendering if a dimension is 0. This must happen after
                 // invalidation to ensure the proper views are still invalidated.
@@ -3472,12 +3480,28 @@ impl AppContext {
                 // In the future, we should separate out position computation from
                 // scene building, as we don't need to do the latter on each
                 // iteration of this loop.
+                let scene_start = Instant::now();
                 scene = presenter.build_scene_skip_layout_if(
                     size,
                     window.backing_scale_factor(),
                     window.max_texture_dimension_2d(),
                     self,
                     skip_layout,
+                );
+                let scene_elapsed = scene_start.elapsed();
+                // One frame pass against the owner's 4 ms UI budget, split into the view
+                // renders (element-tree build) and layout + paint (#1191, #1219, #1301).
+                crate::input_order::log_ui_item_if_over_budget(
+                    "frame",
+                    render_elapsed + scene_elapsed,
+                    || {
+                        format!(
+                            "iter={iter} layout={} render_ms={:.2} layout_paint_ms={:.2}",
+                            !skip_layout,
+                            render_elapsed.as_secs_f64() * 1000.0,
+                            scene_elapsed.as_secs_f64() * 1000.0
+                        )
+                    },
                 );
 
                 // Cache the last position cache after rendering.
@@ -4865,6 +4889,9 @@ impl AppContext {
         let slow_start = Instant::now();
         let event_kind = crate::event::EventDiscriminants::from(&event);
         let dispatch_result = presenter.borrow_mut().dispatch_event(event, self);
+        crate::input_order::log_ui_item_if_over_budget("event", slow_start.elapsed(), || {
+            format!("event={event_kind:?}")
+        });
         SLOW_EVENT.finish(slow_start, || format!("event {event_kind:?}"));
 
         // Iterate through all timers, and put a task onto the main thread for each

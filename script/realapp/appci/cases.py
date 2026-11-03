@@ -1076,6 +1076,7 @@ def c_big(ctx, r):
     ctx.be.type("cat > big.out", 12, enter=True)
     time.sleep(1.0)
     ctx.be.clip_set(data)
+    ui_off = ctx.log_size()
     ctx.be.paste()
 
     def stable():
@@ -1091,6 +1092,7 @@ def c_big(ctx, r):
     got = open(os.path.join(ctx.W, "big.out"), "rb").read() if os.path.exists(os.path.join(ctx.W, "big.out")) else b""
     r.metric("bytes_expected", len(data) + 1)
     r.metric("bytes_got", len(got))
+    ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
     r.check(got == (data + "\n").encode(), "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
     ctx.reset()
 
@@ -2559,6 +2561,36 @@ def keydown_audit(txt, dup_ms=2.0):
         ks.append((key, float(t)))
     dups = [(k2, t2, round(t2 - t1, 2)) for (k1, t1), (k2, t2) in zip(ks, ks[1:]) if k1 == k2 and 0 <= t2 - t1 < dup_ms]
     return dict(count=len(ks), dups=dups)
+
+
+_UI_ITEM_RE = re.compile(r"input_order hop=ui_item kind=(\w+) ms=(\d+(?:\.\d+)?)")
+
+
+def ui_item_audit(txt):
+    """#1191/#1219/#1301: the app's own `hop=ui_item kind=<frame|event|action> ms=<x>` lines (input_order::log_ui_item_if_over_budget, written for
+    every main-thread item at or over the owner's 4 ms UI budget) -> dict(over_4ms, over_16ms, max_ms, by_kind={kind: [count, max_ms]}). Builds
+    before the hop log nothing, which reads exactly like 'no item over budget': callers say so (ui_item_metrics)."""
+    by_kind, ms_all = {}, []
+    for m in _UI_ITEM_RE.finditer(txt):
+        kind, ms = m.group(1), float(m.group(2))
+        ms_all.append(ms)
+        k = by_kind.setdefault(kind, [0, 0.0])
+        k[0] += 1
+        k[1] = max(k[1], ms)
+    return dict(over_4ms=len(ms_all), over_16ms=sum(1 for v in ms_all if v >= 16.0), max_ms=max(ms_all) if ms_all else 0.0, by_kind=by_kind)
+
+
+def ui_item_metrics(ctx, r, off, label):
+    """Records the ui_item audit of the app log written since byte offset `off` as metric `<label>_ui_items`. Informational: llvmpipe/Xvfb frames
+    are raster bound and over 4 ms by themselves, so this is a metric for the before/after comparison, never a check."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.note("%s: no app log, ui_item audit not taken" % label)
+        return None
+    a = ui_item_audit(ctx.log_since(off))
+    r.metric("%s_ui_items" % label, a)
+    if not a["over_4ms"]:
+        r.note("%s: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)" % label)
+    return a
 
 
 _KD_SEQ_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(?:true|false) cmd=(true|false) t=\d+(?:\.\d+)? seq=(\d+)")

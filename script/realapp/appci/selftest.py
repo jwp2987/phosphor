@@ -509,6 +509,15 @@ def key_event_audit_counts_typed_only_and_enter_hops():
 
 
 @check
+def ui_item_audit_counts_items_over_budget():
+    ln = lambda kind, ms: "input_order hop=ui_item kind=%s ms=%s iter=1 t=1\n" % (kind, ms)
+    a = cases.ui_item_audit("junk\n" + ln("frame", "4.25") + ln("frame", "17.00") + ln("action", "5.5"))
+    assert (a["over_4ms"], a["over_16ms"], a["max_ms"]) == (3, 1, 17.0), a
+    assert a["by_kind"] == {"frame": [2, 17.0], "action": [1, 5.5]}, a
+    assert cases.ui_item_audit("input_order hop=enter_begin deferred=false t=1\n") == dict(over_4ms=0, over_16ms=0, max_ms=0.0, by_kind={})
+
+
+@check
 def hanging_tcp_server_reports_connecting_then_closed():
     import socket
     srv = cases.HangingTcpServer()

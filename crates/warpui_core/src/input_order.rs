@@ -311,6 +311,31 @@ pub fn log_hop(what: &str, detail: impl FnOnce() -> String) {
     }
 }
 
+/// The owner's budget for one item of main-thread UI work (#1191, #1219, #1301): a frame, an
+/// event dispatch or an action dispatch over this is logged as a `hop=ui_item` line so a real-app
+/// run can show which item broke the budget (the `SlowLog` lines only start at 16 ms).
+pub const UI_ITEM_BUDGET: Duration = Duration::from_millis(4);
+
+/// `input_order hop=ui_item kind=<kind> ms=<elapsed> <detail> t=...`; `detail` is counts, times
+/// and type names only, never text.
+fn ui_item_line(kind: &str, elapsed: Duration, detail: &str) -> String {
+    hop_line(
+        "ui_item",
+        &format!(
+            "kind={kind} ms={:.2} {detail}",
+            elapsed.as_secs_f64() * 1000.0
+        ),
+    )
+}
+
+/// Logs one main-thread UI item that took at least [`UI_ITEM_BUDGET`] (#1191). Under the budget
+/// it is one `Duration` compare; the detail is formatted only for a line that is written.
+pub fn log_ui_item_if_over_budget(kind: &str, elapsed: Duration, detail: impl FnOnce() -> String) {
+    if elapsed >= UI_ITEM_BUDGET && enabled() {
+        log::debug!(target: TARGET, "{}", ui_item_line(kind, elapsed, &detail()));
+    }
+}
+
 /// Logs one stage of an Enter key press (#1482); see [`enter_line`]. Takes the detail lazily.
 pub fn log_enter(layer: &str, stage: &str, detail: impl FnOnce() -> String) {
     if enabled() {
@@ -437,6 +462,22 @@ mod tests {
             line.starts_with("input_order hop=preexec_received signal=preexec t="),
             "{line}"
         );
+    }
+
+    #[test]
+    fn ui_item_lines_name_the_kind_and_the_time() {
+        let line = ui_item_line(
+            "frame",
+            Duration::from_micros(4_250),
+            "render_ms=1.00 layout_paint_ms=3.25",
+        );
+        assert!(
+            line.starts_with(
+                "input_order hop=ui_item kind=frame ms=4.25 render_ms=1.00 layout_paint_ms=3.25 t="
+            ),
+            "{line}"
+        );
+        assert_eq!(UI_ITEM_BUDGET, Duration::from_millis(4));
     }
 
     #[test]
