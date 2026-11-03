@@ -12555,7 +12555,7 @@ impl TerminalView {
         // stopped at a foreign entry or yielded, ops in the mailbox) go out BEFORE the agent's
         // bytes. The agent bytes themselves are never held behind a gate (REFUSED, not held).
         self.flush_deferred_queue_ops(ctx);
-        self.on_pane_queue_needs_drain(ctx);
+        self.continue_stopped_drain(ctx);
         warpui::input_order::log_key_hop("kh_agent_write", || {
             format!(
                 "bytes={} queued={}",

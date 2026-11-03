@@ -822,6 +822,33 @@ impl TerminalView {
         guard.resume_after_yield(&mut host);
     }
 
+    /// #1580 (F2): the agent write's version of [`Self::on_pane_queue_needs_drain`]: continues a
+    /// drain that STOPPED at a foreign entry, but never a YIELDED one (`poke` returns at once
+    /// while the queue is yielded). Only the waker's handler resumes a yield, after the yielding
+    /// entry's effects (the submit's `ExecuteCommand`, which arms the inner connect window) were
+    /// applied; resuming in the agent write's own update would re-open #1421. The caller has
+    /// already flushed the deferred operations.
+    pub(super) fn continue_stopped_drain(&mut self, ctx: &mut ViewContext<Self>) {
+        let queue = self.paste_queue.queue.clone();
+        let pending = match queue.try_peek() {
+            Some(queue) => queue.pending_foreign(),
+            None => {
+                log::warn!("input queue: agent drain requested while the queue was busy; deferred");
+                queue.defer(Deferred::Poke);
+                return;
+            }
+        };
+        if !pending {
+            return;
+        }
+        let Some(mut guard) = queue.try_lock() else {
+            queue.defer(Deferred::Poke);
+            return;
+        };
+        let mut host = PtyQueueHost::new(self, ctx);
+        guard.poke(&mut host);
+    }
+
     /// Starts the gate of a paced CLI-agent submit (#1353 phase 3): until
     /// [`Self::end_cli_submit_gate`], pty keys the user types queue behind the submit instead of
     /// landing between its writes. One submit at a time; a second begin while one is in progress is
