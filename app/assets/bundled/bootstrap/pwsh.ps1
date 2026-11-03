@@ -525,19 +525,27 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # Set-PSReadLineKeyHandler is the PowerShell equivalent of zsh's bindkey.
         PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+2' -Function BackwardDeleteLine
 
-        # Phosphor (#1581): the app writes a single-line command to <temp>\.phosphor-cmd-<session
-        # id> and sends only this chord (ESC 3), instead of ~80 typed keys. The handler reads and
-        # deletes the file, replaces the line with its contents in ONE Insert and accepts it, so
-        # PSReadLine renders twice instead of once per key, and the shell still echoes, records
-        # history and reports the real command to Preexec. Anything that goes wrong inserts
-        # nothing and tells the app (CommandFileFailed), which types the command the old way.
+        # Phosphor (#1581): the app serves a single-line command on a per-session named pipe
+        # ($global:_warpCmdPipe, set once by the init script; the text never touches the disk) and
+        # sends only this chord (ESC 3), instead of ~80 typed keys. The handler reads the pipe
+        # and replaces the line with its contents in ONE Insert and accepts it, so PSReadLine
+        # renders twice instead of once per key, and the shell still echoes, records history and
+        # reports the real command to Preexec. Anything that goes wrong inserts nothing and tells
+        # the app (CommandFileFailed), which types the command the old way.
         PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+3' -ScriptBlock {
             $text = $null
+            $pipe = $null
             try {
-                $path = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ".phosphor-cmd-$($global:_warpSessionId)")
-                $text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
-                [System.IO.File]::Delete($path)
-            } catch { }
+                $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', [string]$global:_warpCmdPipe, [System.IO.Pipes.PipeDirection]::In)
+                $pipe.Connect(500)
+                $buffer = New-Object System.IO.MemoryStream
+                $pipe.CopyTo($buffer)
+                $text = (New-Object System.Text.UTF8Encoding($false)).GetString($buffer.ToArray())
+            } catch {
+                $text = $null
+            } finally {
+                if ($null -ne $pipe) { $pipe.Dispose() }
+            }
             if ([string]::IsNullOrEmpty($text)) {
                 Warp-Send-JsonMessage @{ hook = 'CommandFileFailed'; value = @{ session_id = $global:_warpSessionId } }
                 return

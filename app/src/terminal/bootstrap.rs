@@ -529,8 +529,21 @@ pub fn init_shell_script_for_shell(
         ShellType::Nu => load_script("bundled/bootstrap/nu_init_shell.nu", assets)
             .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string())),
     };
-    script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
+    let script = script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
+    if shell_type == ShellType::PowerShell {
+        // The session's command-pipe name (#1581): minted here so the shell and the controller
+        // agree on it; the shell gets it in this script and nowhere else.
+        script.replace(
+            CMD_PIPE_PLACEHOLDER,
+            &crate::terminal::writeable_pty::command_pipe::init_script_value(session_id.as_u64()),
+        )
+    } else {
+        script
+    }
 }
+
+/// Placeholder in the PowerShell init script for the session's command-pipe name (#1581).
+pub(crate) const CMD_PIPE_PLACEHOLDER: &str = "@@WARP_CMD_PIPE@@";
 
 /// Longest line (bytes, excluding the terminator) the subshell bootstrap writes to a pty.
 ///
@@ -1107,6 +1120,7 @@ pub fn raw_init_shell_script_for_shell(
     load_script(file, assets)
         .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
         .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
+        .replace(CMD_PIPE_PLACEHOLDER, "")
 }
 
 /// Returns the script in the file at `file_path` to be passed as a single-quoted argument in the
