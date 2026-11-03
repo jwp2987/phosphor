@@ -12,9 +12,11 @@
 //! [`PtyStreamBarrier::drained_with`] answers, for a decision made now, whether nothing written
 //! before the call can still be unapplied: no read was in flight across the check, the master has
 //! nothing unread (the platform's check, passed in), and the applied count equals the read count.
-//! A shell writes its prompt's Precmd before its line editor puts the tty in raw mode, so a raw tty
-//! sampled BEFORE a drained barrier means that Precmd has been applied: a hook account that still
-//! says "a command runs" is then current, not behind the shell (#933).
+//! bash and zsh write their prompt's Precmd before the line editor puts the tty in raw mode, so
+//! under them a raw tty sampled BEFORE a drained barrier means that Precmd has been applied: a hook
+//! account that still says "a command runs" is then current, not behind the shell (#933). fish
+//! does the opposite (raw first, then `fish_prompt`), so the terminal manager installs this check
+//! for bash and zsh only; every other shell keeps the hold.
 //!
 //! Lock-free: three atomics, one writer (the reader thread), any number of checkers. Every failure
 //! or doubt answers "not drained", which keeps today's behaviour (the hold for the prompt).

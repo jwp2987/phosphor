@@ -208,8 +208,10 @@ pub fn shell_provably_not_at_prompt(fd: RawFd, shell_pid: i32) -> bool {
 /// group owns the foreground and the tty is raw (non-canonical), which is the state readline, zle,
 /// fish and reedline put it in while they read a line. A shell running a command has restored the
 /// cooked tty and a program in the foreground is not the shell's group, so neither looks like
-/// this; and a line editor that reads has already had its prompt's Precmd written, so that Precmd
-/// is in the pty stream and will be parsed. Anything else, including a failed query and a local
+/// this. Under bash and zsh a line editor that reads has already had its prompt's Precmd written,
+/// so that Precmd is in the pty stream and will be parsed; fish sets raw BEFORE it fires
+/// `fish_prompt`, so there it may not be (#1392 installs its drained-stream veto for bash and zsh
+/// only). Anything else, including a failed query and a local
 /// tty in front of an `ssh`, is `Unknown`.
 pub fn shell_prompt_fact(
     fd: RawFd,
