@@ -4229,14 +4229,24 @@ fn powershell_setup_lines_parse_as_powershell() {
 /// the script they replaced, so editing the script without re-encoding fails here.
 #[test]
 fn test_zsh_env_script_hex_constants_decode_to_the_script() {
-    fn constant<'a>(zsh: &'a str, name: &str) -> &'a str {
-        let marker = format!("local {name}='");
-        let start = zsh
-            .find(&marker)
-            .unwrap_or_else(|| panic!("zsh_body.sh lost `{marker}`"))
-            + marker.len();
-        let len = zsh[start..].find('\'').expect("unterminated constant");
-        &zsh[start..start + len]
+    // A constant may be split over lines (`local name='..'` then `name+='..'`) to keep every typed
+    // line under macOS MAX_CANON; the pieces are joined.
+    fn constant(zsh: &str, name: &str) -> String {
+        fn piece<'a>(zsh: &'a str, marker: &str) -> Option<&'a str> {
+            let start = zsh.find(marker)? + marker.len();
+            let len = zsh[start..].find('\'').expect("unterminated constant");
+            Some(&zsh[start..start + len])
+        }
+        let mut hex = piece(zsh, &format!("local {name}='"))
+            .unwrap_or_else(|| panic!("zsh_body.sh lost `local {name}='`"))
+            .to_owned();
+        let more = format!("{name}+='");
+        for line in zsh.lines() {
+            if let Some(rest) = line.trim_start().strip_prefix(&more) {
+                hex.push_str(rest.split('\'').next().expect("unterminated constant"));
+            }
+        }
+        hex
     }
     fn decode(hex: &str) -> String {
         assert_eq!(hex.len() % 2, 0, "odd hex length");
@@ -4248,8 +4258,8 @@ fn test_zsh_env_script_hex_constants_decode_to_the_script() {
     }
 
     let zsh = bundled_script("bundled/bootstrap/zsh_body.sh");
-    let head = decode(constant(&zsh, "zsh_env_head"));
-    let tail = decode(constant(&zsh, "zsh_env_tail"));
+    let head = decode(&constant(&zsh, "zsh_env_head"));
+    let tail = decode(&constant(&zsh, "zsh_env_tail"));
     assert_eq!(head, "unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID=");
     assert!(tail.starts_with("_hostname=$(command -pv hostname"), "{tail}");
     assert!(

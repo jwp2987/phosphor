@@ -1337,7 +1337,13 @@ fn an_editor_without_a_diff_base_has_none_to_compute_against() {
     // The content-changed path skips copying the whole text when there is no base (#1340).
     App::test((), |mut app| async move {
         initialize_deps(&mut app);
-        let editor = mock_model(&mut app, "fn a() {}\n", ContentVersion::new());
+        // `reset_content` always sets the loaded text as the base, so an editor with nothing to
+        // diff against is one that was only constructed (the mock helpers all reset its content).
+        let editor = app.add_model(|ctx| {
+            let styles =
+                code_text_styles(Appearance::as_ref(ctx), FontSettings::as_ref(ctx), None);
+            CodeEditorModel::new(styles, None, false, None, ctx)
+        });
         editor.read(&app, |editor, ctx| {
             assert!(!editor.diff().as_ref(ctx).has_base());
         });

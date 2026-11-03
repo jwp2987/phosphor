@@ -46,7 +46,8 @@ fn end_the_line(view: &TerminalView, bytes: &[u8]) {
 #[test]
 fn ssh_warpify_waits_for_a_line_holding_delivered_keys() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
+        // The warpify write reads the bundled probe script, so the test app needs the real assets.
+        App::test(crate::ASSETS, move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
@@ -87,7 +88,8 @@ fn ssh_warpify_waits_for_a_line_holding_delivered_keys() {
 #[test]
 fn ssh_warpify_on_a_clean_line_writes_at_once() {
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
-        App::test((), move |mut app| async move {
+        // The warpify write reads the bundled probe script, so the test app needs the real assets.
+        App::test(crate::ASSETS, move |mut app| async move {
             let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
