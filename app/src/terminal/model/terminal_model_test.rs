@@ -3804,3 +3804,25 @@ fn selection_bits_are_published_where_the_selection_changes() {
     terminal.apply_inbox();
     assert_eq!(bits(&copy), (false, false));
 }
+
+/// #1599: RIS resets DECCKM and the kitty flags, and the published key-modes word is the reset one.
+#[test]
+fn full_reset_clears_app_cursor_and_kitty_flags_and_publishes_them_1599() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _kitty = FeatureFlag::KittyKeyboardProtocol.override_enabled(true);
+    terminal.set_mode(ansi::Mode::CursorKeys);
+    terminal.push_keyboard_enhancement_flags(KeyboardModes::DISAMBIGUATE_ESC_CODES);
+    assert!(terminal.is_term_mode_set(TermMode::APP_CURSOR));
+    assert!(terminal.is_term_mode_set(TermMode::KEYBOARD_DISAMBIGUATE_ESCAPE));
+
+    terminal.reset_state();
+
+    assert!(!terminal.is_term_mode_set(TermMode::APP_CURSOR));
+    assert!(!terminal.is_term_mode_set(TermMode::KEYBOARD_PROTOCOL));
+    let eager = terminal
+        .key_model_cell()
+        .eager_modes()
+        .expect("published at the reset");
+    assert_eq!(eager, PublishedKeyModes::from_model(&terminal));
+    assert!(!eager.app_cursor);
+}

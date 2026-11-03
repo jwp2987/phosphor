@@ -1015,6 +1015,13 @@ impl ansi::Handler for GridHandler {
         self.ansi_handler_state.scroll_region = VisibleRow(0)..VisibleRow(self.visible_rows());
         self.ansi_handler_state.tabs = TabStops::new(self.columns());
 
+        // RIS returns every terminal mode to what a new grid starts with (xterm/alacritty): DECCKM,
+        // keypad, mouse, bracketed paste, focus reporting, ... and the kitty keyboard stack. The
+        // shell re-enables what it needs at its next prompt. Without this a program that died with
+        // these set keeps encoding arrows/Enter in its mode after `reset` (#1599).
+        self.ansi_handler_state.mode = TermMode::default();
+        self.reset_keyboard_mode_state();
+
         let blinking = self.ansi_handler_state.cursor_style.blinking;
         self.ansi_handler_state
             .event_proxy

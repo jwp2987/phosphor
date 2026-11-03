@@ -3764,3 +3764,31 @@ fn bounded_selection_from_parts_never_renders_snapshots() {
         BoundedSelection::TooLarge
     );
 }
+
+#[test]
+fn test_ris_resets_modes_and_keyboard_stack_to_a_new_grids_defaults_1599() {
+    let mut grid = GridHandler::new_for_test(5, 10);
+    let defaults = grid.ansi_handler_state.mode.bits();
+
+    grid.set_mode(ansi::Mode::CursorKeys);
+    grid.set_mode(ansi::Mode::BracketedPaste);
+    grid.set_keypad_application_mode();
+    grid.push_keyboard_mode(
+        KeyboardModes::DISAMBIGUATE_ESC_CODES | KeyboardModes::REPORT_EVENT_TYPES,
+    );
+    assert!(grid.is_mode_set(TermMode::APP_CURSOR));
+    assert!(grid.is_mode_set(TermMode::KEYBOARD_DISAMBIGUATE_ESCAPE));
+
+    grid.reset_state();
+
+    assert_eq!(grid.ansi_handler_state.mode.bits(), defaults);
+    assert!(!grid.is_mode_set(TermMode::APP_CURSOR));
+    assert!(!grid.is_mode_set(TermMode::APP_KEYPAD));
+    assert!(!grid.is_mode_set(TermMode::BRACKETED_PASTE));
+    assert!(!grid.is_mode_set(TermMode::KEYBOARD_PROTOCOL));
+    assert_eq!(
+        grid.ansi_handler_state.keyboard_mode,
+        KeyboardModes::NO_MODE
+    );
+    assert!(grid.ansi_handler_state.keyboard_mode_stack.is_empty());
+}
