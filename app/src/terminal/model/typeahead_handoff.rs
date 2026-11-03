@@ -1860,10 +1860,17 @@ impl TypeaheadHandoff {
         if let HandoffState::PtyOwned {
             precmds_seen,
             enters_written,
+            wrote_user_bytes,
             ..
         } = &mut self.state
         {
             *precmds_seen = precmds_seen.saturating_add(1);
+            // #1589 liveness: delivered bytes that never landed (the remote exited, an unmanaged
+            // remote sends no Precmd) are not in the outer shell's line once its prompt is back
+            // with nothing written or queued: the mark clears on this event.
+            if self.committed_delivery && !*wrote_user_bytes && *precmds_seen >= *enters_written {
+                self.committed_delivery = false;
+            }
             // #1353 phase 6 (PTY-3): the command that ended was reading the keys typed into it
             // (it became interactive), so the Enters written while it ran were consumed by it and
             // no prompt answers them. Answering them here is the event the 250 ms quiet period
@@ -1958,6 +1965,14 @@ impl TypeaheadHandoff {
             warpui::input_order::log_hop("commit_deferred_prompt_hold", String::new);
             return false;
         }
+        // #1589: bytes delivered to the shell as final may still be deferred behind the queue's
+        // gate (nothing counted yet); the line looks empty but is not. The pty keeps input until
+        // they are written (`on_command_written` / the user's Enter clear the mark) or a prompt
+        // proves the line empty (`on_precmd`).
+        if self.committed_delivery {
+            warpui::input_order::log_hop("commit_deferred_committed_delivery", String::new);
+            return false;
+        }
         match self.owner() {
             Owner::Pty {
                 wrote_user_bytes: false,
@@ -2023,6 +2038,14 @@ impl TypeaheadHandoff {
                     return ActiveDecision::Wait {
                         activity_generation: self.activity_generation,
                     };
+                }
+                if self.committed_delivery && !wrote_user_bytes {
+                    // #1589: the delivered bytes have not landed yet (deferred behind a gate), so
+                    // the line looks empty but is not. The pty keeps input until they are written.
+                    warpui::input_order::log_hop("handoff_request_skipped", || {
+                        "reason=committed_delivery_pending".to_owned()
+                    });
+                    return ActiveDecision::Drain;
                 }
                 if !wrote_user_bytes && !self.interrupt_barrier {
                     if no_line_queued {
