@@ -23855,6 +23855,10 @@ fn a_line_delivered_to_the_shell_as_final_stays_in_the_shell() {
                     let mut handoff = model.typeahead_handoff_mut();
                     // The delivered text (`4echo T9`, no Enter) is in the shell's line, counted.
                     handoff.on_command_written();
+                    // The command has run a while: the first byte of the line is not young
+                    // (#933), or `young_line` latches here and holds the Enter below whatever the
+                    // aging after the precmd does.
+                    handoff.age_last_activity_for_test();
                     handoff.on_user_bytes(b"4echo T9");
                     handoff.on_user_write_flushed();
                     // What `hand_held_ssh_typeahead_to_unbootstrapped_remote` records.

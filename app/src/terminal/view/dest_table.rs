@@ -1185,7 +1185,24 @@ impl TerminalView {
     ) -> bool {
         let pending = self.shadow_begin(Class::Seq, ctx);
         if pending.is_some() {
-            shadow::note_leaf(if legacy {
+            // The comparison closes before the key is written, so the leaf is what the write will
+            // do: a PowerShell setup or an open gate of the pane queue holds the key (the writer's
+            // own `Held` leaf, which first-wins would never see here). The queue clause mirrors
+            // `offer_to_paste_queue` and over-approximates two writer paths it cannot see: a
+            // `SubshellPrep::Bypass` key (an announced setup whose output awaits an answer) and a
+            // stale young hold settled at the offer, both of which reach the pty. Shadow-only: it
+            // can misreport those, never change routing (review of fix/r18d9-r2-shadow).
+            let held = legacy
+                && (self.holds_keys_for_powershell_subshell_setup()
+                    || (self
+                        .paste_queue
+                        .queue
+                        .try_peek()
+                        .is_some_and(|queue| queue.holds_keys())
+                        && !self.only_ssh_gates_open()));
+            shadow::note_leaf(if held {
+                DestClass::Held
+            } else if legacy {
                 DestClass::Pty
             } else {
                 DestClass::Dropped
