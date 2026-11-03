@@ -168,6 +168,15 @@ const BASH_BOOTSTRAP_AFTER_READ: [&str; 2] = [
 const BASH_COUNTED_READ_RUN: &[u8] =
     b"; stty sane; eval \"$WARP_BOOTSTRAP_VAR\"; unset WARP_BOOTSTRAP_VAR";
 
+/// Known residual (#1253): a ^C that reaches the tty while `head -c N` is still reading kills
+/// `head`, and the rest of the raw body is then read by the shell as ordinary input lines (the
+/// same exposure the here-document form has). It is not fixable from the command line: `head`
+/// has no way to be told to survive SIGINT without a `trap`, and a `trap '' INT` would also make
+/// the wait for a wedged remote uninterruptible, which is worse (the owner rule is that keys typed
+/// while ssh connects are held, so only an explicit abort key can reach this window). The body
+/// has no tty-special bytes and no line over 999 bytes, so a stray read is inert text, and
+/// `stty -echo` keeps it from being echoed.
+///
 /// #1226: [`bash_counted_read_bootstrap`] for either shell, also returning how many leading bytes
 /// of the result end with the counted-read command line (its CR): everything after that is the
 /// raw body and nothing else (#1549), which the shell does not see until `head`
