@@ -155,7 +155,17 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
             // continuation has not run yet. In one update the prompt was observed before the
             // nested window existed and nothing observed it afterwards.
             terminal.update(&mut app, |view, ctx| {
+                // The nested ssh starts running (its preexec), as in production: the inner
+                // shell's prompt is output of that running block, which is what opens the
+                // window's "a prompt is up" reading. Without a running block the text landed
+                // outside any command's output and the window never saw a prompt.
+                view.model
+                    .lock()
+                    .simulate_long_running_block("ssh other", "");
                 view.model.lock().process_bytes("inner$ ");
+                // The pty reader publishes the key facts after each parse (as the sibling
+                // `ssh_shell_prompt_of_an_unbootstrapped_inner_host_receives_the_held_keys`).
+                view.model.lock().publish_key_facts();
                 // The output wakeup the parse ends with: it observes the prompt AND judges the
                 // held line (`deliver_ssh_typeahead_if_ready("output")`), as in production. Only
                 // observing left the hand-over with no event to run on.
