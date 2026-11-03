@@ -50,6 +50,10 @@ class Result:
         self.noref.append(msg)
         self.notes.append("NO-REFERENCE: " + msg)
 
+    def unverifiable(self, msg):
+        """the evidence the case claims to rest on is missing (e.g. the app's key trace): status 'noref', never a pass"""
+        self.no_reference("UNVERIFIABLE: " + msg)
+
     def metric(self, k, v):
         self.metrics[k] = round(v, 3) if isinstance(v, float) else v
 
@@ -109,7 +113,9 @@ def lat_checks(r, rec, label):
                 r.note("WARN " + msg)
     if rec["verdict"] in ("inconclusive", "no-compare") or rec.get("budget_verdict") in ("inconclusive", "no-compare"):  # (#1514: includes too-few-samples and resolution-limited)
         why = "overhead %s +/- %s ms (SE) vs budget %g ms is within noise" % (rec.get("overhead_ms"), rec.get("overhead_se_ms"), rec["budget_ms"])
-        if rec.get("budget_verdict") == "no-compare":
+        if rec.get("implausible"):
+            why = "the reference measured implausibly slow (overhead %s ms)" % rec.get("overhead_ms")
+        elif rec.get("budget_verdict") == "no-compare":
             why = "pane shell %s != reference shell %s" % (rec.get("pane_shell"), rec.get("reference_shell"))
         elif rec.get("insufficient"):
             why = "insufficient evidence (%s)" % "; ".join(rec["insufficient"])
@@ -1163,27 +1169,58 @@ def stamps(ctx, fname):
 
 def ctrlc_flood(ctx, r, n, warm):
     """#1514: the owner budget (docs/testing.md) is Ctrl-C "under flood", the plain-sleep measurement above is the control. Same trap/stamp line, but the
-    interrupted command is `yes` writing to the terminal. Phosphor vs the reference terminal, key 'ctrl_c_flood'. Unix panes only."""
+    interrupted command is `yes` writing to the terminal. Phosphor vs the reference terminal, key 'ctrl_c_flood'. Unix panes only.
+    r18e0 follow-up: Phosphor and the reference are measured in A/B/A/B blocks (run_interleaved, like latency_enter); a reference measured AFTER Phosphor
+    confounded run order / drift with the overhead. When the reference cannot be kept open next to Phosphor the row is NOREF (Phosphor's own numbers
+    only, reason recorded), never a verdict against a sequentially measured reference."""
     ctx.reset()
-    fl, okf = ctrlc_samples(ctx, n + warm, "ccf.txt", flood=True)
-    fl = fl[warm:]
-    ctx.reset()
-    r.metric("ctrl_c_flood_ms", stats(fl))
-    rs, ref = [], ref_terminal(ctx)
-    if ref:
+    ref = ref_terminal(ctx)
+    fl, rs, okf, mode, fallback, blocks = [], [], False, "sequential", None, None
+    if ref and ref.switch and lat.interleave_enabled():
+        seq = {"n": 0}
+        oks = []
+
+        def sampler(side, cnt):
+            seq["n"] += 1       # a fresh sample file per block: ctrlc_samples indexes the trap stamps by position in the file it was given
+            out, ok = ctrlc_samples(ctx, cnt, "ccf_%s_%d.txt" % ("p" if side == "phosphor" else "r", seq["n"]), budget_s=max(120, cnt * 5), flood=True)
+            oks.append(ok)
+            return out
         try:
             time.sleep(2.5)
-            rs = ctrlc_samples(ctx, n + warm, "ccf_ref.txt", budget_s=max(120, (n + warm) * 5), flood=True)[0][warm:]
-            ctx.reset()
+            fl, rs, blocks = run_interleaved(ctx, ref, n, warm, sampler)
+            mode = "interleaved"
+        except RuntimeError as e:
+            fl, rs, blocks = [], [], None
+            fallback = "interleaving failed (%s)" % str(e)[:160]
         finally:
-            ref.close()
+            close_ref(ref)
         time.sleep(1.0)
+        okf = all(oks) and bool(oks)
+    else:
+        fallback = ("no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else "")) if not ref else \
+            "this backend cannot keep both windows, or interleaving is disabled (APPCI_LAT_INTERLEAVE=0)"
+        if ref:
+            ref.close()
+            time.sleep(1.0)
+    if mode != "interleaved":
+        # NOREF: Phosphor alone, so the delivery check still means something; the reason is in the row
+        ctx.reset()
+        fl, okf = ctrlc_samples(ctx, n + warm, "ccf.txt", flood=True)
+        fl = fl[warm:]
+        rs = []
+        ctx.reset()
+    record_interleave(r, mode, blocks, fallback)
+    r.metric("ctrl_c_flood_ms", stats(fl))
+    if rs:
         r.metric("reference_ctrl_c_flood_ms", stats(rs))
+        r.metric("reference", ref.name)
     if fl:
         rec = lat.evaluate("%s/ctrl_c_d/ctrl_c_flood" % ctx.label, fl, rs, float(os.environ.get("APPCI_CTRLC_MAX_MS", "20")), "overhead", plat(),
-                           remeasure=None, ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms, expected=n,
-                           pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
-                           notes=["Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; reference measured after Phosphor"])
+                           remeasure=None, ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n,
+                           pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None, mode=mode,
+                           notes=["Ctrl-C while `yes` floods the terminal; the plain-sleep ctrl_c measurement is the control; " +
+                                  ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
+                                   else "NOREF: the reference was not interleaved (%s), so no overhead is judged" % fallback)])
         r.metrics.setdefault("lat", {})["ctrl_c_flood"] = rec
         lat_checks(r, rec, "Ctrl-C under flood")
     r.check(okf and bool(fl), "Ctrl-C under flood: fewer than %d samples stopped `yes` and ran the trap" % (n + warm))
@@ -1566,6 +1603,12 @@ def c_ssh_fail(ctx, r):
         r.note("ssh gate at the first MUSTNOT key: %s; first gate release/exit after it: %s; ssh failed (connection closed) %.2f s after typing began; listener-side typing window %.2f s" % (
             ("t=+%.3fs %s" % (first[0] - t_type, first[1]) if first else "no kh_hold_entry logged (app key trace off or rotated)"),
             ("t=+%.3fs %s" % (rel[0][0] - t_type, rel[0][1]) if rel else "none logged"), t_failed - t_type, t_typed - t_type))
+        if not first:
+            alive_trace = bool(ctx.app_hop_lines(re.compile(r"input_order "), t_type - 0.5))
+            r.unverifiable("ssh_failing_not_local: no kh_hold_entry in the app log after the first MUSTNOT key (%s; log %s): the ssh gate was not observed, so \"the line did not run locally\" "
+                           "is not shown to be the app's hold; ssh started +%.2f s before the key, connection closed +%.2f s after typing began" % (
+                               "input_order trace is ON (other lines present) but the gate hop is absent" if alive_trace else "NO input_order lines at all: the key trace is OFF",
+                               ctx.log_path, t_type - t_ssh, t_failed - t_type))
         r.check(connecting, "HARNESS: the ssh connection was already closed when MUSTNOT was typed (not connecting): the case proves nothing; ssh gate: %s" % (first[1] if first else "n/a"))
         r.check(not ctx.lines("sf.txt"), "line typed behind a FAILING ssh ran locally: %r (ssh was connecting when typed: %s; ssh gate at first key: %s)" % (
             ctx.lines("sf.txt"), connecting, first[1] if first else "not logged"))
@@ -2668,6 +2711,7 @@ def c_lat_first_key_idle(ctx, r):
             rec = lat.evaluate("%s/latency_first_key_after_idle/%s" % (ctx.label, tag), ph[g], rs[g] if ref else [], budget, "overhead", plat(),
                                ref_name=ref.name if ref and rs[g] else None, floor=ctx.be.key_floor_ms, expected=n,
                                pane_shell=pane_shell_id(ctx), ref_shell=getattr(ctx, "ref_shell", None) if ref else None,
+                               mode="interleaved" if ref and rs[g] else "sequential", implausible_neg_ms=float(os.environ.get("APPCI_IMPLAUSIBLE_NEG_MS", "5")),
                                notes=["first key after %g s idle, kl3 post-to-first-changed-pixel at 240 Hz (%.2f ms quantum, not applied as a resolution veto: the SE of the median difference is); "
                                       "Phosphor and Terminal.app in blocks of %d, the first side alternating per gap" % (g, KL3_QUANTUM_MS, IDLE_BLOCK)])
             r.metrics.setdefault("lat", {})[tag] = rec
@@ -2739,7 +2783,7 @@ def c_editor_mem(ctx, r):
     pane and record RSS after the undo-close grace window. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
     7 MB Rust <= ~150 MB, memory released on close). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the
     palette / close key sequence is platform specific: APPCI_KEY_PALETTE (default ctrl+shift+p; mac cmd+p) and APPCI_KEY_CLOSE
-    (default ctrl+shift+w; mac cmd+w) override it. Needs the process RSS via ps (Linux, macOS)."""
+    (default ctrl+shift+w; empty on macOS, where Phosphor's close shortcut cmd-shift-W is refused by the frontmost-app guard) override it. Needs the process RSS via ps (Linux, macOS)."""
     try:
         rss_mb(ctx)
     except Exception as e:  # noqa: BLE001 - no ps / no pid on this platform
@@ -2781,7 +2825,7 @@ def c_editor_mem(ctx, r):
         opened_any = True
         r.check(delta <= limits[kind], "%s: opening a %d MB file cost %.0f MB of RSS (> %.0f MB target)" % (kind, size >> 20, delta, limits[kind]))
         if not close:
-            r.note("%s: no close key on this platform (APPCI_KEY_CLOSE empty): release on close not measured" % kind)
+            r.note("%s: release on close NOT MEASURED: no close key on this platform (APPCI_KEY_CLOSE empty; macOS: cmd-shift-W is refused by the guard). Only the open-cost half of this case is judged" % kind)
             ctx.reset()
             continue
         try:

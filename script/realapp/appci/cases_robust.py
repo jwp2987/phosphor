@@ -19,7 +19,31 @@ NEWTAB = os.environ.get("APPCI_KEY_NEWTAB", "ctrl+shift+t")
 NEWWIN = os.environ.get("APPCI_KEY_NEWWIN", "ctrl+shift+n")
 QUIT_KEY = os.environ.get("APPCI_KEY_QUIT", "ctrl+shift+q")
 CLOSE_PANE = os.environ.get("APPCI_KEY_CLOSE", "ctrl+shift+w")
+# Phosphor's own close shortcut on macOS is cmd-shift-W (app/src/util/bindings.rs: CloseCurrentSession = cmd_or_ctrl_shift("w"); it is also bound to
+# CloseWindow), and the backend refuses every Cmd+W chord on purpose (backend.MacBackend.NEVER_CMD, owner rule: Cmd-W/Cmd-Q hit the wrong app).
+# So there the key is empty and a case that NEEDS a keyboard close must SKIP with this reason; it must never call be.key("").
+NO_CLOSE_WHY = ("no keyboard close-pane/tab shortcut is usable on this platform (APPCI_KEY_CLOSE empty): Phosphor's close shortcut on macOS is "
+                "cmd-shift-W, which the frontmost-app guard refuses by policy")
 NOW = lambda ctx: "now" if ctx.be.name == "mac" else "date +%s.%N"     # BSD date has no %N; ~/bin/now is written by profile.py
+
+
+# Precise skip reasons (a coverage gap, not "not applicable"): what is missing on macOS/Windows for each family of Linux-only cases.
+SKIP_QUIT_WHY = ("%s needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; "
+                 "on macOS Cmd-Q is refused by the frontmost-app guard and MacBackend has no quit/relaunch (an osascript 'tell application to quit' path and a "
+                 "relaunch through the LaunchServices PID are not implemented); Windows has a separate flow")
+SKIP_EDITOR_WHY = ("the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux only); "
+                   "macOS (open -a / an Apple Event open-document handler) and Windows have no verified equivalent, and the editor key set differs "
+                   "(Cmd-S/Cmd-V on macOS, close = cmd-shift-W which the guard refuses)")
+
+
+def close_tab_best_effort(ctx, r):
+    """end-of-case cleanup of a throw-away shell tab: the close key where there is one, else Ctrl-D (EOF ends the tab's shell). Never raises
+    on an empty key; the note says which was used so a leftover tab is attributable."""
+    if CLOSE_PANE:
+        ctx.be.key(CLOSE_PANE)
+    else:
+        ctx.be.key("ctrl+d")
+        r.note("no close key on this platform: the throw-away tab was ended with Ctrl-D (unverified that the tab disappears)")
 
 
 def need_linux_app(ctx, why):
@@ -141,7 +165,7 @@ def descendants_cwd_under(prefix):
 def c_session_restore(ctx, r):
     """N tabs (cwd per tab, one command run in each), quit with the app's quit key, relaunch on the same profile: the N tabs come
     back in order with their cwds and NOTHING re-runs (effect file unchanged, rec.log has no command from the restore)."""
-    need_linux_app(ctx, "session_restore quits through the quit key; Cmd-Q is forbidden on macOS and the Windows flow is separate")
+    need_linux_app(ctx, SKIP_QUIT_WHY % "session_restore")
     n = int(os.environ.get("APPCI_SR_TABS", "5"))
     bound = float(os.environ.get("APPCI_QUIT_BOUND_S", "10"))
     try:
@@ -234,7 +258,7 @@ def c_quit_24(ctx, r):
     """#1410: 24 streaming tabs + a second window, quit through the quit key (confirm dialog included): the process exits within
     a bound (APPCI_QUIT_BOUND_S, 10 s after the last confirm key), the app log has no 'Failed to send Shutdown', and no shell or
     streaming loop of the profile outlives the app. Repeated APPCI_QUIT_REPEAT times (the original failure was 1 in 3)."""
-    need_linux_app(ctx, "quit_24_tabs quits through the quit key; Cmd-Q is forbidden on macOS and the Windows flow is separate")
+    need_linux_app(ctx, SKIP_QUIT_WHY % "quit_24_tabs")
     bound = float(os.environ.get("APPCI_QUIT_BOUND_S", "10"))
     ntabs = int(os.environ.get("APPCI_QUIT_TABS", "24"))
     reps = int(os.environ.get("APPCI_QUIT_REPEAT", "2"))
@@ -363,7 +387,7 @@ def c_flood_lat(ctx, r):
         r.check(max(gaps) <= lim, "typing stalled %.0f ms (> %.0f ms) at char %d while another tab flooded" % (max(gaps), lim, gaps.index(max(gaps))))
         r.note("no reference terminal in this case: gap p50 %.1f / p95 %.1f ms are recorded, not judged against one" % (statistics.median(gaps), cases.pct(gaps, 0.95)))
     ctx.be.key("ctrl+c")                                # tab B: leave ts_reader if it is still waiting
-    ctx.be.key(CLOSE_PANE)
+    close_tab_best_effort(ctx, r)
     time.sleep(0.8)
     ctx.until(lambda: os.path.exists(os.path.join(ctx.W, "fla_end.txt")), 300 if ctx.scale >= 1 else 60, step=0.5)
 
@@ -432,7 +456,7 @@ EDIT_ORIG = "alpha line one\nsecond line éü café\n\ttabbed third\nlast line w
 
 
 def editor_prepare(ctx, r, name):
-    need_linux_app(ctx, "the file open uses the D-Bus URL forward of the Linux build")
+    need_linux_app(ctx, SKIP_EDITOR_WHY)
     d = os.path.join(ctx.W, "ed")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, name)
@@ -614,6 +638,8 @@ def c_soak(ctx, r):
         raise cases.Skip("soak is full-tier only")
     if ctx.app is None or not hasattr(ctx.app, "pid"):
         raise cases.Skip("needs the real app (not the sim backend)")
+    if not CLOSE_PANE:
+        raise cases.Skip(NO_CLOSE_WHY)
     mins = float(os.environ.get("APPCI_SOAK_MIN", "60"))
     now = NOW(ctx)
     ctx.rm("soak.txt")

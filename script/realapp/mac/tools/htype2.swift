@@ -73,7 +73,8 @@ for op in ops {
   var p = op.components(separatedBy: ":")
   if p[0] == "t" && p.count > 4 { let tail = Array(p.suffix(2)); p = ["t", p[1..<(p.count-2)].joined(separator: ":")] + tail }   // CI: ':' inside the text
   switch p[0] {
-  case "t": for ch in p[1] { sl(rnd(Double(p[2])!, Double(p[3])!)); logk(String(nk), String(ch)); nk += 1; ev(0, String(ch), true); ev(0, String(ch), false) }
+  case "t": for ch in p[1].unicodeScalars {   // CI: one key event per Unicode SCALAR, not per grapheme cluster: a ZWJ family emoji is ONE Character, and its ZWJ (U+200D) scalars must each be sent as themselves
+     sl(rnd(Double(p[2])!, Double(p[3])!)); logk(String(nk), String(ch)); nk += 1; ev(0, String(ch), true); ev(0, String(ch), false) }
   case "r":
     let chars = Array(p[1]); let gap = Double(p[2])!
     for (i, ch) in chars.enumerated() {

@@ -553,6 +553,30 @@ SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor op
   sample exceeds `APPCI_SOAK_RSS_MAX_MB` (4096); fewer than 3 windows = noted, no verdict; idle CPU over 30 s at the end must be <=
   max(`APPCI_SOAK_IDLE_CPU_PCT` 5, start + 3) %.
 
+#### r18e0 macOS validation follow-up: test-accuracy rules
+
+- **Close key (`APPCI_KEY_CLOSE`).** Phosphor's close-pane/tab shortcut on macOS is `cmd-shift-W` (`app/src/util/bindings.rs`, `CloseCurrentSession`; it is also bound to
+  CloseWindow), and the Mac backend refuses every Cmd+W chord by policy, so `mac/ci/app_test.sh` keeps the value EMPTY. A case must never pass the empty value to
+  `be.key()` (that raised `no key code for ''` in `soak` / `flood_typing_latency`): `soak` SKIPs with the reason, `flood_typing_latency` ends its throw-away tab with
+  Ctrl-D and says so (unverified that the tab goes), `editor_memory_7mb` notes "release on close NOT MEASURED" (the open-cost half is still judged).
+- **Reference measured in blocks, never after.** `ctrl_c_d` (Ctrl-C under flood), `latency_enter_ssh` (both windows hold an ssh session) and
+  `latency_first_key_after_idle` (block A/B per gap since #1160; now labelled `interleaved`) use the A/B/A/B block design of `latency_enter` / `latency_paint`
+  (`cases.run_interleaved`, #1514). Where the reference cannot be kept open next to Phosphor the row is NOREF with the reason (`metrics.interleave_fallback`),
+  never a verdict against a reference measured after Phosphor. Every latency record now carries `per_side` (n and the bootstrap SE of each side's median) next
+  to `overhead_se_ms`. `latency_first_key_after_idle` passes `implausible_neg_ms` (`APPCI_IMPLAUSIBLE_NEG_MS`, default 5): Phosphor more than that many ms FASTER than
+  Terminal.app beyond 2 SE (r18e0: -23.7 / -36.8 ms) is a mis-measured reference, reported NOREF (`implausible: true`), never PASS.
+- **A pass rests on the claimed evidence.** `Result.unverifiable()` (status `noref`) is used when the evidence is missing. `ssh_failing_not_local` with no `kh_hold_entry`
+  after the first MUSTNOT key is UNVERIFIABLE (the note says whether other `input_order` lines exist, i.e. whether the key trace is on). The trace itself is enabled by
+  `RUST_LOG=warp::input_order=debug` + `WARP_INPUT_ORDER_LOG_TEXT=1`, set by `app.py` (`MacApp.start` passes them through `open --env`, `WindowsApp.env`, Linux `App`).
+  `ssh_hanging_host_not_local` polls the ssh client by `-p <port>` and logs ssh first-seen / exit time next to the first and last MUSTNOT key: a line typed after the ssh
+  already exited (a refused host) is UNVERIFIABLE (running locally is correct), a line typed while it was alive is judged, and no `kh_hold_*` line after it is UNVERIFIABLE too.
+- **International text.** `intl_wide_*` messages print the UTF-8 hex beside the repr: `repr()` shows a real U+200D as the text `\u200d`, which in r18e0 looked like
+  a typed backslash sequence (and `intl_wide_paste` never touches the injector). `htype2` `t:` sends one key event per Unicode scalar (not per grapheme cluster), so the
+  ZWJ scalars of a family emoji are sent as themselves. The shell's line is compared as exact text and the file as exact bytes. Unverified on a Mac until the next run.
+- **macOS coverage gaps, precisely.** `editor_edit_save` / `editor_paste` need the Linux D-Bus URL forward (a second `phosphor <path>` process) and the Linux key set
+  (macOS: Cmd-S/Cmd-V, close = cmd-shift-W); `session_restore` / `quit_24_tabs` need a quit + relaunch on the same profile (Cmd-Q is refused; no osascript-quit /
+  LaunchServices relaunch path in `MacBackend`). They SKIP with those reasons (`cases_robust.SKIP_EDITOR_WHY`, `SKIP_QUIT_WHY`); they are gaps, not "not applicable".
+
 #### Latency budgets and regression checks (`latency_enter`, `latency_key_log`, `ctrl_c_d`; Windows `latency_enter`)
 
 The latency cases are pass/fail on the owner's budgets (3.6, `perf-budgets`), not CI-sized bounds. Every record is in

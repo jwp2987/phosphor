@@ -39,6 +39,16 @@ def median_diff_se(a, b, boot=400, seed=1):
     return statistics.pstdev(ds)
 
 
+def median_se(a, boot=400, seed=1):
+    """standard error of the median of ONE side's samples (bootstrap, fixed seed); None below 2 samples. Recorded per side next to n (#1514 follow-up)."""
+    import random
+    a = list(a)
+    if len(a) < 2:
+        return None
+    rng = random.Random(seed)
+    return statistics.pstdev([statistics.median(rng.choices(a, k=len(a))) for _ in range(boot)])
+
+
 def shell_base(s):
     """'/bin/zsh' -> 'zsh', 'powershell.exe' -> 'powershell', 'C:\\...\\bash.exe' -> 'bash'; None/'' -> None"""
     if not s:
@@ -240,14 +250,20 @@ def load_prev():
 
 
 def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None, pane_shell=None, ref_shell=None,
-             expected=None, resolution_ms=None, mode="sequential"):
+             expected=None, resolution_ms=None, mode="sequential", implausible_neg_ms=None):
     """phos/ref: sample lists (warm-up already dropped). remeasure: callable returning a fresh phos sample list, or None.
     expected: samples the case asked for (a PASS needs >= 90 % of them AND >= min_n, #1514); resolution_ms: the measurement's time quantum
     (a PASS is withheld when it exceeds budget/2). Both only ever turn a pass into 'inconclusive', never a fail into a pass.
+    implausible_neg_ms: when set and the overhead is below -implausible_neg_ms (and beyond 2 SE), the reference is judged to be mis-measured (Phosphor
+    cannot be that much FASTER than a bare terminal at the same job): verdict 'no-compare' (NOREF), never a PASS. Per-side n and the SE of each
+    side's median are always recorded (rec['per_side']).
     Returns the latency record (see header)."""
     ps = summarize(phos)
     rec = {"measurement_mode": mode, "phosphor": ps, "reference": summarize(ref) if ref else None, "reference_name": ref_name if ref else None,
            "budget_ms": budget_ms, "budget_kind": kind, "floor_ms": floor, "notes": list(notes or [])}
+    rec["per_side"] = {"phosphor": dict(n=ps["n"], se_median_ms=(lambda x: round(x, 2) if x is not None else None)(median_se(phos)))}
+    if ref:
+        rec["per_side"]["reference"] = dict(n=len(ref), se_median_ms=(lambda x: round(x, 2) if x is not None else None)(median_se(ref)))
     if ps["n"] < min_n():
         rec["notes"].append("n=%d < %d samples (smoke/scaled run): numbers are indicative only" % (ps["n"], min_n()))
     bv = "pass"
@@ -260,6 +276,11 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
             bv = overhead_verdict(rec["overhead_ms"], se, budget_ms, pane_shell, ref_shell)
             if bv == "inconclusive":
                 rec["notes"].append("overhead %.2f +/- %.2f ms (SE of the median difference) vs budget %g ms: neither within nor over budget at 2 SE; more samples needed" % (rec["overhead_ms"], se, budget_ms))
+            elif bv != "no-compare" and implausible_neg_ms and rec["overhead_ms"] < -implausible_neg_ms and (se is None or rec["overhead_ms"] + 2 * se < 0):
+                bv = "no-compare"
+                rec["implausible"] = True
+                rec["notes"].append("IMPLAUSIBLE reference: Phosphor is %.2f ms FASTER than the reference (> %g ms, beyond 2 SE of %s): an ordering / focus / idle-wake artifact of the reference window, "
+                                    "not a Phosphor figure; NOREF, no verdict (a PASS here would rest on a mis-measured reference)" % (-rec["overhead_ms"], implausible_neg_ms, se))
             elif bv == "no-compare":
                 rec["notes"].append("pane shell %s != reference shell %s: overhead %.2f ms is NOT a Phosphor figure; no verdict" % (pane_shell, ref_shell, rec["overhead_ms"]))
         else:
