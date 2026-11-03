@@ -1989,3 +1989,28 @@ fn parse_setup_line_marker_osc() {
     let (_, handler) = parse_bytes(b"\x1b]7771;x;3\x07\x1b]7771;1\x07\x1b]7771;1;2;3\x07");
     assert!(handler.setup_line_markers.is_empty());
 }
+
+/// #1582: `Warp-Preexec` builds its JSON by hand instead of `ConvertTo-Json`. The payload below is
+/// exactly what that code produces for the command `echo "a\b"<TAB>x <LF> y é 世` (backslash and
+/// double quote escaped, control characters as `\u00XX`, non-ASCII passed through), and must
+/// decode to the original command.
+#[test]
+fn parse_dcs_preexec_decodes_the_hand_built_powershell_json() {
+    let payload = "{\"hook\":\"Preexec\",\"value\":{\"session_id\":7,\"command\":\"echo \\\"a\\\\b\\\"\\u0009x \\u000a y \u{e9} \u{4e16}\",\"seq\":3}}";
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(payload));
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::Preexec { value }] => {
+            assert_eq!(value.command, "echo \"a\\b\"\tx \n y \u{e9} \u{4e16}");
+            assert_eq!(value.session_id, Some(7));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+
+    // The empty command and a command that is only escapes.
+    let empty = "{\"hook\":\"Preexec\",\"value\":{\"session_id\":7,\"command\":\"\",\"seq\":4}}";
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(empty));
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::Preexec { value }] if value.command.is_empty()
+    ));
+}

@@ -298,19 +298,32 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             }
             $title = ($titleSource -replace "(?s)\r?\n.*", [string][char]0x2026)
             if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
-            $HOST.UI.RawUI.WindowTitle = $title
         } catch { }
         # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
         $script:warpSeq = ([int64]$script:warpSeq) + 1
-        $preexecMsg = @{
-            hook = 'Preexec'
-            value = @{
-                session_id = $global:_warpSessionId
-                command = $command
-                seq = $script:warpSeq
+        # Phosphor (#1582): the JSON is built by hand (ConvertTo-Json is the most expensive
+        # statement on this path on Windows PowerShell 5.1). Escapes: backslash, double quote and
+        # every control character below 0x20 as \u00XX; everything else (non-ASCII included) is
+        # passed through and carried as UTF-8 by the hex encoding. The bytes on the wire keep the
+        # Send-JsonMessage shape: the same OSC, hex payload and $oscResetGrid trailer.
+        $escaped = ([string]$command).Replace('\', '\\').Replace('"', '\"')
+        if ($escaped -match '[\x00-\x1f]') {
+            $escapedBuilder = [System.Text.StringBuilder]::new($escaped.Length + 16)
+            foreach ($escapedChar in $escaped.ToCharArray()) {
+                if ([int]$escapedChar -lt 32) {
+                    [void]$escapedBuilder.Append('\u').Append(([int]$escapedChar).ToString('x4'))
+                } else {
+                    [void]$escapedBuilder.Append($escapedChar)
+                }
             }
+            $escaped = $escapedBuilder.ToString()
         }
-        Warp-Send-JsonMessage $preexecMsg $oscResetGrid
+        $preexecJson = '{"hook":"Preexec","value":{"session_id":' + [uint64]$global:_warpSessionId + ',"command":"' + $escaped + '","seq":' + $script:warpSeq + '}}'
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$(Warp-Encode-HexString $preexecJson)$oscEnd$oscResetGrid"
+        # The title is set after the OSC: the app does not need it before the command starts.
+        try {
+            $HOST.UI.RawUI.WindowTitle = $title
+        } catch { }
 
         # If this preexec is called for user command, kill ongoing generator command jobs and clean
         # up the bookkeeping temp files used to bookkeep.
@@ -988,8 +1001,8 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     }
 
     function Warp-Stop-ActiveThread {
-        $script:threadInner.values | Microsoft.PowerShell.Core\ForEach-Object {
-            $_.Stop()
+        if ($script:threadInner.Count -gt 0) {
+            foreach ($t in @($script:threadInner.Values)) { $t.Stop() }
         }
     }
 
