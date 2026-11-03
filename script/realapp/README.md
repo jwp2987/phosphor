@@ -43,10 +43,18 @@ tool and `kseq`/`rec` binaries (build `linux/torture/*.c` with `cc -O2 -lX11 -lX
 | `appci/` | Linux Wayland/X11, macOS | the CI case matrix: `run.py` (driver), `cases.py`, `backend.py` (wtype/grim/wl-clipboard, xdotool, cliclick, sim), `profile.py` (scratch HOME), `app.py`, `sshd.py` (local ssh server), `report.py` (results.json/junit), `ts_reader.py` |
 | `linux/wayland_session.sh` | Linux | starts headless sway (or Xvfb / XWayland mode), runs `appci`, tears down by exact PID: `--mode wayland|xwayland|x11 --dist DIR` |
 | `mac/ci/app_test.sh`, `windows/ci/app_test.ps1` | macOS, Windows | CI entry points for those platforms (GUI-session probe + owner-grant list; side-by-side install with backup/restore) |
-| `shared/ptyq/` | any | pty-queue experiments (what the tty accepts, MAX_CANON, chunking) |
-| `shared/nutest.py` | any + nu | nushell counted-bootstrap / history-prefix behaviour in a pty |
 | `shared/render.sh` | any | fills `@WINUSER@` |
 | `../ci/ci_seq.py` | glab | drives a `build/*` pipeline: waits for check-linux, plays the manual jobs in order, never re-plays |
+
+## Orphan audit (#1525)
+
+No CI job or other script runs the hand-run trees (`linux/{env,f,h,launch}.sh`, `linux/bin/*` except `fakesshd.py`,
+`linux/torture`, `mac/earlier`, `mac/r18bi`, `windows/{lib,hooks,agentkey,bashstall,pwshmarker,cases-r18ba,cases-r18bj}`,
+`config.example.sh`). They are kept on purpose: each is the documented reproduction harness for a filed issue or a measurement
+and is described step by step in `docs/testing.md` sections 3.2-3.4 (the only reference they need), and `script/ci/mac/fix-gitrunner-login.sh`
+is the documented runner-account fix (3.3). `ci_seq`'s `APP_NONAFFECTING` correctly ignores edits here. The two trees that had
+no reference anywhere (`shared/ptyq/`, `shared/nutest.py`: throw-away tty-queue and nushell probes) were deleted.
+If you add a hand-run tree, describe it in `docs/testing.md` or delete it when its issue closes.
 
 ## Rules baked into the scripts (keep them when editing)
 

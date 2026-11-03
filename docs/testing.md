@@ -336,7 +336,7 @@ By hand on the VM: `$py = "$env:LOCALAPPDATA\phosphor-ci\python312\python.exe"; 
 | focus guard | focus the newest Phosphor window (X11) | frontmost app NAME and PID == the started PID, refuses Cmd-Q/W/Tab/Space/H/M | `GetForegroundWindow` + `GetWindowThreadProcessId` == the started PID before every burst (and every key of a long one); refuses Win-key / Alt-F4 / Alt-Tab chords |
 | screenshots | `grim` / `import` / `ffmpeg` | `screencapture` | `PIL.ImageGrab` |
 | clipboard | `wl-copy` / `xsel` | `pbcopy` | user32 `CF_UNICODETEXT` |
-| injector record (#1482) | none | `htype2` per-call K lines | per call: events asked / accepted by `SendInput`, wall time of each posted Return; `<run>/inject.log` |
+| injector record (#1482, #1509) | Wayland/X11: one record per `wtype`/`xdotool` call (`backend.parse_injector`) | `htype2` per-call K lines | per call: events asked / accepted by `SendInput`, wall time of each posted Return; `<run>/inject.log` |
 | reference terminal | foot / xterm (own rc `.refrc` and own `refctl/` log dir, never the app pane's `ctl/rec.log`; keys are refused unless the reference window has the focus: sway `get_tree` focused pid/app_id on Wayland, X input focus on the PID's windows on X11, checked before every timed burst) | Terminal.app (`.command`) | the same shell in a plain console (conhost: `powershell.exe -NoLogo` or Git Bash), `APPCI_WIN_REF=wt` for Windows Terminal; guard accepts only that window |
 | key -> paint (`latency_paint`) | skip (no read-back) | `kl3` ScreenCaptureKit | skip (no read-back) |
 | app launch | `dbus-run-session` | `open -n` bundle, private HOME | the side-by-side test build started by the harness; data under the known folders `%LOCALAPPDATA%\phosphor`, `%APPDATA%\phosphor` (wiped per pass; backed up and restored by `app_test.ps1`) |
@@ -614,6 +614,17 @@ by exact PID in teardown. Clients bind `wl_keyboard` once, before any test key, 
 session). The session exports `APPCI_WL_INJECTOR=persistent|percall` (percall = holder failed to start, or `APPCI_WL_KBD_HOLD=0` forces the
 old behaviour for reproducing the artifact); `key_loss_control` reports it as `metrics.key_loss.injector_mode` and a note. With `persistent`,
 the "perline-unprimed" variant measures Phosphor with a stable keyboard and no priming; with `percall` it reproduces the artifact.
+
+**Injector accounting, all keys (#1509).** Every case on Linux (wayland/x11) and macOS now ends with an informational note `injector accounting: injector sent N;
+app saw M; lost-before-app K (Enter: sent a, app saw b)` and a `metrics.injector` record. `sent` is the backend's own record of what it posted
+(`<run>/inject.log`: Linux one line per logical `wtype`/`xdotool` call with the typed-character COUNT and every named key; the wtype priming Shift tap and
+modifier presses are not keys; a call that errored posted nothing); `saw` is the number of distinct physical keys in the app's `input_order keydown` /
+`typed_characters` lines (shared `seq`) in the case's wall window (`appci/injacct.py`). `lost-before-app` is therefore lost between the injector and
+the app, never inside Phosphor's queue; keys aimed at a reference terminal are excluded. It only counts, so it cannot see a reorder or a changed
+character (that is `cadence`/`fast_typing`'s exact-line check); on `key_loss_control`/`enter_loss_control`/`fast_typing`/`ssh_connect_typing`/`cadence` a non-zero
+loss is prefixed `WARN loss case` so it is read next to the case's own verdict. On macOS `ktap` now also logs every non-Return key-down (`K down ...`,
+key codes only) and `enter_route.py` prints `ALL KEYS: injector sent N; macOS delivered M to Phosphor, K to other processes; never in macOS L`.
+Windows keeps its stronger `SendInput` accepted-count record.
 
 **Where a Return went (Mac, `ktap` + `enter_route.py`, #1482).** For the whole Mac run, `script/realapp/mac/tools/ktap.swift` (compiled at job
 start like htype2) sits at the *annotated* session event tap, where macOS has already chosen the target process, and logs each Return

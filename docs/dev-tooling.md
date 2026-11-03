@@ -56,6 +56,14 @@ cargo bench -p warp --features dev-support --bench key_path_bench -- --baseline 
 | `handoff/*` | `young_submit_decision`, `KeyFactsCell::load`, `PaneHandoff::read` |
 | `ansi/mixed_1mb_in_4k_reads` | 1 MB mixed VT stream into a real `TerminalModel` |
 
+**Regression gate (#1533).** The manual `bench` CI job runs `script/bench_gate.py` on the criterion output and
+fails when a benchmark's median exceeds `max_ns` in `script/bench_thresholds.json` (or a listed bench is missing,
+e.g. renamed). The limits are the header budgets with generous headroom for the noisy shared box (order-of-magnitude
+catches, not baselines). To update: run the `bench` job or `cargo bench ...` locally, run
+`python3 script/bench_gate.py target/criterion --suggest` to see medians and a 10x suggestion, then edit
+`max_ns` in the same commit as the code change that justifies it (and add an entry when you add a bench).
+Never raise a limit just to go green. For a tighter local A/B use `-- --save-baseline before` / `-- --baseline before`.
+
 Budget notes are in each file's header. Owner budget: key-to-paint Phosphor overhead <= 2 ms,
 Enter <= 2 ms, UI work <= 4 ms per event; the pure parts here should each be microseconds. HTML
 reports land in `target/criterion/`.
@@ -139,7 +147,7 @@ the default pipeline. Start them from the pipeline page of a protected ref (`mai
 | `fuzz-smoke` | each fuzz target for `FUZZ_SECONDS` (180) from the committed corpus; `RUSTC_BOOTSTRAP=1` so the pinned stable toolchain is used | `fuzz/artifacts/` (crashes) |
 | `mutants` | cargo-mutants on `MUTANTS_FILES` of `MUTANTS_PACKAGE`, tests limited by `MUTANTS_TEST_FILTER`, optional `MUTANTS_SHARD=k/n` (default scope: pane_key, key_facts, input_queue gates+destination) | `mutants.out/` |
 | `mutants-warpui-core` | cargo-mutants on the warpui_core clipboard with warpui_core's own tests | `mutants.out/` |
-| `bench` | both criterion benches | `bench-results/criterion/` (HTML reports, estimates) |
+| `bench` | both criterion benches, then `script/bench_gate.py` (fails on a regression) | `bench-results/criterion/` (HTML reports, estimates) |
 
 `fuzz-smoke` and `mutants` fetch `cargo-fuzz` / `cargo-mutants` with `cargo binstall` into the
 runner user's own `CARGO_HOME` when missing (the `licenses` job does the same for `cargo-deny`);

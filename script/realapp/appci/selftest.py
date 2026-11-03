@@ -476,6 +476,44 @@ def no_function_local_import_shadows_a_module_import():
     assert not bad, bad
 
 
+@check
+def injector_accounting_parse_and_join():
+    import backend
+    import injacct
+    pi = backend.parse_injector
+    # wtype: the priming Shift_L tap is not a key; text is a count; -k names are keys
+    assert pi(["wtype", "-k", "Shift_L", "-s", "20", "-d", "15", "echo hi", "-k", "Return"]) == dict(chars=7, keys=["Return"])
+    assert pi(["wtype", "-M", "ctrl", "-k", "u", "-m", "ctrl"]) == dict(chars=0, keys=["u"])
+    assert pi(["wtype", "-P", "a", "-s", "10", "-p", "a", "-k", "Return"]) == dict(chars=0, keys=["a", "Return"])
+    # xdotool: type + chained key, plain key specs, roll (keydown/keyup/sleep chain)
+    assert pi(["xdotool", "type", "--delay", "15", "--", "abc", "key", "--delay", "0", "Return"]) == dict(chars=3, keys=["Return"])
+    assert pi(["xdotool", "key", "--delay", "15", "ctrl+shift+t", "Left", "Left"]) == dict(chars=0, keys=["t", "Left", "Left"])
+    assert pi(["xdotool", "keydown", "a", "sleep", "0.01", "keyup", "a", "key", "Return"]) == dict(chars=0, keys=["a", "Return"])
+    assert pi(["xdotool", "keyup", "shift"]) == dict(chars=0, keys=[])
+    # the recorder: one record per logical call, Enter counted, text never logged
+    be = backend.X11Backend()
+    be.record_injection(["xdotool", "type", "--", "secret", "key", "Return"], 100.0, 100.2)
+    be.record_injection(["xdotool", "key", "Return"], 101.0, 101.1, err="RuntimeError: key injector failed")
+    c = be.calls
+    assert (c[0]["chars"], c[0]["enters_posted"], c[0]["enters_want"]) == (6, 1, 1) and (c[1]["enters_posted"], c[1]["enters_want"]) == (0, 1), c
+    assert "secret" not in repr([x["special"] for x in c])
+    # the join: reference-terminal calls are not expected in the app; modifier keydowns are not keys; a keydown and its typed_characters are one key
+    be.record_injection(["xdotool", "type", "--", "ab"], 102.0, 102.1)
+    be.guard_override = dict(pids={1})
+    be.record_injection(["xdotool", "type", "--", "zzzzzzzz"], 103.0, 103.1)
+    d = tempfile.mkdtemp()
+    log = os.path.join(d, "phosphor.log")
+    def kd(k, t, seq):
+        return "input_order keydown key=%s ctrl=false alt=false shift=false cmd=false t=%.3f seq=%d\n" % (k, t * 1000, seq)
+    open(log, "w").write("".join([kd("a", 100.01, 1), kd("b", 100.02, 2), kd("Shift", 100.03, 3), kd("Enter", 100.15, 4), kd("a", 102.01, 5)])
+                         + "input_order typed_characters text=a t=%.3f seq=5\n" % 102010)
+    txt, j = injacct.account(be.calls, log, "fast_typing")
+    assert (j["sent"], j["seen"], j["lost"], j["enters_seen"]) == (9, 4, 5, 1), j      # sent = 6 + 1 + 2 (the errored call posted nothing: counted in errs, not in sent)
+    assert txt.startswith("WARN loss case: injector sent 9; app saw 4; lost-before-app 5"), txt
+    assert injacct.account(be.calls, None, "x")[1]["seen"] is None                 # no trace: reported, not compared
+    assert injacct.account([], log, "x") == (None, None)
+
+
 def main():
     failed = 0
     for f in CHECKS:

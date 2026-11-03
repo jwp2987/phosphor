@@ -7,7 +7,7 @@ by the event's own timestamp. Writes OUT/run/logs/enter_route.txt and prints a s
   - Returns targeted at Phosphor that Phosphor's NSApplication never saw  -> lost between macOS and the app's event queue
   - Returns targeted at another process (with its name)                  -> focus/routing: the key went elsewhere
   - Returns Phosphor saw that the tap never saw                          -> should be 0 (a sanity check on the join)
-Never fails the job: a missing input is reported, exit 0."""
+The last block counts ALL keys (#1509). Never fails the job: a missing input is reported, exit 0."""
 import glob, os, re, subprocess, sys
 
 out = sys.argv[1]
@@ -100,6 +100,30 @@ if inj and tap:
     say("injector posted %d Returns; never seen by macOS (no tap event within 200 ms): %d" % (len(inj), len(never)))
     for w in never[:30]:
         say("  NEVER-IN-MACOS posted wall=%.3f" % w)
+
+# ALL keys, not only Returns (#1509). ktap logs every key-down (K lines, plus the E down lines for Return); inject.log has, per htype2 call,
+# `chars=N` (typed characters, a count) and one NAME@wall token per named key (ENTER/KEY/BS/TAB/RIGHT...). sent = chars + named keys of
+# calls that did not error. Counts only, never characters. Informational (never fails the job): "sent N; macOS delivered to Phosphor M,
+# to other processes K; never in macOS L".
+try:
+    sent = 0
+    for l in open(os.path.join(run, "inject.log"), errors="replace"):
+        if " ERR=" in l:
+            continue
+        m = re.search(r" chars=(\d+) ", l)
+        sent += int(m.group(1)) if m else 0
+        sent += len(re.findall(r"\b[A-Z_]+@[\d.]+", l.split(" out=", 1)[-1]))
+    kdown = []   # target pids of every key-down at the tap
+    for l in open(os.path.join(out, "ktap.log"), errors="replace"):
+        m = re.match(r"[EK] down keycode=\d+ ts_ns=\d+ target_pid=(-?\d+)", l)
+        if m:
+            kdown.append(int(m.group(1)))
+    to_app = sum(1 for p in kdown if p in app_pids)
+    other = len(kdown) - to_app
+    say("ALL KEYS: injector sent %d; macOS delivered %d to Phosphor, %d to other processes; never in macOS (sent - delivered) %d%s" % (
+        sent, to_app, other, max(sent - len(kdown), 0), "" if kdown else " (ktap logged no key-downs: tap not running, or an old ktap binary that logs Returns only)"))
+except OSError:
+    say("all-keys accounting skipped: no inject.log or ktap.log")
 
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 open(dst, "w").write("\n".join(lines) + "\n")
