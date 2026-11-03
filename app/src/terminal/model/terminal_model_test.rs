@@ -3810,6 +3810,8 @@ fn selection_bits_are_published_where_the_selection_changes() {
 fn full_reset_clears_app_cursor_and_kitty_flags_and_publishes_them_1599() {
     let mut terminal = TerminalModel::mock(None, None);
     let _kitty = FeatureFlag::KittyKeyboardProtocol.override_enabled(true);
+    // A fresh mock still routes modes to the early-output handler; a running block owns them.
+    terminal.simulate_long_running_block("cat", "");
     terminal.set_mode(ansi::Mode::CursorKeys);
     terminal.push_keyboard_enhancement_flags(KeyboardModes::DISAMBIGUATE_ESC_CODES);
     assert!(terminal.is_term_mode_set(TermMode::APP_CURSOR));

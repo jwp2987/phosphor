@@ -159,7 +159,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
     # session.
     #
     # Only relevant for remote SSH shells. WARP_IS_SSH is exported to "1"
-    # by `warp_ssh_helper` on the remote side of a Warp-managed SSH session
+    # by the ssh wrapper on the remote side of a Warp-managed SSH session
     # and is unset everywhere else (local shells, subshells, docker
     # sandboxes, etc.), so the hook only fires where a remote-server-proxy
     # actually needs tearing down.
