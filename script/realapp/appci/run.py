@@ -438,7 +438,7 @@ def main():
                         proved = False       # a relaunched Windows pane needs its keys proven again (and its cwd set)
                     continue
                 if status != "fail" and win:       # r18e9: a PASSING case's app-log slice too (capped), so a validator can check a pass against the app's own hops
-                    save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=3_000_000)
+                    save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url, cap=1_000_000)
                 if status == "fail":
                     exit_fail = True
                     if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
