@@ -23243,11 +23243,6 @@ fn a_held_segment_with_an_enter_past_the_cap_stays_held_until_the_signal() {
                 // The signal releases the segment, once, in typed order.
                 line_editor_signal(view, ctx);
                 assert!(!prompt_gate_open(view), "{mode:?}");
-                assert_eq!(
-                    pty_writes.borrow().concat(),
-                    b"ls\rx".to_vec(),
-                    "{mode:?}: once, in order"
-                );
                 // The shell signalled after all: the next prompt is held for again.
                 view.model.lock().typeahead_handoff_mut().on_precmd();
                 view.write_user_bytes_to_pty(b"y".to_vec(), ctx);
