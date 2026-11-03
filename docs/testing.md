@@ -209,8 +209,8 @@ has < 80 GB free or the dir exceeds its cap (`ci-test` 120 GB, `ci-check-linux` 
 |---|---|---|---|
 | `guards` | test | automatic | oracle pin fetch + all guards of 2.3 + `macos/test_create_warpctrl_wrapper` + `test_warpctrl_early_dispatch` |
 | `check-linux` | test | automatic (~10 min warm) | `cargo check -p warp --features gui --lib --tests`, feature-unified multi-package check, `--features tui`, `-p warp_tui` |
-| `test-linux` | test | manual (auto on tags and on pushes to `main`, with the filter derived from the pushed diff by `ci_seq.py --derive-env`; skipped when nothing in its scope changed) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule) |
-| `test-warpui-core` | test | manual (auto on tags and on `main` pushes that touch warpui_core) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
+| `test-linux` | test | manual (auto on tags only, owner 2026-11-02 #1503: pushes to `main` do not auto-run suites; `AUTO_DERIVE` derives the filter from the pushed diff with `ci_seq.py --derive-env` when set) | `check_test_failures -p warp -p warp_tui --lib --features warp/gui`, plus `-E $TEST_FILTER` when that variable is set (fix tier; a filtered run skips the stale-known-failure rule, and FAILS when one of its `test(/.../)` terms selected no test that ran: `script/ci/check_filter_terms.py`, #1504) |
+| `test-warpui-core` | test | manual (auto on tags only, #1503) | `check_test_failures -p warpui_core --features tui` (honours `$TEST_FILTER`) |
 | `test-workspace-rest` | test | manual (auto on tags) | the 40 other packages in one invocation (honours `$TEST_FILTER`) |
 | `integration-linux` | test | manual, allow_failure | `crates/integration` under xvfb, 3 shards, `--profile ci`; sets `PHOSPHOR_REQUIRE_SSH_FIXTURE=1` and checks `sshd` / `ssh-keygen` first (the ssh scenarios use a local sshd, 2.2) |
 | `integration-linux-pwsh` | test | manual | the two pwsh scenarios with `PHOSPHOR_TEST_SHELL=pwsh` |
