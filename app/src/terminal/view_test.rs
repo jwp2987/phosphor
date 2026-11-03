@@ -18117,9 +18117,24 @@ fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
+        // The hand-over writes through the counted route too (`WriteHandoffUserBytesToPty`).
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             ssh_pane_with_held_typeahead_for_test(view, ctx);
+            // The bootstrap block is the foreground work of the pane (as in
+            // `ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane`): since #1494/#1566
+            // the held text is delivered after `stty sane` only when a remote shell is provably in
+            // front, else handed back.
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             view.on_bootstrap_failed_timer_complete((), ctx);
             assert!(view.ssh_typeahead_holding);
