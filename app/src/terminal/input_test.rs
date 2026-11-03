@@ -13372,6 +13372,94 @@ fn test_paste_then_held_enter_classifies_the_pasted_line() {
     });
 }
 
+/// #1590: a ready paste (the text already read, nothing queued) with an Enter applied in the
+/// same update, before the editor's `Edited` event could request detection: the Enter must still
+/// wait for the pasted line's verdict. A shell line runs in the shell (no agent request), prose is
+/// not run by the shell. Padded variants stay under the #968 limit (16 KiB), so they classify.
+#[test]
+fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
+    App::test((), |mut app| async move {
+        let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
+        initialize_app(&mut app);
+        AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
+            let _ = ai_settings
+                .ai_autodetection_enabled_internal
+                .set_value(true, ctx);
+        });
+        let session_info = SessionInfo::new_for_test();
+        let session_id = session_info.session_id;
+        let terminal =
+            add_window_with_bootstrapped_terminal(&mut app, None, Some(session_info)).await;
+        simulate_directory_for_completion(session_id, &terminal, &mut app, "~");
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        let executed = Rc::new(RefCell::new(Vec::<String>::new()));
+        let ai_queries = Rc::new(RefCell::new(0usize));
+        {
+            let executed = executed.clone();
+            let ai_queries = ai_queries.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| match event {
+                    super::Event::ExecuteCommand(event) => {
+                        executed.borrow_mut().push(event.command.clone())
+                    }
+                    super::Event::ExecuteAIQuery => *ai_queries.borrow_mut() += 1,
+                    _ => {}
+                });
+            });
+        }
+        let pad = |n: usize| format!(" #{}", "x".repeat(n));
+        let cases = [
+            ("echo PASTE-G1; echo PASTE-H1".to_owned(), true),
+            (format!("echo PASTE-G1; echo PASTE-H1{}", pad(500)), true),
+            (format!("echo PASTE-G1; echo PASTE-H1{}", pad(5000)), true),
+            ("please explain why the build failed".to_owned(), false),
+        ];
+        for (text, runs_in_shell) in cases {
+            executed.borrow_mut().clear();
+            *ai_queries.borrow_mut() = 0;
+            input.update(&mut app, |input, ctx| {
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                input.ai_input_model().update(ctx, |ai_input, ctx| {
+                    ai_input.set_input_config(
+                        InputConfig {
+                            input_type: InputType::AI,
+                            is_locked: false,
+                        },
+                        true, /* is_input_buffer_empty */
+                        ctx,
+                    );
+                });
+            });
+            warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+            // The paste lands and the Enter is applied in the same update.
+            let pasted = text.clone();
+            input.update(&mut app, |input, ctx| {
+                input.offer_ready_paste(
+                    ClipboardContent::plain_text(pasted),
+                    PasteSource::PlainTextPaste,
+                    ctx,
+                );
+                input.input_enter(ctx);
+            });
+            warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+            if runs_in_shell {
+                assert_eq!(
+                    executed.borrow().as_slice(),
+                    [text.clone()],
+                    "a pasted shell command Enter-ed at once runs in the shell ({} bytes)",
+                    text.len()
+                );
+                assert_eq!(*ai_queries.borrow(), 0);
+            } else {
+                assert!(
+                    executed.borrow().is_empty(),
+                    "pasted prose is not run by the shell"
+                );
+            }
+        }
+    });
+}
+
 #[cfg(not(target_family = "wasm"))]
 #[test]
 fn export_error_message_names_the_failure() {
