@@ -370,18 +370,27 @@ impl Input {
         let id = hold.next_queue_paste_id();
         self.paste_payloads.insert(id, (source, content));
         let queue = hold.queue();
+        let kind = EntryKind::Paste {
+            paste_id: id,
+            payload: Some(Vec::new()),
+        };
+        // #1425: never `lock()` here. A paste answered while a drain delivers (or while
+        // operations wait in the mailbox) is offered through the mailbox in its turn: a
+        // re-entrant lock would panic, and an unordered one would overtake earlier keys.
+        let Some(mut guard) = queue.try_lock_ordered() else {
+            queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            });
+            return;
+        };
         let mut host = InputQueueHost {
             input: self,
             ctx,
             held_behind: 0,
         };
-        queue.lock().offer(
-            &mut host,
-            EntryKind::Paste {
-                paste_id: id,
-                payload: Some(Vec::new()),
-            },
-        );
+        guard.offer(&mut host, kind);
     }
 
     /// Starts an editor-bound clipboard read on the queue.
