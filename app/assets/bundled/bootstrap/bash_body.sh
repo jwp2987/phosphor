@@ -1811,7 +1811,8 @@ esac
                     builtin read -r -d '' WARP_SSH_PROBE_CACHE < "$probe_file" 2>/dev/null || :
                 fi
             fi
-            now=$(command -p date +%s)
+            # #1172: $EPOCHSECONDS (bash >= 5.0) instead of a `date` fork.
+            now=${EPOCHSECONDS:-$(command -p date +%s)}
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
                 l_ts="${line##*|}"
