@@ -107,7 +107,9 @@ pub(super) fn is_alias_lookup_script(script: &str) -> bool {
 }
 
 /// The script that lists every configured alias at once (the signature's own alias generator).
-pub(super) const ALL_ALIASES_SCRIPT: &str = "git --no-optional-locks config --get-regexp '^alias.'";
+/// It is the text the PowerShell executor runs directly (no `powershell.exe`, #1342).
+pub(super) const ALL_ALIASES_SCRIPT: &str =
+    crate::context_chips::builtins::GIT_ALIAS_LISTING_COMMAND;
 
 /// The alias name of a single-name lookup `git config --get alias.<name>`, if `script` is exactly
 /// that and the name is plain (letters, digits, `-`, `_`). Dotted or odd names are subsection

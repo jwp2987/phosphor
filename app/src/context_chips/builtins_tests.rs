@@ -243,6 +243,15 @@ fn direct_powershell_invocation_covers_the_command_correction_branch_list() {
         super::GIT_BRANCHES_FOR_CORRECTIONS_COMMAND,
         "git --no-optional-locks branch --no-color"
     );
+    // #1342: the completer's one alias listing runs without PowerShell too.
+    assert_eq!(
+        super::direct_powershell_invocation(super::GIT_ALIAS_LISTING_COMMAND),
+        Some(DirectPlan::Single(DirectInvocation {
+            program: "git",
+            args: &["--no-optional-locks", "config", "--get-regexp", "^alias."],
+            env: &[("GIT_OPTIONAL_LOCKS", "0")],
+        }))
+    );
 }
 
 #[test]
