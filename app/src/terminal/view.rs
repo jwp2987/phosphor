@@ -31673,19 +31673,37 @@ impl TerminalView {
             .into();
 
         let is_live = Self::is_block_duration_live(model, index);
+        // #1142: a running command's counter ticks with paint-only repaints (a layout only when
+        // its length changes), instead of a full-window layout every second.
+        let live_start = is_live
+            .then(|| model.block_list().block_at(index)?.start_ts().copied())
+            .flatten()
+            .filter(|_| crate::ui_components::live_duration::paint_only_counter_enabled());
         if let Some(duration_string) = Self::block_duration_text(model, index) {
-            let duration = Text::new_inline(
-                duration_string,
-                appearance.monospace_font_family(),
-                appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
-            )
-            .with_style(Properties::default().weight(appearance.monospace_font_weight()))
-            .with_color(terminal_theme_prompt)
-            .finish();
+            let duration = if let Some(start) = live_start {
+                crate::ui_components::live_duration::LiveDurationText::new(
+                    start,
+                    appearance.monospace_font_family(),
+                    appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
+                    Properties::default().weight(appearance.monospace_font_weight()),
+                    terminal_theme_prompt,
+                )
+                .finish()
+            } else {
+                Text::new_inline(
+                    duration_string,
+                    appearance.monospace_font_family(),
+                    appearance.monospace_font_size() * WARP_PROMPT_HEIGHT_LINES,
+                )
+                .with_style(Properties::default().weight(appearance.monospace_font_weight()))
+                .with_color(terminal_theme_prompt)
+                .finish()
+            };
 
             // Wrap in LiveElement to trigger periodic repaints while the command is still
             // running, so the elapsed-duration counter updates live. See issue #426.
-            let duration: Box<dyn Element> = if is_live {
+            // (The paint-only counter above schedules its own repaints.)
+            let duration: Box<dyn Element> = if is_live && live_start.is_none() {
                 LiveElement::new(duration, LIVE_COMMAND_DURATION_REPAINT_INTERVAL).finish()
             } else {
                 duration
