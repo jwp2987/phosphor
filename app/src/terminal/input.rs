@@ -14925,6 +14925,17 @@ impl Input {
         self.arm_ssh_handover_enter_guard(restored);
     }
 
+    /// The stashed handed-back text, if any (#1596: the kept-text banner shows it).
+    pub(crate) fn kept_handed_back_text(&self) -> Option<&str> {
+        self.handed_back_text.as_deref()
+    }
+
+    /// Takes the stashed handed-back text (#1596: the banner's "Type into session" or "Discard"),
+    /// so the end-of-block restore finds nothing and nothing is delivered twice.
+    pub(crate) fn take_kept_handed_back_text(&mut self) -> Option<String> {
+        self.handed_back_text.take()
+    }
+
     #[cfg(test)]
     pub(crate) fn handed_back_text_for_test(&self) -> Option<&str> {
         self.handed_back_text.as_deref()

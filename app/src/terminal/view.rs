@@ -33,6 +33,7 @@ mod shell_terminated_banner;
 mod wakeup_redraw;
 use wakeup_redraw::{FooterFingerprint, RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
+pub(crate) mod ssh_kept_text_banner;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
 mod tab_metadata;
@@ -3256,6 +3257,10 @@ pub struct TerminalView {
     /// event that ends it, each logged where it happens. The tests assert the event path leaves
     /// this at zero.
     ssh_give_ups: u64,
+    /// #1596: the block the last ssh typeahead hold was opened for (its connect gate's block),
+    /// recorded when the hold opens. The kept-text banner is shown only over that block, so a late
+    /// hand-back can never attach it to another (local) command.
+    ssh_hold_block_id: Option<BlockId>,
 
     /// The [`EntityId`] for this terminal view.
     view_id: EntityId,
@@ -5107,6 +5112,7 @@ impl TerminalView {
             ssh_bootstrap_swallow_started: None,
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
+            ssh_hold_block_id: None,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
@@ -11388,6 +11394,13 @@ impl TerminalView {
     fn set_ssh_typeahead_holding(&mut self, holding: bool) {
         if self.ssh_typeahead_holding != holding {
             warpui::input_order::log_key_hop("kh_holding_set", || format!("holding={holding}"));
+            if holding {
+                // #1596: which block this hold is for (no model lock: the gate knows it).
+                self.ssh_hold_block_id = self
+                    .ssh_connect_gate
+                    .as_ref()
+                    .and_then(|gate| gate.block_id.clone());
+            }
         }
         self.ssh_typeahead_holding = holding;
         self.paste_queue.queue.set_ssh_hold_active(holding);
@@ -11644,7 +11657,24 @@ impl TerminalView {
         // of #1571 asked for no loss). Whatever happens below, an Enter typed in the same burst
         // must not run what the user meant for the remote machine on this one: the hand-back's
         // Enter guard covers the text wherever it lands.
-        if self.is_long_running() {
+        let long_running = self.is_long_running();
+        // #1596: where the handed-back text went and which end of the connect sent it there, so a
+        // run tells "kept until the ssh session ends" (no visible holding area) from "in the
+        // editor". Counts only, never the text.
+        warpui::input_order::log_hop("ssh_handed_back", || {
+            format!(
+                "chars={} dest={} remote_prompt_seen={} give_up={}",
+                text.chars().count(),
+                if long_running {
+                    "stashed_until_block_end"
+                } else {
+                    "editor"
+                },
+                self.ssh_remote_prompt_seen,
+                self.ssh_give_up_in_progress
+            )
+        });
+        if long_running {
             // A command owns the pty: the text waits on the input and comes back into the editor
             // when that block completes (`Input::restore_handed_back_text`), guard armed then.
             log::info!(
@@ -11653,11 +11683,30 @@ impl TerminalView {
             );
             self.input
                 .update(ctx, |input, _| input.stash_handed_back_text(text));
-            self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was kept, not run; it will be in the \
-                 input when the running command ends",
-                ctx,
-            );
+            // #1596: the kept text is shown over the running ssh block, with "Type into session"
+            // (the user's click writes it) and "Discard"; at the block's end it comes back into
+            // the input as before. Only over the block the hold was opened for.
+            let active_block = self.model.lock().active_block_id().clone();
+            if self.ssh_hold_block_id.as_ref() == Some(&active_block) {
+                self.show_ssh_kept_text_banner(ctx);
+                self.show_ssh_typing_toast(
+                    "Text typed while the SSH session connected was kept, not run; it is shown \
+                     above the input until the running command ends",
+                    ctx,
+                );
+            } else {
+                warpui::input_order::log_hop("ssh_kept_text", || {
+                    format!(
+                        "action=no_banner reason=not_the_ssh_block hold_block_known={}",
+                        self.ssh_hold_block_id.is_some()
+                    )
+                });
+                self.show_ssh_typing_toast(
+                    "Text typed while the SSH session connected was kept, not run; it will be in \
+                     the input when the running command ends",
+                    ctx,
+                );
+            }
             return;
         }
         let existing = self.input.as_ref(ctx).buffer_text(ctx);
@@ -11763,6 +11812,18 @@ impl TerminalView {
     /// #1579: a block started (its preexec): it is the user's when the submit that preceded it was
     /// the user's own. Consumed here, so a later block nothing submitted (typed into a program,
     /// run by a script) never inherits it.
+    /// Preexec of an ssh command: the block that actually runs ssh is the one preexec fired for,
+    /// which can differ from the submit-time block the gate (and a hold opened before preexec)
+    /// recorded. Both are corrected to it, so the #1596 kept-text banner goes over that block.
+    fn note_ssh_running_block(&mut self, running_block_id: BlockId) {
+        if self.ssh_typeahead_holding {
+            self.ssh_hold_block_id = Some(running_block_id.clone());
+        }
+        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+            gate.block_id = Some(running_block_id);
+        }
+    }
+
     fn note_block_started_for_ssh(&mut self) {
         self.running_block_user_submitted = self.ssh_submit_user_origin.take().unwrap_or(false);
     }
@@ -17502,6 +17563,12 @@ impl TerminalView {
 
                 // In-band commands finishing should never trigger a focus change as it could steal
                 // focus from the TerminalView.
+                // #1596: the kept-text banner goes with any block that ends (a user's or an
+                // agent's ssh); for a user block the input's own end-of-block hand-back restores
+                // the text.
+                if !matches!(block_completed_event.block_type, BlockType::InBandCommand) {
+                    self.ssh_kept_text_block_ended(ctx);
+                }
                 if !matches!(block_completed_event.block_type, BlockType::InBandCommand) {
                     let reset_focus = self.redetermine_terminal_focus(ctx);
                     // There are two different cases for redraws here:
@@ -17802,9 +17869,7 @@ impl TerminalView {
                                     .set_pending_ssh_host(warpify_command.to_string(), ssh_host);
                                 // The block that actually runs ssh is the one preexec fired for.
                                 let running_block_id = self.model.lock().active_block_id().clone();
-                                if let Some(gate) = self.ssh_connect_gate.as_mut() {
-                                    gate.block_id = Some(running_block_id);
-                                }
+                                self.note_ssh_running_block(running_block_id);
                                 self.model.lock().start_notify_on_end_of_ssh_login();
                                 // #1424 step 7: the event that shows ssh running arms the window
                                 // (and its give-up deadline) in `table` mode, not the next key;

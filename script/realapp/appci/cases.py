@@ -126,6 +126,143 @@ def lat_checks(r, rec, label):
         r.note("%s: %s" % (label, n_))
 
 
+_SSH_HB_RE = re.compile(r"hop=(?:young_hold_handed_back|prompt_hold_handed_back)\b.*?\bwhy=(\w+)")
+_SSH_HOLD_RE = re.compile(r"hop=kh_iq_hold\b.*queue=Q7_ssh_typeahead bytes=(\d+)")
+_SSH_HANDOVER_RE = re.compile(r"hop=kh_handover\b.*?source=(\w+).*?held_bytes=(\d+)")
+_SSH_FINISH_RE = re.compile(r"hop=kh_finish_begin\b.*?\bheld_bytes=(\d+)")
+_SSH_HANDED_BACK_RE = re.compile(r"hop=ssh_handed_back\b.*?chars=(\d+) dest=(\w+)")
+
+
+def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
+    """Pure: one ssh typeahead trial from its app-log window `lines` (raw, oldest first), the line typed during the connect (`expected`) and
+    the commands the remote shell logged in the trial (`remote_new`). `enters_before`: Enters typed before that line (`ssh fake` = 1; a nested
+    `ssh fake` twice = 2). Names the hop where the line went wrong, by issue:
+    #1614 the ssh Enter itself handed back (ssh never ran: the hold was not exercised); #1292 keys not held / line lost whole;
+    #1332 the held Enter refused (HistoryNotAppendable); #1345/#1394 one key lost at the hand-over (index vs held count);
+    #1400 a run of keys lost between the hold window and the hand-over; #1596 the held text kept, invisibly, until the ssh session ends."""
+    import difflib
+    f = dict(exact=False, typed="", app_saw_line=None, enter_handed_back=None, hold_seen=False, held_keys=0, held_bytes=0, deferred_busy=0,
+             handovers=[], finish=[], give_ups=0, refused=0, discards=0, table_drops=0, handed_back=[], remote=None, missing=[], extra=[])
+    enters, typed, core_pending, after_handover = 0, [], False, False
+    for l in lines:
+        # a physical Enter: the window's dispatch (`core_enter stage=handle_window_event`, every platform) and, when no binding took it, the
+        # keydown that follows (macOS/Linux); Windows' editor binding takes it, so only the first is logged. Counted once either way.
+        if "hop=core_enter stage=handle_window_event" in l:
+            enters += 1
+            core_pending = True
+            continue
+        if "input_order keydown key=enter" in l:
+            if core_pending:
+                core_pending = False
+            else:
+                enters += 1
+            continue
+        m = re.search(r'input_order typed_characters text="((?:[^"\\]|\\.)*)"', l)
+        if m:
+            if enters == enters_before:
+                typed.append(m.group(1).replace('\\"', '"').replace("\\\\", "\\"))
+            continue
+        m = _SSH_HB_RE.search(l)
+        if m and f["enter_handed_back"] is None:
+            f["enter_handed_back"] = m.group(1)
+            f["handed_back_enter_no"] = enters
+            f["handed_back_after_hold"] = f["hold_seen"]
+        if ("kh_holding_set" in l and "holding=true" in l) or "gate_open kind=ssh_connect" in l:
+            f["hold_seen"] = True
+        m = _SSH_HOLD_RE.search(l)
+        if m:
+            f["hold_seen"] = True
+            f["held_keys"] += 1
+            f["held_bytes"] += int(m.group(1))
+        if "hop=kh_ssh_hold_deferred" in l:
+            f["deferred_busy"] += 1
+        m = _SSH_HANDOVER_RE.search(l)
+        if m:
+            f["handovers"].append((m.group(1), int(m.group(2))))
+            after_handover = True
+        m = _SSH_FINISH_RE.search(l)
+        if m:
+            # `finish_ssh_typeahead` is also entered without `kh_handover` (another event ended the connect): its held count is the hand-over's
+            if not after_handover and "give_up=" not in l:
+                f["handovers"].append(("finish", int(m.group(1))))
+            after_handover = False
+        m = re.search(r"hop=kh_finish_(?:begin|end)\b.*?\b((?:delivered|give_up)=\w+)", l)
+        if m:
+            f["finish"].append(m.group(1))
+        if "hop=kh_ssh_give_up" in l:
+            f["give_ups"] += 1
+        if "can_execute_command was false" in l:
+            f["refused"] += 1
+        if "hop=kh_iq_discard" in l and "Q7_ssh_typeahead" in l:
+            f["discards"] += 1
+        if "hop=kh_table_drop" in l:
+            f["table_drops"] += 1
+        m = _SSH_HANDED_BACK_RE.search(l)
+        if m:
+            f["handed_back"].append((int(m.group(1)), m.group(2)))
+        elif "handed-back char(s) kept until the running block ends" in l:
+            f["handed_back"].append((None, "stashed_until_block_end"))
+        m = re.search(r"hop=ssh_kept_text action=(\w+)", l)
+        if m:
+            f.setdefault("kept_banner", []).append(m.group(1))
+    f["typed"] = "".join(typed)
+    if typed:
+        f["app_saw_line"] = expected in f["typed"]
+    got = [c for c in remote_new if c.strip()]
+    if expected in got:
+        f["exact"] = True
+        f["remote"] = expected
+    elif got:
+        best = max(got, key=lambda c: difflib.SequenceMatcher(None, expected, c, autojunk=False).ratio())
+        f["remote"] = best
+        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, expected, best, autojunk=False).get_opcodes():
+            if op in ("delete", "replace"):
+                f["missing"].append((i1, expected[i1:i2]))
+            if op in ("insert", "replace"):
+                f["extra"].append((j1, best[j1:j2]))
+    hold = "held %d key(s)/%d byte(s)%s, hand-over %s, finish %s" % (
+        f["held_keys"], f["held_bytes"], " (+%d deferred: queue busy)" % f["deferred_busy"] if f["deferred_busy"] else "",
+        ",".join("%s@%d" % h for h in f["handovers"]) or "none", ",".join(f["finish"]) or "none")
+    if f["app_saw_line"] is None:
+        saw = "no typed_characters trace"
+    elif f["app_saw_line"]:
+        saw = "the app saw every key of the line"
+    else:
+        saw = "the app's typed keys %r lack the line (injector/OS loss, or a key dropped before typed_characters)" % f["typed"][:60]
+    if f["exact"]:
+        why = "exact"
+    elif f["enter_handed_back"]:
+        if f.get("handed_back_enter_no", 0) <= enters_before and not f.get("handed_back_after_hold"):
+            why = ("#1614: the `ssh` Enter was HANDED BACK to the editor (why=%s) before any ssh hold, so ssh never ran and the ssh typeahead "
+                   "hold was NOT exercised" % f["enter_handed_back"])
+        else:
+            why = ("#1609/#1614: an Enter typed after the ssh hold engaged was HANDED BACK to the editor by the local young hold (why=%s): the "
+                   "text reached the remote, its Enter did not" % f["enter_handed_back"])
+    elif f["refused"]:
+        why = "#1332: the delivered Enter was REFUSED (can_execute_command false / HistoryNotAppendable)"
+    elif any(d == "stashed_until_block_end" for _, d in f["handed_back"]):
+        kb = f.get("kept_banner") or []
+        why = ("#1596: the held text was handed back and KEPT until the ssh block ends (%s)"
+               % ("kept-text banner: %s" % ",".join(kb) if kb else "NO kept-text banner shown"))
+    elif f["handed_back"]:
+        why = "held text handed back to the editor as text (%s), not run remotely" % f["handed_back"]
+    elif f["remote"] is None and not f["hold_seen"]:
+        why = "#1292: no ssh hold was seen and the remote shell logged nothing for the line"
+    elif f["remote"] is None:
+        why = "#1292: the line never reached the remote shell (discards=%d table_drops=%d give_ups=%d)" % (f["discards"], f["table_drops"], f["give_ups"])
+    elif len(f["missing"]) == 1 and len(f["missing"][0][1]) == 1 and not f["extra"]:
+        i, ch = f["missing"][0]
+        boundary = [hb for _, hb in f["handovers"] if hb in (i, i - 1)]
+        why = "#1345/#1394: ONE key lost: char %d (%r) of %d%s" % (
+            i + 1, ch, len(expected), "; it is the key right after the %d held at the hand-over (the in-flight key)" % boundary[0] if boundary else "")
+    elif f["missing"] and not f["extra"]:
+        why = "#1400: keys lost: %s of %d" % (", ".join("chars %d-%d %r" % (i + 1, i + len(s), s) for i, s in f["missing"]), len(expected))
+    else:
+        why = "mangled line at the remote: %r (missing %r, extra %r)" % (f["remote"], f["missing"], f["extra"])
+    f["text"] = "%s; %s; %s; remote got %r" % (why, hold, saw, f["remote"])
+    return f
+
+
 def enter_segments(lines, t0):
     """app log lines -> the split of Enter->command-start the APP can see, medians in ms (#1583 W3):
       enter_to_write_ms        `hop=enter_begin` -> the `pty_write` of the line (> 10 bytes; handoff writes excluded)
@@ -515,6 +652,37 @@ class Ctx:
     def ssh_app_hops(self, since, limit=10):
         """the app's own ssh hold / hand-over lines since wall time `since` (Q7_ssh_typeahead hold+release, kh_hold_entry/exit, `ssh hold:` log lines, hand-over hops): the last `limit`"""
         return [l for _t, l in self.app_hop_lines(self.SSH_HOP_RE, since)][-limit:]
+
+    def app_log_window(self, t0, t1=None):
+        """the raw app-log lines (rotated chunks included, oldest first) between wall times t0 and t1 (None: now). A line without its own t= (a
+        WARN such as `can_execute_command was false`) takes the t= of the last line before it, so it lands in the right trial window."""
+        import glob
+        src = self.log_path
+        if not src:
+            return []
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        out, last = [], None
+        for f in parts:
+            try:
+                txt = open(f, errors="replace").read()
+            except OSError:
+                continue
+            for l in txt.splitlines():
+                m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+                if m:
+                    last = float(m.group(1)) / 1000.0
+                if last is not None and last >= t0 and (t1 is None or last <= t1):
+                    out.append(l)
+        return out
+
+    def ssh_trial_verdict(self, t0, expected, remote_before, enters_before=1, t1=None):
+        """#1292/#1332/#1345/#1394/#1400/#1596/#1614: what ONE ssh typeahead trial did, from the app's own log between t0 and t1 and the remote
+        shell's rec.log lines logged after index `remote_before`. -> ssh_trial_facts() dict; its "text" is the one-line verdict."""
+        try:
+            remote_new = [c for _, c in self.prof.commands(remote=True)[remote_before:] if ".appci_where" not in c]
+        except Exception:
+            remote_new = []
+        return ssh_trial_facts(self.app_log_window(t0, t1), expected, remote_new, enters_before)
 
     def ssh_client_probe(self):
         """r18d8: what the ssh CLIENT says for the same host alias, run now in the app's environment: exit status and the last stderr lines of `ssh -vv fake true`
@@ -1613,6 +1781,33 @@ def loss_report(lost, n, conf=0.95):
     return dict(lost=lost, n=n, rate=round(lost / n, 4) if n else None, upper_bound=round(ub, 4) if ub is not None else None, conf=conf, text=text)
 
 
+def ssh_trial_note(ctx, r, verdicts, label, t0, line, r0, enters_before=1):
+    """one ssh typeahead trial's verdict from the app log (ssh_trial_facts): every trial that was not exact is noted with the hop that went
+    wrong; diagnostics never break the case"""
+    try:
+        v = ctx.ssh_trial_verdict(t0, line, r0, enters_before)
+    except Exception as e:
+        r.note("%s: trial verdict failed: %r" % (label, e))
+        return None
+    verdicts.append(v)
+    if not v["exact"]:
+        r.note("%s: %s" % (label, v["text"]))
+    return v
+
+
+def ssh_trial_summary(r, verdicts):
+    """per-case tally of the trial verdicts (exact / the issue each failure names) + the compact per-trial facts as a metric"""
+    if not verdicts:
+        return
+    tally = {}
+    for v in verdicts:
+        k = "exact" if v["exact"] else v["text"].split(":", 1)[0] if v["text"].startswith("#") else "other"
+        tally[k] = tally.get(k, 0) + 1
+    r.note("ssh trial verdicts: " + ", ".join("%s=%d" % kv for kv in sorted(tally.items())))
+    r.metric("ssh_trial_verdicts", [{k: v[k] for k in ("exact", "held_keys", "held_bytes", "deferred_busy", "handovers", "finish", "refused",
+                                                      "handed_back", "enter_handed_back", "app_saw_line", "missing")} for v in verdicts])
+
+
 @case("ssh_connect_typing", order=30)
 def c_ssh(ctx, r):
     if not ctx.ssh:
@@ -1625,15 +1820,19 @@ def c_ssh(ctx, r):
         except FileNotFoundError:
             pass
     exp, miss, base, stop = [], 0, ctx.shell_count(), False
+    verdicts = []
     for gap, trials in plan:
         for i in range(trials):
             tok = ctx.tok(6)
             exp.append(tok)
+            line = "echo %s >> ~/rl.txt" % tok
+            t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
             ctx.be.type("ssh fake", 12, enter=True)
             time.sleep(gap)
-            ctx.be.type("echo %s >> ~/rl.txt" % tok, 15, enter=True)
+            ctx.be.type(line, 15, enter=True)
             if not ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20):
                 miss += 1
+            ssh_trial_note(ctx, r, verdicts, "ssh_connect_typing gap %.1f s trial %d" % (gap, i + 1), t0, line, r0)
             if not ctx.leave_remote(r, "ssh_connect_typing (gap %.1f s)" % gap, "rl.txt", tok, base):
                 stop = True
                 break
@@ -1644,6 +1843,7 @@ def c_ssh(ctx, r):
     lost = sum(1 for t in exp if t not in got)
     r.metric("loss", loss_report(lost, len(exp)))
     r.note("ssh_connect_typing loss: " + loss_report(lost, len(exp))["text"])
+    ssh_trial_summary(r, verdicts)
     r.check(got == exp, "remote shell received %d/%d typed-ahead commands exactly (missing %d)" % (sum(1 for t in exp if t in got), len(exp), miss))
     r.check(not ctx.local_lines("rl.txt"), "typed-ahead command ran LOCALLY: %r" % ctx.local_lines("rl.txt"))
     rem = [c for _, c in ctx.prof.commands(remote=True)]
@@ -1666,14 +1866,19 @@ def c_ssh_enter_immediate(ctx, r):
         pass
     ctx.rm("rh.txt")
     exp, base = [], ctx.shell_count()
-    for _ in range(trials):
+    verdicts = []
+    for n in range(trials):
         tok = ctx.tok(6)
         exp.append(tok)
+        line = "echo %s >> ~/rh.txt" % tok
+        t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
         ctx.be.type("ssh fake", 12, enter=True)
-        ctx.be.type("echo %s >> ~/rh.txt" % tok, 12, enter=True)
+        ctx.be.type(line, 12, enter=True)
         ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20)
+        ssh_trial_note(ctx, r, verdicts, "ssh_enter_then_immediate_command trial %d" % (n + 1), t0, line, r0)
         if not ctx.leave_remote(r, "ssh_enter_then_immediate_command", "rh.txt", tok, base):
             break
+    ssh_trial_summary(r, verdicts)
     got = ctx.lines("rh.txt", remote=True)
     r.check(got == exp, "remote shell received %d/%d immediately-typed commands exactly: %r" % (sum(1 for t in exp if t in got), len(exp), got))
     r.check(not ctx.local_lines("rh.txt"), "immediately-typed command ran LOCALLY: %r" % ctx.local_lines("rh.txt"))
@@ -1694,11 +1899,16 @@ def c_ssh_nested(ctx, r):
     ctx.rm("rn.txt")
     base = ctx.shell_count()
     tok = ctx.tok(6)
+    line = "echo %s >> ~/rn.txt" % tok
+    t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
     ctx.be.type("ssh fake", 12, enter=True)
     ctx.be.type("ssh fake", 12, enter=True)
-    ctx.be.type("echo %s >> ~/rn.txt" % tok, 12, enter=True)
+    ctx.be.type(line, 12, enter=True)
     ctx.until(lambda: tok in ctx.lines("rn.txt", remote=True), 30)
     time.sleep(1.0)
+    verdicts = []
+    ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead", t0, line, r0, enters_before=2)
+    ssh_trial_summary(r, verdicts)
     got = ctx.lines("rn.txt", remote=True)
     r.check(got == [tok], "the line typed behind a nested ssh ran exactly once remotely: %r" % got)
     r.check(not ctx.local_lines("rn.txt"), "the line typed behind a nested ssh ran LOCALLY: %r" % ctx.local_lines("rn.txt"))

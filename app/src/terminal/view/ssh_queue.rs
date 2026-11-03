@@ -142,8 +142,10 @@ impl TerminalView {
             if self.paste_queue.delivering {
                 return self.ssh_hold_requeue(input);
             }
-            log::warn!("ssh hold: input queue busy outside a delivery, a key was not held");
-            return SshTypeaheadPush::Ignored;
+            // Busy outside a delivery (an operation of the queue's host holds it): the key is
+            // held by the next operation, in typed order, as the editor's own offer does when the
+            // queue is busy. It used to be dropped here (a lost key at the hand-over, #1394).
+            return self.ssh_hold_defer_busy(input, ctx);
         }
         let len = input.byte_len();
         if self.ssh_held_bytes() + len > SSH_TYPEAHEAD_MAX_BYTES {
@@ -154,7 +156,11 @@ impl TerminalView {
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, len);
         let kind = EntryKind::Held { class, text };
-        let Some(mut guard) = queue.try_lock() else {
+        // `try_lock_ordered`: an offer recorded in the mailbox earlier (a key held while the queue
+        // was busy) must not be overtaken by this one, so with anything deferred this key is
+        // deferred behind it. Not flushed here: a deferred hand-over could run first and a gate it
+        // opens would trap the key (review of #1394).
+        let Some(mut guard) = queue.try_lock_ordered() else {
             // Held in order by the next operation (never dropped, never written as typed).
             queue.defer(Deferred::Offer {
                 kind,
@@ -165,6 +171,34 @@ impl TerminalView {
         };
         let mut host = PtyQueueHost::new(self, ctx);
         guard.offer(&mut host, kind);
+        SshTypeaheadPush::Held
+    }
+
+    /// [`Self::ssh_hold_push`] while the queue is held outside a delivery: the offer waits in the
+    /// queue's mailbox and is applied, in order, by the next operation. The open gate is the one
+    /// it joins; with none, its opening is recorded first (`ssh_hold_ensure_gate` defers it), so
+    /// the key never reaches a queue with no gate in front of it. The 64 KiB bound is not checked
+    /// here (the stats read nothing while the queue is held); the next key's push checks it.
+    fn ssh_hold_defer_busy(
+        &mut self,
+        input: HeldInput,
+        ctx: &mut ViewContext<Self>,
+    ) -> SshTypeaheadPush {
+        if self.ssh_iq.gate.is_none() {
+            self.ssh_hold_ensure_gate(ctx);
+        }
+        let queue = self.paste_queue.queue.clone();
+        let len = input.byte_len();
+        let (class, text) = input.into_parts();
+        trace::hold(trace::legacy::SSH, len);
+        warpui::input_order::log_key_hop("kh_ssh_hold_deferred", || {
+            format!("bytes={len} reason=queue_busy_outside_delivery")
+        });
+        queue.defer(Deferred::Offer {
+            kind: EntryKind::Held { class, text },
+            origin: Origin::Keyboard,
+            stamp: queue.stamp_now(),
+        });
         SshTypeaheadPush::Held
     }
 
@@ -189,7 +223,8 @@ impl TerminalView {
             class: HELD_SIGNAL,
             text,
         };
-        let Some(mut guard) = queue.try_lock() else {
+        // In typed order behind any offer still in the mailbox (as `ssh_hold_push`).
+        let Some(mut guard) = queue.try_lock_ordered() else {
             // Held in order by the next operation (never dropped, never written as typed).
             queue.defer(Deferred::Offer {
                 kind,
