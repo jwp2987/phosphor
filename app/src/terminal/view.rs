@@ -12242,16 +12242,31 @@ impl TerminalView {
         // Enter/Tab/Escape and keeps the key. The table decides on the fact (Fable F9).
         facts.settled_ai_focus = focus_snap == input_queue::FocusSnap::SettledAiTarget;
         let target = pane_key::key_target(class, &facts);
+        // #1552: in a focus gap (neither the editor nor the terminal focused) the log names what
+        // does have focus, so a run shows which view kept it after a long-running command: the
+        // input view itself (its editor not focused), a view inside the input (a chip menu, the
+        // footer), or another pane child. Logging only; nothing decides on it.
+        let gap_leaf = if facts.editor_focused || facts.terminal_focused {
+            "-"
+        } else if key_ctx.leaf() == Some(self.input.id()) {
+            "input_view"
+        } else if key_ctx.in_focus_chain(self.input.id()) {
+            "in_input"
+        } else {
+            "other"
+        };
         warpui::input_order::log_key_hop("kh_pane_key", || {
             format!(
                 "seq={} class={class:?} target={target:?} editor_focused={} terminal_focused={} \
-                 in_text_field={} ssh_hold={} shadow={}",
+                 in_text_field={} ssh_hold={} shadow={} focus={focus_snap:?} gap_leaf={gap_leaf} \
+                 chain_len={}",
                 key.seq,
                 facts.editor_focused,
                 facts.terminal_focused,
                 facts.in_text_field,
                 facts.ssh_hold_active,
-                pane_key::mode() == PaneKeyMode::Shadow
+                pane_key::mode() == PaneKeyMode::Shadow,
+                key_ctx.focus_chain.len()
             )
         });
         // Shadow mode: decide and log, leave delivery to the elements.
