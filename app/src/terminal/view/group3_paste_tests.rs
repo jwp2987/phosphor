@@ -71,41 +71,30 @@ fn editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold() {
                 submit_command(view, "ssh host", ctx);
                 release_test_gate(view, ctx);
                 let buffer = view.input.as_ref(ctx).buffer_text(ctx);
-                match mode {
-                    DestinationMode::Table => {
-                        assert_eq!(
-                            queued_texts(view),
-                            vec!["echo ".to_owned(), "X".to_owned(), " Y".to_owned()]
-                        );
-                        assert_eq!(buffer, "");
-                        assert!(view.ssh_typeahead_holding);
-                    }
-                    DestinationMode::Legacy | DestinationMode::Shadow => {
-                        // Same hold as Table at this instant: nothing is typed ahead of the line.
-                        assert_eq!(
-                            buffer, "",
-                            "nothing reached the local editor ahead of the line"
-                        );
-                        // Legacy keeps the paste as its own queue entry behind the held line (not
-                        // lost: `queued_texts` lists only text entries), still in typed order.
-                        assert_eq!(
-                            queued_texts_and_editor_pastes(view, ctx),
-                            vec!["echo ".to_owned(), "X".to_owned(), " Y".to_owned()]
-                        );
-                        // No remote shell comes up: the hold gives up and hands the text back
-                        // unexecuted. The kill switch keeps the editor insert, in typed order.
-                        view.ssh_connect_gate = None;
-                        view.note_ssh_gate_released(
-                            crate::terminal::input_queue::SshRelease::GiveUpCeiling,
-                        );
-                        view.deliver_ssh_typeahead_if_ready("test", ctx);
-                        assert_eq!(
-                            view.input.as_ref(ctx).buffer_text(ctx),
-                            "echo X Y",
-                            "the paste stays in order between the typed parts"
-                        );
-                    }
-                }
+                // Both modes hold the same way at this instant: nothing is typed ahead of the
+                // line, and the paste stays its own queue entry behind the held line (not lost:
+                // `queued_texts` lists only text entries), in typed order.
+                assert_eq!(
+                    buffer, "",
+                    "nothing reached the local editor ahead of the line"
+                );
+                assert_eq!(
+                    queued_texts_and_editor_pastes(view, ctx),
+                    vec!["echo ".to_owned(), "X".to_owned(), " Y".to_owned()]
+                );
+                assert!(view.ssh_typeahead_holding);
+                // No remote shell comes up: the hold gives up and hands the text back
+                // unexecuted, in typed order, with the paste between the typed parts.
+                view.ssh_connect_gate = None;
+                view.note_ssh_gate_released(
+                    crate::terminal::input_queue::SshRelease::GiveUpCeiling,
+                );
+                view.deliver_ssh_typeahead_if_ready("test", ctx);
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "echo X Y",
+                    "the paste stays in order between the typed parts"
+                );
             });
             for _ in 0..16 {
                 futures_lite::future::yield_now().await;

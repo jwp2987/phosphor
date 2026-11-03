@@ -219,16 +219,49 @@ fn check(intent: &Intent, facts: &RouteFacts, pin: Option<Destination>) -> Plan 
                 "oracle consultation: {plan:?} for {intent:?} / {facts:?}"
             );
         }
+        // #1601b: a CLI-agent submit is held by an open PowerShell setup (paced or not); a PACED
+        // one (its `CliSubmit` gate is open) by nothing else; an UNPACED one is offered to the
+        // queue as any key is (open gates but an ssh-only set, a subshell setup, queued entries).
         if intent.origin == Origin::CliSubmit
             && !is_signal(intent.class)
             && intent.class != Class::AgentWrite
         {
-            assert!(
-                !plan.outcome.is_hold()
-                    && plan.outcome != Outcome::Hint
-                    && !matches!(plan.outcome, Outcome::Swallow(_)),
-                "the CLI-agent submit was held: {plan:?} for {intent:?} / {facts:?}"
+            let paced = facts.gates.has(GateKind::CliSubmit);
+            let queue_idle = facts.gates.is_empty() && !facts.queued && !facts.mailbox_non_empty;
+            let ssh_only = facts.gates.all_within(&[GateKind::SshConnect]);
+            let setup_held = matches!(
+                facts.subshell,
+                SubshellPhase::SetupHeld | SubshellPhase::BootstrapWriting
             );
+            let not_held = !plan.outcome.is_hold()
+                && plan.outcome != Outcome::Hint
+                && !matches!(plan.outcome, Outcome::Swallow(_));
+            if facts.ps.holds_keys() {
+                assert_eq!(
+                    plan.outcome,
+                    Outcome::Hold(GateKind::PowershellSetup),
+                    "{plan:?} for {intent:?} / {facts:?}"
+                );
+            } else if paced {
+                assert!(
+                    not_held,
+                    "the paced CLI-agent submit was held: {plan:?} for {intent:?} / {facts:?}"
+                );
+            } else if (queue_idle || (ssh_only && !facts.queued && !facts.mailbox_non_empty))
+                && !setup_held
+            {
+                assert!(
+                    not_held,
+                    "the idle CLI-agent submit was held: {plan:?} for {intent:?} / {facts:?}"
+                );
+            } else if !facts.subshell_awaiting_answer
+                && ((!facts.gates.is_empty() && !ssh_only) || setup_held)
+            {
+                assert!(
+                    plan.outcome.is_hold(),
+                    "the unpaced CLI-agent submit passed a gate: {plan:?} for {intent:?} / {facts:?}"
+                );
+            }
         }
         if intent.origin == Origin::Editor
             && !is_signal(intent.class)

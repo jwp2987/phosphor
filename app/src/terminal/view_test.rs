@@ -16022,6 +16022,82 @@ fn powershell_setup_keys_are_delivered_once_in_order_at_the_prompt_after_bootstr
     })
 }
 
+/// #1601 (owner decision): a CLI-agent submit made during an announced PowerShell setup is held
+/// with the other keys -- nothing reaches the pty -- and is delivered exactly once, in typed order,
+/// at the prompt after `Bootstrapped` (the setup's closing event), never by a timer. Legacy and
+/// `table` mode agree (the table's O-cli-submit row used to be exempt from this hold).
+/// Not compiled/run when written (no builds in the fix pass).
+fn a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(mode: DestMode) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let delivered = collect_delivered_input(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            announce_powershell_setup(view);
+            // A key typed before the submit, the submit (text, then its Enter), a key after it.
+            assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+            view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+            view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+            assert!(view.write_user_bytes_to_pty(b"b".to_vec(), ctx));
+            assert_eq!(
+                powershell_held(view).concat(),
+                b"aTEXT\rb".to_vec(),
+                "{mode:?}: the submit is held in typed order with the keys around it"
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "{mode:?}: the submit reached the shell during the setup: {:?}",
+            String::from_utf8_lossy(&delivered.borrow())
+        );
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_terminal_event(
+                &ModelEvent::Handler(AnsiHandlerEvent::Bootstrapped {
+                    session_id: SessionId::from(1601),
+                    is_subshell: true,
+                }),
+                ctx,
+            );
+        });
+        assert!(
+            delivered.borrow().is_empty(),
+            "{mode:?}: nothing before the prompt that follows Bootstrapped"
+        );
+        for _ in 0..2 {
+            terminal.update(&mut app, |view, ctx| {
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            });
+        }
+        let (editor_text, hold, held) = terminal.read(&app, |view, ctx| {
+            (
+                view.input.as_ref(ctx).buffer_text(ctx),
+                view.powershell_setup_hold,
+                powershell_held(view),
+            )
+        });
+        let mut everything = delivered.borrow().clone();
+        everything.extend_from_slice(editor_text.as_bytes());
+        assert_eq!(
+            String::from_utf8_lossy(&everything),
+            "aTEXT\rb",
+            "{mode:?}: every byte exactly once, in the order submitted"
+        );
+        assert_eq!(hold, PowerShellSetupHold::Off, "{mode:?}: the hold is over");
+        assert!(held.is_empty(), "{mode:?}: nothing stays held");
+    })
+}
+
+#[test]
+fn legacy_mode_a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once() {
+    a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(DestMode::Legacy);
+}
+
+#[test]
+fn table_mode_a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once() {
+    a_cli_agent_submit_during_a_powershell_setup_is_held_and_delivered_once_in(DestMode::Table);
+}
+
 /// #1051: a Ctrl-C early in a PowerShell setup (Ctrl-C at ~0.5 s or ~2 s after the chip) is not
 /// written to the shell -- it stopped the bootstrap half-way and left the pane on "Starting
 /// shell..." with an editor that refused every command. It does what Ctrl-C does at a prompt:
@@ -26625,6 +26701,252 @@ fn table_mode_keys_typed_during_a_paced_cli_agent_submit_follow_the_submit_in_or
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(written, b"TEXT\rxy".to_vec());
     })
+}
+
+// ---- #1601b: the CLI-agent submit against the gates a key waits behind ---------------------------
+//
+// The table models the submit exactly as the legacy writer treats its bytes: a PACED submit (its own
+// `CliSubmit` gate is open) goes straight to the stage after the paste stage; an UNPACED one is
+// offered to the queue and waits behind the subshell setup, the Enter verdict, a paste being read
+// (any gate but an ssh-only set). Each combination runs in `legacy` and `table` mode (same bytes,
+// same order: the table only plans) and in `shadow` mode (zero untagged disagreements).
+
+#[derive(Clone, Copy, Debug)]
+enum SubmitGate {
+    EnterVerdict,
+    SubshellSetup,
+    PasteReading,
+}
+
+/// Opens `gate` and types one key (`k`), which the open gate holds. For the subshell setup the
+/// setup is announced and that first key is what opens the setup gate (`prepare_subshell_gates`).
+fn open_submit_gate(
+    view: &mut TerminalView,
+    gate: SubmitGate,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let generic = match gate {
+        SubmitGate::EnterVerdict => Some((input_queue::GateKind::EnterVerdict, 78)),
+        SubmitGate::PasteReading => Some((input_queue::GateKind::PasteReading, 77)),
+        SubmitGate::SubshellSetup => None,
+    };
+    match generic {
+        Some((kind, key)) => {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().open_gate(
+                &mut host,
+                input_queue::GateSpec::new(kind, key).with_cap(None),
+            );
+        }
+        None => {
+            let block_id = view.model.lock().block_list().active_block().id().clone();
+            view.subshell_bootstrap_announced = Some((block_id, Instant::now()));
+        }
+    }
+    assert!(view.write_user_bytes_to_pty(b"k".to_vec(), ctx));
+}
+
+/// The event that ends the gate `open_submit_gate` opened: what it held is delivered, in order.
+fn close_submit_gate(
+    view: &mut TerminalView,
+    gate: SubmitGate,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let generic = match gate {
+        SubmitGate::EnterVerdict => Some((input_queue::GateKind::EnterVerdict, 78)),
+        SubmitGate::PasteReading => Some((input_queue::GateKind::PasteReading, 77)),
+        SubmitGate::SubshellSetup => None,
+    };
+    match generic {
+        Some((kind, key)) => {
+            let queue = view.paste_queue.queue.clone();
+            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+            queue.lock().on_gate_event(&mut host, kind, key);
+        }
+        None => {
+            view.release_subshell_setup_held_bytes(ctx);
+            view.subshell_bootstrap_announced = None;
+        }
+    }
+}
+
+/// The pieces of a CLI-agent submit: the text, then the Enter; paced, they own a `CliSubmit` gate.
+fn write_cli_submit_pieces(
+    view: &mut TerminalView,
+    paced: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    if paced {
+        view.begin_cli_submit_gate(ctx);
+    }
+    view.write_cli_submit_bytes(b"TEXT".to_vec(), ctx);
+    view.write_cli_submit_bytes(b"\r".to_vec(), ctx);
+    if paced {
+        view.end_cli_submit_gate(ctx);
+    }
+}
+
+fn scenario_cli_submit_behind_a_gate(
+    view: &mut TerminalView,
+    gate: SubmitGate,
+    paced: bool,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    open_submit_gate(view, gate, ctx);
+    write_cli_submit_pieces(view, paced, ctx);
+    close_submit_gate(view, gate, ctx);
+}
+
+macro_rules! cli_submit_gate_scenario {
+    ($name:ident, $gate:expr, $paced:expr) => {
+        fn $name(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+            scenario_cli_submit_behind_a_gate(view, $gate, $paced, ctx);
+        }
+    };
+}
+
+cli_submit_gate_scenario!(
+    scenario_cli_unpaced_enter_verdict,
+    SubmitGate::EnterVerdict,
+    false
+);
+cli_submit_gate_scenario!(
+    scenario_cli_paced_enter_verdict,
+    SubmitGate::EnterVerdict,
+    true
+);
+cli_submit_gate_scenario!(
+    scenario_cli_unpaced_subshell_setup,
+    SubmitGate::SubshellSetup,
+    false
+);
+cli_submit_gate_scenario!(
+    scenario_cli_paced_subshell_setup,
+    SubmitGate::SubshellSetup,
+    true
+);
+cli_submit_gate_scenario!(
+    scenario_cli_unpaced_paste_reading,
+    SubmitGate::PasteReading,
+    false
+);
+cli_submit_gate_scenario!(
+    scenario_cli_paced_paste_reading,
+    SubmitGate::PasteReading,
+    true
+);
+
+const CLI_SUBMIT_GATE_SCENARIOS: [(&str, Scenario); 6] = [
+    ("unpaced, Enter verdict", scenario_cli_unpaced_enter_verdict),
+    ("paced, Enter verdict", scenario_cli_paced_enter_verdict),
+    (
+        "unpaced, subshell setup",
+        scenario_cli_unpaced_subshell_setup,
+    ),
+    ("paced, subshell setup", scenario_cli_paced_subshell_setup),
+    ("unpaced, paste reading", scenario_cli_unpaced_paste_reading),
+    ("paced, paste reading", scenario_cli_paced_paste_reading),
+];
+
+/// The bytes that reached the pty while a gate was open and a CLI-agent submit was written, and the
+/// bytes that followed when the gate's event ended it, in `mode`.
+fn cli_submit_gate_bytes(
+    mode: DestMode,
+    gate: SubmitGate,
+    paced: bool,
+) -> (Vec<u8>, Vec<u8>, bool) {
+    App::test((), move |mut app| async move {
+        let _mode = force_dest_mode(mode);
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            open_submit_gate(view, gate, ctx);
+            write_cli_submit_pieces(view, paced, ctx);
+        });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let during: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        terminal.update(&mut app, |view, ctx| close_submit_gate(view, gate, ctx));
+        let all: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        let idle = terminal.read(&app, |view, _| ssh_queue_is_idle(view));
+        (during.clone(), all[during.len()..].to_vec(), idle)
+    })
+}
+
+/// An UNPACED submit waits behind the gate with the key typed before it and is delivered in typed
+/// order when the gate ends; a PACED one is written at once, ahead of that key. Same in `legacy`
+/// and `table` mode: the table only plans, the legacy writer moves the bytes.
+#[test]
+fn a_cli_submit_behind_a_gate_is_held_unpaced_and_written_at_once_paced_in_both_modes() {
+    for gate in [
+        SubmitGate::EnterVerdict,
+        SubmitGate::SubshellSetup,
+        SubmitGate::PasteReading,
+    ] {
+        for mode in [DestMode::Legacy, DestMode::Table] {
+            let (during, after, idle) = cli_submit_gate_bytes(mode, gate, false);
+            assert!(
+                during.is_empty(),
+                "{gate:?} {mode:?} unpaced: nothing is written while the gate is open: {during:?}"
+            );
+            assert_eq!(
+                after,
+                b"kTEXT\r".to_vec(),
+                "{gate:?} {mode:?} unpaced: typed order"
+            );
+            assert!(idle, "{gate:?} {mode:?} unpaced: nothing stays queued");
+            let (during, after, idle) = cli_submit_gate_bytes(mode, gate, true);
+            assert_eq!(
+                during,
+                b"TEXT\r".to_vec(),
+                "{gate:?} {mode:?} paced: written at once"
+            );
+            assert_eq!(
+                after,
+                b"k".to_vec(),
+                "{gate:?} {mode:?} paced: the held key follows"
+            );
+            assert!(idle, "{gate:?} {mode:?} paced: nothing stays queued");
+        }
+    }
+}
+
+/// The shadow comparison over each combination (and chained on one pane, in two orders): the table
+/// and the legacy writer agree on where every piece of the submit goes.
+#[test]
+fn shadow_mode_reports_zero_untagged_disagreements_for_a_cli_submit_behind_a_gate() {
+    for (name, scenario) in CLI_SUBMIT_GATE_SCENARIOS {
+        let lines = run_shadow_scenario(scenario);
+        let untagged = crate::terminal::input_queue::shadow::untagged(&lines);
+        assert!(
+            untagged.is_empty(),
+            "{name}: the table and the legacy writer disagree: {untagged:?}"
+        );
+    }
+    let forward = CLI_SUBMIT_GATE_SCENARIOS;
+    let mut backward = forward;
+    backward.reverse();
+    for (order, sequence) in [("forward", forward), ("backward", backward)] {
+        App::test((), move |mut app| async move {
+            let _mode = force_dest_mode(DestMode::Shadow);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let _ = crate::terminal::input_queue::shadow::take_recorded();
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                for (name, scenario) in sequence {
+                    scenario(view, ctx);
+                    let untagged = crate::terminal::input_queue::shadow::take_untagged();
+                    assert!(
+                        untagged.is_empty(),
+                        "{order}: after `{name}` the table and the legacy writer disagree: {untagged:?}"
+                    );
+                }
+            });
+        })
+    }
 }
 
 /// Paste routing (step 6): the table's destination rows say what the legacy `paste_routing` says,

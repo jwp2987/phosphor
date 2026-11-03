@@ -918,6 +918,20 @@ impl BlocklistAIInputModel {
                 .is_some_and(|status| status.is_in_progress())
     }
 
+    /// Ends an explicit input-type write that no detection request has claimed yet, for a typed
+    /// edit: the write (the agent view's entry, a toggle) was about the buffer before this
+    /// keystroke, and the user typing is asking autodetection a new question. A claimed write
+    /// keeps its own rules (#833).
+    pub fn release_unclaimed_explicit_write(&mut self) {
+        if self
+            .explicit_input_type_set
+            .as_ref()
+            .is_some_and(|explicit| explicit.buffer_text.is_none())
+        {
+            self.explicit_input_type_set = None;
+        }
+    }
+
     /// Records that the view has requested input-type detection for `buffer_text` (an edit the
     /// user made, or a re-detection the view triggered). The view classifies a parse only while
     /// its text is still requested ([`Self::is_detection_requested_for`]) (#833).
