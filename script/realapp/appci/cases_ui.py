@@ -192,6 +192,10 @@ def c_tab_menu(ctx, r):
         open(os.path.join(d, n), "w").close()
     chosen = []
     for variant in ("tab_return", "down_return"):
+        try:                                       # #1610: a run of the uncompleted line creates tc/menuzz_, which would be an
+            os.remove(os.path.join(d, "menuzz_"))  # exact-match candidate #1 for the next variant
+        except FileNotFoundError:
+            pass
         tok = ctx.tok(6).lower()
         mark = ctx.cmd_mark()
         ctx.be.type("echo %s >> tc/menuzz_" % tok, 15)
