@@ -807,7 +807,9 @@ impl TerminalView {
         self.flush_deferred_queue_ops(ctx);
         // A window released without a hand-over: hand over BEFORE this key is judged, so it lands
         // behind the held keys (typed order, #1348).
-        if self.ssh_handover_after_release {
+        // A signal is not such a key: it ends the hold (the tty flushes what was typed before a
+        // ^C, P1b), so it must not first hand the held text back to the editor (9e02279ee).
+        if self.ssh_handover_after_release && !is_signal {
             self.deliver_ssh_typeahead_if_ready("released_before_key", ctx);
         }
         // Step 7: no ssh refresher runs on the key path (the connect gate is armed, released and

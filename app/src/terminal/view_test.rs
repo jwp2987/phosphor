@@ -18039,8 +18039,14 @@ fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = record_all_pty_writes(&mut app, &terminal);
             let executed = count_executed_commands(&mut app, &terminal);
+            // The pane's own `ssh host` submit is an ExecuteCommand too; only what runs after it
+            // (the held `echo hi` + Enter, a bootstrap line) counts.
             terminal.update(&mut app, |view, ctx| {
                 ssh_pane_with_held_typeahead_for_test(view, ctx);
+            });
+            // Read between updates: the view's events are delivered once an update has ended.
+            let ran_during_setup = *executed.borrow();
+            terminal.update(&mut app, |view, ctx| {
                 view.model
                     .lock()
                     .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
@@ -18077,7 +18083,11 @@ fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
                 "{mode:?}: a timer wrote to the pty: {:?}",
                 pty_writes.borrow()
             );
-            assert_eq!(*executed.borrow(), 0, "{mode:?}: nothing ran");
+            assert_eq!(
+                *executed.borrow(),
+                ran_during_setup,
+                "{mode:?}: nothing ran after the pane's own `ssh host`"
+            );
         })
     }
 }
@@ -19595,6 +19605,13 @@ fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shel
             let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
             let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
             app.add_singleton_model(|_| crate::workspace::ToastStack);
+            // Entering the agent view and running a command in it associates the block with the
+            // conversation and persists that, which needs GlobalResourceHandlesProvider (the
+            // sibling agent-view tests register it the same way).
+            let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+            app.add_singleton_model(|_| {
+                crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+            });
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = record_pty_writes(&mut app, &terminal);
             let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -25819,6 +25836,15 @@ fn scenario_agent_writes(view: &mut TerminalView, ctx: &mut ViewContext<Terminal
     view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
     announce_powershell_setup(view);
     view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
+    // The scenario ends its own PowerShell setup: left open, it carried into the next scenario of
+    // a chained sequence, where a CLI-agent submit (exempt from every hold in the table, held
+    // behind the PowerShell setup by the legacy writer) was judged against a setup no real pane
+    // has while a CLI agent is in front (#1528).
+    view.powershell_setup_hold = PowerShellSetupHold::Off;
+    view.subshell_bootstrap_announced = None;
+    if let Some(mut queue) = view.paste_queue.queue.try_lock() {
+        let _ = queue.drop_gate(input_queue::GateKind::PowershellSetup, 0);
+    }
 }
 
 /// The navigation keys of the key bindings, in a running command and at an idle prompt.
