@@ -1178,7 +1178,7 @@ esac
         # the pane sockets (key and lifetime rules unchanged; only the memory is shared).
         set -l probe_file ""
         if test -n "$SSH_SOCKET_DIR"
-            set probe_file (string replace -r '^~' -- $HOME "$SSH_SOCKET_DIR")/phosphor-ssh-probe-cache
+            set probe_file (string replace -r '^~' -- "$HOME" "$SSH_SOCKET_DIR")/phosphor-ssh-probe-cache
             if test (count $warp_ssh_probe_cache) -eq 0; and test -r "$probe_file"
                 set -g warp_ssh_probe_cache (string match -r -- '.+' <$probe_file 2>/dev/null)
             end

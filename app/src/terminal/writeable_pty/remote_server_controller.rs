@@ -311,10 +311,14 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         // absent / old / unsupported / failed runs the same install, prompt and fallback paths
         // as ever, and `bootstrap_written` stops any of them writing the script a second time.
         let host_key = connection_label_for_session_info(&info);
-        if early_flush_known_hosts_enabled() && known_extension_hosts().contains(&host_key) {
+        if early_flush_known_hosts_enabled()
+            && !info.hostname.is_empty()
+            && known_extension_hosts().contains(&host_key)
+        {
             self.flush_stashed_bootstrap(info.clone(), ctx);
             log::info!(
-                "remote-server bootstrap flushed immediately for {host_key} (extension known                  present); binary check runs behind it for session {session_id:?}"
+                "remote-server bootstrap flushed immediately for {host_key} (extension known \
+                 present); binary check runs behind it for session {session_id:?}"
             );
         }
         self.state = SshInitState::AwaitingCheck {
