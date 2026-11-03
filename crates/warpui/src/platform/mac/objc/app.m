@@ -501,13 +501,21 @@ NSUInteger activeScreenId() {
 // Enter-key tracing (#1482): the first place an Enter reaches the app, before AppKit picks a
 // window for it. Logs only; always forwards to super.
 - (void)sendEvent:(NSEvent *)event {
-    if (warpIsEnterKeyDown(event)) {
-        NSWindow *keyWindow = [self keyWindow];
-        WARP_LOG_ENTER(event, "app_send_event",
-                       @"keycode=%u ts=%.9f event_window=%ld key_window=%ld key_window_class=%@",
-                       (unsigned)[event keyCode], (double)[event timestamp],
-                       (long)[event windowNumber], (long)[keyWindow windowNumber],
-                       keyWindow ? NSStringFromClass([keyWindow class]) : @"none");
+    if (event != nil && [event type] == NSEventTypeKeyDown) {
+        // #1606: how long this key-down queued between the OS stamping it and the app dequeuing
+        // it. NSEvent.timestamp and systemUptime are the same clock (seconds since boot).
+        double ageMs = ([[NSProcessInfo processInfo] systemUptime] - [event timestamp]) * 1000.0;
+        BOOL ctrl = ([event modifierFlags] & NSEventModifierFlagControl) != 0;
+        warp_note_key_event(ageMs, warpIsEnterKeyDown(event) ? 1 : 0, ctrl ? 1 : 0);
+        if (warpIsEnterKeyDown(event)) {
+            NSWindow *keyWindow = [self keyWindow];
+            WARP_LOG_ENTER(
+                event, "app_send_event",
+                @"keycode=%u ts=%.9f age_ms=%.3f event_window=%ld key_window=%ld key_window_class=%@",
+                (unsigned)[event keyCode], (double)[event timestamp], ageMs,
+                (long)[event windowNumber], (long)[keyWindow windowNumber],
+                keyWindow ? NSStringFromClass([keyWindow class]) : @"none");
+        }
     }
     [super sendEvent:event];
 }

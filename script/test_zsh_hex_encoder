@@ -1,0 +1,46 @@
+#!/usr/bin/env zsh
+# Pins the zsh bootstrap's fork-free hex encoder (__warp_hex_encode_to, #1170/#1606) byte for byte
+# against `od`, the reference the app decodes: its printf path, its loop (PHOSPHOR_ZSH_HEX_LOOP=1,
+# the kill switch; any other value must NOT force it) and its fallback when `builtin printf` cannot
+# serve (`disable printf` stands in for a zsh < 5.3 without `printf -v`, which would print "-v").
+# Runs on any zsh (the Mac's /bin/zsh 5.8.1 included); needs only zsh, od and tr.
+#
+# USAGE  zsh script/test_zsh_hex_encoder [path/to/zsh_body.sh]
+# Origin: the #1606 review's byte matrix (reviewer's /tmp/rv1606/t.zsh), reading the REAL function
+# out of zsh_body.sh instead of a copy. Called by script/test_bootstrap_hook_equivalence.
+emulate -L zsh
+body=${1:-${0:A:h}/../app/assets/bundled/bootstrap/zsh_body.sh}
+src=$(sed -n '/^  __warp_hex_encode_to () {/,/^  }/p' "$body")
+[[ -n $src ]] || { print -u2 "test_zsh_hex_encoder: no __warp_hex_encode_to in $body"; exit 2; }
+warp_hex_encode_string () { builtin printf '%s' "$1" | command -p od -An -v -tx1 | command -p tr -d ' \n'; }
+eval "$src"
+typeset -i fail=0 n=0
+check() {
+  local s=$1 ref a b c
+  ref=$(warp_hex_encode_string "$s")
+  unset PHOSPHOR_ZSH_HEX_LOOP; __warp_hex_encode_to "$s"; a=$__warp_hex
+  PHOSPHOR_ZSH_HEX_LOOP=1 __warp_hex_encode_to "$s"; b=$__warp_hex
+  PHOSPHOR_ZSH_HEX_LOOP=0 __warp_hex_encode_to "$s"; c=$__warp_hex
+  n+=1
+  if [[ $a != $ref || $b != $ref || $c != $ref ]]; then
+    print -r -- "FAIL [${(q)s}] printf=$a loop=$b loop0=$c od=$ref"; fail=1
+  fi
+}
+inputs=( "" "a" "'" '"' '%' '%%' '%d' '\' '\\' '\n' $'\n' $'\t' ' ' '  ' "a b" $'\0' $'a\0b' $'\0\0' "é" "日本語" "😀" $'\xff' $'\x80' $'\xc3'
+         $'\xc3(' $'\xe2\x82' $'\x83' $'\x9b' $'\xa0' '-v' '--' '-' "'a" '"a' '{"hook":"Preexec","value":{"command":"ls -la | grep \"x\" % \\ é"}}' )
+for b in {1..255}; do inputs+=( ${(#)b} ); done
+for b in {1..255}; do inputs+=( "$(printf "\\x$(printf %02x $b)")" ); done
+for s in "${inputs[@]}"; do check "$s"; done
+for i in {1..50}; do check "$(head -c $((RANDOM % 2000 + 1)) /dev/urandom | LC_ALL=C tr -d '\0')"; done
+# a zsh whose `builtin printf` cannot serve (stand-in for < 5.3) must still encode right, through the loop
+(
+  disable printf
+  for s in "a" "é" $'\xff' '-v' '{"hook":"x"}'; do
+    __warp_hex_encode_to "$s"
+    [[ $__warp_hex == $(command -p printf '%s' "$s" | command -p od -An -v -tx1 | command -p tr -d ' \n') ]] || { print -r -- "FAIL fallback [${(q)s}] got=$__warp_hex"; exit 1; }
+  done
+) 2>/dev/null || fail=1
+# under the user's hostile options too
+( setopt ksharrays shwordsplit nounset errreturn; __warp_hex_encode_to "a'b é"; [[ $__warp_hex == $(warp_hex_encode_string "a'b é") ]] ) || { print "FAIL hostile options"; fail=1; }
+if (( fail )); then print "test_zsh_hex_encoder: FAILED ($n inputs, zsh $ZSH_VERSION)"; exit 1; fi
+print "test_zsh_hex_encoder: ok ($n inputs, zsh $ZSH_VERSION)"

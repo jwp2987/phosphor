@@ -612,6 +612,14 @@ def preexec_hex_tests():
 
 
 
+def zsh_hex_encoder_tests():
+    """#1606: the zsh encoder's printf path, loop and kill switch against `od`, over every byte value (script/test_zsh_hex_encoder)"""
+    print("zsh hex encoder (printf -v path, loop, fallback)")
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_zsh_hex_encoder")
+    p = subprocess.run([SHELLS["zsh"], helper, os.path.join(BOOT, "zsh_body.sh")], capture_output=True, text=True, timeout=300)
+    check(p.returncode == 0, "zsh hex encoder matches od byte for byte", (p.stdout + p.stderr)[-2000:])
+
+
 def debug_trap_tests():
     """#1283: the DEBUG trap skips the call into bash-preexec once the first command of a line has
     cleared the interactive-mode flag. What bash-preexec does for a line must not change: one
@@ -658,6 +666,8 @@ table_tests()
 history_tests()
 preexec_hex_tests()
 debug_trap_tests()
+if SHELLS["zsh"]:
+    zsh_hex_encoder_tests()
 for kind in ("bash", "zsh", "fish"):
     if SHELLS[kind]:
         e2e(kind)
