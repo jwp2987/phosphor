@@ -68,7 +68,7 @@ for r in rows:
         lat_rows.append("| %s | %s/%s | %s | %s%s | %s | %s | %s | %s | %s | %s |" % (
             r.get("mode", ""), r["name"], k, cell(rec.get("phosphor")) if rec.get("budget_kind") != "slow-log" else "worst %s ms" % f(rec["phosphor"].get("max"), 0),
             cell(ref), (" (%s)" % rec["reference_name"]) if ref and rec.get("reference_name") else "",
-            f(rec.get("overhead_ms"), 2), b, dcell(rec.get("prev")), dcell(rec.get("baseline")), rec["verdict"].upper(),
+            f(rec.get("overhead_ms"), 2) + ((" +/- %s" % f(rec["overhead_se_ms"], 2)) if rec.get("overhead_se_ms") is not None else ""), b, dcell(rec.get("prev")), dcell(rec.get("baseline")), rec["verdict"].upper(),
             "n=%s" % (rec["phosphor"].get("n"))))
         if rec.get("remeasure"):
             lat_rows.append("| | re-measure | %s | | | | | | | |" % cell(rec["remeasure"]["phosphor"]))

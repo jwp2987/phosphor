@@ -72,7 +72,7 @@ def lat_checks(r, rec, label):
     """turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
     if rec["budget_verdict"] == "fail":
         if rec["budget_kind"] == "overhead":
-            r.check(False, "%s: Phosphor overhead %.2f ms over %s exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["reference_name"], rec["budget_ms"]))
+            r.check(False, "%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget (overhead - 2 SE > budget)" % (label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
         else:
             r.check(False, "%s: %.2f ms over the harness floor exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["budget_ms"]))
     for tag in ("prev", "baseline"):
@@ -85,6 +85,11 @@ def lat_checks(r, rec, label):
                 r.check(False, "REGRESSION " + msg)
             else:
                 r.note("WARN " + msg)
+    if rec["verdict"] in ("inconclusive", "no-compare") or rec.get("budget_verdict") in ("inconclusive", "no-compare"):
+        why = "overhead %s +/- %s ms (SE) vs budget %g ms is within noise" % (rec.get("overhead_ms"), rec.get("overhead_se_ms"), rec["budget_ms"])
+        if rec.get("budget_verdict") == "no-compare":
+            why = "pane shell %s != reference shell %s" % (rec.get("pane_shell"), rec.get("reference_shell"))
+        r.no_reference("%s: %s: INCONCLUSIVE/NO-COMPARE, the overhead budget was NOT judged (not a pass)" % (label, why))
     if rec["verdict"] == "no-reference":
         r.no_reference("%s: no reference terminal measured in this session, the overhead budget was NOT judged (absolute numbers recorded as metrics)" % label)
     for n_ in rec.get("notes", []):
@@ -1600,6 +1605,21 @@ def c_enter_loss(ctx, r):
         r.note("the injector/OS loses instant Enters even in the reference: fast_typing reports such a loss as 'injector/OS lost Enter (reference too)', not an app bug")
 
 
+def stamp_line(ctx):
+    """The timestamp command typed in BOTH terminals (a '%d' for the sample index). macOS: BSD date has no %N. When the pane shell is zsh (r18cz: it
+    was, not bash 3.2) the stamp is the shell's own builtin, `$EPOCHREALTIME` (no fork/exec, no 50 ms perl start-up inside the measurement; the
+    `zmodload` is a no-op after the first line and is typed before the stamp, so it is outside the stamped interval's tail; it also keeps the
+    line structured so agent-mode autodetect does not send it to the AI). Only bash 3.2 (no $EPOCHREALTIME) keeps perl, which is in the base
+    system. The reference terminal runs the same shell (pane_shell) and so the same line. Linux: `date +%s.%N`. PowerShell: UTC ms."""
+    if ctx.pane == "powershell":
+        return "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
+    if ctx.be.name == "mac":
+        if lat.shell_base(pane_shell(ctx)) == "zsh":
+            return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME > lat_%d"
+        return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d"
+    return "date +%%s.%%N > lat_%d"
+
+
 def enter_to_start(ctx, n, budget_s=None):
     ds = []
     t_end = time.time() + budget_s if budget_s else None
@@ -1609,12 +1629,7 @@ def enter_to_start(ctx, n, budget_s=None):
         f = os.path.join(ctx.W, "lat_%d" % i)
         if os.path.exists(f):
             os.remove(f)
-        # macOS: BSD date has no %N, and the pane runs /bin/bash 3.2 (no $EPOCHREALTIME; zsh's `print` is "command not found" there and,
-        # in agent mode, autodetect rightly sends it to the AI: r18ct queued 31 prompts). perl is in the base system; its start-up is
-        # paid identically by the reference terminal, which types the same line.
-        stamp = "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d" if ctx.be.name == "mac" else "date +%%s.%%N > lat_%d"
-        if ctx.pane == "powershell":
-            stamp = "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File lat_%d -Encoding ascii"
+        stamp = stamp_line(ctx)
         ctx.be.guard_ref()
         ctx.be.type(stamp % i, 12)
         time.sleep(0.3)
@@ -1640,7 +1655,7 @@ def c_lat_enter(ctx, r):
     """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
     Verdict is on OVERHEAD (Phosphor median - reference median) against the owner's 2 ms budget; both include one input-tool spawn,
     which cancels. No reference terminal -> verdict 'no-reference' (absolute numbers only). Also checked build-to-build (lat.py)."""
-    n, warm = ctx.count(30), lat.warmup()
+    n, warm = ctx.count(60), lat.warmup()      # 60: the SE of a 30-sample median difference (~2.3 ms) is larger than the 2 ms budget
     t_lat0 = time.time()
     ds = enter_to_start(ctx, n + warm)[warm:]
     r.metric("enter_to_start_ms", stats(ds))
