@@ -49,7 +49,7 @@ use crate::terminal::input_queue::{
     FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue,
     PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode, is_pty_entry, trace,
 };
-use crate::terminal::model::typeahead_handoff::{YoungHoldEnd, YoungHoldExpiry};
+use crate::terminal::model::typeahead_handoff::{PromptHoldCap, YoungHoldEnd, YoungHoldExpiry};
 use crate::terminal::paste_sequencer::PasteFailure;
 
 /// A warning line for a pane closed while it still held input (#1441): entries and bytes queued
@@ -848,9 +848,6 @@ impl TerminalView {
             })
             .map(|gate| gate.kind);
         if kind == Some(GateKind::LineEditorActive) {
-            // The line editor never signalled (#1349): the held keys are written anyway, and the
-            // hand-off stops holding for this session. The queue's own give-up would deliver them
-            // through the stages again; the hold has its own release instead.
             let key = queue
                 .try_peek()
                 .and_then(|queue| {
@@ -861,6 +858,28 @@ impl TerminalView {
                         .map(|gate| gate.key)
                 })
                 .unwrap_or_default();
+            // #1573: the cap is shared by two waits; the hand-off says whether this is a give-up
+            // at all. While the command the enter window's Enter started is running, or while the
+            // precmd that followed it is younger than the cap, nothing is overdue: the cap is
+            // armed again and nothing is written. Only the events (the line editor's signal, the
+            // command becoming interactive, a continuation prompt, a signal key) release the keys.
+            let decision = self
+                .handoff
+                .read()
+                .prompt_hold_cap_fired(key, instant::Instant::now());
+            if let PromptHoldCap::NotYet(after) = decision {
+                warpui::input_order::log_hop("prompt_hold_cap_not_due", || {
+                    format!("hold={key} rearm_ms={}", after.as_millis())
+                });
+                self.rearm_prompt_hold_cap(token, after, ctx);
+                return;
+            }
+            // The line editor never signalled (#1349), or the window's Enter was never acted on:
+            // the held keys are released anyway, in typed order through the counted release, the
+            // same path as the signal's (never a second copy, never ahead of a held key). Whether
+            // the hold stays on is the hand-off's decision (`expire_queued_prompt_hold`). The
+            // queue's own give-up would deliver them through the stages again; the hold has its
+            // own release instead.
             self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
             return;
         }
@@ -1491,6 +1510,20 @@ impl TerminalView {
             }
         }
         chunks
+    }
+
+    /// Arms the give-up cap of prompt hold gate `token` again (#1573): the hand-off found the wait
+    /// not overdue yet. Token-guarded like the first arming: a gate that closed meanwhile finds
+    /// nothing to do. Writes nothing.
+    fn rearm_prompt_hold_cap(
+        &mut self,
+        token: GateToken,
+        after: Duration,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.spawn(Timer::after(after), move |me, _, ctx| {
+            me.on_paste_queue_give_up(token, ctx)
+        });
     }
 
     /// The line editor signalled (the controller's `PromptHoldReleased`): the keys held for the

@@ -11836,6 +11836,58 @@ fn a_handoff_report_that_does_not_extend_the_editors_typeahead_is_refused() {
     });
 }
 
+/// #1574: an input in AI mode (locked: autodetection will not re-decide it) never receives a shell
+/// report: the shell's line would become an agent prompt (#1566 `4echo T93_r`). Refused (counts
+/// logged) and the buffer is untouched. The same input in shell mode inserts it.
+#[test]
+fn an_ai_mode_input_refuses_a_handoff_report() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        let inserted = input.update(&mut app, |input, ctx| {
+            input.insert_handoff_typeahead_text(CharOffset::from(0), "4echo T93_r", ctx)
+        });
+        assert!(!inserted, "an AI-mode input never takes a shell report");
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "");
+        });
+        // The same input in shell mode takes it.
+        input.update(&mut app, |input, ctx| {
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true, /* is_input_buffer_empty */
+                    ctx,
+                );
+            });
+        });
+        let inserted = input.update(&mut app, |input, ctx| {
+            input.insert_handoff_typeahead_text(CharOffset::from(0), "echo hi", ctx)
+        });
+        assert!(inserted);
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "echo hi");
+        });
+    });
+}
+
 #[test]
 fn hint_inputs_changed_skips_unchanged_streaming_deltas() {
     use crate::ai::agent::conversation::ConversationStatus;

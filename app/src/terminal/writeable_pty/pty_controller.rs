@@ -724,6 +724,18 @@ impl<T: EventLoopSender> PtyController<T> {
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return;
         }
+        // #1573: the Enter of the ConPTY enter window ended a line the shell continues (PS2): its
+        // line editor reads again, so the keys held since that Enter are released now, in typed
+        // order, by this event (before, only the 1.5 s give-up released them, and it switched the
+        // prompt hold off for the session).
+        let held_for_continuation = self
+            .terminal_model
+            .lock()
+            .typeahead_handoff_mut()
+            .release_enter_window_for_continuation();
+        if let Some(hold_id) = held_for_continuation {
+            ctx.emit(PtyControllerEvent::PromptHoldReleased { hold_id });
+        }
         self.retry_typeahead_handoff_request(ctx);
     }
 

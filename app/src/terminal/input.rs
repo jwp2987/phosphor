@@ -8398,12 +8398,35 @@ impl Input {
     }
 
     /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for.
+    /// Returns whether the report was inserted; a refusal (#1569, #1574) leaves the buffer exactly
+    /// as it was and is logged with counts only.
     pub fn insert_handoff_typeahead_text(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
+        // #1574: the report is the shell's line, typed for the shell. An input whose mode is AI
+        // and stays AI for this text (locked, or with no autodetection to re-decide it) would make
+        // it an agent prompt: the #1566 `4echo T93_r` that became one. Refused, never inserted.
+        // An unlocked AI input with autodetection on is not refused: there the text's typeahead
+        // provenance (#886) decides it, and a deferred Enter runs it as a shell command.
+        if self.handoff_report_input_is_ai(ctx) {
+            log::warn!(
+                "typeahead hand-off: a report was refused because the input is in AI mode \
+                 (replaced_prefix_chars={}, report_chars={})",
+                num_typeahead_chars_inserted.as_usize(),
+                typeahead.chars().count()
+            );
+            warpui::input_order::log_hop("handoff_insert_refused", || {
+                format!(
+                    "reason=ai_input replaced_prefix_chars={} report_chars={}",
+                    num_typeahead_chars_inserted.as_usize(),
+                    typeahead.chars().count()
+                )
+            });
+            return false;
+        }
         let text_before = warpui::input_order::enabled().then(|| self.buffer_text(ctx));
         // #1569: a report that replaces the front of the buffer must extend what is there (a
         // second report of the same line). One that does not is another line's text; splicing it
@@ -8430,7 +8453,7 @@ impl Input {
                     warpui::input_order::describe_text(&text_before.unwrap_or_default())
                 )
             });
-            return;
+            return false;
         }
         self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         // #1393: the report's insertion into the editor, before and after, with the count of
@@ -8445,6 +8468,15 @@ impl Input {
             )
         });
         self.note_typeahead_inserted(typeahead, ctx);
+        true
+    }
+
+    /// #1574: whether the input is in AI mode for a shell report: the input type is AI and will
+    /// not be re-decided for the inserted text (the type is locked, or autodetection does not run
+    /// in this context).
+    fn handoff_report_input_is_ai(&self, ctx: &AppContext) -> bool {
+        let model = self.ai_input_model.as_ref(ctx);
+        model.is_ai_input_enabled() && !model.should_run_input_autodetection(ctx)
     }
 
     pub fn focus_input_box(&self, ctx: &mut ViewContext<Self>) {

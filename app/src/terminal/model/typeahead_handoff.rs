@@ -229,10 +229,24 @@ pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 /// ~6 ms before that start-up output vanished below the app).
 ///
 /// This is only the give-up safety net for a shell that was expected to signal and never did
-/// (for example readline with `enable-bracketed-paste off`): the keys are written anyway, a
-/// warning is logged, and the hold is switched off for the rest of the session so the next
-/// prompt is not delayed again. It is deliberately long: a signal normally arrives within
-/// 10-60 ms, so reaching this means the signal is not coming.
+/// (for example readline with `enable-bracketed-paste off`): the keys are released anyway, in
+/// typed order through the same counted release as the signal's, and a warning is logged. It is
+/// deliberately long: a signal normally arrives within 10-60 ms, so reaching this means the signal
+/// is not coming.
+///
+/// It measures ONE wait, the precmd's (#1573): from the prompt's precmd (or from the hold's first
+/// key, if that came later) to the line editor's signal. The enter window ([`CONPTY_ENTER_HOLD_ENV`])
+/// shares the gate but not the clock: while the command its Enter started runs, nothing is
+/// overdue, however long it takes (`sleep 3`, a build); the window ends by its events (the
+/// command's prompt, the command becoming interactive, a continuation prompt, a signal key). See
+/// [`TypeaheadHandoff::prompt_hold_cap_fired`].
+///
+/// What a give-up switches off (#1573, deciding #1349's "off for the session"): the hold stays off
+/// for the rest of the session only when this session's shell has NEVER answered a precmd's wait
+/// with a ready signal, i.e. it does not signal at all and every prompt would otherwise wait out
+/// the cap (the documented #1349 reason). A shell that has signalled before missed one prompt (a
+/// loaded machine, a slow prompt): that give-up is for the one prompt, and the next prompt is held
+/// again, so the #1162 raw-write corruption does not come back for the rest of the session.
 pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
 
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
@@ -614,9 +628,26 @@ pub struct TypeaheadHandoff {
     /// is not known to (PowerShell 5.1, cmd, an unknown WSL shell) is never held for: with no
     /// signal to release it, the hold could only be a timer.
     prompt_hold_shell_signals: bool,
-    /// A hold ran to the give-up cap with no signal: the shell does not signal after all, so
-    /// the hold stays off for the rest of the session (#1349).
+    /// A hold ran to the give-up cap with no signal and this session's shell never signalled: the
+    /// shell does not signal after all, so the hold stays off for the rest of the session (#1349,
+    /// narrowed by #1573: see [`CONPTY_PROMPT_HOLD_GIVE_UP`]).
     prompt_hold_gave_up: bool,
+    /// A ready signal answered a precmd's wait in this session (#1573): the shell does signal, so a
+    /// give-up is one missed prompt, not a reason to stop holding.
+    line_editor_signal_seen: bool,
+    /// When the live prompt hold's first key was held (#1573): its give-up cap was armed then.
+    prompt_hold_started_at: Option<Instant>,
+    /// When the shell last started a command (its preexec), to tell an enter window whose command
+    /// is running from one whose Enter the shell never acted on (#1573).
+    last_preexec_at: Option<Instant>,
+    /// #1574: bytes the view delivered to the shell as a final delivery (the #1494 `stty sane`
+    /// path) may be in the shell's line. They belong to that shell; a report of them is not the
+    /// editor's to insert. Cleared by the first report after it, and by anything that shows the
+    /// shell's line no longer holds them (a commit to the editor, a command or a user Enter
+    /// written).
+    committed_delivery: bool,
+    /// #1574: the last report arrived while [`Self::committed_delivery`] was set.
+    last_report_unaccounted: bool,
     /// A prompt hold was just created, so the view must put the key that started it behind a
     /// `LineEditorActive` gate keyed by the hold's id.
     prompt_hold_started: bool,
@@ -708,6 +739,21 @@ pub enum YoungHoldExpiry {
     Keep,
     /// The hold is not live (it ended; the view applies the recorded end).
     Gone,
+}
+
+/// What the give-up cap of a queued prompt hold decides when it fires (#1573); see
+/// [`TypeaheadHandoff::prompt_hold_cap_fired`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptHoldCap {
+    /// The hold is not live (its event released it, or the timer belongs to an earlier hold).
+    Gone,
+    /// Not overdue: the wait the cap measures has not run its course (the command the enter
+    /// window's Enter started is still running, or the precmd that followed it came less than the
+    /// cap ago). The view arms the cap again for this long; nothing is written.
+    NotYet(Duration),
+    /// The wait ran out with no event: the view releases the held keys, in typed order, through the
+    /// counted release ([`TypeaheadHandoff::expire_queued_prompt_hold`]).
+    GiveUp,
 }
 
 /// Identifies an agent's command held behind the user's typeahead.
@@ -819,13 +865,12 @@ impl TypeaheadHandoff {
     }
 
     /// Whether the enter window is open (#1490): an Enter went to a shell that was at its line
-    /// editor, and neither the command's prompt nor the command becoming interactive ended it. The
-    /// give-up cap only covers the instant before the view's give-up timer runs.
-    fn enter_window_open(&self, now: Instant) -> bool {
-        self.enter_window_enabled
-            && self
-                .enter_window_since
-                .is_some_and(|at| now.saturating_duration_since(at) < CONPTY_PROMPT_HOLD_GIVE_UP)
+    /// editor, and neither the command's prompt nor the command becoming interactive ended it.
+    fn enter_window_open(&self, _now: Instant) -> bool {
+        // #1573: no clock here. A command that runs longer than the give-up cap is not overdue;
+        // keys typed into it are still held for the shell's next line editor, and the window ends
+        // by its events only (precmd, interactive latch, continuation prompt, a signal key).
+        self.enter_window_enabled && self.enter_window_since.is_some()
     }
 
     /// Whether an Enter written now submits a line at the shell's line editor, so the enter window
@@ -892,6 +937,8 @@ impl TypeaheadHandoff {
         if self.awaiting_line_editor_since.take().is_none() {
             return None;
         }
+        // #1573: this shell signals; a later give-up is one missed prompt.
+        self.line_editor_signal_seen = true;
         let waited_ms = self
             .last_precmd_at
             .map(|at| at.elapsed().as_secs_f64() * 1000.0);
@@ -918,23 +965,109 @@ impl TypeaheadHandoff {
         self.prompt_hold_queued.then_some(self.prompt_hold_id)
     }
 
-    /// The give-up cap of the queued prompt hold `id` ran out with no line editor signal
-    /// (#1349): returns whether that hold is live, so the view writes its keys anyway and the
-    /// hold is off for the rest of the session. `false` when it is gone already.
+    /// The continuation prompt (PS2) of the line the enter window's Enter submitted was shown
+    /// (#1573): the shell consumed that Enter and its line editor reads the next line, so the
+    /// window ends by this event and the view releases the held keys in typed order (the
+    /// controller's `PromptHoldReleased`). Returns the hold's id when keys are held; nothing
+    /// happens when no window is open. (A window never opens at a continuation prompt, see
+    /// `enter_window_may_open`, so this marker is the one the window's own Enter caused.)
+    pub fn release_enter_window_for_continuation(&mut self) -> Option<u64> {
+        self.enter_window_since.take()?;
+        warpui::input_order::log_hop("enter_window_continuation", || {
+            format!("queued={}", self.prompt_hold_queued)
+        });
+        self.prompt_hold_queued.then_some(self.prompt_hold_id)
+    }
+
+    /// The give-up cap of queued prompt hold `id` fired (#1573): whether it is a give-up at all.
+    /// The cap is armed once, when the hold's first key is held, and the gate is shared by two
+    /// waits with different meanings:
+    ///
+    /// * the precmd's wait for the line editor's signal: overdue once the cap has passed since the
+    ///   precmd, or since the hold's first key if that came later (the timer was armed then);
+    /// * the enter window: while the command its Enter started runs (its preexec was seen),
+    ///   nothing is overdue -- the window ends by its events, and the precmd that follows starts
+    ///   the wait above with a full cap. An Enter the shell answered with neither a preexec nor a
+    ///   precmd within the cap (a continuation prompt with no marker, a lost Enter) is a give-up
+    ///   for this window's keys.
+    ///
+    /// `NotYet` asks the view to arm the cap again; it writes nothing and runs nothing. `now` is
+    /// given, never read.
+    pub fn prompt_hold_cap_fired(&self, id: u64, now: Instant) -> PromptHoldCap {
+        if id != self.prompt_hold_id || !self.prompt_hold_queued {
+            return PromptHoldCap::Gone;
+        }
+        if let Some(precmd_at) = self.awaiting_line_editor_since {
+            let started_at = self.prompt_hold_started_at.unwrap_or(precmd_at);
+            if started_at >= precmd_at {
+                // The hold began in this wait: its cap was armed with the full give-up then.
+                return PromptHoldCap::GiveUp;
+            }
+            // The hold began in the enter window and the precmd came later: the wait gets its own
+            // full cap from the precmd.
+            let waited = now.saturating_duration_since(precmd_at);
+            return match CONPTY_PROMPT_HOLD_GIVE_UP.checked_sub(waited) {
+                Some(left) if !left.is_zero() => PromptHoldCap::NotYet(left),
+                _ => PromptHoldCap::GiveUp,
+            };
+        }
+        if let Some(opened_at) = self.enter_window_since
+            && self.last_preexec_at.is_some_and(|at| at >= opened_at)
+        {
+            // The command is running: not overdue. The window's own events end it.
+            return PromptHoldCap::NotYet(CONPTY_PROMPT_HOLD_GIVE_UP);
+        }
+        PromptHoldCap::GiveUp
+    }
+
+    /// The give-up of queued prompt hold `id` (#1349): [`Self::prompt_hold_cap_fired`] said
+    /// [`PromptHoldCap::GiveUp`], so the view releases its keys anyway, in typed order through the
+    /// counted release, exactly as the signal would. Returns whether that hold is live; `false`
+    /// when it is gone already.
+    ///
+    /// #1573: the hold is switched off for the rest of the session only when the precmd's wait
+    /// gave up and this session's shell has never signalled (it does not signal at all). Any other
+    /// give-up is for this hold only: the next prompt is held again.
     pub fn expire_queued_prompt_hold(&mut self, id: u64) -> bool {
         if id != self.prompt_hold_id || !self.prompt_hold_queued {
             return false;
         }
-        self.awaiting_line_editor_since = None;
-        self.enter_window_since = None;
-        self.prompt_hold_gave_up = true;
-        log::warn!(
-            "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt; \
-             writing the held keys and turning the hold off for this session",
-            CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
-        );
-        warpui::input_order::log_hop("prompt_hold_expired", String::new);
+        let precmd_wait = self.awaiting_line_editor_since.take().is_some();
+        let enter_window = self.enter_window_since.take().is_some();
+        let session_off = precmd_wait && !self.line_editor_signal_seen;
+        if session_off {
+            self.prompt_hold_gave_up = true;
+            log::warn!(
+                "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt, \
+                 and this shell has never sent one; releasing the held keys and turning the hold \
+                 off for this session",
+                CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
+            );
+        } else if precmd_wait {
+            log::warn!(
+                "ConPTY prompt hold: no line-editor ready signal within {} ms after this prompt; \
+                 releasing the held keys (the hold stays on for the next prompt)",
+                CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
+            );
+        } else {
+            log::warn!(
+                "ConPTY enter window: the shell neither started a command nor prompted within {} \
+                 ms of the Enter; releasing the held keys (the hold stays on)",
+                CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
+            );
+        }
+        warpui::input_order::log_hop("prompt_hold_expired", || {
+            format!(
+                "precmd_wait={precmd_wait} enter_window={enter_window} session_off={session_off}"
+            )
+        });
         true
+    }
+
+    /// Whether the prompt hold is off for the rest of the session after a give-up, for tests.
+    #[cfg(test)]
+    pub fn prompt_hold_off_for_session(&self) -> bool {
+        self.prompt_hold_gave_up
     }
 
     /// A signal or EOF byte is about to be written while the view's queue holds keys for the
@@ -1152,8 +1285,10 @@ impl TypeaheadHandoff {
         self.rtt_samples.clear();
         self.rtt_pending.clear();
         self.command_written_at = None;
-        // A new shell may signal where the last one did not.
+        // A new shell may signal where the last one did not (and must earn the per-prompt give-up
+        // again, #1573).
         self.prompt_hold_gave_up = false;
+        self.line_editor_signal_seen = false;
         self.enter_window_since = None;
         // ... and may predate the sequence numbers (an older remote bootstrap): it earns the
         // prompt-sequence path again with its first number.
@@ -1233,6 +1368,28 @@ impl TypeaheadHandoff {
             self.untracked_line_bytes = true;
             self.untracked_cover_after_reports = None;
         }
+    }
+
+    /// #1574: the view delivered bytes to the shell's line as a FINAL delivery (the #1494 path:
+    /// held ssh typeahead written to an unbootstrapped remote after `stty sane`). They belong to
+    /// that shell; the next report, which would carry them back, is not inserted into the editor.
+    /// The mark ends with that report, or as soon as the line cannot hold them any more (a commit
+    /// to the editor, a command written, a user Enter written).
+    pub fn note_committed_delivery(&mut self) {
+        self.committed_delivery = true;
+        warpui::input_order::log_hop("handoff_committed_delivery", String::new);
+    }
+
+    /// Whether a committed delivery may still be in the shell's line, for tests.
+    #[cfg(test)]
+    pub fn committed_delivery_pending(&self) -> bool {
+        self.committed_delivery
+    }
+
+    /// Whether the report just received ([`Self::on_report`]) is one the hand-off cannot account
+    /// for: its text is a line delivered to the shell as final (#1574). One-shot.
+    pub fn take_report_unaccounted(&mut self) -> bool {
+        mem::take(&mut self.last_report_unaccounted)
     }
 
     /// `PtyController` wrote a legacy request (the editor owns input). Its report covers every
@@ -1473,6 +1630,8 @@ impl TypeaheadHandoff {
     /// counts them ([`Self::count_followed_young_hold`]).
     pub fn on_command_written(&mut self) {
         self.forget_untracked_line_bytes();
+        // #1574: the command's kill prefix and Enter end whatever line it lands on.
+        self.committed_delivery = false;
         self.interrupt_barrier = false;
         self.interrupt_awaiting_cycle = false;
         // An Enter held behind the request follows the command as typeahead (#933): the view
@@ -1562,6 +1721,8 @@ impl TypeaheadHandoff {
             self.enter_window_since = Some(Instant::now());
         }
         self.forget_untracked_line_bytes();
+        // #1574: its kill prefix ends a line delivered bytes were in.
+        self.committed_delivery = false;
         // Its kill prefix ends the line a held Enter belongs to.
         self.drop_young_hold();
         self.young_line = false;
@@ -1647,7 +1808,10 @@ impl TypeaheadHandoff {
         self.activity_generation = self.activity_generation.wrapping_add(1);
         // The shell took a line: its line editor is not about to start.
         self.awaiting_line_editor_since = None;
-        self.last_activity_at = Some(Instant::now());
+        let now = Instant::now();
+        self.last_activity_at = Some(now);
+        // #1573: an enter window whose command started is not overdue while it runs.
+        self.last_preexec_at = Some(now);
         // The editor's command reached the shell: one write-to-preexec loop measured. A line the
         // shell started itself ran ahead of that command, so its preexec is not the command's and
         // the command's own would include the line's run: the sample is dropped.
@@ -1720,6 +1884,8 @@ impl TypeaheadHandoff {
                 self.interrupt_barrier = false;
                 self.interrupt_awaiting_cycle = false;
                 self.state = HandoffState::EditorOwned;
+                // #1574: nothing typed or delivered is in the shell's line any more.
+                self.committed_delivery = false;
                 true
             }
             Owner::Pty { .. } | Owner::Editor | Owner::AwaitingReport | Owner::Hold { .. } => false,
@@ -1778,6 +1944,8 @@ impl TypeaheadHandoff {
                 if !wrote_user_bytes && !self.interrupt_barrier {
                     if no_line_queued {
                         self.state = HandoffState::EditorOwned;
+                        // #1574: the shell's line is empty: no delivered bytes are left in it.
+                        self.committed_delivery = false;
                         ActiveDecision::Committed
                     } else {
                         ActiveDecision::DrainAndWait {
@@ -1866,7 +2034,9 @@ impl TypeaheadHandoff {
             self.prompt_hold_queued = true;
             self.prompt_hold_id = self.prompt_hold_id.wrapping_add(1);
             self.prompt_hold_started = true;
-            self.last_line_bytes_at = Some(Instant::now());
+            let now = Instant::now();
+            self.prompt_hold_started_at = Some(now);
+            self.last_line_bytes_at = Some(now);
             self.log_route_decision("held_prompt_hold_started", bytes);
             return UserBytesRoute::Held;
         }
@@ -2170,6 +2340,9 @@ impl TypeaheadHandoff {
                 // armed could otherwise land in the editor).
                 if wrote_an_enter {
                     self.activity_generation = self.activity_generation.wrapping_add(1);
+                    // #1574: the Enter submits the line delivered bytes were in; it is not
+                    // reported.
+                    self.committed_delivery = false;
                     // #1490: an Enter at the shell's line editor opens the window in which the
                     // shell is not reading; keys typed now are held until it is again.
                     if opens_enter_window {
@@ -2290,6 +2463,10 @@ impl TypeaheadHandoff {
     /// The shell reported its line buffer.
     pub fn on_report(&mut self) -> ReportDisposition {
         self.interrupt_barrier = false;
+        // #1574: a report of a line the view delivered to the shell as final is not the editor's.
+        // It still answers the request (the states below move on as for any report); the view
+        // refuses to insert its text ([`Self::take_report_unaccounted`]).
+        self.last_report_unaccounted = mem::take(&mut self.committed_delivery);
         // #1089: a report for a request written before untracked bytes does not cover them.
         self.on_report_received();
         match self.owner() {
