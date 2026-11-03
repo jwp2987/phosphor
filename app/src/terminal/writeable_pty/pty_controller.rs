@@ -327,6 +327,7 @@ impl<T: EventLoopSender> PtyController<T> {
     ) -> Self {
         ctx.subscribe_to_model(&model_event_dispatcher, |me, event, ctx| match event {
             ModelEvent::Handler(AnsiHandlerEvent::UserCommandFinished) => {
+                me.log_since_ctrl_c("command_finished_after_ctrl_c");
                 me.is_user_command_executing = false;
             }
             ModelEvent::Handler(AnsiHandlerEvent::InitShell {
@@ -341,7 +342,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 me.set_bracketed_paste_enabled(true);
                 if let Some(sent) = me.ctrl_c_sent_at.take() {
                     warpui::input_order::log_hop("line_editor_ready_after_ctrl_c", || {
-                        format!("since_ctrl_c_ms={:.1}", sent.elapsed().as_secs_f64() * 1e3)
+                        format!(
+                            "via=bracketed_paste since_ctrl_c_ms={:.1}",
+                            sent.elapsed().as_secs_f64() * 1e3
+                        )
                     });
                 }
                 // #1349: the line editor's ready signal releases the keys held since the
@@ -390,6 +394,16 @@ impl<T: EventLoopSender> PtyController<T> {
                 me.set_bracketed_paste_enabled(false);
             }
             ModelEvent::LineEditorReading { .. } => {
+                // #1401: PowerShell never enables bracketed paste, so its "ready after ^C" leg
+                // ends here (the last hop of the chain; the clock stops).
+                if let Some(sent) = me.ctrl_c_sent_at.take() {
+                    warpui::input_order::log_hop("line_editor_ready_after_ctrl_c", || {
+                        format!(
+                            "via=line_editor_reading since_ctrl_c_ms={:.1}",
+                            sent.elapsed().as_secs_f64() * 1e3
+                        )
+                    });
+                }
                 me.on_line_editor_reading_marker(ctx);
             }
             ModelEvent::ContinuationPrompt { .. } => {
@@ -417,6 +431,7 @@ impl<T: EventLoopSender> PtyController<T> {
             // The shell is back at a prompt and never ran the inserted command (no Preexec came):
             // nothing else will report it, so type it once (#1581).
             ModelEvent::Handler(AnsiHandlerEvent::Precmd) => {
+                me.log_since_ctrl_c("precmd_after_ctrl_c");
                 me.on_precmd_with_chord_outstanding(ctx);
             }
             ModelEvent::Handler(AnsiHandlerEvent::StartTmuxControlMode) => {
@@ -2481,6 +2496,17 @@ impl<T: EventLoopSender> PtyController<T> {
         };
         self.send_message_to_event_loop(message, ctx);
         true
+    }
+
+    /// Input-order log only (#1401): one hop of the ^C -> next prompt chain, with the time since
+    /// the last lone ^C was handed to the event loop. Does not stop the clock (the chain ends at
+    /// the line editor's ready signal) and decides nothing.
+    fn log_since_ctrl_c(&self, what: &str) {
+        if let Some(sent) = self.ctrl_c_sent_at {
+            warpui::input_order::log_hop(what, || {
+                format!("since_ctrl_c_ms={:.1}", sent.elapsed().as_secs_f64() * 1e3)
+            });
+        }
     }
 
     /// Sends a message to the event loop. If the send fails with `SendError::Disconnected`, emits

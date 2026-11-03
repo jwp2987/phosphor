@@ -9881,6 +9881,10 @@ impl TerminalView {
     /// Windows users expect ctrl-c to copy if there is selected text. Otherwise,
     /// we perform the normal ctrl-c action.
     fn ctrl_c(&mut self, ctx: &mut ViewContext<Self>) {
+        // #1401: the first hop of the ^C -> next prompt chain (no typed text, state names only).
+        warpui::input_order::log_hop("ctrl_c_keydown", || {
+            format!("powershell_setup_hold={:?}", self.powershell_setup_hold)
+        });
         self.end_focus_reclaim();
         if self.powershell_setup_hold != PowerShellSetupHold::Off {
             self.ctrl_c_during_powershell_setup(ctx);
@@ -13425,6 +13429,9 @@ impl TerminalView {
             let committed = handoff.try_commit_at_prompt();
             (committed, handoff.is_pty_owned())
         };
+        warpui::input_order::log_hop("handoff_commit_at_prompt", || {
+            format!("committed={committed} still_pty_owned={still_pty_owned}")
+        });
         if committed {
             self.handle_typeahead_handoff_changed(ctx);
         }
@@ -14072,6 +14079,9 @@ impl TerminalView {
             )
         };
         self.drain_young_hold_ends(ctx);
+        warpui::input_order::log_hop("ctrl_c_handoff", || {
+            format!("outcome={outcome:?} barrier={barrier} awaiting_cycle={awaiting_cycle}")
+        });
         if outcome == InterruptOutcome::NotOwned {
             return;
         }
