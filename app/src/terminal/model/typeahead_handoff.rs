@@ -1529,6 +1529,20 @@ impl TypeaheadHandoff {
         ) || self.untracked_bytes_uncovered()
     }
 
+    /// Whether the shell's line may hold typed text right now (#1562): keys were delivered to
+    /// the pty and no Enter, ^C or ^U has ended the line since, or untracked user bytes sit in
+    /// it. A setup write (ssh warpify, subshell bootstrap) must not land on such a line: it
+    /// would be appended to it, or would have to kill it.
+    pub fn shell_line_may_hold_typed_text(&self) -> bool {
+        matches!(
+            self.state,
+            HandoffState::PtyOwned {
+                wrote_user_bytes: true,
+                ..
+            }
+        ) || self.untracked_bytes_uncovered()
+    }
+
     /// Untracked user bytes (#1089) are in the shell's line and no request has been written
     /// behind them (#1104): a queued command's kill prefix would destroy them unreported.
     fn untracked_bytes_uncovered(&self) -> bool {
@@ -1852,11 +1866,24 @@ impl TypeaheadHandoff {
         }
         // The command's prompt: the wait above holds the keys from here (#1490).
         self.enter_window_since = None;
-        warpui::input_order::log_hop("precmd_seen", String::new);
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Precmd);
         self.interrupt_awaiting_cycle = false;
         let consumed_by_program = mem::take(&mut self.interactive_command_finished);
         let seq_mode = self.prompt_seq_mode();
+        // #1552: shows which of the two blocked the correction below on a Git Bash session.
+        warpui::input_order::log_hop("precmd_seen", || {
+            let (enters, precmds) = match &self.state {
+                HandoffState::PtyOwned {
+                    enters_written,
+                    precmds_seen,
+                    ..
+                } => (*enters_written, *precmds_seen),
+                _ => (0, 0),
+            };
+            format!(
+                "consumed={consumed_by_program} seq_mode={seq_mode} enters={enters} precmds={precmds}"
+            )
+        });
         if let HandoffState::PtyOwned {
             precmds_seen,
             enters_written,
@@ -2936,6 +2963,10 @@ fn scan_line_terminators(bytes: &[u8], mut dirty: bool) -> (u32, bool) {
     for byte in bytes {
         if matches!(byte, b'\r' | b'\n') {
             enters = enters.saturating_add(1);
+            dirty = false;
+        } else if matches!(byte, 0x03 | 0x15) {
+            // ^C and ^U end the line as the tty does (flush / kill): not an Enter, but the
+            // line no longer holds typed text (#1562).
             dirty = false;
         } else {
             dirty = true;

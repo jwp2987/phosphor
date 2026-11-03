@@ -26579,3 +26579,8 @@ mod group1_handover_tests;
 // reason as group 1.
 #[path = "view/group3_paste_tests.rs"]
 mod group3_paste_tests;
+
+// Group 4 (setup writes vs delivered keys, focus-gap control keys). Declared here for the same
+// reason as group 1.
+#[path = "view/group4_prompt_tests.rs"]
+mod group4_prompt_tests;
