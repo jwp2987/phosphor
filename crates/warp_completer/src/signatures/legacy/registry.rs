@@ -286,7 +286,7 @@ impl CommandRegistry {
             // #1342: a token that cannot be an alias is not looked up (each lookup is a process,
             // on Windows a PowerShell as well): `git config --global alias.zz x` used to look up
             // `config`, `--global` and `alias.zz` as if they were subcommands.
-            let may_be_alias = can_be_alias(curr_signature, token, signature_start_idx);
+            let may_be_alias = can_be_alias(signature, curr_signature, token, signature_start_idx);
             if let Some(alias) = may_be_alias
                 .then(|| {
                     curr_signature
@@ -587,7 +587,19 @@ fn is_completed_options_terminator(
 /// documentation says "aliases that hide existing Git commands are ignored"), or when the
 /// signature was reached by descending into a subcommand that has no subcommands of its own, so
 /// the token is that subcommand's argument.
-fn can_be_alias(curr_signature: &Signature, token: &str, signature_start_idx: usize) -> bool {
+///
+/// Owner decision on #1342: this narrowing is for git only (`root_signature` is the top-level
+/// command's signature). Every other tool keeps the old behaviour, where any token may be an
+/// alias.
+fn can_be_alias(
+    root_signature: &Signature,
+    curr_signature: &Signature,
+    token: &str,
+    signature_start_idx: usize,
+) -> bool {
+    if root_signature.name() != "git" {
+        return true;
+    }
     if token.starts_with('-') {
         return false;
     }

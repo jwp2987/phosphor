@@ -498,12 +498,12 @@ fn test_registered_commands_unaffected_by_oversized_lookups() {
 fn test_alias_candidates_exclude_options_real_subcommands_and_leaf_arguments() {
     let git = warp_command_signatures::signature_by_name("git")
         .expect("global command signatures should include 'git'");
-    assert!(!super::can_be_alias(&git, "--global", 0));
-    assert!(!super::can_be_alias(&git, "-C", 0));
-    assert!(!super::can_be_alias(&git, "config", 0));
-    assert!(!super::can_be_alias(&git, "status", 0));
-    assert!(super::can_be_alias(&git, "zz", 0));
-    assert!(super::can_be_alias(&git, "co", 0));
+    assert!(!super::can_be_alias(&git, &git, "--global", 0));
+    assert!(!super::can_be_alias(&git, &git, "-C", 0));
+    assert!(!super::can_be_alias(&git, &git, "config", 0));
+    assert!(!super::can_be_alias(&git, &git, "status", 0));
+    assert!(super::can_be_alias(&git, &git, "zz", 0));
+    assert!(super::can_be_alias(&git, &git, "co", 0));
 
     let config = git
         .subcommands()
@@ -512,6 +512,24 @@ fn test_alias_candidates_exclude_options_real_subcommands_and_leaf_arguments() {
         .expect("git has a config subcommand");
     if config.subcommands().is_empty() {
         // Reached by descending into `config`: `alias.zz` is its argument.
-        assert!(!super::can_be_alias(config, "alias.zz", 1));
+        assert!(!super::can_be_alias(&git, config, "alias.zz", 1));
     }
+}
+
+/// #1342 owner decision: the narrowing is git-only. A tool with an alias generator other than
+/// git (here a clone of git's signature under another name) keeps the old rule: every token,
+/// options and real subcommands included, may be an alias.
+#[test]
+fn test_alias_candidate_narrowing_is_git_only() {
+    let git = warp_command_signatures::signature_by_name("git")
+        .expect("global command signatures should include 'git'");
+    assert!(!super::can_be_alias(&git, &git, "status", 0));
+
+    let mut other = warp_command_signatures::signature_by_name("git")
+        .expect("global command signatures should include 'git'");
+    other.name = "not-git".to_owned();
+    assert!(super::can_be_alias(&other, &other, "--global", 0));
+    assert!(super::can_be_alias(&other, &other, "config", 0));
+    assert!(super::can_be_alias(&other, &other, "status", 0));
+    assert!(super::can_be_alias(&other, &other, "zz", 0));
 }
