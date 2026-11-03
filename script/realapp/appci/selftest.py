@@ -423,6 +423,16 @@ def idle_schedule_and_loss_bound():
     assert lat.trials_to_exclude(1 / 40) == 119
 
 
+@check
+def keydown_audit_counts_plain_keys_and_flags_doubles():
+    ln = lambda k, t, ctrl="false", shift="false": "input_order keydown key=%s ctrl=%s alt=false shift=%s cmd=false t=%s seq=1\n" % (k, ctrl, shift, t)
+    ok = ln("g", 1000.0) + ln("i", 1020.5) + ln("t", 1041.0) + ln("Shift", 1050.0, shift="true") + ln("c", 1060.0, ctrl="true") + ln("Enter", 1080.0)
+    a = cases.keydown_audit("junk\n" + ok)
+    assert a["count"] == 4 and a["dups"] == [], a            # ctrl press and the bare Shift are not typed keys
+    d = cases.keydown_audit(ln("a", 1000.0) + ln("a", 1000.4) + ln("b", 1030.0) + ln("b", 1060.0))   # 0.4 ms apart = the #1159 signature; 30 ms apart = a real repeat
+    assert d["count"] == 4 and d["dups"] == [("a", 1000.4, 0.4)], d
+
+
 def main():
     failed = 0
     for f in CHECKS:

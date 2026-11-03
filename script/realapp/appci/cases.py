@@ -2091,6 +2091,77 @@ def c_lat_paint(ctx, r):
             r.check(statistics.median(ds) <= 120, "key->paint median %.1f ms > 120 ms sanity bound (no reference measured)" % statistics.median(ds))
 
 
+# ---------------------------------------------------------------- keydown count == keys sent (#1159)
+KEYDOWN_KEY_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(true|false) cmd=(true|false) t=(\d+(?:\.\d+)?)")
+MODIFIER_KEYS = {"shift", "control", "ctrl", "alt", "option", "meta", "super", "command", "cmd", "capslock", "fn"}
+
+
+def keydown_audit(txt, dup_ms=2.0):
+    """#1159: the app log's own count of plain key presses. -> dict(count, dups): `count` = `input_order keydown` lines without ctrl/alt/cmd and not for a
+    bare modifier key (Shift of a capital is not a typed key); `dups` = [(key, t_ms, dt_ms)] consecutive presses of the SAME key less than `dup_ms`
+    apart (the #1159 signature: the extra keydown arrived ~0.4 ms after the real one; a human or injector at >= 12 ms/key never repeats a key that fast)."""
+    ks = []
+    for m in KEYDOWN_KEY_RE.finditer(txt):
+        key, ctrl, alt, _shift, cmd, t = m.groups()
+        if ctrl == "true" or alt == "true" or cmd == "true" or key.lower() in MODIFIER_KEYS:
+            continue
+        ks.append((key, float(t)))
+    dups = [(k2, t2, round(t2 - t1, 2)) for (k1, t1), (k2, t2) in zip(ks, ks[1:]) if k1 == k2 and 0 <= t2 - t1 < dup_ms]
+    return dict(count=len(ks), dups=dups)
+
+
+@case("keydown_count", order=14, gui=True)
+def c_keydown_count(ctx, r):
+    """#1159: N known lines typed at 12-30 ms/key (alternating plain typing and the injector's rollover, where it has one: ctx.be.roll = overlapping key-down/key-up on
+    macOS htype2 `r:`, the backend's own approximation elsewhere), then (1) the number of plain `input_order keydown` lines in the app log must equal the keys sent (every
+    character plus Enter), with no same-key repeat < 2 ms apart, and (2) the shell must have received every line exactly (effect file; rec.log where the pane has one).
+    Full tier only. A doubled keydown is an app/OS-delivery fault; a SHORT count with exact text would mean logging missed a key, a short count with wrong text is key loss."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.skip("no app log at %s (set APPCI_APP_LOG): the keydown count is read from the app's input_order log" % ctx.log_path)
+    shell = ctx.pane_shell()
+    fname = "kd.txt"
+    ctx.rm(fname)
+    n = ctx.count(20)
+    ctx.reset()
+    time.sleep(0.5)
+    mark = ctx.cmd_mark()
+    off = ctx.log_size()
+    exp, cmds, sent, how = [], [], 0, {"roll": 0, "type": 0}
+    for i in range(n):
+        tok = "".join(ctx.rng.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(12))
+        cmd = ctx.append_cmd(shell, tok, fname)
+        exp.append(tok)
+        cmds.append(cmd)
+        gap = ctx.rng.randint(12, 30)
+        if i % 2:
+            ctx.be.roll(cmd, overlap_ms=gap, enter=True)
+            how["roll"] += 1
+        else:
+            ctx.be.type(cmd, gap, enter=True)
+            how["type"] += 1
+        sent += len(cmd) + 1
+        time.sleep(ctx.rng.choice([0.05, 0.2]))
+    ctx.until(lambda: len(ctx.lines(fname)) >= n, 20 + n * 0.5)
+    time.sleep(1.0)
+    got = ctx.lines(fname)
+    aud = keydown_audit(ctx.log_since(off))
+    r.metric("keys_sent", sent)
+    r.metric("keydowns_logged", aud["count"])
+    r.metric("injection", how)
+    if aud["count"] == 0:
+        r.check(False, "no `input_order keydown` line at all in %s for %d keys sent: input_order logging off, wrong log path, or the keys never reached the app" % (ctx.log_path, sent))
+        return
+    r.check(aud["count"] == sent, "keydown count %d != keys sent %d (%+d): %s" % (aud["count"], sent, aud["count"] - sent,
+            "EXTRA keydowns (the #1159 doubled-delivery signature)" if aud["count"] > sent else "keydowns missing from the app log (lost before the app, or not logged)"))
+    r.check(not aud["dups"], "same key pressed twice < 2 ms apart %d time(s): %s" % (len(aud["dups"]), aud["dups"][:5]))
+    r.check(got == exp, "received text not exact: %d/%d lines; first mismatch %s" % (
+        len(got), n, next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))
+    if ctx.prof.commands():
+        have = ctx.cmds_since(mark)
+        r.check(have == cmds, "shell rec.log: %d/%d commands exact; first mismatch %s" % (
+            sum(1 for a, b in zip(cmds, have) if a == b), n, next(((a, b) for a, b in zip(cmds + [None], have + [None]) if a != b), None)))
+
+
 # ---------------------------------------------------------------- first key after idle (#1160)
 IDLE_GAPS = (1.0, 2.0, 5.0)
 IDLE_BLOCK = 10      # samples per side before the A/B order flips (macOS: a focus switch between Phosphor and Terminal.app costs ~1 s, so not per sample)
