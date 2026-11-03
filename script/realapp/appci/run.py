@@ -11,7 +11,7 @@
 import argparse, json, os, re, shutil, subprocess, sys, time, traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import backend, cases, injacct, profile, sshd, winmap, app as appmod  # noqa: E402
+import backend, cases, deadline, injacct, profile, sshd, winmap, app as appmod  # noqa: E402
 
 
 def skip_status(r, why):
@@ -190,6 +190,8 @@ def main():
             f.write(json.dumps(row) + "\n")
         emitted.add((row["mode"], row["name"]))
         print(ci_env.redact(row_log_line(row), ollama_url), flush=True)
+        for e in (row.get("evidence") or []):
+            print(ci_env.redact("    evidence: " + e, ollama_url), flush=True)
         write_partial_report(run, a)      # r18d8: a killed job still leaves every finished row in results.json/summary.md/junit.xml
 
     be = None if sim else backend.make(a.backend)
@@ -219,6 +221,12 @@ def main():
     crashed_exit = None
     case_timeout = float(os.environ.get("APPCI_CASE_TIMEOUT", "1500"))
     passes = [(m, p) for m in a.modes.split(",") for p in panes]
+    clock = deadline.Clock()      # the job's own time budget: no new case starts when too little is left (r18e0: killed by the job timeout, artifacts lost)
+    print("[deadline] " + clock.describe(), flush=True)
+
+    def case_limit(name):
+        return max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if name == "soak" else case_timeout
+
     for mode, pane in passes:
         # per-mode fresh profile + app: settings differ (default_session_mode). Windows: once per pane shell too (label = terminal | terminal@gitbash)
         label = mode if pane in (None, "powershell") else "%s@%s" % (mode, pane)
@@ -227,6 +235,18 @@ def main():
         ssh_why = None       # why the ssh cases skip when there is no usable ssh test host
         app = None
         instance = 1       # app instance number within this mode: each instance's log is kept as phosphor.<n>.log (#1457)
+        if not clock.allows(0)[0]:
+            # a pass that would start with (almost) no budget left: no app launch, every case of the pass gets its explicit skip row
+            why = clock.allows(0)[1]
+            print("[deadline] %s: pass %s not started: %s" % (time.strftime("%H:%M:%S"), label, why), flush=True)
+            clock.logged_stop = True
+            tn = None
+            if win and not explicit_cases:
+                tn, _o = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE)
+            for c in sel:
+                if mode in c["modes"] and (tn is None or c["name"] in tn):
+                    emit(dict(name=c["name"], mode=label, status="skip", seconds=0, detail=[why], metrics={}, shots=[]))
+            continue
         try:
             prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b')
             ssh_info = None if sim else sshd.start(prof, run)
@@ -293,6 +313,13 @@ def main():
                     continue
                 if tier_names is not None and c["name"] not in tier_names:
                     continue
+                ok_t, why_t = clock.allows(case_limit(c["name"]))
+                if not ok_t:
+                    if not clock.logged_stop:
+                        clock.logged_stop = True
+                        print("[deadline] %s: STOP starting cases in %s: %s; every remaining case gets a skip row" % (time.strftime("%H:%M:%S"), label, why_t), flush=True)
+                    emit(dict(name=c["name"], mode=label, status="skip", seconds=0, detail=[why_t], metrics={}, shots=[]))
+                    continue
                 if win:
                     why = winmap.skip_reason(c["name"], pane)
                     if why:          # explicit, per pane: never a silent omission
@@ -311,6 +338,7 @@ def main():
                 t0 = time.time()
                 ctx.t_case0 = t0
                 k_start = len(be.calls) if getattr(be, "calls", None) is not None else None     # injector accounting (#1509)
+                log_off = ctx.log_size() if (ctx.log_path and not sim) else None      # job-log evidence: the app-side Enter destinations of THIS case
                 status = "pass"
                 # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
                 disarm = arm_case_timeout(max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if c["name"] == "soak" else case_timeout)
@@ -346,11 +374,12 @@ def main():
                 for ev in (be.drain_health() if hasattr(be, "drain_health") else []):
                     r.note(ev + " (key loss in this case is the INJECTOR's, not the app's)")
                 shot = None if sim else ctx.shot(c["name"] + ("_FAIL" if status == "fail" else ""))
+                evidence = case_evidence(c["name"], r, ctx, log_off)
                 dead = app.death() if hasattr(app, "death") else (None if app is None or app.alive() else "APP DIED during/after this case (crash): see logs/app.stdout")
                 if dead:
                     status = "fail"
                     r.fails.append(dead)
-                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1),
+                    emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence,
                               detail=r.fails + r.notes, metrics=r.metrics, shots=[shot] if shot else []))
                     exit_fail = True
                     keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)   # the relaunch overwrites phosphor.log (#1457)
@@ -367,7 +396,7 @@ def main():
                     exit_fail = True
                     if win:     # the rotating app log keeps only its newest part: save this failing case's lines now, plus the ssh logs (r18cj: the evidence was gone)
                         save_case_log(run, label, c["name"], t0, prof, ctx, app, ollama_url)
-                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1),
+                emit(dict(name=c["name"], mode=label, status=status, seconds=round(time.time() - t0, 1), evidence=evidence,
                           detail=(r.fails or []) + r.notes, metrics=r.metrics, shots=[os.path.relpath(shot, run)] if shot else []))
                 if c["name"].startswith(("ssh_", "remote_")):
                     # r18ct: a failed nested-ssh case left the pane inside the remote shell, and the next case (latency_enter) typed a zsh-only
@@ -473,8 +502,18 @@ def main():
                 crashed_exit = e.code if e.code is not None else 143
         finally:
             if app:
+                pid_before = None
+                try:
+                    pid_before = app.pid()
+                except Exception:
+                    pass
                 app.stop()
+                try:
+                    print("teardown[%s]: app pid %s %s" % (label, pid_before, "STILL RUNNING after stop" if app.alive() else "stopped (gone)"), flush=True)
+                except Exception as e:
+                    print("teardown[%s]: app pid %s stop status unknown: %r" % (label, pid_before, e), flush=True)
             sshd.stop(ssh_info)
+            print("teardown[%s]: test sshd %s" % (label, "stopped" if ssh_info else "was not running"), flush=True)
             if sim and be:
                 be.close()
             logs = os.path.join(run, "logs", label)
@@ -504,6 +543,8 @@ def main():
                 exit_fail = exit_fail or bool(untagged)
             if os.path.exists(run + "/app.stdout"):
                 os.remove(run + "/app.stdout")
+            if not sim:
+                cleanup_scratch(label, prof, run)
         if crashed_exit is not None:
             break
         if not win and not exit_fail:
@@ -564,7 +605,7 @@ def launch_errors(src, ollama_url, limit=8):
         return ["app log unreadable at launch failure: %s" % e]
     if not lines:
         return ["app log (%s): no error line" % (src or "not found")]
-    return ["app log: " + ci_env.redact(l.strip(), ollama_url)[:300] for l in lines[-limit:]]
+    return ["app log: " + ci_env.redact(l.strip(), ollama_url) for l in lines[-limit:]]
 
 
 def log_src(prof, backend_name, app=None):
@@ -673,6 +714,84 @@ def row_log_line(row):
     if rest:
         line += "; " + "; ".join(rest)[:200]
     return line
+
+
+def cleanup_scratch(label, prof, run):
+    """end-of-pass cleanup evidence (all platforms; the logs were copied above): remove the scratch HOME and ctl dirs, then audit for leftover
+    processes whose command line names this run dir. Prints what it did; never raises."""
+    try:
+        gone, kept = [], []
+        for d in (prof.home, prof.ctl, prof.rctl, prof.refctl, prof.rhome):
+            if not os.path.isdir(d):
+                continue
+            shutil.rmtree(d, ignore_errors=True)
+            (kept if os.path.exists(d) else gone).append(os.path.basename(d))
+        print("teardown[%s]: scratch dirs removed: %s%s" % (label, ",".join(gone) or "none", ("; COULD NOT REMOVE: " + ",".join(kept)) if kept else ""), flush=True)
+    except Exception as e:
+        print("teardown[%s]: scratch removal failed: %r" % (label, e), flush=True)
+    try:
+        left = leftover_processes(run)
+        print("teardown[%s]: leftover processes naming %s: %s" % (label, run, "; ".join(left) if left else "none"), flush=True)
+    except Exception as e:
+        print("teardown[%s]: leftover-process audit failed: %r" % (label, e), flush=True)
+
+
+def leftover_processes(run):
+    """['pid command'] of processes (other than this harness and the audit itself) whose command line contains the run dir"""
+    if os.name == "nt":
+        ps = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*%s*' } | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.CommandLine }" % run.replace("'", "''")
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60).stdout
+        rows = [l.strip() for l in out.splitlines() if l.strip()]
+        return [l[:200] for l in rows if not l.startswith("%d " % os.getpid()) and "Get-CimInstance" not in l and "run.py" not in l]
+    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True, timeout=30).stdout
+    res = []
+    for l in out.splitlines():
+        l = l.strip()
+        if run in l and not l.startswith("%d " % os.getpid()) and "run.py" not in l and not l.split(None, 1)[1].startswith("ps "):
+            res.append(l[:200])
+    return res
+
+
+def host_load():
+    """'loadavg1=1.23 cpus=12' (Windows has no loadavg: cpus only)"""
+    try:
+        la = "loadavg1=%.2f " % os.getloadavg()[0]
+    except (OSError, AttributeError):
+        la = "loadavg1=n/a "
+    return la + "cpus=%s" % (os.cpu_count() or "?")
+
+
+def enter_summary(types):
+    """'enter_route: 12 Return(s) at the app: Shell=11 AI=1 [Shell,Shell,...]' from the input_type of every hop=enter_begin of a case"""
+    if not types:
+        return None
+    cnt = {}
+    for t in types:
+        cnt[t] = cnt.get(t, 0) + 1
+    seq = ",".join(types[:40]) + (",..." if len(types) > 40 else "")
+    return "enter_route: %d Enter(s) reached the input editor: %s [%s]" % (len(types), " ".join("%s=%d" % kv for kv in sorted(cnt.items())), seq)
+
+
+def case_evidence(name, r, ctx, log_off):
+    """r18e0 validators had only the job log: lines printed under the row for mode_proof (logged view mode + OCR marker booleans), for any case
+    whose app log shows Enters (the destination summary) and for every latency row (host load). Never raises."""
+    ev = []
+    try:
+        m = r.metrics or {}
+        if name == "mode_proof":
+            ev.append("mode_proof: log_view_mode=%s ocr_agent_markers=%s ocr_terminal_hint=%s queue_destination=%s" % (
+                m.get("log_view_mode"), m.get("ocr_agent_markers"), m.get("ocr_terminal_hint"), m.get("queue_destination")))
+        if log_off is not None:
+            import cases_caseagent as ca
+            es = enter_summary(ca.enter_begin_types(ctx.log_since(log_off)))
+            if es:
+                ev.append(es)
+        if name.startswith("latency") or m.get("lat"):
+            ev.append("host load after the case: " + host_load())
+            r.metrics["host_load"] = host_load()
+    except Exception as e:
+        ev.append("evidence capture failed: %r" % (e,))
+    return ev
 
 
 def write_partial_report(run, a):

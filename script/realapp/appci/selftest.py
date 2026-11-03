@@ -642,6 +642,37 @@ def lifecycle_full_log_line_and_incremental_report():
         shutil.rmtree(d, ignore_errors=True)
 
 
+@check
+def deadline_stops_new_cases_and_report_line_untruncated():
+    """r18e0: the run's own time budget (no new case when too little is left, explicit skip text) and the full first-failure line in the report table"""
+    import deadline
+    env = {"CI_JOB_TIMEOUT": "5400", "CI_JOB_STARTED_AT": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(1_000_000))}
+    c = deadline.Clock(env, now=1_000_000 + 60)
+    assert c.budget == 5400 and c.start == 1_000_000 and c.start_src == "CI_JOB_STARTED_AT", (c.budget, c.start)
+    assert c.allows(1500, now=1_000_000 + 60)[0]                                  # 89 min left, needs 25 + 5
+    ok, why = c.allows(1500, now=1_000_000 + 5400 - 29 * 60)                       # 29 min left < 30 needed
+    assert not ok and "not run: job time budget (29 min left" in why, why
+    assert c.allows(0, now=1_000_000 + 5400 - 29 * 60)[0]                          # a 10 min margin case still fits
+    assert not c.allows(0, now=1_000_000 + 5400 - 14 * 60)[0] and not c.allows(0, now=1_000_000 + 9999)[0]
+    assert deadline.Clock({"APPCI_DEADLINE_S": "100", "CI_JOB_TIMEOUT": "5400"}).budget == 100            # the explicit variable wins
+    n = deadline.Clock({}, now=5)
+    assert n.budget is None and n.allows(99999)[0] and n.left() is None            # no budget: never stops a local run
+    f = deadline.Clock({"CI_JOB_TIMEOUT": "600", "CI_JOB_STARTED_AT": "2001-01-01T00:00:00Z"}, now=1_000_000)
+    assert f.start_src == "process start"                                          # an implausible start (older than the budget) is ignored
+    d = tempfile.mkdtemp()
+    try:
+        long = "first failure " + "z" * 700
+        open(os.path.join(d, "results.jsonl"), "w").write(json.dumps(dict(name="a", mode="agent", status="fail", seconds=1, detail=[long, "y" * 400])) + "\n")
+        out = subprocess.run([sys.executable, os.path.join(HERE, "report.py"), d, "platform=linux"], capture_output=True, text=True).stdout
+        assert long in out and "y" * 161 not in out, "the first failure must be in the summary table in full, the rest capped"
+        assert long in open(os.path.join(d, "summary.md")).read()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    import run as runmod
+    assert runmod.enter_summary([]) is None and "AI=1 Shell=2" in runmod.enter_summary(["Shell", "AI", "Shell"])
+    assert runmod.host_load().startswith("loadavg1=") and "cpus=" in runmod.host_load()
+
+
 def main():
     failed = 0
     for f in CHECKS:

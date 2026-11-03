@@ -21,15 +21,22 @@ CAFF=""; PYPID=""; KTAP=""; DONE=0
 killif() {   # killif PID SUBSTRING: signal PID only when its command line contains SUBSTRING
   local p="$1" pat="$2" cmd; [ -n "$p" ] || return 0
   cmd=$(ps -o command= -p "$p" 2>/dev/null) || return 0
-  case "$cmd" in *"$pat"*) kill "$p" 2>/dev/null; sleep 1; kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null;; esac; return 0; }
+  case "$cmd" in *"$pat"*) kill "$p" 2>/dev/null; sleep 1
+    if kill -0 "$p" 2>/dev/null; then kill -9 "$p" 2>/dev/null; echo "cleanup: pid $p ($pat) needed SIGKILL"; else echo "cleanup: pid $p ($pat) stopped"; fi;;
+  *) echo "cleanup: pid $p is no longer ours (command line does not contain $pat): left alone";; esac; return 0; }
 cleanup() {
   [ "$DONE" = 1 ] && return; DONE=1
-  if [ -n "$PYPID" ] && kill -0 "$PYPID" 2>/dev/null; then kill "$PYPID" 2>/dev/null; for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 "$PYPID" 2>/dev/null || break; sleep 1; done; kill -9 "$PYPID" 2>/dev/null; fi
+  echo "cleanup: begin ($(date '+%H:%M:%S'))"
+  if [ -n "$PYPID" ] && kill -0 "$PYPID" 2>/dev/null; then echo "cleanup: run.py pid $PYPID still running: SIGTERM (it flushes results and stops the app)"; kill "$PYPID" 2>/dev/null; for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 "$PYPID" 2>/dev/null || break; sleep 1; done; kill -0 "$PYPID" 2>/dev/null && { echo "cleanup: run.py pid $PYPID needed SIGKILL"; kill -9 "$PYPID" 2>/dev/null; }; fi
   for f in "$OUT/pids" "$OUT/run/pids"; do [ -f "$f" ] && while read -r kind p _; do [ "$kind" = app ] && killif "$p" "${BIN:-/nonexistent}"; done < "$f"; done
   [ -f "$OUT/run/ssh/sshd.pid" ] && killif "$(cat "$OUT/run/ssh/sshd.pid" 2>/dev/null)" "$OUT/run/ssh/sshd_config"
-  [ -n "$CAFF" ] && kill "$CAFF" 2>/dev/null
+  [ -n "$CAFF" ] && { kill "$CAFF" 2>/dev/null; echo "cleanup: caffeinate pid $CAFF stopped"; }
   [ -n "$KTAP" ] && killif "$KTAP" "$OUT/ktap.log"
-  hdiutil detach "$OUT/mnt" -quiet 2>/dev/null; true; }
+  if hdiutil detach "$OUT/mnt" -quiet 2>/dev/null; then echo "cleanup: DMG detached from $OUT/mnt"; else echo "cleanup: DMG mount $OUT/mnt not attached (nothing to detach)"; fi
+  # audit: anything still alive whose command line names this job's out dir (the app bundle, tools, sshd) is reported, never killed here (teardown.sh in after_script owns that)
+  left=$(ps -axo pid=,command= 2>/dev/null | grep -F "$OUT" | grep -v "grep -F" | grep -v "app_test.sh" | cut -c1-160)
+  if [ -n "$left" ]; then echo "cleanup: leftover processes naming $OUT:"; echo "$left" | sed 's/^/cleanup:   /'; else echo "cleanup: leftover processes naming $OUT: none"; fi
+  true; }
 trap cleanup EXIT
 trap 'cleanup; exit 143' TERM INT HUP
 fail3() { echo "NEEDS OWNER: $*" | tee "$OUT/NEEDS_OWNER.txt"; 

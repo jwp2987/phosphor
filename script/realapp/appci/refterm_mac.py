@@ -73,19 +73,24 @@ def quit_if_ours():
         late = [p for p in terminal_pids() if (_started_epoch(p) or 0) >= _state["t0"] - 1 and p != _state["pre_pid"]]
         pid = late[0] if len(late) == 1 else None
     if not pid:
+        print("teardown: Terminal.app reference: none launched by this run (%s)" % ("a Terminal.app that was already running is left open" if _state["was_running"] else "no reference window was opened"), flush=True)
         return
     _state["pid"] = None
     if pid not in terminal_pids():          # gone already, or the PID now belongs to something else
+        print("teardown: Terminal.app reference pid %s already gone (its windows closed with it)" % pid, flush=True)
         return
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
+        print("teardown: Terminal.app reference pid %s could not be signalled" % pid, flush=True)
         return
     for _ in range(10):
         time.sleep(0.5)
         if pid not in terminal_pids():
+            print("teardown: Terminal.app reference pid %s quit by SIGTERM (all its reference windows closed)" % pid, flush=True)
             return
     try:
         os.kill(pid, signal.SIGKILL)
+        print("teardown: Terminal.app reference pid %s needed SIGKILL (windows closed with the process)" % pid, flush=True)
     except OSError:
         pass

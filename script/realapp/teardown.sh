@@ -74,7 +74,7 @@ for out in "$@"; do
     started=$(LC_ALL=C ps -o lstart= -p "$p" 2>/dev/null | python3 -c 'import sys,time; print(int(time.mktime(time.strptime(sys.stdin.read().strip(), "%a %b %d %H:%M:%S %Y"))))' 2>/dev/null)
     [ -n "$started" ] && [ -n "$born" ] && [ "$started" -ge "$born" ] && ours="$ours $p"
   done
-  [ -n "$ours" ] || { echo "teardown $out: nothing left running"; continue; }
+  [ -n "$ours" ] || { echo "teardown $out: nothing recorded is left running (no pid of pids/run/pids/sshd.pid is alive and ours)"; continue; }
   echo "teardown $out: stopping$ours"
   pgs=""
   for p in $ours; do   # decide group vs PID BEFORE signalling (a dead leader no longer reports its pgid)
@@ -82,7 +82,12 @@ for out in "$@"; do
   done
   for g in $pgs; do kill -- "-$g" 2>/dev/null; done
   sleep 2
-  for p in $ours; do kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null; done
+  for p in $ours; do kill -0 "$p" 2>/dev/null && { echo "teardown $out: pid $p survived TERM: KILL"; kill -9 "$p" 2>/dev/null; }; done
   for g in $pgs; do kill -0 -- "-$g" 2>/dev/null && kill -9 -- "-$g" 2>/dev/null; done
+  # audit (also on macOS, where this is the after_script): what of the recorded set is still alive, and what else names the out dir
+  alive=""; for p in $ours; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+  echo "teardown $out: recorded processes still alive:${alive:- none}"
+  left=$(ps -axo pid=,command= 2>/dev/null | grep -F "$out" | grep -v "grep -F" | cut -c1-160)
+  if [ -n "$left" ]; then echo "teardown $out: other processes naming it:"; echo "$left" | sed 's/^/teardown:   /'; else echo "teardown $out: no other process names it"; fi
 done
 exit 0
