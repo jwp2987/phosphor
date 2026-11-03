@@ -1718,7 +1718,6 @@ impl CodeEditorModel {
                 selection_model_id,
             } => {
                 let buffer = self.content().as_ref(ctx);
-                let content = buffer.text();
                 if self.should_defer_syntax_tree_parsing() {
                     self.pending_syntax_tree_bootstrap = true;
                 } else {
@@ -1767,9 +1766,14 @@ impl CodeEditorModel {
                     }
                 }
 
-                self.diff.update(ctx, move |diff, ctx| {
-                    diff.compute_diff(content, *buffer_version, ctx)
-                });
+                // The diff needs the whole text; copying a large file's text on every edit for a
+                // model with nothing to diff against is pure waste (#1340).
+                if self.diff.as_ref(ctx).has_base() {
+                    let content = self.content().as_ref(ctx).text();
+                    self.diff.update(ctx, move |diff, ctx| {
+                        diff.compute_diff(content, *buffer_version, ctx)
+                    });
+                }
 
                 // If we are delaying rendering, push these updates to the delay rendering state. Otherwise, flush them to diff and rendering model.
                 if let Some(delay_rendering) = &mut self.delay_rendering {

@@ -544,6 +544,11 @@ impl BufferSnapshot {
         Self { content, byte_len }
     }
 
+    /// Length of the snapshot's content in bytes.
+    pub fn byte_len(&self) -> usize {
+        self.byte_len.as_usize()
+    }
+
     /// Returns a `Bytes` iterator positioned at the start of the content,
     /// suitable for reuse across multiple seeks during tree-sitter parsing.
     pub fn bytes(&self) -> Bytes<'_> {

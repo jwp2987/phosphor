@@ -587,6 +587,11 @@ impl DiffModel {
         self.base.clone()
     }
 
+    /// Whether a base text was set, i.e. whether [`Self::compute_diff`] has anything to compare to.
+    pub fn has_base(&self) -> bool {
+        self.base.is_some()
+    }
+
     /// Given the new content, compute the new set of diff contents.
     pub fn compute_diff(
         &mut self,
