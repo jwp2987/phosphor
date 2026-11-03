@@ -33,12 +33,24 @@ fi
 case "$APPCI_BUILD_JOB_ID" in ''|*[!0-9]*) die "APPCI_BUILD_JOB_ID='$APPCI_BUILD_JOB_ID' is not a job id";; esac
 LOCAL="$ROOT/$APPCI_BUILD_JOB_ID"
 write_record() {
-  mkdir -p appci-out
-  cat > appci-out/reused_build.json <<J
-{"reused_build": {"job_id": $APPCI_BUILD_JOB_ID, "job_name": "${APPCI_BUILD_JOB_NAME:-}", "pipeline_id": "${APPCI_BUILD_PIPELINE_ID:-}", "commit": "${APPCI_BUILD_SHA:-}", "this_pipeline": "$CI_PIPELINE_ID", "this_commit": "$CI_COMMIT_SHA", "fetched": "$1"}}
-J
-  echo "fetch_build: OK. Testing build job $APPCI_BUILD_JOB_ID from pipeline ${APPCI_BUILD_PIPELINE_ID:-?} (commit ${APPCI_BUILD_SHA:-?}), NOT a build of this pipeline's commit $CI_COMMIT_SHA (app-identical by ci_seq.py)."
+  # verify the files FIRST, then record their hashes: results.json (record_reuse.py) names the exact binaries tested (#1501)
   (cd dist && ls -l && { sha256sum -c SHA256SUMS 2>/dev/null || shasum -a 256 -c SHA256SUMS; }) || die "dist/SHA256SUMS check failed"
+  mkdir -p appci-out
+  python3 - "$1" <<'PY' || die "could not write appci-out/reused_build.json"
+import json, os, sys
+sums = {}
+for line in open("dist/SHA256SUMS"):
+    parts = line.split(None, 1)
+    if len(parts) == 2:
+        sums[parts[1].strip().lstrip("*")] = parts[0]
+env = os.environ.get
+rec = {"job_id": int(env("APPCI_BUILD_JOB_ID")), "job_name": env("APPCI_BUILD_JOB_NAME", ""),
+       "pipeline_id": env("APPCI_BUILD_PIPELINE_ID", ""), "commit": env("APPCI_BUILD_SHA", ""),
+       "this_pipeline": env("CI_PIPELINE_ID", ""), "this_commit": env("CI_COMMIT_SHA", ""),
+       "fetched": sys.argv[1], "dist_sha256": sums}
+json.dump({"reused_build": rec}, open("appci-out/reused_build.json", "w"), indent=1)
+PY
+  echo "fetch_build: OK. Testing build job $APPCI_BUILD_JOB_ID from pipeline ${APPCI_BUILD_PIPELINE_ID:-?} (commit ${APPCI_BUILD_SHA:-?}), NOT a build of this pipeline's commit $CI_COMMIT_SHA (app-identical by ci_seq.py)."
 }
 if [ -f "$LOCAL/SHA256SUMS" ]; then
   echo "fetch_build: using the build job $APPCI_BUILD_JOB_ID already on this machine: $LOCAL (no download)"
