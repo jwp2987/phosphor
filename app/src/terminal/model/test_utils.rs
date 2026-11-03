@@ -211,6 +211,7 @@ impl<'a> TestBlockListBuilder<'a> {
             false, /* is_inverted */
             ObfuscateSecrets::No,
             false, /* is_telemetry_enabled */
+            super::key_facts::KeyModelCell::default(),
             self.lazy_restore_min_bytes,
         );
         // This is usually done by the terminal manager after constructing the blocklist,

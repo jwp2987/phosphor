@@ -1218,11 +1218,15 @@ impl TerminalModel {
         shared_session_status: SharedSessionStatus,
         is_dummy_ambient_agent_session: bool,
     ) -> Self {
+        // Shared with both screens: they publish their selection bit to it where the selection
+        // changes (#1411).
+        let key_model = KeyModelCell::default();
         let alt_screen = AltScreen::new(
             sizes.size,
             0, /* max_scroll_limit */
             event_proxy.clone(),
             obfuscate_secrets,
+            key_model.clone(),
         );
         let block_list = BlockList::new(
             restored_blocks,
@@ -1236,6 +1240,7 @@ impl TerminalModel {
             is_inverted,
             obfuscate_secrets,
             is_ai_ugc_telemetry_enabled,
+            key_model.clone(),
         );
 
         Self {
@@ -1251,7 +1256,7 @@ impl TerminalModel {
                 PaneHandoff::from(handoff)
             },
             key_facts: KeyFactsCell::default(),
-            key_model: KeyModelCell::default(),
+            key_model,
             facts_gen: AtomicU64::new(0),
             sticky_output: Default::default(),
             inbox: ModelInbox::default(),

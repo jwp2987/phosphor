@@ -3758,3 +3758,49 @@ fn eager_key_modes_are_republished_by_a_full_reset() {
         terminal.is_alt_screen_active()
     );
 }
+
+// ---- #1411: the selection bits are published where the selection changes ----
+
+/// Both screens tell the key path's copy about their selection the moment it is set or dropped,
+/// under the model's lock, so a Ctrl-C that finds the parser inside the model never copies a
+/// selection that is gone (or ignores one that exists). No slice end and no event is involved.
+#[test]
+fn selection_bits_are_published_where_the_selection_changes() {
+    use crate::terminal::model::blocks::BlockListPoint;
+    let mut terminal = TerminalModel::mock(None, None);
+    let copy = terminal.key_model_cell();
+    let bits = |copy: &KeyModelCell| {
+        let snapshot = copy.load_exact_modes();
+        (
+            snapshot.has_block_list_selection,
+            snapshot.has_alt_screen_selection,
+        )
+    };
+    assert_eq!(bits(&copy), (false, false));
+
+    terminal.block_list_mut().start_selection(
+        BlockListPoint::new(0.0, 0),
+        SelectionType::Simple,
+        Side::Left,
+    );
+    assert_eq!(bits(&copy), (true, false));
+    terminal
+        .alt_screen_mut()
+        .start_selection(Point::new(1, 1), SelectionType::Simple, Side::Left);
+    assert_eq!(bits(&copy), (true, true));
+    terminal.block_list_mut().clear_selection();
+    assert_eq!(bits(&copy), (false, true));
+    terminal.alt_screen_mut().clear_selection();
+    assert_eq!(bits(&copy), (false, false));
+
+    // The clear a Ctrl-C leaves in the inbox (the parser held the model) publishes the same way.
+    terminal
+        .alt_screen_mut()
+        .start_selection(Point::new(1, 1), SelectionType::Simple, Side::Left);
+    assert_eq!(bits(&copy), (false, true));
+    terminal
+        .model_inbox()
+        .post(ModelCommand::ClearAltScreenSelection);
+    terminal.apply_inbox();
+    assert_eq!(bits(&copy), (false, false));
+}

@@ -18600,14 +18600,10 @@ impl TerminalView {
                 }
             }
             ModelEvent::SelectedTextChanged => {
-                {
-                    // Whether Ctrl-C copies or interrupts is decided from this, without the lock.
-                    let model = self.model.lock();
-                    self.key_model.store_selections(
-                        model.block_list().selection().is_some(),
-                        model.alt_screen().selection().is_some(),
-                    );
-                }
+                // The selection bits a Ctrl-C decides on are stored by the block list and the
+                // alt screen where the selection changes, under the model's lock they already
+                // hold (#1411): nothing to read back here, and no lock on the main thread per
+                // drag step.
                 ctx.emit(Event::SelectedTextChanged);
             }
             ModelEvent::ShellSpawned(shell_type) => {

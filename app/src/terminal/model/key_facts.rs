@@ -483,13 +483,16 @@ impl KeyModelSnapshot {
 pub struct KeyModelCell {
     snapshot: Arc<Mutex<KeyModelSnapshot>>,
     eager_modes: Arc<AtomicU32>,
-    /// Bit 0: the block list has a selection; bit 1: the alt screen has one. Stored by the main
-    /// thread when the model reports a selection change, and with every stored snapshot.
+    /// [`SELECTION_BLOCK_LIST`]: the block list has a selection; [`SELECTION_ALT_SCREEN`]: the alt
+    /// screen has one. Stored by the model, under its lock, wherever either selection is set or
+    /// dropped (so exact at the change, like the modes), and with every stored snapshot.
     selections: Arc<AtomicU32>,
 }
 
 const EAGER_VALID: u32 = 1 << 8;
 const EAGER_ALT_SCREEN: u32 = 1 << 7;
+const SELECTION_BLOCK_LIST: u32 = 1 << 0;
+const SELECTION_ALT_SCREEN: u32 = 1 << 1;
 
 impl PublishedKeyModes {
     fn to_eager_bits(self) -> u32 {
@@ -550,12 +553,34 @@ impl KeyModelCell {
         self.eager_modes.store(word, Ordering::Release);
     }
 
-    /// Records whether the model has a text selection (the main thread, on a selection change).
+    /// Records whether the model has a text selection (with every stored snapshot, and by a
+    /// Ctrl-C that read both exactly).
     pub fn store_selections(&self, block_list: bool, alt_screen: bool) {
         self.selections.store(
             u32::from(block_list) | (u32::from(alt_screen) << 1),
             Ordering::Release,
         );
+    }
+
+    /// Records whether the block list has a text selection. Called by the block list, under the
+    /// model's lock, wherever its selection is set or dropped (#1411): exact at the change, so a
+    /// Ctrl-C that finds the parser inside the model reads the selection of this moment.
+    pub fn store_block_list_selection(&self, has_selection: bool) {
+        self.store_selection_bit(SELECTION_BLOCK_LIST, has_selection);
+    }
+
+    /// As [`Self::store_block_list_selection`], for the alt screen (whose parser-side drop,
+    /// `AltScreen::rotate_selection`, sends no event).
+    pub fn store_alt_screen_selection(&self, has_selection: bool) {
+        self.store_selection_bit(SELECTION_ALT_SCREEN, has_selection);
+    }
+
+    fn store_selection_bit(&self, bit: u32, set: bool) {
+        if set {
+            self.selections.fetch_or(bit, Ordering::AcqRel);
+        } else {
+            self.selections.fetch_and(!bit, Ordering::AcqRel);
+        }
     }
 
     /// The key modes as last published (mid-slice or at a slice's end), `None` before the first.
@@ -573,8 +598,8 @@ impl KeyModelCell {
             snapshot.input_box.alt_screen_active = word & EAGER_ALT_SCREEN != 0;
         }
         let selections = self.selections.load(Ordering::Acquire);
-        snapshot.has_block_list_selection = selections & 1 != 0;
-        snapshot.has_alt_screen_selection = selections & 2 != 0;
+        snapshot.has_block_list_selection = selections & SELECTION_BLOCK_LIST != 0;
+        snapshot.has_alt_screen_selection = selections & SELECTION_ALT_SCREEN != 0;
     }
 
     /// The gen of the stored snapshot, without cloning it.
