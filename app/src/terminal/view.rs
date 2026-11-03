@@ -22544,6 +22544,11 @@ impl TerminalView {
     /// that) goes first, then the held keys through the normal hand-over, in order, exactly once.
     /// When no remote shell is provably in front (the ssh block is no longer running) the keys
     /// are handed back as unexecuted text instead; they are never run locally.
+    ///
+    /// #1577 (owner decision 2026-11-03): that delivery is a timer writing a command and the
+    /// user's keys to a pty. By default the keys are handed back here too (the ssh hand-back: the
+    /// input, or kept for it while the ssh block runs) with a toast naming `stty sane`; the #1494
+    /// delivery stays behind `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1`.
     fn hand_held_ssh_typeahead_to_unbootstrapped_remote(
         &mut self,
         is_ssh: bool,
@@ -22576,6 +22581,28 @@ impl TerminalView {
                 self.ssh_held_bytes()
             );
             self.finish_ssh_typeahead(ctx);
+            return;
+        }
+        if !crate::terminal::bootstrap::ssh_bootstrap_giveup_delivers() {
+            // #1577 (owner decision): a timer never writes user bytes or a command to a pty. The
+            // held keys are handed back (to the input, or kept for it while the ssh block runs,
+            // like any ssh hand-back) and nothing is sent: no `stty sane`, no keys.
+            log::warn!(
+                "ssh typeahead: bootstrap failed; handing {} held byte(s) back instead of \
+                 writing them to the remote (#1577; PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1 \
+                 restores the #1494 delivery)",
+                self.ssh_held_bytes()
+            );
+            warpui::input_order::log_key_hop("kh_bootstrap_giveup", || {
+                format!("handed_back held_bytes={}", self.ssh_held_bytes())
+            });
+            self.ssh_remote_prompt_seen = false;
+            self.finish_ssh_typeahead(ctx);
+            self.show_ssh_typing_toast(
+                "SSH setup didn't finish; your typed text was not sent. The remote terminal may \
+                 be in raw mode: run `stty sane` there",
+                ctx,
+            );
             return;
         }
         log::warn!(

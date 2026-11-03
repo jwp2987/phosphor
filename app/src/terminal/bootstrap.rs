@@ -776,6 +776,52 @@ pub fn bootstrap_timed() -> bool {
     *TIMED.get_or_init(|| std::env::var("PHOSPHOR_BOOTSTRAP_TIMED").is_ok_and(|v| v == "1"))
 }
 
+/// Whether an ssh bootstrap that really failed (the 7 s give-up, #1494) still WRITES the held
+/// typing to the remote after a ` stty sane` line: `PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1`.
+/// Off by default (owner decision, #1577): a timer never writes user bytes or a command to a pty,
+/// so the held keys are handed back to the input with a toast instead. A kill switch for #1494's
+/// old behaviour.
+pub fn ssh_bootstrap_giveup_delivers() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = giveup_delivers_forced_for_test() {
+        return forced;
+    }
+    static DELIVERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DELIVERS.get_or_init(|| {
+        std::env::var("PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS").is_ok_and(|v| v == "1")
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What a test forces [`ssh_bootstrap_giveup_delivers`] to on its own thread.
+    static GIVEUP_DELIVERS_FOR_TEST: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn giveup_delivers_forced_for_test() -> Option<bool> {
+    GIVEUP_DELIVERS_FOR_TEST.with(std::cell::Cell::get)
+}
+
+/// Restores the previous forced value when dropped.
+#[cfg(test)]
+#[must_use = "the forced value is restored when the guard drops"]
+pub struct GiveUpDeliversGuard(Option<bool>);
+
+#[cfg(test)]
+impl Drop for GiveUpDeliversGuard {
+    fn drop(&mut self) {
+        GIVEUP_DELIVERS_FOR_TEST.with(|slot| slot.set(self.0));
+    }
+}
+
+/// Forces [`ssh_bootstrap_giveup_delivers`] on the calling thread until the guard drops.
+#[cfg(test)]
+pub fn set_ssh_bootstrap_giveup_delivers_for_test(on: bool) -> GiveUpDeliversGuard {
+    GiveUpDeliversGuard(GIVEUP_DELIVERS_FOR_TEST.with(|slot| slot.replace(Some(on))))
+}
+
 /// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
 fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
     chunked_eval_lines_with_markers(shell_type, raw_script, None)

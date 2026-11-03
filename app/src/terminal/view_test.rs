@@ -17955,13 +17955,78 @@ fn ssh_pane_with_held_typeahead_for_test(
     assert!(!view.ssh_held_is_empty());
 }
 
-/// #1494: the ssh bootstrap timed out with typing held. The remote shell is alive at a
+/// #1494 / #1577 (owner decision): the ssh bootstrap timed out with typing held and the remote
+/// shell is alive at a non-bootstrapped prompt. A timer no longer writes anything there: no
+/// ` stty sane`, no keys. The held text is handed back (kept for the input while the ssh block
+/// runs, like any ssh hand-back), nothing reaches the pty, nothing runs, and the delivery is not
+/// marked committed. Old behaviour: the kill-switch test below. Legacy and Table.
+#[test]
+fn ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            let _delivers =
+                crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let executed = count_executed_commands(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                ssh_pane_with_held_typeahead_for_test(view, ctx);
+                view.model
+                    .lock()
+                    .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+                view.model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .interactive_latch()
+                    .force(true);
+                assert!(view.is_long_running(), "the bootstrap block is running");
+                view.on_bootstrap_failed_timer_complete((), ctx);
+                assert!(!view.ssh_typeahead_holding, "{mode:?}");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                // The ssh block is still running, so the text is kept for the input (as for any
+                // ssh hand-back); it is never lost and never written.
+                let input = view.input.as_ref(ctx);
+                let kept = input.handed_back_text_for_test().map(str::to_owned);
+                let shown = input.buffer_text(ctx);
+                assert!(
+                    kept.as_deref() == Some("echo hi") || shown == "echo hi",
+                    "{mode:?}: the held text is handed back: kept={kept:?} shown={shown:?}"
+                );
+                assert!(
+                    !view
+                        .model
+                        .lock()
+                        .typeahead_handoff()
+                        .committed_delivery_pending(),
+                    "{mode:?}: nothing was delivered"
+                );
+            });
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: a timer wrote to the pty: {:?}",
+                pty_writes.borrow()
+            );
+            assert_eq!(*executed.borrow(), 0, "{mode:?}: nothing ran");
+        })
+    }
+}
+
+/// #1494 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the ssh bootstrap timed out with
+/// typing held. The remote shell is alive at a
 /// non-bootstrapped prompt (its tty still raw), so the held text is delivered to it -- after a
 /// `stty sane` line, once, in order -- instead of being discarded, and nothing is written to the
 /// local shell. (Against the old behaviour nothing was delivered at all.)
 #[test]
-fn ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane() {
+fn ssh_bootstrap_failure_under_the_kill_switch_delivers_held_typeahead_after_stty_sane() {
     App::test((), |mut app| async move {
+        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -18140,11 +18205,61 @@ fn stale_bootstrap_timer_from_an_earlier_connect_does_not_fail_a_later_one() {
     }
 }
 
-/// #1566: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes, the
-/// second expiry runs the #1494 path (held text delivered after `stty sane`, once).
+/// #1566 / #1577: the deferral is one grace, not an escape hatch: if `Bootstrapped` never comes,
+/// the second expiry fails the session, and (owner decision) hands the held text back instead of
+/// writing it after `stty sane`: nothing reaches the pty. The kill-switch copy is below.
 #[test]
 fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
     App::test((), |mut app| async move {
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(false);
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let terminal = add_window_with_terminal(&mut app, None);
+        // The hand-over writes through the counted route too (`WriteHandoffUserBytesToPty`).
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
+        terminal.update(&mut app, |view, ctx| {
+            ssh_pane_with_held_typeahead_for_test(view, ctx);
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(view.ssh_typeahead_holding);
+            view.on_bootstrap_failed_timer_complete((), ctx);
+            assert!(!view.ssh_typeahead_holding);
+            assert!(view.ssh_held_is_empty());
+            let input = view.input.as_ref(ctx);
+            assert!(
+                input.handed_back_text_for_test() == Some("echo hi")
+                    || input.buffer_text(ctx) == "echo hi",
+                "the held text is handed back"
+            );
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "no `stty sane`, no keys: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
+/// #1566 (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1): the deferral is one grace, not an
+/// escape hatch: if `Bootstrapped` never comes, the second expiry runs the #1494 path (held text
+/// delivered after `stty sane`, once).
+#[test]
+fn ssh_bootstrap_timer_second_expiry_under_the_kill_switch_still_delivers_after_stty_sane() {
+    App::test((), |mut app| async move {
+        // #1577: the old delivery, kept behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1.
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
@@ -23756,11 +23871,15 @@ fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
     }
 }
 
-/// #1574 wiring: the #1494 path (held ssh typeahead delivered to an unbootstrapped remote after
+/// #1574 wiring: the #1494 path (kill switch PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1; held ssh
+/// typeahead delivered to an unbootstrapped remote after
 /// `stty sane`) marks the delivery as final, so the remote's report of that line is not inserted.
 #[test]
 fn the_ssh_bootstrap_failure_delivery_is_marked_final() {
     App::test((), |mut app| async move {
+        // The delivery exists only behind PHOSPHOR_SSH_BOOTSTRAP_GIVEUP_DELIVERS=1 (#1577).
+        let _delivers =
+            crate::terminal::bootstrap::set_ssh_bootstrap_giveup_delivers_for_test(true);
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
