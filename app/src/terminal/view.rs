@@ -956,16 +956,18 @@ const SUBSHELL_SETUP_DEFER_QUIET: Duration = Duration::from_millis(600);
 const SUBSHELL_SETUP_TYPED_HOLD_LIMIT: Duration = Duration::from_secs(90);
 /// How long the keys typed during a PowerShell subshell setup after a complete line stay held
 /// behind the command that line ran, waiting for its prompt (#1048). A command still running
-/// then is slow or interactive, and the rest is written to the pty as its typeahead.
+/// then is slow or interactive. #1577: firing only tells the user the input waits (log + toast);
+/// the keys are released by the command's prompt or by it becoming interactive, never this timer.
 const POWERSHELL_HELD_LINE_GRACE: Duration = Duration::from_secs(2);
 /// How long after a Ctrl-C that skips a PowerShell subshell setup the keys held behind it wait
 /// (#1048): the Windows console flushes its input buffer as it processes the Ctrl-C, and keys
-/// written right behind the ^C were lost with it.
+/// written right behind the ^C were lost with it. Only the legacy timed setup
+/// (`PHOSPHOR_BOOTSTRAP_TIMED`, a kill switch) is paced by this; a marker-paced setup is not.
 const POWERSHELL_ABORT_SETTLE: Duration = Duration::from_millis(500);
 /// The give-up net behind the marker that ends the settle after a Ctrl-C skipped a marker-paced
 /// PowerShell setup (#1372): the shell prints the marker when PSReadLine is about to read again;
 /// if it never does (the Ctrl-C killed the wrapper's session, a host without the hook), the held
-/// keys are released after this, with a log line.
+/// keys are handed back to the editor as text after this (#1577: never written), with a log line.
 const POWERSHELL_ABORT_MARKER_GIVE_UP: Duration = Duration::from_secs(5);
 /// Duration before we consider a session invoked from an env vars object to
 /// have failed bootstrapping. The longer duration is meant to account for
@@ -2858,7 +2860,8 @@ enum PowerShellSetupHold {
     /// `Bootstrapped` arrived; the keys are delivered at the prompt that follows it.
     AwaitingPrompt,
     /// A held line was submitted as a command; what was typed after it stays held until that
-    /// command's prompt is back (or `POWERSHELL_HELD_LINE_GRACE` passes).
+    /// command's prompt is back (or it becomes interactive); `POWERSHELL_HELD_LINE_GRACE` only
+    /// tells the user the input waits (#1577).
     LineRunning { generation: u64 },
     /// Ctrl-C skipped the setup. The Windows console discards its pending input when it processes
     /// a Ctrl-C, so the keys held meanwhile (and any typed now) go out only once
@@ -12830,11 +12833,13 @@ impl TerminalView {
                         if me.powershell_setup_hold
                             == (PowerShellSetupHold::AfterAbort { generation })
                         {
+                            // #1577: a timer never writes the held keys to the pty. The marker
+                            // event releases them; this give-up hands them back as text.
                             log::warn!(
                                 "PowerShell did not signal it was reading again after the Ctrl-C \
-                                 (setup token {token}); releasing the held keys"
+                                 (setup token {token}); handing the held keys back (#1577)"
                             );
-                            me.end_powershell_abort_wait(generation, ctx);
+                            me.give_up_powershell_abort_wait(generation, ctx);
                         }
                     },
                 );
@@ -12846,9 +12851,12 @@ impl TerminalView {
                 ctx.spawn(Timer::after(POWERSHELL_ABORT_SETTLE), move |me, _, ctx| {
                     if me.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation })
                     {
+                        // #1577: the legacy (kill-switch, timed-setup) path: the only release there
+                        // is, and a timer write by design. Marker-paced setups never get here.
                         log::warn!(
                             "PowerShell setup has no read marker to wait for after the Ctrl-C; \
-                             releasing the held keys after the settle give-up"
+                             releasing the held keys after the settle give-up (legacy timed \
+                             setup, PHOSPHOR_BOOTSTRAP_TIMED; #1577)"
                         );
                     }
                     me.end_powershell_abort_wait(generation, ctx)
@@ -18058,6 +18066,15 @@ impl TerminalView {
             ModelEvent::CommandBecameInteractive { block_id } => {
                 // A program took over the terminal (#1373): the event the "long running"
                 // consumers used to wait 50 ms for.
+                // #1577: the held PowerShell line became a program that reads keys: the keys
+                // typed after it are its typeahead, released in order by this event (the
+                // 2 s grace no longer writes them).
+                if matches!(
+                    self.powershell_setup_hold,
+                    PowerShellSetupHold::LineRunning { .. }
+                ) {
+                    self.release_subshell_setup_held_bytes(ctx);
+                }
                 // #1490: keys the ConPTY enter window held since the Enter are typeahead for this
                 // program, not for the shell's line editor: they are released to it in typed
                 // order, by this event and not by a timer.
@@ -21264,12 +21281,32 @@ impl TerminalView {
         }
     }
 
+    /// #1577: the marker never came within `POWERSHELL_ABORT_MARKER_GIVE_UP`. A timer never writes
+    /// user bytes to the pty: the keys held behind the ^C come back to the editor as text, with
+    /// the Enter guard and a toast. Nothing happens if a later Ctrl-C restarted the wait.
+    fn give_up_powershell_abort_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
+        if self.powershell_setup_hold == (PowerShellSetupHold::AfterAbort { generation }) {
+            self.give_up_setup_gates_to_editor("abort_marker_give_up", ctx);
+        }
+    }
+
     /// The held line `generation` ran was still running after `POWERSHELL_HELD_LINE_GRACE`
-    /// (#1048): a slow or interactive command. What was typed after it is its typeahead, written
-    /// to the pty in order as if typed while it ran. Nothing happens if its prompt already came.
+    /// (#1048): a slow or interactive command. #1577: a timer never writes the keys typed after
+    /// it. They stay held, a toast and a log line say the input waits for the command's prompt,
+    /// and the events release them in order: its prompt (`Precmd`), or the command becoming
+    /// interactive (`CommandBecameInteractive`: a program that reads keys, for which the held
+    /// keys are typeahead). Nothing happens if its prompt already came.
     fn end_powershell_held_line_wait(&mut self, generation: u64, ctx: &mut ViewContext<Self>) {
         if self.powershell_setup_hold == (PowerShellSetupHold::LineRunning { generation }) {
-            self.release_subshell_setup_held_bytes(ctx);
+            log::warn!(
+                "PowerShell held line still running after {} ms; the keys typed after it stay \
+                 held for its prompt (#1577)",
+                POWERSHELL_HELD_LINE_GRACE.as_millis()
+            );
+            warpui::input_order::log_key_hop("kh_powershell_held_line_grace", || {
+                "kept held".to_owned()
+            });
+            self.show_error_toast("Input is waiting for the command's prompt".to_string(), ctx);
         }
     }
 

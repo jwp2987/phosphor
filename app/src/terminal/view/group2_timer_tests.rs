@@ -343,3 +343,71 @@ fn ssh_give_up_with_the_remote_prompt_seen_hands_back_instead_of_delivering() {
         });
     }
 }
+
+/// A9 (#1577): the 2 s grace behind a running PowerShell held line writes nothing (log + toast
+/// only); the command becoming interactive releases the keys typed after it, once, in order.
+#[test]
+fn powershell_held_line_grace_writes_nothing_and_the_interactive_event_releases() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                announce_powershell_setup(view);
+                view.powershell_setup_hold = PowerShellSetupHold::LineRunning { generation: 1 };
+                view.hold_powershell_keys(b"ls".to_vec(), true, ctx);
+                view.end_powershell_held_line_wait(1, ctx);
+                assert_eq!(
+                    view.powershell_setup_hold,
+                    PowerShellSetupHold::LineRunning { generation: 1 },
+                    "still waiting"
+                );
+            });
+            assert!(
+                delivered.borrow().is_empty(),
+                "the grace wrote: {:?}",
+                delivered.borrow()
+            );
+            terminal.update(&mut app, |view, ctx| {
+                let block_id = view.model.lock().active_block_id().clone();
+                view.handle_terminal_event(&ModelEvent::CommandBecameInteractive { block_id }, ctx);
+                assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+            });
+            assert_eq!(*delivered.borrow(), b"ls".to_vec(), "once, in order");
+        });
+    }
+}
+
+/// A9 (#1577): the 5 s marker give-up after a Ctrl-C that skipped a PowerShell setup hands the
+/// held keys back to the editor; it no longer writes them to the pty.
+#[test]
+fn powershell_abort_marker_give_up_hands_the_held_keys_back() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                announce_powershell_setup(view);
+                view.hold_powershell_keys(b"ls".to_vec(), true, ctx);
+                view.powershell_setup_hold = PowerShellSetupHold::AfterAbort { generation: 1 };
+                view.give_up_powershell_abort_wait(1, ctx);
+                assert_eq!(view.powershell_setup_hold, PowerShellSetupHold::Off);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "ls");
+                assert!(view.input.as_ref(ctx).ssh_handover_enter_guard_armed());
+                // A late second firing for the same wait changes nothing.
+                view.give_up_powershell_abort_wait(1, ctx);
+            });
+            assert!(
+                delivered.borrow().is_empty(),
+                "the give-up wrote: {:?}",
+                delivered.borrow()
+            );
+        });
+    }
+}
