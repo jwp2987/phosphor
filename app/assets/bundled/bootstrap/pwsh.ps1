@@ -298,19 +298,32 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             }
             $title = ($titleSource -replace "(?s)\r?\n.*", [string][char]0x2026)
             if ($title.Length -gt 200) { $title = $title.Substring(0, 200) + [string][char]0x2026 }
-            $HOST.UI.RawUI.WindowTitle = $title
         } catch { }
         # Phosphor (#1353): one per-session counter for every Precmd and Preexec this shell sends.
         $script:warpSeq = ([int64]$script:warpSeq) + 1
-        $preexecMsg = @{
-            hook = 'Preexec'
-            value = @{
-                session_id = $global:_warpSessionId
-                command = $command
-                seq = $script:warpSeq
+        # Phosphor (#1582): the JSON is built by hand (ConvertTo-Json is the most expensive
+        # statement on this path on Windows PowerShell 5.1). Escapes: backslash, double quote and
+        # every control character below 0x20 as \u00XX; everything else (non-ASCII included) is
+        # passed through and carried as UTF-8 by the hex encoding. The bytes on the wire keep the
+        # Send-JsonMessage shape: the same OSC, hex payload and $oscResetGrid trailer.
+        $escaped = ([string]$command).Replace('\', '\\').Replace('"', '\"')
+        if ($escaped -match '[\x00-\x1f]') {
+            $escapedBuilder = [System.Text.StringBuilder]::new($escaped.Length + 16)
+            foreach ($escapedChar in $escaped.ToCharArray()) {
+                if ([int]$escapedChar -lt 32) {
+                    [void]$escapedBuilder.Append('\u').Append(([int]$escapedChar).ToString('x4'))
+                } else {
+                    [void]$escapedBuilder.Append($escapedChar)
+                }
             }
+            $escaped = $escapedBuilder.ToString()
         }
-        Warp-Send-JsonMessage $preexecMsg $oscResetGrid
+        $preexecJson = '{"hook":"Preexec","value":{"session_id":' + [uint64]$global:_warpSessionId + ',"command":"' + $escaped + '","seq":' + $script:warpSeq + '}}'
+        Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$(Warp-Encode-HexString $preexecJson)$oscEnd$oscResetGrid"
+        # The title is set after the OSC: the app does not need it before the command starts.
+        try {
+            $HOST.UI.RawUI.WindowTitle = $title
+        } catch { }
 
         # If this preexec is called for user command, kill ongoing generator command jobs and clean
         # up the bookkeeping temp files used to bookkeep.
@@ -511,6 +524,28 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
 
         # Set-PSReadLineKeyHandler is the PowerShell equivalent of zsh's bindkey.
         PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+2' -Function BackwardDeleteLine
+
+        # Phosphor (#1581): the app writes a single-line command to <temp>\.phosphor-cmd-<session
+        # id> and sends only this chord (ESC 3), instead of ~80 typed keys. The handler reads and
+        # deletes the file, replaces the line with its contents in ONE Insert and accepts it, so
+        # PSReadLine renders twice instead of once per key, and the shell still echoes, records
+        # history and reports the real command to Preexec. Anything that goes wrong inserts
+        # nothing and tells the app (CommandFileFailed), which types the command the old way.
+        PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+3' -ScriptBlock {
+            $text = $null
+            try {
+                $path = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ".phosphor-cmd-$($global:_warpSessionId)")
+                $text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8).TrimStart([char]0xFEFF)
+                [System.IO.File]::Delete($path)
+            } catch { }
+            if ([string]::IsNullOrEmpty($text)) {
+                Warp-Send-JsonMessage @{ hook = 'CommandFileFailed'; value = @{ session_id = $global:_warpSessionId } }
+                return
+            }
+            [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
+            [Microsoft.PowerShell.PSConsoleReadLine]::Insert($text)
+            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        }
 
         # Input reporting. Note that ESC-1 is used instead of ESC-i as for all other shells. This
         # is because PowerShell on Windows does some virtual key code translation which depends on
@@ -988,8 +1023,8 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     }
 
     function Warp-Stop-ActiveThread {
-        $script:threadInner.values | Microsoft.PowerShell.Core\ForEach-Object {
-            $_.Stop()
+        if ($script:threadInner.Count -gt 0) {
+            foreach ($t in @($script:threadInner.Values)) { $t.Stop() }
         }
     }
 

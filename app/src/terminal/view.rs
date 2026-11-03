@@ -18365,6 +18365,8 @@ impl TerminalView {
             ModelEvent::SshInitShell { .. } => {}
             // Consumed by the typeahead hand-off (#1390, #1391), not by the view itself.
             ModelEvent::LineEditorReading { .. } | ModelEvent::ContinuationPrompt { .. } => {}
+            // Consumed by the pty controller (#1581).
+            ModelEvent::CommandFileFailed { .. } => {}
             ModelEvent::RemoteServerBlockRequested { session_id } => {
                 self.show_ssh_remote_server_choice_block(*session_id, ctx);
             }

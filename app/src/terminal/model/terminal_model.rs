@@ -67,9 +67,10 @@ use super::{
 };
 use super::{tmux, Secret, SecretHandle};
 use crate::terminal::model::ansi::{
-    ClearValue, CommandFinishedValue, CompletionMetadata, ExitShellValue, InitShellValue,
-    InitSshValue, InitSubshellValue, LineEditorMarkerValue, PreInteractiveSSHSessionValue,
-    PrecmdValue, PreexecValue, PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
+    ClearValue, CommandFileFailedValue, CommandFinishedValue, CompletionMetadata, ExitShellValue,
+    InitShellValue, InitSshValue, InitSubshellValue, LineEditorMarkerValue,
+    PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, PromptMetadata, SSHValue,
+    SourcedRcFileForWarpValue,
 };
 use crate::terminal::model::grid::text_snapshot::{BoundedSelection, SelectionParts};
 use crate::terminal::model::grid::IndexRegion;
@@ -3903,6 +3904,14 @@ impl ansi::Handler for TerminalModel {
                     seq: data.seq,
                 });
         }
+    }
+
+    fn command_file_failed(&mut self, data: CommandFileFailedValue) {
+        // Sent whatever the id says (#1581): the controller owns the outstanding chord.
+        self.event_proxy
+            .send_terminal_event(Event::CommandFileFailed {
+                session_id: SessionId::from(data.session_id.unwrap_or_default()),
+            });
     }
 
     fn exit_shell(&mut self, data: ExitShellValue) {

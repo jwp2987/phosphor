@@ -111,6 +111,11 @@ pub(super) enum DProtoHook {
     ContinuationPrompt {
         value: LineEditorMarkerValue,
     },
+    /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command file, so it inserted
+    /// nothing and the buffer is empty: the app retypes the command the old way.
+    CommandFileFailed {
+        value: CommandFileFailedValue,
+    },
 }
 
 impl DProtoHook {
@@ -137,6 +142,7 @@ impl DProtoHook {
             DProtoHook::ExitShell { .. } => "ExitShell",
             DProtoHook::LineEditorReading { .. } => "LineEditorReading",
             DProtoHook::ContinuationPrompt { .. } => "ContinuationPrompt",
+            DProtoHook::CommandFileFailed { .. } => "CommandFileFailed",
         }
     }
 
@@ -158,6 +164,7 @@ impl DProtoHook {
             DProtoHook::LineEditorReading { value } | DProtoHook::ContinuationPrompt { value } => {
                 value.session_id.map(SessionId::from)
             }
+            DProtoHook::CommandFileFailed { value } => value.session_id.map(SessionId::from),
             DProtoHook::Preexec { value } => value.session_id.map(SessionId::from),
             DProtoHook::CommandFinished { value } => value.session_id.map(SessionId::from),
             DProtoHook::Bootstrapped { value } => value.session_id.map(SessionId::from),
@@ -208,6 +215,10 @@ impl DProtoHook {
             | DProtoHook::SshTmuxInstaller { .. }
             | DProtoHook::TmuxInstallFailed { .. } => true,
             DProtoHook::SourcedRcFileForWarp { .. } => false,
+            // Never dropped for its session id (#1581): the failure report must reach the pty
+            // controller even if the shell's id is not the one the app registered, or the command
+            // would be lost. The controller retypes for whatever chord it has outstanding.
+            DProtoHook::CommandFileFailed { .. } => false,
         }
     }
 
@@ -260,6 +271,9 @@ impl DProtoHook {
                 session_id: Default::default(),
             }),
             "ExitShell" => Some(DProtoHook::ExitShell {
+                value: Default::default(),
+            }),
+            "CommandFileFailed" => Some(DProtoHook::CommandFileFailed {
                 value: Default::default(),
             }),
             _ => {
@@ -450,6 +464,12 @@ impl DProtoHook {
                 }
                 _ => {
                     log::warn!("Tried to add unknown field {key} to ExitShell hook");
+                }
+            },
+            DProtoHook::CommandFileFailed { value } => match key.as_ref() {
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
+                _ => {
+                    log::warn!("Tried to add unknown field {key} to CommandFileFailed hook");
                 }
             },
             _ => {
@@ -1115,6 +1135,13 @@ pub struct FinishUpdateValue {
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ExitShellValue {
     pub session_id: SessionId,
+}
+
+/// Payload of `CommandFileFailed` (#1581): the PowerShell insert chord found no command file.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CommandFileFailedValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
 }
 
 /// Payload of the line-editor activity markers (`LineEditorReading`, `ContinuationPrompt`; #1390,

@@ -99,6 +99,10 @@ pub enum Event {
         session_id: SessionId,
         seq: Option<u64>,
     },
+    /// The PowerShell insert chord found no command file and inserted nothing (#1581).
+    CommandFileFailed {
+        session_id: SessionId,
+    },
     /// Sent when the model detects an SSH ControlMaster error, which means that
     /// completions reliant on command execution will not work.
     SSHControlMasterError,
@@ -688,6 +692,9 @@ impl Debug for Event {
                     f,
                     "ContinuationPrompt(session: {session_id:?}, seq: {seq:?})"
                 )
+            }
+            Event::CommandFileFailed { session_id } => {
+                write!(f, "CommandFileFailed(session: {session_id:?})")
             }
         }
     }

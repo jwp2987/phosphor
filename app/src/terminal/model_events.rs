@@ -409,6 +409,7 @@ impl ModelEventDispatcher {
             Event::ContinuationPrompt { session_id, seq } => {
                 ModelEvent::ContinuationPrompt { session_id, seq }
             }
+            Event::CommandFileFailed { session_id } => ModelEvent::CommandFileFailed { session_id },
             _ => return,
         };
 
@@ -620,6 +621,11 @@ pub enum ModelEvent {
     ContinuationPrompt {
         session_id: SessionId,
         seq: Option<u64>,
+    },
+    /// The PowerShell insert chord (`ESC 3`, #1581) found no command file and inserted nothing:
+    /// the pty controller retypes the command.
+    CommandFileFailed {
+        session_id: SessionId,
     },
 }
 

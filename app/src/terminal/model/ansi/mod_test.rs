@@ -265,6 +265,11 @@ impl Handler for MockHandler {
             .push(DProtoHook::ContinuationPrompt { value: data })
     }
 
+    fn command_file_failed(&mut self, data: CommandFileFailedValue) {
+        self.d_proto_hooks
+            .push(DProtoHook::CommandFileFailed { value: data })
+    }
+
     fn sourced_rc_file(&mut self, data: SourcedRcFileForWarpValue) {
         self.d_proto_hooks
             .push(DProtoHook::SourcedRcFileForWarp { value: data })
@@ -1988,4 +1993,54 @@ fn parse_setup_line_marker_osc() {
     assert_eq!(handler.setup_line_markers, vec![(4242, 3), (u64::MAX, 12)]);
     let (_, handler) = parse_bytes(b"\x1b]7771;x;3\x07\x1b]7771;1\x07\x1b]7771;1;2;3\x07");
     assert!(handler.setup_line_markers.is_empty());
+}
+
+/// #1582: `Warp-Preexec` builds its JSON by hand instead of `ConvertTo-Json`. The payload below is
+/// exactly what that code produces for the command `echo "a\b"<TAB>x <LF> y é 世` (backslash and
+/// double quote escaped, control characters as `\u00XX`, non-ASCII passed through), and must
+/// decode to the original command.
+#[test]
+fn parse_dcs_preexec_decodes_the_hand_built_powershell_json() {
+    let payload = "{\"hook\":\"Preexec\",\"value\":{\"session_id\":7,\"command\":\"echo \\\"a\\\\b\\\"\\u0009x \\u000a y \u{e9} \u{4e16}\",\"seq\":3}}";
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(payload));
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::Preexec { value }] => {
+            assert_eq!(value.command, "echo \"a\\b\"\tx \n y \u{e9} \u{4e16}");
+            assert_eq!(value.session_id, Some(7));
+        }
+        other => panic!("unexpected hooks {other:?}"),
+    }
+
+    // The empty command and a command that is only escapes.
+    let empty = "{\"hook\":\"Preexec\",\"value\":{\"session_id\":7,\"command\":\"\",\"seq\":4}}";
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(empty));
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::Preexec { value }] if value.command.is_empty()
+    ));
+}
+
+/// #1581: the insert chord's failure report is a hex-encoded JSON hook with the session id only.
+#[test]
+fn parse_dcs_command_file_failed_carries_the_session() {
+    let payload = r#"{"hook":"CommandFileFailed","value":{"session_id":7}}"#;
+    let (_, handler) = parse_bytes(&hex_encoded_dcs_string(payload));
+    match handler.d_proto_hooks.as_slice() {
+        [DProtoHook::CommandFileFailed { value }] => assert_eq!(value.session_id, Some(7)),
+        other => panic!("unexpected hooks {other:?}"),
+    }
+}
+
+/// #1581: the failure report is not dropped for a session id the app did not register, or the
+/// command it reports would be lost; the pty controller retypes for its outstanding chord.
+#[test]
+fn command_file_failed_is_delivered_for_an_unregistered_session() {
+    let bytes = hex_encoded_dcs_string(
+        r#"{"hook":"CommandFileFailed","value":{"session_id":99}}"#,
+    );
+    let (_, handler) = parse_bytes_with_registered_sessions(&bytes, [SessionId::from(7)]);
+    assert!(matches!(
+        handler.d_proto_hooks.as_slice(),
+        [DProtoHook::CommandFileFailed { .. }]
+    ));
 }
