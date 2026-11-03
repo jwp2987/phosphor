@@ -1445,6 +1445,7 @@ class RefTerm:
     """A reference terminal running the same scratch rc, for same-session comparison. name says how it was reached (XWayland etc.)."""
     def __init__(self, name, proc=None, close=None):
         self.name, self.proc, self._close = name, proc, close
+        self.switch = None      # #1514: callable(side) with side 'phosphor'|'reference' that makes that window the injection target (focus + guard + ctl dir); None = the backend cannot keep both windows, so no interleaving
 
     def close(self):
         if self._close:
@@ -1612,7 +1613,20 @@ def ref_terminal(ctx):
             time.sleep(0.8)
             ctx.be.guard_override = None
             ctx.be.refocus()
-        return RefTerm("Terminal.app (.command via open)", close=close)
+        rt = RefTerm("Terminal.app (.command via open)", close=close)
+
+        def switch(side):
+            if side == "reference":
+                ctx.be.guard_override = "Terminal"
+                ctx.prof.ref_active = True
+                ctx.be._focus_pid(pid_of("Terminal"))
+            else:
+                ctx.be.guard_override = None
+                ctx.prof.ref_active = False
+                ctx.be.refocus(verify=True)
+            ctx.be.guard()          # frontmost process verified for the side now targeted; raises RuntimeError otherwise
+        rt.switch = switch
+        return rt
     disp, wl = os.environ.get("DISPLAY"), os.environ.get("WAYLAND_DISPLAY")
     # r18d2: the reference shell starts in the case work dir like the pane does (the rc cds to $APPCI_W). Without it foot/xterm inherited the harness's cwd, so every
     # effect file the reference shell wrote (el_ref*.txt, lat_N, cc_ref.txt) landed OUTSIDE ctx.W where the case reads: enter_loss_control saw 30/30 lines
@@ -1647,7 +1661,64 @@ def ref_terminal(ctx):
         close()
         ctx.ref_reason = str(e)
         return None
-    return RefTerm(name, proc=proc, close=close)
+    rt = RefTerm(name, proc=proc, close=close)
+    override = dict(pids={proc.pid}, names=names)
+
+    def switch(side):
+        if side == "reference":
+            ctx.be.guard_override = override
+            ctx.prof.ref_active = True
+        else:
+            ctx.be.guard_override = None
+            ctx.prof.ref_active = False
+            ctx.be.refocus(verify=True)     # sway: focus Phosphor by PID and wait for it; X11: no-op, its guard() focuses Phosphor
+        ctx.be.guard()                      # reference: focus + verify its window; Phosphor on X11: focus its window
+    rt.switch = switch
+    return rt
+
+
+LAT_SETTLE_S = 0.4
+
+
+def run_interleaved(ctx, ref, n, warm, sampler, block=None, lead=None):
+    """#1514: A/B/A/B interleaving of Phosphor and the reference for a latency case, in blocks (lat.block_schedule), never per sample. Before every block
+    ref.switch(side) moves the focus and runs the backend guard (the frontmost-window check) for THAT side; sampler(side, count) -> list of samples
+    for that side. -> (phosphor samples, reference samples, [(side, kept samples)]). RuntimeError (a guard or focus failure) propagates: the caller
+    discards the partial data and falls back to the sequential mode, recording why."""
+    block = block or lat.interleave_block()
+    lead = lat.interleave_lead() if lead is None else lead
+    out = {"phosphor": [], "reference": []}
+    blocks = []
+    for side, cnt, disc in lat.block_schedule(n, block, warm, lead):
+        ref.switch(side)
+        time.sleep(LAT_SETTLE_S)
+        kept = sampler(side, cnt)[disc:]
+        out[side] += kept
+        blocks.append((side, kept))
+        ctx.reset()
+    return out["phosphor"], out["reference"], blocks
+
+
+def record_interleave(r, mode, blocks=None, fallback=None):
+    """metrics for how a latency case was measured: mode ('interleaved' | 'sequential'), the block size, per-block medians, and why it fell back"""
+    r.metric("measurement_mode", mode)
+    if fallback:
+        r.metric("interleave_fallback", fallback)
+        r.note("measurement mode: sequential (%s)" % fallback)
+    if blocks:
+        r.metric("interleave_block", lat.interleave_block())
+        r.metric("block_medians_ms", [[side, round(statistics.median(xs), 2)] for side, xs in blocks if xs])
+        r.note("measurement mode: interleaved, blocks of %d kept samples (+%d discarded lead per block), %d blocks" % (lat.interleave_block(), lat.interleave_lead(), len(blocks)))
+
+
+def close_ref(ref):
+    """close an interleaved reference: aim the guard at it first (mac types `exit` into it under the guard), tolerate a failed switch"""
+    if ref.switch:
+        try:
+            ref.switch("reference")
+        except RuntimeError:
+            pass
+    ref.close()
 
 
 @case("key_loss_control", modes=("terminal",), order=3, gui=True)
@@ -1872,7 +1943,29 @@ def c_lat_enter(ctx, r):
     pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
     r.metric("pane_shell", pane_sh or "unknown")
     t_lat0 = time.time()
-    ds = enter_to_start(ctx, n + warm)[warm:]
+    # #1514: A/B/A/B interleaving in blocks when the reference can stay open next to Phosphor (Linux, macOS); otherwise (Windows, no reference, a focus
+    # failure) the sequential mode below. Which one ran is recorded (metrics.measurement_mode, lat record measurement_mode).
+    ds, rs, ref, mode, fallback, blocks, tried = None, [], None, "sequential", None, None, False
+    if not ctx.win and lat.interleave_enabled():
+        ref, tried = ref_terminal(ctx), True
+        if ref and ref.switch:
+            try:
+                time.sleep(2.5)
+                ds, rs, blocks = run_interleaved(ctx, ref, n, warm, lambda side, cnt: enter_to_start(ctx, cnt))
+                mode = "interleaved"
+            except RuntimeError as e:
+                ds, rs, blocks = None, [], None
+                fallback = "interleaving failed, fell back to sequential: %s" % str(e)[:160]
+        elif ref:
+            fallback = "this backend cannot keep both windows"
+        if ds is None and ref and ref.switch:
+            try:
+                ref.switch("phosphor")
+            except RuntimeError:
+                pass
+    if ds is None:
+        ds = enter_to_start(ctx, n + warm)[warm:]
+    record_interleave(r, mode, blocks, fallback)
     r.metric("enter_to_start_ms", stats(ds))
     segs = ctx.app_enter_segments(t_lat0)
     share = segs.get("enter_to_write_ms")
@@ -1892,13 +1985,17 @@ def c_lat_enter(ctx, r):
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))      # hard floor; a PASS verdict needs 90 % (lat.evaluate expected=)
     ctx.reset()
-    rs, ref = [], ref_terminal(ctx)
+    if ref is None and not tried:
+        ref = ref_terminal(ctx)
     if ref:
         ref_note(ctx, r)
     if ref:
         try:
-            time.sleep(2.5)
-            rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5))[warm:]      # overall cap: a dead reference cannot hang the case
+            if mode != "interleaved":
+                if ref.switch:
+                    ref.switch("reference")
+                time.sleep(2.5)
+                rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5))[warm:]      # overall cap: a dead reference cannot hang the case
             ctx.reset()
             if ctx.win and rs:
                 # #1583 W1: the SAME stamp line delivered to the reference as ONE burst (0 ms between characters), then Enter. Phosphor writes the whole
@@ -1916,7 +2013,7 @@ def c_lat_enter(ctx, r):
                     else:
                         r.note("W1: reference burst %.1f ms vs per-key %.1f ms (%+.1f ms): burst ingestion does not explain the gap" % (mb, mk, mb - mk))
         finally:
-            ref.close()
+            close_ref(ref) if mode == "interleaved" or fallback else ref.close()
         time.sleep(1.0)   # focus returns to Phosphor before any re-measure
         r.metric("reference_enter_to_start_ms", stats(rs))
         r.metric("reference", ref.name)
@@ -1928,8 +2025,10 @@ def c_lat_enter(ctx, r):
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,
-                           pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None, expected=n,
-                           notes=["reference measured after Phosphor (sequential, same session); Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
+                           pane_shell=pane_sh, ref_shell=getattr(ctx, "ref_shell", None) if ref else None, expected=n, mode=mode,
+                           notes=[("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
+                                   else "reference measured after Phosphor (sequential, same session)" + ("; " + fallback if fallback else "")) +
+                                  "; Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
         r.metrics.setdefault("lat", {})["enter_to_start"] = rec
         lat_checks(r, rec, "Enter to command start")
         if not rs and ds:
@@ -2086,22 +2185,50 @@ def c_lat_paint(ctx, r):
         r.skip("no Phosphor window rect from System Events")
     ctx.be.guard()
     n, warm = ctx.count_lat(30), lat.warmup()
-    ds = paint_samples(ctx, rect, n + warm)[warm:]
+    # #1514: A/B/A/B blocks with Terminal.app kept open next to Phosphor (each window sampled at its own rect); sequential when interleaving is
+    # off, there is no reference/rect, or a focus guard fails. The mode that ran is recorded.
+    ds, rs, ref, mode, fallback, blocks, tried = None, [], None, "sequential", None, None, False
+    if lat.interleave_enabled():
+        ref, tried = ref_terminal(ctx), True
+        if ref and ref.switch:
+            try:
+                time.sleep(2.5)
+                rrect = ctx.be.window_rect(pid=pid_of("Terminal"))
+                if not rrect or rrect[2] < 100:
+                    fallback = "no Terminal.app window rect"
+                else:
+                    ds, rs, blocks = run_interleaved(ctx, ref, n, warm, lambda side, cnt: paint_samples(ctx, rect if side == "phosphor" else rrect, cnt))
+                    mode = "interleaved"
+            except RuntimeError as e:
+                ds, rs, blocks = None, [], None
+                fallback = "interleaving failed, fell back to sequential: %s" % str(e)[:160]
+            if ds is None:
+                try:
+                    ref.switch("phosphor")
+                except RuntimeError:
+                    pass
+    if ds is None:
+        ds = paint_samples(ctx, rect, n + warm)[warm:]
+    record_interleave(r, mode, blocks, fallback)
     ctx.reset()
     r.metric("key_to_paint_ms", stats(ds))
     r.check(len(ds) >= 20, "only %d key->paint samples from kl3 (capture region or Screen Recording permission wrong)" % len(ds))
-    rs, ref = [], ref_terminal(ctx)
+    if ref is None and not tried:
+        ref = ref_terminal(ctx)
     if ref:
         try:
-            time.sleep(2.5)
-            rrect = ctx.be.window_rect(pid=pid_of("Terminal"))
-            if not rrect or rrect[2] < 100:
-                r.note("no reference: absolute only (key->paint): no Terminal.app window rect")
-            else:
-                rs = paint_samples(ctx, rrect, n + warm)[warm:]
+            if mode != "interleaved":
+                if ref.switch:
+                    ref.switch("reference")
+                time.sleep(2.5)
+                rrect = ctx.be.window_rect(pid=pid_of("Terminal"))
+                if not rrect or rrect[2] < 100:
+                    r.note("no reference: absolute only (key->paint): no Terminal.app window rect")
+                else:
+                    rs = paint_samples(ctx, rrect, n + warm)[warm:]
             ctx.reset()
         finally:
-            ref.close()
+            close_ref(ref) if mode == "interleaved" or fallback else ref.close()
         time.sleep(1.0)
         r.metric("reference_key_to_paint_ms", stats(rs))
         r.metric("reference", ref.name)
@@ -2110,8 +2237,10 @@ def c_lat_paint(ctx, r):
     if ds:
         rec = lat.evaluate("%s/latency_paint/key_to_paint" % ctx.label, ds, rs, float(os.environ.get("APPCI_KEY_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: paint_samples(ctx, rect, n + warm)[warm:], ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms,
-                           expected=n, resolution_ms=KL3_QUANTUM_MS,
-                           notes=["kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; reference measured after Phosphor in the same session"])
+                           expected=n, resolution_ms=KL3_QUANTUM_MS, mode=mode,
+                           notes=["kl3 measures post-to-first-changed-pixel at 240 Hz in each terminal's own window; " +
+                                  ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
+                                   else "reference measured after Phosphor in the same session" + ("; " + fallback if fallback else ""))])
         r.metrics.setdefault("lat", {})["key_to_paint"] = rec
         lat_checks(r, rec, "Key to paint")
         if not rs:

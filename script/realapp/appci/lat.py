@@ -64,7 +64,7 @@ def overhead_verdict(overhead, se, budget, pane_shell=None, ref_shell=None, z=2.
 
 
 def block_drift(xs, ys=None, z=2.0):
-    """Sequential-measurement drift (#1514; true A/B/A/B interleaving is not done): compare the median of the first half of a series with the
+    """Within-series drift (#1514; kept for interleaved runs too, where it shows drift the A/B/A/B blocks did NOT cancel): compare the median of the first half of a series with the
     median of the second half. -> (drift_ms, significant): significant when |drift| > z * SE of that difference. None when < 8 samples.
     Slow drift (thermal, GC, background load) between the Phosphor series and the later reference series shows up as a half-to-half move."""
     xs = list(xs or [])
@@ -127,6 +127,30 @@ def idle_schedule(gaps, n, block=10, warm=0, first="phosphor", alternate=True, t
                 seen.add(s)
                 out.append((g, s, c + d, d))
     return out
+
+
+def block_schedule(n, block=5, warm=0, lead=1, first="phosphor"):
+    """#1514: the A/B/A/B order of an interleaved latency measurement. -> [(side, count, discard)]: blocks of `block` KEPT samples alternate
+    strictly between 'phosphor' and 'reference' (never per sample: a focus switch is itself an activation), each side totalling exactly n kept
+    samples. Every block is led by `lead` extra samples that are discarded (the first sample after a focus switch pays the activation), and
+    the first block of each side also carries `warm` discarded warm-up samples. `count` is what to take (kept + discarded); the first `discard`
+    of them are dropped."""
+    out = []
+    for _gap, side, count, disc in idle_schedule([0], n, block=block, warm=warm, first=first, alternate=False, two_sided=True):
+        out.append((side, count + lead, disc + lead))
+    return out
+
+
+def interleave_block():
+    return max(1, int(os.environ.get("APPCI_LAT_BLOCK", "5")))
+
+
+def interleave_lead():
+    return max(0, int(os.environ.get("APPCI_LAT_BLOCK_LEAD", "1")))
+
+
+def interleave_enabled():
+    return os.environ.get("APPCI_LAT_INTERLEAVE", "1") != "0"
 
 
 def warmup():
@@ -216,13 +240,13 @@ def load_prev():
 
 
 def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name=None, floor=None, notes=None, pane_shell=None, ref_shell=None,
-             expected=None, resolution_ms=None):
+             expected=None, resolution_ms=None, mode="sequential"):
     """phos/ref: sample lists (warm-up already dropped). remeasure: callable returning a fresh phos sample list, or None.
     expected: samples the case asked for (a PASS needs >= 90 % of them AND >= min_n, #1514); resolution_ms: the measurement's time quantum
     (a PASS is withheld when it exceeds budget/2). Both only ever turn a pass into 'inconclusive', never a fail into a pass.
     Returns the latency record (see header)."""
     ps = summarize(phos)
-    rec = {"phosphor": ps, "reference": summarize(ref) if ref else None, "reference_name": ref_name if ref else None,
+    rec = {"measurement_mode": mode, "phosphor": ps, "reference": summarize(ref) if ref else None, "reference_name": ref_name if ref else None,
            "budget_ms": budget_ms, "budget_kind": kind, "floor_ms": floor, "notes": list(notes or [])}
     if ps["n"] < min_n():
         rec["notes"].append("n=%d < %d samples (smoke/scaled run): numbers are indicative only" % (ps["n"], min_n()))
@@ -258,7 +282,7 @@ def evaluate(rid, phos, ref, budget_ms, kind, platform, remeasure=None, ref_name
         for tag, series in (("Phosphor", phos), ("reference", ref)):
             dr = block_drift(series)
             if dr and dr[1] and abs(dr[0]) > budget_ms / 2.0:
-                why.append("%s series drifted %+.2f ms between its halves (sequential A-then-B measurement)" % (tag, dr[0]))
+                why.append("%s series drifted %+.2f ms between its halves (%s measurement)" % (tag, dr[0], "interleaved A/B/A/B" if mode == "interleaved" else "sequential A-then-B"))
             if dr:
                 rec.setdefault("drift_ms", {})[tag.lower()] = dr[0]
     if why and bv == "pass":

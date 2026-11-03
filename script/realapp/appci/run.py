@@ -246,7 +246,7 @@ def main():
                 else:
                     app = appmod.App(run, prof.home, a.bin, a.app_display)
                 app.start()
-                if a.backend in ("mac", "windows"):
+                if a.backend in ("mac", "windows", "wayland"):
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
             ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane)
             tier_names = None
