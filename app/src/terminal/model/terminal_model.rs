@@ -59,9 +59,10 @@ use super::selection::ScrollDelta;
 use super::session::{InBandCommandOutputReceiver, SessionId};
 use super::tmux::commands::TmuxCommand;
 use super::early_output::TypeaheadMode;
+use super::pty_stream_barrier::PtyStreamBarrier;
 use super::reply_ledger::SharedReplyLedger;
 use super::setup_echo_filter::SetupEchoFilter;
-use super::typeahead_handoff::{PaneHandoff, TypeaheadHandoff};
+use super::typeahead_handoff::{PaneHandoff, ParsedShellHook, TypeaheadHandoff};
 use super::{
     super::{AltScreen, BlockList},
     ansi::BootstrappedValue,
@@ -496,6 +497,10 @@ pub struct TerminalModel {
     /// Replies written to the pty and text the user wrote, so a reply that leaks into the
     /// shell's line can be told from typed text (#921).
     reply_ledger: SharedReplyLedger,
+    /// The pty reader's read / applied byte counts (#1392), so a decision can tell whether the
+    /// hook account in the hand-off is current. The event loop counts into it; the hand-off's
+    /// probe checks it.
+    pty_stream_barrier: Arc<PtyStreamBarrier>,
     /// Hides the tty's echo of the typed subshell setup script while the shell has not read it
     /// yet (#1038).
     setup_echo_filter: SetupEchoFilter,
@@ -1261,6 +1266,7 @@ impl TerminalModel {
             sticky_output: Default::default(),
             inbox: ModelInbox::default(),
             reply_ledger: SharedReplyLedger::default(),
+            pty_stream_barrier: Arc::default(),
             setup_echo_filter: SetupEchoFilter::default(),
             last_setup_line_marker: None,
             setup_line_marker_count: 0,
@@ -2005,6 +2011,12 @@ impl TerminalModel {
     /// The ledger of query replies and pty writes, shared with the pty event loop.
     pub fn reply_ledger(&self) -> SharedReplyLedger {
         self.reply_ledger.clone()
+    }
+
+    /// The pty reader's barrier (#1392): the event loop counts the bytes it reads and applies
+    /// into it, the typeahead hand-off's probe asks it whether the hook account is current.
+    pub fn pty_stream_barrier(&self) -> Arc<PtyStreamBarrier> {
+        self.pty_stream_barrier.clone()
     }
 
     /// Whether the shell is at its prompt with no command started, so the typeahead request
@@ -3124,6 +3136,16 @@ impl TerminalModel {
         }
     }
 
+    /// #1392: tells the hand-off which shell hook the parser just met, BEFORE the block lifecycle
+    /// decides whether to apply it (an ignored Precmd still means the shell went back to its
+    /// prompt). On this thread, in stream order, so it is applied before the pty reader publishes
+    /// these bytes as applied.
+    fn note_shell_hook_parsed(&mut self, hook: ParsedShellHook) {
+        if FeatureFlag::TypeaheadHandoff.is_enabled() {
+            self.typeahead_handoff.write().note_shell_hook_parsed(hook);
+        }
+    }
+
     /// Applies prompt metadata through the normal once-per-block path.
     fn apply_precmd_to_fresh_block(&mut self, data: PromptMetadata) {
         self.ignore_bootstrapping_messages = false;
@@ -3717,6 +3739,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn command_finished(&mut self, data: CommandFinishedValue) {
+        self.note_shell_hook_parsed(ParsedShellHook::CommandFinished);
         let disposition = self
             .block_list
             .classify_next_block_id(&data.completion_metadata.next_block_id);
@@ -3752,6 +3775,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        self.note_shell_hook_parsed(ParsedShellHook::Precmd);
         self.reset_stale_in_band_command_output();
         let disposition = self
             .block_list
@@ -3779,6 +3803,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn prompt_only_precmd(&mut self, data: PromptMetadata) {
+        self.note_shell_hook_parsed(ParsedShellHook::Precmd);
         self.reset_stale_in_band_command_output();
         let transition = self.plan_lifecycle_transition(
             LifecycleInput::PromptOnlyPrecmd,
@@ -3793,6 +3818,7 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn preexec(&mut self, data: PreexecValue) {
+        self.note_shell_hook_parsed(ParsedShellHook::Preexec);
         let active_block = self.block_list.active_block();
         active_block
             .interactive_latch()

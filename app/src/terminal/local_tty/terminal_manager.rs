@@ -1009,6 +1009,18 @@ fn on_shell_determined<S: TerminalSurface>(
         ShellLaunchData::Executable { shell_type, .. } | ShellLaunchData::MSYS2 { shell_type, .. }
             if matches!(shell_type, crate::terminal::shell::ShellType::PowerShell)
     );
+    // #1392: the drained-stream veto trusts that the shell writes its Precmd before its line editor
+    // sets raw mode. bash (PROMPT_COMMAND) and zsh (precmd) do; fish sets raw THEN fires
+    // fish_prompt, so a drained stream there proves nothing. Other shells keep the plain hold.
+    #[cfg(unix)]
+    let precmd_precedes_raw_tty = matches!(
+        &shell_launch_data,
+        ShellLaunchData::Executable { shell_type, .. } | ShellLaunchData::MSYS2 { shell_type, .. }
+            if matches!(
+                shell_type,
+                crate::terminal::shell::ShellType::Bash | crate::terminal::shell::ShellType::Zsh
+            )
+    );
     model
         .lock()
         .typeahead_handoff_mut()
@@ -1032,17 +1044,29 @@ fn on_shell_determined<S: TerminalSurface>(
         );
 
         manager.terminal_attributes_poller = Some(terminal_attributes_poller);
+        // Taken before the statement below locks the model (the lock is not reentrant).
+        let stream_barrier = model.lock().pty_stream_barrier();
         // #1131: a plain program in the foreground, or a password being read, means no prompt is
         // waiting for a held Enter.
-        model.lock().typeahead_handoff_mut().set_foreground_probe(
+        let mut probe =
             crate::terminal::model::typeahead_handoff::ForegroundProbe::new(Arc::new(move || {
                 super::terminal_attributes::shell_provably_not_at_prompt(fd, pid as i32)
             }))
             // #1353 phase 6: the same sample, also saying when the shell's line editor is reading.
             .with_prompt_fact(Arc::new(move || {
                 super::terminal_attributes::shell_prompt_fact(fd, pid as i32)
-            })),
-        );
+            }));
+        // #1392: whether everything the shell wrote before now is read and applied, so the
+        // hook account can be set against the sample just taken (the pty reader counts into
+        // the barrier; the master is asked whether it holds anything unread). Only for shells
+        // that write their Precmd before raw mode; without it the veto never fires.
+        if precmd_precedes_raw_tty {
+            probe = probe.with_stream_drained(Arc::new(move || {
+                stream_barrier
+                    .drained_with(|| super::terminal_attributes::pty_master_has_unread(fd))
+            }));
+        }
+        model.lock().typeahead_handoff_mut().set_foreground_probe(probe);
         // #1373: who owns the terminal decides "interactive / long running", not elapsed time.
         model.lock().set_interactive_probe(Arc::new(move || {
             super::terminal_attributes::terminal_owner(fd, pid as i32)

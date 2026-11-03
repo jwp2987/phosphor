@@ -25,7 +25,7 @@ use crate::terminal::{
     TerminalModel,
     event_listener::ChannelEventListener,
     local_tty,
-    model::{BlockId, ansi, reply_ledger::SharedReplyLedger},
+    model::{BlockId, ansi, pty_stream_barrier::PtyStreamBarrier, reply_ledger::SharedReplyLedger},
 };
 use crate::terminal::{model::terminal_model::ExitReason, writeable_pty::Message};
 
@@ -98,6 +98,10 @@ pub struct EventLoop<T: local_tty::EventedPty> {
     /// Query replies and every pty write, so a reply that leaks into the shell's line can be
     /// told from typed text (#921).
     reply_ledger: SharedReplyLedger,
+    /// The read / applied byte counts of this pty (#1392), owned by the terminal model: every read
+    /// of the master is counted, and the applied total is published after each parsed slice, so
+    /// the typeahead hand-off can tell whether its hook account is current.
+    stream_barrier: Arc<PtyStreamBarrier>,
 
     /// The event listener is available to the PTY event loop
     /// to emit relevant events to subscribers. The ansi handler
@@ -177,6 +181,9 @@ pub struct State {
     input_overflow_dropped: u64,
     /// The surface has not been told about `input_overflow_dropped` yet.
     input_overflow_unreported: bool,
+    /// Bytes handed to the parser so far (#1392); published to the stream barrier as applied
+    /// whenever no synchronized-output frame holds some of them unapplied.
+    bytes_fed: u64,
 }
 
 /// `PHOSPHOR_PTY_COALESCE=0` turns key-write coalescing off.
@@ -294,11 +301,29 @@ impl Default for State {
             mid_read_write_error: None,
             input_overflow_dropped: 0,
             input_overflow_unreported: false,
+            bytes_fed: 0,
         }
     }
 }
 
 impl State {
+    /// #1392: `n` more bytes were parsed into the model (every hook in them handled); publishes
+    /// the applied total, see [`Self::publish_applied`].
+    fn note_parsed(&mut self, n: usize, barrier: &PtyStreamBarrier) {
+        self.bytes_fed += n as u64;
+        self.publish_applied(barrier);
+    }
+
+    /// Publishes every byte fed to the parser as applied, unless a synchronized-output frame is
+    /// open: its bytes are buffered in the parser, not applied, so a hook among them has not been
+    /// handled yet and the barrier keeps the last total (behind the read count) until the frame
+    /// ends.
+    fn publish_applied(&self, barrier: &PtyStreamBarrier) {
+        if self.parser.sync_output_buffer_len().is_none() {
+            barrier.publish_applied(self.bytes_fed);
+        }
+    }
+
     #[inline]
     fn ensure_next(&mut self) {
         if self.writing.is_none() {
@@ -1043,12 +1068,16 @@ where
 
         match registered {
             Ok(poll) => {
-                let reply_ledger = terminal.lock().reply_ledger();
+                let (reply_ledger, stream_barrier) = {
+                    let terminal = terminal.lock();
+                    (terminal.reply_ledger(), terminal.pty_stream_barrier())
+                };
                 Ok(EventLoop {
                     poll,
                     pty,
                     rx,
                     reply_ledger,
+                    stream_barrier,
                     terminal,
                     event_listener,
                 })
@@ -1213,7 +1242,13 @@ where
             {
                 break;
             }
-            match self.pty.reader().read(&mut buf[bytes_in_buffer..]) {
+            // #1392: the read is bracketed for the stream barrier, so a check made while bytes
+            // have left the master but are not counted yet sees a read in flight.
+            self.stream_barrier.begin_read();
+            let read = self.pty.reader().read(&mut buf[bytes_in_buffer..]);
+            self.stream_barrier
+                .end_read(read.as_ref().map_or(0, |got| *got));
+            match read {
                 Ok(0) if bytes_in_buffer == 0 => {
                     // If we get 0 here with an empty buffer (guaranteed if
                     // bytes_in_buffer == 0), it means the object is unable to
@@ -1277,6 +1312,8 @@ where
                     &self.reply_ledger,
                     &buf[offset..end],
                 );
+                // #1392: the hooks in this slice are applied; say so to the stream barrier.
+                state.note_parsed(end - offset, &self.stream_barrier);
                 terminal.publish_key_facts();
                 let held = held_since.elapsed();
                 SLOW_PTY_PARSE.finish(held_since, || {
@@ -1624,6 +1661,8 @@ where
                                     ledger: &self.reply_ledger,
                                 },
                             );
+                            // #1392: the frame's bytes are applied now.
+                            state.publish_applied(&self.stream_barrier);
                             executing_block
                         };
                         let evicted =
