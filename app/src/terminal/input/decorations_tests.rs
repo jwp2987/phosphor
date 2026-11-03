@@ -15,8 +15,8 @@ use crate::{
                 MAX_BACKGROUND_JOB_BUFFER_CHARS, MAX_BACKGROUND_JOB_BUFFER_TOKENS,
             },
             tests::{
-                add_window_with_bootstrapped_terminal, initialize_app,
-                simulate_directory_for_completion,
+                add_window_with_bootstrapped_terminal, ensure_input_classifier_for_test,
+                initialize_app, simulate_directory_for_completion,
             },
         },
         model::session::SessionInfo,
@@ -228,6 +228,8 @@ fn test_oversized_buffer_keeps_detection_pending_and_is_classified_in_the_backgr
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
+        // The real app registers the classifier at startup; the over-cap job reads it (#1604).
+        ensure_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
