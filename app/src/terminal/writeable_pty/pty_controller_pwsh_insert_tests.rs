@@ -1,5 +1,6 @@
-//! The PowerShell insert chord (#1581): a single-line command is written to the session's command
-//! file and the pty gets exactly `ESC 3`; the shell reads the file. These tests drive
+//! The PowerShell insert chord (#1581): a single-line command is served on the session's named
+//! pipe (in memory; a stand-in off Windows) and the pty gets exactly `ESC 3`; the shell reads it
+//! from the pipe. These tests drive
 //! `send_write_to_event_loop` the way the queue-draining path does and read what reaches the
 //! event loop.
 
@@ -64,6 +65,10 @@ fn rig(app: &mut App, session: u64, powershell_local: bool) -> Rig {
             ctx,
         )
     });
+    if powershell_local {
+        // What building the init script does on Windows.
+        command_pipe::pipe_name_for_session(session);
+    }
     controller.update(app, |controller, _| {
         controller.runs_long_commands_from_file = powershell_local;
     });
@@ -89,7 +94,7 @@ fn typed_bytes(text: &str) -> Vec<u8> {
 }
 
 #[test]
-fn a_single_line_powershell_command_is_one_chord_write_and_a_file() {
+fn a_single_line_powershell_command_is_one_chord_write_and_a_pipe() {
     App::test((), |mut app| async move {
         let session = 9_100_001;
         let rig = rig(&mut app, session, true);
@@ -109,15 +114,14 @@ fn a_single_line_powershell_command_is_one_chord_write_and_a_file() {
         assert!(matches!(&messages[0], Message::CommandInput(_)));
         assert_eq!(payload(&messages[0]), b"\x1b3".to_vec());
 
-        let path = long_command_file::session_file_path(&std::env::temp_dir(), session);
-        let bytes = std::fs::read(&path).expect("the command file exists");
-        assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF]);
-        assert_eq!(&bytes[3..], b"Get-Date");
         drop(messages);
         rig.controller.read(&app, |controller, _| {
             assert_eq!(controller.file_insert_pending.as_deref(), Some("Get-Date"));
+            assert!(
+                controller.command_pipe.is_some(),
+                "the pipe lives with the chord"
+            );
         });
-        let _ = std::fs::remove_file(&path);
     });
 }
 
@@ -213,6 +217,10 @@ fn the_failure_hook_retypes_the_command_once_and_only_once() {
         rig.controller.read(&app, |controller, _| {
             assert!(controller.file_insert_pending.is_none());
             assert!(!controller.force_typed_command);
+            assert!(
+                controller.command_pipe.is_none(),
+                "the retype closes the pipe"
+            );
         });
 
         // A second report has nothing to retype: no duplicate.
@@ -230,7 +238,7 @@ fn a_preexec_clears_the_outstanding_chord_so_a_late_failure_retypes_nothing() {
         rig.controller.update(&mut app, |controller, ctx| {
             controller.send_write_to_event_loop(command("Get-Date", None), ctx);
             // What the Preexec subscription does.
-            controller.file_insert_pending = None;
+            controller.clear_file_insert();
             controller.on_command_file_failed(ctx);
         });
         assert_eq!(rig.sender.messages.lock().len(), 1, "only the chord");
@@ -271,7 +279,26 @@ fn a_refused_write_leaves_no_outstanding_chord() {
         assert!(rig.sender.messages.lock().is_empty());
         rig.controller.read(&app, |controller, _| {
             assert!(controller.file_insert_pending.is_none());
+            assert!(
+                controller.command_pipe.is_none(),
+                "a refused write closes the pipe"
+            );
         });
+    });
+}
+
+#[test]
+fn a_session_without_a_registered_pipe_name_is_typed() {
+    App::test((), |mut app| async move {
+        // Local PowerShell, but no name was minted for this session (no Windows init script).
+        let rig = rig(&mut app, 9_100_011, false);
+        rig.controller.update(&mut app, |controller, ctx| {
+            controller.runs_long_commands_from_file = true;
+            controller.send_write_to_event_loop(command("Get-Date", None), ctx);
+        });
+        let messages = rig.sender.messages.lock();
+        assert_eq!(messages.len(), 2, "ESC 2 and the typed line, no chord");
+        assert_eq!(payload(&messages[0]), b"\x1b2".to_vec());
     });
 }
 
@@ -296,7 +323,7 @@ fn a_precmd_without_a_preexec_retypes_once_and_a_preexec_first_retypes_nothing()
         let normal = self::rig(&mut app, 9_100_010, true);
         normal.controller.update(&mut app, |controller, ctx| {
             controller.send_write_to_event_loop(command("Get-Date", None), ctx);
-            controller.file_insert_pending = None; // what the Preexec subscription does
+            controller.clear_file_insert(); // what the Preexec subscription does
             controller.on_precmd_with_chord_outstanding(ctx);
         });
         assert_eq!(normal.sender.messages.lock().len(), 1);

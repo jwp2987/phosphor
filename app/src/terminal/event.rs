@@ -99,7 +99,7 @@ pub enum Event {
         session_id: SessionId,
         seq: Option<u64>,
     },
-    /// The PowerShell insert chord found no command file and inserted nothing (#1581).
+    /// The PowerShell insert chord could not read the command pipe and inserted nothing (#1581).
     CommandFileFailed {
         session_id: SessionId,
     },

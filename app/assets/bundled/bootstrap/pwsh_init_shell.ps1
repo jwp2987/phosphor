@@ -22,6 +22,7 @@ function prompt {
     $function:global:prompt = $global:_warpOriginalPrompt
     $username = [Environment]::UserName
     $global:_warpSessionId = [uint64]@@WARP_SESSION_ID@@
+    $global:_warpCmdPipe = '@@WARP_CMD_PIPE@@'
     $msg = Microsoft.PowerShell.Utility\ConvertTo-Json -Compress -InputObject @{ hook = 'InitShell'; value = @{ session_id = $_warpSessionId; shell = 'pwsh'; user = $username; hostname = [System.Net.Dns]::GetHostName() } }
     $encodedMsg = [BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($msg)).Replace('-', '')
     $oscStart = "$([char]0x1b)]9278;"

@@ -111,7 +111,7 @@ pub(super) enum DProtoHook {
     ContinuationPrompt {
         value: LineEditorMarkerValue,
     },
-    /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command file, so it inserted
+    /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command pipe, so it inserted
     /// nothing and the buffer is empty: the app retypes the command the old way.
     CommandFileFailed {
         value: CommandFileFailedValue,

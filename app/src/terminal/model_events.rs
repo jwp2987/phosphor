@@ -622,8 +622,8 @@ pub enum ModelEvent {
         session_id: SessionId,
         seq: Option<u64>,
     },
-    /// The PowerShell insert chord (`ESC 3`, #1581) found no command file and inserted nothing:
-    /// the pty controller retypes the command.
+    /// The PowerShell insert chord (`ESC 3`, #1581) could not read the command pipe and inserted
+    /// nothing: the pty controller retypes the command.
     CommandFileFailed {
         session_id: SessionId,
     },

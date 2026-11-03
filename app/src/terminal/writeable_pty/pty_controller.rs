@@ -25,6 +25,7 @@ use crate::terminal::model_events::AnsiHandlerEvent;
 use crate::terminal::view::LINEFEED_REGEX;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::bootstrap_file::{permanent_bootstrap_file, TempBootstrapFile};
+use crate::terminal::writeable_pty::command_pipe;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::writeable_pty::long_command_file;
 use crate::terminal::writeable_pty::posix_long_command;
@@ -223,14 +224,13 @@ pub struct PtyController<T: EventLoopSender> {
     /// The temp file of the last such command; replaced by the next one, removed on drop.
     #[cfg(not(target_family = "wasm"))]
     long_command_file: Option<tempfile::TempPath>,
-    /// The per-session file the PowerShell insert chord reads (#1581) and the session it belongs
-    /// to; removed when replaced by another session's, and on drop. The handler normally deletes
-    /// it first.
-    #[cfg(not(target_family = "wasm"))]
-    session_command_file: Option<(u64, tempfile::TempPath)>,
-    /// The command whose text went to the shell as a file plus the insert chord (#1581), until its
-    /// Preexec arrives (the shell ran it) or `CommandFileFailed` does (the shell inserted nothing
-    /// and the command is typed instead). At most one: a second command is typed while it is set.
+    /// The command being served on the session's named pipe for the PowerShell insert chord
+    /// (#1581); in memory only, closed when dropped. Set exactly while `file_insert_pending` is.
+    command_pipe: Option<command_pipe::CommandPipe>,
+    /// The command whose text went to the shell on the pipe plus the insert chord (#1581), until
+    /// its Preexec arrives (the shell ran it) or `CommandFileFailed` does (the shell inserted
+    /// nothing and the command is typed instead). At most one: a second command is typed while it
+    /// is set.
     file_insert_pending: Option<String>,
     /// One-shot: the retype after `CommandFileFailed` must be typed, not sent as the chord again.
     force_typed_command: bool,
@@ -385,7 +385,7 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             // The shell ran what the chord inserted (or anything else): nothing to retype (#1581).
             ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
-                me.file_insert_pending = None;
+                me.clear_file_insert();
             }
             ModelEvent::CommandFileFailed { session_id } => {
                 let active = me
@@ -601,8 +601,7 @@ impl<T: EventLoopSender> PtyController<T> {
             runs_long_commands_from_file: false,
             #[cfg(not(target_family = "wasm"))]
             long_command_file: None,
-            #[cfg(not(target_family = "wasm"))]
-            session_command_file: None,
+            command_pipe: None,
             file_insert_pending: None,
             force_typed_command: false,
             tmux_control_mode: None,
@@ -2118,25 +2117,20 @@ impl<T: EventLoopSender> PtyController<T> {
             && is_user_command
             && !std::mem::take(&mut self.force_typed_command)
             && self.file_insert_pending.is_none()
-            && long_command_file::file_insert_enabled()
-            && long_command_file::can_insert_from_file(&command)
+            && long_command_file::fast_insert_enabled()
+            && long_command_file::can_insert_via_pipe(&command)
         {
-            if let Some(session_id) = session_id {
-                if let Some(path) = long_command_file::write_session_command_file(
-                    &std::env::temp_dir(),
-                    session_id,
-                    &command,
-                ) {
-                    if self.session_command_file.as_ref().map(|(id, _)| *id) != Some(session_id) {
-                        self.session_command_file =
-                            Some((session_id, tempfile::TempPath::from_path(path)));
-                    }
-                    warpui::input_order::log_hop("pwsh_command_via_file", || {
-                        format!("bytes={}", command.len())
-                    });
-                    self.file_insert_pending = Some(command);
-                    return TypedCommand::FileChord;
-                }
+            // The pipe exists before the chord is written, so the shell cannot connect early.
+            if let Some(pipe) = session_id
+                .and_then(command_pipe::lookup_pipe_name)
+                .and_then(|name| command_pipe::CommandPipe::serve(&name, &command))
+            {
+                self.command_pipe = Some(pipe);
+                warpui::input_order::log_hop("pwsh_command_via_pipe", || {
+                    format!("bytes={}", command.len())
+                });
+                self.file_insert_pending = Some(command);
+                return TypedCommand::FileChord;
             }
         }
         let _ = (is_user_command, session_id);
@@ -2184,10 +2178,7 @@ impl<T: EventLoopSender> PtyController<T> {
         warpui::input_order::log_hop("pwsh_command_file_failed_retype", || {
             format!("bytes={}", command.len())
         });
-        #[cfg(not(target_family = "wasm"))]
-        {
-            self.session_command_file = None;
-        }
+        self.command_pipe = None;
         self.force_typed_command = true;
         self.send_write_to_event_loop(
             PtyWrite::Command {
@@ -2209,13 +2200,11 @@ impl<T: EventLoopSender> PtyController<T> {
         }
     }
 
-    /// Forgets an outstanding insert chord whose write was refused before it reached the pty.
-    fn discard_file_insert(&mut self) {
+    /// Forgets an outstanding insert chord (its command ran, or its write was refused before it
+    /// reached the pty) and closes its pipe.
+    fn clear_file_insert(&mut self) {
         self.file_insert_pending = None;
-        #[cfg(not(target_family = "wasm"))]
-        {
-            self.session_command_file = None;
-        }
+        self.command_pipe = None;
     }
 
     /// Sends a message to the event loop thread requesting a PTY write for the given `bytes`.
@@ -2358,7 +2347,7 @@ impl<T: EventLoopSender> PtyController<T> {
 
         if let Some(on_write_fn) = on_write_fn {
             if !on_write_fn().is_accepted() {
-                self.discard_file_insert();
+                self.clear_file_insert();
                 return false;
             }
         }
