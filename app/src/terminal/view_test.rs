@@ -26081,6 +26081,50 @@ fn shadow_mode_agrees_on_typing_during_an_agent_driven_command() {
     })
 }
 
+/// #1528: shadow mode's consumer over SEQUENCES, not single scenarios: the arrival scenarios that
+/// need no ssh or PowerShell setup run back to back on ONE pane, in two orders (state left by one
+/// scenario is the start of the next, as in a real session), and the shadow counter
+/// (`shadow::take_untagged`) must stay at zero for every step. The scenarios are the ones the
+/// per-scenario test above runs, so a disagreement here is a state-carry-over difference between
+/// the legacy chain and the table, not a new key.
+#[test]
+fn shadow_mode_reports_zero_untagged_disagreements_over_chained_key_sequences() {
+    let forward: [(&str, Scenario); 7] = [
+        ("idle prompt", scenario_idle_prompt_keys),
+        ("running command", scenario_running_command_keys),
+        ("navigation keys", scenario_navigation_keys),
+        ("other origins", scenario_written_by_other_origins),
+        ("agent writes", scenario_agent_writes),
+        ("text behind a gate", scenario_text_behind_a_cli_submit_gate),
+        (
+            "block started, not yet long running",
+            scenario_block_started_not_yet_long_running,
+        ),
+    ];
+    let mut backward = forward;
+    backward.reverse();
+    for (order, sequence) in [("forward", forward), ("backward", backward)] {
+        App::test((), move |mut app| async move {
+            let _mode = force_dest_mode(DestMode::Shadow);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let _ = crate::terminal::input_queue::shadow::take_recorded();
+            terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                for (name, scenario) in sequence {
+                    scenario(view, ctx);
+                    let untagged = crate::terminal::input_queue::shadow::take_untagged();
+                    assert!(
+                        untagged.is_empty(),
+                        "{order}: after `{name}` the table and the legacy chain disagree: {untagged:?}"
+                    );
+                }
+            });
+        })
+    }
+}
+
 /// The origin rows: the synced origin refuses bytes for a pane with no running command (O-synced);
 /// a pane running one takes them. Wired at the writer, in `table` mode.
 #[test]
