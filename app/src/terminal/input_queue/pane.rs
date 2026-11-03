@@ -31,7 +31,8 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use super::{
-    EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin, PaneRouteState, QueueFacts, Stamp,
+    EntryId, EntryKind, GateKind, GateSpec, GateToken, InputQueue, Origin, PaneRouteState,
+    QueueFacts, Stamp,
 };
 
 /// Paste ids owned by the input editor have this bit set; the pty's do not. One counter hands out
@@ -74,6 +75,11 @@ pub enum Deferred {
     PasteRead { id: u64, ok: bool },
     /// The line editor signalled (or the hold gave up) while the queue was busy.
     ReleasePromptHold { hold_id: u64, gave_up: bool },
+    /// An interrupt (^C, ^Z, ^\\) voided the prompt hold `hold_id` while the queue was busy
+    /// (#1584): the pty keys held before the signal (ids below `before`) are dropped, as the tty
+    /// flushes its typeahead; editor entries are delivered; keys that arrived after the signal go
+    /// out in order.
+    VoidPromptHold { hold_id: u64, before: EntryId },
     /// A young hold's keys are to be written (its give-up found the queue busy).
     ReleaseYoungHoldKeys { hold_id: u64, routed: bool },
     /// The hand-off recorded young-hold ends that could not be applied while the queue was busy.

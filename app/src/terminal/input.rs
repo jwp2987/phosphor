@@ -8398,12 +8398,14 @@ impl Input {
     }
 
     /// Like [`Self::insert_typeahead_text`], for a report the typeahead hand-off asked for.
+    /// Returns whether the report was inserted; a refusal (#1569: another line's text) leaves the
+    /// buffer exactly as it was and is logged.
     pub fn insert_handoff_typeahead_text(
         &mut self,
         num_typeahead_chars_inserted: CharOffset,
         typeahead: &str,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
         let text_before = warpui::input_order::enabled().then(|| self.buffer_text(ctx));
         // #1569: a report that replaces the front of the buffer must extend what is there (a
         // second report of the same line). One that does not is another line's text; splicing it
@@ -8430,7 +8432,35 @@ impl Input {
                     warpui::input_order::describe_text(&text_before.unwrap_or_default())
                 )
             });
-            return;
+            return false;
+        }
+        // #1574: the report is the shell's line, typed for the shell, and the shell has already
+        // cleared it from its own line: it is inserted (never dropped). An input whose mode is AI
+        // and stays AI for this text (locked, or no autodetection to re-decide it) would make it
+        // an agent prompt (the #1566 `4echo T93_r` that became one), so the input is switched to
+        // shell, locked, visibly: the user sees a shell line and can switch it back. An unlocked AI
+        // input with autodetection on keeps its mode: the text's typeahead provenance (#886)
+        // decides it, and a deferred Enter runs it as a shell command.
+        if self.handoff_report_input_is_ai(ctx) {
+            let is_buffer_empty = self.editor.as_ref(ctx).is_empty(ctx);
+            self.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    is_buffer_empty,
+                    ctx,
+                );
+            });
+            log::info!(
+                "typeahead hand-off: a report reached an AI-mode input; it is inserted and the \
+                 input is switched to shell (report_chars={})",
+                typeahead.chars().count()
+            );
+            warpui::input_order::log_hop("handoff_insert_as_shell", || {
+                format!("report_chars={}", typeahead.chars().count())
+            });
         }
         self.replace_typeahead_prefix(num_typeahead_chars_inserted, typeahead, ctx);
         // #1393: the report's insertion into the editor, before and after, with the count of
@@ -8445,6 +8475,15 @@ impl Input {
             )
         });
         self.note_typeahead_inserted(typeahead, ctx);
+        true
+    }
+
+    /// #1574: whether the input is in AI mode for a shell report: the input type is AI and will
+    /// not be re-decided for the inserted text (the type is locked, or autodetection does not run
+    /// in this context).
+    fn handoff_report_input_is_ai(&self, ctx: &AppContext) -> bool {
+        let model = self.ai_input_model.as_ref(ctx);
+        model.is_ai_input_enabled() && !model.should_run_input_autodetection(ctx)
     }
 
     pub fn focus_input_box(&self, ctx: &mut ViewContext<Self>) {
@@ -14837,6 +14876,13 @@ impl Input {
     /// Makes the next Enter in this input run as [`Self::input_enter_as_shell_command`].
     pub(crate) fn submit_next_enter_as_shell_command(&mut self) {
         self.shell_command_submit_pending = true;
+    }
+
+    /// Whether the next Enter runs as a shell command ([`Self::submit_next_enter_as_shell_command`]),
+    /// for tests.
+    #[cfg(test)]
+    pub(crate) fn shell_command_submit_pending_for_test(&self) -> bool {
+        self.shell_command_submit_pending
     }
 
     /// Defers this Enter while the typeahead hand-off waits for the shell's report of what the

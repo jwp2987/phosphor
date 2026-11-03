@@ -2094,18 +2094,195 @@ fn a_ready_signal_before_the_precmd_does_not_end_the_window() {
     assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
 }
 
+/// #1573: the give-up of an enter window whose Enter the shell never acted on (no preexec, no
+/// precmd within the cap: a continuation prompt with no marker, a lost Enter) releases THAT
+/// window's keys, in order, and nothing else. The old test here (`..._and_is_then_off`) encoded the
+/// bug: the window's give-up switched the prompt hold off for the rest of the session, so every
+/// later prompt wrote its keys raw to ConPTY again (#1162/#1569).
 #[test]
-fn the_enter_window_gives_up_like_the_prompt_hold_and_is_then_off() {
+fn the_enter_window_gives_up_for_its_own_keys_and_the_hold_stays_on() {
     let mut handoff = conpty_ready_with_enter_window();
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
     assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
     let id = handoff.take_prompt_hold_started().unwrap();
-    // No precmd, no signal, no interactive command: the logged give-up writes the keys.
+    // No preexec, no precmd, no signal, no interactive command: a give-up for this window.
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::GiveUp
+    );
     assert!(handoff.expire_queued_prompt_hold(id));
     assert!(handoff.route_released_chunk(b"a"));
     handoff.finish_queued_prompt_hold(id);
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::Gone
+    );
     assert_eq!(handoff.release_enter_window_for_program(), None);
     assert_eq!(handoff.on_user_bytes(b"c"), UserBytesRoute::WriteCounted);
+    // The hold is NOT off: the next prompt holds its keys for the line editor again.
+    assert!(!handoff.prompt_hold_off_for_session());
+    handoff.on_precmd();
+    assert!(handoff.awaiting_line_editor_signal());
+    assert_eq!(handoff.on_user_bytes(b"d"), UserBytesRoute::Held);
+    assert!(handoff.take_prompt_hold_started().is_some());
+}
+
+/// #1573, Git Bash-like ConPTY: `sleep 3` with keys typed in its first second. The cap (1.5 s,
+/// armed at the first held key) fires while the command still runs: that is not a give-up, the
+/// keys stay held and the hold stays on. The command's precmd starts the line editor wait with a
+/// full cap of its own; the ready signal then releases every key once, in typed order; the next
+/// prompt is held for again. Old behaviour: the cap wrote the keys raw mid-command and switched the
+/// prompt hold off for the session.
+#[test]
+fn a_command_running_past_the_give_up_cap_keeps_its_keys_held_and_the_hold_on() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(
+        handoff.on_user_bytes(b"sleep 3"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    handoff.on_preexec(false);
+    // Typed within the first second of the command.
+    let keys: [&[u8]; 7] = [b"e", b"c", b"h", b"o", b" ", b"x", b"\r"];
+    assert_eq!(handoff.on_user_bytes(keys[0]), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().expect("a hold started");
+    // The cap fires 1.5 s after the first key; `sleep 3` is still running.
+    let cap_fires_at = Instant::now() + CONPTY_PROMPT_HOLD_GIVE_UP + Duration::from_millis(1);
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, cap_fires_at),
+        PromptHoldCap::NotYet(CONPTY_PROMPT_HOLD_GIVE_UP),
+        "a running command is not overdue"
+    );
+    assert!(handoff.has_prompt_hold());
+    assert!(!handoff.prompt_hold_off_for_session());
+    // The command's prompt: its precmd starts the wait for the line editor, with its own cap.
+    handoff.on_precmd();
+    assert!(handoff.awaiting_line_editor_signal());
+    match handoff.prompt_hold_cap_fired(id, Instant::now()) {
+        PromptHoldCap::NotYet(left) => assert!(
+            left > CONPTY_PROMPT_HOLD_GIVE_UP - Duration::from_millis(500),
+            "the precmd's wait gets a full cap: {left:?}"
+        ),
+        other => panic!("the re-armed cap right after the precmd gave {other:?}"),
+    }
+    // The precmd's wait still has its give-up.
+    let precmd_at = handoff.awaiting_line_editor_since.expect("waiting");
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, precmd_at + CONPTY_PROMPT_HOLD_GIVE_UP),
+        PromptHoldCap::GiveUp
+    );
+    // The line editor's signal releases every key once, in typed order.
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    let mut written = Vec::new();
+    for key in keys {
+        if handoff.route_released_chunk(key) {
+            written.push(key.to_vec());
+        }
+    }
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(written, keys.map(|key| key.to_vec()).to_vec());
+    assert!(!handoff.prompt_hold_off_for_session());
+    // The released line's prompt: a fast line typed there is held for its line editor again.
+    handoff.on_precmd();
+    assert!(handoff.awaiting_line_editor_signal());
+    assert_eq!(handoff.on_user_bytes(b"l"), UserBytesRoute::Held);
+    let next = handoff
+        .take_prompt_hold_started()
+        .expect("the hold is still on");
+    assert_ne!(next, id);
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(next));
+}
+
+/// #1573: the enter window has no clock. A key typed into a command that has run longer than the
+/// give-up cap, with nothing held yet, is still held for the shell's next line editor. Old
+/// behaviour: the window "expired" after 1.5 s and the key was written raw to ConPTY mid-command
+/// (#1490's lost / moved characters).
+#[test]
+fn a_key_typed_after_the_cap_into_a_running_command_is_still_held() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"make"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    handoff.on_preexec(false);
+    // Nothing typed for longer than the give-up cap.
+    handoff.enter_window_since =
+        Some(Instant::now() - CONPTY_PROMPT_HOLD_GIVE_UP - Duration::from_millis(500));
+    handoff.last_preexec_at = handoff.enter_window_since;
+    assert_eq!(handoff.on_user_bytes(b"x"), UserBytesRoute::Held);
+    assert!(handoff.take_prompt_hold_started().is_some());
+}
+
+/// #1573: the cap firing after an event already ended both waits (its release in flight, e.g.
+/// deferred behind a busy queue) is not a give-up: it is checked again shortly. Bounded: a hold
+/// left queued with no wait and no release is released past twice the cap.
+#[test]
+fn a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    // The command became interactive: the window ended, the view has not released the keys yet.
+    assert_eq!(handoff.release_enter_window_for_program(), Some(id));
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::NotYet(PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK)
+    );
+    let started = handoff.prompt_hold_started_at.expect("a hold started");
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, started + CONPTY_PROMPT_HOLD_GIVE_UP * 2),
+        PromptHoldCap::GiveUp
+    );
+    assert!(handoff.route_released_chunk(b"a"));
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::Gone
+    );
+}
+
+/// #1573: a give-up in the precmd's wait by a shell that HAS signalled this session is one missed
+/// prompt (a loaded machine): its keys are released, and the next prompt is held for again. Only a
+/// shell that never signalled turns the hold off for the session (the #1349 reason, kept:
+/// `a_hold_that_gave_up_is_off_for_the_session_until_a_new_shell`).
+#[test]
+fn a_give_up_by_a_shell_that_signals_is_for_that_prompt_only() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    handoff.on_precmd();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    // The hold began in this wait: the cap was armed with the full give-up then.
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::GiveUp
+    );
+    assert!(handoff.expire_queued_prompt_hold(id));
+    assert!(handoff.route_released_chunk(b"a"));
+    handoff.finish_queued_prompt_hold(id);
+    assert!(!handoff.prompt_hold_off_for_session());
+    handoff.on_precmd();
+    assert!(handoff.awaiting_line_editor_signal());
+    assert_eq!(handoff.on_user_bytes(b"b"), UserBytesRoute::Held);
+}
+
+/// #1573: an Enter that ends a line the shell continues (PS2) never gets a precmd or a preexec;
+/// the continuation prompt is the event that ends the window and releases its keys in order, not
+/// the give-up (which used to switch the hold off for the session).
+#[test]
+fn a_continuation_prompt_ends_the_enter_window_and_releases_its_keys() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(
+        handoff.on_user_bytes(b"for i in 1; do"),
+        UserBytesRoute::WriteCounted
+    );
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"e"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    handoff.on_continuation_prompt();
+    assert_eq!(handoff.release_enter_window_for_continuation(), Some(id));
+    assert!(handoff.route_released_chunk(b"e"));
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(handoff.release_enter_window_for_continuation(), None);
+    assert!(!handoff.prompt_hold_off_for_session());
 }
 
 #[test]
@@ -3189,4 +3366,127 @@ fn the_prompt_commits_to_the_editor_when_no_keys_are_held() {
     handoff.on_precmd();
     assert!(handoff.try_commit_at_prompt());
     assert_eq!(handoff.state(), &HandoffState::EditorOwned);
+}
+
+// ---- #1574: a report the hand-off cannot account for --------------------------------------------
+
+/// A pty-owned hand-off whose line holds `ec` at a prompt, ready to ask for the shell's report.
+fn line_awaiting_a_request() -> TypeaheadHandoff {
+    let mut handoff = after_submit();
+    assert_eq!(handoff.on_user_bytes(b"ec"), UserBytesRoute::WriteCounted);
+    handoff.on_user_write_flushed();
+    handoff.on_precmd();
+    handoff
+}
+
+/// A line this pane delivered to the shell as final (#1494's `stty sane` path) stays in the shell:
+/// while the mark is set no report is asked for (a report clears the shell's line, so the text
+/// would leave the shell), the pty keeps input, and the mark is still set. Without the mark the
+/// same line is asked for as before.
+#[test]
+fn a_committed_delivery_is_never_asked_for_and_stays_in_the_shell() {
+    let mut handoff = line_awaiting_a_request();
+    handoff.note_committed_delivery();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::Drain
+    );
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.committed_delivery_pending());
+    assert!(!handoff.try_commit_at_prompt(), "the line is not empty");
+    // The user's Enter submits the line where it is: the mark ends, nothing was reported.
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.committed_delivery_pending());
+
+    // Control: without the mark the line is asked for.
+    let mut handoff = line_awaiting_a_request();
+    assert_eq!(
+        handoff.on_line_editor_active(true, true),
+        ActiveDecision::SendRequest
+    );
+}
+
+/// The mark ends as soon as the shell's line cannot hold the delivered bytes any more, so a later
+/// report of keys the hand-off owns is never refused for it.
+#[test]
+fn the_committed_delivery_mark_ends_when_its_line_cannot_hold_it() {
+    // A user Enter submits the line.
+    let mut handoff = after_submit();
+    handoff.note_committed_delivery();
+    assert_eq!(handoff.on_user_bytes(b"x\r"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.committed_delivery_pending());
+    // A command written from the editor (its kill prefix ends the line).
+    let mut handoff = TypeaheadHandoff::default();
+    handoff.note_committed_delivery();
+    handoff.on_command_written();
+    assert!(!handoff.committed_delivery_pending());
+    // The prompt hands input to the editor: the line is empty.
+    let mut handoff = after_submit();
+    handoff.note_committed_delivery();
+    handoff.on_precmd();
+    assert!(handoff.try_commit_at_prompt());
+    assert!(!handoff.committed_delivery_pending());
+    // ... and a later report of keys the hand-off owns is accounted.
+    let mut handoff = line_awaiting_a_request();
+    handoff.note_committed_delivery();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert!(!handoff.committed_delivery_pending());
+}
+
+// ---- #1584: a give-up never writes to the pty ----------------------------------------------------
+
+/// Keys held in the precmd's wait at a prompt whose line holds nothing typed may go back to the
+/// editor in order; keys held by an enter window (the shell's state unknown) may not.
+#[test]
+fn only_a_hold_at_a_clean_prompt_can_go_back_to_the_editor() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(handoff.prompt_hold_can_hand_back(id));
+    assert!(!handoff.prompt_hold_can_hand_back(id + 1));
+    assert!(handoff.expire_queued_prompt_hold(id));
+    handoff.finish_queued_prompt_hold(id);
+    assert!(
+        handoff.try_commit_at_prompt(),
+        "the editor takes input over"
+    );
+
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(!handoff.prompt_hold_can_hand_back(id));
+}
+
+/// A hold kept past its cap (an Enter among its keys) keeps its wait, so the line editor's signal
+/// still releases it; a shell that had never signalled is switched off meanwhile, and back on when
+/// the signal shows it does signal.
+#[test]
+fn an_overdue_hold_kept_for_the_events_is_still_released_by_the_signal() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(handoff.keep_overdue_prompt_hold(id));
+    assert!(handoff.prompt_hold_off_for_session());
+    assert!(handoff.awaiting_line_editor_signal());
+    assert!(handoff.has_prompt_hold());
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    assert!(!handoff.prompt_hold_off_for_session());
+    assert!(!handoff.keep_overdue_prompt_hold(id + 1));
+}
+
+/// A preexec while keys wait in the precmd's wait (the shell started a line it already had) turns
+/// the hold into an enter window: not overdue while the command runs, released by its latch.
+#[test]
+fn a_preexec_turns_a_waiting_prompt_hold_into_an_enter_window() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    handoff.on_preexec(true);
+    assert!(!handoff.awaiting_line_editor_signal());
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::NotYet(CONPTY_PROMPT_HOLD_GIVE_UP)
+    );
+    assert_eq!(handoff.release_enter_window_for_program(), Some(id));
 }
