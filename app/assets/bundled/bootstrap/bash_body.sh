@@ -232,6 +232,18 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       __warp_kv_buf=
     }
 
+    # Phosphor (#1492): as ..._end, and the reset-grid OSC that warp_maybe_send_reset_grid_osc
+    # would send right after the hook (ConPTY only) goes out in the SAME write: the bytes on the
+    # pty are identical, one /dev/tty open + write + close (a ConPTY round trip on Windows) fewer.
+    warp_send_hook_via_kv_pairs_end_and_reset_grid () {
+      builtin printf -v __warp_kv_piece "${OSC_START}k;C\a"
+      if [ "${WARP_USING_WINDOWS_CON_PTY:-}" = true ]; then
+        __warp_kv_piece+=$RESET_GRID_OSC
+      fi
+      __warp_emit '%s' "${__warp_kv_buf-}$__warp_kv_piece"
+      __warp_kv_buf=
+    }
+
     # Hex-encodes the given argument and writes it to the PTY, wrapped in the OSC
     # sequences for generator output.
     #
@@ -384,7 +396,7 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "command" "$BASH_COMMAND"
           warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
           warp_send_hook_kv_pair "seq" "$__warp_seq"
-          warp_send_hook_via_kv_pairs_end
+          warp_send_hook_via_kv_pairs_end_and_reset_grid
         else
           local truncated_command
           __warp_ej_var truncated_command "$BASH_COMMAND"
@@ -403,8 +415,8 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           __warp_hex_encode_to "${__warp_seq}}}"
           encoded_message+=$__warp_hex
           __warp_emit_hex_message
+          warp_maybe_send_reset_grid_osc
         fi
-        warp_maybe_send_reset_grid_osc
 
 
         # Since we did not early-return above, this hook is for a user-entered
@@ -531,7 +543,12 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
       # warp_set_title_active_on_preexec is a preexec_function, which accepts 1 argument 
       #(currently invoked command)
       local this_command_spec
-      builtin read -r -a this_command_spec <<< "${1-}"
+      # Phosphor (#1492): only `fg` needs the words, and the here-string is a temp file (MSYS2)
+      # or a pipe on every command. A first word of exactly `fg` contains `fg`, so any other
+      # command skips the read with the same result (this_command_spec stays empty).
+      if [[ "${1-}" == *fg* ]]; then
+        builtin read -r -a this_command_spec <<< "${1-}"
+      fi
 
       # if running fg, figure out the command from its process id
       if [[ "${this_command_spec[0]:-}" == "fg" ]]; then 
@@ -607,12 +624,11 @@ if [ -z "${WARP_BOOTSTRAPPED:-}" ]; then
           warp_send_hook_kv_pair "exit_code" "$exit_code"
           warp_send_hook_kv_pair "next_block_id" "$next_block_id"
           warp_send_hook_kv_pair "session_id" "${WARP_SESSION_ID:-}"
-          warp_send_hook_via_kv_pairs_end
+          warp_send_hook_via_kv_pairs_end_and_reset_grid
         else
           warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\", \"session_id\": ${WARP_SESSION_ID:-}}}"
+          warp_maybe_send_reset_grid_osc
         fi
-
-        warp_maybe_send_reset_grid_osc
 
         if [[ ${PS1:-} == "" ]]; then
           # Use the saved PS1, if we've already unset it (due to active Warp prompt).
