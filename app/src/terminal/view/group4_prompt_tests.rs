@@ -356,3 +356,183 @@ fn enter_on_an_unknown_pane_child_stays_with_the_child() {
         assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
     });
 }
+
+/// A typed key delivered to the pane's key sink with `focus_chain` focused.
+fn pane_typed_with_focus(
+    view: &mut TerminalView,
+    chars: &str,
+    focus_chain: Vec<EntityId>,
+    ctx: &mut ViewContext<TerminalView>,
+) -> PaneKeyOutcome {
+    let key = PaneKey {
+        seq: 0,
+        kind: PaneKeyKind::Typed {
+            chars: chars.to_owned(),
+            ime_commit: false,
+        },
+    };
+    view.on_pane_key_event(
+        &key,
+        &PaneKeyContext {
+            focus_chain,
+            leaf_takes_typed_text: false,
+        },
+        ctx,
+    )
+}
+
+/// #1552 (a), the Git Bash repro (r18co): a long command runs and focus is left on the input view
+/// itself, or on a view inside the input, but not on its editor. The typed keys of that gap went
+/// to the pty and the Enter to the empty editor. Now the Enter follows the typed line through
+/// the terminal's routing: the pty gets `a` then `\r`, in order, and the editor stays empty.
+#[test]
+fn enter_with_focus_on_the_input_view_follows_the_typed_line_to_the_pty() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for inside_the_input in [false, true] {
+            App::test((), move |mut app| async move {
+                let _mode =
+                    crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes = record_all_pty_writes(&mut app, &terminal);
+                let chain = terminal.read(&app, |view, _| {
+                    let mut chain = vec![view.view_id, view.input.id()];
+                    if inside_the_input {
+                        chain.push(EntityId::new());
+                    }
+                    chain
+                });
+                let (typed, enter) = terminal.update(&mut app, |view, ctx| {
+                    register_local_session_for_ssh_test(view, ctx);
+                    view.model.lock().simulate_long_running_block("cat", "");
+                    let typed = pane_typed_with_focus(view, "a", chain.clone(), ctx);
+                    let enter = pane_enter_with_focus(view, chain.clone(), ctx);
+                    (typed, enter)
+                });
+                assert_eq!(
+                    typed,
+                    PaneKeyOutcome::Consumed,
+                    "{mode:?} {inside_the_input}"
+                );
+                assert_eq!(
+                    enter,
+                    PaneKeyOutcome::Consumed,
+                    "{mode:?} {inside_the_input}"
+                );
+                assert_eq!(
+                    flat_bytes(&pty_writes),
+                    b"a\r".to_vec(),
+                    "{mode:?} {inside_the_input}"
+                );
+                terminal.read(&app, |view, ctx| {
+                    assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "");
+                });
+            });
+        }
+    }
+}
+
+/// #1552 (a): with no command taking keys (an idle prompt), the line typed from the input view is
+/// the editor's, and so is its Enter: the sink leaves it to the input's own handling and writes
+/// nothing to the pty.
+#[test]
+fn enter_with_focus_on_the_input_view_at_an_idle_prompt_stays_with_the_input() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let outcome = terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                let chain = vec![view.view_id, view.input.id()];
+                pane_enter_with_focus(view, chain, ctx)
+            });
+            assert_eq!(outcome, PaneKeyOutcome::NotMine, "{mode:?}");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    }
+}
+
+/// #1552 (a) / Fable B1: a pane child that is not inside the input (a card, any unknown child)
+/// keeps its Enter while a command runs, in both destination modes: only the input view's gap
+/// follows the line.
+#[test]
+fn enter_on_a_pane_child_outside_the_input_keeps_its_enter_while_a_command_runs() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_all_pty_writes(&mut app, &terminal);
+            let outcome = terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                view.model.lock().simulate_long_running_block("cat", "");
+                let chain = vec![view.view_id, EntityId::new()];
+                pane_enter_with_focus(view, chain, ctx)
+            });
+            assert_eq!(outcome, PaneKeyOutcome::NotMine, "{mode:?}");
+            assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
+        });
+    }
+}
+
+/// #1552 (a), agent view: while the agent drives its command the user's keys are the agent's
+/// input (#1179), never the command's. The Enter typed from the input view must not become a
+/// byte for that pty either: it stays with the input, and nothing reaches the pty.
+#[test]
+fn enter_with_focus_on_the_input_view_during_an_agent_command_never_reaches_the_pty() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let (pty_writes, _conversation_id) = setup_running_agent_command(&mut app, &terminal);
+            let (typed, enter) = terminal.update(&mut app, |view, ctx| {
+                assert!(view.agent_owns_command_pty());
+                let chain = vec![view.view_id, view.input.id()];
+                let typed = pane_typed_with_focus(view, "a", chain.clone(), ctx);
+                let enter = pane_enter_with_focus(view, chain, ctx);
+                (typed, enter)
+            });
+            assert_eq!(typed, PaneKeyOutcome::Consumed, "{mode:?}");
+            assert_eq!(enter, PaneKeyOutcome::NotMine, "{mode:?}");
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "no user byte may reach the agent's command: {:?}",
+                pty_writes.borrow()
+            );
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "a");
+            });
+        });
+    }
+}
+
+/// #1552 (b): the prompt after a long-running command consumes the hand-back mark on its Precmd
+/// (an event, never a timer) and does not move focus that is not in a gap: the terminal view
+/// itself keeps it. The gap decision itself is `pane_key::hands_back_focus_at_prompt`.
+#[test]
+fn the_prompt_after_a_long_running_command_hands_focus_back_only_from_a_gap() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            register_local_session_for_ssh_test(view, ctx);
+            ctx.focus_self();
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.focus_hand_back_at_prompt = true;
+            assert!(
+                !view.hand_back_focus_at_prompt(ctx),
+                "the terminal view is not a gap"
+            );
+            view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
+            assert!(
+                !view.focus_hand_back_at_prompt,
+                "the Precmd consumes the mark"
+            );
+        });
+    });
+}
