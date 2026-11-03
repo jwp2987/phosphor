@@ -18,6 +18,7 @@ BOTH = {
 GITBASH_ONLY = {
     "key_loss_control": "compares the typed line with the shell's own rec.log; a PowerShell pane has no rc hook (the app starts it with -NoProfile): runs in the Git Bash pane",
     "latency_key_log": "types into a running `cat > /dev/null`: no equivalent stdin-echo program in PowerShell: runs in the Git Bash pane",
+    "latency_first_key_after_idle": "types into a running `cat > /dev/null` (key -> frame from the app log): no PowerShell equivalent: runs in the Git Bash pane",
     "expert_fuzz": "BackSpace / Left / Ctrl-W editing of `echo ... >>` lines; PSReadLine's Ctrl-W differs: runs in the Git Bash pane",
     "big_paste": "`cat > file` + Ctrl-D end-of-input: runs in the Git Bash pane",
     "read_x": "bash `read x` / printf: runs in the Git Bash pane",

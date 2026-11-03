@@ -407,6 +407,22 @@ def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
     assert sent.count("ctrl+c") == 1 and sent.count("ctrl+u") == 2, sent
 
 
+@check
+def idle_schedule_and_loss_bound():
+    import lat
+    sch = lat.idle_schedule([1.0, 2.0, 5.0], 30, 10, 3)
+    for g in (1.0, 2.0, 5.0):
+        for side in ("phosphor", "reference"):
+            rows = [x for x in sch if x[0] == g and x[1] == side]
+            assert sum(c - d for _, _, c, d in rows) == 30 and sum(d for *_, d in rows) == 3 and rows[0][3] == 3, (g, side, rows)
+    assert sch[0][1] == "phosphor" and [x for x in sch if x[0] == 2.0][0][1] == "reference"      # the side that goes first alternates per gap
+    assert all(a[1] != b[1] for a, b in zip([x for x in sch if x[0] == 1.0], [x for x in sch if x[0] == 1.0][1:]))      # A/B/A/B blocks
+    assert {x[1] for x in lat.idle_schedule([1.0], 30, 10, 3, two_sided=False)} == {"phosphor"}
+    assert abs(lat.loss_rate_bound(0, 40) - 0.0722) < 0.001 and abs(lat.loss_rate_bound(1, 40) - 0.1132) < 0.001   # 95 % one-sided Clopper-Pearson
+    assert lat.loss_rate_bound(40, 40) == 1.0 and lat.loss_rate_bound(0, 0) is None
+    assert lat.trials_to_exclude(1 / 40) == 119
+
+
 def main():
     failed = 0
     for f in CHECKS:

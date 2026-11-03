@@ -77,6 +77,58 @@ def block_drift(xs, ys=None, z=2.0):
     return round(d, 2), bool(se is not None and abs(d) > z * se)
 
 
+def loss_rate_bound(k, n, conf=0.95):
+    """one-sided Clopper-Pearson UPPER confidence bound on a loss rate: k lost of n trials -> p such that P(X <= k | n, p) = 1 - conf
+    (bisection; deterministic). k=0 gives 1-(1-conf)^(1/n): 0/40 -> 7.2 % at 95 %, i.e. 40 clean trials cannot exclude a 1/40 rate. None for n < 1."""
+    if n < 1:
+        return None
+    k = max(0, min(int(k), int(n)))
+    if k >= n:
+        return 1.0
+    from math import comb
+
+    def cdf(p):
+        return sum(comb(n, i) * p ** i * (1 - p) ** (n - i) for i in range(k + 1))
+    lo, hi = 0.0, 1.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if cdf(mid) > 1 - conf:
+            lo = mid
+        else:
+            hi = mid
+    return hi
+
+
+def trials_to_exclude(rate, conf=0.95):
+    """clean (zero-loss) trials needed for the upper bound to fall below `rate`: ceil(ln(1-conf)/ln(1-rate)); 119 for 1/40 at 95 %"""
+    from math import ceil, log
+    return int(ceil(log(1 - conf) / log(1 - rate)))
+
+
+def idle_schedule(gaps, n, block=10, warm=0, first="phosphor", alternate=True, two_sided=True):
+    """#1160: the order of the first-key-after-idle samples. -> [(gap, side, count, discard)]: per gap, blocks of `block` samples alternate between
+    'phosphor' and 'reference' (A/B/A/B by block; the side that starts alternates per gap when `alternate`, so neither always goes first), each side
+    totalling exactly n kept samples; the first block of each side per gap also carries `warm` extra samples that are discarded. One-sided (no
+    reference): only phosphor blocks."""
+    other = {"phosphor": "reference", "reference": "phosphor"}
+    out = []
+    for gi, g in enumerate(gaps):
+        start = first if not (alternate and gi % 2) else other[first]
+        sides = [start, other[start]] if two_sided else ["phosphor"]
+        left = {s: n for s in sides}
+        seen = set()
+        while any(v > 0 for v in left.values()):
+            for s in sides:
+                if left[s] <= 0:
+                    continue
+                c = min(block, left[s])
+                left[s] -= c
+                d = 0 if s in seen else warm
+                seen.add(s)
+                out.append((g, s, c + d, d))
+    return out
+
+
 def warmup():
     return int(os.environ.get("APPCI_WARMUP", "3"))
 
