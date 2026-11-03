@@ -156,7 +156,10 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
             // nested window existed and nothing observed it afterwards.
             terminal.update(&mut app, |view, ctx| {
                 view.model.lock().process_bytes("inner$ ");
-                view.ssh_observe(ctx);
+                // The output wakeup the parse ends with: it observes the prompt AND judges the
+                // held line (`deliver_ssh_typeahead_if_ready("output")`), as in production. Only
+                // observing left the hand-over with no event to run on.
+                view.handle_terminal_wakeup(crate::terminal::event_listener::Wakeup::Output, ctx);
             });
             for _ in 0..16 {
                 futures_lite::future::yield_now().await;
