@@ -60,6 +60,42 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
     # Byte used to signal the end of an OSC for Warp JSON messages.
     $oscEnd = "$([char]0x07)"
 
+    # Phosphor (#1401): hook timing marks, to attribute Enter -> command start and command end ->
+    # next prompt per hop. Off unless the app's environment names a file in
+    # PHOSPHOR_PWSH_HOOK_TIMING, and then only while `<file>.on` exists (checked once per prompt,
+    # in Warp-Idle-Maintenance). A mark is one Stopwatch read appended to a buffer: `<name> <ticks>`
+    # (Stopwatch.GetTimestamp, the Windows performance counter; the app logs the same counter as
+    # `qpc=` on two hops, which places the marks on its timeline). The buffer is written out at
+    # the next prompt, never on the Enter path. Marks: k0/k1/k2 the insert chord's handler (start,
+    # pipe read, before AcceptLine), r PSReadLine returned the line, p the Preexec OSC written,
+    # q Preexec done, c the prompt function entered, m Precmd sent, x the prompt function done,
+    # i PSConsoleHostReadLine entered, e LineEditorReading sent.
+    $script:warpDiagPath = $env:PHOSPHOR_PWSH_HOOK_TIMING
+    # See Warp-Prompt (#1280).
+    $script:warpNoPromptOptionCache = @('0', 'off', 'false', 'no') -contains "$env:PHOSPHOR_PWSH_PROMPT_OPTION_CACHE".Trim().ToLowerInvariant()
+    $script:warpDiagOn = $false
+    $script:warpDiagBuf = $null
+    if ($script:warpDiagPath) {
+        try {
+            $script:warpDiagBuf = [System.Text.StringBuilder]::new()
+            [System.IO.File]::AppendAllText($script:warpDiagPath, "freq $([System.Diagnostics.Stopwatch]::Frequency)`n")
+        } catch {
+            $script:warpDiagPath = $null
+        }
+    }
+
+    function Warp-Diag-Flush {
+        try {
+            if ($script:warpDiagBuf.Length -gt 0) {
+                [System.IO.File]::AppendAllText($script:warpDiagPath, $script:warpDiagBuf.ToString())
+                [void]$script:warpDiagBuf.Clear()
+            }
+            $script:warpDiagOn = [System.IO.File]::Exists($script:warpDiagPath + '.on')
+        } catch {
+            $script:warpDiagOn = $false
+        }
+    }
+
     # Writes a hex-encoded JSON message to the PTY.
     function Warp-Send-JsonMessage([System.Collections.Hashtable]$table, [string]$trailer = '') {
         $json = Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject $table -Compress
@@ -330,6 +366,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         }
         $preexecJson = '{"hook":"Preexec","value":{"session_id":' + [uint64]$global:_warpSessionId + ',"command":"' + $escaped + '","seq":' + $script:warpSeq + '}}'
         Warp-Write-Osc "$oscStart$oscJsonMarker$oscParamSeparator$(Warp-Encode-HexString $preexecJson)$oscEnd$oscResetGrid"
+        if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("p $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
         # The title is set after the OSC: the app does not need it before the command starts.
         try {
             $HOST.UI.RawUI.WindowTitle = $title
@@ -344,6 +381,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # The housekeeping that used to follow here (cleaning up completed warp jobs, scrubbing our
         # own commands from the history) runs in Warp-Idle-Maintenance, once the next prompt is on
         # screen: nothing about it has to happen before the command starts (#1279).
+        if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("q $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
     }
 
     # Housekeeping that does not have to happen on the way from the user's Enter to the next
@@ -357,6 +395,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         param()
         # A throw here would keep PSConsoleHostReadLine from reading the next line at all.
         try {
+            if ($script:warpDiagPath) { Warp-Diag-Flush }
             # Clean up any completed warp jobs so they do not show up on the user's 'get-job'
             # commands
             Warp-Clean-CompletedThread
@@ -543,6 +582,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # reports the real command to Preexec. Anything that goes wrong inserts nothing and tells
         # the app (CommandFileFailed), which types the command the old way.
         PSReadLine\Set-PSReadLineKeyHandler -Chord 'Alt+3' -ScriptBlock {
+            if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("k0 $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
             $text = $null
             $pipe = $null
             try {
@@ -556,12 +596,14 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
             } finally {
                 if ($null -ne $pipe) { $pipe.Dispose() }
             }
+            if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("k1 $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
             if ([string]::IsNullOrEmpty($text)) {
                 Warp-Send-JsonMessage @{ hook = 'CommandFileFailed'; value = @{ session_id = $global:_warpSessionId } }
                 return
             }
             [Microsoft.PowerShell.PSConsoleReadLine]::RevertLine()
             [Microsoft.PowerShell.PSConsoleReadLine]::Insert($text)
+            if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("k2 $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
             [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
         }
 
@@ -1218,6 +1260,7 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         #    back to what they were originally
         $status = $?
         $code = $LASTEXITCODE
+        if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("c $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
         $isGeneratorCommand = [bool]($script:generatorCommand -eq $true)
 
         # The bootstrap's own lines are the last history entries at the first prompt: remove them
@@ -1230,19 +1273,37 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         if ($script:dontRunPrecmdForPrompt -ne $true) {
             Warp-Precmd -status $status -code $code
         }
+        if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("m $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
 
         $script:preexecHandled = $false
 
         $renderedPrompt = Warp-Render-Prompt -status $status -code $code -isGeneratorCommand $isGeneratorCommand
         $decoratedPrompt = Warp-Decorate-Prompt -basePrompt $renderedPrompt
         $extraLines = ($decoratedPrompt -split "$([char]0x0a)").Length - 1
-        PSReadLine\Set-PSReadLineOption -ExtraPromptLineCount $extraLines
+        # Phosphor (#1280): a cmdlet call per prompt (0.2 ms on pwsh 7 on Linux, several times that
+        # on Windows PowerShell 5.1) to restate the same count. Set it only when PSReadLine's LIVE
+        # option differs (read with GetOptions(), 0.02 ms), so a value anything else set -- the
+        # user's Set-PSReadLineOption, a prompt framework, a re-import -- is still corrected every
+        # prompt. If the live value cannot be read it is set every prompt, as before.
+        # PHOSPHOR_PWSH_PROMPT_OPTION_CACHE=0 sets it every prompt.
+        $liveExtraLines = $null
+        if (-not $script:warpNoPromptOptionCache) {
+            try {
+                $liveExtraLines = [Microsoft.PowerShell.PSConsoleReadLine]::GetOptions().ExtraPromptLineCount
+            } catch {
+                $liveExtraLines = $null
+            }
+        }
+        if ($null -eq $liveExtraLines -or $liveExtraLines -ne $extraLines) {
+            PSReadLine\Set-PSReadLineOption -ExtraPromptLineCount $extraLines
+        }
 
         # NOTE: Because we are in the prompt, we do not need to reset
         # the $? automatic variable (apparently $prompt does not impact it).
         # However, we do need to reset the LASTEXITCODE. If we ever refactor
         # this to not use the prompt, then watch out for $?
         $global:LASTEXITCODE = $code
+        if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("x $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
 
         return $decoratedPrompt
     }
@@ -1305,10 +1366,13 @@ $null = Microsoft.PowerShell.Core\New-Module -Name Warp-Module -ScriptBlock {
         # PSConsoleHostReadLine.
         $script:oldPSConsoleHostReadLine = $function:global:PSConsoleHostReadLine
         $function:global:PSConsoleHostReadLine = {
+            if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("i $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
             Warp-Idle-Maintenance
             Warp-Send-LineEditorReading
+            if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("e $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
 
             $line = & $script:oldPSConsoleHostReadLine
+            if ($script:warpDiagOn) { [void]$script:warpDiagBuf.Append("r $([System.Diagnostics.Stopwatch]::GetTimestamp())`n") }
 
             # A command too long to type into PSReadLine (#1106) arrives as the launcher line
             # `. (Warp-Run-LongCommand)` (#1592). Preexec reports that line as is; the app

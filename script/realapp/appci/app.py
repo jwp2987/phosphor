@@ -248,6 +248,8 @@ class WindowsApp:
         self.proc = None
         self.exit_code = None
         self.config = os.path.join(os.environ["LOCALAPPDATA"], "phosphor", "Phosphor", "config")
+        # #1401: pwsh.ps1's hook timing marks go here while `<file>.on` exists (cases.py pwsh_hook_timing turns it on for a measurement only)
+        self.hook_timing_path = os.path.join(self.home, "pwsh_hook_timing.txt")
 
     def prepare(self):
         import shutil
@@ -270,6 +272,7 @@ class WindowsApp:
         e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))
+        e["PHOSPHOR_PWSH_HOOK_TIMING"] = self.hook_timing_path
         tail = os.pathsep.join(winapi.git_dirs())
         e["PATH"] = os.path.join(self.home, "bin") + os.pathsep + e.get("PATH", "") + (os.pathsep + tail if tail else "")
         if os.name != "nt":

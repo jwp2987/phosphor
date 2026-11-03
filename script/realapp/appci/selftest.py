@@ -307,6 +307,40 @@ def enter_segment_split():
 
 
 @check
+def enter_segments_count_the_powershell_insert_chord():
+    """#1401: a PowerShell line is served on the pipe and only the 2-byte chord is written; that write is the line's pty write"""
+    L = ["input_order hop=enter_begin t=1000.0", "input_order hop=pwsh_command_via_pipe bytes=83 t=1001.0",
+         "input_order pty_write bytes=2 t=1001.5", "input_order hop=preexec_received signal=preexec t=1017.5",
+         "input_order hop=enter_begin t=2000.0", "input_order pty_write bytes=2 t=2000.4"]          # a 2-byte write with no chord hop: not the line
+    s = cases.enter_segments(L, 0)
+    assert s["enter_to_write_ms"] == 1.5 and s["enter_to_write_n"] == 1, s
+    assert s["write_to_preexec_ms"] == 16.0, s
+
+
+@check
+def pwsh_hook_timing_marks_land_on_the_app_timeline():
+    """#1401: pwsh.ps1 marks (Stopwatch ticks) are placed on the app's epoch timeline through the qpc= calibration of its log lines"""
+    import pwsh_timing as pt
+    f, base = 10_000_000, 1_793_713_705_000.0          # 10 MHz counter; epoch ms of qpc 0 is `base`
+    q = lambda ms: int(round(ms * f / 1000.0))          # noqa: E731  (epoch offset ms -> ticks)
+    lines = ["input_order hop=pwsh_command_via_pipe bytes=83 qpc=%d qpf=%d t=%.3f" % (q(100.0), f, base + 100.0),
+             "input_order hop=preexec_received signal=preexec t=%.3f qpc=%d qpf=%d" % (base + 120.0, q(120.0), f),
+             "input_order hop=ctrl_c_pty_write bytes=1 t=%.3f" % (base + 500.0),
+             "input_order hop=line_editor_ready_after_ctrl_c via=line_editor_reading since_ctrl_c_ms=80.5 t=%.3f" % (base + 580.5)]
+    assert abs(pt.calibration(lines) - base) < 0.01
+    marks = "freq %d\n" % f + "".join("%s %d\n" % (n, q(ms)) for n, ms in
+                                      (("k0", 106.0), ("k1", 108.0), ("k2", 109.0), ("r", 112.0), ("p", 114.0), ("q", 115.0),
+                                       ("c", 160.0), ("m", 170.0), ("x", 171.0), ("i", 172.0), ("e", 180.0), ("c", 560.0), ("e", 575.0)))
+    s = pt.segments(marks, lines, stamps_ms=[base + 130.0])
+    assert s["app_write_to_handler"] == 6.0 and s["handler_pipe_read"] == 2.0 and s["accept_line"] == 3.0, s
+    assert s["readline_to_preexec"] == 2.0 and s["preexec_osc_to_app"] == 6.0 and s["preexec_tail"] == 1.0, s
+    assert s["hook_to_command_start"] == 15.0 and s["prompt_precmd"] == 10.0 and s["readline_maintenance"] == 8.0, s
+    assert pt.segments("", lines) == {} and pt.segments(marks, []) == {}            # no marks or no calibration: nothing, not zeros
+    c = pt.ctrl_c_segments(marks, lines)
+    assert c["ctrl_c_to_prompt"] == 60.0 and c["ctrl_c_to_reading"] == 75.0 and c["line_editor_ready_after_ctrl_c"] == 80.5, c
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])
