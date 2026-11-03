@@ -10129,6 +10129,7 @@ impl Input {
                     .as_ref(ctx)
                     .has_typeahead_provenance()
                     .then(|| self.buffer_text(ctx));
+                let user_typed_edit = matches!(edit_origin, EditOrigin::UserTyped);
                 if !typed_behind_waiting_enter {
                     self.ai_input_model.update(ctx, |controller, _| {
                         controller.abort_in_progress_detection();
@@ -10136,6 +10137,15 @@ impl Input {
                             controller.note_buffer_edited(&buffer_text);
                         }
                         if let Some(buffer_text) = buffer_text_for_detection {
+                            // Typed text is the user's own question to autodetection: an
+                            // explicit write that no edit has claimed yet (the agent view's
+                            // entry, a mode toggle) was made for the buffer before it, and
+                            // must not cover what is typed next -- a whole line typed or
+                            // delivered at once right after entry (`ssh host`) was then
+                            // never classified and went to the agent from an unready shell.
+                            if user_typed_edit {
+                                controller.release_unclaimed_explicit_write();
+                            }
                             controller.note_detection_requested(buffer_text);
                         }
                     });
