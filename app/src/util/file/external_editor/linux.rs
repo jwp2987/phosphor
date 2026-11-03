@@ -415,8 +415,8 @@ impl EditorMetadata {
 /// If `line_column_number` is `Some`, the file will be opened with the cursor
 /// at the given location (if supported by the editor).
 ///
-/// If with_editor is `None`, we attempt to compute the default editor for the
-/// given file type, and open the file there.
+/// If with_editor is `None`, the file is handed to the OS handler. To use the XDG default
+/// editor, resolve it first (off the UI thread) with [`default_editor_for_file`].
 pub fn open_file_path_with_line_and_col(
     line_column_number: Option<LineAndColumnArg>,
     with_editor: Option<Editor>,
@@ -424,7 +424,9 @@ pub fn open_file_path_with_line_and_col(
     ctx: &mut AppContext,
 ) {
     if full_path.is_file() {
-        let with_editor = with_editor.or_else(|| get_app_for_file_from_mime(full_path));
+        // No `xdg-mime` lookup here (#1318): it blocks for up to ~500 ms, so callers that want the
+        // system-default editor resolve it off the UI thread with
+        // [`default_editor_for_file`] and pass the result as `with_editor`.
         if let Some(editor) = with_editor {
             if let Some(mut command) = editor.command(full_path, line_column_number) {
                 match command.spawn() {
@@ -439,18 +441,18 @@ pub fn open_file_path_with_line_and_col(
     ctx.open_file_path(full_path);
 }
 
-/// Open `full_path` in its XDG default application, but only if that application is a known
-/// [`Editor`]; returns whether it was opened. See the macOS twin for why (#681): the caller
-/// opens the in-app editor when this returns `false`, never the OS handler.
-pub fn open_in_default_editor_only(
+/// Open `full_path` in `editor` (the XDG default editor resolved by [`default_editor_for_file`]),
+/// but only if there is one; returns whether it was opened. See the macOS twin for why (#681): the
+/// caller opens the in-app editor when this returns `false`, never the OS handler.
+pub fn open_in_editor_only(
     line_column_number: Option<LineAndColumnArg>,
     full_path: &Path,
-    _ctx: &mut AppContext,
+    editor: Option<Editor>,
 ) -> bool {
     if !full_path.is_file() {
         return false;
     }
-    let Some(editor) = get_app_for_file_from_mime(full_path) else {
+    let Some(editor) = editor else {
         return false;
     };
     let Some(mut command) = editor.command(full_path, line_column_number) else {
@@ -465,6 +467,26 @@ pub fn open_in_default_editor_only(
             log::error!("Error launching {editor:?}: {err:#}");
             false
         }
+    }
+}
+
+/// Resolves the XDG default editor for `path` without blocking the caller (#1318): the
+/// `xdg-mime` queries (each capped at [`XDG_MIME_TIMEOUT`]) run on a dedicated thread. Resolves to
+/// `None` if the default app is not a known [`Editor`], the lookup fails, or the thread dies.
+pub fn default_editor_for_file(
+    path: std::path::PathBuf,
+) -> impl std::future::Future<Output = Option<Editor>> + Send {
+    let (tx, rx) = futures::channel::oneshot::channel();
+    let spawned = std::thread::Builder::new()
+        .name("xdg-mime-lookup".into())
+        .spawn(move || {
+            let _ = tx.send(get_app_for_file_from_mime(&path));
+        });
+    async move {
+        if spawned.is_err() {
+            return None;
+        }
+        rx.await.ok().flatten()
     }
 }
 

@@ -55,6 +55,34 @@ static MAIN_THREAD_ID: OnceLock<thread::ThreadId> = OnceLock::new();
 pub fn open_url_in_system(url: &str) {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
+        // The WSL path waits on `wslview` / `rundll32.exe` (#1318), which can take hundreds of
+        // milliseconds, so it runs on its own thread instead of the UI thread. The behaviour
+        // and the logging are unchanged; only the thread differs.
+        if platform::linux::is_wsl() {
+            let url = url.to_owned();
+            let spawned = thread::Builder::new()
+                .name("open-url-wsl".into())
+                .spawn(move || open_url_in_system_blocking(&url));
+            if let Err(e) = spawned {
+                log::warn!("Unable to spawn thread to open url {e:?}");
+            }
+            return;
+        }
+        open_url_in_system_blocking(url);
+    }
+
+    #[cfg(windows)]
+    {
+        if let Err(e) = open::that_detached(url) {
+            log::warn!("Unable to open url {e:?}");
+        }
+    }
+}
+
+/// The blocking body of [`open_url_in_system`]; on WSL it must not run on the UI thread.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn open_url_in_system_blocking(url: &str) {
+    {
         // Opening in WSL is complicated for a few reasons
         // 1. By default, wsl does not have an awareness of browsers installed in windows.
         //    We either need to have wslu installed for wslview, or we need
@@ -120,13 +148,6 @@ pub fn open_url_in_system(url: &str) {
                 }
             }
         }
-        if let Err(e) = open::that_detached(url) {
-            log::warn!("Unable to open url {e:?}");
-        }
-    }
-
-    #[cfg(windows)]
-    {
         if let Err(e) = open::that_detached(url) {
             log::warn!("Unable to open url {e:?}");
         }
