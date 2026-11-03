@@ -14,7 +14,10 @@
 //! * `pane_queue/idle_key`: one key offered to an idle queue (decide the destination, deliver).
 //! * `pane_queue/gate_open_offer_drain`: 64 keys offered behind an open gate, then the gate's
 //!   event drains them (per-key cost = time / 64; the throughput line reports it).
-//! * `destination_for`: the pure destination table over the common (kind, facts) pairs.
+//! * `destination_for`: the LEGACY destination decision over the common (kind, facts) pairs.
+//! * `table_decide`: the destination table (`table::decide`, #1424) over the same kind of pairs:
+//!   typed, Enter, a control key, a sequence and a paste, each into an idle shell, a focused
+//!   editor and an agent-owned pty (#1533: the bench used to measure only the legacy function).
 //! * `handoff`: the hand-off decision (`young_submit_decision`) and the lock-free reads a key
 //!   makes of the model facts (`KeyFactsCell::load`, `PaneHandoff::read`).
 
@@ -22,9 +25,10 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use warp::dev_support::table::{Class, Intent, decide};
 use warp::dev_support::{
     DeliverOutcome, DestFacts, Destination, DiscardReason, EntryKind, FollowUps, GateKind,
-    GateSpec, GateToken, Host, InputEntry, PaneQueue, destination_for,
+    GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue, RouteFacts, destination_for,
 };
 use warp::terminal::model::key_facts::{KeyFacts, KeyFactsCell};
 use warp::terminal::model::typeahead_handoff::{PaneHandoff, young_submit_decision};
@@ -131,6 +135,45 @@ fn destinations(c: &mut Criterion) {
     });
 }
 
+/// An idle, bootstrapped shell at its prompt with the input box up: the common case. Built by
+/// assignment (as the table tests do) so a field added to `RouteFacts` does not break the bench.
+#[allow(clippy::field_reassign_with_default)]
+fn idle_route_facts() -> RouteFacts {
+    let mut f = RouteFacts::default();
+    f.model_consistent = true;
+    f.handoff_known = true;
+    f.is_bootstrapped = true;
+    f.session_pending_or_bootstrapped = true;
+    f.input_box_visible = true;
+    f
+}
+
+fn table_decide(c: &mut Criterion) {
+    let idle = idle_route_facts();
+    let mut editor_focused = idle;
+    editor_focused.editor_focused = true;
+    let mut agent = idle;
+    agent.agent_owns_pty = true;
+    agent.active_block_started = true;
+    agent.long_running = true;
+    let intents = [
+        Intent::new(Class::Typed, Origin::Keyboard),
+        Intent::new(Class::Enter, Origin::Keyboard),
+        Intent::new(Class::Control, Origin::Keyboard),
+        Intent::new(Class::Seq, Origin::Keyboard),
+        Intent::new(Class::Paste, Origin::Keyboard),
+    ];
+    c.bench_function("table_decide", |b| {
+        b.iter(|| {
+            for intent in &intents {
+                for facts in [&idle, &editor_focused, &agent] {
+                    black_box(decide(black_box(intent), black_box(facts), None));
+                }
+            }
+        })
+    });
+}
+
 fn handoff(c: &mut Criterion) {
     let mut group = c.benchmark_group("handoff");
     group.bench_function("young_submit_decision", |b| {
@@ -157,5 +200,5 @@ fn handoff(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, pane_queue, destinations, handoff);
+criterion_group!(benches, pane_queue, destinations, table_decide, handoff);
 criterion_main!(benches);

@@ -232,6 +232,74 @@ def c_remote_ext(ctx, r):
             r.check(False, "the app did not come back with never_install after the extension case: later cases would run on the wrong path")
 
 
+# ------------------------------------------------------------------ ssh Enter latency against a plain-ssh control (#1532)
+def remote_stamp_line(ctx):
+    """The timestamp line for the REMOTE shell, writing ~/lat_<i> into the remote home. Phosphor and the reference ssh into the SAME remote
+    shell, so the line is symmetric whichever shell that is: macOS perl (BSD date has no %N; works in bash 3.2 and zsh), else `date +%s.%N`."""
+    if ctx.be.name == "mac":
+        return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > ~/lat_%d"
+    return "date +%%s.%%N > ~/lat_%d"
+
+
+@case("latency_enter_ssh", order=64, gui=True)
+def c_lat_enter_ssh(ctx, r):
+    """#1532: Enter -> command start INSIDE an ssh session, Phosphor vs plain ssh in the reference terminal (same session, same remote shell,
+    same keys/cadence/stamp line), verdict on the overhead against the owner's ssh budget (plain ssh +/- 1 ms, APPCI_SSH_ENTER_BUDGET_MS).
+    Sequential (Phosphor, then the reference). The stamp files land in the remote home, so the measurement includes the ssh round trip on
+    BOTH sides and cancels out of the overhead."""
+    need_ssh(ctx, r)
+    import lat
+    from cases import enter_to_start, ref_terminal, ref_note, plat, lat_checks
+    n, warm = ctx.count_lat(60), lat.warmup()
+    stamp, rhome = remote_stamp_line(ctx), ctx.prof.rhome
+    rm_remote(ctx, "lat_ready")
+    base = ctx.shell_count()
+    if connect(ctx) is None:
+        r.check(False, "ssh fake: no remote prompt within 90 s (sshd.log). Test host: %s" % ctx.ssh_diag())
+        ctx.reset()
+        return
+    tok = ctx.tok(6)
+    ctx.be.type("echo %s >> ~/lat_ready" % tok, 12, enter=True)
+    if not ctx.until(lambda: tok in ctx.lines("lat_ready", remote=True), 10):
+        r.check(False, "after ssh fake, a probe line did not reach the REMOTE home: not measuring Enter latency in an unknown shell")
+        ctx.reset()
+        return
+    ds = enter_to_start(ctx, n + warm, stamp=stamp, d=rhome)[warm:]
+    left = ctx.leave_remote(r, "latency_enter_ssh", "lat_ready", tok, base)
+    r.metric("ssh_enter_to_start_ms", stats(ds))
+    r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured over ssh" % (len(ds), n))
+    if not left:
+        return
+    ctx.reset()
+    rs, ref = [], ref_terminal(ctx)
+    if ref:
+        ref_note(ctx, r)
+        try:
+            if ref.switch:
+                ref.switch("reference")
+            time.sleep(2.5)
+            if connect(ctx) is None:
+                r.note("reference: plain `ssh fake` gave no remote prompt within 90 s; no control measured")
+            else:
+                rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5), stamp=stamp, d=rhome)[warm:]
+                ctx.be.type("exit", 12, enter=True)
+                time.sleep(1.0)
+        finally:
+            ref.close()
+        time.sleep(1.0)      # focus returns to Phosphor
+        r.metric("reference_ssh_enter_to_start_ms", stats(rs))
+        r.metric("reference", ref.name)
+    else:
+        r.note("no reference terminal available for the plain-ssh control%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
+    if ds:
+        rec = lat.evaluate("%s/latency_enter_ssh/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_SSH_ENTER_BUDGET_MS", "1")), "overhead",
+                           plat(), ref_name=ref.name if ref and rs else None, floor=ctx.be.key_floor_ms, expected=n, mode="sequential",
+                           notes=["both sides type into the SAME remote shell over ssh to the harness's local sshd; reference measured after Phosphor (sequential)"])
+        r.metrics.setdefault("lat", {})["ssh_enter_to_start"] = rec
+        lat_checks(r, rec, "Enter to command start over ssh")
+    ctx.reset()
+
+
 # ------------------------------------------------------------------ failing / hanging host, password prompt
 @case("ssh_hanging_host_not_local", order=62, gui=True)
 def c_ssh_hang(ctx, r):
