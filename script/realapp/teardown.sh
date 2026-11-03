@@ -10,6 +10,39 @@
 # a group-leading `Xvfb -displayfd` that started after OUT_DIR was created. Still never by name or pattern.
 # One extra rule (#1485): a `terminal <pid>` line (the Terminal.app this run launched as the macOS reference) is ours only when the
 # command is exactly the Terminal.app executable AND that PID started after OUT_DIR was created (ps lstart, so a reused PID is safe).
+# r18d8: `teardown.sh --stale` (called at the START of wayland_session.sh) reaps leftovers of an EARLIER killed job, which the per-dir
+# pass below cannot (a job killed at the runner timeout left sway, the app, foot, the wtype keyboard holder and the test sshd running;
+# the next job's checkout may even have wiped the old pidfiles). The harness exports APPCI_SESSION="<session script pid>:<job id>:<mode>"
+# into its own environment, so every process it started carries it. A process is stale when it is owned by this user, its
+# /proc/PID/environ carries that marker, and the session script pid in the marker is no longer alive (a concurrent live session is never
+# touched). Exact PIDs from /proc, never by name or pattern; a group leader is stopped by its group (same rule as below). Logs what it reaped.
+if [ "${1:-}" = "--stale" ]; then
+  [ -d /proc/self ] || { echo "stale-reap: no /proc here, skipped"; exit 0; }
+  me=$(id -u); stale=""; seen=""
+  for d in /proc/[0-9]*; do
+    p=${d#/proc/}
+    [ "$p" = "$$" ] && continue
+    [ "$(stat -c %u "$d" 2>/dev/null)" = "$me" ] || continue
+    mark=$({ tr '\0' '\n' < "$d/environ"; } 2>/dev/null | sed -n 's/^APPCI_SESSION=//p' | head -1)
+    [ -n "$mark" ] || continue
+    spid=${mark%%:*}
+    case "$spid" in ''|*[!0-9]*) continue;; esac
+    kill -0 "$spid" 2>/dev/null && continue          # the session that started it is still alive: not stale
+    stale="$stale $p"
+    echo "stale-reap: pid $p ($({ tr '\0' ' ' < "$d/cmdline"; } 2>/dev/null | cut -c1-100)) from dead session $mark"
+  done
+  [ -n "$stale" ] || { echo "stale-reap: no leftovers of an earlier job"; exit 0; }
+  pgs=""
+  for p in $stale; do
+    if [ "$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')" = "$p" ]; then pgs="$pgs $p"; else kill "$p" 2>/dev/null; fi
+  done
+  for g in $pgs; do kill -- "-$g" 2>/dev/null; done
+  sleep 2
+  for p in $stale; do kill -0 "$p" 2>/dev/null && { echo "stale-reap: pid $p survived TERM: KILL"; kill -9 "$p" 2>/dev/null; }; done
+  for g in $pgs; do kill -0 -- "-$g" 2>/dev/null && kill -9 -- "-$g" 2>/dev/null; done
+  echo "stale-reap: stopped$stale"
+  exit 0
+fi
 for out in "$@"; do
   [ -d "$out" ] || continue
   out=$(cd "$out" && pwd)

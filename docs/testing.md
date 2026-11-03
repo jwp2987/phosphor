@@ -428,6 +428,26 @@ pass/fail/skip, detail, metrics, shots), `junit.xml` (GitLab test report), `summ
 sway/GPU info). A case passes only if the effect file the typed command writes AND the shell's own `rec.log` match the typed commands
 exactly; an empty `rec.log` is noted and the effect file alone decides.
 
+Run lifecycle (r18d8, Linux CI; `job 17686762542` was killed at the 90 min timeout with nothing but the runner log):
+- **Crash-safe results.** `run.py` regenerates `results.json`, `summary.md` and `junit.xml` from `results.jsonl` after EVERY case (meta
+  `partial=1` until the final write, which is unchanged and decides the exit code). A killed job leaves every finished row.
+- **Artifacts.** `.appci_linux` uploads with `when: always`, so a timed-out or cancelled job still ships results, `shots/`, `logs/` and
+  `results.jsonl`; finished cases' screenshots and logs are already under `run/` when the job dies.
+- **Timeout.** `.appci_linux` has `timeout: 4h` (GitLab's is static per job). The full tier of `app-test-linux-wayland` runs two modes
+  (terminal ~75 min alone, `soak` ~70 min per mode at `APPCI_SOAK_MIN=60`) plus the xwayland pass; the fix tier (smoke) ends by itself well
+  under 90 min and is not lengthened. The per-case limit `APPCI_CASE_TIMEOUT` (1500 s) is unchanged EXCEPT `soak`, which gets
+  `APPCI_SOAK_MIN * 60 + 600` s (it can never finish a 60 min soak inside 1500 s: it hit CaseTimeout in r18d8). `quit_24_tabs` + `soak`
+  are the dominant cases; nothing else looked mis-sized, and no coverage was shrunk.
+- **SIGTERM/INT/HUP.** `wayland_session.sh` traps them, signals run.py's process group (run.py is started under `setsid`; its pgid is
+  recorded in `pids` as `runpy`), waits up to 30 s for it to flush and stop the app, then exits (the EXIT trap tears down every recorded
+  PID). `run.py`'s own handler writes the partial report first, then unwinds (`app.stop`, `sshd.stop`).
+- **Stale processes.** At job start `wayland_session.sh` runs `teardown.sh <this out dir>` and `teardown.sh --stale`. The latter reaps
+  every process of this user whose `/proc/PID/environ` carries `APPCI_SESSION=<session pid>:<job id>:<mode>` (exported by the session
+  script; all its sway/app/foot/wtype-holder/sshd children inherit it) when that session pid is dead. Exact PIDs, group-leader
+  by group, never by name; a live concurrent session is untouched; what it reaped is logged as `[session] stale: ...`.
+- **Job log.** Each row's FIRST failing message (or a `noref` row's `NO-REFERENCE` reason) is printed in full; the rest of the detail
+  stays capped at 200 characters; the Ollama endpoint is redacted as before.
+
 Cases (each in both modes unless noted): `mode_proof` (screenshot + OCR when tesseract exists), `cadence` (real key spacing measured at
 the pty), `fast_typing` (10-25 ms/key, Enter in the same call, gaps 0 and 250 ms), `rollover` (next key down before the previous is
 up), `expert_fuzz` (seeded typos fixed with BackSpace / Left+insert / Ctrl-W), `paste_instant_enter`, `arrows_behind_paste` (#1389),
