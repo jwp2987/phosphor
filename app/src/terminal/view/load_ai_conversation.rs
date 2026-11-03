@@ -1177,15 +1177,25 @@ impl TerminalView {
     /// however long the parse takes (#1363). The only timer is a stall watchdog for a parse
     /// that never completes; it is logged and the user is told.
     fn persist_restored_blocks_for_fork(&mut self, ctx: &mut ViewContext<Self>) {
-        let (ready, still_pending) = {
+        let (ready, still_pending, newly_failed) = {
             let model = self.model.lock();
-            let candidates = model
+            let restored = model
                 .block_list()
                 .blocks()
                 .iter()
-                // A placeholder whose parse failed is blank: saving it would record an empty
-                // copy of the original block, so the fork leaves it out (#1265).
-                .filter(|b| b.is_restored() && !b.is_background() && !b.is_restore_failed())
+                .filter(|b| b.is_restored() && !b.is_background())
+                .collect::<Vec<_>>();
+            // A placeholder whose parse failed is blank: saving it would record an empty copy of
+            // the original block, so the fork leaves it out and tells the user (#1265).
+            let failed = restored
+                .iter()
+                .filter(|b| b.is_restore_failed())
+                .map(|b| b.id().clone())
+                .collect::<Vec<_>>();
+            let newly_failed = self.fork_restore_persist.note_failed(failed);
+            let candidates = restored
+                .iter()
+                .filter(|b| !b.is_restore_failed())
                 .map(|b| (b.id().clone(), b.is_restore_pending()))
                 .collect::<Vec<_>>();
             let ready_ids = self.fork_restore_persist.poll(candidates);
@@ -1194,8 +1204,12 @@ impl TerminalView {
                 .filter_map(|id| model.block_list().block_with_id(id))
                 .map(|b| Arc::new(SerializedBlock::from(b)))
                 .collect::<Vec<_>>();
-            (ready, self.fork_restore_persist.is_waiting())
+            (ready, self.fork_restore_persist.is_waiting(), newly_failed)
         };
+        if newly_failed {
+            log::error!("Forked conversation: some restored blocks failed to load; not saved");
+            self.show_fork_blocks_not_saved_message(ctx);
+        }
         for block in ready {
             ctx.emit(Event::BlockCompleted {
                 is_local: self.is_block_considered_remote(block.session_id, None, ctx),
@@ -1228,6 +1242,12 @@ impl TerminalView {
         log::error!(
             "Forked conversation: restored blocks never finished loading; they were not saved"
         );
+        self.show_fork_blocks_not_saved_message(ctx);
+    }
+
+    /// Tells the user that some blocks of a forked conversation were not saved: their restore
+    /// never finished (stall watchdog) or failed (#1265).
+    fn show_fork_blocks_not_saved_message(&mut self, ctx: &mut ViewContext<Self>) {
         let message = InputMessage::new(vec![MessageItem::text(
             "some blocks of this forked conversation failed to load and were not saved",
         )]);
