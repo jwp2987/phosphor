@@ -86,7 +86,7 @@ use warpui::{
 
 mod actions;
 pub use actions::init;
-pub(super) use actions::CodeEditorViewAction;
+pub(crate) use actions::CodeEditorViewAction;
 
 mod vim_handler;
 
