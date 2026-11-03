@@ -629,6 +629,10 @@ pub struct TypeaheadHandoff {
     /// next precmd (which starts the wait above) or the command becoming interactive: keys typed
     /// in between are held (#1490).
     enter_window_since: Option<Instant>,
+    /// F7 (#1595): the session's shell does not treat `^U` as a line kill (PowerShell's PSReadLine
+    /// does not bind it by default), so a raw `^U` never makes the line clean in the hand-off's
+    /// accounting. Default false: `^U` kills, as in a tty, readline, zle and fish.
+    ctrl_u_not_line_kill: bool,
     /// Whether the session's shell is known to signal its line editor being ready (#1349): a
     /// readline, zle or fish prompt enables bracketed paste as it starts reading. A shell that
     /// is not known to (PowerShell 5.1, cmd, an unknown WSL shell) is never held for: with no
@@ -775,6 +779,12 @@ impl TypeaheadHandoff {
     /// Marks the session's input as going through ConPTY (#1162).
     pub fn set_conpty_input(&mut self, conpty_input: bool) {
         self.conpty_input = conpty_input;
+    }
+
+    /// Declares whether `^U` kills the line in this session's shell (F7, #1595). `false` for
+    /// PowerShell, whose PSReadLine does not bind it by default.
+    pub fn set_ctrl_u_kills_line(&mut self, kills: bool) {
+        self.ctrl_u_not_line_kill = !kills;
     }
 
     /// Turns the ConPTY prompt hold on or off (#1162). Only has an effect on a ConPTY session.
@@ -1792,7 +1802,7 @@ impl TypeaheadHandoff {
             ..
         } = &mut self.state
         {
-            let (enters, dirty) = scan_line_terminators(bytes, false);
+            let (enters, dirty) = scan_line_terminators(bytes, false, !self.ctrl_u_not_line_kill);
             *enters_written = enters_written.saturating_add(enters);
             *wrote_user_bytes = dirty;
             if enters > 0 {
@@ -2467,6 +2477,7 @@ impl TypeaheadHandoff {
             && self.first_byte_is_young(self.last_activity_at.is_some_and(|at| {
                 Instant::now().saturating_duration_since(at) < YOUNG_ENTER_WINDOW
             }));
+        let ctrl_u_kills = !self.ctrl_u_not_line_kill;
         match &mut self.state {
             HandoffState::PtyOwned {
                 wrote_user_bytes,
@@ -2479,7 +2490,8 @@ impl TypeaheadHandoff {
                         self.young_line = true;
                     }
                     self.last_line_bytes_at = Some(Instant::now());
-                    let (enters, dirty) = scan_line_terminators(bytes, *wrote_user_bytes);
+                    let (enters, dirty) =
+                        scan_line_terminators(bytes, *wrote_user_bytes, ctrl_u_kills);
                     *enters_written = enters_written.saturating_add(enters);
                     *wrote_user_bytes = dirty;
                     wrote_an_enter = enters > 0;
@@ -2967,15 +2979,19 @@ fn skip_escape_sequence(chars: &[char], start: usize) -> usize {
 
 /// Counts line terminators in `bytes` and returns them with whether the line is still dirty
 /// afterwards (bytes follow the last terminator), starting from `dirty`.
-fn scan_line_terminators(bytes: &[u8], mut dirty: bool) -> (u32, bool) {
+///
+/// `ctrl_u_kills` is whether `^U` (0x15) kills the shell's line. It does in a tty line discipline,
+/// readline, zle and fish; PSReadLine does not bind it by default, so on PowerShell a raw `^U`
+/// leaves the line as dirty as before (F7, #1595).
+fn scan_line_terminators(bytes: &[u8], mut dirty: bool, ctrl_u_kills: bool) -> (u32, bool) {
     let mut enters = 0u32;
     for byte in bytes {
         if matches!(byte, b'\r' | b'\n') {
             enters = enters.saturating_add(1);
             dirty = false;
-        } else if matches!(byte, 0x03 | 0x15) {
+        } else if *byte == 0x03 || (*byte == 0x15 && ctrl_u_kills) {
             // ^C and ^U end the line as the tty does (flush / kill): not an Enter, but the
-            // line no longer holds typed text (#1562).
+            // line no longer holds typed text (#1562). ^U only where it is a kill (F7, #1595).
             dirty = false;
         } else {
             dirty = true;

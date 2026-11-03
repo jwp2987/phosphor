@@ -26741,3 +26741,7 @@ mod group4_prompt_tests;
 // same reason as group 1.
 #[path = "view/group2_timer_tests.rs"]
 mod group2_timer_tests;
+
+// Review follow-ups F6 / F10. Declared here for the same reason as group 1.
+#[path = "view/followup_tests.rs"]
+mod followup_tests;
