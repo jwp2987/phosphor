@@ -380,6 +380,33 @@ def latency_cases_have_a_sample_floor_and_flood_line():
     assert cases.KL3_QUANTUM_MS > 2.0 / 2
 
 
+@check
+def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
+    # the r18d2 failures: find the bug in main.rs ran in the shell inside a conversation by the #1183 evidence rule (main.rs is data-shaped)
+    w = ca.ambiguous_want
+    assert w("find the bug in main.rs", "AgentConversation", "evidence-in-conversation (#1183)") == "shell"
+    assert w("find the bug in main.rs", "PlainTerminal", "installed-head (#906/#964)") == "shell"
+    assert w("make a PR", "AgentConversation", "no-evidence-in-conversation (#1183)") == "agent"
+    assert w("cat the error log and tell me what is wrong", "AgentConversation", "request-shape (#834/#965)") == "agent"
+    assert w("some other line", "AgentConversation", "evidence-in-conversation (#1183)") == "shell"
+    assert w("some other line", None, None) is None
+    # OCR: tesseract read 'keepmet115_qmoods' for 'keepmet115_qm09d8'
+    assert ca.fuzzy_has("x keepmet115_qmoods y", "keepmet115_qm09d8")
+    assert ca.fuzzy_has("KEEPMET115_QM09D8", "keepmet115_qm09d8")
+    assert not ca.fuzzy_has("the quick brown fox jumps over the lazy dog", "keepmet115_qm09d8")
+    assert not ca.fuzzy_has("abc", "abcd")      # short needles are exact
+    # Ctrl-C window: two presses within 1.3 s exit an empty agent conversation; reset() skips the second one in agent mode
+    c = types.SimpleNamespace(ctrlc_ts=[10.0, 10.6, 20.0])
+    c.EXIT_WINDOW_S = cases.Ctx.EXIT_WINDOW_S
+    assert cases.Ctx.double_ctrlc_since(c, 9.0) and not cases.Ctx.double_ctrlc_since(c, 11.0)
+    sent = []
+    be = types.SimpleNamespace(key=lambda spec, *a, **k: sent.append(spec), keys=lambda specs, *a, **k: sent.extend(specs))
+    ctx = types.SimpleNamespace(ctrlc_ts=[], mode="agent", be=be, EXIT_WINDOW_S=cases.Ctx.EXIT_WINDOW_S)
+    cases.Ctx._wrap_ctrlc(ctx, be)
+    cases.Ctx.reset(ctx); cases.Ctx.reset(ctx)
+    assert sent.count("ctrl+c") == 1 and sent.count("ctrl+u") == 2, sent
+
+
 def main():
     failed = 0
     for f in CHECKS:

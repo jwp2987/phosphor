@@ -361,6 +361,25 @@ def main():
                     # every agent-pass case must END in agent mode, or the cases after it measure a terminal session under the agent label
                     # (r18cx macOS: mode_proof's Escape left agent view; nothing noticed). Unreadable screen: no verdict, no row.
                     seen = ctx.mode_now("mode_after_" + c["name"])
+                    if seen == "terminal" and ctx.double_ctrlc_since(t0):
+                        # r18d2: two Ctrl-C within the 1 s confirmation window of an empty agent conversation leave agent view BY DESIGN
+                        # (view.rs should_ctrl_c_exit_agent_view -> exit_agent_view_with_required_confirmation). A visible row, not a failure; the app is
+                        # still relaunched so the cases after this one run in agent mode.
+                        emit(dict(name="agent_view_left_by_double_ctrl_c_after_" + c["name"], mode=label, status="pass", seconds=0,
+                                  shots=[os.path.relpath(p, run) for p in [ctx.shot("left_agent_after_" + c["name"])] if p],
+                                  detail=["after %s the pane is a terminal session, and the case sent two Ctrl-C within the 1 s exit-confirmation window: that exits an empty "
+                                          "agent conversation by design, so this is not an app finding; the app is relaunched (fresh agent session)" % c["name"]]))
+                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+                        instance += 1
+                        app.stop()
+                        nb = prof.prompts()
+                        app.start()
+                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                            time.sleep(4)
+                        if win:
+                            be.guard()
+                            proved = False
+                        continue
                     if seen == "terminal":
                         emit(dict(name="left_agent_mode_after_" + c["name"], mode=label, status="fail", seconds=0,
                                   shots=[os.path.relpath(p, run) for p in [ctx.shot("left_agent_after_" + c["name"])] if p],

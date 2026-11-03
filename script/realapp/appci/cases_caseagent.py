@@ -61,11 +61,45 @@ def wait_marker(ctx, off, needle, n=1, timeout=60):
     return ctx.until(lambda: count_in_log(ctx, off, needle) >= n, timeout, step=0.25)
 
 
+def _squash(text):
+    return "".join(c for c in text.lower() if c.isalnum())
+
+
+def _edit_distance(a, b):
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def fuzzy_has(text, needle, max_ratio=0.25):
+    """needle in an OCR text, tolerating OCR confusions (r18d2 Wayland: the input showed 'keepmet115_qm09d8', tesseract read 'keepmet115_qmoods'; the
+    exact substring test failed on a screen that was right). Punctuation and case are dropped, then a window of the needle's length (+-2) must lie
+    within max_ratio edit distance. Short needles must match exactly."""
+    n = _squash(needle)
+    if not n:
+        return False
+    t = _squash(text)
+    if n in t:
+        return True
+    if len(n) < 10:
+        return False
+    allow = int(len(n) * max_ratio)
+    for w in range(len(n) - 2, len(n) + 3):
+        for i in range(0, max(0, len(t) - w) + 1):
+            if _edit_distance(n, t[i:i + w]) <= allow:
+                return True
+    return False
+
+
 def ocr_has(ctx, tag, needle):
     t = ctx.ocr(tag)
     if t is None:
         return None
-    return needle.lower() in " ".join(t.lower().split())
+    return fuzzy_has(" ".join(t.split()), needle)
 
 
 def setting_bool(ctx, key):
@@ -124,7 +158,15 @@ def c_agent_stream_cancel(ctx, r):
             r.check(seen, "text typed at 10-25 ms/key while the reply streamed is not visible in the input (%r)" % typed)
         r.check(count_in_log(ctx, off, "[byop] opening stream") == before_req, "typing during the reply started a new model request (steering)")
         r.check(not [c for c in ctx.cmds_since(mark) if typed in c], "text typed during the reply reached the shell")
-        # cancel
+        # cancel. Two presses, by the app's design (terminal/view.rs handle_ctrl_c_input_event): with text in the input the first Ctrl-C only CLEARS the input
+        # (cleared_buffer_len > 0 returns before any cancel); the second, on the empty input of an in-progress conversation, stops the stream. r18d2 Mac sent one
+        # Ctrl-C and judged the stream still running because it had only cleared (or never cleared) the text.
+        ctx.be.key("ctrl+c")
+        time.sleep(1.2)
+        ctx.shot("after_clear")
+        still = ocr_has(ctx, "after_clear_ocr", typed)
+        if still is True:
+            r.check(False, "the first Ctrl-C did not clear the text typed while the reply streamed (%r still visible): the key did not reach the input" % typed)
         ctx.be.key("ctrl+c")
         time.sleep(2.5)
         ctx.shot("after_cancel")
@@ -135,7 +177,7 @@ def c_agent_stream_cancel(ctx, r):
                 hs2.append(h)
             time.sleep(1.2)
         r.metric("distinct_frames_after_cancel", len(set(hs2)))
-        r.check(len(set(hs2)) <= 2, "the screen kept changing %d s after Ctrl-C (%d distinct frames in 5): the stream did not stop" % (6, len(set(hs2))))
+        r.check(len(set(hs2)) <= 2, "the screen kept changing %d s after the Ctrl-C that follows the input clear (%d distinct frames in 5): the stream did not stop" % (6, len(set(hs2))))
         r.check(not [c for c in ctx.cmds_since(mark) if "bicycle" in c or typed in c], "agent text or the typed text reached the shell")
     finally:
         cleanup_tmp(ctx)
@@ -221,6 +263,33 @@ PROSE_LINES = ["what does this error mean", "how do I undo my last git commit", 
 # installed head + English arguments: the documented rule (owner decision #964, #1183) decides by SURFACE, read from the routing log:
 # plain terminal (no conversation open) = Shell, inside an agent conversation with no command evidence = Agent
 AMBIGUOUS_LINES = ["find the bug in main.rs", "make a PR", "cat the error log and tell me what is wrong"]
+# (plain terminal, inside an agent conversation); None = not pinned for that surface (the logged rule below still has to agree). r18d2: the #1183
+# evidence rule judges the LINE, not the conversation's history, and the table's own prose lines open a conversation in the terminal pane too, so the
+# expectation is per line:
+#   * "find the bug in main.rs": `main.rs` is a data-shaped word (interior dot, util.rs is_data_shaped_word) = command evidence, so it runs in the
+#     shell on both surfaces (routing_corpus.rs: Case::cmd "#964 / #906"); the log says evidence-in-conversation (#1183) when it does
+#   * "make a PR": `make` + words that are not common make targets = no evidence in a conversation (no-evidence-in-conversation) -> agent
+#   * "cat the error log and tell me what is wrong": request shape (#834/#965) -> agent in a conversation
+AMBIGUOUS_EXPECT = {
+    "find the bug in main.rs": ("shell", "shell"),
+    "make a PR": (None, "agent"),
+    "cat the error log and tell me what is wrong": (None, "agent"),
+}
+
+
+def ambiguous_want(line, surface, rule):
+    """Where an installed-head English line must go, from the line, the surface the app reports and the rule it logged. None = no verdict
+    (no routing line was logged)."""
+    pinned = AMBIGUOUS_EXPECT.get(line)
+    if pinned and surface:
+        want = pinned[1] if surface == "AgentConversation" else pinned[0]
+        if want:
+            return want
+    if rule and rule.startswith("evidence-in-conversation"):
+        return "shell"
+    if rule and rule.startswith("no-evidence-in-conversation"):
+        return "agent"
+    return ("agent" if surface == "AgentConversation" else "shell") if surface else None
 
 
 ENTER_BEGIN_RE = re.compile(r'hop=enter_begin\b.*?\binput_type=(\w+)')
@@ -282,7 +351,7 @@ def c_routing_table(ctx, r):
         dest = classify_dest(reached_shell, rows, enter_begin_types(ctx.log_since(off)))
         surface = enter["surface"] if enter else None
         if kind == "ambiguous":
-            want = ("agent" if surface == "AgentConversation" else "shell") if surface else None
+            want = ambiguous_want(line, surface, enter["rule"] if enter else None)
         ok = want is None or dest == want
         results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=enter["rule"] if enter else None))
         if dest == "lost" or (dest == "unproven" and want != "shell"):

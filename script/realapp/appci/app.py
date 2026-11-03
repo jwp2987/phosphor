@@ -264,7 +264,9 @@ class WindowsApp:
         import winapi
         e = {k: v for k, v in os.environ.items() if not (k.startswith("CI_JOB_JWT") or k in ("CI_JOB_TOKEN", "CI_REGISTRY_PASSWORD", "CI_DEPLOY_PASSWORD"))}
         fwd = lambda p: p.replace("\\", "/")           # noqa: E731  (msys bash takes C:/... paths; backslashes inside variables survive unchanged)
-        e["RUST_LOG"] = "warn,warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"
+        # r18d2: the agent cases read INFO markers ('[byop] opening stream', 'stream opened OK', '[byop-diag] queue_actions'); a bare `warn` base hid them, so
+        # agent_stream_cancel / agent_approval reported "no model request" on a run whose screenshot showed the finished reply. Only those two modules go to info.
+        e["RUST_LOG"] = "warn,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warpui::frame_cause=debug,phosphor::routing=debug"
         e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))
