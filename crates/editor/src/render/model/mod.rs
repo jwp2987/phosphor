@@ -78,7 +78,7 @@ use warpui::elements::ListIndentLevel;
 use super::{
     BLOCK_FOOTER_HEIGHT,
     element::{RenderableBlock, broken_embedding::RenderableBrokenEmbedding},
-    layout::{TextLayout, line_height},
+    layout::{LAZY_LAYOUT_MIN_BLOCKS, TextLayout, line_height},
 };
 
 use super::element::{CursorData, RenderContext};
@@ -468,6 +468,9 @@ pub struct RenderState {
     /// This extra newline doesn't make sense in read-only rich text, so it can be disabled.
     show_final_trailing_newline_when_non_empty: bool,
     has_final_trailing_newline: Cell<bool>,
+    /// Set when a delta of at least [`LAZY_LAYOUT_MIN_BLOCKS`] blocks (opening a file) was laid
+    /// out; taken by the owner to log memory and hand freed transients back (#1607).
+    large_layout_done: Cell<bool>,
 
     width_setting: WidthSetting,
 
@@ -1104,6 +1107,46 @@ impl ParagraphBlock {
     }
 }
 
+/// What a [`RenderState`]'s block tree costs; see [`RenderState::memory_stats`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderMemoryStats {
+    /// Shape of the block tree and the bytes of its node allocations.
+    pub tree: sum_tree::NodeStats,
+    pub hydrated_paragraphs: usize,
+    pub dehydrated_paragraphs: usize,
+    pub parked_chunks: usize,
+    pub parked_lines: usize,
+    /// Bytes of the parked chunks' own data.
+    pub parked_bytes: usize,
+    /// Line, run, glyph and caret vectors of hydrated frames.
+    pub frame_bytes: usize,
+    /// Line sources (text + style runs) paragraphs keep so they can be laid out again.
+    pub source_bytes: usize,
+    /// Every other block item (temporary blocks, trailing newline, hidden ranges, ...).
+    pub other_items: usize,
+}
+
+/// Heap bytes of a laid-out frame's vectors (lines, runs, glyphs, carets).
+fn frame_heap_bytes(frame: &TextFrame) -> usize {
+    let lines = frame.lines();
+    lines.capacity() * mem::size_of::<Line>()
+        + lines
+            .iter()
+            .map(|line| {
+                line.runs.capacity() * mem::size_of::<warpui::text_layout::Run>()
+                    + line
+                        .runs
+                        .iter()
+                        .map(|run| {
+                            run.glyphs.capacity() * mem::size_of::<warpui::text_layout::Glyph>()
+                        })
+                        .sum::<usize>()
+                    + line.caret_positions.capacity()
+                        * mem::size_of::<warpui::text_layout::CaretPosition>()
+            })
+            .sum::<usize>()
+}
+
 /// Everything needed to lay a paragraph out again from scratch (#1340): the exact inputs of
 /// [`TextLayout::layout_text`]. Cheap to keep (text plus style runs, no glyphs or carets).
 #[derive(Clone, Debug)]
@@ -1115,6 +1158,15 @@ pub struct LineSource {
 }
 
 impl LineSource {
+    /// Bytes of the boxed source, its text and its style runs (memory accounting, #1607).
+    pub fn heap_bytes(&self) -> usize {
+        mem::size_of::<Self>()
+            + 2 * mem::size_of::<usize>()
+            + self.text.len()
+            + 2 * mem::size_of::<usize>()
+            + self.style_runs.len() * mem::size_of::<(Range<usize>, StyleAndFont)>()
+    }
+
     pub fn new(
         text: &str,
         paragraph_style: ParagraphStyles,
@@ -2171,6 +2223,7 @@ impl RenderState {
             styles,
             show_final_trailing_newline_when_non_empty: true,
             has_final_trailing_newline: Cell::new(true),
+            large_layout_done: Cell::new(false),
             viewport: ViewportState::new(viewport_width, viewport_height),
             selections: Default::default(),
             decorations: Default::default(),
@@ -2249,6 +2302,48 @@ impl RenderState {
             .get_mut()
             .push(Self::final_trailing_newline_cursor(&self.styles));
         self.has_final_trailing_newline.set(true);
+    }
+
+    /// Whether a large delta (at least [`LAZY_LAYOUT_MIN_BLOCKS`] blocks) was laid out since the
+    /// last call; clears the flag.
+    pub fn take_large_layout_done(&self) -> bool {
+        self.large_layout_done.replace(false)
+    }
+
+    /// Allocation summary of the block tree, for the `editor_memory` log and the memory
+    /// accounting test (#1607). Walks every item: diagnostics only, never per frame.
+    pub fn memory_stats(&self) -> RenderMemoryStats {
+        let content = self.content.borrow();
+        let mut stats = RenderMemoryStats {
+            tree: content.node_stats(),
+            ..Default::default()
+        };
+        let mut cursor = content.cursor::<(), ()>();
+        cursor.descend_to_first_item(&content, |_| true);
+        while let Some(item) = cursor.item() {
+            match item {
+                BlockItem::Paragraph(paragraph) => {
+                    match &paragraph.layout {
+                        ParagraphLayout::Hydrated(frame) => {
+                            stats.hydrated_paragraphs += 1;
+                            stats.frame_bytes += frame_heap_bytes(frame);
+                        }
+                        ParagraphLayout::Dehydrated(_) => stats.dehydrated_paragraphs += 1,
+                    }
+                    if let Some(source) = paragraph.source.as_deref() {
+                        stats.source_bytes += source.heap_bytes();
+                    }
+                }
+                BlockItem::ParkedLines(chunk) => {
+                    stats.parked_chunks += 1;
+                    stats.parked_lines += chunk.len();
+                    stats.parked_bytes += chunk.heap_bytes();
+                }
+                _ => stats.other_items += 1,
+            }
+            cursor.next();
+        }
+        stats
     }
 
     /// Returns reference to the underlying content tree.
@@ -2992,6 +3087,9 @@ impl RenderState {
         hidden_ranges: Option<RangeSet<CharOffset>>,
         app: &AppContext,
     ) {
+        if delta.new_lines.len() >= LAZY_LAYOUT_MIN_BLOCKS {
+            self.large_layout_done.set(true);
+        }
         let layout_context = self.layout_context(app);
         let laid_out_edit = delta.layout_delta(
             &layout_context,

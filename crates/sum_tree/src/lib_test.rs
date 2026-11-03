@@ -451,3 +451,23 @@ impl Add<&Self> for Sum {
         self
     }
 }
+
+#[test]
+fn node_stats_counts_every_node_and_item() {
+    let empty = SumTree::<u8>::new();
+    let stats = empty.node_stats();
+    assert_eq!((stats.leaves, stats.internal_nodes, stats.items), (1, 0, 0));
+
+    let mut tree = SumTree::new();
+    tree.extend(0..200u8);
+    let stats = tree.node_stats();
+    assert_eq!(stats.items, 200);
+    // `extend` fills each leaf to capacity before starting the next one.
+    assert_eq!(stats.leaves, 200usize.div_ceil(2 * TREE_BASE));
+    assert!(stats.internal_nodes >= 1);
+    let per_node = 2 * std::mem::size_of::<usize>() + std::mem::size_of::<Node<u8>>();
+    assert_eq!(
+        stats.node_bytes,
+        (stats.leaves + stats.internal_nodes) * per_node
+    );
+}

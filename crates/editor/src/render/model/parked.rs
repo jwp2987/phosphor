@@ -222,6 +222,24 @@ impl ParkedLines {
         self.len() == 0
     }
 
+    /// Bytes of this chunk's own allocation (the `Arc`ed data and its boxed slices), for the
+    /// `editor_memory` log (#1607).
+    pub fn heap_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let d = &self.0;
+        2 * size_of::<usize>()
+            + size_of::<ParkedData>()
+            + d.text.len()
+            + size_of::<u32>()
+                * (d.text_ends.len()
+                    + d.content_ends.len()
+                    + d.run_line_ends.len()
+                    + d.run_char_ends.len())
+            + size_of::<f32>() * d.widths.len()
+            + size_of::<StyleAndFont>() * d.styles.len()
+            + size_of::<u16>() * d.run_styles.len()
+    }
+
     /// Total content length (chars, newlines included).
     pub fn content_length(&self) -> CharOffset {
         CharOffset::from(self.0.content_ends.last().copied().unwrap_or(0) as usize)
