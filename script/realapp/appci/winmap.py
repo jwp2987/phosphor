@@ -38,6 +38,8 @@ GITBASH_ONLY = {
     "ui_palette": "asserts the exact line from rec.log: runs in the Git Bash pane",
     "routing_table": "asserts what the shell received from rec.log: runs in the Git Bash pane",
     "agent_stream_cancel": "uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (needs the CI model)",
+    "agent_input_exact": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
+    "agent_mode_switch": "asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
@@ -96,7 +98,7 @@ FIX_TIER = {
     "windows": {
         "terminal": dict(cases=None, ref=True, ft_gaps=(0.0, 0.25), cc_short=False),
         "agent": dict(cases=("mode_proof", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d",
-                             "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "routing_table", "agent_stream_cancel"),
+                             "ssh_connect_typing", "ssh_enter_then_immediate_command", "ssh_nested_typeahead", "routing_table", "agent_stream_cancel", "agent_input_exact", "agent_mode_switch"),
                       ref=False, ft_gaps=(0.0,), cc_short=True),
     },
 }
