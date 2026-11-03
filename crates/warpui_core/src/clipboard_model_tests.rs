@@ -91,7 +91,8 @@ fn model_write_order_never_applies_an_older_generation_after_a_newer() {
         );
         assert!(
             applied.windows(2).all(|pair| pair[0] < pair[1]),
-            "applied out of order: {applied:?}"
+            "applied out of order: {:?}",
+            *applied
         );
         assert_eq!(*applied.last().unwrap(), 2, "the newest generation wins");
     });
