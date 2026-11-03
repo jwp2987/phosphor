@@ -307,6 +307,40 @@ def enter_segment_split():
 
 
 @check
+def enter_segments_count_the_powershell_insert_chord():
+    """#1401: a PowerShell line is served on the pipe and only the 2-byte chord is written; that write is the line's pty write"""
+    L = ["input_order hop=enter_begin t=1000.0", "input_order hop=pwsh_command_via_pipe bytes=83 t=1001.0",
+         "input_order pty_write bytes=2 t=1001.5", "input_order hop=preexec_received signal=preexec t=1017.5",
+         "input_order hop=enter_begin t=2000.0", "input_order pty_write bytes=2 t=2000.4"]          # a 2-byte write with no chord hop: not the line
+    s = cases.enter_segments(L, 0)
+    assert s["enter_to_write_ms"] == 1.5 and s["enter_to_write_n"] == 1, s
+    assert s["write_to_preexec_ms"] == 16.0, s
+
+
+@check
+def pwsh_hook_timing_marks_land_on_the_app_timeline():
+    """#1401: pwsh.ps1 marks (Stopwatch ticks) are placed on the app's epoch timeline through the qpc= calibration of its log lines"""
+    import pwsh_timing as pt
+    f, base = 10_000_000, 1_793_713_705_000.0          # 10 MHz counter; epoch ms of qpc 0 is `base`
+    q = lambda ms: int(round(ms * f / 1000.0))          # noqa: E731  (epoch offset ms -> ticks)
+    lines = ["input_order hop=pwsh_command_via_pipe bytes=83 qpc=%d qpf=%d t=%.3f" % (q(100.0), f, base + 100.0),
+             "input_order hop=preexec_received signal=preexec t=%.3f qpc=%d qpf=%d" % (base + 120.0, q(120.0), f),
+             "input_order hop=ctrl_c_pty_write bytes=1 t=%.3f" % (base + 500.0),
+             "input_order hop=line_editor_ready_after_ctrl_c via=line_editor_reading since_ctrl_c_ms=80.5 t=%.3f" % (base + 580.5)]
+    assert abs(pt.calibration(lines) - base) < 0.01
+    marks = "freq %d\n" % f + "".join("%s %d\n" % (n, q(ms)) for n, ms in
+                                      (("k0", 106.0), ("k1", 108.0), ("k2", 109.0), ("r", 112.0), ("p", 114.0), ("q", 115.0),
+                                       ("c", 160.0), ("m", 170.0), ("x", 171.0), ("i", 172.0), ("e", 180.0), ("c", 560.0), ("e", 575.0)))
+    s = pt.segments(marks, lines, stamps_ms=[base + 130.0])
+    assert s["app_write_to_handler"] == 6.0 and s["handler_pipe_read"] == 2.0 and s["accept_line"] == 3.0, s
+    assert s["readline_to_preexec"] == 2.0 and s["preexec_osc_to_app"] == 6.0 and s["preexec_tail"] == 1.0, s
+    assert s["hook_to_command_start"] == 15.0 and s["prompt_precmd"] == 10.0 and s["readline_maintenance"] == 8.0, s
+    assert pt.segments("", lines) == {} and pt.segments(marks, []) == {}            # no marks or no calibration: nothing, not zeros
+    c = pt.ctrl_c_segments(marks, lines)
+    assert c["ctrl_c_to_prompt"] == 60.0 and c["ctrl_c_to_reading"] == 75.0 and c["line_editor_ready_after_ctrl_c"] == 80.5, c
+
+
+@check
 def injector_failures_are_errors():
     import backend
     assert backend.is_injector(["wtype", "-k", "a"]) and backend.is_injector(["xdotool", "type", "x"]) and not backend.is_injector(["xdotool", "windowfocus", "1"])
@@ -509,6 +543,32 @@ def key_event_audit_counts_typed_only_and_enter_hops():
 
 
 @check
+def ui_item_audit_counts_items_over_budget():
+    ln = lambda kind, ms: "input_order hop=ui_item kind=%s ms=%s iter=1 t=1\n" % (kind, ms)
+    a = cases.ui_item_audit("junk\n" + ln("frame", "4.25") + ln("frame", "17.00") + ln("action", "5.5"))
+    assert (a["over_4ms"], a["over_16ms"], a["max_ms"]) == (3, 1, 17.0), a
+    assert a["by_kind"] == {"frame": [2, 17.0], "action": [1, 5.5]}, a
+    assert cases.ui_item_audit("input_order hop=enter_begin deferred=false t=1\n") == dict(over_4ms=0, over_16ms=0, max_ms=0.0, by_kind={})
+    h = cases.lock_hold_audit("DEBUG model lock held 3.25ms by TerminalView::render\nmodel lock held 812.5µs by TerminalView::render\n"
+                              "WARN model lock held 1.5s by BlockListElement::layout (> 8ms; 0 similar holds suppressed)\n")
+    assert h == {"TerminalView::render": [2, 3.25], "BlockListElement::layout": [1, 1500.0]}, h
+
+
+@check
+def ctrl_c_segments_split_the_app_share():
+    kd = lambda t: 'input_order keydown key="c" ctrl=true alt=false shift=false cmd=false t=%s seq=1\n' % t
+    hop = lambda h, t: "input_order hop=%s x=1 t=%s\n" % (h, t)
+    one = lambda t0: (kd(t0) + hop("ctrl_c_keydown", t0 + 0.5) + hop("ctrl_c_to_event_loop", t0 + 1.0) + hop("ctrl_c_received", t0 + 1.25)
+                      + hop("ctrl_c_received", t0 + 9) + hop("ctrl_c_pty_write", t0 + 2.0))
+    a = cases.ctrl_c_segments("junk\n" + one(1000.0) + one(2000.0) + hop("ctrl_c_keydown", 3000.0))
+    assert a["n"] == 2, a
+    assert a["keydown->ctrl_c_keydown"]["p50"] == 0.5 and a["ctrl_c_received->ctrl_c_pty_write"]["p50"] == 0.75, a
+    assert a["keydown_to_write"]["p50"] == 2.0, a
+    assert cases.ctrl_c_segments("")["n"] == 0
+    assert cases.ctrl_c_segments(one(1000.0) + one(2000.0), skip=1)["n"] == 1    # warm-up presses dropped
+
+
+@check
 def hanging_tcp_server_reports_connecting_then_closed():
     import socket
     srv = cases.HangingTcpServer()
@@ -535,6 +595,58 @@ def ssh_trial_plan_and_loss_report():
     o = cases.loss_report(1, 40)
     assert o["rate"] == 0.025 and o["upper_bound"] > 0.11
     assert cases.loss_report(0, 150)["upper_bound"] < 0.025 and "needs" not in cases.loss_report(0, 150)["text"]
+
+
+@check
+def ssh_trial_facts_name_the_issue():
+    """#1292/#1332/#1345/#1394/#1400/#1596/#1614: one ssh typeahead trial's app-log window -> the hop that went wrong, by issue"""
+    line = "echo T1_abc >> ~/rl.txt"
+
+    def kd_enter(t):
+        return "x input_order keydown key=enter ctrl=false t=%.1f seq=1" % t
+
+    def ty(c, t):
+        return 'x input_order typed_characters text="%s" t=%.1f seq=2' % (c, t)
+
+    def held(t):
+        return "x input_order hop=kh_iq_hold seq=3 queue=Q7_ssh_typeahead bytes=1 t=%.1f" % t
+    ssh = [ty(c, 1.0) for c in "ssh fake"] + [kd_enter(2.0)]
+    typed = [ty(c, 3.0 + i) for i, c in enumerate(line)]
+    # r18e4 Mac: the ssh Enter given up by the young hold, every key then raw: the ssh hold was never exercised
+    mac = ssh + ["x input_order hop=prompt_hold_handed_back hold=25 kind=PromptSeen why=young_hold_cap chunks=1 t=2.5"] + typed + [kd_enter(40.0)]
+    v = cases.ssh_trial_facts(mac, line, [])
+    assert not v["exact"] and v["text"].startswith("#1614: the `ssh` Enter") and "young_hold_cap" in v["text"] and v["app_saw_line"], v["text"]
+    # exact: 10 held, hand-over at precmd, the rest live
+    ok = ssh + typed[:10] + [held(3.0 + i) for i in range(10)] + ["x input_order hop=kh_handover seq=9 source=precmd remote_prompt_seen=true held_bytes=10 t=20.0",
+                                                               "x input_order hop=kh_finish_end seq=9 delivered=remote buffer_chars=10 t=20.1"] + typed[10:]
+    v = cases.ssh_trial_facts(ok, line, ["echo w1 >> ~/.appci_where", line])
+    assert v["exact"] and v["text"].startswith("exact") and v["handovers"] == [("precmd", 10)] and "delivered=remote" in v["finish"], v
+    # #1394: the key right after the 10 held at the hand-over is lost
+    v = cases.ssh_trial_facts(ok, line, [line[:10] + line[11:]])
+    assert v["text"].startswith("#1345/#1394: ONE key lost: char 11") and "the 10 held at the hand-over" in v["text"], v["text"]
+    # #1400: a run of keys lost
+    v = cases.ssh_trial_facts(ok, line, [line[:5] + line[14:]])
+    assert v["text"].startswith("#1400: keys lost: chars 6-14"), v["text"]
+    # #1332: the delivered Enter refused (the WARN has no t= of its own)
+    v = cases.ssh_trial_facts(ok + ["[WARN] Tried to execute command but can_execute_command was false: HistoryNotAppendable"], line, [])
+    assert v["text"].startswith("#1332"), v["text"]
+    # #1596: handed back and kept until the ssh block ends
+    v = cases.ssh_trial_facts(ok + ["x input_order hop=ssh_handed_back chars=23 dest=stashed_until_block_end remote_prompt_seen=false give_up=true"], line, [])
+    assert v["text"].startswith("#1596"), v["text"]
+    # #1292: held, then the line never reached the remote
+    v = cases.ssh_trial_facts(ok, line, [])
+    assert v["text"].startswith("#1292: the line never reached"), v["text"]
+    # the window reader: a line with no t= takes the t= of the line before it
+    d = tempfile.mkdtemp()
+    try:
+        lp = os.path.join(d, "phosphor.log")
+        with open(lp, "w") as fh:
+            fh.write("a t=1000.0\n[WARN] no stamp\nb t=5000.0\nc t=9000.0\n")
+        c = types.SimpleNamespace(log_path=lp)
+        assert cases.Ctx.app_log_window(c, 0.5, 6.0) == ["a t=1000.0", "[WARN] no stamp", "b t=5000.0"]
+        assert cases.Ctx.app_log_window(c, 4.0) == ["b t=5000.0", "c t=9000.0"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @check
@@ -824,13 +936,14 @@ def editor_memory_breakdown_close_and_cycles():
         assert r4.metrics["txt_rss_open_phys_footprint_mb"] == 80.0 and r4.metrics["txt_rss_open_phys_footprint_delta_mb"] == 70.0, r4.metrics
         # hop=ui_item: the open window starts after the load's own (largest) frame; the close window is plain
         t = 1000.0
-        logtxt = "".join("x input_order hop=ui_item what=%s ms=%.2f t=%.3f\n" % (w, ms, (t + dt) * 1000) for w, ms, dt in (
-            ("frame", 2.0, -1.0), ("frame", 250.0, 0.5), ("effects", 3.0, 1.0), ("frame", 6.5, 2.0), ("frame", 9.0, 8.0)))
+        logtxt = "".join("x input_order hop=ui_item kind=%s ms=%.2f render_ms=0.50 layout_paint_ms=0.50 t=%.3f\n" % (w, ms, (t + dt) * 1000) for w, ms, dt in (
+            ("frame", 2.0, -1.0), ("frame", 250.0, 0.5), ("event", 3.0, 1.0), ("frame", 6.5, 2.0), ("action", 9.0, 8.0)))
         items = cases.ui_items(logtxt)
         assert len(items) == 5 and items[1][1] == 250.0 and items[1][2] == "frame", items
         assert cases.ui_window_max(items, t, after_largest=True) == (6.5, 1, 250.0), cases.ui_window_max(items, t, after_largest=True)
         assert cases.ui_window_max(items, t) == (250.0, 2, None), cases.ui_window_max(items, t)
         assert cases.ui_window_max([], t) == (0.0, 0, None)
+        assert cases.ui_item_audit(logtxt)["max_ms"] == 250.0 and cases.ui_items("input_order hop=ui_item what=frame ms=9 t=1") == []
         sent = []
         be = types.SimpleNamespace(key=lambda k: sent.append(k), type=lambda *a, **k: sent.append(("type", a)))
         r = cases.Result("t", "terminal")
@@ -854,6 +967,51 @@ def editor_memory_breakdown_close_and_cycles():
                     os.environ[k] = v
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
+def pty_bytes_decide_where_a_line_changed():
+    """#1490/#1393: line_evidence says app-side vs. after-the-pty-write from the app's own pty_write_bytes, never from typed_characters alone"""
+    assert cases.unescape_rust_ascii('a\\x1b[200~b\\r\\n\\"q\\\\\\x10') == 'a\x1b[200~b\r\n"q\\\x10'
+    want, have = "echo t134_xy", "34echo t1_xy"
+    # keys to the shell's line in order, an `ESC i` request between two of them: the typed line, so the change came after the pty write
+    assert cases.pty_line_verdict("echo t1\x1bi34_xy\r", want, have) == "want"
+    # the editor command carries the moved keys: the app wrote it that way
+    assert cases.pty_line_verdict("echo t1\x1bi\x10\x1b[200~34echo t1_xy\x1b[201~\r", want, have) == "have"
+    # split between the shell's line and an editor command: neither contiguously
+    assert cases.pty_line_verdict("echo\x10\x1b[200~ t134_xy\x1b[201~\r", want, have) == "neither"
+    assert cases.pty_line_verdict(None, want, have) is None
+    # a corrupted line that is only a piece of the typed one (a lost tail) proves nothing about the app's writes
+    assert cases.pty_line_verdict("echo t134_xy\r", want, "echo t1") == "want"
+    # review R5: a line written to the shell's line and then killed (^P, ^U, ^K, ESC 2) before its line end did not reach the shell as typed;
+    # a kill AFTER its line end belongs to the next line
+    for kill in ("\x10", "\x15", "\x0b", "\x1b2"):
+        assert cases.pty_line_verdict("echo t134_xy" + kill + "x\r", want, have) == "neither", repr(kill)
+        assert cases.pty_line_verdict("echo t134_xy\r" + kill + "next\r", want, have) == "want", repr(kill)
+    # review R5: escape_ascii writes non-ASCII as \xNN bytes; they are bytes, decoded once (a character split over two writes too)
+    assert cases.unescape_rust_ascii_bytes("\\xc3\\xa9") == b"\xc3\xa9" and cases.unescape_rust_ascii("caf\\xc3\\xa9") == "caf\u00e9"
+    d = tempfile.mkdtemp()
+    try:
+        log = os.path.join(d, "phosphor.log")
+        open(log, "w").write(
+            'x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes="e" since_precmd_ms=1 t=1000000.0\n'
+            'x [DEBUG] input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes="old" since_precmd_ms=1 t=10.0\n'
+            'x [DEBUG] input_order hop=pty_write_bytes class=UserCommand wrote=9 of_job=9 bytes="\\x10\\x1b[200~cho\\x1b[201~\\r" s=1 t=1000001.0\n')
+        c = _ctx(d, log)
+        assert cases.Ctx.app_pty_text(c, 999.0) == "e\x10\x1b[200~cho\x1b[201~\r", repr(cases.Ctx.app_pty_text(c, 999.0))
+        open(log, "w").write(
+            'x input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes="echo caf\\xc3" t=1000000.0\n'
+            'x input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes="\\xa9 \\xe2\\x82\\xac\\r" t=1000001.0\n')
+        assert cases.Ctx.app_pty_text(c, 999.0) == "echo caf\u00e9 \u20ac\r", repr(cases.Ctx.app_pty_text(c, 999.0))
+        assert cases.pty_line_verdict(cases.Ctx.app_pty_text(c, 999.0), "echo caf\u00e9 \u20ac", "echo caf \u20ac") == "want"
+        open(log, "w").write('x input_order hop=pty_write_bytes class=UserKey wrote=1 of_job=1 bytes=<1 bytes> t=1.0\n')
+        assert cases.Ctx.app_pty_text(c, 0.0) is None, "a log without opted-in text is no trace"
+        c.app_saw_line = lambda w, t: True
+        c.app_pty_wrote_line = lambda w, h, t: "have"
+        ev = cases.line_evidence(c, want, have, 0.0)
+        assert "after the app's pty write" not in ev and "Phosphor wrote it that way" in ev, ev
+    finally:
+        shutil.rmtree(d)
 
 
 def main():

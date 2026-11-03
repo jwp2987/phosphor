@@ -15,6 +15,7 @@ use crate::{
         ssh::{error::SshErrorBlock, install_tmux::SshInstallTmuxBlock, warpify::SshWarpifyBlock},
         view::{
             block_onboarding::onboarding_agentic_suggestions_block::OnboardingAgenticSuggestionsBlock,
+            ssh_kept_text_banner::SshKeptTextBanner,
             ssh_remote_server_choice_view::SshRemoteServerChoiceView,
             ssh_remote_server_failed_banner::SshRemoteServerFailedBanner,
         },
@@ -216,6 +217,10 @@ pub enum RichContentMetadata {
     },
     SshRemoteServerFailedBanner {
         handle: ViewHandle<SshRemoteServerFailedBanner>,
+    },
+    /// #1596: the text an ssh hand-back kept while the ssh block runs.
+    SshKeptTextBanner {
+        handle: ViewHandle<SshKeptTextBanner>,
     },
     WarpifySuccessBlock {
         bootstrap_success_block_handle: ViewHandle<WarpifySuccessBlock>,

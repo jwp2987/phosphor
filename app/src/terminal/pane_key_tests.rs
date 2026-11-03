@@ -103,6 +103,60 @@ fn control_keys_follow_focus_the_terminal_and_the_editor_keep_theirs() {
 }
 
 #[test]
+fn control_keys_from_the_input_view_gap_follow_the_typed_keys() {
+    // #1552 (a): focus on the input view (or inside it), not its editor, no card: the control key
+    // goes through the terminal's routing like the typed keys of the same gap.
+    let input_gap = PaneFocusFacts {
+        input_gap_focus: true,
+        ..facts()
+    };
+    assert_eq!(
+        key_target(KeyClass::Control, &input_gap),
+        KeyTarget::Terminal
+    );
+    assert_eq!(key_target(KeyClass::Typed, &input_gap), KeyTarget::Terminal);
+    // The editor focused keeps its bindings; a text field keeps every key.
+    let editor = PaneFocusFacts {
+        editor_focused: true,
+        ..input_gap
+    };
+    assert_eq!(key_target(KeyClass::Control, &editor), KeyTarget::NotMine);
+    let text_field = PaneFocusFacts {
+        in_text_field: true,
+        ..input_gap
+    };
+    assert_eq!(
+        key_target(KeyClass::Control, &text_field),
+        KeyTarget::NotMine
+    );
+    // Composition is unchanged: shown where it will be committed, never in a gap.
+    assert_eq!(
+        key_target(KeyClass::Composition, &input_gap),
+        KeyTarget::NotMine
+    );
+    // Without the input gap (any other pane child), Fable B1 still holds.
+    assert_eq!(key_target(KeyClass::Control, &facts()), KeyTarget::NotMine);
+}
+
+#[test]
+fn focus_is_handed_back_at_the_prompt_only_from_a_gap_inside_the_pane() {
+    use crate::terminal::input_queue::FocusSnap;
+    // #1552 (b)
+    assert!(hands_back_focus_at_prompt(FocusSnap::Other, true));
+    assert!(!hands_back_focus_at_prompt(FocusSnap::Other, false));
+    for kept in [
+        FocusSnap::Terminal,
+        FocusSnap::Editor,
+        FocusSnap::SshChoiceCard,
+        FocusSnap::ApprovalCard,
+        FocusSnap::AiBlockAwaitingConfirm,
+        FocusSnap::SettledAiTarget,
+    ] {
+        assert!(!hands_back_focus_at_prompt(kept, true), "{kept:?}");
+    }
+}
+
+#[test]
 fn composition_is_shown_where_it_will_be_committed() {
     let editor = PaneFocusFacts {
         editor_focused: true,
@@ -449,6 +503,7 @@ mod model {
                     terminal_focused: s.terminal_focused,
                     ssh_hold_active: s.ssh_hold_active,
                     settled_ai_focus: false,
+                    input_gap_focus: false,
                 };
                 match key_target(KeyClass::Typed, &facts) {
                     KeyTarget::Editor => editor.push(seq),

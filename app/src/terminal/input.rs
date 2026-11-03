@@ -8552,6 +8552,21 @@ impl Input {
         ctx.focus_self();
     }
 
+    /// #1552: whether a menu of the input that binds its own Enter/Escape is open: voltron, a chip
+    /// menu of the prompt, or a chip menu of the agent input footer (the views `on_focus` hands
+    /// self-focus to). A key typed with focus inside the input while one is open is that menu's.
+    pub fn has_open_menu(&self, ctx: &AppContext) -> bool {
+        self.is_voltron_open
+            || self.prompt_render_helper.has_open_chip_menu(ctx)
+            || self.agent_input_footer.as_ref(ctx).has_open_chip_menu(ctx)
+    }
+
+    /// Test seam (#1552): marks voltron open without building it.
+    #[cfg(test)]
+    pub(crate) fn set_voltron_open_for_test(&mut self, open: bool) {
+        self.is_voltron_open = open;
+    }
+
     pub fn input_type(&self, app: &AppContext) -> InputType {
         self.ai_input_model.as_ref(app).input_type()
     }
@@ -12239,10 +12254,16 @@ impl Input {
                 compute: completion_compute.clone(),
             });
         }
+        // #1289: an explicit Tab on a remote session that shows no menu was never explained; log
+        // which stage came back empty so the next occurrence names it.
+        let remote_tab_session = (completions_trigger == CompletionsTrigger::Keybinding
+            && !completion_session.is_local())
+        .then(|| completion_session.id());
 
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
+                    let remote_tab_started = Instant::now();
                     if let Some(debounce) = remote_debounce {
                         Timer::after(debounce).await;
                     }
@@ -12262,6 +12283,7 @@ impl Input {
                         &completion_context,
                     )
                     .await;
+                    let completer_count = suggestions.as_ref().map(|s| s.suggestions.len());
 
                     let suggestions = match suggestions {
                         Some(s) if !s.suggestions.is_empty() && !force_native_shell_completions => {
@@ -12288,6 +12310,17 @@ impl Input {
                             }
                         }),
                     };
+
+                    if let Some(session_id) = remote_tab_session {
+                        let final_count = suggestions.as_ref().map_or(0, |s| s.suggestions.len());
+                        if final_count == 0 {
+                            log::info!(
+                                "Tab on remote session {session_id:?} produced no suggestions after {} ms (completer: {completer_count:?}, native fallback: {})",
+                                remote_tab_started.elapsed().as_millis(),
+                                suggestions.is_some()
+                            );
+                        }
+                    }
 
                     (suggestions, completions_trigger, editor_snapshot)
                 },
@@ -12381,6 +12414,13 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         if self.is_stale_generation(generation) {
+            if completions_trigger == CompletionsTrigger::Keybinding {
+                // #1289: a dropped Tab result is one way a Tab shows no menu.
+                log::debug!(
+                    "Dropping a stale Tab completion result (generation {generation}, now {})",
+                    self.input_generation
+                );
+            }
             return;
         }
         if let Some(wait) = self.verdict_wait.as_ref() {
@@ -14883,6 +14923,17 @@ impl Input {
             .update(ctx, |editor, ctx| editor.set_buffer_text(&restored, ctx));
         self.is_editor_empty_on_last_edit = false;
         self.arm_ssh_handover_enter_guard(restored);
+    }
+
+    /// The stashed handed-back text, if any (#1596: the kept-text banner shows it).
+    pub(crate) fn kept_handed_back_text(&self) -> Option<&str> {
+        self.handed_back_text.as_deref()
+    }
+
+    /// Takes the stashed handed-back text (#1596: the banner's "Type into session" or "Discard"),
+    /// so the end-of-block restore finds nothing and nothing is delivered twice.
+    pub(crate) fn take_kept_handed_back_text(&mut self) -> Option<String> {
+        self.handed_back_text.take()
     }
 
     #[cfg(test)]

@@ -25,6 +25,8 @@ pub(super) struct ForkRestorePersist {
     waiting: bool,
     /// Bumped by every poll, so a watchdog armed for an older poll is stale.
     generation: u64,
+    /// Blocks whose deferred restore failed (#1265), already reported to the user.
+    failed: HashSet<BlockId>,
 }
 
 impl ForkRestorePersist {
@@ -68,6 +70,17 @@ impl ForkRestorePersist {
             }
         }
         ready
+    }
+
+    /// Records blocks of the fork whose deferred restore failed: they are blank and are not
+    /// saved (#1265). Returns true when any of them is newly reported, so the user is told once
+    /// per block that the fork lost it.
+    pub(super) fn note_failed(&mut self, ids: impl IntoIterator<Item = BlockId>) -> bool {
+        let mut newly = false;
+        for id in ids {
+            newly |= self.failed.insert(id);
+        }
+        newly
     }
 
     /// The stall watchdog for `generation` fired. Returns true when it is the current one and

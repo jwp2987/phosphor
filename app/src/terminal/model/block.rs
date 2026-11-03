@@ -511,6 +511,9 @@ pub struct Block {
     /// True for a restored placeholder whose grids are still being parsed off-thread (#1254):
     /// serializing it would save a blank block (#1265).
     restore_pending: bool,
+    /// True for a restored placeholder whose off-thread parse failed (#1265): it stays blank and
+    /// must not be saved as if that were its content.
+    restore_failed: bool,
 
     /// `true` if client-side telemetry for user-generated AI data is enabled.
     pub(super) is_ai_ugc_telemetry_enabled: bool,
@@ -1017,6 +1020,7 @@ impl Block {
             reflow_stale: false,
             leading_linefeeds_ignored: 0,
             restore_pending: false,
+            restore_failed: false,
             is_ai_ugc_telemetry_enabled,
             restored_block_was_local: None,
             agent_view_visibility: match conversation_id {
@@ -1199,6 +1203,19 @@ impl Block {
 
     pub(super) fn set_restore_pending(&mut self, pending: bool) {
         self.restore_pending = pending;
+    }
+
+    /// The off-thread parse of this placeholder failed: it is no longer pending (nothing will
+    /// ever be installed), and it stays blank (#1265).
+    pub(super) fn mark_restore_failed(&mut self) {
+        self.restore_pending = false;
+        self.restore_failed = true;
+    }
+
+    /// Whether this is a restored placeholder whose content could not be parsed (#1265). Its
+    /// grids are blank, so it must not be saved as a copy of the original block.
+    pub fn is_restore_failed(&self) -> bool {
+        self.restore_failed
     }
 
     /// Prefer using the `reset_block_index` fn on the BlockList instead.

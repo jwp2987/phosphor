@@ -524,23 +524,31 @@ enum RestoreMode {
     Detached,
 }
 
+/// What the off-thread parse produced for one placeholder.
+enum DeferredRestoreOutcome {
+    Parsed(Block),
+    /// The parse panicked or produced no block. The placeholder stays blank, but it must stop
+    /// being "pending": a fork would otherwise wait for it until the stall watchdog (#1265).
+    Failed,
+}
+
 /// Blocks parsed off-thread, waiting to be installed into their placeholders.
 #[derive(Default)]
 struct DeferredRestoreMailbox {
-    ready: std::sync::Mutex<Vec<(BlockId, Block)>>,
+    ready: std::sync::Mutex<Vec<(BlockId, DeferredRestoreOutcome)>>,
     /// Mirrors `ready.len()` so the per-frame check is a single atomic load.
     ready_count: std::sync::atomic::AtomicUsize,
 }
 
 impl DeferredRestoreMailbox {
-    fn push(&self, id: BlockId, block: Block) {
+    fn push(&self, id: BlockId, outcome: DeferredRestoreOutcome) {
         let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
-        ready.push((id, block));
+        ready.push((id, outcome));
         self.ready_count
             .store(ready.len(), std::sync::atomic::Ordering::Release);
     }
 
-    fn take(&self) -> Vec<(BlockId, Block)> {
+    fn take(&self) -> Vec<(BlockId, DeferredRestoreOutcome)> {
         let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
         self.ready_count
             .store(0, std::sync::atomic::Ordering::Release);
@@ -582,41 +590,52 @@ fn run_deferred_restore_job(
         if Arc::strong_count(&mailbox) <= 1 {
             return;
         }
-        let mut scratch = BlockList::new_internal(
-            config.sizes.clone(),
-            ChannelEventListener::detached(),
-            config.background_executor.clone(),
-            config.show_warp_bootstrap_input,
-            config.show_in_band_command_blocks,
-            config.show_memory_stats,
-            config.honor_ps1,
-            config.is_inverted,
-            config.obfuscate_secrets,
-            config.is_ai_ugc_telemetry_enabled,
-            // Its own cell, shared with nobody: the scratch list's selection must never reach the
-            // pane's key facts (#1411), for the same reason its events go nowhere.
-            KeyModelCell::default(),
-        );
         // A panic parsing one block must not strand the blocks after it as blank placeholders.
+        // The scratch list is built inside the guard too, so no panic in this job can skip the
+        // outcome below and leave a placeholder pending forever (#1265).
         let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut scratch = BlockList::new_internal(
+                config.sizes.clone(),
+                ChannelEventListener::detached(),
+                config.background_executor.clone(),
+                config.show_warp_bootstrap_input,
+                config.show_in_band_command_blocks,
+                config.show_memory_stats,
+                config.honor_ps1,
+                config.is_inverted,
+                config.obfuscate_secrets,
+                config.is_ai_ugc_telemetry_enabled,
+                // Its own cell, shared with nobody: the scratch list's selection must never reach
+                // the pane's key facts (#1411), for the same reason its events go nowhere.
+                KeyModelCell::default(),
+            );
             scratch.restore_block_with_mode(
                 &serialized,
                 BootstrapStage::RestoreBlocks,
                 &mut Processor::new(),
                 RestoreMode::Detached,
             );
+            scratch.blocks.pop()
         }));
-        if parsed.is_err() {
-            log::error!(
-                "Deferred restore of block {:?} panicked; leaving it blank",
-                serialized.id
-            );
-            continue;
-        }
-        if let Some(block) = scratch.blocks.pop() {
-            mailbox.push(serialized.id.clone(), block);
-            config.event_proxy.send_wakeup_event();
-        }
+        let outcome = match parsed {
+            Ok(Some(block)) => DeferredRestoreOutcome::Parsed(block),
+            Ok(None) => {
+                log::error!(
+                    "Deferred restore of block {:?} produced no block; leaving it blank",
+                    serialized.id
+                );
+                DeferredRestoreOutcome::Failed
+            }
+            Err(_) => {
+                log::error!(
+                    "Deferred restore of block {:?} panicked; leaving it blank",
+                    serialized.id
+                );
+                DeferredRestoreOutcome::Failed
+            }
+        };
+        mailbox.push(serialized.id.clone(), outcome);
+        config.event_proxy.send_wakeup_event();
     }
 }
 
@@ -4438,7 +4457,7 @@ impl BlockList {
             return false;
         };
         let mut installed = false;
-        for (id, restored) in mailbox.take() {
+        for (id, outcome) in mailbox.take() {
             let Some(index) = self.block_id_to_block_index.get(&id).copied() else {
                 continue;
             };
@@ -4448,6 +4467,15 @@ impl BlockList {
             if placeholder.id() != &id {
                 continue;
             }
+            let restored = match outcome {
+                DeferredRestoreOutcome::Parsed(restored) => restored,
+                // Nothing to install; the placeholder stays blank but is no longer pending, so
+                // a fork stops waiting for it and skips it rather than saving it blank (#1265).
+                DeferredRestoreOutcome::Failed => {
+                    placeholder.mark_restore_failed();
+                    continue;
+                }
+            };
             placeholder.adopt_restored_content(restored);
             self.refresh_block_height(index);
             self.installed_restore_ids.push(id);

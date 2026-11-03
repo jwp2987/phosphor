@@ -126,6 +126,143 @@ def lat_checks(r, rec, label):
         r.note("%s: %s" % (label, n_))
 
 
+_SSH_HB_RE = re.compile(r"hop=(?:young_hold_handed_back|prompt_hold_handed_back)\b.*?\bwhy=(\w+)")
+_SSH_HOLD_RE = re.compile(r"hop=kh_iq_hold\b.*queue=Q7_ssh_typeahead bytes=(\d+)")
+_SSH_HANDOVER_RE = re.compile(r"hop=kh_handover\b.*?source=(\w+).*?held_bytes=(\d+)")
+_SSH_FINISH_RE = re.compile(r"hop=kh_finish_begin\b.*?\bheld_bytes=(\d+)")
+_SSH_HANDED_BACK_RE = re.compile(r"hop=ssh_handed_back\b.*?chars=(\d+) dest=(\w+)")
+
+
+def ssh_trial_facts(lines, expected, remote_new, enters_before=1):
+    """Pure: one ssh typeahead trial from its app-log window `lines` (raw, oldest first), the line typed during the connect (`expected`) and
+    the commands the remote shell logged in the trial (`remote_new`). `enters_before`: Enters typed before that line (`ssh fake` = 1; a nested
+    `ssh fake` twice = 2). Names the hop where the line went wrong, by issue:
+    #1614 the ssh Enter itself handed back (ssh never ran: the hold was not exercised); #1292 keys not held / line lost whole;
+    #1332 the held Enter refused (HistoryNotAppendable); #1345/#1394 one key lost at the hand-over (index vs held count);
+    #1400 a run of keys lost between the hold window and the hand-over; #1596 the held text kept, invisibly, until the ssh session ends."""
+    import difflib
+    f = dict(exact=False, typed="", app_saw_line=None, enter_handed_back=None, hold_seen=False, held_keys=0, held_bytes=0, deferred_busy=0,
+             handovers=[], finish=[], give_ups=0, refused=0, discards=0, table_drops=0, handed_back=[], remote=None, missing=[], extra=[])
+    enters, typed, core_pending, after_handover = 0, [], False, False
+    for l in lines:
+        # a physical Enter: the window's dispatch (`core_enter stage=handle_window_event`, every platform) and, when no binding took it, the
+        # keydown that follows (macOS/Linux); Windows' editor binding takes it, so only the first is logged. Counted once either way.
+        if "hop=core_enter stage=handle_window_event" in l:
+            enters += 1
+            core_pending = True
+            continue
+        if "input_order keydown key=enter" in l:
+            if core_pending:
+                core_pending = False
+            else:
+                enters += 1
+            continue
+        m = re.search(r'input_order typed_characters text="((?:[^"\\]|\\.)*)"', l)
+        if m:
+            if enters == enters_before:
+                typed.append(m.group(1).replace('\\"', '"').replace("\\\\", "\\"))
+            continue
+        m = _SSH_HB_RE.search(l)
+        if m and f["enter_handed_back"] is None:
+            f["enter_handed_back"] = m.group(1)
+            f["handed_back_enter_no"] = enters
+            f["handed_back_after_hold"] = f["hold_seen"]
+        if ("kh_holding_set" in l and "holding=true" in l) or "gate_open kind=ssh_connect" in l:
+            f["hold_seen"] = True
+        m = _SSH_HOLD_RE.search(l)
+        if m:
+            f["hold_seen"] = True
+            f["held_keys"] += 1
+            f["held_bytes"] += int(m.group(1))
+        if "hop=kh_ssh_hold_deferred" in l:
+            f["deferred_busy"] += 1
+        m = _SSH_HANDOVER_RE.search(l)
+        if m:
+            f["handovers"].append((m.group(1), int(m.group(2))))
+            after_handover = True
+        m = _SSH_FINISH_RE.search(l)
+        if m:
+            # `finish_ssh_typeahead` is also entered without `kh_handover` (another event ended the connect): its held count is the hand-over's
+            if not after_handover and "give_up=" not in l:
+                f["handovers"].append(("finish", int(m.group(1))))
+            after_handover = False
+        m = re.search(r"hop=kh_finish_(?:begin|end)\b.*?\b((?:delivered|give_up)=\w+)", l)
+        if m:
+            f["finish"].append(m.group(1))
+        if "hop=kh_ssh_give_up" in l:
+            f["give_ups"] += 1
+        if "can_execute_command was false" in l:
+            f["refused"] += 1
+        if "hop=kh_iq_discard" in l and "Q7_ssh_typeahead" in l:
+            f["discards"] += 1
+        if "hop=kh_table_drop" in l:
+            f["table_drops"] += 1
+        m = _SSH_HANDED_BACK_RE.search(l)
+        if m:
+            f["handed_back"].append((int(m.group(1)), m.group(2)))
+        elif "handed-back char(s) kept until the running block ends" in l:
+            f["handed_back"].append((None, "stashed_until_block_end"))
+        m = re.search(r"hop=ssh_kept_text action=(\w+)", l)
+        if m:
+            f.setdefault("kept_banner", []).append(m.group(1))
+    f["typed"] = "".join(typed)
+    if typed:
+        f["app_saw_line"] = expected in f["typed"]
+    got = [c for c in remote_new if c.strip()]
+    if expected in got:
+        f["exact"] = True
+        f["remote"] = expected
+    elif got:
+        best = max(got, key=lambda c: difflib.SequenceMatcher(None, expected, c, autojunk=False).ratio())
+        f["remote"] = best
+        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, expected, best, autojunk=False).get_opcodes():
+            if op in ("delete", "replace"):
+                f["missing"].append((i1, expected[i1:i2]))
+            if op in ("insert", "replace"):
+                f["extra"].append((j1, best[j1:j2]))
+    hold = "held %d key(s)/%d byte(s)%s, hand-over %s, finish %s" % (
+        f["held_keys"], f["held_bytes"], " (+%d deferred: queue busy)" % f["deferred_busy"] if f["deferred_busy"] else "",
+        ",".join("%s@%d" % h for h in f["handovers"]) or "none", ",".join(f["finish"]) or "none")
+    if f["app_saw_line"] is None:
+        saw = "no typed_characters trace"
+    elif f["app_saw_line"]:
+        saw = "the app saw every key of the line"
+    else:
+        saw = "the app's typed keys %r lack the line (injector/OS loss, or a key dropped before typed_characters)" % f["typed"][:60]
+    if f["exact"]:
+        why = "exact"
+    elif f["enter_handed_back"]:
+        if f.get("handed_back_enter_no", 0) <= enters_before and not f.get("handed_back_after_hold"):
+            why = ("#1614: the `ssh` Enter was HANDED BACK to the editor (why=%s) before any ssh hold, so ssh never ran and the ssh typeahead "
+                   "hold was NOT exercised" % f["enter_handed_back"])
+        else:
+            why = ("#1609/#1614: an Enter typed after the ssh hold engaged was HANDED BACK to the editor by the local young hold (why=%s): the "
+                   "text reached the remote, its Enter did not" % f["enter_handed_back"])
+    elif f["refused"]:
+        why = "#1332: the delivered Enter was REFUSED (can_execute_command false / HistoryNotAppendable)"
+    elif any(d == "stashed_until_block_end" for _, d in f["handed_back"]):
+        kb = f.get("kept_banner") or []
+        why = ("#1596: the held text was handed back and KEPT until the ssh block ends (%s)"
+               % ("kept-text banner: %s" % ",".join(kb) if kb else "NO kept-text banner shown"))
+    elif f["handed_back"]:
+        why = "held text handed back to the editor as text (%s), not run remotely" % f["handed_back"]
+    elif f["remote"] is None and not f["hold_seen"]:
+        why = "#1292: no ssh hold was seen and the remote shell logged nothing for the line"
+    elif f["remote"] is None:
+        why = "#1292: the line never reached the remote shell (discards=%d table_drops=%d give_ups=%d)" % (f["discards"], f["table_drops"], f["give_ups"])
+    elif len(f["missing"]) == 1 and len(f["missing"][0][1]) == 1 and not f["extra"]:
+        i, ch = f["missing"][0]
+        boundary = [hb for _, hb in f["handovers"] if hb in (i, i - 1)]
+        why = "#1345/#1394: ONE key lost: char %d (%r) of %d%s" % (
+            i + 1, ch, len(expected), "; it is the key right after the %d held at the hand-over (the in-flight key)" % boundary[0] if boundary else "")
+    elif f["missing"] and not f["extra"]:
+        why = "#1400: keys lost: %s of %d" % (", ".join("chars %d-%d %r" % (i + 1, i + len(s), s) for i, s in f["missing"]), len(expected))
+    else:
+        why = "mangled line at the remote: %r (missing %r, extra %r)" % (f["remote"], f["missing"], f["extra"])
+    f["text"] = "%s; %s; %s; remote got %r" % (why, hold, saw, f["remote"])
+    return f
+
+
 def enter_segments(lines, t0):
     """app log lines -> the split of Enter->command-start the APP can see, medians in ms (#1583 W3):
       enter_to_write_ms        `hop=enter_begin` -> the `pty_write` of the line (> 10 bytes; handoff writes excluded)
@@ -136,7 +273,7 @@ def enter_segments(lines, t0):
                                the report says so.
     Lines before wall time t0 are ignored."""
     seg = {"enter_to_write_ms": [], "write_to_first_read_ms": [], "write_to_preexec_ms": []}
-    pending, wrote, read_seen = None, None, True
+    pending, wrote, read_seen, chord = None, None, True, False
     for l in lines:
         m = re.search(r" t=(\d+(?:\.\d+)?)", l)
         if not m:
@@ -145,15 +282,19 @@ def enter_segments(lines, t0):
         if t / 1000.0 < t0:
             continue
         if "hop=enter_begin" in l:
-            pending = t
+            pending, chord = t, False
+        elif "hop=pwsh_command_via_pipe" in l and pending is not None:
+            # #1581: a PowerShell line goes on the session's pipe and only the 2-byte insert chord is written, so the "> 10 bytes" rule below
+            # never matched and r18e4 had no app segment metric for the PowerShell pane at all (#1401)
+            chord = True
         elif "hop=preexec_received" in l and wrote is not None:
             seg["write_to_preexec_ms"].append(t - wrote)
             wrote = None
         elif "pty_write bytes=" in l and "handoff" not in l:
             nb = re.search(r"pty_write bytes=(\d+)", l)
-            if nb and int(nb.group(1)) > 10 and pending is not None:
+            if nb and (int(nb.group(1)) > 10 or chord) and pending is not None:
                 seg["enter_to_write_ms"].append(t - pending)
-                wrote, pending, read_seen = t, None, False
+                wrote, pending, read_seen, chord = t, None, False, False
         elif wrote is not None and not read_seen and " pty_read bytes=" in l:
             sw = re.search(r"since_write_ms=(\d+(?:\.\d+)?)", l)
             seg["write_to_first_read_ms"].append(float(sw.group(1)) if sw else t - wrote)
@@ -456,6 +597,71 @@ class Ctx:
                 continue
         return enter_segments(lines, t0)
 
+    def app_pty_text(self, t0):
+        """#1490/#1393: the bytes the APP wrote to its pty since wall time t0, in write order (`input_order hop=pty_write_bytes ... bytes="..."`, Rust
+        `escape_ascii` form; needs WARP_INPUT_ORDER_LOG_TEXT=1), decoded, from the active log plus its rotated chunks. None when there is no such trace
+        (a log without opted-in text shows `<N bytes>` and is no trace)."""
+        import glob
+        src = self.log_path
+        if not src:
+            return None
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        out, seen = [], False
+        for f in parts:
+            try:
+                txt = open(f, errors="replace").read()
+            except OSError:
+                continue
+            for m in PTY_WRITE_BYTES_RE.finditer(txt):
+                seen = True
+                if float(m.group(2)) / 1000.0 >= t0 - 1:
+                    out.append(unescape_rust_ascii_bytes(m.group(1)))
+        # bytes first, decoded once: a UTF-8 character split over two writes is still one character
+        return b"".join(out).decode("utf-8", errors="replace") if seen else None
+
+    def app_pty_wrote_line(self, want, have, t0):
+        """#1490/#1393: which line the app's OWN pty writes since t0 carry; see pty_line_verdict."""
+        return pty_line_verdict(self.app_pty_text(t0), want, have)
+
+    def app_log_all_lines(self):
+        """every line of the app log (rotated chunks first, oldest first); [] without a trace"""
+        import glob
+        src = self.log_path
+        if not src:
+            return []
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        lines = []
+        for f in parts:
+            try:
+                lines += open(f, errors="replace").read().splitlines()
+            except OSError:
+                continue
+        return lines
+
+    def pwsh_hook_timing(self, on):
+        """#1401: turn pwsh.ps1's hook timing marks on/off (the shell checks `<file>.on` once per prompt, so the first command after a switch
+        may be on either side). -> the marks file path, or None when this pane has none (not Windows PowerShell, an app without the env)"""
+        path = getattr(self.app, "hook_timing_path", None) if self.win and self.pane == "powershell" else None
+        if not path:
+            return None
+        try:
+            if on:
+                open(path + ".on", "w").close()
+            elif os.path.exists(path + ".on"):
+                os.remove(path + ".on")
+        except OSError:
+            return None
+        return path
+
+    def pwsh_hook_segments(self, path, t0, stamps_ms=()):
+        """#1401: the per-hop split of PowerShell's own work for the commands since wall time t0 (pwsh_timing.segments), {} without marks"""
+        import pwsh_timing
+        try:
+            text = open(path, errors="replace").read()
+        except (OSError, TypeError):
+            return {}
+        return pwsh_timing.segments(text, self.app_log_all_lines(), stamps_ms, t0 * 1000.0)
+
     def app_saw_line(self, want, t0):
         """True: every character of `want` is in the app's own typed-character log, in order and contiguous (the key ARRIVED and was routed);
         False: the app's log has typed characters but not this line (the injector/OS never delivered it, or the log rotated it away); None: no trace."""
@@ -489,6 +695,37 @@ class Ctx:
     def ssh_app_hops(self, since, limit=10):
         """the app's own ssh hold / hand-over lines since wall time `since` (Q7_ssh_typeahead hold+release, kh_hold_entry/exit, `ssh hold:` log lines, hand-over hops): the last `limit`"""
         return [l for _t, l in self.app_hop_lines(self.SSH_HOP_RE, since)][-limit:]
+
+    def app_log_window(self, t0, t1=None):
+        """the raw app-log lines (rotated chunks included, oldest first) between wall times t0 and t1 (None: now). A line without its own t= (a
+        WARN such as `can_execute_command was false`) takes the t= of the last line before it, so it lands in the right trial window."""
+        import glob
+        src = self.log_path
+        if not src:
+            return []
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        out, last = [], None
+        for f in parts:
+            try:
+                txt = open(f, errors="replace").read()
+            except OSError:
+                continue
+            for l in txt.splitlines():
+                m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+                if m:
+                    last = float(m.group(1)) / 1000.0
+                if last is not None and last >= t0 and (t1 is None or last <= t1):
+                    out.append(l)
+        return out
+
+    def ssh_trial_verdict(self, t0, expected, remote_before, enters_before=1, t1=None):
+        """#1292/#1332/#1345/#1394/#1400/#1596/#1614: what ONE ssh typeahead trial did, from the app's own log between t0 and t1 and the remote
+        shell's rec.log lines logged after index `remote_before`. -> ssh_trial_facts() dict; its "text" is the one-line verdict."""
+        try:
+            remote_new = [c for _, c in self.prof.commands(remote=True)[remote_before:] if ".appci_where" not in c]
+        except Exception:
+            remote_new = []
+        return ssh_trial_facts(self.app_log_window(t0, t1), expected, remote_new, enters_before)
 
     def ssh_client_probe(self):
         """r18d8: what the ssh CLIENT says for the same host alias, run now in the app's environment: exit status and the last stderr lines of `ssh -vv fake true`
@@ -831,18 +1068,90 @@ def classify_line(want, have):
     return "differs (%d typed, %d received characters)" % (len(want), len(have))
 
 
+PTY_WRITE_BYTES_RE = re.compile(r'input_order hop=pty_write_bytes\b[^\n]*? bytes="((?:[^"\\]|\\.)*)"[^\n]*? t=(\d+(?:\.\d+)?)')
+# What the app writes to the shell's line that is never line text: the typeahead report requests (bash/zsh `ESC i`, fish `ESC 1`) and the
+# bracketed-paste markers an editor command is wrapped in. Removed before the line is looked for, so a request written between two keys does not
+# split it. The kill-line bytes (^P, ^K^U, ESC 2) stay: text written before one is not the line the shell runs.
+PTY_NON_LINE_BYTES = ("\x1b[200~", "\x1b[201~", "\x1bi", "\x1b1")
+PTY_LINE_VERDICT_TEXT = {
+    "have": "the app's OWN pty writes (pty_write_bytes) carry the corrupted line: Phosphor wrote it that way (app-side: the hand-off / editor "
+            "path moved or dropped the keys before the pty)",
+    "want": "the app's own pty writes (pty_write_bytes) carry the line exactly as typed and not the corrupted one: it was changed after the "
+            "app's pty write (ConPTY / the shell's tty)",
+    "neither": "the app's own pty writes (pty_write_bytes) carry neither line contiguously (part of it went to the shell's line, part through "
+               "an editor command): read the case log's pty_write_bytes / handoff_insert / input_report hops for the split",
+    None: "no pty byte trace in the app log (pty_write_bytes with WARP_INPUT_ORDER_LOG_TEXT=1), so where it changed is not known",
+}
+
+
+def unescape_rust_ascii_bytes(s):
+    """the inverse of Rust's `<[u8]>::escape_ascii` (what the app's input_order log prints), as BYTES: \\t \\r \\n \\' \\" \\\\ and \\xNN, where
+    \\xNN is one byte (escape_ascii writes every non-ASCII byte that way, so a UTF-8 character is several of them)"""
+    out, i = bytearray(), 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", s[i + 2:i + 4]):
+                out.append(int(s[i + 2:i + 4], 16))
+                i += 4
+                continue
+            out += {"t": b"\t", "r": b"\r", "n": b"\n", "0": b"\0"}.get(nxt, nxt.encode("utf-8"))
+            i += 2
+            continue
+        out += ch.encode("utf-8")
+        i += 1
+    return bytes(out)
+
+
+def unescape_rust_ascii(s):
+    """unescape_rust_ascii_bytes decoded as UTF-8 (invalid bytes replaced)"""
+    return unescape_rust_ascii_bytes(s).decode("utf-8", errors="replace")
+
+
+# Bytes that kill the shell's line: ^U, ^K, ^P (the bootstrap's kill-whole-line), PowerShell's ESC 2.
+PTY_KILL_BYTES = ("\x15", "\x0b", "\x10", "\x1b2")
+
+
+def pty_line_verdict(got, want, have):
+    """#1490/#1393: 'have' when the corrupted line `have` is in the app's pty bytes `got` (and is not just a piece of the typed line), 'want' when the
+    typed line is there instead and no kill byte (PTY_KILL_BYTES) follows it before its line ends (a line written and then killed did not reach
+    the shell as typed), 'neither' otherwise, None without a trace. Report requests and bracketed-paste markers are removed first
+    (PTY_NON_LINE_BYTES)."""
+    if got is None:
+        return None
+    for b in PTY_NON_LINE_BYTES:
+        got = got.replace(b, "")
+    if have and have not in want and have in got:
+        return "have"
+    at = got.rfind(want)
+    if at >= 0:
+        rest = got[at + len(want):]
+        ends = [i for i in (rest.find("\r"), rest.find("\n")) if i >= 0]
+        rest = rest[:min(ends)] if ends else rest
+        if not any(k in rest for k in PTY_KILL_BYTES):
+            return "want"
+    return "neither"
+
+
 def line_evidence(ctx, want, have, t0, ctrl=None):
     """one sentence of proof for a corrupted line: what changed, whether the APP's own typed-character log shows the line arriving intact and in
-    order (then it was lost/moved AFTER the app's pty write: app or the ConPTY it hosts, not the injector), and what the reference terminal did
-    with the same injection in this session (a reference that kept every line exactly makes this Phosphor-side)."""
+    order (then the injector delivered it), whether the app's own pty writes carry the corrupted line or the typed one (#1490/#1393: app-side
+    vs. after the pty write), and what the reference terminal did with the same injection in this session (a reference that kept every line
+    exactly makes this Phosphor-side)."""
     parts = ["%s: typed %r, shell received %r" % (classify_line(want, have), want[:90], have[:90])]
     saw = ctx.app_saw_line(want, t0)
     if saw is True:
-        parts.append("the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write")
+        # #1490/#1393: keys arriving in order say nothing about what the app WROTE: the hand-off moves keys between the shell's line and the editor
+        # (a report, an editor command). Where the line changed is read from the app's own pty writes below, never from typed_characters (r18ct
+        # said "changed after the app's pty write" from this line alone).
+        parts.append("the app's log shows every character of the line arriving in order (typed_characters)")
     elif saw is False:
         parts.append("the app's log does NOT show the line's characters in order (never delivered to the app, or the log rotated it away)")
     else:
         parts.append("no key trace in the app log")
+    wrote = ctx.app_pty_wrote_line(want, have, t0) if hasattr(ctx, "app_pty_wrote_line") else None
+    parts.append(PTY_LINE_VERDICT_TEXT[wrote])
     if ctrl:
         parts.append("reference %s with the same injection: %d/%d lines missing, %s received exactly" % (
             ctrl.get("ref"), ctrl.get("bad", 0), ctrl.get("n", 0), "all" if not ctrl.get("exact_bad") else "NOT all (%d inexact)" % ctrl["exact_bad"]))
@@ -1076,6 +1385,7 @@ def c_big(ctx, r):
     ctx.be.type("cat > big.out", 12, enter=True)
     time.sleep(1.0)
     ctx.be.clip_set(data)
+    ui_off = ctx.log_size()
     ctx.be.paste()
 
     def stable():
@@ -1091,6 +1401,7 @@ def c_big(ctx, r):
     got = open(os.path.join(ctx.W, "big.out"), "rb").read() if os.path.exists(os.path.join(ctx.W, "big.out")) else b""
     r.metric("bytes_expected", len(data) + 1)
     r.metric("bytes_got", len(got))
+    ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
     r.check(got == (data + "\n").encode(), "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
     ctx.reset()
 
@@ -1277,14 +1588,85 @@ def ctrlc_flood(ctx, r, n, warm):
     r.check(okf and bool(fl), "Ctrl-C under flood: fewer than %d samples stopped `yes` and ran the trap" % (n + warm))
 
 
+_CC_KD_RE = re.compile(r'input_order keydown key="?[cC]"? ctrl=true\b.* t=(\d+(?:\.\d+)?)')
+_CC_HOP_RE = re.compile(r"input_order hop=(ctrl_c_keydown|ctrl_c_to_event_loop|ctrl_c_received|ctrl_c_pty_write)\b.* t=(\d+(?:\.\d+)?)")
+_CC_STAGES = ("keydown", "ctrl_c_keydown", "ctrl_c_to_event_loop", "ctrl_c_received", "ctrl_c_pty_write")
+
+
+def ctrl_c_segments(txt, skip=0):
+    """#1408: the APP's share of Ctrl-C, from its own input_order lines, per press: `keydown key=c ctrl=true` (presenter) -> hop=ctrl_c_keydown
+    (TerminalView::ctrl_c) -> hop=ctrl_c_to_event_loop (PtyController) -> hop=ctrl_c_received (pty event loop) -> hop=ctrl_c_pty_write (write(2)
+    returned). -> dict(n, <segment>: stats ms, keydown_to_write: stats ms). A press is closed by its pty write; a stage logged twice before the write
+    keeps the first stamp; the first `skip` presses (warm-up) are dropped. Whatever the reference terminal gap is beyond keydown_to_write is outside the app (injector, X server, signal delivery)."""
+    samples, cur = [], None
+    for line in txt.splitlines():
+        m = _CC_KD_RE.search(line)
+        if m:
+            cur = {"keydown": float(m.group(1))}
+            continue
+        m = _CC_HOP_RE.search(line)
+        if not m:
+            continue
+        stage, t = m.group(1), float(m.group(2))
+        if cur is None:
+            cur = {}
+        cur.setdefault(stage, t)
+        if stage == "ctrl_c_pty_write":
+            samples.append(cur)
+            cur = None
+    samples = samples[skip:]                    # the warm-up presses the end-to-end latency (lat_ms[warm:]) drops too
+    out = {"n": len(samples)}
+    for a, b in zip(_CC_STAGES, _CC_STAGES[1:]):
+        out["%s->%s" % (a, b)] = stats([x[b] - x[a] for x in samples if a in x and b in x])
+    out["keydown_to_write"] = stats([x["ctrl_c_pty_write"] - x["keydown"] for x in samples if "keydown" in x])
+    return out
+
+
 @case("ctrl_c_d", order=17)
 def c_ctrl(ctx, r):
     ctx.rm("cd.txt", "cd2.txt")
     n, warm = ctx.count_lat(30), lat.warmup()
+    cc_off = ctx.log_size()
     lat_ms, ok1 = ctrlc_samples(ctx, n + warm, "cc.txt", bail_after=3 if ctx.pane == "powershell" else None)
     lat_ms = lat_ms[warm:]
+    if ctx.win and ctx.pane == "powershell":
+        # #1401: the gated samples above ran with the hook timing marks OFF; the ^C split comes from a separate, ungated batch with them on,
+        # and only when Ctrl-C works at all (a miss costs a 36 s wait).
+        r.metric("pwsh_hook_timing_during_samples", False)
+        import pwsh_timing
+        cs, hook_marks, t_cc0 = {}, None, time.time()
+        if lat_ms:
+            hook_marks = ctx.pwsh_hook_timing(True)
+        if hook_marks:
+            try:
+                ctrlc_samples(ctx, 5, "cc_marks.txt", budget_s=60, bail_after=2)      # 5: the first may run before the shell reads `.on`
+            finally:
+                ctx.pwsh_hook_timing(False)
+            time.sleep(0.5)
+            try:
+                marks_text = open(hook_marks, errors="replace").read()
+            except OSError:
+                marks_text = ""
+            cs = pwsh_timing.ctrl_c_segments(marks_text, ctx.app_log_all_lines(), t_cc0 * 1000.0)
+        r.metric("ctrl_c_segments_ms", cs or dict(unavailable=True, why="Ctrl-C stopped nothing" if not lat_ms else "no marks"))
+        if cs:
+            r.note("^C split (#1401, separate ungated batch with the marks on, medians ms): ^C write -> PowerShell prompt %s, -> LineEditorReading %s; app: line editor ready %s, active %s, "
+                   "next command written %s, its Preexec %s"
+                   % tuple(cs.get(k, "-") for k in ("ctrl_c_to_prompt", "ctrl_c_to_reading", "line_editor_ready_after_ctrl_c",
+                                                     "line_editor_active_after_ctrl_c", "command_written_after_ctrl_c", "preexec_after_ctrl_c")))
     r.metric("ctrl_c_ms", stats(lat_ms))
+    if ctx.log_path and os.path.exists(ctx.log_path):
+        r.metric("ctrl_c_app_segments", ctrl_c_segments(ctx.log_since(cc_off), skip=warm))     # #1408: where the app's share of each Ctrl-C goes
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
+    if ctx.win:
+        # #1570: whether this harness (and so the app it started) inherited "ignore Ctrl-C" from the runner. The app clears it for its shells
+        # (PHOSPHOR_CONPTY_CTRL_C_RESET); with it set and the app's reset off, no PowerShell in the pane can be interrupted.
+        import winapi
+        ign = winapi.ctrl_c_ignored()
+        r.metric("harness_ctrl_c_ignored", ign)
+        r.metric("app_conpty_ctrl_c_reset", os.environ.get("PHOSPHOR_CONPTY_CTRL_C_RESET", "default(on)"))
+        if ign:
+            r.note("#1570: the harness process ignores Ctrl-C (inherited from the runner's process group); the app inherits it and must clear it for its shells")
     # (the delivered-count verdict is below, after the reference ran, so it can say whether the reference lost any sample line)
     # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp
     # command's cost, which cancel in the overhead; the owner budget (Ctrl-C <= 20 ms) is judged on that overhead.
@@ -1314,6 +1696,8 @@ def c_ctrl(ctx, r):
             time.sleep(1.0)
             r.metric("reference_ctrl_c_ms", stats(rs))
             r.metric("reference", ref.name)
+            if ctx.win:
+                r.metric("reference_ctrl_c_flag", getattr(ctx, "ref_ctrl_c", None))
         elif not short:
             r.note("no reference: absolute only (Ctrl-C): no reference terminal available%s" % (": " + ctx.ref_reason if getattr(ctx, "ref_reason", None) else ""))
         if short:
@@ -1476,6 +1860,33 @@ def loss_report(lost, n, conf=0.95):
     return dict(lost=lost, n=n, rate=round(lost / n, 4) if n else None, upper_bound=round(ub, 4) if ub is not None else None, conf=conf, text=text)
 
 
+def ssh_trial_note(ctx, r, verdicts, label, t0, line, r0, enters_before=1):
+    """one ssh typeahead trial's verdict from the app log (ssh_trial_facts): every trial that was not exact is noted with the hop that went
+    wrong; diagnostics never break the case"""
+    try:
+        v = ctx.ssh_trial_verdict(t0, line, r0, enters_before)
+    except Exception as e:
+        r.note("%s: trial verdict failed: %r" % (label, e))
+        return None
+    verdicts.append(v)
+    if not v["exact"]:
+        r.note("%s: %s" % (label, v["text"]))
+    return v
+
+
+def ssh_trial_summary(r, verdicts):
+    """per-case tally of the trial verdicts (exact / the issue each failure names) + the compact per-trial facts as a metric"""
+    if not verdicts:
+        return
+    tally = {}
+    for v in verdicts:
+        k = "exact" if v["exact"] else v["text"].split(":", 1)[0] if v["text"].startswith("#") else "other"
+        tally[k] = tally.get(k, 0) + 1
+    r.note("ssh trial verdicts: " + ", ".join("%s=%d" % kv for kv in sorted(tally.items())))
+    r.metric("ssh_trial_verdicts", [{k: v[k] for k in ("exact", "held_keys", "held_bytes", "deferred_busy", "handovers", "finish", "refused",
+                                                      "handed_back", "enter_handed_back", "app_saw_line", "missing")} for v in verdicts])
+
+
 @case("ssh_connect_typing", order=30)
 def c_ssh(ctx, r):
     if not ctx.ssh:
@@ -1488,15 +1899,19 @@ def c_ssh(ctx, r):
         except FileNotFoundError:
             pass
     exp, miss, base, stop = [], 0, ctx.shell_count(), False
+    verdicts = []
     for gap, trials in plan:
         for i in range(trials):
             tok = ctx.tok(6)
             exp.append(tok)
+            line = "echo %s >> ~/rl.txt" % tok
+            t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
             ctx.be.type("ssh fake", 12, enter=True)
             time.sleep(gap)
-            ctx.be.type("echo %s >> ~/rl.txt" % tok, 15, enter=True)
+            ctx.be.type(line, 15, enter=True)
             if not ctx.until(lambda: tok in ctx.lines("rl.txt", remote=True), 20):
                 miss += 1
+            ssh_trial_note(ctx, r, verdicts, "ssh_connect_typing gap %.1f s trial %d" % (gap, i + 1), t0, line, r0)
             if not ctx.leave_remote(r, "ssh_connect_typing (gap %.1f s)" % gap, "rl.txt", tok, base):
                 stop = True
                 break
@@ -1507,6 +1922,7 @@ def c_ssh(ctx, r):
     lost = sum(1 for t in exp if t not in got)
     r.metric("loss", loss_report(lost, len(exp)))
     r.note("ssh_connect_typing loss: " + loss_report(lost, len(exp))["text"])
+    ssh_trial_summary(r, verdicts)
     r.check(got == exp, "remote shell received %d/%d typed-ahead commands exactly (missing %d)" % (sum(1 for t in exp if t in got), len(exp), miss))
     r.check(not ctx.local_lines("rl.txt"), "typed-ahead command ran LOCALLY: %r" % ctx.local_lines("rl.txt"))
     rem = [c for _, c in ctx.prof.commands(remote=True)]
@@ -1529,14 +1945,19 @@ def c_ssh_enter_immediate(ctx, r):
         pass
     ctx.rm("rh.txt")
     exp, base = [], ctx.shell_count()
-    for _ in range(trials):
+    verdicts = []
+    for n in range(trials):
         tok = ctx.tok(6)
         exp.append(tok)
+        line = "echo %s >> ~/rh.txt" % tok
+        t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
         ctx.be.type("ssh fake", 12, enter=True)
-        ctx.be.type("echo %s >> ~/rh.txt" % tok, 12, enter=True)
+        ctx.be.type(line, 12, enter=True)
         ctx.until(lambda: tok in ctx.lines("rh.txt", remote=True), 20)
+        ssh_trial_note(ctx, r, verdicts, "ssh_enter_then_immediate_command trial %d" % (n + 1), t0, line, r0)
         if not ctx.leave_remote(r, "ssh_enter_then_immediate_command", "rh.txt", tok, base):
             break
+    ssh_trial_summary(r, verdicts)
     got = ctx.lines("rh.txt", remote=True)
     r.check(got == exp, "remote shell received %d/%d immediately-typed commands exactly: %r" % (sum(1 for t in exp if t in got), len(exp), got))
     r.check(not ctx.local_lines("rh.txt"), "immediately-typed command ran LOCALLY: %r" % ctx.local_lines("rh.txt"))
@@ -1557,11 +1978,16 @@ def c_ssh_nested(ctx, r):
     ctx.rm("rn.txt")
     base = ctx.shell_count()
     tok = ctx.tok(6)
+    line = "echo %s >> ~/rn.txt" % tok
+    t0, r0 = time.time(), len(ctx.prof.commands(remote=True))
     ctx.be.type("ssh fake", 12, enter=True)
     ctx.be.type("ssh fake", 12, enter=True)
-    ctx.be.type("echo %s >> ~/rn.txt" % tok, 12, enter=True)
+    ctx.be.type(line, 12, enter=True)
     ctx.until(lambda: tok in ctx.lines("rn.txt", remote=True), 30)
     time.sleep(1.0)
+    verdicts = []
+    ssh_trial_note(ctx, r, verdicts, "ssh_nested_typeahead", t0, line, r0, enters_before=2)
+    ssh_trial_summary(r, verdicts)
     got = ctx.lines("rn.txt", remote=True)
     r.check(got == [tok], "the line typed behind a nested ssh ran exactly once remotely: %r" % got)
     r.check(not ctx.local_lines("rn.txt"), "the line typed behind a nested ssh ran LOCALLY: %r" % ctx.local_lines("rn.txt"))
@@ -1721,6 +2147,7 @@ def ref_terminal_windows(ctx):
     home = ctx.prof.home
     env = dict(ctx.app.env()) if hasattr(ctx.app, "env") else dict(os.environ)
     env["HOME"] = home
+    env.pop("PHOSPHOR_PWSH_HOOK_TIMING", None)          # the app's pane only (#1401)
     if ctx.pane == "gitbash":
         sh, shname = [winapi.git_bash(), "--rcfile", home + "/.bashrc", "-i"], "bash"
     else:
@@ -1739,7 +2166,24 @@ def ref_terminal_windows(ctx):
     else:
         argv, name, flags = sh, "conhost (%s)" % shname, 0x00000010           # CREATE_NEW_CONSOLE
     before = {w[0] for w in winapi.top_windows(None)}
-    proc = subprocess.Popen(argv, cwd=ctx.W, env=env, creationflags=flags, stdin=subprocess.DEVNULL if want_wt else None)
+    # #1570: a process started in a new process group (this job, by the runner) ignores Ctrl-C and every child inherits that, so the conhost reference
+    # could not be interrupted either (r18cz, r18e4: NO-CONTROL). A real user's conhost receives Ctrl-C: start the reference with the flag cleared
+    # (restored right after), so the control measures conhost, not the runner. The app clears it for its own shells (PHOSPHOR_CONPTY_CTRL_C_RESET).
+    # APPCI_WIN_REF_CTRL_C=inherit keeps the inherited flag (the old behaviour).
+    ignored = winapi.ctrl_c_ignored()
+    ctx.harness_ctrl_c_ignored = ignored
+    clear = bool(ignored) and os.environ.get("APPCI_WIN_REF_CTRL_C", "enable").lower() != "inherit"
+    if clear:
+        winapi.set_ctrl_c_ignored(False)
+    try:
+        proc = subprocess.Popen(argv, cwd=ctx.W, env=env, creationflags=flags, stdin=subprocess.DEVNULL if want_wt else None)
+    finally:
+        if clear:
+            winapi.set_ctrl_c_ignored(True)
+    ctx.ref_ctrl_c = "cleared" if clear else ("inherited-ignored" if ignored else ("not-ignored" if ignored is False else "unknown"))
+    if want_wt and clear and any(winapi.proc_name(w[1]) == "windowsterminal.exe" for w in winapi.top_windows(None) if w[0] in before):
+        # wt.exe hands the tab to an already running Windows Terminal, whose process (and the shell it starts) never saw the cleared flag
+        ctx.ref_ctrl_c = "unknown (wt reused)"
     ctx.ref_proc = proc
     ctx.ref_shell = shname
     hwnd, wpid = None, None
@@ -2277,6 +2721,35 @@ def c_lat_enter(ctx, r):
             r.note("shell side: pty_write -> first pty_read median %.2f ms (n=%s)" % (segs["write_to_first_read_ms"], segs.get("write_to_first_read_n")))
         if "write_to_preexec_ms" not in segs:
             r.note("write -> preexec NOT measurable: no `hop=preexec_received` line in the app log (a build older than #1583 W3, input-order logging off, or the shell sent no preexec)")
+    if ctx.win and ctx.pane == "powershell":
+        # #1401: the gated samples (and the app segments above) ran with the hook timing marks OFF (the `.on` switch file never existed). The per-hop split comes
+        # from a SEPARATE, ungated batch with the marks on, so the marks' own cost never reaches a verdict.
+        r.metric("pwsh_hook_timing_during_samples", False)
+        nm = max(10, n // 3)
+        t_marks0 = time.time()
+        hook_marks = ctx.pwsh_hook_timing(True)
+        if hook_marks:
+            try:
+                enter_to_start(ctx, nm + warm + 1, budget_s=max(45, (nm + warm + 1) * 2.5))     # +1: the shell reads `.on` at a prompt, so the first may be unmarked
+            finally:
+                ctx.pwsh_hook_timing(False)
+            time.sleep(0.5)                              # the last command's marks are written out at its next prompt
+            stamps = []
+            for i in range(nm + warm + 1):
+                try:
+                    v = float(open(os.path.join(ctx.W, "lat_%d" % i), errors="replace").read().replace("\x00", "").strip())
+                    stamps.append(v if v > 1e11 else v * 1000.0)
+                except (OSError, ValueError):
+                    pass
+            hs = ctx.pwsh_hook_segments(hook_marks, t_marks0, stamps)
+            r.metric("pwsh_hook_segments_ms", hs or dict(unavailable=True, marks_file=hook_marks))
+            if hs:
+                r.note("PowerShell side of Enter->start (#1401, separate ungated batch of %d with the marks on, medians ms): app write->chord handler %s, "
+                       "pipe read %s, insert %s, AcceptLine %s, line->Preexec OSC %s, OSC->app %s, Preexec tail %s, hook->command start %s; next prompt: "
+                       "precmd %s, render %s, maintenance+marker %s"
+                       % ((nm,) + tuple(hs.get(k, "-") for k in ("app_write_to_handler", "handler_pipe_read", "handler_insert", "accept_line", "readline_to_preexec",
+                                                         "preexec_osc_to_app", "preexec_tail", "hook_to_command_start", "prompt_precmd", "prompt_render",
+                                                         "readline_maintenance"))))
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))      # hard floor; a PASS verdict needs 90 % (lat.evaluate expected=)
     ctx.reset()
@@ -2559,6 +3032,56 @@ def keydown_audit(txt, dup_ms=2.0):
         ks.append((key, float(t)))
     dups = [(k2, t2, round(t2 - t1, 2)) for (k1, t1), (k2, t2) in zip(ks, ks[1:]) if k1 == k2 and 0 <= t2 - t1 < dup_ms]
     return dict(count=len(ks), dups=dups)
+
+
+_UI_ITEM_RE = re.compile(r"input_order hop=ui_item kind=(\w+) ms=(\d+(?:\.\d+)?)")
+
+
+def ui_item_audit(txt):
+    """#1191/#1219/#1301: the app's own `hop=ui_item kind=<frame|event|action> ms=<x>` lines (input_order::log_ui_item_if_over_budget, written for
+    every main-thread item at or over the owner's 4 ms UI budget) -> dict(over_4ms, over_16ms, max_ms, by_kind={kind: [count, max_ms]}). Builds
+    before the hop log nothing, which reads exactly like 'no item over budget': callers say so (ui_item_metrics)."""
+    by_kind, ms_all = {}, []
+    for m in _UI_ITEM_RE.finditer(txt):
+        kind, ms = m.group(1), float(m.group(2))
+        ms_all.append(ms)
+        k = by_kind.setdefault(kind, [0, 0.0])
+        k[0] += 1
+        k[1] = max(k[1], ms)
+    return dict(over_4ms=len(ms_all), over_16ms=sum(1 for v in ms_all if v >= 16.0), max_ms=max(ms_all) if ms_all else 0.0, by_kind=by_kind)
+
+
+_LOCK_HOLD_RE = re.compile(r"model lock held (\d+(?:\.\d+)?)(ns|µs|us|ms|s) by (\S+)")
+_DUR_MS = {"ns": 1e-6, "µs": 1e-3, "us": 1e-3, "ms": 1.0, "s": 1000.0}
+
+
+def lock_hold_audit(txt):
+    """#1301: the app's `model lock held <Duration> by <scope>` lines (app/src/terminal/model_lock_trace.rs HoldTimer: every hold >= 2 ms, needs
+    RUST_LOG warp::terminal::model_lock_trace=debug) -> {scope: [count, max_ms]}. TerminalView::render and BlockListElement::layout are the
+    holds #1301 is about; an empty dict is 'no hold over 2 ms' only on a build and RUST_LOG that log them."""
+    out = {}
+    for m in _LOCK_HOLD_RE.finditer(txt):
+        ms = float(m.group(1)) * _DUR_MS[m.group(2)]
+        k = out.setdefault(m.group(3), [0, 0.0])
+        k[0] += 1
+        k[1] = max(k[1], round(ms, 3))
+    return out
+
+
+def ui_item_metrics(ctx, r, off, label):
+    """Records the ui_item audit of the app log written since byte offset `off` as metric `<label>_ui_items`, and the model-lock holds over 2 ms
+    as `<label>_lock_holds` (#1301). Informational: llvmpipe/Xvfb frames
+    are raster bound and over 4 ms by themselves, so this is a metric for the before/after comparison, never a check."""
+    if not ctx.log_path or not os.path.exists(ctx.log_path):
+        r.note("%s: no app log, ui_item audit not taken" % label)
+        return None
+    txt = ctx.log_since(off)
+    a = ui_item_audit(txt)
+    r.metric("%s_ui_items" % label, a)
+    r.metric("%s_lock_holds" % label, lock_hold_audit(txt))
+    if not a["over_4ms"]:
+        r.note("%s: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)" % label)
+    return a
 
 
 _KD_SEQ_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(?:true|false) cmd=(true|false) t=\d+(?:\.\d+)? seq=(\d+)")
@@ -2944,11 +3467,14 @@ def editor_mem_log(ctx, off):
 
 
 def ui_items(text):
-    """[(epoch_s, ms, what)] of the app's `input_order hop=ui_item what=<frame|effects> ms=<ms> t=<epoch ms>` lines (warpui_core app.rs
-    log_ui_item: UI-thread items of >= 1 ms, logged only with input_order debug on)"""
+    """[(epoch_s, ms, kind)] of the app's `input_order hop=ui_item kind=<frame|event|action> ms=<ms> ... t=<epoch ms>` lines
+    (input_order::log_ui_item_if_over_budget: main-thread items at or over the 4 ms budget). Same regex as ui_item_audit, plus each line's t="""
     out = []
-    for m in re.finditer(r"hop=ui_item what=(\w+) ms=([\d.]+) t=([\d.]+)", text):
-        out.append((float(m.group(3)) / 1000.0, float(m.group(2)), m.group(1)))
+    for line in text.splitlines():
+        m = _UI_ITEM_RE.search(line)
+        t = re.search(r" t=(\d+(?:\.\d+)?)", line) if m else None
+        if m and t:
+            out.append((float(t.group(1)) / 1000.0, float(m.group(2)), m.group(1)))
     return out
 
 
@@ -3003,7 +3529,7 @@ def editor_mem_relaunch(ctx, env):
 def editor_trim_ab(ctx, r, palette, path):
     """#1607 perf rule: UI-thread cost of the heap trims, A/B by relaunch. One open/close of the plain-text file per variant: default (trim on
     close only), PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 (opt-in trim after the load) and PHOSPHOR_HEAP_TRIM=0 (no trim at all, the control for the
-    close-time trim, which is new on macOS). Per variant: the max hop=ui_item in the 5 s after the load's layout frame and in the 5 s after the
+    close-time trim, which is new on macOS). Per variant: the max hop=ui_item (main's log_ui_item_if_over_budget, items >= 4 ms; kind frame|event|action) in the 5 s after the load's layout frame and in the 5 s after the
     close key, against the 4 ms budget. A trim variant fails only if it goes over the budget AND more than 1 ms over its control, so a build that
     is already over budget there is reported (metrics, notes) without blaming the trim."""
     if not getattr(ctx, "log_path", None):
@@ -3028,12 +3554,14 @@ def editor_trim_ab(ctx, r, palette, path):
                 r.note("trim A/B %s: no way to close the pane on this platform; A/B incomplete" % name)
                 break
             time.sleep(5.5)
-            items = ui_items(ctx.log_since(off))
+            txt = ctx.log_since(off)
+            items = ui_items(txt)
             if not items:
-                r.note("trim A/B %s: no hop=ui_item lines in the app log (build older than the #1607 review fixes, or input_order logging off)" % name)
+                r.note("trim A/B %s: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)" % name)
             o_max, o_over, load_ms = ui_window_max(items, t_open, after_largest=True)
             c_max, c_over, _ = ui_window_max(items, t_close)
-            res[name] = dict(open_max_ms=o_max, open_over=o_over, load_frame_ms=load_ms, close_max_ms=c_max, close_over=c_over, items=len(items))
+            res[name] = dict(open_max_ms=o_max, open_over=o_over, load_frame_ms=load_ms, close_max_ms=c_max, close_over=c_over,
+                             audit=ui_item_audit(txt))
             ctx.reset()
     finally:
         if not editor_mem_relaunch(ctx, {}):

@@ -25089,6 +25089,53 @@ fn text_replayed_into_a_new_ssh_connect_is_held_not_dropped() {
     });
 }
 
+/// #1394: a key offered to the ssh hold while the queue is held OUTSIDE a delivery (an operation
+/// of the queue's host holds it) is held by the next operation, behind the keys held before it.
+/// It used to log "a key was not held" and drop the key: one character lost at the hand-over. A
+/// key typed after it, before the mailbox is applied, stays behind it (review: in Legacy the
+/// direct offer used to overtake the deferred one, "abdc").
+#[test]
+fn ssh_key_offered_while_the_queue_is_busy_is_held_in_order() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        with_ssh_hold_path(move |view, ctx, pty_writes| {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            submit_command(view, "ssh host", ctx);
+            view.typed_characters_on_terminal("ab", ctx);
+            assert!(view.ssh_typeahead_holding, "{mode:?}");
+            assert_eq!(view.ssh_held_bytes(), 2, "{mode:?}");
+            let queue = view.paste_queue.queue.clone();
+            {
+                let _busy = queue.borrow_mut();
+                assert!(!view.paste_queue.delivering);
+                assert_eq!(
+                    view.ssh_hold_push(HeldInput::from_chars("c"), ctx),
+                    SshTypeaheadPush::Held,
+                    "{mode:?}: held, not ignored"
+                );
+            }
+            // The next key arrives before anything applied the mailbox.
+            view.typed_characters_on_terminal("d", ctx);
+            view.flush_deferred_queue_ops(ctx);
+            assert_eq!(
+                view.ssh_held_bytes(),
+                4,
+                "{mode:?}: both keys joined the hold"
+            );
+            assert_eq!(
+                view.ssh_hold_take(),
+                vec![HeldInput::Typed("abcd".to_owned())],
+                "{mode:?}: in typed order, once"
+            );
+            assert!(
+                pty_writes.borrow().is_empty(),
+                "{mode:?}: {:?}",
+                pty_writes.borrow()
+            );
+        });
+    }
+}
+
 /// #1421: `ssh other` + Enter typed during a connect, then `rm -rf x` + Enter. At the hand-over
 /// the first Enter submits the nested ssh; the text after it must be judged only once that
 /// command's connect gate is armed (the submit's event runs after the delivery returns), so it is

@@ -881,6 +881,11 @@ impl EventLoop {
                 if let ApproveTerminateResult::Terminate =
                     self.terminate_app_requested(termination_mode)
                 {
+                    // #1410: a quit that stalls between here and `LoopExiting` never reached
+                    // `on_will_terminate`'s give-up; arm it now and name where it is.
+                    log::info!("Quit approved; leaving the event loop");
+                    crate::platform::shutdown_progress::set_step("awaiting_loop_exit");
+                    crate::platform::shutdown_progress::arm_quit_give_up_before_will_terminate();
                     window_target.exit();
                 }
             }
@@ -1219,6 +1224,8 @@ impl EventLoop {
     /// `TerminateFromSignal` handler, because the process must be done before that message returns
     /// (jwp2987/phosphor#1075).
     fn run_exit_sequence(&mut self) {
+        // #1410: the give-up log names this step if hiding the windows is what stalls.
+        crate::platform::shutdown_progress::set_step("exit_sequence_hide_windows");
         // Hide all open windows such that, if the application takes a
         // second or two to clean up before exiting, this isn't visible
         // to the end user.

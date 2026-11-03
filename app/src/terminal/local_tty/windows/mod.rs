@@ -1,5 +1,6 @@
 mod child;
 mod conpty_api;
+mod ctrl_c;
 mod environment;
 mod pipes;
 mod proc_thread_attribute_list;
@@ -119,6 +120,8 @@ pub(super) fn spawn(
     options: PtyOptions,
     event_loop_tx: mio_channel::Sender<writeable_pty::Message>,
 ) -> Result<PtySpawnInfo, PtySpawnError> {
+    // #1570: a shell inherits this process's ignore-Ctrl-C flag; clear it before the first spawn.
+    ctrl_c::ensure_children_receive_ctrl_c();
     let conpty_api = unsafe { ConptyApi::load() }?;
     let environment_block = get_shell_environment_variables(&options);
 

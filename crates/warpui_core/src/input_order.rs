@@ -146,9 +146,40 @@ pub fn note_shell_signal(signal: ShellSignal) {
 }
 
 /// `input_order hop=preexec_received signal=preexec t=...` (#1583 W3; parsed by the appci
-/// harness's `enter_segments`).
+/// harness's `enter_segments`). On Windows the line ends with the performance counter
+/// (` qpc=<ticks> qpf=<ticks per second>`, after `t=`), the clock PowerShell's hook timing marks
+/// use (#1401), so the shell's own marks can be placed on the app's timeline.
 fn preexec_line() -> String {
-    hop_line("preexec_received", "signal=preexec")
+    format!(
+        "{}{}",
+        hop_line("preexec_received", "signal=preexec"),
+        qpc_suffix()
+    )
+}
+
+/// ` qpc=<ticks> qpf=<ticks per second>`: the Windows performance counter now (#1401). The
+/// PowerShell bootstrap's hook timing marks (`PHOSPHOR_PWSH_HOOK_TIMING`) are taken with
+/// `Stopwatch.GetTimestamp()`, which reads the same counter, so a log line that carries both
+/// `t=` and this calibrates them onto the app's epoch timeline. Empty elsewhere.
+pub fn qpc_suffix() -> String {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(count: *mut i64) -> i32;
+            fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+        }
+        let (mut count, mut frequency) = (0i64, 0i64);
+        // SAFETY: each call writes one i64 through a pointer to a live local.
+        let ok = unsafe {
+            QueryPerformanceCounter(&mut count) != 0
+                && QueryPerformanceFrequency(&mut frequency) != 0
+        };
+        if ok {
+            return format!(" qpc={count} qpf={frequency}");
+        }
+    }
+    String::new()
 }
 
 /// `since_precmd_ms=12 since_preexec_ms=none ...`: how long ago each shell-ready signal was last
@@ -311,6 +342,31 @@ pub fn log_hop(what: &str, detail: impl FnOnce() -> String) {
     }
 }
 
+/// The owner's budget for one item of main-thread UI work (#1191, #1219, #1301): a frame, an
+/// event dispatch or an action dispatch over this is logged as a `hop=ui_item` line so a real-app
+/// run can show which item broke the budget (the `SlowLog` lines only start at 16 ms).
+pub const UI_ITEM_BUDGET: Duration = Duration::from_millis(4);
+
+/// `input_order hop=ui_item kind=<kind> ms=<elapsed> <detail> t=...`; `detail` is counts, times
+/// and type names only, never text.
+fn ui_item_line(kind: &str, elapsed: Duration, detail: &str) -> String {
+    hop_line(
+        "ui_item",
+        &format!(
+            "kind={kind} ms={:.2} {detail}",
+            elapsed.as_secs_f64() * 1000.0
+        ),
+    )
+}
+
+/// Logs one main-thread UI item that took at least [`UI_ITEM_BUDGET`] (#1191). Under the budget
+/// it is one `Duration` compare; the detail is formatted only for a line that is written.
+pub fn log_ui_item_if_over_budget(kind: &str, elapsed: Duration, detail: impl FnOnce() -> String) {
+    if elapsed >= UI_ITEM_BUDGET && enabled() {
+        log::debug!(target: TARGET, "{}", ui_item_line(kind, elapsed, &detail()));
+    }
+}
+
 /// Logs one stage of an Enter key press (#1482); see [`enter_line`]. Takes the detail lazily.
 pub fn log_enter(layer: &str, stage: &str, detail: impl FnOnce() -> String) {
     if enabled() {
@@ -437,6 +493,27 @@ mod tests {
             line.starts_with("input_order hop=preexec_received signal=preexec t="),
             "{line}"
         );
+        // #1401: the performance counter follows `t=` on Windows only (pwsh_timing.py parses it).
+        assert_eq!(line.contains(" qpc="), cfg!(windows), "{line}");
+        if cfg!(windows) {
+            assert!(line.contains(" qpf="), "{line}");
+        }
+    }
+
+    #[test]
+    fn ui_item_lines_name_the_kind_and_the_time() {
+        let line = ui_item_line(
+            "frame",
+            Duration::from_micros(4_250),
+            "render_ms=1.00 layout_paint_ms=3.25",
+        );
+        assert!(
+            line.starts_with(
+                "input_order hop=ui_item kind=frame ms=4.25 render_ms=1.00 layout_paint_ms=3.25 t="
+            ),
+            "{line}"
+        );
+        assert_eq!(UI_ITEM_BUDGET, Duration::from_millis(4));
     }
 
     #[test]

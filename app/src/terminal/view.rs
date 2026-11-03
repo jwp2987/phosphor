@@ -33,6 +33,7 @@ mod shell_terminated_banner;
 mod wakeup_redraw;
 use wakeup_redraw::{FooterFingerprint, RenderFingerprint, WakeupRedraw};
 pub mod ssh_file_upload;
+pub(crate) mod ssh_kept_text_banner;
 pub(crate) mod ssh_remote_server_choice_view;
 pub(crate) mod ssh_remote_server_failed_banner;
 mod tab_metadata;
@@ -3290,6 +3291,10 @@ pub struct TerminalView {
     /// event that ends it, each logged where it happens. The tests assert the event path leaves
     /// this at zero.
     ssh_give_ups: u64,
+    /// #1596: the block the last ssh typeahead hold was opened for (its connect gate's block),
+    /// recorded when the hold opens. The kept-text banner is shown only over that block, so a late
+    /// hand-back can never attach it to another (local) command.
+    ssh_hold_block_id: Option<BlockId>,
 
     /// The [`EntityId`] for this terminal view.
     view_id: EntityId,
@@ -3299,6 +3304,9 @@ pub struct TerminalView {
     /// Whether we've already emitted a chrome refresh for the active block after it crossed the
     /// long-running threshold. Reset when the active command starts and finishes.
     did_notify_long_running: bool,
+    /// #1552: a long-running command just completed, so the prompt that follows it hands focus
+    /// back (`hand_back_focus_at_prompt`). Set by `AfterBlockCompleted`, consumed by the Precmd.
+    focus_hand_back_at_prompt: bool,
     /// Block whose CLI-agent detection waits for it to become interactive (#1373).
     pending_cli_agent_detection: Option<BlockId>,
     /// Agent-requested command's block whose input lock to the agent waits for it to become
@@ -5147,9 +5155,11 @@ impl TerminalView {
             ssh_bootstrap_swallow_started: None,
             ssh_phase: input_queue::SshPhaseMachine::default(),
             ssh_give_ups: 0,
+            ssh_hold_block_id: None,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
             did_notify_long_running: false,
+            focus_hand_back_at_prompt: false,
             pending_cli_agent_detection: None,
             pending_agent_input_lock: None,
             is_focused_and_active: true,
@@ -7734,6 +7744,12 @@ impl TerminalView {
             if block.is_restore_pending() {
                 log::warn!(
                     "Cannot persist CLI subagent snapshot; block {block_id:?} is still loading"
+                );
+                return;
+            }
+            if block.is_restore_failed() {
+                log::warn!(
+                    "Cannot persist CLI subagent snapshot; block {block_id:?} failed to load"
                 );
                 return;
             }
@@ -11421,6 +11437,13 @@ impl TerminalView {
     fn set_ssh_typeahead_holding(&mut self, holding: bool) {
         if self.ssh_typeahead_holding != holding {
             warpui::input_order::log_key_hop("kh_holding_set", || format!("holding={holding}"));
+            if holding {
+                // #1596: which block this hold is for (no model lock: the gate knows it).
+                self.ssh_hold_block_id = self
+                    .ssh_connect_gate
+                    .as_ref()
+                    .and_then(|gate| gate.block_id.clone());
+            }
         }
         self.ssh_typeahead_holding = holding;
         self.paste_queue.queue.set_ssh_hold_active(holding);
@@ -11677,7 +11700,24 @@ impl TerminalView {
         // of #1571 asked for no loss). Whatever happens below, an Enter typed in the same burst
         // must not run what the user meant for the remote machine on this one: the hand-back's
         // Enter guard covers the text wherever it lands.
-        if self.is_long_running() {
+        let long_running = self.is_long_running();
+        // #1596: where the handed-back text went and which end of the connect sent it there, so a
+        // run tells "kept until the ssh session ends" (no visible holding area) from "in the
+        // editor". Counts only, never the text.
+        warpui::input_order::log_hop("ssh_handed_back", || {
+            format!(
+                "chars={} dest={} remote_prompt_seen={} give_up={}",
+                text.chars().count(),
+                if long_running {
+                    "stashed_until_block_end"
+                } else {
+                    "editor"
+                },
+                self.ssh_remote_prompt_seen,
+                self.ssh_give_up_in_progress
+            )
+        });
+        if long_running {
             // A command owns the pty: the text waits on the input and comes back into the editor
             // when that block completes (`Input::restore_handed_back_text`), guard armed then.
             log::info!(
@@ -11686,11 +11726,30 @@ impl TerminalView {
             );
             self.input
                 .update(ctx, |input, _| input.stash_handed_back_text(text));
-            self.show_ssh_typing_toast(
-                "Text typed while the SSH session connected was kept, not run; it will be in the \
-                 input when the running command ends",
-                ctx,
-            );
+            // #1596: the kept text is shown over the running ssh block, with "Type into session"
+            // (the user's click writes it) and "Discard"; at the block's end it comes back into
+            // the input as before. Only over the block the hold was opened for.
+            let active_block = self.model.lock().active_block_id().clone();
+            if self.ssh_hold_block_id.as_ref() == Some(&active_block) {
+                self.show_ssh_kept_text_banner(ctx);
+                self.show_ssh_typing_toast(
+                    "Text typed while the SSH session connected was kept, not run; it is shown \
+                     above the input until the running command ends",
+                    ctx,
+                );
+            } else {
+                warpui::input_order::log_hop("ssh_kept_text", || {
+                    format!(
+                        "action=no_banner reason=not_the_ssh_block hold_block_known={}",
+                        self.ssh_hold_block_id.is_some()
+                    )
+                });
+                self.show_ssh_typing_toast(
+                    "Text typed while the SSH session connected was kept, not run; it will be in \
+                     the input when the running command ends",
+                    ctx,
+                );
+            }
             return;
         }
         let existing = self.input.as_ref(ctx).buffer_text(ctx);
@@ -11796,6 +11855,18 @@ impl TerminalView {
     /// #1579: a block started (its preexec): it is the user's when the submit that preceded it was
     /// the user's own. Consumed here, so a later block nothing submitted (typed into a program,
     /// run by a script) never inherits it.
+    /// Preexec of an ssh command: the block that actually runs ssh is the one preexec fired for,
+    /// which can differ from the submit-time block the gate (and a hold opened before preexec)
+    /// recorded. Both are corrected to it, so the #1596 kept-text banner goes over that block.
+    fn note_ssh_running_block(&mut self, running_block_id: BlockId) {
+        if self.ssh_typeahead_holding {
+            self.ssh_hold_block_id = Some(running_block_id.clone());
+        }
+        if let Some(gate) = self.ssh_connect_gate.as_mut() {
+            gate.block_id = Some(running_block_id);
+        }
+    }
+
     fn note_block_started_for_ssh(&mut self) {
         self.running_block_user_submitted = self.ssh_submit_user_origin.take().unwrap_or(false);
     }
@@ -12241,7 +12312,40 @@ impl TerminalView {
                     .is_some_and(|gate| gate.user_submitted),
             // Set by the caller from the focus snap it has already taken (#1552, Fable F9).
             settled_ai_focus: false,
+            // Set by the caller from the focus snap and the focus chain (#1552 (a)).
+            input_gap_focus: false,
         }
+    }
+
+    /// #1552 (a): whether a control key typed with focus on the input view (outside its editor)
+    /// goes where the typed keys of that gap go through the terminal's routing: the pty, or a hold
+    /// or queue in front of it. The same rows `keydown_on_terminal_legacy` (and the table) take
+    /// to the pty side, read without the model's lock: an Enter's gate holding keys, a PowerShell
+    /// subshell setup holding them, a user's running command (not the agent's), the hand-off
+    /// giving the pty input, a subshell bootstrap forwarding keys. Otherwise the line is in the
+    /// editor and the key is the editor's.
+    fn input_gap_control_key_follows_pty(&self, chars: &str, ctx: &ViewContext<Self>) -> bool {
+        let abort = is_abort_key(chars.as_bytes());
+        if self.input.as_ref(ctx).enter_queue_holds_keys(ctx) {
+            return true;
+        }
+        // #1051: a Ctrl-C during a PowerShell subshell setup has its own row in the terminal's
+        // routing, as for the typed keys (review R3).
+        if chars == "\u{3}" && self.powershell_setup_hold != PowerShellSetupHold::Off {
+            return true;
+        }
+        if !abort && self.holds_keys_for_powershell_subshell_setup() {
+            return true;
+        }
+        let snapshot = self.read_key_snapshot();
+        // The agent drives the command: every key from the input gap stays with the input, the
+        // abort keys too, as before #1552 (a) (review R2).
+        if snapshot.agent_owns_pty {
+            return false;
+        }
+        snapshot.is_long_running()
+            || self.typeahead_handoff_routes_keys_to_pty()
+            || self.forwards_keys_during_subshell_bootstrap(abort)
     }
 
     /// The pane's one key entry point (#1404): every key event of a focused pane arrives here once,
@@ -12284,17 +12388,43 @@ impl TerminalView {
         // AI block awaiting confirmation, the ssh choice card, a question card) binds its own
         // Enter/Tab/Escape and keeps the key. The table decides on the fact (Fable F9).
         facts.settled_ai_focus = focus_snap == input_queue::FocusSnap::SettledAiTarget;
+        // #1552: in a focus gap (neither the editor nor the terminal focused) the log names what
+        // does have focus, so a run shows which view kept it after a long-running command: the
+        // input view itself (its editor not focused), a view inside the input (a chip menu, the
+        // footer), or another pane child.
+        let gap_leaf = if facts.editor_focused || facts.terminal_focused {
+            "-"
+        } else if key_ctx.leaf() == Some(self.input.id()) {
+            "input_view"
+        } else if key_ctx.in_focus_chain(self.input.id()) {
+            "in_input"
+        } else {
+            "other"
+        };
+        // #1552 (a), owner decision: focus on the input view or inside it (not its editor, not a
+        // text field), with no card or other pane child holding it, sends control keys through
+        // the terminal's routing like the typed keys of the same gap. An unknown pane child
+        // (`gap_leaf == "other"`) or a card keeps its own Enter (Fable B1).
+        // An open menu of the input (voltron, a chip menu) binds its own Enter/Escape: a key
+        // typed inside the input while one is open stays with it (review R1).
+        facts.input_gap_focus = matches!(gap_leaf, "input_view" | "in_input")
+            && !facts.in_text_field
+            && focus_snap == input_queue::FocusSnap::Other
+            && !(gap_leaf == "in_input" && self.input.as_ref(ctx).has_open_menu(ctx));
         let target = pane_key::key_target(class, &facts);
         warpui::input_order::log_key_hop("kh_pane_key", || {
             format!(
                 "seq={} class={class:?} target={target:?} editor_focused={} terminal_focused={} \
-                 in_text_field={} ssh_hold={} shadow={}",
+                 in_text_field={} ssh_hold={} shadow={} focus={focus_snap:?} gap_leaf={gap_leaf} \
+                 chain_len={} input_gap={}",
                 key.seq,
                 facts.editor_focused,
                 facts.terminal_focused,
                 facts.in_text_field,
                 facts.ssh_hold_active,
-                pane_key::mode() == PaneKeyMode::Shadow
+                pane_key::mode() == PaneKeyMode::Shadow,
+                key_ctx.focus_chain.len(),
+                facts.input_gap_focus
             )
         });
         // Shadow mode: decide and log, leave delivery to the elements.
@@ -12333,8 +12463,18 @@ impl TerminalView {
                     return PaneKeyOutcome::NotMine;
                 }
             }
-            // A focus gap (the ssh hold, a settled AI target): the control characters as typed.
+            // A focus gap (the ssh hold, a settled AI target, the input view outside its editor):
+            // the control characters as typed.
             (KeyTarget::Terminal, PaneKeyKind::KeyDown { chars, .. }) => {
+                // #1552 (a): from the input view, the key follows the line. Where the typed keys
+                // of this gap go to the editor (nothing takes them for the pty), the line is the
+                // editor's and so is its Enter: the input's own handling takes it, as before.
+                if facts.input_gap_focus
+                    && !facts.ssh_hold_active
+                    && !self.input_gap_control_key_follows_pty(chars, ctx)
+                {
+                    return PaneKeyOutcome::NotMine;
+                }
                 self.keydown_on_terminal(chars, ctx)
             }
             (
@@ -16436,6 +16576,28 @@ impl TerminalView {
         self.redetermine_terminal_focus_inner(false, ctx)
     }
 
+    /// #1552: the prompt after a long-running command (its Precmd, after the hand-off decided at
+    /// it) hands focus back when it was left in a gap inside the pane: neither the input editor
+    /// nor the terminal view, nor a card or AI block that keeps its own keys. `BlockCompleted`
+    /// already redetermined focus, but before this prompt's hand-off decision, so focus could
+    /// stay where neither the typed keys nor the Enter belong (r18co: the typed keys reached the
+    /// pty and the Enter the empty editor). The same guarded redetermination runs again, on this
+    /// event; it focuses the editor, or the terminal while the hand-off still gives the pty
+    /// input. Never a timer. Returns whether focus was moved.
+    fn hand_back_focus_at_prompt(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let focused = ctx.focused_view_id(ctx.window_id());
+        let snap = self.live_focus_snap(ctx);
+        let in_gap = pane_key::hands_back_focus_at_prompt(
+            snap,
+            focused.is_some() && ctx.is_self_or_child_focused(),
+        );
+        let moved = in_gap && self.redetermine_terminal_focus(ctx);
+        warpui::input_order::log_key_hop("kh_focus_hand_back", || {
+            format!("focus={snap:?} in_gap={in_gap} moved={moved}")
+        });
+        moved
+    }
+
     /// Like [`Self::redetermine_terminal_focus`], but also takes focus back from an AI block.
     /// Used when an agent-run command hands the PTY to the user (a password or `[y/N]` prompt):
     /// approving the command leaves focus on its card, and the guard that keeps focus on an AI
@@ -17444,6 +17606,12 @@ impl TerminalView {
 
                 // In-band commands finishing should never trigger a focus change as it could steal
                 // focus from the TerminalView.
+                // #1596: the kept-text banner goes with any block that ends (a user's or an
+                // agent's ssh); for a user block the input's own end-of-block hand-back restores
+                // the text.
+                if !matches!(block_completed_event.block_type, BlockType::InBandCommand) {
+                    self.ssh_kept_text_block_ended(ctx);
+                }
                 if !matches!(block_completed_event.block_type, BlockType::InBandCommand) {
                     let reset_focus = self.redetermine_terminal_focus(ctx);
                     // There are two different cases for redraws here:
@@ -17744,9 +17912,7 @@ impl TerminalView {
                                     .set_pending_ssh_host(warpify_command.to_string(), ssh_host);
                                 // The block that actually runs ssh is the one preexec fired for.
                                 let running_block_id = self.model.lock().active_block_id().clone();
-                                if let Some(gate) = self.ssh_connect_gate.as_mut() {
-                                    gate.block_id = Some(running_block_id);
-                                }
+                                self.note_ssh_running_block(running_block_id);
                                 self.model.lock().start_notify_on_end_of_ssh_login();
                                 // #1424 step 7: the event that shows ssh running arms the window
                                 // (and its give-up deadline) in `table` mode, not the next key;
@@ -18145,6 +18311,8 @@ impl TerminalView {
                             _ => TerminalViewState::Normal,
                         }
                     };
+                    // #1552: the prompt that follows a long-running command hands focus back.
+                    self.focus_hand_back_at_prompt |= self.did_notify_long_running;
                     self.did_notify_long_running = false;
                     self.set_current_state(terminal_view_state, ctx);
 
@@ -18669,6 +18837,11 @@ impl TerminalView {
                     // erased (#934).
                     self.handoff.write().on_precmd_viewed();
                     self.commit_typeahead_handoff_at_prompt(ctx);
+                }
+                // #1552: after a long-running command, focus left in a gap inside the pane goes
+                // back where the hand-back puts it. On this event, never a timer.
+                if std::mem::take(&mut self.focus_hand_back_at_prompt) {
+                    let _ = self.hand_back_focus_at_prompt(ctx);
                 }
                 // #1348: the remote shell's first prompt. The input is reset for it (above and
                 // by the finished block's `BlockCompleted`, handled before this event), so the
