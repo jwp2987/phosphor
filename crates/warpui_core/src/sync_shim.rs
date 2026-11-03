@@ -177,33 +177,195 @@ mod model {
         }
     }
 
-    pub struct RwLock<T>(inner::RwLock<T>);
+    /// parking_lot's `RwLock`, modelled: a mutex-and-condvar lock with per-thread ownership, so
+    /// it can do what the checkers' own `RwLock` cannot. Both checkers panic when a thread takes a
+    /// lock it already holds, a read included, while parking_lot's `read_recursive` on a thread
+    /// that already reads succeeds even with a writer waiting (that is what it is for). The
+    /// checkers' lock therefore failed a nested read the normal build performs safely; this one
+    /// grants it and still panics on every acquisition that deadlocks with parking_lot:
+    ///
+    /// - `write` by a thread that holds the lock (a read or the write);
+    /// - `read` or `read_recursive` by the thread that holds the write;
+    /// - a nested plain `read` (parking_lot's queues behind a waiting writer).
+    ///
+    /// Blocking is modelled with the checker's condvar, so a cross-thread deadlock is still a
+    /// deadlock the checker reports.
+    pub struct RwLock<T> {
+        state: inner::Mutex<RwState>,
+        changed: inner::Condvar,
+        data: std::cell::UnsafeCell<T>,
+    }
 
-    pub type RwLockReadGuard<'a, T> = inner::RwLockReadGuard<'a, T>;
-    pub type RwLockWriteGuard<'a, T> = inner::RwLockWriteGuard<'a, T>;
+    // SAFETY: `data` is reached only through a guard; `state` grants one writer or any number of
+    // readers, never both, exactly as for `std::sync::RwLock`.
+    unsafe impl<T: Send> Send for RwLock<T> {}
+    unsafe impl<T: Send + Sync> Sync for RwLock<T> {}
+
+    #[derive(Default)]
+    struct RwState {
+        writer: Option<thread::ThreadId>,
+        /// Each reading thread with how many read guards it holds.
+        readers: Vec<(thread::ThreadId, usize)>,
+    }
+
+    impl RwState {
+        fn reads_held_by(&self, me: thread::ThreadId) -> usize {
+            self.readers
+                .iter()
+                .find(|(id, _)| *id == me)
+                .map_or(0, |(_, count)| *count)
+        }
+
+        fn add_reader(&mut self, me: thread::ThreadId) {
+            match self.readers.iter_mut().find(|(id, _)| *id == me) {
+                Some((_, count)) => *count += 1,
+                None => self.readers.push((me, 1)),
+            }
+        }
+
+        fn remove_reader(&mut self, me: thread::ThreadId) {
+            if let Some(index) = self.readers.iter().position(|(id, _)| *id == me) {
+                self.readers[index].1 -= 1;
+                if self.readers[index].1 == 0 {
+                    self.readers.swap_remove(index);
+                }
+            }
+        }
+    }
+
+    pub struct RwLockReadGuard<'a, T> {
+        lock: &'a RwLock<T>,
+        reader: thread::ThreadId,
+    }
+
+    pub struct RwLockWriteGuard<'a, T> {
+        lock: &'a RwLock<T>,
+    }
 
     impl<T> RwLock<T> {
         pub fn new(value: T) -> Self {
-            Self(inner::RwLock::new(value))
+            Self {
+                state: inner::Mutex::new(RwState::default()),
+                changed: inner::Condvar::new(),
+                data: std::cell::UnsafeCell::new(value),
+            }
+        }
+
+        fn state(&self) -> inner::MutexGuard<'_, RwState> {
+            // A panic is the test's failure; a guard dropped while it unwinds must still release.
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        fn acquire_read(&self, recursive: bool) -> RwLockReadGuard<'_, T> {
+            let me = thread::current().id();
+            let mut state = self.state();
+            if state.writer == Some(me) {
+                drop(state);
+                panic!("deadlock! a thread read an RwLock while holding its write lock");
+            }
+            if !recursive && state.reads_held_by(me) > 0 {
+                drop(state);
+                panic!(
+                    "deadlock! a nested non-recursive read of an RwLock (parking_lot's `read` \
+                     queues behind a waiting writer); use `read_recursive`"
+                );
+            }
+            // A thread that already reads is not made to wait for a writer: that writer waits for
+            // this thread's guards, so waiting would be the deadlock `read_recursive` avoids.
+            while state.writer.is_some() {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            state.add_reader(me);
+            RwLockReadGuard {
+                lock: self,
+                reader: me,
+            }
         }
 
         pub fn read(&self) -> RwLockReadGuard<'_, T> {
-            self.0.read().unwrap()
+            self.acquire_read(false)
         }
 
-        /// The checkers' read locks do not queue behind a waiting writer, so a nested read is
-        /// as safe as with parking_lot's `read_recursive`.
+        /// As parking_lot's `read_recursive`: a thread that already reads gets another guard.
         pub fn read_recursive(&self) -> RwLockReadGuard<'_, T> {
-            self.0.read().unwrap()
+            self.acquire_read(true)
         }
 
         /// As parking_lot's `try_read_recursive`: `None` while a writer holds it.
         pub fn try_read_recursive(&self) -> Option<RwLockReadGuard<'_, T>> {
-            self.0.try_read().ok()
+            let me = thread::current().id();
+            let mut state = self.state();
+            if state.writer.is_some() {
+                return None;
+            }
+            state.add_reader(me);
+            Some(RwLockReadGuard {
+                lock: self,
+                reader: me,
+            })
         }
 
         pub fn write(&self) -> RwLockWriteGuard<'_, T> {
-            self.0.write().unwrap()
+            let me = thread::current().id();
+            let mut state = self.state();
+            if state.writer == Some(me) || state.reads_held_by(me) > 0 {
+                drop(state);
+                panic!("deadlock! a thread took an RwLock's write lock while holding that lock");
+            }
+            while state.writer.is_some() || !state.readers.is_empty() {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            state.writer = Some(me);
+            RwLockWriteGuard { lock: self }
+        }
+    }
+
+    impl<T> Deref for RwLockReadGuard<'_, T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            // SAFETY: this guard is a registered reader, so no writer exists until it drops.
+            unsafe { &*self.lock.data.get() }
+        }
+    }
+
+    impl<T> Drop for RwLockReadGuard<'_, T> {
+        fn drop(&mut self) {
+            let mut state = self.lock.state();
+            state.remove_reader(self.reader);
+            drop(state);
+            self.lock.changed.notify_all();
+        }
+    }
+
+    impl<T> Deref for RwLockWriteGuard<'_, T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            // SAFETY: this guard is the only writer and no reader exists until it drops.
+            unsafe { &*self.lock.data.get() }
+        }
+    }
+
+    impl<T> DerefMut for RwLockWriteGuard<'_, T> {
+        fn deref_mut(&mut self) -> &mut T {
+            // SAFETY: as for `deref`; `&mut self` makes the borrow unique.
+            unsafe { &mut *self.lock.data.get() }
+        }
+    }
+
+    impl<T> Drop for RwLockWriteGuard<'_, T> {
+        fn drop(&mut self) {
+            let mut state = self.lock.state();
+            state.writer = None;
+            drop(state);
+            self.lock.changed.notify_all();
         }
     }
 
@@ -219,3 +381,8 @@ mod model {
         }
     }
 }
+
+// Interleaving tests of the modelled `RwLock` itself.
+#[cfg(all(test, any(shuttle, loom)))]
+#[path = "sync_shim_model_tests.rs"]
+mod model_tests;
