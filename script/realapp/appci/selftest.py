@@ -450,13 +450,30 @@ def ssh_trial_plan_and_loss_report():
 @check
 def profile_build_writes_every_file_in_a_fresh_dir():
     # r18d4 diag: #1550 wrote .refzdot/.zshrc into a directory nobody created; every pass crashed in prof.build. Build both modes offline.
-    import tempfile
+
     import profile as P
     for mode in ("terminal", "agent"):
         d = tempfile.mkdtemp()
         pr = P.Profile(os.path.join(d, "run"))
         pr.build(mode, None, "gpt-oss:20b")
         assert os.path.exists(os.path.join(pr.ref_zdot, ".zshrc")) and os.path.exists(pr.ref_rc), mode
+
+
+@check
+def no_function_local_import_shadows_a_module_import():
+    # r18d4: `import winmap` inside run.main() made winmap a local of main, so every non-Windows run died with UnboundLocalError
+    import ast, glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    bad = []
+    for path in glob.glob(os.path.join(here, "*.py")):
+        t = ast.parse(open(path).read())
+        top = {a.asname or a.name for n in t.body if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+        for f in ast.walk(t):
+            if isinstance(f, ast.FunctionDef):
+                for n in ast.walk(f):
+                    if isinstance(n, (ast.Import, ast.ImportFrom)):
+                        bad += ["%s:%d %s" % (os.path.basename(path), n.lineno, a.asname or a.name) for a in n.names if (a.asname or a.name) in top]
+    assert not bad, bad
 
 
 def main():

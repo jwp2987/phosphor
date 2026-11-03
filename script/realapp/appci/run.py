@@ -155,8 +155,7 @@ def main():
     win = a.backend == "windows"
     prof = profile.Profile(run)
     panes = [p for p in os.environ.get("APPCI_WIN_SHELLS", "powershell,gitbash").replace(" ", "").split(",") if p] if win else [None]
-    if win:
-        import winmap
+    # winmap is imported at module level; a local `import winmap` here made it a local of main() and broke every non-Windows run (r18d4)
     if a.backend == "mac":
         import refterm_mac
         refterm_mac.snapshot(run)       # #1485: was Terminal.app already running? (if not, a reference launch is quit by PID at exit)
