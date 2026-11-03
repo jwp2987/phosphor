@@ -12239,10 +12239,16 @@ impl Input {
                 compute: completion_compute.clone(),
             });
         }
+        // #1289: an explicit Tab on a remote session that shows no menu was never explained; log
+        // which stage came back empty so the next occurrence names it.
+        let remote_tab_session = (completions_trigger == CompletionsTrigger::Keybinding
+            && !completion_session.is_local())
+        .then(|| completion_session.id());
 
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
+                    let remote_tab_started = Instant::now();
                     if let Some(debounce) = remote_debounce {
                         Timer::after(debounce).await;
                     }
@@ -12262,6 +12268,7 @@ impl Input {
                         &completion_context,
                     )
                     .await;
+                    let completer_count = suggestions.as_ref().map(|s| s.suggestions.len());
 
                     let suggestions = match suggestions {
                         Some(s) if !s.suggestions.is_empty() && !force_native_shell_completions => {
@@ -12288,6 +12295,17 @@ impl Input {
                             }
                         }),
                     };
+
+                    if let Some(session_id) = remote_tab_session {
+                        let final_count = suggestions.as_ref().map_or(0, |s| s.suggestions.len());
+                        if final_count == 0 {
+                            log::info!(
+                                "Tab on remote session {session_id:?} produced no suggestions after {} ms (completer: {completer_count:?}, native fallback: {})",
+                                remote_tab_started.elapsed().as_millis(),
+                                suggestions.is_some()
+                            );
+                        }
+                    }
 
                     (suggestions, completions_trigger, editor_snapshot)
                 },
@@ -12381,6 +12399,13 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         if self.is_stale_generation(generation) {
+            if completions_trigger == CompletionsTrigger::Keybinding {
+                // #1289: a dropped Tab result is one way a Tab shows no menu.
+                log::debug!(
+                    "Dropping a stale Tab completion result (generation {generation}, now {})",
+                    self.input_generation
+                );
+            }
             return;
         }
         if let Some(wait) = self.verdict_wait.as_ref() {
