@@ -81,6 +81,10 @@ pub(super) const UNREADY_ENTER_GIVE_UP: Duration = Duration::from_secs(15);
 const ENTER_GATE_GIVE_UP_TOAST: &str = "The shell did not take the command in time; what you typed \
      after it is in the input, not sent";
 
+/// #1577: the toast of an Enter that was not submitted because its verdict never came.
+const VERDICT_GIVE_UP_TOAST: &str =
+    "Couldn't tell shell from chat in time; press Enter again to send";
+
 const UNREADY_ENTER_GIVE_UP_TOAST: &str = "The shell was not ready, so the line was not run; it is \
      back in the input with what you typed after it";
 
@@ -516,7 +520,43 @@ impl Input {
         warpui::input_order::log_key_hop("kh_enter_gate_give_up", || {
             format!("by={why} behind={held_behind} submitted={}", gate.submitted)
         });
-        self.hand_back_enter_gate(gate, ENTER_GATE_GIVE_UP_TOAST, ctx);
+        let toast = match why {
+            "verdict_cap" => VERDICT_GIVE_UP_TOAST,
+            _ => ENTER_GATE_GIVE_UP_TOAST,
+        };
+        self.hand_back_enter_gate(gate, toast, ctx);
+    }
+
+    /// #1577: an Enter whose verdict / completion never came within the cap is not submitted by
+    /// the clock. With its gate open the text typed behind it comes back with it
+    /// ([`Self::give_up_enter_gate_to_editor`]); otherwise the wait is dropped and the line stays
+    /// in the editor. The next Enter submits it, with the verdict by then in.
+    pub(super) fn hand_back_unsubmitted_enter(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        warpui::input_order::log_key_hop("enter_verdict_give_up", || format!("editor {why}"));
+        // The late verdict is dropped (as a submit would have): the next Enter, the user's own
+        // say-so after the toast, submits on the Enter-time rules instead of waiting again for a
+        // classifier that may be stuck for good.
+        self.ai_input_model
+            .update(ctx, |model, _| model.abandon_pending_detection());
+        if self.enter_gate.is_some() {
+            self.give_up_enter_gate_to_editor(why, ctx);
+            return;
+        }
+        self.void_verdict_wait_for_give_up();
+        if ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(VERDICT_GIVE_UP_TOAST.to_string()),
+                    window_id,
+                    ctx,
+                );
+            });
+        }
     }
 
     /// [`Self::give_up_enter_gate_to_editor`] for the gate `(kind, key)` a cap named: only when it
@@ -598,7 +638,9 @@ impl Input {
             // Several lines in one buffer submit as ONE command: the first Enter on the handed-back
             // text is held with the "check the line" toast (the ssh hand-back's guard).
             self.arm_ssh_handover_enter_guard(baseline);
-        } else if !submitted {
+        } else if !submitted && gate.held_unready {
+            // The held line alone (an unready shell's Enter): its next Enter is held with the
+            // toast. A line given up for a verdict is what the user typed: Enter sends it.
             let line = self.editor.as_ref(ctx).buffer_text(ctx);
             self.arm_ssh_handover_enter_guard(line);
         }

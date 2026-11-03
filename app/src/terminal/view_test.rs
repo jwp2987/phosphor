@@ -15057,12 +15057,13 @@ fn typeahead_handoff_ctrl_c_on_an_agent_command_is_not_held() {
     })
 }
 
-/// #1331: a terminal-bound paste whose clipboard read never answers fails at the backstop; the
-/// keys typed meanwhile reach the pty in typing order (none dropped, Enter after the fragment it
-/// followed) and the reader's late answer writes nothing. Not compiled/run when written (no
-/// builds in the fix pass).
+/// #1331/#1577: a terminal-bound paste whose clipboard read never answers fails at the backstop;
+/// the keys typed meanwhile are HANDED BACK to the editor in typing order (none dropped, the Enter
+/// a new line after the fragment it followed, the next Enter held with a toast), not written to
+/// the pty by the timer (owner rule 2026-11-01; this test used to assert the pty write). The
+/// reader's late answer writes nothing. Not compiled/run when written (no builds in the fix pass).
 #[test]
-fn stalled_pty_paste_releases_held_keys_in_order_at_the_backstop() {
+fn stalled_pty_paste_hands_held_keys_back_in_order_at_the_backstop() {
     use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -15103,12 +15104,18 @@ fn stalled_pty_paste_releases_held_keys_in_order_at_the_backstop() {
             }
             warpui::r#async::Timer::after(Duration::from_millis(5)).await;
         }
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"ls\r".to_vec(), "held keys released in order");
+        let buffer_of =
+            |app: &App| terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx));
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "the backstop wrote to the pty: {:?}",
+            pty_writes.borrow()
+        );
+        assert_eq!(buffer_of(&app), "ls\n", "held keys handed back in order");
         release.send(()).unwrap();
         warpui::r#async::Timer::after(Duration::from_millis(100)).await;
-        let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-        assert_eq!(written, b"ls\r".to_vec(), "the late answer is ignored");
+        assert!(pty_writes.borrow().is_empty());
+        assert_eq!(buffer_of(&app), "ls\n", "the late answer is ignored");
     })
 }
 
@@ -15202,16 +15209,23 @@ async fn pty_paste_bytes(app: &mut App, scenario: PtyPasteScenario) -> Vec<u8> {
                 }
                 warpui::r#async::Timer::after(Duration::from_millis(5)).await;
             }
+            // #1577: the keys typed behind the paste are handed back to the editor at the
+            // backstop, not written by the timer; only the key typed before the paste was sent.
             assert_eq!(
                 flat(&pty_writes),
-                b"als\r".to_vec(),
-                "keys released at the backstop"
+                b"a".to_vec(),
+                "nothing was written at the backstop"
+            );
+            assert_eq!(
+                terminal.read(app, |view, ctx| view.input.as_ref(ctx).buffer_text(ctx)),
+                "ls\n",
+                "keys handed back to the editor at the backstop"
             );
             release.send(()).unwrap();
             warpui::r#async::Timer::after(Duration::from_millis(100)).await;
             assert_eq!(
                 flat(&pty_writes),
-                b"als\r".to_vec(),
+                b"a".to_vec(),
                 "the late result is ignored"
             );
         }
@@ -15278,14 +15292,15 @@ fn pty_paste_ctrl_c_during_a_pending_read_cancels_it() {
     });
 }
 
-/// #1353 phase 1: the backstop gives up once, releases the keys in order and the reader's late
-/// answer writes nothing, on both paths.
+/// #1353 phase 1 / #1577: the backstop gives up once, hands the keys behind the paste back to the
+/// editor (the scenario asserts the editor's text) and the reader's late answer writes nothing.
+/// Only the key typed before the paste reaches the pty.
 #[cfg(not(target_family = "wasm"))]
 #[test]
 fn pty_paste_backstop_gives_up_then_the_late_result_is_ignored() {
     App::test((), move |mut app| async move {
         let written = pty_paste_bytes(&mut app, PtyPasteScenario::BackstopThenLateResult).await;
-        assert_eq!(written, b"als\r".to_vec());
+        assert_eq!(written, b"a".to_vec());
     });
 }
 

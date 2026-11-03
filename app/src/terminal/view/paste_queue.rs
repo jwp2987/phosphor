@@ -1502,6 +1502,9 @@ impl TerminalView {
         match then {
             GateKeysThen::Release => self.release_held_keys(held, ctx),
             GateKeysThen::GiveUpToEditor => self.give_up_deferred_enter_keys_to_editor(held, ctx),
+            GateKeysThen::GiveUpHandBack(why) => {
+                self.hand_back_deferred_enter_keys_to_editor(held, why, ctx)
+            }
         }
     }
 

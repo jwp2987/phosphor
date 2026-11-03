@@ -118,6 +118,9 @@ pub enum GateKeysThen {
     Release,
     /// The report never came: the keys come back to the editor as text.
     GiveUpToEditor,
+    /// #1577: a timer gave up on the deferred Enter (the reason names it): the Enter is not run,
+    /// the keys come back to the editor as text, the next Enter is consumed once with a toast.
+    GiveUpHandBack(&'static str),
 }
 
 /// What happens to the keys of a `Deferred::TakePowershellKeys` once taken.

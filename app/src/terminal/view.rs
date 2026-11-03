@@ -815,7 +815,8 @@ const AFTER_ENTER_REPLAY_PTY_WAIT: Duration = Duration::from_millis(300);
 
 /// How long a young line's Enter waits for a verdict that never arrives at all before it gives up
 /// (#1353 phase 3). A safety net for a lost signal, never how the wait normally ends; logged when
-/// it fires. The normal give-up is [`YOUNG_DETECTION_CAP`] of classifier compute.
+/// it fires. The normal give-up is [`YOUNG_DETECTION_CAP`] of classifier compute. #1577: a give-up
+/// with the input type undecided hands the line back to the editor (never submitted by the clock).
 const YOUNG_DETECTION_BACKSTOP: Duration = Duration::from_millis(500);
 
 pub const WARP_PROMPT_HEIGHT_LINES: f32 = 0.9;
@@ -13574,6 +13575,70 @@ impl TerminalView {
         self.redetermine_terminal_focus(ctx);
     }
 
+    /// #1577: a timer gave up on the deferred Enter before the verdict / report it waited for
+    /// (`why` names which): the Enter does not run, the text stays in the editor, the keys held
+    /// behind the Enter follow it as text, the next Enter is consumed once with a toast, and it is
+    /// logged with counts. Nothing is written to the pty, nothing is routed by the clock.
+    pub(super) fn hand_back_deferred_enter_keys_to_editor(
+        &mut self,
+        held: Vec<u8>,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let text = text_for_editor(&held);
+        log::warn!(
+            "Enter not run ({why}): the text stays in the input; {} held byte(s) handed back to \
+             the editor",
+            held.len()
+        );
+        warpui::input_order::log_key_hop("enter_verdict_give_up", || {
+            format!(
+                "{why} held_bytes={} chars={}",
+                held.len(),
+                text.chars().count()
+            )
+        });
+        self.input.update(ctx, |input, ctx| {
+            input.clear_handoff_enter_hold();
+            if !text.is_empty() {
+                input.system_insert(&text, ctx);
+            }
+            // Several lines in one buffer would submit as ONE command: the first Enter on them
+            // is held with the "check the line" toast. One line is what the user typed: the
+            // next Enter sends it.
+            let buffer = input.editor().as_ref(ctx).buffer_text(ctx);
+            if buffer.contains('\n') {
+                input.arm_ssh_handover_enter_guard(buffer);
+            }
+        });
+        let toast = match why {
+            "uncovered_report" => "The shell did not report its line; the text stays in the input",
+            _ => "Couldn't tell shell from chat in time; press Enter again to send",
+        };
+        self.show_error_toast(toast.to_string(), ctx);
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
+    }
+
+    /// [`Self::keep_deferred_enter_text`] for a timer's give-up (#1577): the keys behind the Enter
+    /// come back to the editor as text instead of being released to the pty, and the next Enter
+    /// is consumed once with a toast.
+    fn keep_deferred_enter_text_hand_back(
+        &mut self,
+        why: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.input
+            .update(ctx, |input, _| input.clear_handoff_enter_hold());
+        let gate = self.handoff.write().release_after_unsubmitted_enter();
+        match gate {
+            Some(gate) => {
+                self.take_deferred_gate_keys_then(gate, GateKeysThen::GiveUpHandBack(why), ctx)
+            }
+            None => self.hand_back_deferred_enter_keys_to_editor(Vec::new(), why, ctx),
+        }
+    }
+
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
     /// there since the request. Returns `false` only when the editor refused a report as another
     /// line's text (#1569); an empty report inserts nothing and is not a refusal.
@@ -13689,10 +13754,27 @@ impl TerminalView {
                     "young line waited for the input-type verdict and gave up",
                     started.elapsed(),
                 );
-                self.input.update(ctx, |input, ctx| {
-                    input.give_up_pending_detection_for_submit(ctx)
-                });
-                self.run_deferred_enter(true, ctx);
+                // #1577: the clock never chooses between the shell and the agent. With the input
+                // type already decided (locked, or autodetection off) the Enter runs as before;
+                // otherwise it is not run: the text stays in the editor and the next Enter
+                // submits it once the verdict is in.
+                let decided = self
+                    .input
+                    .read(ctx, |input, ctx| input.input_type_is_decided(ctx));
+                if decided {
+                    self.input.update(ctx, |input, ctx| {
+                        input.give_up_pending_detection_for_submit(ctx)
+                    });
+                    self.run_deferred_enter(true, ctx);
+                } else {
+                    // The late verdict is dropped: the next Enter is the user's say-so.
+                    self.input.update(ctx, |input, ctx| {
+                        input
+                            .ai_input_model()
+                            .update(ctx, |model, _| model.abandon_pending_detection())
+                    });
+                    self.keep_deferred_enter_text_hand_back("young_verdict_cap", ctx);
+                }
             }
             YoungSubmit::Wait => self.watch_young_detection(ctx),
             YoungSubmit::KeepInEditor => {

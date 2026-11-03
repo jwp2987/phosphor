@@ -14621,6 +14621,16 @@ impl Input {
         }
     }
 
+    /// #1577: whether the input's shell-or-agent type is already decided (locked by the user, or
+    /// autodetection is off for this context), so that an Enter needs no verdict. When it is not,
+    /// a timer must not pick a destination by the clock.
+    pub(crate) fn input_type_is_decided(&self, ctx: &AppContext) -> bool {
+        !self
+            .ai_input_model
+            .as_ref(ctx)
+            .should_run_input_autodetection(ctx)
+    }
+
     /// #1577: the Enter held for its verdict / Tab completion is given up by a timer: the wait is
     /// dropped (nothing will submit it) and its completion is cancelled. The caller hands the line
     /// back to the editor.
@@ -14718,6 +14728,13 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         log_late_enter_verdict(text, classifier_compute);
+        // #1577: the clock never chooses between the shell and the agent. With the input type
+        // undecided (autodetection running) the Enter is not submitted: the line stays in the
+        // editor with what was typed behind it, and the next Enter submits it.
+        if !self.input_type_is_decided(ctx) {
+            self.hand_back_unsubmitted_enter("verdict_cap", ctx);
+            return;
+        }
         // The parse may have landed since the Enter: decide on everything known now, then drop
         // the verdict so it cannot land after the submit.
         self.settle_pending_input_detection_for_submit(ctx);
