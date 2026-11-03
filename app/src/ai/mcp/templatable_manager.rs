@@ -4,8 +4,6 @@ mod native;
 pub use native::McpIntegration;
 #[cfg(not(target_family = "wasm"))]
 mod oauth;
-#[cfg(target_family = "wasm")]
-mod wasm;
 
 #[cfg(not(target_family = "wasm"))]
 use diesel::SqliteConnection;
@@ -38,7 +36,7 @@ type ReconnectResultSender =
 /// - Maintains MCP server view handles to preserve state when panes are hidden
 /// - Tracks currently open MCP server panes and their location
 ///
-/// The core implementations are in the `native` and `wasm` modules.
+/// The core implementation is in the `native` module.
 #[derive(Default)]
 pub struct TemplatableMCPServerManager {
     #[cfg(not(target_family = "wasm"))]
