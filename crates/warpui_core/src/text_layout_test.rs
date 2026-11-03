@@ -808,3 +808,85 @@ fn text_cache_keeps_entries_fetched_within_two_frames() {
     assert_eq!(cache.get(&key("kept") as &dyn CacheKey).as_deref(), Some(&1));
     assert_eq!(cache.get(&key("dropped") as &dyn CacheKey), None);
 }
+
+fn retired_test_key(text: &str) -> CacheKeyValue {
+    CacheKeyValue {
+        text: text.to_owned(),
+        font_size: 12.0.into(),
+        line_height_ratio: 1.2.into(),
+        fixed_width_tab_size: None,
+        style_runs: Default::default(),
+        max_width: f32::MAX.into(),
+        max_height: None,
+        alignment: TextAlignment::Left,
+        first_line_head_indent: None,
+        clip_config: None,
+    }
+}
+
+/// #1219: an overlay row that left the screen for many frames (the slash menu closed and opened
+/// again) is still served from the cache, so the reopen does not shape its text again; with the
+/// kill switch the plain two-generation cache drops it after two frames as before.
+#[test]
+fn text_cache_retired_generation_serves_a_reopened_overlay_row() {
+    let cache: TextCache<u32> = TextCache::with_retired_generation(true);
+    cache.insert(retired_test_key("/agent"), Arc::new(7));
+    for _ in 0..10 {
+        cache.finish_frame();
+    }
+    assert_eq!(
+        cache
+            .get(&retired_test_key("/agent") as &dyn CacheKey)
+            .as_deref(),
+        Some(&7)
+    );
+    // Served entries are live again: they survive the next two frames without a lookup.
+    cache.finish_frame();
+    assert_eq!(
+        cache
+            .get(&retired_test_key("/agent") as &dyn CacheKey)
+            .as_deref(),
+        Some(&7)
+    );
+
+    let legacy: TextCache<u32> = TextCache::with_retired_generation(false);
+    legacy.insert(retired_test_key("/agent"), Arc::new(7));
+    for _ in 0..10 {
+        legacy.finish_frame();
+    }
+    assert_eq!(
+        legacy.get(&retired_test_key("/agent") as &dyn CacheKey),
+        None
+    );
+}
+
+/// #1219: a retired entry is invalidated like a live one (fallback-font load), long texts are
+/// never retired, and the retired generation never grows past its capacity.
+#[test]
+fn text_cache_retired_generation_is_bounded_and_invalidated() {
+    let cache: TextCache<u32> = TextCache::with_retired_generation(true);
+    cache.insert(retired_test_key("glyph"), Arc::new(1));
+    let long = "x".repeat(RETIRED_MAX_TEXT_LEN + 1);
+    cache.insert(retired_test_key(&long), Arc::new(2));
+    cache.finish_frame();
+    cache.finish_frame();
+    cache.remove(&retired_test_key("glyph") as &dyn CacheKey);
+    assert_eq!(cache.get(&retired_test_key("glyph") as &dyn CacheKey), None);
+    assert_eq!(cache.get(&retired_test_key(&long) as &dyn CacheKey), None);
+
+    for i in 0..(RETIRED_CAPACITY + 10) {
+        cache.insert(retired_test_key(&format!("row {i}")), Arc::new(0));
+    }
+    cache.finish_frame();
+    cache.finish_frame();
+    assert!(cache.retired.lock().len() <= RETIRED_CAPACITY);
+}
+
+#[test]
+fn layout_cache_retired_kill_switch_values() {
+    assert!(retired_generation_from_value(None));
+    assert!(retired_generation_from_value(Some("")));
+    assert!(retired_generation_from_value(Some("1")));
+    assert!(!retired_generation_from_value(Some("0")));
+    assert!(!retired_generation_from_value(Some(" 0 ")));
+}
