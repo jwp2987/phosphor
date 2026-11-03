@@ -1316,9 +1316,20 @@ fn prewarm_fast_path_fills_the_cache_asynchronously() {
             assert_eq!(entry.rules.len(), 1);
             assert_eq!(entry.rules[0].content, "prewarmed rules");
             drop(cached);
-            let found = model.find_rules_with_fast_path(&cwd).expect("rules found");
-            assert_eq!(found.active_rules[0].content, "prewarmed rules");
         });
+        // The entry is stamped with the mtimes of every directory the scan walked, including the
+        // shared temp dir; a concurrently running test creating a temp dir there makes the stamp
+        // stale and the lookup correctly reports Pending (a rescan) instead of serving it
+        // (#1412, same race as request_before_prewarm_waits_for_the_scan_instead_of_scanning;
+        // r18e0 hit it here). The rules are never lost: found now, or a rescan is due.
+        let again = model.update(&mut app, |model, ctx| model.request_rules_wait(&cwd, ctx));
+        match again {
+            RulesWait::Ready(Some(found)) => {
+                assert_eq!(found.active_rules[0].content, "prewarmed rules")
+            }
+            RulesWait::Pending(_) => {}
+            RulesWait::Ready(None) => panic!("the prewarmed rules were lost"),
+        }
     });
 }
 
