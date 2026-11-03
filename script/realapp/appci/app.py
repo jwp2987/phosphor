@@ -7,7 +7,7 @@ if [ "$APPCI_APP_DISPLAY" = x11 ]; then unset WAYLAND_DISPLAY; fi
 if [ "$APPCI_APP_DISPLAY" = wayland ] && [ -z "$APPCI_KEEP_DISPLAY" ]; then unset DISPLAY; fi
 export HOME="%(home)s" XDG_CONFIG_HOME="%(home)s/.config" XDG_STATE_HOME="%(home)s/.local/state" XDG_DATA_HOME="%(home)s/.local/share"
 export SHELL=/bin/bash ZDOTDIR="%(home)s"
-export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug
+export RUST_LOG=warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug
 export WARP_INPUT_ORDER_LOG_TEXT=1
 mkdir -p "$XDG_STATE_HOME" "$XDG_DATA_HOME"
 printf "" | gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || echo "WARNING: gnome-keyring-daemon unavailable" >&2
@@ -19,7 +19,7 @@ exec "%(bin)s" >> "%(run)s/app.stdout" 2>&1
 
 # #1532: environment variables that must reach the app under test even where the launcher does not inherit os.environ (macOS `open --env`).
 # Linux and Windows pass the whole environment. APPCI_APP_ENV="K=V,K2=V2" (run.py) sets more of them for one run.
-PASSTHROUGH_ENV = ("PHOSPHOR_QUEUE_DESTINATION", "PHOSPHOR_CONPTY_ENTER_HOLD")
+PASSTHROUGH_ENV = ("PHOSPHOR_QUEUE_DESTINATION", "PHOSPHOR_CONPTY_ENTER_HOLD", "PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM")  # the last two: editor_memory_7mb trim A/B (#1607)
 
 
 def passthrough_env(environ=None):
@@ -123,7 +123,7 @@ class MacApp:
         env_args = []
         for k, v in (("HOME", self.home), ("SHELL", "/bin/zsh"), ("ZDOTDIR", self.home), ("APPCI_W", self.home + "/w"),
                      ("PA_CTL", os.path.join(self.run, "ctl")),
-                     ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug"),
+                     ("RUST_LOG", "warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug"),
                      ("WARP_INPUT_ORDER_LOG_TEXT", "1")):
             env_args += ["--env", "%s=%s" % (k, v)]
         for k, v in passthrough_env().items():
@@ -268,7 +268,7 @@ class WindowsApp:
         fwd = lambda p: p.replace("\\", "/")           # noqa: E731  (msys bash takes C:/... paths; backslashes inside variables survive unchanged)
         # r18d2: the agent cases read INFO markers ('[byop] opening stream', 'stream opened OK', '[byop-diag] queue_actions'); a bare `warn` base hid them, so
         # agent_stream_cancel / agent_approval reported "no model request" on a run whose screenshot showed the finished reply. Only those two modules go to info.
-        e["RUST_LOG"] = "warn,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug"
+        e["RUST_LOG"] = "warn,warp::ai::agent_providers=info,warp::ai::blocklist::controller=info,warp::input_order=debug,warp::terminal::model_lock_trace=debug,warpui::frame_cause=debug,phosphor::routing=debug,editor_memory=debug"
         e["WARP_INPUT_ORDER_LOG_TEXT"] = "1"
         e["PA_CTL"] = fwd(self.ctl)
         e["APPCI_W"] = fwd(os.path.join(self.home, "w"))

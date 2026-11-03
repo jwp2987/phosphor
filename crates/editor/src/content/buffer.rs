@@ -556,6 +556,19 @@ impl BufferSnapshot {
     }
 }
 
+/// What a [`Buffer`]'s content costs in memory; see [`Buffer::memory_stats`].
+#[derive(Clone, Copy, Debug)]
+pub struct BufferMemoryStats {
+    /// Bytes of text (and markers) in the buffer.
+    pub text_bytes: usize,
+    pub lines: usize,
+    /// `size_of::<BufferText>()`: every item, a 1-byte newline included, takes this much inline.
+    pub item_bytes: usize,
+    /// Shape of the content tree and the bytes of its node allocations.
+    pub tree: sum_tree::NodeStats,
+    pub undo_entries: usize,
+}
+
 /// Model for storing the content of an editor.
 pub struct Buffer {
     pub(super) content: SumTree<BufferText>,
@@ -2467,6 +2480,18 @@ impl Buffer {
     /// Point coordinate at the end of buffer.
     pub fn max_point(&self) -> Point {
         self.content.extent()
+    }
+
+    /// Allocation summary of the content tree, for the `editor_memory` log and the memory
+    /// accounting test (#1607). Walks every tree node: diagnostics only, never per frame.
+    pub fn memory_stats(&self) -> BufferMemoryStats {
+        BufferMemoryStats {
+            text_bytes: self.max_byte_offset().as_usize(),
+            lines: self.content.summary().text.lines.row as usize + 1,
+            item_bytes: std::mem::size_of::<BufferText>(),
+            tree: self.content.node_stats(),
+            undo_entries: self.undo_stack.len(),
+        }
     }
 
     /// CharOffset at the end of buffer.

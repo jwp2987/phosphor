@@ -1569,6 +1569,24 @@ impl CodeEditorView {
         self.is_selecting
     }
 
+    /// Whether this editor holds state that rebuilding it from its text would lose (#1267, the
+    /// agent answer's off-screen code-block recycling): focus (also in a window that is not
+    /// active), a selection or a selection drag in progress, an open find bar, or a scroll offset.
+    pub fn holds_user_state(&self, app: &AppContext) -> bool {
+        let focused = self
+            .self_handle
+            .upgrade(app)
+            .is_some_and(|handle| handle.is_focused(app));
+        let find_open = self
+            .find_bar
+            .as_ref()
+            .is_some_and(|find_bar| find_bar.as_ref(app).is_open());
+        let render_state = self.model.as_ref(app).render_state().as_ref(app);
+        let viewport = render_state.viewport();
+        let scrolled = viewport.scroll_left().as_f32() > 0. || viewport.scroll_top().as_f32() > 0.;
+        focused || self.is_selecting || find_open || scrolled || self.selected_text(app).is_some()
+    }
+
     /// Extend the selection to the given offset.  This is used for shift-clicking to extend the
     /// selection, and not for dragging the selection.
     fn selection_extend(&mut self, offset: CharOffset, ctx: &mut ViewContext<Self>) {
@@ -2646,4 +2664,4 @@ impl CodeEditorView {
 }
 
 #[cfg(test)]
-mod view_tests;
+pub(crate) mod view_tests;

@@ -361,62 +361,101 @@ impl BufferSumTree for SumTree<BufferText> {
 
     fn append_str(&mut self, s: &str) {
         let trailing_newline = s.ends_with('\n');
-        let mut is_first = true;
-        let mut new_fragments = Vec::new();
 
         // Split str into lines first. For linebreaks, we need to push BufferText::Newline.
         let mut lines = s.lines().peekable();
-        while let Some(line) = lines.next() {
-            let mut text = line;
-            // For the first fragment we are pushing, try to fill up the trailing text fragment if 1) it exists 2) it has extra byte space.
-            if is_first && !self.is_empty() {
-                self.update_last(|last_text| {
-                    if let BufferText::Text {
-                        fragment,
-                        char_count,
-                    } = last_text
-                    {
-                        let split_ix = if fragment.len() + text.len() <= TEXT_FRAGMENT_SIZE {
-                            text.len()
-                        } else {
-                            let mut split_ix = TEXT_FRAGMENT_SIZE
-                                .saturating_sub(fragment.len())
-                                .min(text.len());
-                            while !text.is_char_boundary(split_ix) {
-                                split_ix -= 1;
-                            }
-                            split_ix
-                        };
+        let Some(mut text) = lines.next() else {
+            return;
+        };
+        // For the first fragment we are pushing, try to fill up the trailing text fragment if 1) it exists 2) it has extra byte space.
+        if !self.is_empty() {
+            self.update_last(|last_text| {
+                if let BufferText::Text {
+                    fragment,
+                    char_count,
+                } = last_text
+                {
+                    let split_ix = if fragment.len() + text.len() <= TEXT_FRAGMENT_SIZE {
+                        text.len()
+                    } else {
+                        let mut split_ix = TEXT_FRAGMENT_SIZE
+                            .saturating_sub(fragment.len())
+                            .min(text.len());
+                        while !text.is_char_boundary(split_ix) {
+                            split_ix -= 1;
+                        }
+                        split_ix
+                    };
 
-                        let (suffix, remainder) = text.split_at(split_ix);
-                        fragment.push_str(suffix);
-                        *char_count = fragment.chars().count() as u8;
+                    let (suffix, remainder) = text.split_at(split_ix);
+                    fragment.push_str(suffix);
+                    *char_count = fragment.chars().count() as u8;
 
-                        text = remainder;
-                    }
-                });
-            }
-            is_first = false;
+                    text = remainder;
+                }
+            });
+        }
 
-            // If there are still remaining text, push it as a new fragment.
-            while !text.is_empty() {
-                let mut split_ix = text.len().min(TEXT_FRAGMENT_SIZE);
-                while !text.is_char_boundary(split_ix) {
+        // The remaining fragments are generated as the tree consumes them (#1607): collecting
+        // them into a Vec first held a second, item-sized copy of the whole text (a 7 MB file is
+        // ~180k items of `size_of::<BufferText>()` bytes each) next to the tree being built.
+        self.extend(TextFragments::new(text, lines, trailing_newline));
+    }
+}
+
+/// The [`BufferText`] items of a str, in order: each line as fragments of at most
+/// [`TEXT_FRAGMENT_SIZE`] bytes (split on char boundaries), then a [`BufferText::Newline`] when
+/// another line follows or the str ends with a newline. The same items, in the same order, as the
+/// Vec `append_str` used to build.
+struct TextFragments<'a> {
+    /// What is left of the current line.
+    rest: &'a str,
+    /// The current line is followed by a newline item.
+    newline_pending: bool,
+    lines: std::iter::Peekable<std::str::Lines<'a>>,
+    trailing_newline: bool,
+}
+
+impl<'a> TextFragments<'a> {
+    fn new(
+        first: &'a str,
+        mut lines: std::iter::Peekable<std::str::Lines<'a>>,
+        trailing_newline: bool,
+    ) -> Self {
+        let newline_pending = lines.peek().is_some() || trailing_newline;
+        Self {
+            rest: first,
+            newline_pending,
+            lines,
+            trailing_newline,
+        }
+    }
+}
+
+impl Iterator for TextFragments<'_> {
+    type Item = BufferText;
+
+    fn next(&mut self) -> Option<BufferText> {
+        loop {
+            if !self.rest.is_empty() {
+                let mut split_ix = self.rest.len().min(TEXT_FRAGMENT_SIZE);
+                while !self.rest.is_char_boundary(split_ix) {
                     split_ix -= 1;
                 }
-                let (chunk, remainder) = text.split_at(split_ix);
-                new_fragments.push(BufferText::Text {
+                let (chunk, remainder) = self.rest.split_at(split_ix);
+                self.rest = remainder;
+                return Some(BufferText::Text {
                     char_count: chunk.chars().count() as u8,
                     fragment: ArrayString::from(chunk).unwrap(),
                 });
-                text = remainder;
             }
-
-            if lines.peek().is_some() || trailing_newline {
-                new_fragments.push(BufferText::Newline);
+            if self.newline_pending {
+                self.newline_pending = false;
+                return Some(BufferText::Newline);
             }
+            self.rest = self.lines.next()?;
+            self.newline_pending = self.lines.peek().is_some() || self.trailing_newline;
         }
-        self.extend(new_fragments);
     }
 }
 

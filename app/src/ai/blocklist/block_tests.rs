@@ -564,3 +564,273 @@ fn empty_enter_hint_follows_focus_and_pending_card() {
         Some("Press Enter again to apply")
     );
 }
+
+// ---------------------------------------------------------------- #1267 code-block editor recycling
+//
+// An AIBlock cannot be built in a unit test (it needs a terminal model, controllers, the history and
+// action models and a live conversation; no test in this file builds one). So the tests drive the
+// narrowest REAL functions the block delegates to: `new_snippet_editor` + `configure_snippet_editor`
+// (what `AIBlock::build_code_editor_view` builds, minus its event subscription to the block),
+// `recycle_embedded_editors`, `restore_embedded_editors` and `rebuild_recycled_for_stream` (the bodies
+// of `recycle_code_editors`, `restore_code_editors` and the recycled arm of
+// `handle_code_section_stream_update`), the distance plan `ai_code_recycle_plan` that
+// `TerminalView::recycle_ai_code_editors` executes, and the kill-switch parser. The `is_finished`
+// guard is a single condition inside `AIBlock::recycle_code_editors` and is not reachable here.
+
+mod code_editor_recycling {
+    use warp_editor::render::element::VerticalExpansionBehavior;
+    use warpui::platform::WindowStyle;
+    use warpui::{App, EntityId, TypedActionView, ViewHandle, WindowId};
+
+    use super::super::{
+        EmbeddedCodeEditorView, configure_snippet_editor, new_snippet_editor,
+        rebuild_recycled_for_stream, recycle_embedded_editors, recycling_flag_enabled,
+        restore_embedded_editors,
+    };
+    use crate::code::editor::view::view_tests::init_code_editor_test_singletons;
+    use crate::code::editor::view::{
+        CodeEditorRenderOptions, CodeEditorView, CodeEditorViewAction,
+    };
+    use crate::terminal::view::{
+        AICodeRecycleAction, ai_code_recycle_action, ai_code_recycle_plan,
+    };
+
+    fn init(app: &mut App) -> WindowId {
+        init_code_editor_test_singletons(app);
+        let (window, _root) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            CodeEditorView::new(
+                None,
+                None,
+                CodeEditorRenderOptions::new(VerticalExpansionBehavior::InfiniteHeight),
+                ctx,
+            )
+        });
+        window
+    }
+
+    /// The real snippet-editor construction and configuration the block uses.
+    fn snippet(
+        app: &mut App,
+        window: WindowId,
+        code: &str,
+        line: Option<usize>,
+    ) -> ViewHandle<CodeEditorView> {
+        let view = app.add_typed_action_view(window, |ctx| new_snippet_editor(None, ctx));
+        let code = code.to_string();
+        view.update(app, move |view, ctx| {
+            configure_snippet_editor(view, &code, &None, line, ctx);
+        });
+        view
+    }
+
+    fn text_of(app: &App, view: &ViewHandle<CodeEditorView>) -> String {
+        view.read(app, |view, ctx| view.text(ctx).into_string())
+    }
+
+    const CODE_A: &str = "fn main() {\n    println!(\"a\");\n}\n";
+    const CODE_B: &str = "let x = 1;\r\nlet y = 2;\r\n";
+
+    #[test]
+    fn far_blocks_recycle_near_blocks_rebuild_with_hysteresis() {
+        assert_eq!(ai_code_recycle_action(0), AICodeRecycleAction::Rebuild);
+        assert_eq!(ai_code_recycle_action(2), AICodeRecycleAction::Rebuild);
+        assert_eq!(ai_code_recycle_action(3), AICodeRecycleAction::Keep);
+        assert_eq!(ai_code_recycle_action(6), AICodeRecycleAction::Keep);
+        assert_eq!(ai_code_recycle_action(7), AICodeRecycleAction::Recycle);
+    }
+
+    #[test]
+    fn the_plan_measures_rich_content_distance_from_the_nearest_visible_entry() {
+        let ids: Vec<EntityId> = (0..20).map(EntityId::from_usize).collect();
+        // Every entry is an AI block except 5 (another kind of rich content).
+        let rich: Vec<(EntityId, bool)> = ids.iter().map(|id| (*id, *id != ids[5])).collect();
+
+        // Nothing visible: nothing is planned, nothing recycled.
+        assert!(ai_code_recycle_plan(&rich, &[]).is_empty());
+        // A visible id that is not rich content counts as nothing visible.
+        assert!(ai_code_recycle_plan(&rich, &[EntityId::from_usize(999)]).is_empty());
+
+        let plan = ai_code_recycle_plan(&rich, &[ids[0]]);
+        let action = |plan: &[(usize, AICodeRecycleAction)], position: usize| {
+            plan.iter().find(|(p, _)| *p == position).map(|(_, a)| *a)
+        };
+        assert_eq!(action(&plan, 2), Some(AICodeRecycleAction::Rebuild));
+        assert_eq!(action(&plan, 3), Some(AICodeRecycleAction::Keep));
+        assert_eq!(action(&plan, 6), Some(AICodeRecycleAction::Keep));
+        assert_eq!(action(&plan, 7), Some(AICodeRecycleAction::Recycle));
+        assert_eq!(
+            action(&plan, 5),
+            None,
+            "non-AI rich content is never planned"
+        );
+        assert_eq!(plan.len(), 19);
+
+        // A block between two visible entries takes the nearer one: 10 is 4 from 6 and 4 from 14.
+        let plan = ai_code_recycle_plan(&rich, &[ids[6], ids[14]]);
+        assert_eq!(action(&plan, 10), Some(AICodeRecycleAction::Keep));
+        assert_eq!(action(&plan, 12), Some(AICodeRecycleAction::Rebuild));
+        assert_eq!(action(&plan, 19), Some(AICodeRecycleAction::Keep));
+        // 0 is 6 from 6: kept, not recycled.
+        assert_eq!(action(&plan, 0), Some(AICodeRecycleAction::Keep));
+        let plan = ai_code_recycle_plan(&rich, &[ids[14]]);
+        assert_eq!(action(&plan, 0), Some(AICodeRecycleAction::Recycle));
+    }
+
+    #[test]
+    fn the_kill_switch_turns_recycling_off_only_on_an_explicit_off() {
+        assert!(recycling_flag_enabled(None));
+        assert!(recycling_flag_enabled(Some("1")));
+        assert!(!recycling_flag_enabled(Some("0")));
+        assert!(!recycling_flag_enabled(Some(" Off ")));
+        assert!(!recycling_flag_enabled(Some("false")));
+    }
+
+    #[test]
+    fn a_recycled_editor_is_rebuilt_from_the_original_snippet_text() {
+        App::test((), |mut app| async move {
+            let window = init(&mut app);
+            let a = snippet(&mut app, window, CODE_A, Some(41));
+            let b = snippet(&mut app, window, CODE_B, None);
+            let mut views = vec![
+                EmbeddedCodeEditorView::new(a, None, CODE_A.len()),
+                EmbeddedCodeEditorView::new(b, None, CODE_B.len()),
+            ];
+            let codes = vec![CODE_A.to_string(), CODE_B.to_string()];
+
+            let dropped = app.read(|ctx| recycle_embedded_editors(&mut views, &codes, ctx));
+            assert_eq!(dropped, 2);
+            assert!(views.iter().all(|v| v.view.is_none()));
+            let kept_a = views[0].recycled.as_ref().unwrap();
+            assert_eq!(
+                (kept_a.code.as_str(), kept_a.starting_line_number),
+                (CODE_A, Some(41))
+            );
+            // The kept text is the section's own, CRLF included, not a re-serialised buffer.
+            assert_eq!(views[1].recycled.as_ref().unwrap().code, CODE_B);
+            // Nothing is left to drop a second time.
+            assert_eq!(
+                app.read(|ctx| recycle_embedded_editors(&mut views, &codes, ctx)),
+                0
+            );
+
+            let mut built = Vec::new();
+            let rebuilt = restore_embedded_editors(&mut views, |code, _language, line| {
+                built.push((code.to_string(), line));
+                snippet(&mut app, window, code, line)
+            });
+            assert_eq!(rebuilt, 2);
+            assert_eq!(
+                built,
+                vec![(CODE_A.to_string(), Some(41)), (CODE_B.to_string(), None)]
+            );
+            assert!(
+                views
+                    .iter()
+                    .all(|v| v.view.is_some() && v.recycled.is_none())
+            );
+            let rebuilt_a = views[0].view.clone().unwrap();
+            assert_eq!(text_of(&app, &rebuilt_a), CODE_A);
+            assert_eq!(
+                rebuilt_a.read(&app, |view, _| view.starting_line_number()),
+                Some(41)
+            );
+        });
+    }
+
+    #[test]
+    fn an_editor_without_its_section_text_is_kept() {
+        App::test((), |mut app| async move {
+            let window = init(&mut app);
+            let a = snippet(&mut app, window, CODE_A, None);
+            let mut views = vec![EmbeddedCodeEditorView::new(a, None, CODE_A.len())];
+            assert_eq!(
+                app.read(|ctx| recycle_embedded_editors(&mut views, &[], ctx)),
+                0
+            );
+            assert!(views[0].view.is_some());
+        });
+    }
+
+    #[test]
+    fn a_stream_update_after_a_recycle_rebuilds_with_the_new_text() {
+        App::test((), |mut app| async move {
+            let window = init(&mut app);
+            let a = snippet(&mut app, window, CODE_A, None);
+            let mut views = vec![EmbeddedCodeEditorView::new(a, None, CODE_A.len())];
+            let codes = vec![CODE_A.to_string()];
+            assert_eq!(
+                app.read(|ctx| recycle_embedded_editors(&mut views, &codes, ctx)),
+                1
+            );
+
+            let longer = format!("{CODE_A}fn more() {{}}\n");
+            let rebuilt = rebuild_recycled_for_stream(
+                &mut views[0],
+                &longer,
+                &None,
+                Some(3),
+                |code, _, line| snippet(&mut app, window, code, line),
+            );
+            assert!(rebuilt);
+            assert!(views[0].recycled.is_none());
+            assert_eq!(views[0].length, longer.len());
+            let view = views[0].view.clone().unwrap();
+            assert_eq!(text_of(&app, &view), longer);
+            assert_eq!(
+                view.read(&app, |view, _| view.starting_line_number()),
+                Some(3)
+            );
+
+            // An editor that is not recycled is left to the in-place update.
+            assert!(!rebuild_recycled_for_stream(
+                &mut views[0],
+                "x",
+                &None,
+                None,
+                |_, _, _| { panic!("a live editor must not be rebuilt") }
+            ));
+        });
+    }
+
+    #[test]
+    fn a_selected_focused_or_searching_editor_is_never_dropped() {
+        App::test((), |mut app| async move {
+            let window = init(&mut app);
+            let selected = snippet(&mut app, window, CODE_A, None);
+            let focused = snippet(&mut app, window, CODE_B, None);
+            let searching = snippet(&mut app, window, CODE_A, None);
+            let plain = snippet(&mut app, window, CODE_A, None);
+            selected.update(&mut app, |view, ctx| {
+                view.handle_action(&CodeEditorViewAction::SelectAll, ctx);
+            });
+            focused.update(&mut app, |view, ctx| view.focus(ctx));
+            searching.update(&mut app, |view, ctx| {
+                view.handle_action(&CodeEditorViewAction::ShowFindBar, ctx);
+            });
+            assert!(selected.read(&app, |view, ctx| view.holds_user_state(ctx)));
+            assert!(focused.read(&app, |view, ctx| view.holds_user_state(ctx)));
+            assert!(
+                searching.read(&app, |view, ctx| view.holds_user_state(ctx)),
+                "an open find bar is user state"
+            );
+            assert!(!plain.read(&app, |view, ctx| view.holds_user_state(ctx)));
+
+            let mut views = vec![
+                EmbeddedCodeEditorView::new(selected, None, CODE_A.len()),
+                EmbeddedCodeEditorView::new(focused, None, CODE_B.len()),
+                EmbeddedCodeEditorView::new(searching, None, CODE_A.len()),
+                EmbeddedCodeEditorView::new(plain, None, CODE_A.len()),
+            ];
+            let codes = vec![
+                CODE_A.to_string(),
+                CODE_B.to_string(),
+                CODE_A.to_string(),
+                CODE_A.to_string(),
+            ];
+            let dropped = app.read(|ctx| recycle_embedded_editors(&mut views, &codes, ctx));
+            assert_eq!(dropped, 1, "only the editor without user state goes");
+            assert!(views[..3].iter().all(|v| v.view.is_some()));
+            assert!(views[3].view.is_none());
+        });
+    }
+}

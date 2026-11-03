@@ -32,6 +32,7 @@ use warp_core::ui::appearance::Appearance;
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_editor::render::element::VerticalExpansionBehavior;
 use lsp::LspManagerModel;
+use warp_util::file::FileId;
 use warp_util::path::LineAndColumnArg;
 use warpui::elements::Rect;
 use warpui::text::point::Point;
@@ -387,23 +388,33 @@ impl CodeView {
     /// Drops every tab editor's own heavy state (laid-out paragraphs, syntax trees, highlight
     /// data) right now, so a closed pane's memory does not wait for every handle to its editor
     /// models to be dropped (#1407). The shared buffers are left to their `Weak` owners.
-    /// Returns whether a large editor was released, so the caller asks for the heap to be
-    /// trimmed afterwards.
-    fn release_tab_editors(&self, ctx: &mut ViewContext<Self>) -> bool {
-        let mut large = false;
+    /// Returns the files of the large editors released, so the caller asks for the heap to be
+    /// trimmed afterwards (and again when each of those buffers is really dropped).
+    fn release_tab_editors(&self, ctx: &mut ViewContext<Self>) -> Vec<FileId> {
+        let mut large = Vec::new();
         for tab in &self.tab_group {
-            large |= tab.editor_view.as_ref(ctx).is_large_buffer(ctx);
+            large.extend(Self::large_file_id(&tab.editor_view, ctx));
             tab.editor_view
                 .update(ctx, |local_editor, ctx| local_editor.release_memory(ctx));
         }
         large
     }
 
+    /// The file of `editor` when it holds a large buffer (a heap trim is worth it after closing it).
+    fn large_file_id(editor: &ViewHandle<LocalCodeEditorView>, ctx: &AppContext) -> Option<FileId> {
+        let editor = editor.as_ref(ctx);
+        if editor.is_large_buffer(ctx) {
+            editor.file_id()
+        } else {
+            None
+        }
+    }
+
     /// Has `GlobalBufferModel` unregister (file watcher, LSP document) buffers whose last handle
     /// was just dropped. See [`GlobalBufferModel::sweep_deallocated_buffers_when_idle`].
-    fn sweep_buffers_after_drop(trim: bool, ctx: &mut ViewContext<Self>) {
+    fn sweep_buffers_after_drop(trim_for: Vec<FileId>, ctx: &mut ViewContext<Self>) {
         GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
-            model.sweep_deallocated_buffers_when_idle(trim, ctx);
+            model.sweep_deallocated_buffers_when_idle(trim_for, ctx);
         });
     }
 
@@ -1695,9 +1706,9 @@ impl CodeView {
             }
         }
 
-        let mut large = false;
+        let mut large = Vec::new();
         if let Some(tab) = self.tab_group.get(index) {
-            large = tab.editor_view.as_ref(ctx).is_large_buffer(ctx);
+            large.extend(Self::large_file_id(&tab.editor_view, ctx));
             tab.editor_view
                 .update(ctx, |local_editor, ctx| local_editor.release_memory(ctx));
         }

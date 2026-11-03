@@ -320,6 +320,10 @@ pub struct CharOffsetEdit {
 pub struct GlobalBufferModel {
     location_to_id: BiMap<BufferLocation, FileId>,
     buffers: HashMap<FileId, InternalBufferState>,
+    /// Buffers a closing editor asked to trim the heap after (#1407). Its sweep can run before the
+    /// buffer is actually dropped (#1478), so the trim is repeated on THAT buffer's drop event,
+    /// when its own tree has really been freed.
+    trim_on_drop_of: HashSet<FileId>,
 }
 
 impl GlobalBufferModel {
@@ -349,6 +353,7 @@ impl GlobalBufferModel {
         Self {
             location_to_id: BiMap::new(),
             buffers: HashMap::new(),
+            trim_on_drop_of: HashSet::new(),
         }
     }
 
@@ -468,18 +473,25 @@ impl GlobalBufferModel {
     /// the caller returns, so a scan made inline still sees their buffers alive and leaves their
     /// file watcher and LSP document registered (#1407). Event-driven: the future completes on
     /// the next executor turn; there is no timer. A singleton, so the scan runs even when the
-    /// caller's own view has been dropped by then. With `trim`, the freed heap is then handed
-    /// back to the OS on a worker (the caller released a large editor).
+    /// caller's own view has been dropped by then. With a non-empty `trim_for` (the files of the
+    /// large editors the caller released), the freed heap is then handed back to the OS on a
+    /// worker, and again when each of those buffers is really dropped.
     pub fn sweep_deallocated_buffers_when_idle(
         &mut self,
-        trim: bool,
+        trim_for: Vec<FileId>,
         ctx: &mut ModelContext<Self>,
     ) {
+        let trim = !trim_for.is_empty();
+        self.trim_on_drop_of.extend(trim_for);
         ctx.spawn(async {}, move |me, _, ctx| {
             me.remove_deallocated_buffers(ctx);
+            // A FileId whose buffer is already unregistered will never see its drop event here
+            // (it was pruned above, or never loaded): forget it so the set cannot grow stale.
+            let registered = &me.buffers;
+            me.trim_on_drop_of.retain(|id| registered.contains_key(id));
             if trim {
                 ctx.background_executor()
-                    .spawn(async { crate::alloc::trim_free_memory() })
+                    .spawn(async { crate::alloc::trim_free_memory_timed("close") })
                     .detach();
             }
         });
@@ -489,7 +501,12 @@ impl GlobalBufferModel {
     /// that closes with it, so the sweep runs on the drop event itself. The idle sweep a closing
     /// pane requests can run before the editors are freed (#1478), leaving the weak entry
     /// registered. Event-driven; no timer.
-    fn watch_buffer_drop(&mut self, buffer: &ModelHandle<Buffer>, ctx: &mut ModelContext<Self>) {
+    fn watch_buffer_drop(
+        &mut self,
+        buffer: &ModelHandle<Buffer>,
+        file_id: FileId,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let (tx, rx) = async_channel::bounded::<()>(1);
         buffer.update(ctx, |buffer, _| buffer.set_drop_notifier(tx));
         log::debug!(
@@ -500,9 +517,20 @@ impl GlobalBufferModel {
         ctx.spawn_stream_local(
             rx,
             |_, _, _| {},
-            |me, ctx| {
+            move |me, ctx| {
                 log::debug!(target: "code::buffer_lifecycle", "buffer dropped; pruning");
                 me.remove_deallocated_buffers(ctx);
+                let trim = me.trim_on_drop_of.remove(&file_id);
+                log::debug!(
+                    target: "editor_memory",
+                    "editor_memory buffer_dropped file_id={file_id:?} registered={} trim={trim}",
+                    me.buffers.len(),
+                );
+                if trim {
+                    ctx.background_executor()
+                        .spawn(async { crate::alloc::trim_free_memory_timed("close") })
+                        .detach();
+                }
             },
         );
     }
@@ -1126,7 +1154,7 @@ impl GlobalBufferModel {
                 },
             },
         );
-        self.watch_buffer_drop(&buffer, ctx);
+        self.watch_buffer_drop(&buffer, file_id, ctx);
 
         // Unsubscribe any existing buffer subscription (e.g. from a previous path)
         // before subscribing with the new path.
@@ -1375,7 +1403,7 @@ impl GlobalBufferModel {
                 source,
             },
         );
-        self.watch_buffer_drop(&buffer, ctx);
+        self.watch_buffer_drop(&buffer, file_id, ctx);
 
         BufferState::new(file_id, buffer)
     }
@@ -1751,7 +1779,7 @@ impl GlobalBufferModel {
                 },
             },
         );
-        self.watch_buffer_drop(&buffer, ctx);
+        self.watch_buffer_drop(&buffer, file_id, ctx);
 
         #[cfg(feature = "local_tty")]
         {

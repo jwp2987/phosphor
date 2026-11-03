@@ -1280,7 +1280,11 @@ impl CLISubagentView {
     ) {
         match self.code_editor_views.get_mut(index) {
             Some(embedded_view) => {
-                embedded_view.view.update(ctx, |view, ctx| {
+                // A CLI subagent view never recycles its editors (#1267 is the AI block's).
+                let Some(handle) = embedded_view.view.clone() else {
+                    return;
+                };
+                handle.update(ctx, |view, ctx| {
                     // The language and starting line number may not be specified in the output for the first iteration.
                     // Only set the language/starting line number the first time that they are specified or if they change.
                     if embedded_view.language != *language {
@@ -1368,11 +1372,11 @@ impl CLISubagentView {
                     }
                     _ => {}
                 });
-                self.code_editor_views.push(EmbeddedCodeEditorView {
+                self.code_editor_views.push(EmbeddedCodeEditorView::new(
                     view,
-                    language: Default::default(),
-                    length: code.len(),
-                });
+                    Default::default(),
+                    code.len(),
+                ));
                 self.code_editor_buttons.push(Default::default());
             }
         }
@@ -1485,14 +1489,16 @@ impl CLISubagentView {
         source_view_id: Option<EntityId>,
         ctx: &mut ViewContext<Self>,
     ) {
-        for editor_view in self.code_editor_views.iter() {
+        for editor_view in self
+            .code_editor_views
+            .iter()
+            .filter_map(|e| e.view.as_ref())
+        {
             // Don't clear selections for the view that triggered this change.
-            if source_view_id.is_some_and(|entity_id| editor_view.view.id() == entity_id) {
+            if source_view_id.is_some_and(|entity_id| editor_view.id() == entity_id) {
                 continue;
             }
-            editor_view
-                .view
-                .update(ctx, |view, ctx| view.clear_selection(ctx));
+            editor_view.update(ctx, |view, ctx| view.clear_selection(ctx));
         }
 
         // If the event was dispatched by a nested view (i.e. code block),
@@ -1523,7 +1529,8 @@ impl CLISubagentView {
     pub fn selected_text(&self, ctx: &AppContext) -> Option<String> {
         self.code_editor_views
             .iter()
-            .find_map(|editor_view| editor_view.view.as_ref(ctx).selected_text(ctx))
+            .filter_map(|editor_view| editor_view.view.as_ref())
+            .find_map(|view| view.as_ref(ctx).selected_text(ctx))
             .or_else(|| self.selected_text.read().clone())
             .filter(|selection| !selection.is_empty())
     }

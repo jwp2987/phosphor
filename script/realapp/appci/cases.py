@@ -3539,94 +3539,394 @@ def editor_mem_file(path, kind, target_bytes):
             i += 1
 
 
+def mac_footprint_kib(pid):
+    """macOS: (phys_footprint, resident) of `pid` in KiB from libproc's proc_pid_rusage(RUSAGE_INFO_V0), or None. phys_footprint is the
+    figure Activity Monitor shows as Memory. `ps` RSS also counts pages malloc already freed (MADV_FREE_REUSABLE) until the kernel takes them
+    back, so it swings with system memory pressure: r18e4's Rust half read RSS -110 MB while a 7 MB file opened (#1607). rusage_info_v0:
+    uuid[16], then u64 user_time, system_time, pkg_idle_wkups, interrupt_wkups, pageins, wired_size, resident_size (offset 64),
+    phys_footprint (offset 72). The buffer is oversized so a newer struct version can never overrun it."""
+    import ctypes, struct
+    for name in (None, "/usr/lib/libSystem.B.dylib", "/usr/lib/system/libsystem_kernel.dylib"):
+        try:
+            fn = ctypes.CDLL(name).proc_pid_rusage
+        except (OSError, AttributeError):
+            continue
+        buf = ctypes.create_string_buffer(512)
+        try:
+            if fn(ctypes.c_int(int(pid)), ctypes.c_int(0), buf) != 0:
+                return None
+        except (TypeError, ValueError, OSError):
+            return None
+        resident, footprint = struct.unpack_from("<QQ", buf.raw, 64)
+        return footprint // 1024, resident // 1024
+    return None
+
+
+def mem_sample(ctx):
+    """{metric: MB} of the app process: 'rss' everywhere (Windows: working set), plus 'phys_footprint' on macOS when libproc answers
+    (see mac_footprint_kib). Owner 2026-11-03: on macOS BOTH are judged; either one over a budget fails the case."""
+    out = {"rss": ctx.app.cpu_ticks()[1] / 1024.0}
+    if ctx.be.name == "mac":
+        pid = ctx.app.pid()
+        fp = mac_footprint_kib(pid) if pid else None
+        if fp:
+            out["phys_footprint"] = fp[0] / 1024.0
+    return out
+
+
 def rss_mb(ctx):
-    return ctx.app.cpu_ticks()[1] / 1024.0
+    return mem_sample(ctx)["rss"]
 
 
 def settle_rss(ctx, quiet_s=3.0, timeout=150):
-    """wait until the app's RSS has stayed within +-2 MB for quiet_s seconds (file load is asynchronous and slow)"""
+    """wait until every memory figure has stayed within +-2 MB for quiet_s seconds (file load is asynchronous and slow); returns mem_sample"""
     t0 = time.time()
-    last, since = rss_mb(ctx), time.time()
+    last, since = mem_sample(ctx), time.time()
     while time.time() - t0 < timeout:
         time.sleep(0.75)
-        cur = rss_mb(ctx)
-        if abs(cur - last) > 2.0:
+        cur = mem_sample(ctx)
+        if any(abs(cur[k] - last.get(k, cur[k])) > 2.0 for k in cur):
             last, since = cur, time.time()
         elif time.time() - since >= quiet_s:
             break
-    return rss_mb(ctx)
+    return mem_sample(ctx)
+
+
+def mem_metrics(r, prefix, sample, base=None):
+    """record every figure of a mem_sample: <prefix>_mb (RSS, the historical name), <prefix>_<metric>_mb for the others, and *_delta_mb vs base"""
+    for k, v in sample.items():
+        name = "%s_mb" % prefix if k == "rss" else "%s_%s_mb" % (prefix, k)
+        r.metric(name, v)
+        if base is not None and k in base:
+            r.metric(name[:-3] + "_delta_mb", v - base[k])
+
+
+def mem_judge(r, sample, base, limit, what):
+    """one check per figure (owner: macOS judges RSS AND phys_footprint): `what % (delta, metric)` describes a failure"""
+    ok = True
+    for k, v in sample.items():
+        if k in base:
+            ok &= r.check(v - base[k] <= limit, what % (v - base[k], k))
+    return ok
+
+
+def editor_close(ctx, r):
+    """close the focused code pane; returns how ('key ...' / 'palette ...') or None when this platform has no usable way. APPCI_KEY_CLOSE first
+    (Linux/Windows ctrl+shift+w: PaneGroupAction::RemoveActive, `pane_group:close_current_session`). macOS has no usable chord (Phosphor's is
+    cmd-shift-W, which the frontmost-app guard refuses), so there the COMMAND palette (APPCI_KEY_CMD_PALETTE, mac cmd+p: CustomAction::CommandPalette
+    = cmd_or_ctrl_shift("p"); cmd+shift+p is the navigation palette) runs the SAME action by its palette name APPCI_CLOSE_PALETTE_TEXT
+    ('Close Current Session', app/i18n/en/warp.ftl keybinding-desc-pane-group-close-current-session). The caller proves a palette close by the
+    app's buffer_dropped log line (Return could have run a different item)."""
+    close = os.environ.get("APPCI_KEY_CLOSE", "ctrl+shift+w")
+    if close:
+        try:
+            ctx.be.key(close)
+            return "key " + close
+        except (RuntimeError, ValueError) as e:  # the macOS guard refuses some chords
+            r.note("close key %r refused by the backend (%s); trying the command palette" % (close, e))
+    pal = os.environ.get("APPCI_KEY_CMD_PALETTE", "")
+    text = os.environ.get("APPCI_CLOSE_PALETTE_TEXT", "Close Current Session")
+    if not pal or not text:
+        return None
+    try:
+        ctx.be.key(pal)
+        time.sleep(1.5)
+        ctx.be.type(text, 12)
+        time.sleep(1.2)
+        ctx.be.key("Return")
+    except (RuntimeError, ValueError) as e:
+        r.note("command palette close (%s, %r) refused by the backend: %s" % (pal, text, e))
+        ctx.be.key("escape")
+        return None
+    return "palette %s + %r" % (pal, text)
+
+
+def editor_open(ctx, palette, path):
+    ctx.be.key(palette)
+    time.sleep(1.5)
+    ctx.be.type(path, 12)
+    time.sleep(1.0)
+    ctx.be.key("Return")   # the keysym name every backend maps (wtype refused "enter": r18e0)
+
+
+def editor_mem_log(ctx, off):
+    """the app's own breakdown lines (target editor_memory, debug: app/src/code/editor/model.rs after_large_layout and the buffer-drop log in
+    global_buffer_model.rs) written since log offset `off`, as {'open': [dict...], 'dropped': [dict...]}"""
+    out = {"open": [], "dropped": []}
+    if not getattr(ctx, "log_path", None):
+        return out
+    for line in ctx.log_since(off).splitlines():
+        m = re.search(r"editor_memory (open|buffer_dropped) (.*)$", line)
+        if not m:
+            continue
+        kv = dict(re.findall(r"(\w+)=(\S+)", m.group(2)))
+        out["open" if m.group(1) == "open" else "dropped"].append({k: (int(v) if v.isdigit() else v) for k, v in kv.items()})
+    return out
+
+
+def ui_items(text):
+    """[(epoch_s, ms, kind)] of the app's `input_order hop=ui_item kind=<frame|event|action> ms=<ms> ... t=<epoch ms>` lines
+    (input_order::log_ui_item_if_over_budget: main-thread items at or over the 4 ms budget). Same regex as ui_item_audit, plus each line's t="""
+    out = []
+    for line in text.splitlines():
+        m = _UI_ITEM_RE.search(line)
+        t = re.search(r" t=(\d+(?:\.\d+)?)", line) if m else None
+        if m and t:
+            out.append((float(t.group(1)) / 1000.0, float(m.group(2)), m.group(1)))
+    return out
+
+
+def ui_window_max(items, t0, seconds=5.0, after_largest=False, t_end=None):
+    """(max ms, count >= 4 ms budget, skipped load-frame ms) over the UI items in [t0, min(t0 + seconds, t_end)]. after_largest: the window
+    starts after the largest item in that window (the load's own layout frame after an open). t_end bounds the window so items of a later phase
+    (the close) can neither enter it nor be taken for the load frame. A trim's own stall is judged separately (ui_trim_max), since it can be the
+    largest item."""
+    end = t0 + seconds if t_end is None else min(t0 + seconds, t_end)
+    xs = sorted(i for i in items if t0 <= i[0] <= end)
+    skipped = None
+    if after_largest and xs:
+        big = max(xs, key=lambda i: i[1])
+        skipped = big[1]
+        xs = [i for i in xs if i[0] > big[0]]
+    return (max((i[1] for i in xs), default=0.0), sum(1 for i in xs if i[1] >= UI_BUDGET_MS), skipped)
+
+
+_HEAP_TRIM_RE = re.compile(r"input_order hop=heap_trim why=(\w+) ms=(\d+(?:\.\d+)?)")
+
+
+def heap_trims(text):
+    """[(end epoch_s, ms, why)] of the app's `input_order hop=heap_trim why=<open|close> ms=<ms> t=<end>` lines (app/src/alloc.rs
+    trim_free_memory_timed: one per heap trim, logged when it finishes)"""
+    out = []
+    for line in text.splitlines():
+        m = _HEAP_TRIM_RE.search(line)
+        t = re.search(r" t=(\d+(?:\.\d+)?)", line) if m else None
+        if m and t:
+            out.append((float(t.group(1)) / 1000.0, float(m.group(2)), m.group(1)))
+    return out
+
+
+def ui_trim_max(items, trims, why, pad_s=0.25):
+    """max ms of the UI items (each logged when it ENDS) that ended while a `why` trim ran, or within pad_s after it: [end - ms, end + pad_s].
+    0.0 when none did (no UI item over 4 ms during the trim)"""
+    worst = 0.0
+    for end, ms, w in trims:
+        if w != why:
+            continue
+        lo, hi = end - ms / 1000.0, end + pad_s
+        worst = max([worst] + [i[1] for i in items if lo <= i[0] <= hi])
+    return worst
+
+
+UI_BUDGET_MS = 4.0     # owner perf budget: UI work <= 4 ms (warn 16)
+
+
+def editor_cycle_growth(close_mb):
+    """MB the post-close figure grew from the first open/close cycle to the last (#1407: 'repeated open/close grows to ~2 GB')"""
+    return (close_mb[-1] - close_mb[0]) if len(close_mb) >= 2 else 0.0
+
+
+def editor_wait_dropped(ctx, off, timeout=15.0):
+    """the buffer_dropped lines since `off`, waiting up to `timeout` for the first (the drop is event-driven but follows the close's effects)"""
+    t0 = time.time()
+    while True:
+        d = editor_mem_log(ctx, off)["dropped"]
+        if d or time.time() - t0 >= timeout:
+            return d
+        time.sleep(0.5)
+
+
+def editor_mem_relaunch(ctx, env):
+    """restart the app with `env` set ({} restores the default): Linux/Windows inherit os.environ, macOS gets the keys through
+    app.PASSTHROUGH_ENV. Returns whether the new instance reached a prompt."""
+    for k in ("PHOSPHOR_EDITOR_TRIM_AFTER_OPEN", "PHOSPHOR_HEAP_TRIM"):
+        os.environ.pop(k, None)
+    os.environ.update(env)
+    n = ctx.prompts()
+    ctx.snapshot_log()                # injector accounting spans the relaunch (r18e9)
+    ctx.app.stop()
+    time.sleep(1.0)
+    ctx.app.start()
+    up = ctx.until(lambda: ctx.prompts() > n, 90, step=0.5)
+    time.sleep(3)
+    ctx.reset()
+    return bool(up)
+
+
+def editor_trim_ab(ctx, r, palette, path):
+    """#1607 perf rule: UI-thread cost of the heap trims, A/B by relaunch. One open/close of the plain-text file per variant: default (trim on
+    close only), PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 (opt-in trim after the load) and PHOSPHOR_HEAP_TRIM=0 (no trim at all, the control for the
+    close-time trim, which is new on macOS). Per variant: the max hop=ui_item (main's log_ui_item_if_over_budget, items >= 4 ms; kind frame|event|action) in the 5 s after the load's layout frame and in the 5 s after the
+    close key, against the 4 ms budget. A trim variant fails only if it goes over the budget AND more than 1 ms over its control, so a build that
+    is already over budget there is reported (metrics, notes) without blaming the trim."""
+    if not getattr(ctx, "log_path", None):
+        r.note("trim A/B not run: no app log (hop=ui_item is read from it)")
+        return
+    variants = (("default", {}), ("trim_after_open", {"PHOSPHOR_EDITOR_TRIM_AFTER_OPEN": "1"}), ("no_trim", {"PHOSPHOR_HEAP_TRIM": "0"}))
+    res = {}
+    try:
+        for name, env in variants:
+            if not editor_mem_relaunch(ctx, env):
+                r.note("trim A/B %s: the relaunched app reached no prompt; A/B incomplete" % name)
+                break
+            off = ctx.log_size()
+            settle_rss(ctx)
+            t_open = time.time()
+            editor_open(ctx, palette, path)
+            settle_rss(ctx)
+            time.sleep(5.5)
+            t_close = time.time()
+            how = editor_close(ctx, r)
+            if not how:
+                r.note("trim A/B %s: no way to close the pane on this platform; A/B incomplete" % name)
+                break
+            time.sleep(5.5)
+            txt = ctx.log_since(off)
+            items, trims = ui_items(txt), heap_trims(txt)
+            if not items:
+                r.note("trim A/B %s: no hop=ui_item line (nothing over 4 ms, a build older than the ui_item hop, or input_order logging off)" % name)
+            o_max, o_over, load_ms = ui_window_max(items, t_open, after_largest=True, t_end=t_close)
+            c_max, c_over, _ = ui_window_max(items, t_close)
+            res[name] = dict(open_max_ms=o_max, open_over=o_over, load_frame_ms=load_ms, close_max_ms=c_max, close_over=c_over,
+                             trim_open_max_ms=ui_trim_max(items, trims, "open"), trim_close_max_ms=ui_trim_max(items, trims, "close"),
+                             trims=[(w, ms) for _, ms, w in trims], audit=ui_item_audit(txt))
+            ctx.reset()
+    finally:
+        if not editor_mem_relaunch(ctx, {}):
+            r.check(False, "trim A/B: the app reached no prompt after relaunching with the default environment")
+    r.metric("trim_ab", res)
+    if "trim_after_open" in res and not any(w == "open" for w, _ in res["trim_after_open"]["trims"]):
+        r.check(False, "trim A/B: PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1 logged no 'heap_trim why=open' (the opt-in trim did not run, or the build predates it)")
+    # each trim is judged by the UI items that ran DURING it, against the same phase of the variant without that trim
+    for name, ctrl, key, ctrl_key, what in (("trim_after_open", "default", "trim_open_max_ms", "open_max_ms", "the open trim"),
+                                           ("default", "no_trim", "trim_close_max_ms", "close_max_ms", "the close trim")):
+        if name not in res or ctrl not in res:
+            continue
+        got, base = res[name][key], res[ctrl][ctrl_key]
+        if base > UI_BUDGET_MS:
+            r.note("trim A/B: the control %s is itself over the %.0f ms UI budget after %s (%.1f ms)" % (ctrl, UI_BUDGET_MS, ctrl_key.split("_")[0], base))
+        r.check(not (got > UI_BUDGET_MS and got > base + 1.0), "trim A/B: %s put a %.1f ms UI item on screen while it ran (> %.0f ms budget; control %s: %.1f ms)" % (
+            what, got, UI_BUDGET_MS, ctrl, base))
 
 
 @case("editor_memory_7mb", modes=("terminal",), order=85, gui=True)
 def c_editor_mem(ctx, r):
-    """#1340 P5: open a generated 7 MB file in the code editor (command palette + absolute path), record RSS after open, close the
-    pane and record RSS after the undo-close grace window. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
-    7 MB Rust <= ~150 MB, memory released on close). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the
-    palette / close key sequence is platform specific: APPCI_KEY_PALETTE (default ctrl+shift+p; mac cmd+p) and APPCI_KEY_CLOSE
-    (default ctrl+shift+w; empty on macOS, where Phosphor's close shortcut cmd-shift-W is refused by the frontmost-app guard) override it. Needs the process RSS via ps (Linux, macOS)."""
+    """#1340 / #1607 / #1407: open a generated 7 MB file in the code editor (command palette + absolute path), record memory after open, close
+    the pane, record memory right after close and after the undo-close grace window, and repeat open/close APPCI_EDITOR_MEM_CYCLES times
+    (default 3, plain-text file only) to measure growth per cycle. Thresholds are the #1340 targets (7 MB plain text <= ~100 MB over baseline,
+    7 MB Rust <= ~150 MB, <= 60 MB held after close, APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB = 30 MB growth from the first to the last cycle).
+    Judged: RSS (Windows: working set) everywhere, and on macOS ALSO phys_footprint (owner 2026-11-03: either over a budget fails; both are
+    reported). A close through the command palette must be followed by the app's buffer_dropped log line. The app's own breakdown (log target
+    editor_memory: buffer tree, render tree, parked chunks, hydrated frames) is attached as metrics. Then the heap-trim UI A/B (editor_trim_ab;
+    APPCI_EDITOR_MEM_TRIM_AB=0 skips it). Skips (APPCI_EDITOR_MEM_STRICT=1: fails) when the file does not open, since the palette / close key
+    sequence is platform specific: APPCI_KEY_PALETTE (default ctrl+shift+p; mac cmd+p), APPCI_KEY_CLOSE (default ctrl+shift+w; empty on macOS)
+    and, where the close key is empty, APPCI_KEY_CMD_PALETTE + APPCI_CLOSE_PALETTE_TEXT (mac: cmd+p, 'Close Current Session')."""
     try:
-        rss_mb(ctx)
+        mem_sample(ctx)
     except Exception as e:  # noqa: BLE001 - no ps / no pid on this platform
-        r.skip("process RSS is not readable on this backend: %s" % e)
+        r.skip("process memory is not readable on this backend: %s" % e)
     palette = os.environ.get("APPCI_KEY_PALETTE", "ctrl+shift+p")
-    close = os.environ.get("APPCI_KEY_CLOSE", "ctrl+shift+w")   # empty: skip the close phase
     grace = float(os.environ.get("APPCI_UNDO_CLOSE_WAIT_S", "75"))   # general.undo_close.grace_period is 60 s
     strict = os.environ.get("APPCI_EDITOR_MEM_STRICT", "") not in ("", "0")
     limits = {"txt": float(os.environ.get("APPCI_EDITOR_MEM_TXT_MAX_MB", "100")), "rs": float(os.environ.get("APPCI_EDITOR_MEM_RS_MAX_MB", "150"))}
     close_max = float(os.environ.get("APPCI_EDITOR_MEM_CLOSE_MAX_MB", "60"))
+    growth_max = float(os.environ.get("APPCI_EDITOR_MEM_CYCLE_GROWTH_MAX_MB", "30"))
+    cycles = max(1, int(os.environ.get("APPCI_EDITOR_MEM_CYCLES", "3")))
     kinds = [k for k in os.environ.get("APPCI_EDITOR_MEM_KINDS", "txt,rs").split(",") if k in limits]
     size = int(float(os.environ.get("APPCI_EDITOR_MEM_MB", "7")) * 1024 * 1024)
     ctx.reset()
     opened_any = False
+    metrics = sorted(mem_sample(ctx))
+    r.metric("mem_metrics", metrics)
+    if len(metrics) > 1:
+        r.note("judged memory figures: %s (owner: each one is checked; macOS ps RSS also counts freed-but-reusable malloc pages)" % ", ".join(metrics))
+    ab_path = None
     for kind in kinds:
         path = os.path.join(ctx.W, "editor_mem_%s.%s" % (kind, "rs" if kind == "rs" else "txt"))
         editor_mem_file(path, kind, size)
+        n_cycles = cycles if kind == kinds[0] else 1
         base = settle_rss(ctx)
-        ctx.be.key(palette)
-        time.sleep(1.5)
-        ctx.be.type(path, 12)
-        time.sleep(1.0)
-        ctx.be.key("Return")   # the keysym name every backend maps (wtype refused "enter": r18e0)
-        opened = settle_rss(ctx)
-        delta = opened - base
-        ctx.shot("editor_mem_%s_open" % kind)
-        r.metric("%s_rss_base_mb" % kind, base)
-        r.metric("%s_rss_open_mb" % kind, opened)
-        r.metric("%s_rss_open_delta_mb" % kind, delta)
-        if delta < 8:
-            msg = "%s: RSS grew only %.1f MB after opening %s through the palette (%s): the file did not open; set APPCI_KEY_PALETTE" % (kind, delta, path, palette)
-            if strict:
-                r.check(False, msg)
-            else:
-                r.note("SKIPPED " + msg)
-            ctx.be.key("escape")
+        mem_metrics(r, "%s_rss_base" % kind, base)
+        opens, closes, how = [], [], None
+        for cyc in range(n_cycles):
+            off = ctx.log_size() if getattr(ctx, "log_path", None) else 0
+            pre = settle_rss(ctx) if cyc else base
+            editor_open(ctx, palette, path)
+            opened = settle_rss(ctx)
+            tag = kind if cyc == 0 else "%s_c%d" % (kind, cyc + 1)
+            ctx.shot("editor_mem_%s_open" % tag)
+            mem_metrics(r, "%s_rss_open" % tag, opened, pre)
+            grew = max(opened[k] - pre[k] for k in opened if k in pre)
+            if grew < 8:
+                msg = "%s: memory grew only %.1f MB after opening %s through the palette (%s): the file did not open; set APPCI_KEY_PALETTE" % (tag, grew, path, palette)
+                if strict:
+                    r.check(False, msg)
+                else:
+                    r.note("SKIPPED " + msg)
+                ctx.be.key("escape")
+                ctx.reset()
+                break
+            opened_any = True
+            opens.append(opened)
+            if cyc == 0:
+                mem_judge(r, opened, pre, limits[kind], "%s: opening a %d MB file cost %%.0f MB of %%s (> %.0f MB target)" % (kind, size >> 20, limits[kind]))
+            how = editor_close(ctx, r)
+            if not how:
+                r.note("%s: release on close NOT MEASURED: no close key and no command-palette close on this platform (APPCI_KEY_CLOSE / APPCI_KEY_CMD_PALETTE empty)" % kind)
+                ctx.reset()
+                break
+            time.sleep(1.0)
+            ctx.shot("editor_mem_%s_after_close" % tag)
+            dropped = editor_wait_dropped(ctx, off) if getattr(ctx, "log_path", None) else []
+            if how.startswith("palette") and getattr(ctx, "log_path", None) and not dropped:
+                r.check(False, "%s: the palette close dropped no buffer: Return ran a different palette item or the editor is still referenced (#1407)" % tag)
+            elif getattr(ctx, "log_path", None) and not dropped:
+                r.note("%s: no 'editor_memory buffer_dropped' line in the app log after close (the buffer may still be referenced, #1407)" % tag)
+            closed = settle_rss(ctx, quiet_s=4.0, timeout=60)
+            closes.append(closed)
+            mem_metrics(r, "%s_rss_closed_now" % tag, closed, base)
+            br = editor_mem_log(ctx, off)
+            if br["open"]:
+                r.metric("%s_app_breakdown_open" % tag, br["open"][-1])
+            if dropped:
+                r.metric("%s_app_buffer_dropped" % tag, dropped[-1])
             ctx.reset()
+        if not opens or not how:
             continue
-        opened_any = True
-        r.check(delta <= limits[kind], "%s: opening a %d MB file cost %.0f MB of RSS (> %.0f MB target)" % (kind, size >> 20, delta, limits[kind]))
-        if not close:
-            r.note("%s: release on close NOT MEASURED: no close key on this platform (APPCI_KEY_CLOSE empty; macOS: cmd-shift-W is refused by the guard). Only the open-cost half of this case is judged" % kind)
-            ctx.reset()
-            continue
-        try:
-            ctx.be.key(close)
-        except RuntimeError as e:  # the macOS guard refuses some chords
-            r.note("%s: close key %r refused by the backend (%s): release on close not measured" % (kind, close, e))
-            ctx.reset()
-            continue
+        r.metric("%s_close_method" % kind, how)
+        if n_cycles > 1 and len(closes) == n_cycles:
+            for k in sorted(closes[0]):
+                series = [c[k] for c in closes if k in c]
+                growth = editor_cycle_growth(series)
+                sfx = "" if k == "rss" else "_" + k
+                r.metric("%s_cycle_close%s_mb" % (kind, sfx), [round(x, 1) for x in series])
+                r.metric("%s_cycle_open%s_mb" % (kind, sfx), [round(o[k], 1) for o in opens if k in o])
+                r.metric("%s_cycle_growth%s_mb" % (kind, sfx), growth)
+                r.check(growth <= growth_max, "%s: %d open/close cycles grew the post-close %s by %.0f MB (> %.0f MB): %s" % (
+                    kind, n_cycles, k, growth, growth_max, ", ".join("%.0f" % x for x in series)))
         time.sleep(grace)
         after = settle_rss(ctx)
-        r.metric("%s_rss_close_mb" % kind, after)
-        r.metric("%s_rss_close_delta_mb" % kind, after - base)
+        mem_metrics(r, "%s_rss_close" % kind, after, base)
         ctx.shot("editor_mem_%s_closed" % kind)
-        r.check(after - base <= close_max, "%s: %.0f MB of RSS still held %.0f s after closing the editor (> %.0f MB over the pre-open baseline %.0f MB)" % (kind, after - base, grace, close_max, base))
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        mem_judge(r, after, base, close_max, "%s: %%.0f MB of %%s still held %.0f s after closing the editor (> %.0f MB over the pre-open baseline; close via %s)" % (
+            kind, grace, close_max, how))
+        if kind == "txt":
+            ab_path = path
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
         ctx.reset()
     if not opened_any and not strict:
         r.skip("the generated file never opened in the code editor on this backend (see notes)")
+    if ab_path and os.environ.get("APPCI_EDITOR_MEM_TRIM_AB", "1") not in ("", "0"):
+        editor_trim_ab(ctx, r, palette, ab_path)
+    if ab_path:
+        try:
+            os.remove(ab_path)
+        except OSError:
+            pass
     r.check(ctx.app.alive(), "app died during the editor memory case")
 
 

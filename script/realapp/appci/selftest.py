@@ -943,6 +943,81 @@ def r18e9_pty_write_cr_count():
 
 
 @check
+def editor_memory_breakdown_close_and_cycles():
+    """#1607/#1407: the editor_memory case parses the app's breakdown lines, computes cycle growth, never sends an empty close key, and the
+    macOS footprint reader degrades to None off macOS (no proc_pid_rusage)"""
+    tmp = tempfile.mkdtemp()
+    try:
+        log = os.path.join(tmp, "app.log")
+        with open(log, "w") as f:
+            f.write("noise\n2026 INFO editor_memory editor_memory open text_bytes=7340032 lines=92000 buffer_items=184001 parked_chunks=360 frame_bytes=1234\n"
+                    "2026 INFO editor_memory editor_memory buffer_dropped registered=0 trim=true\n")
+        c = _ctx(tmp, log_path=log)
+        br = cases.editor_mem_log(c, 0)
+        assert br["open"][0]["text_bytes"] == 7340032 and br["open"][0]["parked_chunks"] == 360, br
+        assert br["dropped"][0]["registered"] == 0 and br["dropped"][0]["trim"] == "true", br
+        assert cases.editor_mem_log(c, os.path.getsize(log)) == {"open": [], "dropped": []}
+        assert cases.editor_cycle_growth([100.0, 104.0, 131.0]) == 31.0 and cases.editor_cycle_growth([5.0]) == 0.0
+        if sys.platform != "darwin":
+            assert cases.mac_footprint_kib(os.getpid()) is None
+        # owner 2026-11-03: macOS judges BOTH figures; either one over the budget fails
+        r2 = cases.Result("t", "terminal")
+        assert not cases.mem_judge(r2, {"rss": 150.0, "phys_footprint": 90.0}, {"rss": 0.0, "phys_footprint": 0.0}, 100, "cost %.0f MB of %s")
+        assert r2.fails == ["cost 150 MB of rss"], r2.fails
+        r3 = cases.Result("t", "terminal")
+        assert not cases.mem_judge(r3, {"rss": 50.0, "phys_footprint": 130.0}, {"rss": 0.0, "phys_footprint": 0.0}, 100, "cost %.0f MB of %s")
+        assert r3.fails == ["cost 130 MB of phys_footprint"], r3.fails
+        r4 = cases.Result("t", "terminal")
+        assert cases.mem_judge(r4, {"rss": 50.0}, {"rss": 0.0}, 100, "x %.0f %s") and not r4.fails
+        cases.mem_metrics(r4, "txt_rss_open", {"rss": 120.0, "phys_footprint": 80.0}, {"rss": 20.0, "phys_footprint": 10.0})
+        assert r4.metrics["txt_rss_open_mb"] == 120.0 and r4.metrics["txt_rss_open_delta_mb"] == 100.0, r4.metrics
+        assert r4.metrics["txt_rss_open_phys_footprint_mb"] == 80.0 and r4.metrics["txt_rss_open_phys_footprint_delta_mb"] == 70.0, r4.metrics
+        # hop=ui_item: the open window starts after the load's own (largest) frame; the close window is plain
+        t = 1000.0
+        logtxt = "".join("x input_order hop=ui_item kind=%s ms=%.2f render_ms=0.50 layout_paint_ms=0.50 t=%.3f\n" % (w, ms, (t + dt) * 1000) for w, ms, dt in (
+            ("frame", 2.0, -1.0), ("frame", 250.0, 0.5), ("event", 3.0, 1.0), ("frame", 6.5, 2.0), ("action", 9.0, 8.0)))
+        items = cases.ui_items(logtxt)
+        assert len(items) == 5 and items[1][1] == 250.0 and items[1][2] == "frame", items
+        assert cases.ui_window_max(items, t, after_largest=True) == (6.5, 1, 250.0), cases.ui_window_max(items, t, after_largest=True)
+        assert cases.ui_window_max(items, t) == (250.0, 2, None), cases.ui_window_max(items, t)
+        assert cases.ui_window_max([], t) == (0.0, 0, None)
+        # a bigger item after t_close must not move the open window (r18 re-review)
+        later = items + [(t + 6.0, 900.0, "frame")]
+        assert cases.ui_window_max(later, t, after_largest=True, t_end=t + 5.5) == (6.5, 1, 250.0), cases.ui_window_max(later, t, after_largest=True, t_end=t + 5.5)
+        # heap trims: the UI items that ended during [end - ms, end + 0.25 s]
+        trim_log = "z input_order hop=heap_trim why=open ms=500.00 t=%.3f\nz input_order hop=heap_trim why=close ms=10.00 t=%.3f\n" % ((t + 2.1) * 1000, (t + 8.0) * 1000)
+        trims = cases.heap_trims(trim_log)
+        assert trims == [(t + 2.1, 500.0, "open"), (t + 8.0, 10.0, "close")], trims
+        assert cases.ui_trim_max(items, trims, "open") == 6.5            # the 6.5 ms frame at t+2.0 ended inside the open trim
+        assert cases.ui_trim_max(items, trims, "close") == 9.0           # the 9 ms action at t+8.0 ended at the close trim's end
+        assert cases.ui_trim_max(items, [], "open") == 0.0
+        assert cases.ui_item_audit(logtxt)["max_ms"] == 250.0 and cases.ui_items("input_order hop=ui_item what=frame ms=9 t=1") == []
+        sent = []
+        be = types.SimpleNamespace(key=lambda k: sent.append(k), type=lambda *a, **k: sent.append(("type", a)))
+        r = cases.Result("t", "terminal")
+        old = {k: os.environ.get(k) for k in ("APPCI_KEY_CLOSE", "APPCI_KEY_CMD_PALETTE")}
+        try:
+            os.environ["APPCI_KEY_CLOSE"], os.environ["APPCI_KEY_CMD_PALETTE"] = "", ""
+            assert cases.editor_close(types.SimpleNamespace(be=be), r) is None and sent == [], sent
+            os.environ["APPCI_KEY_CMD_PALETTE"] = "cmd+p"
+            orig_sleep, cases.time.sleep = cases.time.sleep, lambda s: None
+            try:
+                how = cases.editor_close(types.SimpleNamespace(be=be), r)
+            finally:
+                cases.time.sleep = orig_sleep
+            assert how and how.startswith("palette") and sent[0] == "cmd+p" and sent[-1] == "Return", (how, sent)
+            assert "" not in sent
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@check
 def pty_bytes_decide_where_a_line_changed():
     """#1490/#1393: line_evidence says app-side vs. after-the-pty-write from the app's own pty_write_bytes, never from typed_characters alone"""
     assert cases.unescape_rust_ascii('a\\x1b[200~b\\r\\n\\"q\\\\\\x10') == 'a\x1b[200~b\r\n"q\\\x10'
@@ -985,6 +1060,16 @@ def pty_bytes_decide_where_a_line_changed():
         assert "after the app's pty write" not in ev and "Phosphor wrote it that way" in ev, ev
     finally:
         shutil.rmtree(d)
+
+
+@check
+def agent_code_recycle_log_parse():
+    """#1267: the agent_code_recycle case reads the app's recycle / rebuild lines and builds the exact snippet lines it expects back"""
+    log = ("x DEBUG editor_memory editor_memory agent_code_recycled block=EntityId(42) dropped=12\n"
+           "y DEBUG editor_memory editor_memory agent_code_rebuilt block=EntityId(42) rebuilt=12\n")
+    assert ca.recycle_events(log) == [("recycled", "EntityId(42)", 12), ("rebuilt", "EntityId(42)", 12)], ca.recycle_events(log)
+    assert ca.snippet_lines("AB12", 3) == ["echo RCYAB12_01", "echo RCYAB12_02", "echo RCYAB12_03"]
+    assert "agent_code_recycle" in winmap.BOTH
 
 
 def main():

@@ -514,3 +514,135 @@ def c_agent_mode_switch(ctx, r):
         ctx.reset()
     r.metric("view_mode_trail", trail)
     r.check(ctx.log_view_mode() == start, "could not return to the %s view the case started in (log says %s): later cases would run in the wrong mode" % (start, ctx.log_view_mode()))
+
+
+# ---------------------------------------------------------------- #1267 recycled code-block editors: height / scroll stability, copy
+RECYCLE_RE = re.compile(r"editor_memory agent_code_(recycled|rebuilt) block=(\S+) (?:dropped|rebuilt)=(\d+)")
+
+
+def recycle_events(text):
+    """[(kind 'recycled'|'rebuilt', block id string, count)] of the app's debug lines (app/src/ai/blocklist/block.rs recycle_code_editors /
+    restore_code_editors, target editor_memory)"""
+    return [(m.group(1), m.group(2), int(m.group(3))) for m in RECYCLE_RE.finditer(text)]
+
+
+def snippet_lines(tok, n):
+    return ["echo RCY%s_%02d" % (tok, i) for i in range(1, n + 1)]
+
+
+def visible_snippets(ctx, tag, tok):
+    """the snippet indices whose token OCR reads on screen (None without an OCR engine)"""
+    t = ctx.ocr(tag)
+    if t is None:
+        return None
+    sq = _squash(t)
+    return sorted({int(m.group(1)) for m in re.finditer(r"rcy%s(\d\d)" % tok.lower(), sq)})
+
+
+@case("agent_code_recycle", order=50, gui=True)
+def c_agent_code_recycle(ctx, r):
+    """#1267, both modes: one answer with APPCI_RECYCLE_SNIPPETS (12) fenced code blocks, each one line `echo RCY<tok>_NN`, then
+    APPCI_RECYCLE_FILLERS (9) one-word answers push it more than 6 rich-content entries away, so its code-block editors are recycled (the app's
+    'editor_memory agent_code_recycled' line). Block navigation (APPCI_KEY_BLOCK_UP: ctrl+up, mac cmd+up = SelectBlockAbove) goes back to it until
+    it is rebuilt ('agent_code_rebuilt'). Checked: the recycle and the rebuild happen; the snippets visible on screen (OCR) and the screenshot do
+    not change across the rebuild (height / scroll stable; the hash is a metric, the OCR set the verdict); copying the selected answer
+    (APPCI_KEY_COPY: ctrl+shift+c, mac cmd+c) gives every snippet line exactly. Needs the CI model: the answer comes from it (there is no fake-model
+    path in the app, as for md_viewer_ai_answer), so a model that does not produce the snippets is a SKIP. The per-snippet Run / Copy buttons need a
+    mouse the harness does not drive: they are covered by the unit tests' plain-path reasoning only (block_tests.rs code_editor_recycling)."""
+    need_provider(ctx, r)
+    mac = ctx.be.name == "mac"
+    up = os.environ.get("APPCI_KEY_BLOCK_UP", "cmd+up" if mac else "ctrl+up")
+    copy = os.environ.get("APPCI_KEY_COPY", "cmd+c" if mac else "ctrl+shift+c")
+    n = int(os.environ.get("APPCI_RECYCLE_SNIPPETS", "12"))
+    fillers = int(os.environ.get("APPCI_RECYCLE_FILLERS", "9"))
+    tok = ctx.tok(4).upper()
+    want = snippet_lines(tok, n)
+    mark = ctx.cmd_mark()
+    off = ctx.log_size()
+    try:
+        prompt = ("Reply with exactly %d fenced bash code blocks and no other text. Code block number N contains only the single line "
+                  "echo RCY%s_NN where NN is N written with two digits, from 01 to %02d." % (n, tok, n))
+        type_fast(ctx, prompt)
+        if not wait_marker(ctx, off, "[byop] opening stream", timeout=60):
+            r.skip("the snippet prompt opened no model request in 60 s (routed elsewhere in %s mode, or no provider)" % ctx.mode)
+        if not settled(ctx, "rcy_answer", timeout=180):
+            r.skip("the snippet answer did not finish within 180 s")
+        first = visible_snippets(ctx, "rcy_answer_ocr", tok)
+        r.metric("snippets_visible_after_answer", first)
+        if first is not None and not first:
+            r.skip("the model's answer shows none of the RCY%s_NN snippets (model nondeterminism): nothing to recycle" % tok)
+        for i in range(fillers):
+            reqs = count_in_log(ctx, off, "[byop] opening stream")
+            type_fast(ctx, "Reply with just the word FILL%s%d and nothing else." % (tok, i))
+            if not wait_marker(ctx, off, "[byop] opening stream", n=reqs + 1, timeout=60):
+                r.skip("filler %d opened no model request in 60 s" % i)
+            settled(ctx, "rcy_fill", timeout=120)
+        ev = recycle_events(ctx.log_since(off))
+        recycled = [e for e in ev if e[0] == "recycled"]
+        r.metric("recycle_events_after_fillers", ev)
+        if not recycled:
+            r.check(False, "no 'editor_memory agent_code_recycled' line after %d later answers: the snippet answer's editors were never recycled "
+                           "(a build before #1267, PHOSPHOR_AGENT_CODE_EDITOR_RECYCLE=0, or the answer is not > 6 rich-content entries away)" % fillers)
+            return
+        block = recycled[0][1]
+        r.metric("recycled_editors", recycled[0][2])
+        # back to the snippet answer, one block at a time, until it is rebuilt
+        off2 = ctx.log_size()
+        rebuilt = False
+        vis_first = None      # the snippets on the first frame the answer is back on screen: still the RECYCLED plain rendering (review)
+        for _ in range(fillers + 6):
+            ctx.be.key(up)
+            time.sleep(0.6)
+            if vis_first is None:
+                v = visible_snippets(ctx, "rcy_nav_ocr", tok)
+                if v:
+                    vis_first = v
+            if any(e[0] == "rebuilt" and e[1] == block for e in recycle_events(ctx.log_since(off2))):
+                rebuilt = True
+                break
+        if not rebuilt:
+            r.check(False, "block navigation (%s) back to the snippet answer never rebuilt its editors (no 'agent_code_rebuilt block=%s')" % (up, block))
+            return
+        # stability across the rebuild: what is on screen right after it and once everything settled must be the same
+        time.sleep(0.4)
+        h0 = shot_hash(ctx, "rcy_rebuilt_now")
+        vis0 = visible_snippets(ctx, "rcy_rebuilt_now_ocr", tok)
+        settled(ctx, "rcy_rebuilt_settle", timeout=30)
+        h1 = shot_hash(ctx, "rcy_rebuilt_settled")
+        vis1 = visible_snippets(ctx, "rcy_rebuilt_settled_ocr", tok)
+        ctx.shot("rcy_rebuilt")
+        r.metric("rebuild_shot_stable", h0 == h1)
+        r.metric("snippets_visible_rebuilt", [vis0, vis1])
+        r.metric("snippets_visible_first_on_screen", vis_first)
+        if vis_first is not None and vis1 is not None:
+            # the plain -> editor swap (the height change #1267 risks) happens before vis0 is taken; compare across it
+            r.check(vis_first == vis1, "the visible snippets moved between the answer first coming on screen and after its rebuild settled "
+                                       "(the recycled plain rendering and the rebuilt editor differ in height): %s -> %s" % (vis_first, vis1))
+        if vis0 is None:
+            r.note("no OCR engine: rebuild stability is the screenshot hash only (%s)" % ("stable" if h0 == h1 else "changed"))
+            r.check(h0 == h1, "the screen changed after the rebuild of the recycled code blocks settled (height or scroll moved)")
+        else:
+            r.check(vis0 == vis1, "the visible snippets changed across the rebuild (height or scroll moved): %s -> %s" % (vis0, vis1))
+            if h0 != h1:
+                r.note("screenshot hash changed across the rebuild while the visible snippets did not (syntax colouring / cursor): %s" % vis1)
+        # copy the selected answer: every snippet line exactly
+        ctx.be.clip_set("")
+        ctx.be.key(copy)
+        time.sleep(0.8)
+        clip = ctx.be.clip_get()
+        clip = clip.decode(errors="replace") if isinstance(clip, bytes) else (clip or "")
+        lines = [l.strip() for l in clip.replace("\r\n", "\n").split("\n")]
+        missing = [w for w in want if w not in lines]
+        r.metric("copy_missing", missing)
+        if len(missing) == len(want):
+            r.unverifiable("the copy key (%s) put none of the snippets on the clipboard: the snippet answer was not the selected block, or the model "
+                           "wrote other snippets (clipboard %d bytes); copy across the rebuild is NOT verified" % (copy, len(clip)))
+        else:
+            r.check(not missing, "copying the rebuilt answer lost or changed snippet lines: missing %s" % missing)
+        r.check(not [c for c in ctx.cmds_since(mark) if "RCY" + tok in c], "snippet text reached the shell")
+    finally:
+        try:
+            ctx.be.key("escape")
+        except Exception:
+            pass
+        cleanup_tmp(ctx)

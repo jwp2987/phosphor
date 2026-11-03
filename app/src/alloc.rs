@@ -92,18 +92,101 @@ pub(crate) fn tune_glibc_malloc() {
     not(feature = "dhat_heap_profiling")
 ))]
 pub(crate) fn trim_free_memory() {
+    if !heap_trim_enabled() {
+        return;
+    }
     // SAFETY: `malloc_trim` is thread-safe and only releases memory glibc already considers free.
     let _ = unsafe { libc::malloc_trim(0) };
 }
 
-/// No-op off glibc: jemalloc and the other platforms' allocators return memory on their own.
-#[cfg(not(all(
-    target_os = "linux",
-    target_env = "gnu",
+/// macOS (#1607): the system allocator keeps freed tiny/small-region pages resident until memory
+/// pressure, so a file-sized transient (opening a 7 MB file) stays in the footprint after it is
+/// freed. `malloc_zone_pressure_relief(NULL, 0)` asks every zone to hand back all the free pages it
+/// can, the call the OS itself makes under memory pressure. Same callers and rules as the glibc
+/// arm: a worker thread, only after a large release.
+#[cfg(all(
+    target_os = "macos",
     not(feature = "jemalloc"),
     not(feature = "dhat_heap_profiling")
+))]
+pub(crate) fn trim_free_memory() {
+    unsafe extern "C" {
+        fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+    }
+    if !heap_trim_enabled() {
+        return;
+    }
+    // SAFETY: a null zone means "all zones"; the call only returns pages the allocator already
+    // considers free and is thread-safe (libmalloc takes each zone's lock).
+    let released = unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+    log::debug!(target: "editor_memory", "malloc_zone_pressure_relief released {released} bytes");
+}
+
+/// No-op elsewhere: jemalloc and the remaining platforms' allocators return memory on their own.
+#[cfg(not(any(
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "jemalloc"),
+        not(feature = "dhat_heap_profiling")
+    ),
+    all(
+        target_os = "macos",
+        not(feature = "jemalloc"),
+        not(feature = "dhat_heap_profiling")
+    )
 )))]
 pub(crate) fn trim_free_memory() {}
+
+/// [`trim_free_memory`] plus one `input_order hop=heap_trim why=<why> ms=<ms> t=<end>` line (only while
+/// input-order logging is on), so the appci editor_memory trim A/B can judge the UI items that ran
+/// DURING the trim (#1607). `why` is `open` (after a file-sized layout) or `close`.
+pub(crate) fn trim_free_memory_timed(why: &'static str) {
+    let start = std::time::Instant::now();
+    trim_free_memory();
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    warpui::input_order::log_hop("heap_trim", || format!("why={why} ms={ms:.2}"));
+}
+
+/// Kill switch for [`trim_free_memory`]: `PHOSPHOR_HEAP_TRIM=0` turns every heap trim off (close
+/// and open alike). Read once.
+#[allow(dead_code)]
+fn heap_trim_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag_enabled(std::env::var("PHOSPHOR_HEAP_TRIM").ok().as_deref()))
+}
+
+/// Opt-in for the trim after a large file was laid out in an editor (#1607):
+/// `PHOSPHOR_EDITOR_TRIM_AFTER_OPEN=1` enables it; unset keeps the open path as it was (trim on
+/// close only). Off by default because a trim takes the allocator's arena / magazine locks while it
+/// walks the heap, and a UI-thread allocation that waits on them is a stall nobody has measured
+/// yet; the appci editor_memory case A/Bs it (`hop=ui_item` maxima after open). Read once.
+pub(crate) fn trim_after_large_open_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        env_flag_opted_in(
+            std::env::var("PHOSPHOR_EDITOR_TRIM_AFTER_OPEN")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+/// A default-on switch: unset or anything but `0` / `false` / `off` means enabled.
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("0") | Some("false") | Some("off")
+    )
+}
+
+/// A default-off switch: only `1` / `true` / `on` enable it.
+fn env_flag_opted_in(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1") | Some("true") | Some("on")
+    )
+}
 
 /// Whether the user configured a malloc knob, either through its legacy environment variable or
 /// as `tunable` in the colon-separated `name=value` list of `GLIBC_TUNABLES`.
@@ -133,3 +216,29 @@ fn knob_set_by_user(legacy_var_set: bool, glibc_tunables: Option<&str>, tunable:
 ))]
 #[path = "alloc_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod switch_tests {
+    use super::{env_flag_enabled, env_flag_opted_in};
+
+    #[test]
+    fn trim_switches_default_on_and_turn_off_only_on_an_explicit_off() {
+        assert!(env_flag_enabled(None));
+        assert!(env_flag_enabled(Some("1")));
+        assert!(env_flag_enabled(Some("")));
+        assert!(!env_flag_enabled(Some("0")));
+        assert!(!env_flag_enabled(Some(" off ")));
+        assert!(!env_flag_enabled(Some("FALSE")));
+    }
+
+    #[test]
+    fn trim_after_open_is_opt_in() {
+        assert!(!env_flag_opted_in(None));
+        assert!(!env_flag_opted_in(Some("")));
+        assert!(!env_flag_opted_in(Some("0")));
+        assert!(!env_flag_opted_in(Some("yes please")));
+        assert!(env_flag_opted_in(Some("1")));
+        assert!(env_flag_opted_in(Some(" ON ")));
+        assert!(env_flag_opted_in(Some("true")));
+    }
+}

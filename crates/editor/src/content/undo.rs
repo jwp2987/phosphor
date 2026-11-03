@@ -332,6 +332,11 @@ impl UndoStack {
         self.initial_version = version;
     }
 
+    /// Number of undo entries held (memory accounting, #1607).
+    pub(super) fn len(&self) -> usize {
+        self.stack.len()
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.stack.is_empty()
     }

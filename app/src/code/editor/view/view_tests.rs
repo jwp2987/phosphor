@@ -21,7 +21,9 @@ use crate::{
 use super::{CodeEditorRenderOptions, CodeEditorView, CodeEditorViewAction};
 use warp_util::user_input::UserInput;
 
-fn initialize_editor(app: &mut App) -> (WindowId, ViewHandle<CodeEditorView>) {
+/// The settings and singleton models a `CodeEditorView` needs in a test app; shared with the AI
+/// block's code-block recycling tests (#1267).
+pub(crate) fn init_code_editor_test_singletons(app: &mut App) {
     initialize_settings_for_tests(app);
 
     // Add all required singleton models for EditorView dependencies
@@ -38,6 +40,10 @@ fn initialize_editor(app: &mut App) -> (WindowId, ViewHandle<CodeEditorView>) {
 
     // Add UserWorkspaces mock (required by EditorView)
     app.add_singleton_model(|ctx| UserWorkspaces::mock(vec![], ctx));
+}
+
+fn initialize_editor(app: &mut App) -> (WindowId, ViewHandle<CodeEditorView>) {
+    init_code_editor_test_singletons(app);
 
     let (window, editor_view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
         CodeEditorView::new(

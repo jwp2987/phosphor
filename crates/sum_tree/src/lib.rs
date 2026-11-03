@@ -31,6 +31,16 @@ impl<'a, T: Default> Dimension<'a, T> for () {
     fn add_summary(&mut self, _: &'a T) {}
 }
 
+/// Shape and allocation size of a [`SumTree`]; see [`SumTree::node_stats`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NodeStats {
+    pub leaves: usize,
+    pub internal_nodes: usize,
+    pub items: usize,
+    /// Bytes of all node allocations (`Arc` header + `Node<T>`), excluding heap owned by items.
+    pub node_bytes: usize,
+}
+
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum SeekBias {
     Left,
@@ -101,6 +111,33 @@ impl<T: Item> SumTree<T> {
             }
         }
         extent
+    }
+
+    /// Node and item counts of this tree plus the bytes its node allocations take (#1340/#1607
+    /// memory accounting). Every node is one `Arc<Node<T>>` allocation of fixed size, whatever its
+    /// fill, so `node_bytes` is exact for the tree itself; heap data owned *by* items (a `String`
+    /// inside `T`) is not included. Walks every node: call it for diagnostics, not per frame.
+    pub fn node_stats(&self) -> NodeStats {
+        let mut stats = NodeStats::default();
+        self.add_node_stats(&mut stats);
+        stats
+    }
+
+    fn add_node_stats(&self, stats: &mut NodeStats) {
+        // An `Arc` allocation is the two reference counts followed by the node.
+        stats.node_bytes += 2 * std::mem::size_of::<usize>() + std::mem::size_of::<Node<T>>();
+        match self.0.as_ref() {
+            Node::Internal { child_trees, .. } => {
+                stats.internal_nodes += 1;
+                for child in child_trees {
+                    child.add_node_stats(stats);
+                }
+            }
+            Node::Leaf { items, .. } => {
+                stats.leaves += 1;
+                stats.items += items.len();
+            }
+        }
     }
 
     pub fn summary(&self) -> T::Summary {
