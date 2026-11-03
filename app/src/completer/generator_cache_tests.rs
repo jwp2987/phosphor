@@ -558,3 +558,59 @@ fn config_stamp_covers_worktree_common_dir_config() {
     std::fs::remove_dir_all(&dir).ok();
     assert_ne!(before, after);
 }
+
+#[test]
+fn single_alias_lookup_name_accepts_only_plain_names() {
+    assert_eq!(
+        single_alias_lookup_name("git config --get alias.status"),
+        Some("status")
+    );
+    assert_eq!(
+        single_alias_lookup_name("git config --get alias.my-co_2"),
+        Some("my-co_2")
+    );
+    assert_eq!(single_alias_lookup_name("git config --get alias."), None);
+    assert_eq!(
+        single_alias_lookup_name("git config --get alias.alias.zz"),
+        None
+    );
+    assert_eq!(
+        single_alias_lookup_name("git config --get alias.--global"),
+        Some("--global")
+    );
+    assert_eq!(single_alias_lookup_name(ALL_ALIASES_SCRIPT), None);
+    assert_eq!(
+        single_alias_lookup_name("git config --get alias.co; rm -rf x"),
+        None
+    );
+}
+
+/// One listing answers every single-name lookup: a definition, the last of several, an absent
+/// alias, and the case-insensitive key git lower-cases.
+#[test]
+fn alias_listing_answers_single_lookups() {
+    let listing = "alias.co checkout\nalias.st status -sb\nalias.co checkout -q\n";
+    assert_eq!(
+        alias_from_listing(listing, "st"),
+        Some(Some("status -sb".to_owned()))
+    );
+    assert_eq!(
+        alias_from_listing(listing, "co"),
+        Some(Some("checkout -q".to_owned()))
+    );
+    assert_eq!(alias_from_listing(listing, "status"), Some(None));
+    assert_eq!(
+        alias_from_listing(listing, "ST"),
+        Some(Some("status -sb".to_owned()))
+    );
+    assert_eq!(alias_from_listing("", "co"), Some(None));
+}
+
+/// Anything the listing cannot answer faithfully falls back to the real lookup.
+#[test]
+fn alias_listing_declines_ambiguous_output() {
+    // Valueless definition.
+    assert_eq!(alias_from_listing("alias.x\n", "x"), None);
+    // Continuation line of a multi-line value.
+    assert_eq!(alias_from_listing("alias.x one\ntwo\n", "y"), None);
+}
