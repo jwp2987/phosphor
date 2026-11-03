@@ -147,7 +147,14 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
                 first_precmd_processed_for_test(view, ctx);
                 release_ssh_gate_for_test(view);
                 view.deliver_ssh_typeahead_if_ready("precmd", ctx);
-                // The inner prompt becomes visible before the drain continues.
+            });
+            // The inner prompt becomes visible while the drain is yielded after the `ssh other`
+            // Enter: in a SECOND consecutive update (no await between), so the effects of the
+            // first one (the Enter's ExecuteCommand, which arms the nested connect window) are
+            // applied before the prompt is observed, as in production, and the spawned drain
+            // continuation has not run yet. In one update the prompt was observed before the
+            // nested window existed and nothing observed it afterwards.
+            terminal.update(&mut app, |view, ctx| {
                 view.model.lock().process_bytes("inner$ ");
                 view.ssh_observe(ctx);
             });
@@ -159,6 +166,41 @@ fn nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell(
             }
             terminal.read(&app, |view, ctx| {
                 let writes = String::from_utf8_lossy(&pty_writes.borrow().concat()).into_owned();
+                if writes.matches("echo B").count() != 1 {
+                    // Tell a dropped line from one still queued (a stuck hand-over).
+                    let queued: Vec<String> = view
+                        .paste_queue
+                        .queue
+                        .peek()
+                        .entries()
+                        .filter_map(|entry| match &entry.kind {
+                            input_queue::EntryKind::Text(text) => Some(text.clone()),
+                            input_queue::EntryKind::Held { text, .. } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let buffer = view.input.as_ref(ctx).buffer_text(ctx);
+                    let still_queued = queued.iter().any(|text| text.contains("echo B"));
+                    let in_editor = buffer.contains("echo B");
+                    let ran_locally = executed.borrow().iter().any(|c| c.contains("echo B"));
+                    let verdict = if still_queued {
+                        "STILL QUEUED (the hand-over never ran: nothing observed the inner prompt \
+                         after the nested window was armed)"
+                    } else if in_editor || ran_locally {
+                        "WENT TO THE WRONG DESTINATION (editor / local run)"
+                    } else {
+                        "DROPPED: not queued, not written, not in the editor (possible #1575 \
+                         product bug: table row H4 StaleBeforePrompt dropping a queued Held line \
+                         after reset_ssh_typeahead)"
+                    };
+                    panic!(
+                        "echo B was written {} time(s), expected 1: {verdict}; writes={writes:?} \
+                         queued={queued:?} editor={buffer:?} executed={:?} holding={}",
+                        writes.matches("echo B").count(),
+                        executed.borrow(),
+                        view.ssh_typeahead_holding
+                    );
+                }
                 assert_eq!(writes.matches("echo B").count(), 1, "{writes:?}");
                 let at = writes.find("echo B").unwrap_or(0);
                 assert!(writes[at..].contains('\r'), "{writes:?}");
