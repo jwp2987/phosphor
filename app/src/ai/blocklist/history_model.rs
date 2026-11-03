@@ -434,9 +434,6 @@ impl BlocklistAIHistoryModel {
             .flatten()
     }
 
-    /// Returns the ids of every conversation cleared from `terminal_view_id`, or an empty
-    /// slice if none. Used by `QueuedQueryModel` to drop the queues of conversations cleared
-    /// via `ClearedConversationsInTerminalView` (whose event does not carry the ids).
     /// Moves `conversation_ids` from `from`'s live conversations to `to`'s, and `from`'s active
     /// conversation with them when it is one of them. Emits nothing: the conversations do not
     /// change, only which view owns them. A shell restarted in place (#1103) hands the dead
@@ -472,6 +469,9 @@ impl BlocklistAIHistoryModel {
         }
     }
 
+    /// Returns the ids of every conversation cleared from `terminal_view_id`, or an empty
+    /// slice if none. Used by `QueuedQueryModel` to drop the queues of conversations cleared
+    /// via `ClearedConversationsInTerminalView` (whose event does not carry the ids).
     pub fn cleared_conversation_ids_for_terminal_view(
         &self,
         terminal_view_id: EntityId,

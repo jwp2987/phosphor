@@ -5792,6 +5792,12 @@ impl PaneGroup {
             );
             return false;
         }
+        // `replace_pane` fails after detaching the replacement when the pane holds no tree slot,
+        // which would clear the conversations handed to it (and drop their queues). Refuse first.
+        if !self.panes.is_pane_in_tree(pane_id) {
+            log::warn!("Restart shell: pane {pane_id:?} is not in the pane tree");
+            return false;
+        }
         let LeafContents::Terminal(terminal_snapshot) = pane.snapshot(ctx) else {
             log::warn!("Restart shell: pane {pane_id:?} did not snapshot as a terminal");
             return false;
