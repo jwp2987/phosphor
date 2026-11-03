@@ -179,9 +179,11 @@ def set_setting(ctx, table, key, literal):
 # ---------------------------------------------------------------- (4) completions and history
 @case("ui_tab_menu", order=60)
 def c_tab_menu(ctx, r):
-    """Tab opens the completion menu on an ambiguous path (two candidates); Down + accept inserts EXACTLY one candidate, the Enter that
-    follows runs the completed line: the shell receives `echo TOK >> tc/menuzz_one.txt` or `..._two.txt` (never the bare prefix), the
-    token lands in exactly that one file and no file named like the prefix appears. Both the plain-Tab and the Down-then-accept path."""
+    """Tab on an ambiguous path (two candidates) completes the common prefix and opens the menu with NOTHING highlighted (#1452; owner
+    decision on #1610: keep it as built). tab_return: Tab then Return runs EXACTLY the typed line (`echo TOK >> tc/menuzz_`, as bash
+    does) once, the token lands in tc/menuzz_ and in no candidate. down_return: Tab, Down (highlights one candidate), Return accepts it
+    without running, the next Return runs exactly that candidate's full line once (an accepted completion ends in one space, which the
+    shell's history may keep); the token lands in that one file only and no prefix-named file appears."""
     d = os.path.join(ctx.W, "tc")
     for n in ("menuzz_one.txt", "menuzz_two.txt", "menuzz_"):
         try:
@@ -190,10 +192,9 @@ def c_tab_menu(ctx, r):
             pass
     for n in ("menuzz_one.txt", "menuzz_two.txt"):
         open(os.path.join(d, n), "w").close()
-    chosen = []
     for variant in ("tab_return", "down_return"):
-        try:                                       # #1610: a run of the uncompleted line creates tc/menuzz_, which would be an
-            os.remove(os.path.join(d, "menuzz_"))  # exact-match candidate #1 for the next variant
+        try:                                       # #1610: tab_return's line creates tc/menuzz_, which would be an exact-match
+            os.remove(os.path.join(d, "menuzz_"))  # candidate #1 for the next variant
         except FileNotFoundError:
             pass
         tok = ctx.tok(6).lower()
@@ -202,33 +203,37 @@ def c_tab_menu(ctx, r):
         ctx.be.key("Tab")
         time.sleep(0.6)
         ctx.shot("tabmenu_open_" + variant)
-        if variant == "down_return":
+        if variant == "tab_return":
+            ctx.be.key("Return")                   # nothing highlighted: runs the visible line
+            ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, 8)
+            time.sleep(0.4)
+            ran = ctx.cmds_since(mark)
+            typed = "echo %s >> tc/menuzz_" % tok
+            r.check(ran == [typed], "tab_return: shell received %r, expected exactly [%r] (Return with nothing highlighted runs the typed line, #1452)" % (ran, typed))
+            r.check(ctx.lines("tc/menuzz_")[-1:] == [tok], "tab_return: token missing from tc/menuzz_")
+            for f in ("one", "two"):
+                r.check(tok not in ctx.lines("tc/menuzz_%s.txt" % f), "tab_return: token in tc/menuzz_%s.txt (a candidate was applied)" % f)
+        else:
             ctx.be.key("Down")
             time.sleep(0.15)
-        ctx.be.key("Return")                       # accepts the selected menu item
-        time.sleep(0.8)
-        ran = ctx.cmds_since(mark)
-        if not ran:                                # the accept did not run the line: this Enter does
+            ctx.be.key("Return")                   # accepts the highlighted candidate, does not run
+            time.sleep(0.8)
+            r.check(ctx.cmds_since(mark) == [], "down_return: the accepting Return ran the line %r" % ctx.cmds_since(mark))
             ctx.be.key("Return")
-            r.metric("%s_enters" % variant, 2)
-        else:
-            r.metric("%s_enters" % variant, 1)
-        ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, 8)
-        time.sleep(0.4)
-        ran = ctx.cmds_since(mark)
-        want = ["echo %s >> tc/menuzz_one.txt" % tok, "echo %s >> tc/menuzz_two.txt" % tok]
-        r.check(len(ran) == 1 and ran[0] in want, "%s: shell received %r, expected exactly one of %r" % (variant, ran, want))
-        if ran and ran[0] in want:
-            f = "one" if ran[0] == want[0] else "two"
-            chosen.append(f)
-            other = "two" if f == "one" else "one"
-            r.check(ctx.lines("tc/menuzz_%s.txt" % f)[-1:] == [tok], "%s: token missing from tc/menuzz_%s.txt" % (variant, f))
-            r.check(tok not in ctx.lines("tc/menuzz_%s.txt" % other), "%s: token also in tc/menuzz_%s.txt" % (variant, other))
+            ctx.until(lambda: len(ctx.cmds_since(mark)) >= 1, 8)
+            time.sleep(0.4)
+            ran = ctx.cmds_since(mark)
+            full = {"one": "echo %s >> tc/menuzz_one.txt" % tok, "two": "echo %s >> tc/menuzz_two.txt" % tok}
+            exact = {line + sp: f for f, line in full.items() for sp in ("", " ")}
+            r.check(len(ran) == 1 and ran[0] in exact, "down_return: shell received %r, expected exactly one of %r" % (ran, sorted(exact)))
+            if len(ran) == 1 and ran[0] in exact:
+                f = exact[ran[0]]
+                other = "two" if f == "one" else "one"
+                r.metric("candidate_chosen", f)
+                r.check(ctx.lines("tc/menuzz_%s.txt" % f)[-1:] == [tok], "down_return: token missing from tc/menuzz_%s.txt" % f)
+                r.check(tok not in ctx.lines("tc/menuzz_%s.txt" % other), "down_return: token also in tc/menuzz_%s.txt" % other)
+            r.check(not os.path.exists(os.path.join(d, "menuzz_")), "down_return: a file named like the uncompleted prefix (tc/menuzz_) was created")
         ctx.reset()
-    r.check(not os.path.exists(os.path.join(d, "menuzz_")), "a file named like the uncompleted prefix (tc/menuzz_) was created: Enter ran the uncompleted line")
-    r.metric("candidates_chosen", ",".join(chosen))
-    if len(chosen) == 2 and chosen[0] == chosen[1]:
-        r.note("Down did not change the selected candidate (both runs chose %s); the menu may start with no selection or wrap: see shots/*tabmenu_open_*" % chosen[0])
 
 
 @case("ui_ghost_accept", order=61)

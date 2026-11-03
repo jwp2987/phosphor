@@ -510,7 +510,7 @@ The old "try the other injectors" diagnostic is now the delivery proof's job (VK
 
 **UI cases (`script/realapp/appci/cases_ui.py`, #1462; all full-tier, none in SMOKE, Linux + macOS python harness only).**
 Keys: Linux ctrl-shift-X, macOS cmd-X (`app/src/util/bindings.rs`). Every case verifies the shell's own `rec.log` and an effect file.
-- `ui_tab_menu`: Tab on an ambiguous path opens the menu; plain accept and Down+accept each make the shell receive exactly one of the two candidates' full command, token in that file only, no file named like the uncompleted prefix.
+- `ui_tab_menu`: Tab on an ambiguous path completes the common prefix and opens the menu with nothing highlighted (#1452; owner decision on #1610, keep as built). Tab then Return runs exactly the typed line once (token in `tc/menuzz_` only); Tab, Down, Return accepts one candidate without running, the next Return runs exactly that candidate's full command (one trailing space allowed), token in that file only, no prefix-named file.
 - `ui_ghost_accept`: type a prefix of an earlier command, Right (default binding) + instant Enter, fast and slow: the shell gets the full earlier command. End is probed and recorded (`end_key_accepts_ghost`), not failed.
 - `ui_ctrl_r`: Ctrl-R, a unique fragment, accept: the shell receives exactly the earlier command (one extra Enter allowed, both flows handled), effect file shows it ran twice.
 - `ui_palette`: palette opens ('Search for a command'), nonsense filter shows 'No results', 'split pane right' + Enter makes a new pane (new shell prompt in `prompt.log`), typing there is exact, `exit` closes it.
