@@ -2025,7 +2025,8 @@ proptest! {
 
     /// The password rule: a key stamped before the prompt is never delivered (to the prompt, a
     /// pty, an editor or a gate) while the prompt is up, and one at or after it is never dropped
-    /// for being early.
+    /// for being early. The one exemption (#1575): an input held for the connect reaching a
+    /// shell's prompt, which is never dropped by H4.
     #[test]
     fn a_key_stamped_before_the_prompt_is_never_delivered(i in arb_intent(), mut f in arb_facts(), prompt_gen in 1u64..8) {
         f.ssh = SshPhase::PromptUp { prompt_gen };
@@ -2036,10 +2037,16 @@ proptest! {
         // H1 (the choice card's hint) is asked before H4, for typed text and pastes only.
         let hint = matches!(i.class, Class::Typed | Class::Paste)
             && i.stamp.focus == FocusSnap::SshChoiceCard;
-        // An origin that is checked before the ssh rows.
+        // #1575 (bbfe42460, 83c451b97): an input HELD for the connect that reaches a SHELL's
+        // prompt (a nested ssh's inner shell) is that shell's, not a possible password: delivered.
+        // Live keys at a shell prompt, and held keys at a credential prompt, still drop.
+        let held_for_shell = i.origin == Origin::Held && f.ssh_prompt_is_shell;
         let plan = decide(&i, &f, None);
-        if judged && !hint && i.stamp.facts_gen < prompt_gen {
+        if judged && !hint && i.stamp.facts_gen < prompt_gen && !held_for_shell {
             prop_assert_eq!(plan.outcome, Outcome::Drop(DropWhy::StaleBeforePrompt));
+        } else if judged && !hint && held_for_shell {
+            prop_assert_ne!(plan.row, Row::H4);
+            prop_assert_ne!(plan.outcome, Outcome::Drop(DropWhy::StaleBeforePrompt));
         } else {
             prop_assert_ne!(plan.row, Row::H4);
         }
