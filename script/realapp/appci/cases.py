@@ -7,6 +7,7 @@ import hashlib, json, os, random, re, shutil, statistics, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lat  # noqa: E402
+import backend  # noqa: E402
 
 CASES = []
 # APPCI_TIER=smoke (CI tiers 'fix', docs/testing.md 'Test tiers'): the input-path cases a fix push needs, both modes, ~10 min per platform.
@@ -179,6 +180,8 @@ class Ctx:
         self._wrap_ctrlc(be)
         try:
             be.inject_log = os.path.join(run, "inject.log")
+            os.makedirs(os.path.join(run, "logs"), exist_ok=True)
+            backend.STDERR_LOG = os.path.join(run, "logs", "injector-stderr.log")      # r18d8: wtype/xdotool stderr is kept, not /dev/null
         except Exception:
             pass
         self.n = 0
@@ -451,16 +454,81 @@ class Ctx:
             return None
         return want in got
 
+    SSH_HOP_RE = re.compile(r"kh_iq_(?:hold|release)\b.*Q7_ssh_typeahead|kh_hold_(?:entry|exit)\b|ssh hold:|apply_block_completed_to_ssh_gate|hop=hand_route|kh_handover|handoff_commit")
+
+    def app_hop_lines(self, rx, since):
+        """[(wall_s or None, line)] of the app log lines (rotated chunks included, oldest first) matching `rx` whose t= is >= `since`"""
+        import glob
+        src = self.log_path
+        if not src:
+            return []
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        out = []
+        for f in parts:
+            try:
+                for l in open(f, errors="replace").read().splitlines():
+                    if rx.search(l):
+                        m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+                        t = float(m.group(1)) / 1000.0 if m else None
+                        if t is None or t >= since:
+                            out.append((t, re.sub(r"^\S+\s+", "", l)[:150]))
+            except OSError:
+                continue
+        return out
+
+    def ssh_app_hops(self, since, limit=10):
+        """the app's own ssh hold / hand-over lines since wall time `since` (Q7_ssh_typeahead hold+release, kh_hold_entry/exit, `ssh hold:` log lines, hand-over hops): the last `limit`"""
+        return [l for _t, l in self.app_hop_lines(self.SSH_HOP_RE, since)][-limit:]
+
+    def ssh_client_probe(self):
+        """r18d8: what the ssh CLIENT says for the same host alias, run now in the app's environment: exit status and the last stderr lines of `ssh -vv fake true`
+        (the app's own ssh runs in its pty, whose stderr nobody captured). The full text goes to logs/ssh-client-probe.txt."""
+        env = dict(os.environ, HOME=self.prof.home, PATH=os.path.join(self.prof.home, "bin") + os.pathsep + os.environ.get("PATH", os.defpath))
+        try:
+            p = subprocess.run(["ssh", "-vv", "fake", "true"], env=env, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
+            err, rc = p.stderr or "", p.returncode
+        except subprocess.TimeoutExpired as e:
+            err, rc = (e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")), "timeout(15 s)"
+        except OSError as e:
+            return "ssh client probe could not run: %s" % e
+        try:
+            os.makedirs(os.path.join(self.run, "logs"), exist_ok=True)
+            with open(os.path.join(self.run, "logs", "ssh-client-probe.txt"), "a") as f:
+                f.write("=== %s ssh -vv fake true: exit %s ===\n%s\n" % (time.strftime("%H:%M:%S"), rc, err))
+        except OSError:
+            pass
+        tail = [l.strip() for l in err.splitlines() if l.strip()][-3:]
+        return "ssh client probe exit %s: %s" % (rc, " | ".join(tail) or "(no stderr)")
+
     def ssh_diag(self):
-        """what the ssh test host saw, for a failing ssh case: the tail of sshd.log (connect / auth / session lines) and fakesshd's stderr"""
+        """what the ssh test host saw, for a failing ssh case: the tail of sshd.log (connect / auth / session lines, now LogLevel DEBUG1) and fakesshd's stderr;
+        since r18d8 also whether the test sshd was listening (port), a fresh ssh client probe (exit status + stderr tail), and the app's ssh hold / hand-over hops
+        of this case - so 'ssh did not give a remote shell' says WHY the next time."""
         out = []
         for name in ("sshd.log", "fakesshd.stderr"):
             p = os.path.join(self.run, "ssh", name)
             try:
-                tail = [l for l in open(p, errors="replace").read().splitlines() if l.strip()][-6:]
+                tail = [l for l in open(p, errors="replace").read().splitlines() if l.strip()][-8:]
             except OSError:
                 continue
             out.append("%s: %s" % (name, " | ".join(tail) if tail else "(empty)"))
+        try:
+            info = self.ssh or {}
+            port = info.get("port")
+            if port:
+                import socket
+                try:
+                    socket.create_connection(("127.0.0.1", port), 1.0).close()
+                    out.append("test sshd (%s) listening on 127.0.0.1:%d" % (info.get("kind"), port))
+                except OSError as e:
+                    out.append("test sshd (%s) NOT listening on 127.0.0.1:%d (%s)%s" % (info.get("kind"), port, e,
+                               "; process EXITED rc=%s" % info["popen"].poll() if info.get("popen") is not None and info["popen"].poll() is not None else ""))
+            if not self.win:
+                out.append(self.ssh_client_probe())
+            hops = self.ssh_app_hops(self.t_case0)
+            out.append("app ssh hops: " + (" | ".join(hops) if hops else "none logged since the case started"))
+        except Exception as e:      # diagnostics must never break the case
+            out.append("ssh diag extras failed: %r" % e)
         if getattr(self.prof, "ssh_hint", None):
             out.append("PROBE: " + self.prof.ssh_hint)
         return "; ".join(out) or "no ssh server log"
@@ -1415,15 +1483,95 @@ def c_ssh_nested(ctx, r):
     ctx.reset()
 
 
+class HangingTcpServer:
+    """A local TCP listener that ACCEPTS and never speaks (no SSH banner). `ssh` to it connects, then waits for the banner until its ConnectTimeout, then fails
+    with `Connection timed out during banner exchange`: an ssh that is provably still CONNECTING for ~ConnectTimeout seconds, and then fails (r18d8: the old
+    `.invalid` host could fail in tens of ms, before the first typed character, making 'ran locally' correct)."""
+    def __init__(self):
+        import socket
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(4)
+        self.srv.setblocking(False)
+        self.port = self.srv.getsockname()[1]
+        self.conns, self.accepted_at = [], []
+
+    def poll(self):
+        """accept anything pending; -> (connections accepted so far, connections still open: the peer (ssh) has not closed them)"""
+        import socket
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except (BlockingIOError, OSError):
+                break
+            c.setblocking(False)
+            self.conns.append(c)
+            self.accepted_at.append(time.time())
+        alive = 0
+        for c in self.conns:
+            try:
+                if c.recv(1, socket.MSG_PEEK) != b"":
+                    alive += 1          # the peer sent something: still a live conversation
+            except BlockingIOError:
+                alive += 1              # nothing to read and not closed: open
+            except OSError:
+                pass
+        return len(self.conns), alive
+
+    def close(self):
+        for c in self.conns + [self.srv]:
+            try:
+                c.close()
+            except OSError:
+                pass
+
+
+SSH_GATE_RX = re.compile(r"hop=kh_hold_(?:entry|exit)\b|hop=kh_iq_(?:hold|release)\b.*Q7_ssh_typeahead|ssh hold:")
+
+
 @case("ssh_failing_not_local", order=31, gui=True)
 def c_ssh_fail(ctx, r):
+    """#983/#1292: text typed while an ssh is CONNECTING and then FAILS is never run locally (the app hands it back unexecuted). The target is a local listener
+    that accepts and never speaks, so the ssh is provably still connecting (TCP accepted, connection open) when the line is typed and fails only after its
+    ConnectTimeout; the case checks that proof first (a harness failure if the ssh was not connecting), and logs the app's ssh gate state / release time next to
+    the first MUSTNOT key so a pass or a fail is unambiguous."""
     ctx.rm("sf.txt")
-    ctx.be.type("ssh -o ConnectTimeout=3 -o BatchMode=yes no-such-host.invalid", 12, enter=True)
-    time.sleep(0.15)
-    ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "MUSTNOT", "sf.txt"), 15, enter=True)
-    time.sleep(8)
-    r.check(not ctx.lines("sf.txt"), "line typed behind a FAILING ssh ran locally: %r" % ctx.lines("sf.txt"))
-    ctx.reset()
+    ct = 6
+    srv = HangingTcpServer()
+    try:
+        t_ssh = time.time()
+        ctx.be.type("ssh -p %d -o ConnectTimeout=%d -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 127.0.0.1" % (srv.port, ct), 12, enter=True)
+        ok = ctx.until(lambda: srv.poll()[0] >= 1, 8)
+        if not ok:
+            r.check(False, "HARNESS: the ssh never connected to the hanging listener on 127.0.0.1:%d within 8 s (no TCP accept): not a test of typing behind a connecting ssh" % srv.port)
+            ctx.reset()
+            return
+        time.sleep(0.3)
+        n, alive = srv.poll()
+        t_type = time.time()
+        connecting = alive >= 1
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "MUSTNOT", "sf.txt"), 15, enter=True)
+        t_typed = time.time()
+        n2, alive2 = srv.poll()
+        r.note("ssh_failing_not_local: ssh started %.2f s before the first MUSTNOT key; the hanging listener had accepted %d connection(s), %d still open when typing began and %d when it ended "
+               "(ConnectTimeout %d s)" % (t_type - t_ssh, n, alive, alive2, ct))
+        # wait for the ssh to fail (its connection closes), then give the hand-back time to land
+        ctx.until(lambda: srv.poll()[1] == 0, ct + 8)
+        t_failed = time.time()
+        time.sleep(6)
+        ev = ctx.app_hop_lines(SSH_GATE_RX, t_type - 0.5)
+        first = next(((t, l) for t, l in ev if t is not None and t >= t_type and "kh_hold_entry" in l), None)
+        rel = [(t, l) for t, l in ev if t is not None and ("kh_hold_exit" in l or "kh_iq_release" in l) and t >= t_type]
+        r.note("ssh gate at the first MUSTNOT key: %s; first gate release/exit after it: %s; ssh failed (connection closed) %.2f s after typing began; listener-side typing window %.2f s" % (
+            ("t=+%.3fs %s" % (first[0] - t_type, first[1]) if first else "no kh_hold_entry logged (app key trace off or rotated)"),
+            ("t=+%.3fs %s" % (rel[0][0] - t_type, rel[0][1]) if rel else "none logged"), t_failed - t_type, t_typed - t_type))
+        r.check(connecting, "HARNESS: the ssh connection was already closed when MUSTNOT was typed (not connecting): the case proves nothing; ssh gate: %s" % (first[1] if first else "n/a"))
+        r.check(not ctx.lines("sf.txt"), "line typed behind a FAILING ssh ran locally: %r (ssh was connecting when typed: %s; ssh gate at first key: %s)" % (
+            ctx.lines("sf.txt"), connecting, first[1] if first else "not logged"))
+    finally:
+        srv.close()
+        ctx.reset()
 
 
 # ---------------------------------------------------------------- perf
@@ -2311,11 +2459,37 @@ def keydown_audit(txt, dup_ms=2.0):
     return dict(count=len(ks), dups=dups)
 
 
+_KD_SEQ_RE = re.compile(r"input_order keydown key=(\S+) ctrl=(true|false) alt=(true|false) shift=(?:true|false) cmd=(true|false) t=\d+(?:\.\d+)? seq=(\d+)")
+_TYPED_SEQ_RE = re.compile(r"input_order typed_characters\b.* seq=(\d+)")
+_ENTER_HOP_RE = re.compile(r"input_order hop=enter_begin deferred=(\w+)")
+
+
+def key_event_audit(txt):
+    """What the app actually logs per injected key (r18d8 validation: the premise 'one plain keydown per character' is false). A physical key reaches the
+    app as a `keydown` (named keys, letters), as a `typed_characters` WITHOUT a keydown (wtype-typed symbols: the compositor delivers the text, not a key
+    event), or - for an Enter the input editor handles - as neither: only the `hop=enter_begin deferred=false` line. -> dict(count, keydown, typed_only,
+    enter_hops, enter_keydowns): count = distinct seq numbers of non-modifier keydowns (no ctrl/alt/cmd) and typed_characters events (a keydown and its
+    typed_characters share a seq), plus the Enter hops that have no keydown (an Enter that logs a keydown is not counted twice)."""
+    kd, enter_kd = set(), 0
+    for m in _KD_SEQ_RE.finditer(txt):
+        key, ctrl, alt, cmd, seq = m.groups()
+        if ctrl == "true" or alt == "true" or cmd == "true" or key.lower() in MODIFIER_KEYS:
+            continue
+        kd.add(int(seq))
+        if key.lower() in ("enter", "return", "kp_enter"):
+            enter_kd += 1
+    typed = {int(m.group(1)) for m in _TYPED_SEQ_RE.finditer(txt)}
+    hops = sum(1 for m in _ENTER_HOP_RE.finditer(txt) if m.group(1) != "true")
+    enter_only = max(hops - enter_kd, 0)
+    return dict(count=len(kd | typed) + enter_only, keydown=len(kd), typed_only=len(typed - kd), enter_hops=hops, enter_keydowns=enter_kd, enter_only=enter_only)
+
+
 @case("keydown_count", order=14, gui=True)
 def c_keydown_count(ctx, r):
     """#1159: N known lines typed at 12-30 ms/key (alternating plain typing and the injector's rollover, where it has one: ctx.be.roll = overlapping key-down/key-up on
-    macOS htype2 `r:`, the backend's own approximation elsewhere), then (1) the number of plain `input_order keydown` lines in the app log must equal the keys sent (every
-    character plus Enter), with no same-key repeat < 2 ms apart, and (2) the shell must have received every line exactly (effect file; rec.log where the pane has one).
+    macOS htype2 `r:`, the backend's own approximation elsewhere), then (1) the app's key events must equal the keys sent (every character plus Enter): a
+    plain `keydown`, or a `typed_characters` with no keydown (wtype-typed symbols), or - for an Enter the input editor handles, which logs no keydown - the
+    `hop=enter_begin` line (key_event_audit), with no same-key repeat < 2 ms apart, and (2) the shell must have received every line exactly (effect file; rec.log where the pane has one).
     Full tier only. A doubled keydown is an app/OS-delivery fault; a SHORT count with exact text would mean logging missed a key, a short count with wrong text is key loss."""
     if not ctx.log_path or not os.path.exists(ctx.log_path):
         r.skip("no app log at %s (set APPCI_APP_LOG): the keydown count is read from the app's input_order log" % ctx.log_path)
@@ -2345,15 +2519,20 @@ def c_keydown_count(ctx, r):
     ctx.until(lambda: len(ctx.lines(fname)) >= n, 20 + n * 0.5)
     time.sleep(1.0)
     got = ctx.lines(fname)
-    aud = keydown_audit(ctx.log_since(off))
+    logtxt = ctx.log_since(off)
+    aud = keydown_audit(logtxt)                 # dups: consecutive same-key keydowns < 2 ms apart
+    ev = key_event_audit(logtxt)               # count: what the app logs per key, whichever way it arrives (see key_event_audit)
+    aud["count"] = ev["count"]
     r.metric("keys_sent", sent)
-    r.metric("keydowns_logged", aud["count"])
+    r.metric("keydowns_logged", ev["keydown"])
+    r.metric("key_events_logged", ev)
     r.metric("injection", how)
     if aud["count"] == 0:
         r.check(False, "no `input_order keydown` line at all in %s for %d keys sent: input_order logging off, wrong log path, or the keys never reached the app" % (ctx.log_path, sent))
         return
-    r.check(aud["count"] == sent, "keydown count %d != keys sent %d (%+d): %s" % (aud["count"], sent, aud["count"] - sent,
-            "EXTRA keydowns (the #1159 doubled-delivery signature)" if aud["count"] > sent else "keydowns missing from the app log (lost before the app, or not logged)"))
+    r.check(aud["count"] == sent, "app key events %d != keys sent %d (%+d; %d keydown, %d typed_characters-only, %d Enter via enter_begin only): %s" % (
+            aud["count"], sent, aud["count"] - sent, ev["keydown"], ev["typed_only"], ev["enter_only"],
+            "EXTRA key events (the #1159 doubled-delivery signature)" if aud["count"] > sent else "keys missing from the app log (lost before the app)"))
     r.check(not aud["dups"], "same key pressed twice < 2 ms apart %d time(s): %s" % (len(aud["dups"]), aud["dups"][:5]))
     r.check(got == exp, "received text not exact: %d/%d lines; first mismatch %s" % (
         len(got), n, next(((a, b) for a, b in zip(exp + [None], got + [None]) if a != b), None)))

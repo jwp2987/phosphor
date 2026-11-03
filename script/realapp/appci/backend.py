@@ -48,7 +48,7 @@ class Backend:
         enters = [k for k in p["keys"] if k.lower() in ("return", "kp_enter")]
         ok = err is None
         rec = dict(n=len(self.calls), wall0=t0, wall1=t1, enters_want=len(enters), enters_posted=len(enters) if ok else 0,
-                   enter_wall=[t0] * len(enters) if ok else [], chars=p["chars"], special=["%s@%.3f" % (k, t0) for k in p["keys"]],
+                   enter_wall=[t0] * len(enters) if ok else [], chars=p["chars"], special=["%s@%.3f" % (k, t0) for k in p["keys"]], pastes=count_pastes(argv),
                    err=err, out=True, span_ms=(t1 - t0) * 1000, ref=bool(getattr(self, "guard_override", None)), tool=argv[0])
         self.calls.append(rec)
         if self.inject_log:
@@ -155,6 +155,33 @@ def is_modifier(name):
     return n in MODIFIER_KEYS
 
 
+def count_pastes(argv):
+    """How many paste chords (ctrl+v, ctrl+shift+v, shift+Insert) one injector invocation posts. A paste is ONE named key in the accounting
+    (parse_injector drops the modifiers) but the app logs no per-character key events for it, so injacct must not expect it (r18d8: the
+    paste-only rows read 'sent 14; app saw 0')."""
+    n = 0
+    if not argv:
+        return 0
+    if argv[0] == "wtype":
+        mods = set()
+        for i, t in enumerate(argv[:-1]):
+            nx = argv[i + 1]
+            if t == "-M":
+                mods.add(nx.lower())
+            elif t == "-m":
+                mods.discard(nx.lower())
+            elif t == "-k":
+                k = nx.lower()
+                if (k == "v" and "ctrl" in mods) or (k == "insert" and "shift" in mods):
+                    n += 1
+    elif argv[0] == "xdotool":
+        for t in argv[1:]:
+            parts = t.lower().split("+")
+            if len(parts) > 1 and ((parts[-1] == "v" and "ctrl" in parts[:-1]) or (parts[-1] == "insert" and "shift" in parts[:-1])):
+                n += 1
+    return n
+
+
 def parse_injector(argv):
     """What one wtype / xdotool invocation (xdotool may chain verbs) asks for: {"chars": n typed characters (a COUNT, never the text: typed text
     can be a password), "keys": [names of non-modifier keys pressed, in order]}. Modifier taps (the wtype priming Shift_L) are not keys (#1509)."""
@@ -220,14 +247,31 @@ def is_injector(argv):
     return bool(argv) and (argv[0] == "wtype" or (argv[0] == "xdotool" and len(argv) > 1 and argv[1] in ("type", "key", "keyup")))
 
 
+STDERR_LOG = None        # path of the injector stderr log (<run>/logs/injector-stderr.log), set by Ctx next to inject_log
+
+
+def _tail(txt, n=240):
+    txt = (txt or "").strip().replace("\n", " | ")
+    return txt[-n:]
+
+
 def _run(argv, **kw):
     inj = is_injector(argv)
     if inj:
         kw.setdefault("timeout", INJECT_TIMEOUT_S)
-    r = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
-    if inj and r.returncode != 0:      # was discarded: a failed injection made the case judge keys that were never typed (#1508)
-        raise RuntimeError("key injector failed: %s exit %d" % (argv[0], r.returncode))
-    return r
+        # r18d8: stderr went to /dev/null, so 'wtype exit 1' had no cause. Keep it: in the log next to inject.log and in the error text.
+        r = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **kw)
+        err = (r.stderr or b"").decode("utf-8", "replace")
+        if err.strip() and STDERR_LOG:
+            try:
+                with open(STDERR_LOG, "a") as f:
+                    f.write("%.3f %s exit=%d: %s\n" % (time.time(), argv[0], r.returncode, _tail(err, 600)))
+            except OSError:
+                pass
+        if r.returncode != 0:      # was discarded: a failed injection made the case judge keys that were never typed (#1508)
+            raise RuntimeError("key injector failed: %s exit %d%s" % (argv[0], r.returncode, (" (stderr: %s)" % _tail(err)) if err.strip() else " (no stderr)"))
+        return r
+    return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
 
 
 class WaylandBackend(Backend):
@@ -394,6 +438,64 @@ class WaylandBackend(Backend):
 
     def noop(self):
         self._wtype(["-M", "shift", "-m", "shift"], prime=False)
+
+    # ---- injector health (r18d8): the persistent virtual keyboard holder (#1414) is checked before every case. A dead holder means every wtype
+    # call is a keyboard-per-call again (first key lost) - that is the INJECTOR's fault and must never read as app key loss.
+    health_events = None
+    _holder = None
+    _kbd_baseline = None
+
+    def _keyboards(self):
+        """number of keyboard inputs sway sees, or None when swaymsg cannot say"""
+        try:
+            r = subprocess.run(["swaymsg", "-t", "get_inputs"], capture_output=True, timeout=10)
+            return sum(1 for i in json.loads(r.stdout) if i.get("type") == "keyboard")
+        except Exception:
+            return None
+
+    def _run_dir(self):
+        return os.path.dirname(self.inject_log) if self.inject_log else None
+
+    def check_injector(self):
+        """Called before each case. persistent mode only. Records 'injector died: <stderr tail>' in self.health_events (drained into the case detail by
+        run.py) and restarts the holder."""
+        if self.health_events is None:
+            self.health_events = []
+        if self.injector_mode != "persistent":
+            return
+        n = self._keyboards()
+        if n is None:
+            return
+        if self._kbd_baseline is None:
+            self._kbd_baseline = max(n, 1)
+        if n >= self._kbd_baseline and (self._holder is None or self._holder.poll() is None):
+            return
+        rd = self._run_dir()
+        tails = []
+        for f in ((os.path.join(rd, "..", "kbd-holder.log") if rd else None), os.path.join(rd, "logs", "kbd-holder-restart.log") if rd else None, STDERR_LOG):
+            try:
+                if f:
+                    tails.append("%s: %s" % (os.path.basename(f), _tail(open(f, errors="replace").read()) or "(empty)"))
+            except OSError:
+                pass
+        ev = "injector died: sway sees %d keyboard input(s), expected >= %d; %s" % (n, self._kbd_baseline, "; ".join(tails) or "no stderr available")
+        try:
+            os.makedirs(os.path.join(rd, "logs"), exist_ok=True)
+            self._holder = subprocess.Popen(["wtype"] + ["-s", "1000000"] * 40, stdout=subprocess.DEVNULL, start_new_session=True,
+                                            stderr=open(os.path.join(rd, "logs", "kbd-holder-restart.log"), "a"))
+            time.sleep(1.0)
+            n2 = self._keyboards()
+            ev += "; restarted holder pid %d (sway now sees %s keyboard(s), holder %s)" % (self._holder.pid, n2, "alive" if self._holder.poll() is None else "EXITED again")
+            import atexit
+            atexit.register(lambda h=self._holder: h.poll() is None and h.terminate())      # exact handle, not by name
+        except Exception as e:
+            ev += "; restart failed: %r" % e
+        self.health_events.append(ev)
+        print("[injector] " + ev, flush=True)
+
+    def drain_health(self):
+        ev, self.health_events = self.health_events or [], []
+        return ev
 
     def clip_set(self, data):
         if isinstance(data, str):

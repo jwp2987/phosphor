@@ -631,6 +631,30 @@ loss is prefixed `WARN loss case` so it is read next to the case's own verdict. 
 key codes only) and `enter_route.py` prints `ALL KEYS: injector sent N; macOS delivered M to Phosphor, K to other processes; never in macOS L`.
 Windows keeps its stronger `SendInput` accepted-count record.
 
+**Accounting accuracy (r18d8 validation).** (1) An Enter the input editor handles logs NO `keydown key=enter`; its app-side evidence is `hop=enter_begin
+deferred=false` (`terminal/input.rs`), so `app saw` and `Enter: ... app saw` now add those hops (a `deferred=true` re-run is not a new key; an Enter that
+went to the pty logs the keydown instead, the two are disjoint). Before this every row read "Enter: app saw 0" and `lost-before-app` was inflated by the Enter
+count. (2) A paste chord (ctrl+v, ctrl+shift+v, shift+Insert) posts no per-character keys: it is not counted in `sent`, and a paste-only call reads `injector
+posted N paste chord(s) ...: per-key accounting n/a` instead of "saw 0". (3) `keydown_count` counts what the app logs per injected key (`cases.key_event_audit`):
+a `keydown`, or a `typed_characters` with no keydown (wtype-typed symbols), or an editor Enter's `enter_begin` hop; the failure text splits the three. It still
+fails on a real loss or on an extra/doubled key. (4) Injector health (Wayland): `wtype` stderr is kept in `<run>/logs/injector-stderr.log` and quoted in the
+`key injector failed: wtype exit N (stderr: ...)` error; before every case `WaylandBackend.check_injector` verifies the persistent keyboard holder (#1414) is
+still there (sway's keyboard-input count; the holder's own log `<out>/kbd-holder.log`), and if not it restarts one (stderr in `logs/kbd-holder-restart.log`) and
+adds the note `injector died: ... (key loss in this case is the INJECTOR's, not the app's)` to the case, so a dead injector is never read as app key loss.
+
+**`ssh_failing_not_local` (r18d8).** The target is a local TCP listener that accepts and never speaks (`cases.HangingTcpServer`), so the ssh is provably still
+CONNECTING (TCP accepted, connection open; ConnectTimeout 6 s) when `MUSTNOT` is typed and fails only afterwards (`Connection timed out during banner
+exchange`). The old `.invalid` host could fail in tens of ms, before the first typed key, when running the line locally is correct. The case fails as a HARNESS
+problem if the ssh was not connecting at that moment, and notes the app's `kh_hold_entry` line for the first MUSTNOT key (`holding=...`, `gate_drops=...`), the
+first `kh_hold_exit` / `kh_iq_release Q7_ssh_typeahead` after it and the time the ssh failed. The enforced claim: text typed while an ssh connects and then
+fails is NEVER run locally (handed back unexecuted, #983/#1292).
+
+**ssh cases with no remote shell (r18d8).** `ssh_connect_typing`, `ssh_nested_typeahead`, `remote_session_*` and `latency_enter_ssh` quote `ctx.ssh_diag()` on a
+missing remote shell: the last 8 `sshd.log` lines (the test sshd now runs `LogLevel DEBUG1`, so connection/auth/session lines exist; an empty log means ssh never
+reached it), whether the test sshd was listening on its port (and its exit code if not), a fresh `ssh -vv fake true` client probe in the app's environment (exit
+status and stderr tail; full text in `logs/ssh-client-probe.txt`), and the app's ssh hold / hand-over hops of the case (`kh_iq_hold/release Q7_ssh_typeahead`,
+`kh_hold_entry/exit`, `ssh hold:` lines). Pass criteria are unchanged.
+
 **Where a Return went (Mac, `ktap` + `enter_route.py`, #1482).** For the whole Mac run, `script/realapp/mac/tools/ktap.swift` (compiled at job
 start like htype2) sits at the *annotated* session event tap, where macOS has already chosen the target process, and logs each Return
 keyDown/keyUp (key code, the event's own timestamp, target and source PID; never characters), passing every event through unchanged. After the

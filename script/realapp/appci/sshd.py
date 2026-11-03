@@ -84,9 +84,11 @@ def start(prof, run):
         open(conf, "w").write("\n".join([
             "Port %d" % port, "ListenAddress 127.0.0.1", "HostKey %s/hostkey" % d, "PidFile %s/sshd.pid" % d,
             "AuthorizedKeysFile %s/authorized_keys" % d, "PasswordAuthentication no", "KbdInteractiveAuthentication no",
-            "UsePAM no", "StrictModes no", "PubkeyAuthentication yes", "ForceCommand " + force, "LogLevel ERROR",
+            "UsePAM no", "StrictModes no", "PubkeyAuthentication yes", "ForceCommand " + force, "LogLevel DEBUG1",
             "PermitTTY yes", "X11Forwarding no", ""]))
         log = open(os.path.join(d, "sshd.log"), "w")
+        # r18d8: LogLevel DEBUG1 (was ERROR) so an ssh case that gets no remote shell leaves the connection/auth/session lines in sshd.log
+        # (an empty sshd.log could not tell 'ssh never reached sshd' from 'connected, then no shell')
         p = subprocess.Popen([sshd, "-D", "-e", "-f", conf], stdout=log, stderr=log, start_new_session=True)
         for _ in range(50):
             try:
