@@ -7871,6 +7871,8 @@ fn test_enter_on_oversized_buffer_waits_for_its_background_verdict_and_runs_the_
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
+        // The real app registers the classifier at startup; the over-cap job reads it (#1604).
+        ensure_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
@@ -7965,6 +7967,8 @@ fn test_enter_on_20k_char_paste_is_classified_without_a_parse_and_never_swallowe
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
+        // The real app registers the classifier at startup; the over-cap job reads it (#1604).
+        ensure_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
@@ -8059,6 +8063,8 @@ fn test_second_enter_after_a_give_up_on_an_over_cap_shell_line_runs_it_in_the_sh
     App::test((), |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
+        // The real app registers the classifier at startup; the over-cap job reads it (#1604).
+        ensure_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
@@ -13774,22 +13780,29 @@ fn test_paste_then_held_enter_classifies_the_pasted_line() {
     });
 }
 
-/// #1590: a ready paste (the text already read, nothing queued) with an Enter applied in the
-/// same update, before the editor's `Edited` event could request detection: the Enter must still
-/// wait for the pasted line's verdict. A shell line runs in the shell (no agent request), prose is
-/// not run by the shell.
-///
-/// #1604: the same for text over the former 4096-byte caps (the prefilter's, the parse cap's
-/// abandon and the 16 KiB #968 cap), which used to send every over-size shell command to the
-/// agent in agent mode. A 5400-byte shell line and a 5000-byte 40-line script (under the 50-line
-/// confirmation threshold) each run in the shell exactly once with no agent request; 5000 bytes
-/// of prose go where the short prose goes, to the agent, and never to the shell. Over-size text
-/// is classified by the background job the Enter starts, which the Enter waits for.
-#[test]
-fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
-    App::test((), |mut app| async move {
+/// What one ready-paste-then-Enter run observed (see [`ready_paste_then_enter_run`]).
+struct ReadyPasteOutcome {
+    executed: Vec<String>,
+    ai_queries: usize,
+    input_type: InputType,
+    last_enter_submitted_ai_query: bool,
+    released: bool,
+}
+
+/// One #1590 ready-paste run in a fresh app: the agent's input (AI, unlocked, its explicit-write
+/// window long past), a paste whose text is already read lands and the Enter is applied in the
+/// same update, then the verdict is given time to land. Each case gets its own app: an agent
+/// request made by an earlier case (prose) is still in progress for seconds in this harness (no
+/// provider: it retries), and while it is the input is that agent's steer box (#851), where
+/// nothing is classified -- a later case would test steering, not classification.
+fn ready_paste_then_enter_run(text: String) -> ReadyPasteOutcome {
+    let result = Rc::new(RefCell::new(None));
+    let sink = result.clone();
+    App::test((), move |mut app| async move {
         let _am_flag = FeatureFlag::AgentMode.override_enabled(true);
         initialize_app(&mut app);
+        // The real app registers the classifier at startup; the over-cap job reads it (#1604).
+        ensure_input_classifier_for_test(&mut app);
         AISettings::handle(&app).update(&mut app, |ai_settings, ctx| {
             let _ = ai_settings
                 .ai_autodetection_enabled_internal
@@ -13816,96 +13829,118 @@ fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
                 });
             });
         }
-        let long_shell_line = format!("echo {}; echo PASTE-LONG-END", "PASTE-G1 ".repeat(600));
-        assert!(long_shell_line.len() > 5000 && !long_shell_line.contains('\n'));
-        let long_script = vec![format!("echo {}; echo PASTE-H1", "PASTE-G1 ".repeat(12)); 40]
-            .join("\n");
-        assert!(long_script.len() > 4096 && long_script.lines().count() == 40);
-        let long_prose = "please explain why the build failed ".repeat(140);
-        assert!(long_prose.len() > 5000);
-        let cases = [
-            ("echo PASTE-G1; echo PASTE-H1".to_owned(), true),
-            ("please explain why the build failed".to_owned(), false),
-            (long_shell_line, true),
-            (long_script, true),
-            (long_prose, false),
-        ];
-        for (text, runs_in_shell) in cases {
-            executed.borrow_mut().clear();
-            *ai_queries.borrow_mut() = 0;
-            input.update(&mut app, |input, ctx| {
-                input.clear_buffer_and_reset_undo_stack(ctx);
-                input.last_enter_submitted_ai_query = false;
-                input.ai_input_model().update(ctx, |ai_input, ctx| {
-                    ai_input.set_input_config(
-                        InputConfig {
-                            input_type: InputType::AI,
-                            is_locked: false,
-                        },
-                        true, /* is_input_buffer_empty */
-                        ctx,
-                    );
-                });
-            });
-            warpui::r#async::Timer::after(Duration::from_millis(400)).await;
-            // The paste lands and the Enter is applied in the same update.
-            let pasted = text.clone();
-            input.update(&mut app, |input, ctx| {
-                input.offer_ready_paste(
-                    ClipboardContent::plain_text(pasted),
-                    PasteSource::PlainTextPaste,
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.last_enter_submitted_ai_query = false;
+            input.ai_input_model().update(ctx, |ai_input, ctx| {
+                ai_input.set_input_config(
+                    InputConfig {
+                        input_type: InputType::AI,
+                        is_locked: false,
+                    },
+                    true, /* is_input_buffer_empty */
                     ctx,
                 );
-                input.input_enter(ctx);
             });
-            warpui::r#async::Timer::after(Duration::from_millis(500)).await;
-            if runs_in_shell {
-                assert_eq!(
-                    executed.borrow().as_slice(),
-                    [text.clone()],
-                    "a pasted shell command Enter-ed at once runs in the shell ({} bytes)",
-                    text.len()
-                );
-                assert_eq!(*ai_queries.borrow(), 0, "{} bytes", text.len());
-            } else {
-                assert!(
-                    executed.borrow().is_empty(),
-                    "pasted prose is not run by the shell ({} bytes)",
-                    text.len()
-                );
-                // Backend-independent: the verdict is AI and the Enter took the agent submit path
-                // (`last_enter_submitted_ai_query` is set on both of its branches). The event
-                // count is the stricter check: with the BYO key the prompt alert never blocks,
-                // and without the agent view the submit emits `ExecuteAIQuery`.
-                input.read(&app, |input, ctx| {
-                    assert_eq!(
-                        input.ai_input_model().as_ref(ctx).input_type(),
-                        InputType::AI,
-                        "{} bytes",
-                        text.len()
-                    );
-                    assert!(
-                        input.last_enter_submitted_ai_query,
-                        "pasted prose takes the agent submit path ({} bytes)",
-                        text.len()
-                    );
-                });
-                assert_eq!(
-                    *ai_queries.borrow(),
-                    1,
-                    "pasted prose goes to the agent, once ({} bytes)",
-                    text.len()
-                );
-            }
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(400)).await;
+        // The paste lands and the Enter is applied in the same update.
+        input.update(&mut app, |input, ctx| {
+            input.offer_ready_paste(
+                ClipboardContent::plain_text(text),
+                PasteSource::PlainTextPaste,
+                ctx,
+            );
+            input.input_enter(ctx);
+        });
+        warpui::r#async::Timer::after(Duration::from_millis(500)).await;
+        let (input_type, last_enter_submitted_ai_query, released) =
             input.read(&app, |input, ctx| {
-                assert!(
+                (
+                    input.ai_input_model().as_ref(ctx).input_type(),
+                    input.last_enter_submitted_ai_query,
                     input.verdict_wait.is_none() && !input.detection_pending_for_buffer(ctx),
-                    "the Enter was released by the verdict ({} bytes)",
-                    text.len()
-                );
+                )
             });
-        }
+        *sink.borrow_mut() = Some(ReadyPasteOutcome {
+            executed: executed.borrow().clone(),
+            ai_queries: *ai_queries.borrow(),
+            input_type,
+            last_enter_submitted_ai_query,
+            released,
+        });
     });
+    let outcome = result.borrow_mut().take();
+    outcome.expect("the test body ran")
+}
+
+/// #1590: a ready paste (the text already read, nothing queued) with an Enter applied in the
+/// same update, before the editor's `Edited` event could request detection: the Enter must still
+/// wait for the pasted line's verdict. A shell line runs in the shell (no agent request), prose is
+/// not run by the shell.
+///
+/// #1604: the same for text over the former 4096-byte caps (the prefilter's, the parse cap's
+/// abandon and the 16 KiB #968 cap), which used to send every over-size shell command to the
+/// agent in agent mode. A 5400-byte shell line and a 5000-byte 40-line script (under the 50-line
+/// confirmation threshold) each run in the shell exactly once with no agent request; 5000 bytes
+/// of prose go where the short prose goes, to the agent, and never to the shell. Over-size text
+/// is classified by the background job the Enter starts, which the Enter waits for. Each case
+/// runs in a fresh app (see [`ready_paste_then_enter_run`]).
+#[test]
+fn test_ready_paste_then_immediate_enter_classifies_the_pasted_line() {
+    let long_shell_line = format!("echo {}; echo PASTE-LONG-END", "PASTE-G1 ".repeat(600));
+    assert!(long_shell_line.len() > 5000 && !long_shell_line.contains('\n'));
+    let long_script =
+        vec![format!("echo {}; echo PASTE-H1", "PASTE-G1 ".repeat(12)); 40].join("\n");
+    assert!(long_script.len() > 4096 && long_script.lines().count() == 40);
+    let long_prose = "please explain why the build failed ".repeat(140);
+    assert!(long_prose.len() > 5000);
+    let cases = [
+        ("echo PASTE-G1; echo PASTE-H1".to_owned(), true),
+        ("please explain why the build failed".to_owned(), false),
+        (long_shell_line, true),
+        (long_script, true),
+        (long_prose, false),
+    ];
+    for (text, runs_in_shell) in cases {
+        let outcome = ready_paste_then_enter_run(text.clone());
+        if runs_in_shell {
+            assert_eq!(
+                outcome.executed.as_slice(),
+                [text.clone()],
+                "a pasted shell command Enter-ed at once runs in the shell ({} bytes)",
+                text.len()
+            );
+            assert_eq!(outcome.ai_queries, 0, "{} bytes", text.len());
+        } else {
+            assert!(
+                outcome.executed.is_empty(),
+                "pasted prose is not run by the shell ({} bytes)",
+                text.len()
+            );
+            // Backend-independent: the verdict is AI and the Enter took the agent submit path
+            // (`last_enter_submitted_ai_query` is set on both of its branches). The event count
+            // is the stricter check: with the BYO key the prompt alert never blocks, and without
+            // the agent view the submit emits `ExecuteAIQuery`.
+            assert_eq!(outcome.input_type, InputType::AI, "{} bytes", text.len());
+            assert!(
+                outcome.last_enter_submitted_ai_query,
+                "pasted prose takes the agent submit path ({} bytes)",
+                text.len()
+            );
+            assert_eq!(
+                outcome.ai_queries,
+                1,
+                "pasted prose goes to the agent, once ({} bytes)",
+                text.len()
+            );
+        }
+        assert!(
+            outcome.released,
+            "the Enter was released by the verdict ({} bytes)",
+            text.len()
+        );
+    }
 }
 
 /// One padded-paste run of #1590 with a gated classifier, so the verdict's timing is the test's,
@@ -14292,8 +14327,10 @@ fn debounce_channel_is_bounded_and_hands_the_overflow_back() {
 
 /// Registers the autodetection classifier (the real app has it from startup). Keys an Enter
 /// released from the input queue are replayed into the editor, which classifies the new text
-/// when autodetection is on; the models those tests build from `initialize_app` lack it.
-fn ensure_input_classifier_for_test(app: &mut App) {
+/// when autodetection is on; the models those tests build from `initialize_app` lack it. A
+/// buffer over the parse cap is classified by a background job (#1604) that reads the model when
+/// it starts, so every test that classifies such a buffer needs it too.
+pub(crate) fn ensure_input_classifier_for_test(app: &mut App) {
     app.update(|ctx| {
         if !ctx.has_singleton_model::<crate::input_classifier::InputClassifierModel>() {
             ctx.add_singleton_model(crate::input_classifier::InputClassifierModel::new);
