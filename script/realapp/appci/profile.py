@@ -60,9 +60,11 @@ __pa_rec() {
   print -r -- "P"$'\t'"$EPOCHREALTIME" >> "$PA_CTL/prompt.log"
 }
 precmd_functions+=(__pa_rec)
-# #1606: when the line editor let go of the line (zle-line-finish) and when the LAST preexec hook ran (after the app's own preexec hooks),
-# both in the shell's own clock. The latency_enter stamp line prints them next to its stamp, so Enter -> command start splits into
-# ZLE ingest/accept, preexec hooks and the command itself, the same way in Phosphor and in the reference terminal. Variables only, no I/O.
+# #1606: when the line editor let go of the line (zle-line-finish) and when this rc's preexec hook ran, both in the shell's own clock.
+# In Phosphor the bootstrap puts warp_preexec (the Preexec message) first, so __pa_pxh runs after it, but the bootstrap's title hook
+# (warp_set_title_active_on_preexec) is appended later and runs AFTER __pa_pxh. The latency_enter stamp line prints both times next to
+# its stamp, so Enter -> command start splits into ZLE ingest/accept, warp_preexec, and the title hook + the command, the same way in
+# Phosphor and in the reference terminal. Variables only, no I/O.
 __pa_px=; __pa_lf=
 __pa_pxh() { __pa_px=$EPOCHREALTIME }
 preexec_functions+=(__pa_pxh)

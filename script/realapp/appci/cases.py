@@ -142,13 +142,17 @@ def enter_segments(lines, t0):
                                the report says so. This is when the APP parsed the hook, after any wait for the model lock (below), not
                                when the shell sent it: the shell-side times come from the stamp file (enter_split_summary).
       pty_lock_wait_ms         per Enter, the summed `hop=pty_lock_wait waited_ms=` between the write and the preexec parse (#1606): output
-                               answering the Enter waited for the model lock the UI held while building a frame (0 when none was logged)
+                               answering the Enter waited for the model lock the UI held while building a frame (0 when none was logged,
+                               absent when the build has none of the #1606 hops)
     Lines before wall time t0 are ignored."""
     keys = ("event_age_ms", "event_to_enter_ms", "enter_to_write_ms", "submit_bookkeeping_ms", "effect_flush_ms", "write_to_first_read_ms",
             "write_to_preexec_ms", "pty_lock_wait_ms")
     seg = {k: [] for k in keys}
     pending, wrote, read_seen = None, None, True
     sent, executed, submitted, lock_wait = None, None, None, None
+    # pty_lock_wait is logged only when a wait happened, so its absence means 0 only in a build that has the #1606 hops (the
+    # enter_submit_done hop is logged on every shell submit); an older build reports the key absent, never 0.0
+    has_lock_hop = any("hop=enter_submit_done" in l or "hop=pty_lock_wait" in l for l in lines)
     for l in lines:
         m = re.search(r" t=(\d+(?:\.\d+)?)", l)
         if not m:
@@ -176,7 +180,8 @@ def enter_segments(lines, t0):
             submitted = None
         elif "hop=preexec_received" in l and wrote is not None:
             seg["write_to_preexec_ms"].append(t - wrote)
-            seg["pty_lock_wait_ms"].append(lock_wait or 0.0)
+            if has_lock_hop:
+                seg["pty_lock_wait_ms"].append(lock_wait or 0.0)
             wrote, lock_wait = None, None
         elif "hop=pty_lock_wait" in l and wrote is not None:
             w = re.search(r"waited_ms=(\d+(?:\.\d+)?)", l)
@@ -2254,7 +2259,7 @@ def stamp_line(ctx):
     if ctx.be.name == "mac":
         if lat.shell_base(pane_shell(ctx)) == "zsh":
             # #1606: the rc's preexec / zle-line-finish times follow the stamp (enter_to_start reads the first field as the stamp)
-            return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px-} ${__pa_lf-} > lat_%d"
+            return "zmodload zsh/datetime; print -r -- $EPOCHREALTIME ${__pa_px:-0} ${__pa_lf:-0} > lat_%d"
         return "perl -MTime::HiRes=time -e 'printf \"%%.6f\\n\", time' > lat_%d"
     return "date +%%s.%%N > lat_%d"
 
@@ -2298,10 +2303,12 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
 
 
 def _float_or_none(fields, i):
+    """fields[i] as a float; None when it is missing, not a number, or 0 (the stamp line's `${__pa_px:-0}` for a hook that never ran)"""
     try:
-        return float(fields[i])
+        v = float(fields[i])
     except (IndexError, ValueError):
         return None
+    return v or None
 
 
 def injector_post_wall(ctx):
@@ -2324,8 +2331,9 @@ def enter_split_summary(samples):
       t0_to_post        harness start -> the injector's post of Return (the input-tool spawn: the same for both sides; sanity only)
       post_to_lf        the post -> zle-line-finish: key delivery, the terminal's own work, the pty write and the line editor reading and
                         accepting the line (Phosphor writes the whole line at Enter; a plain terminal's shell already has it)
-      lf_to_px          zle-line-finish -> the last preexec hook: every preexec hook before it (Phosphor's bootstrap hooks; none in the reference)
-      px_to_stamp       the last preexec hook -> the stamp: the command itself (should match between the sides)
+      lf_to_px          zle-line-finish -> the rc's preexec hook: the preexec hooks that run before it (Phosphor's warp_preexec, which
+                        sends the Preexec message; none in the reference). Phosphor's title hook runs AFTER it and lands in px_to_stamp
+      px_to_stamp       the rc's preexec hook -> the stamp: any later preexec hook (Phosphor's title hook) and the command itself
       post_to_stamp     the whole of it without the input-tool spawn
     A key is absent when no sample had both ends (no post time off macOS, no lf/px from a non-zsh shell)."""
     def d(a, b):

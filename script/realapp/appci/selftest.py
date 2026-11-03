@@ -321,13 +321,19 @@ def enter_split_attributes_every_hop():
     # a build without the new hops gives exactly the old keys (absent, never zero)
     old = [l for l in L if "age_ms" not in l and "enter_submit_done" not in l and "pty_lock_wait" not in l]
     s = cases.enter_segments(old, 0)
-    assert "event_age_ms" not in s and "submit_bookkeeping_ms" not in s and s["pty_lock_wait_ms"] == 0.0, s
+    assert "event_age_ms" not in s and "submit_bookkeeping_ms" not in s and "pty_lock_wait_ms" not in s, s
+    # a #1606 build that logged no lock wait for an Enter: 0, not absent
+    s = cases.enter_segments([l for l in L if "pty_lock_wait" not in l], 0)
+    assert s["pty_lock_wait_ms"] == 0.0, s
     # the shell-side split: post 0, zle-line-finish +2 ms, last preexec +3 ms, stamp +3.5 ms; a stale px (> 1 s) is dropped, not averaged in
     sp = cases.enter_split_summary([dict(t0=99.8, post=100.0, lf=100.002, px=100.003, stamp=100.0035),
                                     dict(t0=199.8, post=200.0, lf=200.002, px=198.0, stamp=200.0035)])
     assert sp["post_to_lf_ms"] == 2.0 and sp["lf_to_px_ms"] == 1.0 and sp["px_to_stamp_ms"] == 0.5 and sp["post_to_stamp_ms"] == 3.5, sp
     assert round(sp["t0_to_post_ms"]) == 200 and sp["n"] == 2, sp
     assert cases.enter_split_summary([dict(t0=1.0, post=None, lf=None, px=None, stamp=1.2)]) == {"n": 1}
+    # `${__pa_px:-0}`: a hook that never ran prints 0, which is "no value", never a time
+    assert cases._float_or_none(["1.5", "0", "x"], 1) is None and cases._float_or_none(["1.5", "0", "x"], 2) is None
+    assert cases._float_or_none(["1.5", "2.25"], 1) == 2.25 and cases._float_or_none(["1.5"], 1) is None
     # key-event ages: flags filter, a nonsense (negative) age is dropped
     K = ["input_order hop=os_key_event age_ms=0.300 enter=false ctrl=false t=1000.0", "input_order hop=os_key_event age_ms=40.000 enter=false ctrl=true t=1001.0",
          "input_order hop=os_key_event age_ms=-5.000 enter=false ctrl=true t=1002.0", "input_order hop=os_key_event age_ms=2.000 enter=true ctrl=false t=1003.0"]
