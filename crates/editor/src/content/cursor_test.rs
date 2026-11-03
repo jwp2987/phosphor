@@ -218,3 +218,91 @@ fn test_char_at() {
     assert_eq!(text_cursor.char_at(CharOffset::from(4)), Some('S'));
     assert_eq!(text_cursor.char_at(CharOffset::from(10)), Some('\n'));
 }
+
+/// The items the pre-#1607 `append_str` collected into a Vec (fragments after the first-line fill),
+/// kept here as the reference the streaming version must reproduce item for item.
+fn reference_fragments(first_rest: &str, s: &str) -> Vec<BufferText> {
+    use crate::content::text::TEXT_FRAGMENT_SIZE;
+    use arrayvec::ArrayString;
+
+    let trailing_newline = s.ends_with('\n');
+    let mut out = Vec::new();
+    let mut lines = s.lines().peekable();
+    let mut is_first = true;
+    while let Some(line) = lines.next() {
+        let mut text = if is_first { first_rest } else { line };
+        is_first = false;
+        while !text.is_empty() {
+            let mut split_ix = text.len().min(TEXT_FRAGMENT_SIZE);
+            while !text.is_char_boundary(split_ix) {
+                split_ix -= 1;
+            }
+            let (chunk, remainder) = text.split_at(split_ix);
+            out.push(BufferText::Text {
+                char_count: chunk.chars().count() as u8,
+                fragment: ArrayString::from(chunk).unwrap(),
+            });
+            text = remainder;
+        }
+        if lines.peek().is_some() || trailing_newline {
+            out.push(BufferText::Newline);
+        }
+    }
+    out
+}
+
+#[test]
+fn append_str_streams_the_same_items_as_the_collected_vec() {
+    use crate::content::text::TEXT_FRAGMENT_SIZE;
+
+    let long = "x".repeat(TEXT_FRAGMENT_SIZE * 2 + 5);
+    let wide = "\u{00e9}\u{4e2d}\u{1f600}".repeat(TEXT_FRAGMENT_SIZE / 3 + 7);
+    let inputs = [
+        String::new(),
+        "\n".to_string(),
+        "\n\n\n".to_string(),
+        "one line".to_string(),
+        "one line\n".to_string(),
+        "a\nb\n\nc".to_string(),
+        "a\r\nb\r\n".to_string(),
+        format!("{long}\nshort\n{long}"),
+        format!("{wide}\n{wide}\n"),
+        (0..500)
+            .map(|i| format!("line {i}: alpha beta\n"))
+            .collect(),
+    ];
+    for input in &inputs {
+        // Into an empty tree: no first-line fill, so the reference is the whole input.
+        let mut tree: SumTree<BufferText> = SumTree::new();
+        tree.append_str(input);
+        let first = input.lines().next().unwrap_or("");
+        assert_eq!(
+            tree.items(),
+            reference_fragments(first, input),
+            "input {input:?}"
+        );
+
+        // Behind a marker (what a buffer looks like): still no fill, the marker is not text.
+        let mut tree: SumTree<BufferText> = SumTree::new();
+        let marker = BufferText::BlockMarker {
+            marker_type: BufferBlockStyle::PlainText,
+        };
+        tree.push(marker.clone());
+        tree.append_str(input);
+        let mut expected = vec![marker];
+        expected.extend(reference_fragments(first, input));
+        assert_eq!(tree.items(), expected, "input after marker {input:?}");
+
+        // Behind a short text fragment: the first line tops it up, the rest streams.
+        let mut fresh: SumTree<BufferText> = SumTree::new();
+        fresh.append_str(input);
+        let mut tree: SumTree<BufferText> = SumTree::new();
+        tree.append_str("head");
+        tree.append_str(input);
+        assert_eq!(
+            tree.debug(),
+            format!("head{}", fresh.debug()),
+            "input after text {input:?}"
+        );
+    }
+}
