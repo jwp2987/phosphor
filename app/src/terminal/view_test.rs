@@ -26584,3 +26584,8 @@ mod group3_paste_tests;
 // reason as group 1.
 #[path = "view/group4_prompt_tests.rs"]
 mod group4_prompt_tests;
+
+// Group 2 (timers that decided delivery or ran a command, #1577 / #1588). Declared here for the
+// same reason as group 1.
+#[path = "view/group2_timer_tests.rs"]
+mod group2_timer_tests;

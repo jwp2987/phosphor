@@ -941,7 +941,8 @@ fn subshell_bootstrap_gate_cap(lines: usize) -> Duration {
 /// Logged when it fires.
 const SUBSHELL_FIRST_PROMPT_GIVE_UP: Duration = Duration::from_secs(5);
 /// Give-up net for a pending command / ssh `cd` waiting for the first prompt after a block
-/// completed (#1354); the prompt itself is what releases it. Logged when it fires.
+/// completed (#1354); the prompt itself is what releases it. Logged when it fires. #1588: firing
+/// runs NOTHING; the command stays pending for the prompt (its text is shown in the input).
 const PENDING_COMMAND_PRECMD_GIVE_UP: Duration = Duration::from_secs(2);
 /// After the user answered a prompt that setup was deferred behind, the output must stay unchanged
 /// this long (the shell took the answer and went quiet) before setup is written, when the
@@ -17402,14 +17403,20 @@ impl TerminalView {
                                     warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP)
                                         .await;
                                 },
-                                |me, _, ctx| {
+                                |me, _, _| {
+                                    // #1588: a timer never runs a command. The remote `cd`
+                                    // stays pending: the prompt's own event (`Precmd`) runs it.
                                     if me.ssh_split_cd_awaits_precmd {
                                         log::warn!(
-                                            "No prompt after the ssh split bootstrap block; \
-                                             running the remote cd anyway"
+                                            "No prompt within {} s after the ssh split bootstrap \
+                                             block; the remote cd stays pending for the next \
+                                             prompt (#1588)",
+                                            PENDING_COMMAND_PRECMD_GIVE_UP.as_secs()
                                         );
-                                        me.ssh_split_cd_awaits_precmd = false;
-                                        me.run_ssh_split_cd(ctx);
+                                        warpui::input_order::log_key_hop(
+                                            "kh_pending_command_give_up",
+                                            || "ssh_split_cd kept".to_owned(),
+                                        );
                                     }
                                 },
                             );
@@ -17568,16 +17575,7 @@ impl TerminalView {
                             async move {
                                 warpui::r#async::Timer::after(PENDING_COMMAND_PRECMD_GIVE_UP).await;
                             },
-                            |me, _, ctx| {
-                                if me.pending_command_awaits_precmd {
-                                    log::warn!(
-                                        "No prompt after a completed block; running the pending \
-                                         command anyway"
-                                    );
-                                    me.pending_command_awaits_precmd = false;
-                                    me.execute_pending_command_after_timer((), ctx);
-                                }
-                            },
+                            |me, _, ctx| me.pending_command_precmd_give_up(ctx),
                         );
                     }
                 }
@@ -22173,6 +22171,39 @@ impl TerminalView {
                 );
             }
             _ => {}
+        }
+    }
+
+    /// #1588: the `PENDING_COMMAND_PRECMD_GIVE_UP` net fired with no prompt seen. A timer never
+    /// runs a command: the pending command stays pending (`pending_command_awaits_precmd` stays
+    /// set, so the `Precmd` that finally comes runs it exactly once), its text is made visible in
+    /// the input with the Enter guard, and a toast says it waits for the shell.
+    fn pending_command_precmd_give_up(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.pending_command_awaits_precmd {
+            return;
+        }
+        let waiting = self.input.update(ctx, |input, ctx| {
+            input.show_pending_command_after_give_up(ctx)
+        });
+        log::warn!(
+            "No prompt within {} s after a completed block; the pending command stays pending \
+             for the next prompt (#1588) (waiting={waiting})",
+            PENDING_COMMAND_PRECMD_GIVE_UP.as_secs()
+        );
+        warpui::input_order::log_key_hop("kh_pending_command_give_up", || {
+            format!("kept waiting={waiting}")
+        });
+        if waiting && ctx.has_singleton_model::<ToastStack>() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(
+                        "The shell showed no prompt; the queued command waits for it".to_string(),
+                    ),
+                    window_id,
+                    ctx,
+                );
+            });
         }
     }
 

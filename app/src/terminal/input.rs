@@ -6753,6 +6753,8 @@ impl Input {
         self.has_pending_command = false;
         self.held_unready_enter = false;
         self.pending_command_text = None;
+        // #1588: the hold on the Enter that went with a given-up pending command is over.
+        self.ssh_handover_enter_guard = None;
 
         self.editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(InteractionState::Editable, ctx);
@@ -13225,6 +13227,31 @@ impl Input {
     /// The command [`Self::set_pending_command`] was asked to run, until it starts (#1450).
     pub(crate) fn pending_command_text(&self) -> Option<&str> {
         self.pending_command_text.as_deref()
+    }
+
+    /// #1588: the 2 s net for a pending command found no prompt. The command is NOT run by the
+    /// timer: its text is made visible in the input (when the input holds nothing else), the next
+    /// Enter is consumed once with the "check the line" toast, and the pending state is kept for
+    /// the prompt's own event (`execute_pending_command`). Returns whether a command is waiting.
+    pub(crate) fn show_pending_command_after_give_up(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if !self.has_pending_command || self.held_unready_enter {
+            return false;
+        }
+        let Some(text) = self.pending_command_text.clone() else {
+            return false;
+        };
+        let buffer = self.editor.as_ref(ctx).buffer_text(ctx);
+        if buffer.is_empty() {
+            self.editor
+                .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+            self.arm_ssh_handover_enter_guard(text);
+        } else if buffer == text {
+            self.arm_ssh_handover_enter_guard(text);
+        }
+        true
     }
 
     /// The command [`Self::set_pending_command`] was last asked to run, for tests.
