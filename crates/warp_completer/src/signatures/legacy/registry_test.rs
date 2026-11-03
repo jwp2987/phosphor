@@ -489,3 +489,29 @@ fn test_registered_commands_unaffected_by_oversized_lookups() {
     let registered = registry.registered_commands().collect::<Vec<_>>();
     assert_eq!(registered, vec!["test"]);
 }
+
+/// #1342: `git config --global alias.zz status` used to look up `config`, `--global` and
+/// `alias.zz` as if they were aliases, one process each. Options, a signature's own subcommands
+/// and the arguments of a leaf subcommand are never alias candidates; an unknown word at the
+/// top level still is.
+#[test]
+fn test_alias_candidates_exclude_options_real_subcommands_and_leaf_arguments() {
+    let git = warp_command_signatures::signature_by_name("git")
+        .expect("global command signatures should include 'git'");
+    assert!(!super::can_be_alias(&git, "--global", 0));
+    assert!(!super::can_be_alias(&git, "-C", 0));
+    assert!(!super::can_be_alias(&git, "config", 0));
+    assert!(!super::can_be_alias(&git, "status", 0));
+    assert!(super::can_be_alias(&git, "zz", 0));
+    assert!(super::can_be_alias(&git, "co", 0));
+
+    let config = git
+        .subcommands()
+        .iter()
+        .find(|s| s.name() == "config")
+        .expect("git has a config subcommand");
+    if config.subcommands().is_empty() {
+        // Reached by descending into `config`: `alias.zz` is its argument.
+        assert!(!super::can_be_alias(config, "alias.zz", 1));
+    }
+}
