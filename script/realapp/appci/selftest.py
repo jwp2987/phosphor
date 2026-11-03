@@ -792,6 +792,49 @@ def r18e9_pty_write_cr_count():
     assert runmod.pty_write_cr(L) == dict(writes=2, with_cr=1, enters=1), runmod.pty_write_cr(L)
 
 
+@check
+def editor_memory_breakdown_close_and_cycles():
+    """#1607/#1407: the editor_memory case parses the app's breakdown lines, computes cycle growth, never sends an empty close key, and the
+    macOS footprint reader degrades to None off macOS (no proc_pid_rusage)"""
+    tmp = tempfile.mkdtemp()
+    try:
+        log = os.path.join(tmp, "app.log")
+        with open(log, "w") as f:
+            f.write("noise\n2026 INFO editor_memory editor_memory open text_bytes=7340032 lines=92000 buffer_items=184001 parked_chunks=360 frame_bytes=1234\n"
+                    "2026 INFO editor_memory editor_memory buffer_dropped registered=0 trim=true\n")
+        c = _ctx(tmp, log_path=log)
+        br = cases.editor_mem_log(c, 0)
+        assert br["open"][0]["text_bytes"] == 7340032 and br["open"][0]["parked_chunks"] == 360, br
+        assert br["dropped"][0]["registered"] == 0 and br["dropped"][0]["trim"] == "true", br
+        assert cases.editor_mem_log(c, os.path.getsize(log)) == {"open": [], "dropped": []}
+        assert cases.editor_cycle_growth([100.0, 104.0, 131.0]) == 31.0 and cases.editor_cycle_growth([5.0]) == 0.0
+        if sys.platform != "darwin":
+            assert cases.mac_footprint_kib(os.getpid()) is None
+        sent = []
+        be = types.SimpleNamespace(key=lambda k: sent.append(k), type=lambda *a, **k: sent.append(("type", a)))
+        r = cases.Result("t", "terminal")
+        old = {k: os.environ.get(k) for k in ("APPCI_KEY_CLOSE", "APPCI_KEY_CMD_PALETTE")}
+        try:
+            os.environ["APPCI_KEY_CLOSE"], os.environ["APPCI_KEY_CMD_PALETTE"] = "", ""
+            assert cases.editor_close(types.SimpleNamespace(be=be), r) is None and sent == [], sent
+            os.environ["APPCI_KEY_CMD_PALETTE"] = "cmd+shift+p"
+            orig_sleep, cases.time.sleep = cases.time.sleep, lambda s: None
+            try:
+                how = cases.editor_close(types.SimpleNamespace(be=be), r)
+            finally:
+                cases.time.sleep = orig_sleep
+            assert how and how.startswith("palette") and sent[0] == "cmd+shift+p" and sent[-1] == "Return", (how, sent)
+            assert "" not in sent
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     failed = 0
     for f in CHECKS:
