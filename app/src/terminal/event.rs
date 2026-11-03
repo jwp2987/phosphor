@@ -99,6 +99,10 @@ pub enum Event {
         session_id: SessionId,
         seq: Option<u64>,
     },
+    /// The pty reader applied the stream a young-Enter hold waited on and the typeahead hand-off
+    /// decided the hold again (#1614): the controller decides the request or the view writes the
+    /// held keys.
+    YoungHoldReevaluated,
     /// The PowerShell insert chord could not read the command pipe and inserted nothing (#1581).
     CommandFileFailed {
         session_id: SessionId,
@@ -693,6 +697,7 @@ impl Debug for Event {
                     "ContinuationPrompt(session: {session_id:?}, seq: {seq:?})"
                 )
             }
+            Event::YoungHoldReevaluated => write!(f, "YoungHoldReevaluated"),
             Event::CommandFileFailed { session_id } => {
                 write!(f, "CommandFileFailed(session: {session_id:?})")
             }

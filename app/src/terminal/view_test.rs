@@ -20482,28 +20482,157 @@ fn ssh_line_typed_at_once_after_the_ssh_enter_is_held_and_delivered_once_to_the_
     }
 }
 
-/// #1609: the local typeahead hand-off is told an ssh owns the pty from its submit until its block
-/// ends, so an Enter typed into it is not held as a young line of the local shell; a command that
-/// is not ssh never sets it.
+/// #1609, redone by #1614: the hand-off is no longer told that an ssh owns the pty; the block latch
+/// (`CommandBecameInteractive`, which an interactive ssh, an inner shell or a program all raise) is
+/// the event. A young Enter and the keys behind it held when it arrives are written to the pty as
+/// typeahead, in typed order, as one write; nothing is handed back and no timer is involved. Legacy
+/// and Table.
 #[test]
-fn ssh_submit_tells_the_handoff_the_tty_belongs_to_ssh_until_the_block_ends() {
+fn a_young_hold_is_written_as_typeahead_when_the_command_becomes_interactive() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                let block_id = view.model.lock().active_block_id().clone();
+                view.handle_terminal_event(&ModelEvent::CommandBecameInteractive { block_id }, ctx);
+                assert!(
+                    !young_gate_open(view),
+                    "{mode:?}: the hold ended on the event"
+                );
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+                assert!(view.model.lock().typeahead_handoff().command_interactive());
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing handed back to the editor"
+                );
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"\rx".to_vec()],
+                "{mode:?}: the Enter and the key behind it, one write, typed order"
+            );
+        });
+    }
+}
+
+/// #1614: a late `CommandBecameInteractive` for a block whose prompt is already back (the model
+/// thread ran ahead of the main thread) must not mark the shell's next line as a program's: the
+/// event names an older block than the one running, or a block that never started.
+#[test]
+fn a_late_interactive_event_for_a_finished_block_does_not_mark_the_shell_interactive() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
-        app.add_singleton_model(|_| crate::workspace::ToastStack);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            register_local_session_for_ssh_test(view, ctx);
-            submit_command(view, "ls -l", ctx);
-            assert!(!view.handoff.read().ssh_owns_tty());
-            submit_command(view, "ssh fake", ctx);
-            assert!(view.handoff.read().ssh_owns_tty());
-            // The flag does not depend on the gate (it is cleared with no gate open too).
-            view.ssh_connect_gate = None;
-            assert!(view.handoff.read().ssh_owns_tty());
-            submit_command(view, "echo hi", ctx);
-            assert!(!view.handoff.read().ssh_owns_tty());
+            // A command runs now; the event is for the block before it.
+            young_enter_setup(view);
+            let running = view.model.lock().active_block_id().clone();
+            let older = BlockId::from("precmd-older-block-1614".to_string());
+            assert_ne!(older, running);
+            view.handle_terminal_event(
+                &ModelEvent::CommandBecameInteractive { block_id: older },
+                ctx,
+            );
+            assert!(!view.model.lock().typeahead_handoff().command_interactive());
+            // The running block's own event does mark it.
+            view.handle_terminal_event(
+                &ModelEvent::CommandBecameInteractive { block_id: running },
+                ctx,
+            );
+            assert!(view.model.lock().typeahead_handoff().command_interactive());
         });
     })
+}
+
+/// #1614 (review C2): the cap's hand-back asks the controller for the request decision once the
+/// hold is gone (a decision now can only commit the editor or write the request, never held keys):
+/// the decision the stale-count timer had to skip while the hold lived runs, so the pane does not
+/// stay pty-owned with the handed-back text in the editor. Nothing is written to the pty.
+#[test]
+fn a_young_hold_hand_back_asks_for_the_request_decision() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes = collect_pty_writes(&mut app, &terminal);
+        let retries = Rc::new(RefCell::new(0));
+        let retries_seen = retries.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::RetryTypeaheadHandoffRequest = event {
+                    *retries_seen.borrow_mut() += 1;
+                }
+            });
+        });
+        terminal.update(&mut app, |view, ctx| {
+            young_enter_setup(view);
+            hold_a_young_enter(view, &pty_writes, ctx);
+            assert_eq!(*retries.borrow(), 0, "a window hold asks for nothing when it opens");
+            let token = view.paste_queue.queue.borrow().gates()[0].token;
+            view.on_paste_queue_give_up(token, ctx);
+            assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+        });
+        assert_eq!(*retries.borrow(), 1, "the hand-back asks for the decision once");
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a timer wrote to the pty: {:?}",
+            pty_writes.borrow()
+        );
+    })
+}
+
+/// #1614 (review R2): the shell started a command after a young Enter was held (a Preexec parsed
+/// after the hold opened, not the written command's own): the Enter and the keys behind it are
+/// that command's typeahead, written as one write on the Preexec event itself, with no give-up
+/// involved. Legacy and Table.
+#[test]
+fn a_young_hold_is_written_as_typeahead_on_the_preexec_event() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                young_enter_setup(view);
+                // The written command's own Preexec was parsed before the line was typed.
+                view.model.lock().typeahead_handoff_mut().on_preexec(false);
+                hold_a_young_enter(view, &pty_writes, ctx);
+                // The shell starts a line it already had (model thread), then the event reaches
+                // the view.
+                view.model.lock().typeahead_handoff_mut().on_preexec(true);
+                view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Preexec), ctx);
+                assert!(
+                    !young_gate_open(view),
+                    "{mode:?}: the hold ended on the event"
+                );
+                assert!(view.paste_queue.queue.borrow().is_idle());
+                assert!(!view.model.lock().typeahead_handoff().has_young_hold());
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing handed back"
+                );
+            });
+            assert_eq!(
+                *pty_writes.borrow(),
+                vec![b"\rx".to_vec()],
+                "{mode:?}: the Enter and the key behind it, one write, typed order"
+            );
+        });
+    }
 }
 
 /// The remote session came up and its bootstrap ended: the next `Precmd` is its first prompt.

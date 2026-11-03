@@ -11,18 +11,26 @@
 //! * `WriteCounted` is only ever answered while the pty owns input;
 //! * a hold that STARTS on a key is reported to the view (`take_*_hold_started`), or the key that
 //!   started it would never be queued behind its gate;
-//! * a queued young hold that ENDS on a key, a report, a written command or the session end
-//!   leaves an end for the view (`take_young_hold_ends`), or its gate would outlive the hold and
-//!   strand the keys behind it;
+//! * a queued young hold that ENDS on a key, a report, a written command, a Preexec, the block
+//!   latch, the barrier's publish, a request decision or the session end leaves an end for the
+//!   view (`take_young_hold_ends`), or its gate would outlive the hold and strand the keys behind
+//!   it;
+//! * a young hold that starts names its evidence (#1614), and one that stands on "the request is
+//!   due" has no line queued in the counts (its release, the report, is satisfiable);
 //! * the session end clears every hold.
 //!
 //! The same state under real thread interleavings is the model in
 //! `app/src/terminal/model/pipeline_model_tests.rs`.
 #![no_main]
 
+use std::sync::Arc;
+
 use libfuzzer_sys::arbitrary::Unstructured;
 use libfuzzer_sys::fuzz_target;
-use warp::terminal::model::typeahead_handoff::{HandoffState, TypeaheadHandoff, UserBytesRoute};
+use warp::terminal::model::typeahead_handoff::{
+    ForegroundProbe, HandoffState, ShellPromptFact, TypeaheadHandoff, UserBytesRoute,
+    YoungHoldEvidence,
+};
 
 const SIGNAL_BYTES: [u8; 4] = [0x03, 0x04, 0x1a, 0x1c];
 
@@ -52,7 +60,7 @@ fuzz_target!(|data: &[u8]| {
     let mut ends_taken: usize = 0;
 
     for _ in 0..96 {
-        let Ok(event) = u.int_in_range(0..=25u8) else {
+        let Ok(event) = u.int_in_range(0..=28u8) else {
             break;
         };
         let young_before = h.young_hold_queued();
@@ -86,12 +94,22 @@ fuzz_target!(|data: &[u8]| {
                     }
                     UserBytesRoute::Write => {}
                 }
-                // A young hold that started on this key must be reported to the view.
+                // A young hold that started on this key must be reported to the view, and it
+                // names evidence whose release is satisfiable (#1614).
                 if !young_before && h.young_hold_queued() {
                     assert!(
                         h.take_young_hold_started().is_some(),
                         "a young hold started and was not reported"
                     );
+                    let evidence = h
+                        .young_hold_evidence()
+                        .expect("a young hold names its evidence");
+                    if evidence == YoungHoldEvidence::RequestDue {
+                        assert!(
+                            !h.counts_diverged(),
+                            "a hold for a request that is due has a line queued: {bytes:?}"
+                        );
+                    }
                 }
                 if !prompt_before && h.prompt_hold_queued() {
                     assert!(
@@ -106,7 +124,9 @@ fuzz_target!(|data: &[u8]| {
                 h.on_precmd();
             }
             4 => {
+                // #1614: a Preexec ends a live young hold as typeahead.
                 let _ = h.on_preexec(flag(&mut u));
+                ends_expected = young_before && !h.young_hold_queued();
             }
             5 => {
                 h.on_command_written();
@@ -143,9 +163,11 @@ fuzz_target!(|data: &[u8]| {
                 let _ = h.adopt_untracked_typeahead();
             }
             13 => {
+                // #1614: a decision that finds no request possible ends a live hold as typeahead.
                 let at_prompt = flag(&mut u);
                 let can_request = flag(&mut u);
                 let _ = h.on_line_editor_active(at_prompt, can_request);
+                ends_expected = young_before && !h.young_hold_queued();
             }
             14 => h.set_conpty_input(flag(&mut u)),
             15 => h.set_conpty_prompt_hold(flag(&mut u)),
@@ -175,8 +197,37 @@ fuzz_target!(|data: &[u8]| {
             24 => {
                 let _ = h.check_queued_young_hold();
             }
-            _ => {
+            25 => {
                 let _ = h.try_commit_at_prompt();
+            }
+            26 => {
+                // #1614: the block latch says the command is interactive.
+                h.note_command_interactive();
+                ends_expected = young_before && !h.young_hold_queued();
+            }
+            27 => {
+                // #1614: the pty reader applied a slice; a hold waiting on the barrier decides.
+                let _ = h.on_stream_applied();
+                ends_expected = young_before && !h.young_hold_queued();
+            }
+            _ => {
+                // The platform's sample and barrier, as installed by the terminal manager: a fixed
+                // answer per installation, replaced by the next one.
+                let fact = match u.int_in_range(0..=3u8).unwrap_or(3) {
+                    0 => ShellPromptFact::NotAtPrompt,
+                    1 => ShellPromptFact::LineEditorReading,
+                    2 => ShellPromptFact::ShellCooked,
+                    _ => ShellPromptFact::Unknown,
+                };
+                let mut probe = ForegroundProbe::default().with_prompt_fact(Arc::new(move || fact));
+                match u.int_in_range(0..=2u8).unwrap_or(0) {
+                    0 => {}
+                    barrier => {
+                        let drained = barrier == 1;
+                        probe = probe.with_stream_drained(Arc::new(move || drained));
+                    }
+                }
+                h.set_foreground_probe(probe);
             }
         }
 

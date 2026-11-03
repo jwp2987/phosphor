@@ -2734,3 +2734,18 @@ running in a terminal (Claude Code and similar) at 50, 300 and 300 ms
 (`app/src/terminal/view/use_agent_footer/mod.rs` ~97/101/106). Those programs expose no readiness
 signal Phosphor could wait on, so the pacing stays timer-driven. Scope: CLI-agent input only; it is not
 a precedent for any other pty write. Revisit if a CLI agent gains a readiness signal.
+
+## ConPTY: the interactive latch switches the #933 young-Enter hold off past 50 ms — accepted 2026-11-03 (#1609, #1614)
+
+On Windows there is no foreground probe (`terminal_attributes::shell_prompt_fact` is unix only), so
+the typeahead hand-off cannot sample whether the shell's line editor is reading. The only positive
+fact it has there is the block latch (`block::interactive_latch`, `CommandBecameInteractive`), which
+on ConPTY falls back to "still executing 50 ms after the Preexec". The hand-off takes that latch as
+"the keys are the running command's" where nothing is sampled
+(`TypeaheadHandoff::note_command_interactive`, `young_evidence`): an Enter typed after it is
+delivered to the pty, and it stays delivered until the command's Precmd is parsed. So on ConPTY the
+#933 hold (a line typed and Entered at a prompt the app has not noticed yet, brought back into the
+editor for classification) is off after any command that ran longer than 50 ms; a line typed fast
+after such a command runs in the shell unclassified. The price of fixing the Windows ssh Enter loss
+(#1609, #1614: the same latch is what says an `ssh` owns the pty there). Revisit when ConPTY gets a
+probe. Owner decision 2026-11-03. <!-- markers: keep:note_command_interactive -->

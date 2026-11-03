@@ -1734,6 +1734,7 @@ mod typeahead_handoff {
     use crate::terminal::model::terminal_model::ExitReason;
     use crate::terminal::model::typeahead_handoff::{
         HandoffState, InterruptOutcome, ReportDisposition, UserBytesRoute, YoungHoldEnd,
+        YoungHoldExpiry,
     };
 
     const SHELL: ShellType = ShellType::Zsh;
@@ -2284,6 +2285,114 @@ mod typeahead_handoff {
                 &HandoffState::EditorOwned
             );
             assert!(!written(&harness).contains(&REQUEST.to_vec()));
+        });
+    }
+
+    /// #1614 (review R3, the timer rule): the stale-count give-up never ends a live young hold.
+    /// Its retry of the request decision is skipped while the hold lives (the hold has its own
+    /// event releases and the hand-back cap); run by this timer, the decision could otherwise
+    /// write the held keys (the no-binding and committed-delivery ends) or a request.
+    #[test]
+    fn the_stale_count_reset_leaves_a_live_young_hold_to_its_own_events() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"frob");
+            // The Enter is held (the view's queue carries it; here only the hand-off's record).
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+                assert!(handoff.take_young_hold_started().is_some());
+            }
+            // The decision waits (the block runs) and arms the stale-count reset.
+            line_editor_becomes_active(&mut app, &harness);
+            assert!(harness.model.lock().typeahead_handoff().young_hold_queued());
+            // Meanwhile a delivery was committed to the shell's line: a decision run now would
+            // end the hold as typeahead (`committed_delivery`), which only an event may do.
+            harness
+                .model
+                .lock()
+                .typeahead_handoff_mut()
+                .note_committed_delivery();
+
+            Timer::after(Duration::from_millis(400)).await;
+            {
+                let model = harness.model.lock();
+                let handoff = model.typeahead_handoff();
+                assert!(
+                    handoff.young_hold_queued(),
+                    "the timer left the hold to its events"
+                );
+                assert!(!handoff.young_hold_end_pending(), "no end from a timer");
+                assert!(handoff.is_pty_owned());
+            }
+            assert!(
+                !written(&harness).contains(&REQUEST.to_vec()),
+                "no request from the timer"
+            );
+            // The skipped decision is remembered, to run on the next flushed write.
+            harness.controller.update(&mut app, |controller, _| {
+                assert!(controller.handoff_request_waiting);
+            });
+        });
+    }
+
+    /// #1614 (review C2): the decision the stale-count timer skipped while a young hold lived runs
+    /// once the hold is gone. The cap hands the hold back (the view also asks for the decision
+    /// then, `hand_back_young_hold_keys`), the shell's prompt comes with the typed `frob` still in
+    /// its line, and the next flushed write runs the decision: the request goes out and the editor
+    /// takes the line back, instead of the pane staying pty-owned with the handed-back text in
+    /// the editor.
+    #[test]
+    fn after_the_cap_hands_a_hold_back_the_skipped_decision_runs_on_the_next_write() {
+        App::test((), |mut app| async move {
+            let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
+            let harness = harness(&mut app);
+            submit(&mut app, &harness, "sleep 2");
+            user_types(&mut app, &harness, b"frob");
+            let hold_id = {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::Held);
+                handoff.take_young_hold_started().expect("a hold started")
+            };
+            line_editor_becomes_active(&mut app, &harness);
+            Timer::after(Duration::from_millis(400)).await;
+            harness.controller.update(&mut app, |controller, _| {
+                assert!(
+                    controller.handoff_request_waiting,
+                    "the retry was skipped, not lost"
+                );
+            });
+            assert!(harness.model.lock().typeahead_handoff().young_hold_queued());
+
+            // The cap: the hold is handed back (the hand-off's side of the view's hand-back).
+            {
+                let mut model = harness.model.lock();
+                let mut handoff = model.typeahead_handoff_mut();
+                assert_eq!(
+                    handoff.expire_queued_young_hold(hold_id),
+                    YoungHoldExpiry::Release
+                );
+                handoff.finish_young_hold_handed_back(hold_id);
+                assert!(!handoff.young_hold_queued());
+            }
+            // The command ends; its prompt. The counts agree and `frob` is in the shell's line.
+            shell_runs_a_command(&harness.model, "sleep 2");
+            assert!(!harness.model.lock().typeahead_handoff().counts_diverged());
+            assert!(!written(&harness).contains(&REQUEST.to_vec()));
+            // The next flushed write runs the skipped decision: the request goes out.
+            user_types(&mut app, &harness, b"z");
+            assert!(
+                written(&harness).contains(&REQUEST.to_vec()),
+                "the decision ran once the hold was gone"
+            );
+            assert_eq!(
+                harness.model.lock().typeahead_handoff().state(),
+                &HandoffState::AwaitingReport
+            );
         });
     }
 

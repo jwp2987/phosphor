@@ -1314,6 +1314,8 @@ where
                 );
                 // #1392: the hooks in this slice are applied; say so to the stream barrier.
                 state.note_parsed(end - offset, &self.stream_barrier);
+                // #1614: a young hold waiting on the barrier is decided again now.
+                terminal.on_pty_stream_applied();
                 terminal.publish_key_facts();
                 let held = held_since.elapsed();
                 SLOW_PTY_PARSE.finish(held_since, || {
@@ -1663,6 +1665,8 @@ where
                             );
                             // #1392: the frame's bytes are applied now.
                             state.publish_applied(&self.stream_barrier);
+                            // #1614: a young hold waiting on the barrier is decided again now.
+                            terminal.on_pty_stream_applied();
                             executing_block
                         };
                         let evicted =

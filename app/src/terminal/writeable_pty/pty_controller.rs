@@ -409,9 +409,22 @@ impl<T: EventLoopSender> PtyController<T> {
             ModelEvent::ContinuationPrompt { .. } => {
                 me.on_continuation_prompt_marker(ctx);
             }
+            // #1614: the pty reader applied the stream a young hold waited on, and the hand-off
+            // decided again: the hold either ended as typeahead (the view writes its keys) or now
+            // waits for the request (decided here, if the line editor is active).
+            ModelEvent::YoungHoldReevaluated => {
+                if FeatureFlag::TypeaheadHandoff.is_enabled() {
+                    me.announce_young_hold_end(ctx);
+                    me.retry_typeahead_handoff_request(ctx);
+                }
+            }
             // The shell ran what the chord inserted (or anything else): nothing to retype (#1581).
             ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
                 me.clear_file_insert();
+                // #1614: a Preexec parsed after a young hold opened ended it as typeahead (on the
+                // model thread); the view writes its keys now, on this event, not at the next key
+                // or the cap.
+                me.announce_young_hold_end(ctx);
             }
             ModelEvent::CommandFileFailed { session_id } => {
                 let active = me
@@ -695,6 +708,9 @@ impl<T: EventLoopSender> PtyController<T> {
         warpui::input_order::log_hop("handoff_decision", || {
             format!("decision={decision:?} retry={is_retry}")
         });
+        // #1614: a decision that found no request possible for a live young hold ended it as
+        // typeahead; the view writes its keys.
+        self.announce_young_hold_end(ctx);
         match decision {
             ActiveDecision::Legacy if !is_retry => {
                 self.handoff_request_waiting = false;
@@ -858,11 +874,16 @@ impl<T: EventLoopSender> PtyController<T> {
                 Timer::after(wait).await;
             },
             move |me, _, ctx| {
-                let (did_reset, diverged) = {
+                let (did_reset, diverged, young_hold_live) = {
                     let mut model = me.terminal_model.lock();
                     let mut handoff = model.typeahead_handoff_mut();
                     let diverged = handoff.counts_diverged();
-                    (handoff.reset_stale_counts(activity_generation), diverged)
+                    let young_hold_live = handoff.young_hold_queued();
+                    (
+                        handoff.reset_stale_counts(activity_generation),
+                        diverged,
+                        young_hold_live,
+                    )
                 };
                 if seq_mode && did_reset && diverged {
                     // The give-up of the wait fired: nothing said the queued lines were answered
@@ -877,7 +898,14 @@ impl<T: EventLoopSender> PtyController<T> {
                 // reset is what hands input back to the editor.
                 // (In the prompt-sequence path other events retry a wait that is not about the counts.)
                 if did_reset && (diverged || !seq_mode) {
-                    me.retry_typeahead_handoff_request(ctx);
+                    if young_hold_live {
+                        // #1614: not now (a timer must not end the hold as typeahead: the
+                        // decision's no-binding and committed-delivery branches would); decide on
+                        // the next flushed write, or when the hold's own end asks for it.
+                        me.handoff_request_waiting = true;
+                    } else {
+                        me.retry_typeahead_handoff_request(ctx);
+                    }
                 }
             },
         );

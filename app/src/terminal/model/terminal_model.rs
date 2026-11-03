@@ -62,7 +62,7 @@ use super::early_output::TypeaheadMode;
 use super::pty_stream_barrier::PtyStreamBarrier;
 use super::reply_ledger::SharedReplyLedger;
 use super::setup_echo_filter::SetupEchoFilter;
-use super::typeahead_handoff::{PaneHandoff, ParsedShellHook, TypeaheadHandoff};
+use super::typeahead_handoff::{PaneHandoff, ParsedShellHook, StreamApplied, TypeaheadHandoff};
 use super::{
     super::{AltScreen, BlockList},
     ansi::BootstrappedValue,
@@ -3143,6 +3143,27 @@ impl TerminalModel {
     fn note_shell_hook_parsed(&mut self, hook: ParsedShellHook) {
         if FeatureFlag::TypeaheadHandoff.is_enabled() {
             self.typeahead_handoff.write().note_shell_hook_parsed(hook);
+        }
+    }
+
+    /// #1614: the pty reader published another slice as applied to the stream barrier (reader
+    /// thread, under this model's lock, right after `publish_applied`). A young hold waiting on
+    /// the barrier is decided again; when that changes the hold, the controller and the view are
+    /// told through the event channel (`YoungHoldReevaluated`).
+    pub fn on_pty_stream_applied(&mut self) {
+        if !FeatureFlag::TypeaheadHandoff.is_enabled() {
+            return;
+        }
+        // A read first: this runs after every parsed slice, and a hold waiting on the barrier is
+        // rare; the write lock is taken only when there is one to decide.
+        if !self.typeahead_handoff.read().young_hold_waits_on_barrier() {
+            return;
+        }
+        let outcome = self.typeahead_handoff.write().on_stream_applied();
+        if outcome != StreamApplied::Nothing {
+            self.event_proxy
+                .send_terminal_event(Event::YoungHoldReevaluated);
+            self.event_proxy.send_wakeup_event();
         }
     }
 
