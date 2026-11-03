@@ -335,6 +335,30 @@ struct ChildHandle {
     cancelled: std::sync::atomic::AtomicBool,
 }
 
+/// Kills the render child if the awaiting future is dropped before the result or the deadline
+/// arrives, so the child never outlives the future that owns it. Disarmed once either arrives.
+///
+/// Scope (#1479): in the app the fetch future is detached (`AssetCache::load_asynchronously`
+/// spawns it and calls `detach()`), so closing the view or changing the diagram's source does
+/// NOT drop it; this guard fires only when the executor drops the task (teardown). A render
+/// nobody wants any more still runs until it finishes or the 8 s deadline kills it.
+struct KillChildOnDrop(Option<Arc<ChildHandle>>);
+
+impl KillChildOnDrop {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for KillChildOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            log::debug!("mermaid render abandoned by its caller; stopping the renderer process");
+            handle.kill();
+        }
+    }
+}
+
 impl ChildHandle {
     fn kill(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -376,7 +400,10 @@ async fn render_in_subprocess(
             let _ = tx.send_blocking(run_worker_process(command, source, &host));
         })
         .map_err(|e| anyhow::anyhow!("could not start the diagram renderer: {e}"))?;
-    match rx.recv().with_timeout(timeout).await {
+    let mut abandon_guard = KillChildOnDrop(Some(handle.clone()));
+    let received = rx.recv().with_timeout(timeout).await;
+    abandon_guard.disarm();
+    match received {
         Ok(Ok(result)) => result.map(Bytes::from),
         Ok(Err(_)) => Err(anyhow::anyhow!("the diagram renderer stopped unexpectedly")),
         Err(_) => {
@@ -731,6 +758,34 @@ mod subprocess_tests {
         let err = run("sleep 60", "x", Duration::from_millis(200)).expect_err("timeout");
         assert!(err.to_string().contains("took longer"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// #1479: a render whose caller went away (the asset is no longer wanted) is stopped, not
+    /// left to run to completion. The slot is released only when the host thread ends, which
+    /// it does once the child is killed.
+    #[test]
+    fn an_abandoned_render_kills_its_child() {
+        static LIVE: AtomicUsize = AtomicUsize::new(0);
+        let slot = RenderSlot::acquire(&LIVE, 1000).expect("slot");
+        assert_eq!(LIVE.load(Ordering::SeqCst), 1);
+        // `exec`: the child itself is the sleeper, so killing it closes its stdout.
+        let render = render_in_subprocess(
+            sh("exec sleep 60"),
+            "x".to_string(),
+            Duration::from_secs(120),
+            slot,
+        );
+        // One poll starts the child and leaves the render waiting; the poll's end drops it.
+        let polled = futures_lite::future::block_on(futures_lite::future::poll_once(render));
+        assert!(polled.is_none(), "a 60 s child cannot have finished");
+        let started = std::time::Instant::now();
+        while LIVE.load(Ordering::SeqCst) != 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the abandoned child was not killed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]

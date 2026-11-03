@@ -7694,6 +7694,12 @@ impl TerminalView {
                 );
                 return;
             }
+            if block.is_restore_failed() {
+                log::warn!(
+                    "Cannot persist CLI subagent snapshot; block {block_id:?} failed to load"
+                );
+                return;
+            }
             let metadata = block.agent_interaction_metadata();
             let conversation_id =
                 conversation_id.or_else(|| metadata.map(|metadata| *metadata.conversation_id()));

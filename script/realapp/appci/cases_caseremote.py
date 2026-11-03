@@ -243,6 +243,126 @@ def c_remote_ext(ctx, r):
             r.check(False, "the app did not come back with never_install after the extension case: later cases would run on the wrong path")
 
 
+# ------------------------------------------------------------------ large here-doc / long line over ssh, byte-exact (#1129)
+def _payload_lines(rr, total_bytes, width=(20, 120)):
+    """lines of [a-z0-9 ] (no quote, no `$`, no backslash: nothing a shell could expand inside a here-doc or a single-quoted string) totalling ~total_bytes"""
+    out, tot = [], 0
+    while tot < total_bytes:
+        l = "".join(rr.choice("abcdefghijklmnopqrstuvwxyz0123456789 ") for _ in range(rr.randint(*width)))
+        out.append(l)
+        tot += len(l) + 1
+    return out
+
+
+def _remote_bytes(ctx, name):
+    p = os.path.join(ctx.prof.rhome, name)
+    try:
+        return open(p, "rb").read()
+    except OSError:
+        return None
+
+
+def _wait_remote_file(ctx, name, want_len, timeout):
+    """until the remote file has want_len bytes (or stops growing for 3 s after reaching any size): returns the bytes or None"""
+    last, still = -1, 0.0
+    t_end = time.time() + timeout
+    while time.time() < t_end:
+        b = _remote_bytes(ctx, name)
+        n = -1 if b is None else len(b)
+        if n == want_len:
+            return b
+        if n == last and n >= 0:
+            still += 0.25
+            if still >= 3.0 and n > 0:
+                return b
+        else:
+            still = 0.0
+        last = n
+        time.sleep(0.25)
+    return _remote_bytes(ctx, name)
+
+
+def _send_and_check(ctx, r, label, name, command, expected, timeout):
+    rm_remote(ctx, name)
+    t0 = time.time()
+    ctx.be.clip_set(command)
+    ctx.be.paste(enter=True)
+    got = _wait_remote_file(ctx, name, len(expected), timeout)
+    secs = round(time.time() - t0, 2)
+    r.metric("%s_s" % name.replace(".", "_"), secs)
+    r.metric("%s_bytes_got" % name.replace(".", "_"), -1 if got is None else len(got))
+    ok = got == expected
+    first = None
+    if got is not None and not ok:
+        first = next((i for i, (a, b) in enumerate(zip(expected, got)) if a != b), min(len(expected), len(got)))
+    r.check(ok, "%s: remote file not byte-exact (expected %d bytes, got %s%s, %.1fs)" % (
+        label, len(expected), "no file" if got is None else "%d bytes" % len(got), "" if first is None else ", first difference at byte %d" % first, secs))
+    ctx.shot("heredoc_%s" % name.split(".")[0])
+    return ok
+
+
+@case("remote_heredoc_paste", order=62)
+def c_remote_heredoc(ctx, r):
+    """#1129: a large here-doc and a long single line sent to the REMOTE shell over ssh (the way an agent writes a file) arrive byte-exact. Pasted into the
+    input and submitted with an instant Enter, so they take the same command-write path as an agent's command: a 2,000-line here-doc (~140 KB: above the
+    128 KB no-bracketed-paste wrapper size), a 10 KB single line, and a ~600 KB here-doc (above the 512 KB size from which a bracketed multi-line command
+    goes through the base64 wrapper, #1255). Then, when installed, the same 2,000-line payload in zsh and fish started inside the remote session (fish has
+    no here-docs: a multi-line single-quoted printf). Every file is compared byte for byte with what was sent; the time each took is a metric."""
+    need_ssh(ctx, r)
+    import random as _random
+    rr = _random.Random(1129)
+    secs = connect(ctx, "fake", 60)
+    r.check(secs is not None, "no remote shell prompt after `ssh fake`. Test host: %s" % ("" if secs is not None else ctx.ssh_diag()))
+    if secs is None:
+        ctx.reset()
+        return
+    time.sleep(1.0)
+    eof = "PHOSPHOR_EOF_1129"
+    lines2k = _payload_lines(rr, 200_000, (40, 100))[:2000]
+    heredoc = lambda name, ls: "cat > ~/%s <<'%s'\n%s\n%s" % (name, eof, "\n".join(ls), eof)
+    expect = lambda ls: ("\n".join(ls) + "\n").encode()
+    _send_and_check(ctx, r, "bash: %d-line here-doc (%d bytes)" % (len(lines2k), len(expect(lines2k))), "hd_2k.txt", heredoc("hd_2k.txt", lines2k), expect(lines2k), 90)
+    long_line = "".join(rr.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(10_000))
+    _send_and_check(ctx, r, "bash: 10 KB single line", "hd_line.txt", "printf '%%s\\n' '%s' > ~/hd_line.txt" % long_line, (long_line + "\n").encode(), 60)
+    big = _payload_lines(rr, 600_000)
+    _send_and_check(ctx, r, "bash: %d-line here-doc (%d bytes, wrapper path)" % (len(big), len(expect(big))), "hd_big.txt", heredoc("hd_big.txt", big), expect(big), 180)
+    # zsh / fish inside the remote session (same machine: the harness's sshd runs the remote shell locally, so find_bin applies)
+    for key in ("zsh", "fish"):
+        path, adddir = find_bin(key)
+        if not path:
+            r.note("%s not installed: the remote %s step is skipped" % (key, key))
+            continue
+        probe = "hd_%s_probe.txt" % key
+        rm_remote(ctx, probe)
+        # zsh -f: the remote home has no .zshrc, and an interactive zsh would start zsh-newuser-install and swallow the probe lines
+        ctx.be.type(path + (" -f" if key == "zsh" else ""), 12, enter=True)
+        time.sleep(SHELLS[key][2])
+        ready = False
+        for _ in range(4):
+            ctx.be.type("echo probe >> ~/%s" % probe, 12, enter=True)
+            if ctx.until(lambda: _remote_bytes(ctx, probe), 3):
+                ready = True
+                break
+        r.check(ready, "remote %s never executed a probe line" % key)
+        if not ready:
+            # leave the inner shell (if it started at all) so leave() below talks to the remote bash
+            ctx.be.type("exit", 12, enter=True)
+            time.sleep(1.5)
+            break
+        name = "hd_%s.txt" % key
+        if key == "fish":
+            cmd = "printf '%%s\\n' '%s' > ~/%s" % ("\n".join(lines2k), name)
+        else:
+            cmd = heredoc(name, lines2k)
+        _send_and_check(ctx, r, "remote %s: %d-line payload" % (key, len(lines2k)), name, cmd, expect(lines2k), 120)
+        ctx.be.type("exit", 12, enter=True)
+        time.sleep(1.5)
+    ok = leave(ctx)
+    r.check(ok, "no local prompt after `exit` from the remote shell" if ctx.left_unproven is None else
+            "the pane is not provably REMOTE (probe ran in: %s), so `exit` was NOT typed" % ctx.left_unproven)
+    ctx.reset()
+
+
 # ------------------------------------------------------------------ ssh Enter latency against a plain-ssh control (#1532)
 def remote_stamp_line(ctx):
     """The timestamp line for the REMOTE shell, writing ~/lat_<i> into the remote home. Phosphor and the reference ssh into the SAME remote

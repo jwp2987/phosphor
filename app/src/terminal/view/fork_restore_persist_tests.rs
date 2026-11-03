@@ -56,3 +56,17 @@ fn watchdog_after_completion_is_a_noop() {
     persist.poll([(id(1), false)]);
     assert!(!persist.give_up(armed));
 }
+
+/// #1265: a block whose deferred restore failed is reported once, so the user is told the fork
+/// lost it instead of the block vanishing silently; a new fork reports it again.
+#[test]
+fn failed_blocks_are_reported_once_per_fork() {
+    let mut persist = ForkRestorePersist::default();
+    assert!(!persist.note_failed([]));
+    assert!(persist.note_failed([id(1)]));
+    assert!(!persist.note_failed([id(1)]));
+    assert!(persist.note_failed([id(1), id(2)]));
+    assert!(!persist.note_failed([id(2), id(1)]));
+    persist.reset();
+    assert!(persist.note_failed([id(1)]));
+}
