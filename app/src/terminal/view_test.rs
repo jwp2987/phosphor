@@ -25836,15 +25836,6 @@ fn scenario_agent_writes(view: &mut TerminalView, ctx: &mut ViewContext<Terminal
     view.write_agent_bytes_to_pty(b"y\n".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
     announce_powershell_setup(view);
     view.write_agent_bytes_to_pty(b"q".to_vec(), &AIAgentPtyWriteMode::Raw, ctx);
-    // The scenario ends its own PowerShell setup: left open, it carried into the next scenario of
-    // a chained sequence, where a CLI-agent submit (exempt from every hold in the table, held
-    // behind the PowerShell setup by the legacy writer) was judged against a setup no real pane
-    // has while a CLI agent is in front (#1528).
-    view.powershell_setup_hold = PowerShellSetupHold::Off;
-    view.subshell_bootstrap_announced = None;
-    if let Some(mut queue) = view.paste_queue.queue.try_lock() {
-        let _ = queue.drop_gate(input_queue::GateKind::PowershellSetup, 0);
-    }
 }
 
 /// The navigation keys of the key bindings, in a running command and at an idle prompt.
