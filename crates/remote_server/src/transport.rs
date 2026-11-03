@@ -162,4 +162,13 @@ pub trait RemoteTransport: Send + Sync + std::fmt::Debug {
     fn remove_remote_server_binary(
         &self,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>;
+
+    /// The local ssh ControlMaster socket this transport multiplexes over, whether this app
+    /// created the master or reused one the user owns. Only stat'ed, to tell a crashed proxy
+    /// (socket still there) from the ssh session ending (socket gone); never used for
+    /// teardown, which stays limited to `Connection::control_path` (#1250). `None` for a
+    /// transport without a ControlMaster.
+    fn master_socket_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
