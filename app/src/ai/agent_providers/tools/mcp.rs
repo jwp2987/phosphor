@@ -573,7 +573,18 @@ pub fn parse_mcp_tool_call(
     let parsed: Value = if arguments_json.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str(arguments_json)?
+        // Values the model stringified against the tool's own input schema ("42" for an
+        // integer, a JSON-encoded array) are corrected here, like every built-in tool's
+        // arguments (#1278): the MCP server would only reject them and cost a retry. Values
+        // that already match the schema are left untouched.
+        let schema = server
+            .tools
+            .iter()
+            .find(|t| t.name == tool_name)
+            .map(|t| Value::Object((*t.input_schema).clone()));
+        let coerced = schema
+            .and_then(|schema| super::coerce::coerce_args_against_schema(arguments_json, &schema));
+        serde_json::from_str(coerced.as_deref().unwrap_or(arguments_json))?
     };
     let obj = parsed
         .as_object()

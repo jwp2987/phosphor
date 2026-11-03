@@ -997,9 +997,25 @@ fn attachment_read_give_up() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+/// What a queued submit sends once its attachments are read: a user query, or a skill
+/// invocation carrying the live-staged attachments (#1314).
+enum QueuedSend {
+    User(UserQuerySend),
+    Skill(SkillSend),
+}
+
+impl QueuedSend {
+    fn conversation_id(&self) -> Option<AIConversationId> {
+        match self {
+            QueuedSend::User(send) => Some(send.conversation_id),
+            QueuedSend::Skill(send) => send.conversation_id(),
+        }
+    }
+}
+
 struct PendingQuerySend {
     seq: u64,
-    send: UserQuerySend,
+    send: QueuedSend,
     read: Option<Vec<ReadAttachment>>,
     /// The live-staged attachments were taken (and cleared from staging) at submit time, so
     /// this send owns them; see `send_query` (#1370 F4).
@@ -1916,13 +1932,31 @@ impl BlocklistAIController {
             is_queued_prompt,
         };
 
-        // Reading attached files is disk IO that grows with the file (up to 10 MB), so it runs
-        // on a worker thread. Submits stay strictly ordered: while an earlier submit is still
-        // waiting on its read, every later one queues behind it, and they are sent in the order
-        // they were made.
+        self.schedule_send(
+            QueuedSend::User(send),
+            prompt_attachments,
+            direct_staged,
+            ctx,
+        );
+    }
+
+    /// Sends `send` once `prompt_attachments` are read. Reading attached files is disk IO that
+    /// grows with the file (up to 10 MB), so it runs on a worker thread. Submits stay strictly
+    /// ordered: while an earlier submit is still waiting on its read, every later one queues
+    /// behind it, and they are sent in the order they were made.
+    ///
+    /// `direct_staged`: `prompt_attachments` were copied from live staging (not from a queued
+    /// row), so a deferred send takes them out of staging.
+    fn schedule_send(
+        &mut self,
+        send: QueuedSend,
+        prompt_attachments: Vec<PendingAttachment>,
+        direct_staged: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let needs_read = attachments_need_disk_read(&prompt_attachments);
         if !needs_read && self.pending_query_sends.is_empty() {
-            self.finish_user_query_send(send, read_attachments(prompt_attachments), ctx);
+            self.finish_queued_send(send, read_attachments(prompt_attachments), ctx);
             return;
         }
         // This send is deferred past this call. The attachments it copied from live staging are
@@ -2056,7 +2090,7 @@ impl BlocklistAIController {
         self.next_query_send_seq += 1;
         self.pending_query_sends.push_back(PendingQuerySend {
             seq,
-            send: UserQuerySend {
+            send: QueuedSend::User(UserQuerySend {
                 input_query: InputQueryType::UserSubmittedQueryFromInput {
                     query: query.to_owned(),
                     static_query_type: None,
@@ -2070,7 +2104,7 @@ impl BlocklistAIController {
                 additional_attachments: HashMap::new(),
                 entrypoint_type: EntrypointType::UserInitiated,
                 is_queued_prompt: false,
-            },
+            }),
             read: None,
             staged_taken: false,
             _cancel_read: CancelOnDrop::default(),
@@ -2167,7 +2201,7 @@ impl BlocklistAIController {
     ) {
         let before = self.pending_query_sends.len();
         self.pending_query_sends
-            .retain(|entry| entry.send.conversation_id != conversation_id);
+            .retain(|entry| entry.send.conversation_id() != Some(conversation_id));
         if self.pending_query_sends.len() != before {
             self.drain_ready_query_sends(ctx);
         }
@@ -2199,12 +2233,25 @@ impl BlocklistAIController {
             } else {
                 Vec::new()
             };
-            self.finish_user_query_send(send, read, ctx);
+            self.finish_queued_send(send, read, ctx);
             if !newer.is_empty() {
                 self.context_model.update(ctx, |context_model, ctx| {
                     context_model.append_pending_attachments(newer, ctx);
                 });
             }
+        }
+    }
+
+    /// Sends a queued submit whose attachments have been read.
+    fn finish_queued_send(
+        &mut self,
+        send: QueuedSend,
+        read: Vec<ReadAttachment>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match send {
+            QueuedSend::User(send) => self.finish_user_query_send(send, read, ctx),
+            QueuedSend::Skill(send) => send.finish(self, read, ctx),
         }
     }
 

@@ -1029,6 +1029,13 @@ impl RemoteTransport for SshTransport {
             }
         })
     }
+
+    /// The ControlPath socket, owned or reused: a reused, user-owned master is never torn
+    /// down (`control_path_for_teardown`), but its socket still tells a crashed proxy from
+    /// the ssh session ending (#1250).
+    fn master_socket_path(&self) -> Option<PathBuf> {
+        Some(self.socket_path.clone())
+    }
 }
 
 #[cfg(test)]
@@ -1129,6 +1136,20 @@ mod tests {
             None,
             "reused user-owned ControlMaster must yield None so teardown leaves it running",
         );
+    }
+
+    // #1250: a reused, user-owned master has no teardown path, but its socket is still the
+    // one to stat when the proxy dies, so a crashed proxy is not mistaken for the user leaving.
+    #[test]
+    fn master_socket_path_is_reported_whether_or_not_the_master_is_owned() {
+        let socket_path = PathBuf::from("/tmp/control-master.sock");
+        for owned in [true, false] {
+            let transport = SshTransport::new(socket_path.clone(), static_auth_context(), owned);
+            assert_eq!(
+                RemoteTransport::master_socket_path(&transport),
+                Some(socket_path.clone()),
+            );
+        }
     }
 
     // The `owns_control_master` flag passed to `new()` is exposed verbatim

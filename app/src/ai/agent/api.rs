@@ -177,6 +177,10 @@ pub struct RequestParams {
     pub codebase_symbols: std::sync::Arc<
         Vec<crate::ai::agent_providers::tools::codebase_runtime::CodebaseSymbol>,
     >,
+    /// Why `codebase_symbols` is empty or incomplete (index disabled, still building, failed,
+    /// partial), resolved in `new()` with the snapshot; `search_codebase` passes it on to the
+    /// model (#1276). `None` when the index is complete or the tool is off.
+    pub codebase_index_note: Option<&'static str>,
     /// Zap BYOP-only: request-scoped snapshot powering the local `get_relevant_files`
     /// tool (candidate file+symbol list + the query-independent one-shot context).
     /// Materialized in `new()` (where `AppContext` is available) only when
@@ -404,6 +408,7 @@ impl RequestParams {
             web_search_enabled: false,
             codebase_context_enabled: false,
             codebase_symbols: std::sync::Arc::new(Vec::new()),
+            codebase_index_note: None,
             relevant_files: None,
             codebase_retrieval: None,
             computer_use_enabled: false,
@@ -550,6 +555,17 @@ impl RequestParams {
         } else {
             std::sync::Arc::new(Vec::new())
         };
+        // Resolved after the snapshot: collecting it is what asks for a missing outline, so a
+        // first request reads "still being built", not "no repository".
+        let codebase_index_note = if codebase_context_enabled {
+            crate::ai::agent_providers::tools::codebase_runtime::codebase_index_state(
+                app,
+                &session_context,
+            )
+            .note()
+        } else {
+            None
+        };
         // Shares the same codebase-context gate as `search_codebase`; additionally needs a
         // BYOP active-AI one-shot config and a ready outline (else `None` and the tool is
         // filtered out / rejected).
@@ -658,6 +674,7 @@ impl RequestParams {
             web_search_enabled,
             codebase_context_enabled,
             codebase_symbols,
+            codebase_index_note,
             relevant_files,
             codebase_retrieval,
             computer_use_enabled,

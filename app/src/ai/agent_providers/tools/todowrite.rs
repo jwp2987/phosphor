@@ -165,8 +165,8 @@ pub fn build_update_todos_messages(
     task_id: &str,
     request_id: &str,
 ) -> Result<Vec<api::Message>> {
-    let parsed: Args =
-        serde_json::from_str(args_str).map_err(|e| anyhow!("todowrite args parse error: {e}"))?;
+    let parsed: Args = super::coerce::parse_with_coerce(args_str, parameters)
+        .map_err(|e| anyhow!("todowrite args parse error: {e}"))?;
 
     // All todos start as pending (keeping the model's given order); this feeds CreateTodoList.
     let initial_todos: Vec<api::TodoItem> = parsed.todos.iter().map(to_todo_item).collect();

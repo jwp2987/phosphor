@@ -2237,13 +2237,19 @@ impl RemoteServerManager {
                 },
             );
 
+            // The socket to probe: the master we own, else the transport's own ControlPath
+            // (a reused, user-owned master has no teardown `control_path`, but its socket
+            // still tells a crashed proxy from the ssh session ending; #1250).
+            let master_socket = control_path
+                .clone()
+                .or_else(|| transport.master_socket_path());
             let spawner = self.spawner.clone();
             ctx.background_executor()
                 .spawn(async move {
                     let exit_status = Self::await_exit_status(_child, session_id).await;
                     // A stat of the local ControlPath socket: microseconds,
                     // and off the entity-model thread.
-                    let master_socket_present = control_path.as_ref().map(|p| p.exists());
+                    let master_socket_present = master_socket.as_ref().map(|p| p.exists());
                     let _ = spawner
                         .spawn(move |me, ctx| {
                             me.finish_mark_session_disconnected(
