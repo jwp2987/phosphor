@@ -589,9 +589,14 @@ def c_agent_code_recycle(ctx, r):
         # back to the snippet answer, one block at a time, until it is rebuilt
         off2 = ctx.log_size()
         rebuilt = False
+        vis_first = None      # the snippets on the first frame the answer is back on screen: still the RECYCLED plain rendering (review)
         for _ in range(fillers + 6):
             ctx.be.key(up)
             time.sleep(0.6)
+            if vis_first is None:
+                v = visible_snippets(ctx, "rcy_nav_ocr", tok)
+                if v:
+                    vis_first = v
             if any(e[0] == "rebuilt" and e[1] == block for e in recycle_events(ctx.log_since(off2))):
                 rebuilt = True
                 break
@@ -608,6 +613,11 @@ def c_agent_code_recycle(ctx, r):
         ctx.shot("rcy_rebuilt")
         r.metric("rebuild_shot_stable", h0 == h1)
         r.metric("snippets_visible_rebuilt", [vis0, vis1])
+        r.metric("snippets_visible_first_on_screen", vis_first)
+        if vis_first is not None and vis1 is not None:
+            # the plain -> editor swap (the height change #1267 risks) happens before vis0 is taken; compare across it
+            r.check(vis_first == vis1, "the visible snippets moved between the answer first coming on screen and after its rebuild settled "
+                                       "(the recycled plain rendering and the rebuilt editor differ in height): %s -> %s" % (vis_first, vis1))
         if vis0 is None:
             r.note("no OCR engine: rebuild stability is the screenshot hash only (%s)" % ("stable" if h0 == h1 else "changed"))
             r.check(h0 == h1, "the screen changed after the rebuild of the recycled code blocks settled (height or scroll moved)")
@@ -625,8 +635,8 @@ def c_agent_code_recycle(ctx, r):
         missing = [w for w in want if w not in lines]
         r.metric("copy_missing", missing)
         if len(missing) == len(want):
-            r.note("the copy key (%s) put none of the snippets on the clipboard: the snippet answer was not the selected block, or the model wrote "
-                   "other snippets (clipboard %d bytes)" % (copy, len(clip)))
+            r.unverifiable("the copy key (%s) put none of the snippets on the clipboard: the snippet answer was not the selected block, or the model "
+                           "wrote other snippets (clipboard %d bytes); copy across the rebuild is NOT verified" % (copy, len(clip)))
         else:
             r.check(not missing, "copying the rebuilt answer lost or changed snippet lines: missing %s" % missing)
         r.check(not [c for c in ctx.cmds_since(mark) if "RCY" + tok in c], "snippet text reached the shell")
