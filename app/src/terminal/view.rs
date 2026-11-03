@@ -17728,10 +17728,14 @@ impl TerminalView {
 
                 // In-band commands finishing should never trigger a focus change as it could steal
                 // focus from the TerminalView.
-                // #1596: the kept-text banner goes with any block that ends (a user's or an
-                // agent's ssh); for a user block the input's own end-of-block hand-back restores
-                // the text.
-                if !matches!(block_completed_event.block_type, BlockType::InBandCommand) {
+                // #1596: the kept-text banner goes with a user block that ends (a user's or an
+                // agent's ssh), exactly when the input's own end-of-block hand-back
+                // (`Input::handle_block_completed_event`, `BlockType::User` only) restores the
+                // text. Any other completion (a hidden bootstrap block, e.g. a remote bootstrap
+                // while the ssh block still runs; restored, static or background blocks) leaves
+                // the text kept, so it must leave the banner up too: else the kept text is
+                // invisible until the block ends.
+                if matches!(block_completed_event.block_type, BlockType::User(_)) {
                     self.ssh_kept_text_block_ended(ctx);
                 }
                 if !matches!(block_completed_event.block_type, BlockType::InBandCommand) {
