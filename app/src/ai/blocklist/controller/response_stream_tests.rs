@@ -1,4 +1,3 @@
-#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
 use super::{
@@ -10,7 +9,6 @@ use super::{RetryWaitKind, clear_retry_wait, current_retry_wait, set_retry_wait}
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::api_error::AIApiError;
 // `agent_sdk` (and so the driver's recovery deadline) is native-only here.
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::driver::AUTO_RESUME_TIMEOUT;
 
 // Argument order: has_received_client_actions, is_recoverable, recovery, is_online.
@@ -150,7 +148,6 @@ fn a_scheduled_resume_inherits_a_charged_budget() {
 /// `retry()`'s `pending_resume` assignment through `schedule_auto_resume_after_error` to
 /// `ResponseStream::new`. That path needs a live stream and a `ModelContext`, so it wants
 /// an integration seam this module does not have. Recorded in `TODO.md` rather than faked.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn pending_resume_carries_its_budget_and_backoff_verbatim() {
     // Built exactly as the `RecoveryAction::Resume` arm builds it: the stream's budget
@@ -293,7 +290,6 @@ fn spending_an_attempt_preserves_resume_eligibility() {
 /// the assertion is cloud-bound; it relates two local constants, and both still exist and
 /// still mean the same thing. `attempts_used` is not consulted, so this is a pure
 /// arithmetic property of the schedule.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn the_recovery_backoff_fits_inside_the_driver_run_recovery_window() {
     // The driver re-arms AUTO_RESUME_TIMEOUT per recovery attempt, so what has to fit in
@@ -314,7 +310,6 @@ fn the_recovery_backoff_fits_inside_the_driver_run_recovery_window() {
 
 /// #854: the provider's `Retry-After` stretches the wait but never shortens it, and the
 /// largest hint we accept still fits the driver's recovery window.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_after_stretches_but_never_shortens_the_recovery_wait() {
     let backoff = Duration::from_secs(2);
@@ -335,7 +330,6 @@ fn retry_after_stretches_but_never_shortens_the_recovery_wait() {
 
 /// #853/#854 follow-up: the countdown reads the recorded wait, rounds up to whole seconds, and
 /// is gone once cleared or expired.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_wait_registry_reports_then_clears() {
     let id = AIConversationId::new();
@@ -351,7 +345,6 @@ fn retry_wait_registry_reports_then_clears() {
     assert_eq!(current_retry_wait(id), None);
 }
 
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_wait_expires_on_its_own() {
     let id = AIConversationId::new();
@@ -383,7 +376,6 @@ fn retry_wait_kind_follows_the_error() {
 /// #903: the countdown must keep ticking once a second for the whole wait, independent of any
 /// response stream (a resume waits after its stream is gone). Each tick nudges observers of the
 /// history model, which is what makes the status bar recompute "retrying in N s".
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn retry_wait_pulse_keeps_ticking_until_the_wait_ends() {
     use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
@@ -416,7 +408,6 @@ fn retry_wait_pulse_keeps_ticking_until_the_wait_ends() {
 /// chain's next tick runs on a spawn, and a spawn on a dropped history model never fires, so
 /// relying on that tick to deregister left the id registered forever and no later wait for the
 /// conversation could pulse again.
-#[cfg(not(target_family = "wasm"))]
 #[test]
 fn clearing_the_wait_releases_the_pulse_registration() {
     use super::retry_wait_pulse_running;

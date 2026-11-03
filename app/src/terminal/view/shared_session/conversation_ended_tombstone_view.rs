@@ -12,11 +12,9 @@ use crate::view_components::action_button::{ActionButton, PrimaryTheme};
 use crate::workspace::WorkspaceAction;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use std::path::Path;
-#[cfg(not(target_family = "wasm"))]
 use warp_cli::agent::Harness;
 use warp_core::paths::home_relative_path;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::ambient_agents::AmbientAgentTask;
 use warp_core::ui::icons::Icon;
 use warp_core::ui::theme::{AnsiColorIdentifier, Fill};
@@ -50,7 +48,6 @@ struct TombstoneDisplayData {
     /// Artifacts from the conversation
     artifacts: Vec<Artifact>,
     /// Records the task's execution harness, when available from local data.
-    #[cfg(not(target_family = "wasm"))]
     harness: Option<Harness>,
 }
 
@@ -107,13 +104,11 @@ impl TombstoneDisplayData {
             credits: Some(format_credits(conversation.credits_spent())),
             working_directory: conversation.initial_working_directory(),
             artifacts: conversation.artifacts().to_vec(),
-            #[cfg(not(target_family = "wasm"))]
             harness: None,
         }
     }
 
     /// Enriches the displayed info using data from AmbientAgentTask.
-    #[cfg(not(target_family = "wasm"))]
     fn enrich_from_task(&mut self, task: AmbientAgentTask) {
         // Use task title if we don't have a conversation title.
         if self.title.is_none() {
@@ -165,7 +160,6 @@ impl TombstoneDisplayData {
 pub struct ConversationEndedTombstoneView {
     display_data: TombstoneDisplayData,
     artifact_buttons_view: ViewHandle<ArtifactButtonsRow>,
-    #[cfg(not(target_family = "wasm"))]
     continue_locally_button: Option<ViewHandle<ActionButton>>,
     #[cfg(target_family = "wasm")]
     open_in_warp_button: Option<ViewHandle<ActionButton>>,
@@ -199,7 +193,6 @@ impl ConversationEndedTombstoneView {
         let artifact_buttons_view =
             ctx.add_typed_action_view(|ctx| ArtifactButtonsRow::new(&display_data.artifacts, ctx));
 
-        #[cfg(not(target_family = "wasm"))]
         let continue_locally_button = conversation_id.map(|conv_id| {
             ctx.add_typed_action_view(move |_| {
                 ActionButton::new(crate::t!("terminal-continue-locally"), PrimaryTheme)
@@ -230,7 +223,6 @@ impl ConversationEndedTombstoneView {
         let view = Self {
             display_data,
             artifact_buttons_view,
-            #[cfg(not(target_family = "wasm"))]
             continue_locally_button,
             #[cfg(target_family = "wasm")]
             open_in_warp_button,
@@ -427,7 +419,6 @@ impl ConversationEndedTombstoneView {
 
         let mut has_button = false;
 
-        #[cfg(not(target_family = "wasm"))]
         {
             // Hide for non-Oz harnesses (e.g. Claude, Gemini): they can't be
             // forked into a local Zap conversation. Unknown harness (None) is
@@ -466,7 +457,6 @@ impl ConversationEndedTombstoneView {
 
 #[derive(Debug, Clone)]
 pub enum ConversationEndedTombstoneAction {
-    #[cfg(not(target_family = "wasm"))]
     ContinueLocally(AIConversationId),
     #[cfg(target_family = "wasm")]
     OpenInWarp(AIConversationId),
@@ -549,7 +539,6 @@ impl TypedActionView for ConversationEndedTombstoneView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
-            #[cfg(not(target_family = "wasm"))]
             ConversationEndedTombstoneAction::ContinueLocally(conversation_id) => {
                 ctx.dispatch_typed_action(&WorkspaceAction::ContinueConversationLocally {
                     conversation_id: *conversation_id,

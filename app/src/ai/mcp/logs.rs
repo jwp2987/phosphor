@@ -14,9 +14,7 @@ use uuid::Uuid;
 /// Gated to non-wasm: the only consumer is the native MCP manager, which is
 /// itself `#[cfg(not(target_family = "wasm"))]`, so these would be dead code
 /// on the wasm build.
-#[cfg(not(target_family = "wasm"))]
 const MCP_LOG_MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
-#[cfg(not(target_family = "wasm"))]
 const MCP_LOG_MAX_ROTATION: usize = 5;
 
 pub fn relative_log_file_path_from_uuid(uuid: &Uuid) -> PathBuf {
@@ -32,7 +30,6 @@ pub fn log_file_path_from_uuid(uuid: &Uuid) -> PathBuf {
 /// if a future change accidentally sets one of the cap constants to zero;
 /// callers can treat `None` as "rotation disabled" and the existing
 /// truncate-on-create behavior is preserved.
-#[cfg(not(target_family = "wasm"))]
 pub fn mcp_log_rotation_config() -> Option<simple_logger::RotationConfig> {
     simple_logger::RotationConfig::new(MCP_LOG_MAX_FILE_SIZE_BYTES, MCP_LOG_MAX_ROTATION)
 }

@@ -103,7 +103,6 @@ fn parse_json_with_optional_braces(input: &str) -> anyhow::Result<Value> {
     serde_json::from_str(&json).with_context(|| "Invalid MCP JSON".to_string())
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn normalize_mcp_json_for_single_server(input: &str) -> anyhow::Result<String> {
     crate::ai::mcp::parsing::normalize_mcp_json(input)
         .map_err(|e| anyhow::anyhow!(e))

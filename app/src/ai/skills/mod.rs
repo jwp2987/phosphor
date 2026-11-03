@@ -22,7 +22,6 @@ pub use ai::skills::SkillReference;
 /// (out of `skill_manager.rs`/`dummy_skill_manager.rs`, which each used to define their
 /// own copy) so both implementations share one definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub enum SkillManagerEvent {
     InventoryChanged,
 }
@@ -133,9 +132,7 @@ impl SkillPathQuery for PathBuf {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 mod resolve_skill_spec;
-#[cfg(not(target_family = "wasm"))]
 pub use resolve_skill_spec::{
     clone_repo_for_skill, resolve_skill_spec, ResolveSkillError, ResolvedSkill,
 };

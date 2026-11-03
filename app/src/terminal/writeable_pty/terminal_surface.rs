@@ -41,7 +41,6 @@ use crate::terminal::{ShellLaunchData, SizeInfo, SizeUpdate};
 /// resizing, command execution, and native shell completions.
 pub enum PtyIntent {
     CtrlD,
-    #[cfg(not(target_family = "wasm"))]
     Interrupt,
     /// SIGINT to the pty's foreground process group instead of a ^C byte (#1001); falls back
     /// to the byte where no signal path exists.

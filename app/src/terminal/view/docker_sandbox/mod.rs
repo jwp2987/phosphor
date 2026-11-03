@@ -4,7 +4,6 @@ use std::sync::mpsc::SyncSender;
 #[cfg(feature = "local_tty")]
 use warpui::ModelHandle;
 use warpui::ViewContext;
-#[cfg(not(target_family = "wasm"))]
 use warpui::ViewHandle;
 #[cfg(feature = "local_tty")]
 use warpui::geometry::vector::Vector2F;
@@ -152,7 +151,6 @@ impl TerminalView {
             view.set_pane_configuration(pane_configuration);
         });
 
-        #[cfg(not(target_family = "wasm"))]
         let terminal_view_for_init = terminal_view.clone();
 
         pane_stack.update(ctx, |stack, ctx| {

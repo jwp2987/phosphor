@@ -352,7 +352,6 @@ impl BlockFindResults {
             drop(old);
             return false;
         }
-        #[cfg(not(target_family = "wasm"))]
         {
             // If the thread cannot start, the closure (and `old`) is dropped right here.
             let _ = std::thread::Builder::new()

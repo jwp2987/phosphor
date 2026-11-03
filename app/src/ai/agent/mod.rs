@@ -2232,7 +2232,6 @@ impl AIAgentOutputMessage {
 // Information about what MCP capabilities the client has, to
 // be provided as context for Agent Mode requests.
 #[derive(Debug, Clone)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub struct MCPContext {
     // Old flat structure (deprecated but kept for backward compatibility)
     #[deprecated]
@@ -2244,7 +2243,6 @@ pub struct MCPContext {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub struct MCPServer {
     pub id: String,
     pub name: String,

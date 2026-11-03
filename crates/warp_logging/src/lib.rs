@@ -55,17 +55,14 @@ pub fn default_max_file_size_bytes(frontend: LogFrontend) -> Option<u64> {
 #[path = "native.rs"]
 mod imp;
 
-#[cfg(not(target_family = "wasm"))]
 mod rotation;
 
 pub use imp::init;
-#[cfg(not(target_family = "wasm"))]
 pub use imp::{
     ExtraFile, InlineFile, LogBundleExtras, create_log_bundle_zip, default_log_bundle_filename,
     log_directory, log_file_path, rotate_log_files, write_log_bundle_zip_to,
 };
 
-#[cfg(not(target_family = "wasm"))]
 pub use imp::{
     init_for_crash_recovery_process, init_logging_for_unit_tests, on_crash_recovery_process_killed,
     on_parent_process_crash,
@@ -73,7 +70,6 @@ pub use imp::{
 
 /// Tap on the unit-test logger, for tests that must assert on what a production
 /// call site actually emitted. See [`set_unit_test_log_tap`].
-#[cfg(not(target_family = "wasm"))]
 pub use imp::{UnitTestLogTap, set_unit_test_log_tap, unit_test_log_tap_is_available};
 
 /// Why log-file setup failed and logging fell back to the terminal (#861).
@@ -90,7 +86,6 @@ static LOG_FALLBACK_NOTICE: std::sync::Mutex<Option<LogFallbackNotice>> =
 
 /// Records that logging fell back to the terminal. Called by the logger
 /// before any UI exists; the UI takes it with [`take_log_fallback_notice`].
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn record_log_fallback(directory: std::path::PathBuf, reason: String) {
     if let Ok(mut slot) = LOG_FALLBACK_NOTICE.lock() {
         *slot = Some(LogFallbackNotice { directory, reason });

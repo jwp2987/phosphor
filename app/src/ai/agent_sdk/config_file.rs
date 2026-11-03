@@ -40,7 +40,6 @@ pub struct LoadedAgentConfigSnapshotFile {
 /// - `.json` => JSON
 /// - `.yml` / `.yaml` => YAML
 /// - otherwise: try JSON, then YAML
-#[cfg(not(target_family = "wasm"))]
 pub fn load_config_file(path: &Path) -> anyhow::Result<LoadedAgentConfigSnapshotFile> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file '{}'", path.display()))?;

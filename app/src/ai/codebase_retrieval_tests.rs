@@ -70,7 +70,6 @@ fn an_index_still_building_is_reported_as_syncing() {
 // above exactly, since the daemon computed its error code from the same
 // `RetrieveFileError` in the first place (see
 // `app::remote_server::server_model::search_remote_codebase_error_response_from_error`).
-#[cfg(not(target_family = "wasm"))]
 mod remote_leg {
     use remote_server::proto::{RemoteCodebaseSearchError, RemoteCodebaseSearchErrorCode};
 

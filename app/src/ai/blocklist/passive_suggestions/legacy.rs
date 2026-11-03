@@ -1,11 +1,8 @@
-#[cfg(not(target_family = "wasm"))]
 use command::r#async::Command;
-#[cfg(not(target_family = "wasm"))]
 use std::process::Stdio;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use super::static_prompt_suggestions::static_suggested_query;
-#[cfg(not(target_family = "wasm"))]
 use crate::ai::agent::PassiveSuggestionTrigger;
 use crate::ai::agent::{AIAgentExchangeId, CancellationReason};
 use crate::ai::blocklist::controller::{
@@ -323,7 +320,6 @@ impl PassiveSuggestionsModel {
             let (_, _) = (block_completed, ctx);
         }
 
-        #[cfg(not(target_family = "wasm"))]
         {
             let serialized_block = block_completed.serialized_block_without_output.get_with(|compute| {
                 let model = self.terminal_model.lock();

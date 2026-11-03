@@ -849,7 +849,6 @@ impl Input {
                 }
             }
             export_to_file if command.name == commands::EXPORT_TO_FILE.name => {
-                #[cfg(not(target_family = "wasm"))]
                 {
                     self.export_conversation_to_file(
                         argument.map(|filename| filename.to_owned()),

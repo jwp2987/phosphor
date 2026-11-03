@@ -5,22 +5,17 @@ mod imp;
 mod sink_map_err;
 
 use anyhow::anyhow;
-#[cfg(not(target_family = "wasm"))]
 pub use async_tungstenite::tungstenite::client::IntoClientRequest;
-#[cfg(not(target_family = "wasm"))]
 use async_tungstenite::tungstenite::http::HeaderValue;
 use futures_util::{future, SinkExt, TryStreamExt};
-#[cfg(not(target_family = "wasm"))]
 use itertools::Itertools;
 use thiserror::Error;
 
-#[cfg(not(target_family = "wasm"))]
 pub use async_tungstenite::tungstenite;
 
 // Issue #72: re-exports the global proxy types from the native::proxy module
 // to the crate root, so `app::settings::network` / `app::settings::init` can
 // reference them directly via `websocket::ProxyMode`.
-#[cfg(not(target_family = "wasm"))]
 pub use imp::proxy::{set_global_proxy_config, ProxyConfig, ProxyMode};
 
 use crate::sink_map_err::map_err;
@@ -100,7 +95,6 @@ impl WebSocket {
     /// Create the [`WebSocket`] by connecting using the provided `request`.
     /// For non-wasm WebSockets, the request can be enriched with custom
     /// request headers.
-    #[cfg(not(target_family = "wasm"))]
     pub async fn connect(
         request: impl IntoClientRequest,
         protocols: impl IntoIterator<Item = &str>,

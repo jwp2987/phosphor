@@ -222,7 +222,6 @@ impl AgentProviderSecrets {
     ///
     /// Emits [`AgentProviderSecretsEvent::KeysUpdated`] when the read lands, matching
     /// [`Self::set`]: subscribers re-derive from [`Self::get`] rather than diffing.
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn reload_from_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
         self.start_load(ctx);
     }

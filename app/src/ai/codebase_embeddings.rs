@@ -718,7 +718,6 @@ pub fn refresh_codebase_indexing_configuration(
 ) {
     store_client.refresh_from_settings(&*ctx);
 
-    #[cfg(not(target_family = "wasm"))]
     {
         use remote_server::manager::RemoteServerManager;
 
@@ -801,7 +800,6 @@ pub fn subscribe_to_codebase_indexing_configuration(
 /// interesting part -- names only, values never even reachable from the
 /// return type -- is testable without going through `log` or the process-wide
 /// `Once`.
-#[cfg(not(target_family = "wasm"))]
 fn extra_header_names_to_warn_about(extra_headers: &[(String, String)]) -> Option<Vec<&str>> {
     if extra_headers.is_empty() {
         return None;
@@ -820,7 +818,6 @@ fn extra_header_names_to_warn_about(extra_headers: &[(String, String)]) -> Optio
 /// forwarded to a remote-indexing daemon, because `EmbeddingProviderConfig` (the
 /// wire message) has no field for them. Logs header **names** and a count only;
 /// never values, which may contain secrets.
-#[cfg(not(target_family = "wasm"))]
 fn warn_once_if_remote_indexing_drops_extra_headers(extra_headers: &[(String, String)]) {
     static WARNED: std::sync::Once = std::sync::Once::new();
     let Some(names) = extra_header_names_to_warn_about(extra_headers) else {
@@ -891,7 +888,6 @@ mod remote_indexing_extra_headers_warning_tests {
 /// isn't handed a different model than the one the local vector store already
 /// has rows for, which would otherwise send the daemon on its own,
 /// independent full re-embed under a storage key the local side never uses.
-#[cfg(not(target_family = "wasm"))]
 pub fn remote_client_preferences(
     app: &AppContext,
     store: &SqliteVectorStore,
@@ -989,7 +985,6 @@ pub fn remote_client_preferences(
 /// dropped after being read, it must never be read at all. A "compute the
 /// verdict and then discard it" shape would still pull the key out of the
 /// keychain on every settings change.
-#[cfg(not(target_family = "wasm"))]
 fn remote_embedding_provider(
     remote_indexing_in_use: bool,
     resolve: impl FnOnce() -> Option<remote_server::proto::EmbeddingProviderConfig>,

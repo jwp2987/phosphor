@@ -42,19 +42,16 @@ impl platform::FontDB for CountingFontDb {
         Ok(FamilyId(0))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_from_system(&mut self, _font_family: &str) -> Result<FamilyId> {
         Ok(FamilyId(0))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn load_all_system_fonts(
         &self,
     ) -> futures::future::BoxFuture<'static, Box<dyn LoadedSystemFonts>> {
         futures::future::ready(Box::new(NoLoadedFonts) as Box<dyn LoadedSystemFonts>).boxed()
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn process_loaded_system_fonts(
         &mut self,
         _loaded_system_fonts: Box<dyn LoadedSystemFonts>,

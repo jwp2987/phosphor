@@ -2373,7 +2373,6 @@ fn should_load_blocklist_image_asset(asset_source: &AssetSource) -> bool {
     !matches!(asset_source, AssetSource::LocalFile { .. })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn should_load_blocklist_image_asset(_: &AssetSource) -> bool {
     true
 }

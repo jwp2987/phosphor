@@ -4,23 +4,17 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use warp_core::channel::{Channel, ChannelState};
 
-#[cfg(not(target_family = "wasm"))]
 mod docker;
-#[cfg(not(target_family = "wasm"))]
 mod docker_sandbox;
-#[cfg(not(target_family = "wasm"))]
 mod kubernetes;
-#[cfg(not(target_family = "wasm"))]
 mod namespace;
 
 /// Environment variable set by the server to identify the isolation platform.
 /// The value should match one of the `IsolationPlatformType` variants in snake_case.
-#[cfg(not(target_family = "wasm"))]
 const WARP_ISOLATION_PLATFORM_ENV: &str = "WARP_ISOLATION_PLATFORM";
 
 /// Environment variable containing the generic Zap-managed workload token that we use
 /// for isolation platforms that don't issue their own tokens.
-#[cfg(not(target_family = "wasm"))]
 const WARP_WORKLOAD_TOKEN_ENV: &str = "WARP_WORKLOAD_TOKEN";
 
 /// A kind of isolation platform. For our usage, isolation platforms are different ways where Zap
@@ -31,16 +25,12 @@ const WARP_WORKLOAD_TOKEN_ENV: &str = "WARP_WORKLOAD_TOKEN";
 pub enum IsolationPlatformType {
     /// Zap is running within a Docker container. Note that this does *not* mean this is a Zap-hosted
     /// Docker Sandboxes environment. Instead, it's likely a self-hosted agent.
-    #[cfg(not(target_family = "wasm"))]
     Docker,
     /// Zap is running within a Docker Sandbox, likely as a Zap-hosted agent.
-    #[cfg(not(target_family = "wasm"))]
     DockerSandbox,
     /// Zap is running within a Kubernetes pod, likely as a self-hosted agent.
-    #[cfg(not(target_family = "wasm"))]
     Kubernetes,
     /// Zap is running within a Namespace instance, likely as a Zap-hosted agent.
-    #[cfg(not(target_family = "wasm"))]
     Namespace,
 }
 
@@ -70,22 +60,18 @@ pub fn detect() -> Option<IsolationPlatformType> {
         let platform = (|| {
             // If the server explicitly told us which platform we're on, trust it.
             // This takes priority over all heuristic-based detection.
-            #[cfg(not(target_family = "wasm"))]
             if let Some(platform) = platform_from_env() {
                 return Some(platform);
             }
 
-            #[cfg(not(target_family = "wasm"))]
             if namespace::is_in_namespace_instance() {
                 return Some(IsolationPlatformType::Namespace);
             }
 
-            #[cfg(not(target_family = "wasm"))]
             if kubernetes::is_in_kubernetes() {
                 return Some(IsolationPlatformType::Kubernetes);
             }
 
-            #[cfg(not(target_family = "wasm"))]
             if docker::is_in_docker() {
                 return Some(IsolationPlatformType::Docker);
             }
@@ -115,13 +101,10 @@ pub async fn issue_workload_token(
     duration: Option<Duration>,
 ) -> Result<WorkloadToken, IsolationPlatformError> {
     match detect() {
-        #[cfg(not(target_family = "wasm"))]
         Some(IsolationPlatformType::DockerSandbox) => {
             docker_sandbox::issue_workload_token(duration).await
         }
-        #[cfg(not(target_family = "wasm"))]
         Some(IsolationPlatformType::Namespace) => namespace::issue_workload_token(duration).await,
-        #[cfg(not(target_family = "wasm"))]
         // Check for a platform-agnostic workload token if there's no
         // isolation platform or if the detected platform doesn't have
         // its own workload token mechanism.
@@ -135,7 +118,6 @@ pub async fn issue_workload_token(
 
 /// Read a platform-agnostic workload token from the `WARP_WORKLOAD_TOKEN` environment variable.
 /// Returns a `WorkloadToken` with no expiration, or an error if the variable is missing/empty.
-#[cfg(not(target_family = "wasm"))]
 fn read_generic_workload_token() -> Result<WorkloadToken, IsolationPlatformError> {
     let token = std::env::var(WARP_WORKLOAD_TOKEN_ENV)
         .map_err(|_| IsolationPlatformError::GenericWorkloadTokenMissing)?;
@@ -149,7 +131,6 @@ fn read_generic_workload_token() -> Result<WorkloadToken, IsolationPlatformError
 }
 
 /// Parse the `WARP_ISOLATION_PLATFORM` environment variable into a platform type.
-#[cfg(not(target_family = "wasm"))]
 fn platform_from_env() -> Option<IsolationPlatformType> {
     let value = std::env::var(WARP_ISOLATION_PLATFORM_ENV).ok()?;
     match value.as_str() {

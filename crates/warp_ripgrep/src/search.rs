@@ -136,7 +136,6 @@ pub fn run_search_subprocess(
     Ok(())
 }
 
-#[cfg(not(target_family = "wasm"))]
 mod process_impl {
     use std::path::PathBuf;
     use std::process::Stdio;
@@ -320,7 +319,6 @@ mod process_impl {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub use process_impl::{search, search_streaming};
 
 #[cfg(all(test, not(target_family = "wasm")))]

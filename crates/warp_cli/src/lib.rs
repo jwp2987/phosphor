@@ -290,25 +290,21 @@ pub enum WorkerCommand {
     /// Run the remote development server proxy over SSH stdio.
     /// Ensures the daemon is running, then bridges its stdin/stdout
     /// to the daemon via a Unix domain socket.
-    #[cfg(not(target_family = "wasm"))]
     #[clap(hide = true)]
     RemoteServerProxy(RemoteServerIdentityArgs),
 
     /// Run the long-lived remote development server daemon.
     /// Listens on a Unix domain socket and accepts multiple concurrent
     /// connections from proxy processes.
-    #[cfg(not(target_family = "wasm"))]
     #[clap(hide = true)]
     RemoteServerDaemon(RemoteServerIdentityArgs),
 
     /// Render one mermaid diagram: source on stdin, SVG on stdout. Run in a child process so a
     /// stack overflow in the renderer (an abort) cannot take the app down (#1557).
-    #[cfg(not(target_family = "wasm"))]
     #[clap(hide = true)]
     MermaidRender,
 
     /// Run a headless ripgrep search worker.
-    #[cfg(not(target_family = "wasm"))]
     #[clap(hide = true)]
     RipgrepSearch {
         #[clap(flatten)]
@@ -407,7 +403,6 @@ pub enum Command {
     /// build target (upstream `83b4c101e`): a standalone generator binary
     /// recompiled and relinked the whole `warp` dependency graph a second
     /// time for no reason other than emitting this file.
-    #[cfg(not(target_family = "wasm"))]
     #[clap(long_flag = "dump-settings-schema")]
     DumpSettingsSchema {
         /// Simulate this channel's feature flags (`dev`, `preview`, or
@@ -436,7 +431,6 @@ impl Command {
             Command::Worker(_) => false,
             Command::CommandLine(_) | Command::DumpDebugInfo => true,
             Command::Completions { .. } => true,
-            #[cfg(not(target_family = "wasm"))]
             Command::DumpSettingsSchema { output_path, .. } => output_path.is_none(),
         }
     }
@@ -480,7 +474,6 @@ pub fn terminal_server_subcommand() -> String {
 }
 
 /// Returns the subcommand name to use for starting the ripgrep search worker.
-#[cfg(not(target_family = "wasm"))]
 pub fn ripgrep_search_subcommand() -> String {
     <Args as CommandFactory>::command()
         .find_subcommand("ripgrep-search")

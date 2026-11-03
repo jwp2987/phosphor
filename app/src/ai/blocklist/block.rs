@@ -30,7 +30,6 @@ use crate::ai::blocklist::inline_action::suggested_unit_tests::SuggestedUnitTest
 use crate::ai::blocklist::BlocklistAIContextEvent;
 use crate::ai::blocklist::BlocklistAIContextModel;
 use crate::ai::blocklist::SuggestionDismissButtonTheme;
-#[cfg(not(target_family = "wasm"))]
 use repo_metadata::repositories::DetectedRepositories;
 
 #[cfg(feature = "local_fs")]
@@ -5665,7 +5664,6 @@ impl AIBlock {
         canonical_cwd: Option<&Path>,
         ctx: &mut ViewContext<Self>,
     ) {
-        #[cfg(not(target_family = "wasm"))]
         let repo_path = self
             .current_working_directory
             .as_ref()

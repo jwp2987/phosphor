@@ -38,7 +38,6 @@ use crate::protocol::{
 };
 
 /// Requests an action-scoped credential and sends one authenticated control request.
-#[cfg(not(target_family = "wasm"))]
 pub fn send_request(
     instance: &InstanceRecord,
     request: &RequestEnvelope,

@@ -1043,7 +1043,6 @@ impl TerminalView {
             Some(GateKind::PasteReading) => {
                 // #1353 phase 6 (INP-A4): the paste gave up on its clipboard read, so the reader's
                 // cancel flag is signalled and the blocked-reader count / log reflect it.
-                #[cfg(not(target_family = "wasm"))]
                 warpui::clipboard::abandon_pending_reads();
                 self.hand_back_gate_keys(GateKind::PasteReading, gate_key, "paste_cap", ctx);
                 return;
@@ -2740,7 +2739,6 @@ impl TerminalView {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl TerminalView {
     /// Starts a terminal-bound paste on the queue: reads the clipboard and builds the pty bytes
     /// on a worker thread; the paste is an entry held by a `PasteReading` gate until the result.

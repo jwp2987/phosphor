@@ -122,7 +122,6 @@ impl AIApiError {
             return AIApiError::Transport(err);
         }
         if err.is_decode() {
-            #[cfg(not(target_family = "wasm"))]
             {
                 use std::error::Error as _;
                 let mut source = err.source();
@@ -181,7 +180,6 @@ impl AIApiError {
                 stream_type,
                 #[cfg(target_family = "wasm")]
                 source: anyhow!("{err:#?}"),
-                #[cfg(not(target_family = "wasm"))]
                 source: anyhow!(err),
             },
         }

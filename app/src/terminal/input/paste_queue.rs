@@ -331,7 +331,6 @@ impl Input {
         }
         // #1353 phase 6 (INP-A4): a paste that gives up on its clipboard read signals the reader's
         // cancel flag, so the blocked-reader count and the log reflect an abandoned read.
-        #[cfg(not(target_family = "wasm"))]
         {
             let is_paste_gate = queue.try_peek().is_some_and(|queue| {
                 queue.gates().iter().any(|gate| {
@@ -386,7 +385,6 @@ impl Input {
     }
 
     /// Starts an editor-bound clipboard read on the queue.
-    #[cfg(not(target_family = "wasm"))]
     pub(super) fn start_queued_read(
         &mut self,
         reader: warpui::clipboard::BackgroundTextReader,
@@ -453,7 +451,6 @@ impl Input {
         );
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn show_paste_failed_toast(&mut self, ctx: &mut ViewContext<Self>) {
         if ctx.has_singleton_model::<ToastStack>() {
             let window_id = ctx.window_id();
@@ -470,7 +467,6 @@ impl Input {
     /// The reader's result for paste `id` (`None`: the reader thread died). Opens the paste's
     /// gate: the paste is applied, then the keys typed behind it in order. A cancelled or
     /// given-up paste is no longer in the queue and the late result changes nothing.
-    #[cfg(not(target_family = "wasm"))]
     fn finish_queued_read(
         &mut self,
         id: u64,
@@ -525,7 +521,6 @@ impl Input {
         self.flush_deferred_programmatic_edits(ctx);
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub(super) fn show_paste_too_large_toast(&mut self, bytes: usize, ctx: &mut ViewContext<Self>) {
         if ctx.has_singleton_model::<ToastStack>() {
             let window_id = ctx.window_id();

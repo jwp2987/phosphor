@@ -243,7 +243,6 @@ impl fmt::Debug for RemoteServerClient {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl RemoteServerClient {
     /// Creates a client from a child process's stdin, stdout, and stderr.
     ///
@@ -1425,7 +1424,6 @@ impl RemoteServerClient {
 /// Spawns a background task that reads lines from the server's stderr,
 /// forwards them to the client's logging, and retains the last few lines
 /// in a shared buffer for failure diagnostics.
-#[cfg(not(target_family = "wasm"))]
 pub fn spawn_stderr_forwarder(
     stderr: impl AsyncRead + TransportStream,
     executor: &executor::Background,

@@ -691,7 +691,6 @@ fn a_reconnect_attempt_that_finishes_in_time_is_passed_through() {
 /// Old code: no generation existed; the stale end handler always called `mark_session_disconnected`.
 /// Not compiled/run when written.
 #[test]
-#[cfg(not(target_family = "wasm"))]
 fn a_new_connection_attempt_invalidates_the_previous_streams_generation() {
     App::test((), |mut app| async move {
         let manager = app.add_model(RemoteServerManager::new);
@@ -738,7 +737,6 @@ fn short_lived_connections_count_up_and_a_stable_one_resets() {
 /// connection it had started (the proxy child goes with the state) and makes a late result
 /// of that attempt inert, so a probe-driven connect started afterwards is never clobbered.
 #[test]
-#[cfg(not(target_family = "wasm"))]
 fn a_cancelled_speculative_connect_is_dropped_and_its_late_result_is_inert() {
     App::test((), |mut app| async move {
         let manager = app.add_model(RemoteServerManager::new);
@@ -771,7 +769,6 @@ fn a_cancelled_speculative_connect_is_dropped_and_its_late_result_is_inert() {
 /// #1266: cancelling never touches a session that already connected (the attempt succeeded and
 /// was promoted by `mark_session_connected`); only the attempt bookkeeping goes.
 #[test]
-#[cfg(not(target_family = "wasm"))]
 fn cancelling_after_a_speculative_success_keeps_the_connection() {
     App::test((), |mut app| async move {
         let manager = app.add_model(RemoteServerManager::new);
@@ -796,10 +793,8 @@ fn cancelling_after_a_speculative_success_keeps_the_connection() {
 
 /// A transport that is never used: `finish_speculative_connect` only stores it on success.
 #[derive(Debug)]
-#[cfg(not(target_family = "wasm"))]
 struct NullTransport;
 
-#[cfg(not(target_family = "wasm"))]
 impl RemoteTransport for NullTransport {
     fn detect_platform(
         &self,
@@ -852,7 +847,6 @@ impl RemoteTransport for NullTransport {
 /// #1266: a failed speculative attempt that is still the current one clears its own entry and
 /// reports; a stale one (superseded by a probe-driven connect) changes nothing and stays silent.
 #[test]
-#[cfg(not(target_family = "wasm"))]
 fn a_failed_speculative_connect_reports_only_while_it_is_current() {
     use std::cell::RefCell;
     use std::rc::Rc;
