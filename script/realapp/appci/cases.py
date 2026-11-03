@@ -2580,14 +2580,34 @@ def ui_item_audit(txt):
     return dict(over_4ms=len(ms_all), over_16ms=sum(1 for v in ms_all if v >= 16.0), max_ms=max(ms_all) if ms_all else 0.0, by_kind=by_kind)
 
 
+_LOCK_HOLD_RE = re.compile(r"model lock held (\d+(?:\.\d+)?)(ns|µs|us|ms|s) by (\S+)")
+_DUR_MS = {"ns": 1e-6, "µs": 1e-3, "us": 1e-3, "ms": 1.0, "s": 1000.0}
+
+
+def lock_hold_audit(txt):
+    """#1301: the app's `model lock held <Duration> by <scope>` lines (app/src/terminal/model_lock_trace.rs HoldTimer: every hold >= 2 ms, needs
+    RUST_LOG warp::terminal::model_lock_trace=debug) -> {scope: [count, max_ms]}. TerminalView::render and BlockListElement::layout are the
+    holds #1301 is about; an empty dict is 'no hold over 2 ms' only on a build and RUST_LOG that log them."""
+    out = {}
+    for m in _LOCK_HOLD_RE.finditer(txt):
+        ms = float(m.group(1)) * _DUR_MS[m.group(2)]
+        k = out.setdefault(m.group(3), [0, 0.0])
+        k[0] += 1
+        k[1] = max(k[1], round(ms, 3))
+    return out
+
+
 def ui_item_metrics(ctx, r, off, label):
-    """Records the ui_item audit of the app log written since byte offset `off` as metric `<label>_ui_items`. Informational: llvmpipe/Xvfb frames
+    """Records the ui_item audit of the app log written since byte offset `off` as metric `<label>_ui_items`, and the model-lock holds over 2 ms
+    as `<label>_lock_holds` (#1301). Informational: llvmpipe/Xvfb frames
     are raster bound and over 4 ms by themselves, so this is a metric for the before/after comparison, never a check."""
     if not ctx.log_path or not os.path.exists(ctx.log_path):
         r.note("%s: no app log, ui_item audit not taken" % label)
         return None
-    a = ui_item_audit(ctx.log_since(off))
+    txt = ctx.log_since(off)
+    a = ui_item_audit(txt)
     r.metric("%s_ui_items" % label, a)
+    r.metric("%s_lock_holds" % label, lock_hold_audit(txt))
     if not a["over_4ms"]:
         r.note("%s: no hop=ui_item line (nothing over 4 ms, or a build older than the ui_item hop)" % label)
     return a

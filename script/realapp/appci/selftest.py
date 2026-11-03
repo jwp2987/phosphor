@@ -515,6 +515,9 @@ def ui_item_audit_counts_items_over_budget():
     assert (a["over_4ms"], a["over_16ms"], a["max_ms"]) == (3, 1, 17.0), a
     assert a["by_kind"] == {"frame": [2, 17.0], "action": [1, 5.5]}, a
     assert cases.ui_item_audit("input_order hop=enter_begin deferred=false t=1\n") == dict(over_4ms=0, over_16ms=0, max_ms=0.0, by_kind={})
+    h = cases.lock_hold_audit("DEBUG model lock held 3.25ms by TerminalView::render\nmodel lock held 812.5µs by TerminalView::render\n"
+                              "WARN model lock held 1.5s by BlockListElement::layout (> 8ms; 0 similar holds suppressed)\n")
+    assert h == {"TerminalView::render": [2, 3.25], "BlockListElement::layout": [1, 1500.0]}, h
 
 
 @check
