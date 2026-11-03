@@ -6,7 +6,7 @@
 #   (legacy positional job names after the ref still mean --skip)
 #
 #   fix       (~1 h)   check-linux; test-linux with a nextest filter (--tests, or derived from the git diff);
-#                      test-warpui-core / test-workspace-rest only when their crates changed; builds for --platforms
+#                      test-warpui-core only when its crate changed, test-workspace-rest on every code change (#1496); builds for --platforms
 #                      (default: derived from the diff); app tests in SMOKE mode (APPCI_TIER=smoke). A platform whose
 #                      app-affecting paths (APP_NONAFFECTING below, inverted) equal those of the newest earlier build/*
 #                      pipeline with a SUCCESSFUL, unexpired build job REUSES that build (app-test-*-reuse, job id passed as
@@ -402,6 +402,10 @@ def main():
         plats = [p for p in a.platforms.split(",") if p] or platforms_from(files)
         if a.tests:
             filt = a.tests; suites = set(suites) | {"linux"}
+        # #1496: test-workspace-rest (~4 min, the 40 other packages) runs in EVERY fix tier with a code change, not only when a
+        # crate changed: a red suite nobody plays is a red suite nobody owns.
+        if any(not DOC_ONLY.match(f) for f in files):
+            suites = set(suites) | {"rest"}
         print("base %s..%s: %d files changed" % (base[:10], ref, len(files)))
         for w in why[:15]:
             print("  ", w)

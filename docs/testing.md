@@ -688,7 +688,7 @@ test that never ran because its build failed counts as FAIL. `skipped by tier` (
 
 | tier | runs | target | when |
 |---|---|---|---|
-| `fix` | `check-linux`; `test-linux` with a nextest filter; `test-warpui-core` / `test-workspace-rest` only if their crates changed; builds for the chosen platforms only; app tests in SMOKE mode on those platforms | ~1 h | every push of a fix |
+| `fix` | `check-linux`; `test-linux` with a nextest filter; `test-warpui-core` only if its crate changed; `test-workspace-rest` on every code change (#1496); builds for the chosen platforms only; app tests in SMOKE mode on those platforms | ~1 h | every push of a fix |
 | `candidate` | `check-linux`; all three suites unfiltered; all three builds; the FULL app matrix on every platform (both Linux passes) | ~2.5-3 h | a batch of fixes is ready; nothing is "done" until a candidate passes |
 | `release` | candidate + `test-shuttle-loom`, `fuzz-smoke`, `bench`, `mutants`, `mutants-warpui-core` | ~8 h | before a numbered release (then also the manual checklist of section 5) |
 
@@ -1257,7 +1257,9 @@ compared with the most recent EARLIER run that has that same job/platform, not j
 **Size and privacy rules.** App logs are never copied wholesale (only the failure excerpts inside `results.json`); **no screenshots or other images, ever**
 (the repo is public; owner 2026-11-02): failing cases list their screenshot names, which live in the CI job artifacts (7 days).
 A run directory over 5 MB is flagged; `script/check_test_results` (in `script/precheck`
-and the CI `guards` job) fails above 10 MB per run and on anything that looks like an endpoint or secret. The collector scrubs
+and the CI `guards` job) fails above 10 MB per run and on anything that looks like an endpoint or secret. It also fails (#1496) when the
+NEWEST run (dated 2026-11-03 or later) has a unit failure that the run's `triage.md` does not own: write one line per failing test,
+naming the test and its issue (`terminal::view::tests::foo #1234`), when you commit the run. The collector scrubs
 (`script/ci/results_scrub.py`) the values of `APPCI_OLLAMA_URL`, `PHOSPHOR_BOX_HOST/SSH`, `PHOSPHOR_MAC_SSH`, `PHOSPHOR_WIN_SSH`, `WINUSER`
 (from the environment, `~/.config/phosphor-ci/ci.env` and `~/.config/phosphor-realapp.sh`), every non-loopback IPv4 address, home
 directory user names, and token/key patterns, so collect on a machine that has that config. Archive files are text except the JPEGs
