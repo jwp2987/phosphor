@@ -831,7 +831,15 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
     // Prefer taking the background prewarm result; fall back to synchronous init_db() (the original behavior) if unavailable.
     let (init_result, speculative) = match take_prewarmed_db() {
         Some(Ok(prewarmed)) => (Ok(prewarmed.conn), prewarmed.speculative),
-        Some(Err(err)) => (Err(err), None),
+        // #1600: a failed prewarm is recoverable on its own. Prewarm and the synchronous path run
+        // the identical `init_db()`, so retry once on this thread before giving up; a migration
+        // reported as failing that had in fact been applied finds nothing pending and succeeds.
+        // Without it one failed init is terminal: no `WriterHandles`, so every later write fails
+        // with "sqlite sender is unavailable" and BYOP preflight takes agent requests down with it.
+        Some(Err(err)) => {
+            log::warn!("SQLite prewarm failed ({err:#}); retrying initialization synchronously");
+            (init_db(), None)
+        }
         None => {
             unsafe {
                 init_logging();
@@ -940,6 +948,14 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
                 &underlying_error_message(&err),
             );
             report_db_error("initialization", err, &database_path);
+            // #1600: state the consequence; the app otherwise looks healthy while every persisted
+            // write, and so every agent request, fails for the rest of the session.
+            log::error!(
+                "SQLite is unavailable for this session: no writer thread was started, so \
+                 persistence is disabled and agent requests will fail in BYOP preflight with \
+                 \"sqlite sender is unavailable\". Restart {} to retry.",
+                crate::ChannelState::display_name()
+            );
             (None, None)
         }
     }
