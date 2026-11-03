@@ -1,0 +1,43 @@
+{
+ "summary_line": "Summary [ 216.336s] 10756 tests run: 10753 passed (1 slow), 3 failed, 29 skipped",
+ "duration_s": 216.336,
+ "run": 10756,
+ "passed": 10753,
+ "failed": 3,
+ "timed_out": 0,
+ "skipped": 29,
+ "slow": 1,
+ "flaky": 0,
+ "failures": [
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::group1_handover_tests::nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell",
+   "seconds": 0.212
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::group3_paste_tests::editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold",
+   "seconds": 0.141
+  },
+  {
+   "kind": "FAIL",
+   "crate": "warp",
+   "test": "terminal::view::tests::nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shell",
+   "seconds": 1.239
+  }
+ ],
+ "regressions": [
+  "terminal::view::tests::group1_handover_tests::nested_prompt_during_the_handover_drain_delivers_the_line_to_the_inner_shell",
+  "terminal::view::tests::group3_paste_tests::editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold",
+  "terminal::view::tests::nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shell"
+ ],
+ "notes": [
+  "REGRESSION -- this change broke test(s). Fix the code.",
+  "error: test(s) failed that are not in script/known_test_failures.txt:"
+ ],
+ "job": "test-linux",
+ "status": "failed",
+ "duration": 443.619394
+}
