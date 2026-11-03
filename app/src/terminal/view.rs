@@ -3148,6 +3148,12 @@ pub struct TerminalView {
     /// When the last gate was released. A command that started before this never re-arms the
     /// gate lazily from the warpify pending-ssh state.
     ssh_connect_gate_released_at: Option<DateTime<Local>>,
+    /// The connect window was released (by a path with no event handler of its own) while keys
+    /// are held: the next key or turn hands them over before judging anything else. Cleared by
+    /// any hand-over run (`deliver_ssh_typeahead_if_ready`).
+    ssh_handover_after_release: bool,
+    /// #1575: a next-turn hand-over for a shell prompt that appeared mid-drain is scheduled.
+    ssh_prompt_handover_scheduled: bool,
     /// #1579: the origin of the last command submitted from this pane (`Some(true)`: the user's
     /// own submit), until the block it started is seen starting.
     ssh_submit_user_origin: Option<bool>,
@@ -5020,6 +5026,8 @@ impl TerminalView {
             ssh_interrupt_held_gate_notified: false,
             ssh_interrupt_held_notified: None,
             ssh_connect_gate_released_at: None,
+            ssh_handover_after_release: false,
+            ssh_prompt_handover_scheduled: false,
             ssh_submit_user_origin: None,
             running_block_user_submitted: false,
             young_enter_released: true,
@@ -11162,8 +11170,8 @@ impl TerminalView {
         if had_keys && self.ssh_prompt_is_unmanaged_shell_prompt() {
             if self.paste_queue.queue.is_draining() {
                 log::warn!(
-                    "ssh typeahead: a shell prompt is up but the input queue is mid-drain; handing \
-                     {} held input(s) back to the editor as text (#1561)",
+                    "ssh typeahead: unexpected since #1575: a shell prompt is up but the input queue \
+                     is mid-drain; handing {} held input(s) back to the editor as text (#1561)",
                     self.ssh_held_count()
                 );
                 self.ssh_remote_prompt_seen = false;
@@ -11266,6 +11274,7 @@ impl TerminalView {
         source: &'static str,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.ssh_handover_after_release = false;
         if !self.ssh_typeahead_holding {
             return false;
         }
@@ -12300,6 +12309,12 @@ impl TerminalView {
     /// it makes passes through the paste stage (the queue is mid-drain) and the Enter it replays
     /// that waits again hands its gate back to the drain ([`Input::take_stashed_gate`]).
     fn route_after_enter_input(&mut self, input: &AfterEnterInput, ctx: &mut ViewContext<Self>) {
+        // Legacy-only (#1587): `PtyQueueHost::deliver_entry` (view/paste_queue.rs) reaches this only
+        // when the destination mode is not Table; Table uses `deliver_replayed_entry_table`.
+        debug_assert!(
+            input_queue::destination_mode() != input_queue::DestinationMode::Table,
+            "legacy-only path (#1587)"
+        );
         match input {
             AfterEnterInput::Text(text) => self.typed_characters_on_terminal(text, ctx),
             AfterEnterInput::Enter => {
@@ -12479,6 +12494,21 @@ impl TerminalView {
                 .active_block_mut()
                 .mark_interrupted_by_ctrl_c();
         }
+        // #1580: user bytes already decided for the pty but still in the queue (a drain that
+        // stopped at a foreign entry or yielded, ops in the mailbox) go out BEFORE the agent's
+        // bytes. The agent bytes themselves are never held behind a gate (REFUSED, not held).
+        self.flush_deferred_queue_ops(ctx);
+        self.on_pane_queue_needs_drain(ctx);
+        warpui::input_order::log_key_hop("kh_agent_write", || {
+            format!(
+                "bytes={} queued={}",
+                bytes.len(),
+                self.paste_queue
+                    .queue
+                    .try_peek()
+                    .map_or(0, |queue| queue.queued_len())
+            )
+        });
         ctx.emit(Event::WriteAgentInputToPty { bytes, mode: *mode });
         self.end_origin_row(row, true);
     }

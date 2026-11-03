@@ -18117,9 +18117,24 @@ fn ssh_bootstrap_timer_second_expiry_after_the_grace_still_fails_the_session() {
         initialize_app_for_terminal_view(&mut app);
         app.add_singleton_model(|_| crate::workspace::ToastStack);
         let terminal = add_window_with_terminal(&mut app, None);
-        let pty_writes = record_pty_writes(&mut app, &terminal);
+        // The hand-over writes through the counted route too (`WriteHandoffUserBytesToPty`).
+        let pty_writes = record_all_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
             ssh_pane_with_held_typeahead_for_test(view, ctx);
+            // The bootstrap block is the foreground work of the pane (as in
+            // `ssh_bootstrap_failure_delivers_held_typeahead_after_stty_sane`): since #1494/#1566
+            // the held text is delivered after `stty sane` only when a remote shell is provably in
+            // front, else handed back.
+            view.model
+                .lock()
+                .process_bytes("stty -echo; eval \"$(cat)\"\r\n");
+            view.model
+                .lock()
+                .block_list()
+                .active_block()
+                .interactive_latch()
+                .force(true);
+            assert!(view.is_long_running(), "the bootstrap block is running");
             view.handle_terminal_event(&ModelEvent::Handler(AnsiHandlerEvent::Precmd), ctx);
             view.on_bootstrap_failed_timer_complete((), ctx);
             assert!(view.ssh_typeahead_holding);
@@ -23388,6 +23403,9 @@ fn keys_held_across_the_prompt_all_go_to_the_pty_once_and_the_editor_stays_empty
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
+                // A bootstrapped pane always has a session; without one Legacy would route the
+                // typed key to the editor (`should_write_typed_chars_to_pty`).
+                register_local_session_for_ssh_test(view, ctx);
                 conpty_enter_window_running_command(view);
                 // A line, its Enter and the start of the next line, one key event each.
                 for key in b"echo A" {
@@ -25343,13 +25361,14 @@ fn table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover() {
             view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             assert!(ssh_queue_is_idle(view));
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
-            let writes = pty_writes.borrow();
-            assert_eq!(
-                writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
-                1,
-                "the held ^C reached the pty exactly once: {writes:?}"
-            );
         });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+            1,
+            "the held ^C reached the pty exactly once: {writes:?}"
+        );
     });
 }
 
@@ -25924,13 +25943,14 @@ fn table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_sh
             release_ssh_gate_for_test(view);
             view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             assert!(ssh_queue_is_idle(view));
-            let writes = pty_writes.borrow();
-            assert_eq!(
-                writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
-                1,
-                "the held ^C reached the pty exactly once: {writes:?}"
-            );
         });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+            1,
+            "the held ^C reached the pty exactly once: {writes:?}"
+        );
     })
 }
 
@@ -26010,9 +26030,10 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             assert_eq!(view.paste_queue.queue.peek().queued_len(), 1);
             view.end_cli_submit_gate(ctx);
-            assert_eq!(*pty_writes.borrow(), vec![vec![0x7f]]);
             assert!(ssh_queue_is_idle(view));
         });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        assert_eq!(*pty_writes.borrow(), vec![vec![0x7f]]);
     })
 }
 
@@ -26548,3 +26569,8 @@ fn legacy_mode_does_not_feed_the_ssh_phase_machine() {
         });
     });
 }
+
+// Group 1 (hand-over / yield / gate fixes). Declared here, not at the tail of `view.rs`, so the
+// module sees this file's private test helpers through `use super::*`.
+#[path = "view/group1_handover_tests.rs"]
+mod group1_handover_tests;

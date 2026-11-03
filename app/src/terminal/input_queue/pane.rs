@@ -254,6 +254,16 @@ impl PaneQueue {
         !self.inner.deferred.borrow().is_empty()
     }
 
+    /// Whether an `OpenGate` / `OfferGated` for the gate `(kind, key)` waits in the mailbox.
+    pub fn has_deferred_gate_open(&self, kind: GateKind, key: u64) -> bool {
+        self.inner.deferred.borrow().iter().any(|op| match op {
+            Deferred::OpenGate(spec) | Deferred::OfferGated { spec, .. } => {
+                spec.kind == kind && spec.key == key
+            }
+            _ => false,
+        })
+    }
+
     /// The oldest deferred operation.
     pub fn pop_deferred(&self) -> Option<Deferred> {
         self.inner.deferred.borrow_mut().pop_front()
@@ -415,6 +425,21 @@ mod tests {
         assert!(pane.ssh_hold_active());
         pane.set_ssh_hold_active(false);
         assert!(!pane.ssh_hold_active());
+    }
+
+    /// #1578: only an op that opens THE gate counts as the gate being alive.
+    #[test]
+    fn has_deferred_gate_open_matches_only_the_gates_own_ops() {
+        let pane = PaneQueue::new();
+        pane.defer(Deferred::FocusChanged);
+        assert!(pane.has_deferred());
+        assert!(!pane.has_deferred_gate_open(GateKind::SshConnect, 1));
+        pane.defer(Deferred::OpenGate(
+            GateSpec::new(GateKind::SshConnect, 1).with_cap(None),
+        ));
+        assert!(pane.has_deferred_gate_open(GateKind::SshConnect, 1));
+        assert!(!pane.has_deferred_gate_open(GateKind::SshConnect, 2));
+        assert!(!pane.has_deferred_gate_open(GateKind::PromptSeen, 1));
     }
 
     #[test]

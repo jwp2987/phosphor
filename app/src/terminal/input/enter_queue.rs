@@ -763,6 +763,26 @@ impl Input {
         guard.offer(&mut host, kind);
     }
 
+    /// Offers pty bytes to the pane queue through the EDITOR host, whose drain stops at them as a
+    /// foreign entry (#1580 test): the view has to continue the drain.
+    #[cfg(test)]
+    pub(crate) fn offer_pty_bytes_through_editor_host_for_test(
+        &mut self,
+        bytes: Vec<u8>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.enter_queue_handle(ctx);
+        let mut guard = queue.lock();
+        let mut host = InputQueueHost::new(self, ctx);
+        guard.offer(
+            &mut host,
+            EntryKind::PtyBytes {
+                bytes,
+                takes_over_agent_control: true,
+            },
+        );
+    }
+
     /// The gate of an Enter that waits for its input-type verdict (nothing submitted, nothing
     /// queued behind it yet), for tests of what must wait for it.
     #[cfg(test)]

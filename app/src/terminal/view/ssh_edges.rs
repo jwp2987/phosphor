@@ -274,6 +274,12 @@ impl TerminalView {
             self.note_ssh_give_up(how.name());
         }
         self.ssh_edge(SshEdge::Released(how));
+        // A release with no handler of its own to hand over (an agent write's lazy refresh, an
+        // interrupt check) leaves the keys held behind a closed window: the next key or turn
+        // hands them over (never a timer).
+        if Self::ssh_events_own_the_gate() && self.ssh_typeahead_holding {
+            self.ssh_handover_after_release = true;
+        }
     }
 
     /// A non-ssh command started while an unmanaged window was open: the window is stale. The

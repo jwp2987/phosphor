@@ -282,6 +282,32 @@ impl TerminalView {
         // drops nothing (no pending session, no setup, a seen line of text).
         let prompt_up = matches!(facts.ssh, SshPhase::PromptUp { .. });
         if self.ssh_typeahead_holding && prompt_up && !signal {
+            if self.paste_queue.queue.is_draining() {
+                // Mid-drain (#1575): this input joins the hold; the hand-over runs on the next
+                // turn, out of any key, so the held line is not split from the input being
+                // delivered.
+                if !self.ssh_prompt_handover_scheduled {
+                    self.ssh_prompt_handover_scheduled = true;
+                    ctx.spawn(async {}, |me, _, ctx| {
+                        me.ssh_prompt_handover_scheduled = false;
+                        if me.ssh_typeahead_holding && !me.paste_queue.queue.is_draining() {
+                            let still_prompt = matches!(
+                                me.build_route_facts(QueueFacts::default(), ctx).ssh,
+                                SshPhase::PromptUp { .. }
+                            );
+                            if still_prompt {
+                                me.discard_held_ssh_typeahead_for_prompt(ctx);
+                            } else {
+                                me.deliver_ssh_typeahead_if_ready("prompt_after_drain", ctx);
+                            }
+                        }
+                    });
+                }
+                let mut facts = facts;
+                // H3: held behind the connect gate, requeued mid-drain (#1415).
+                facts.ssh = SshPhase::Holding;
+                return facts;
+            }
             self.discard_held_ssh_typeahead_for_prompt(ctx);
             return self.build_route_facts(queue, ctx);
         }
@@ -763,6 +789,11 @@ impl TerminalView {
         }
         // Operations that found the queue busy come before this key (typed order).
         self.flush_deferred_queue_ops(ctx);
+        // A window released without a hand-over: hand over BEFORE this key is judged, so it lands
+        // behind the held keys (typed order, #1348).
+        if self.ssh_handover_after_release {
+            self.deliver_ssh_typeahead_if_ready("released_before_key", ctx);
+        }
         // Step 7: no ssh refresher runs on the key path (the connect gate is armed, released and
         // handed over by the events, `view/ssh_edges.rs`); the facts carry the machine's phase.
         if !is_signal {
@@ -1074,6 +1105,13 @@ impl TerminalView {
                 // The connect gate is armed lazily from the warpify state, as the legacy probes
                 // (`agent_pty_write_gate`, the hold) did before they read it.
                 let _ = self.refresh_ssh_connect_gate();
+                if self.ssh_handover_after_release {
+                    // Next turn, not here: an agent write is not a user key and must not drain
+                    // the user's queue from inside its own path.
+                    ctx.spawn(async {}, |me, _, ctx| {
+                        me.deliver_ssh_typeahead_if_ready("released_by_origin_write", ctx);
+                    });
+                }
                 let queue_facts = self.paste_queue.queue.try_queue_facts().unwrap_or_default();
                 let facts = self.build_route_facts(queue_facts, ctx);
                 let intent = Intent::new(class, origin).stamped(stamp);

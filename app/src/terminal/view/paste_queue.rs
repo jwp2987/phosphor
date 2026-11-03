@@ -776,7 +776,7 @@ impl TerminalView {
             return;
         };
         let mut host = PtyQueueHost::new(self, ctx);
-        guard.poke(&mut host);
+        guard.resume_after_yield(&mut host);
     }
 
     /// Starts the gate of a paced CLI-agent submit (#1353 phase 3): until
@@ -2499,7 +2499,7 @@ impl TerminalView {
                 };
                 if guard.pending_foreign() {
                     let mut host = PtyQueueHost::new(self, ctx);
-                    guard.poke(&mut host);
+                    guard.resume_after_yield(&mut host);
                 }
             }
         }
