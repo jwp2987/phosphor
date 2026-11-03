@@ -312,7 +312,8 @@ def c_palette(ctx, r):
     """command palette: opens (OCR 'Search for a command' when tesseract exists), a nonsense filter shows 'No results', filter 'split pane
     right' + Enter runs the action: a NEW pane with its own shell appears (prompt.log +1, machine-checked), typing in it stays exact
     and the pane is closed again with `exit`. Metrics palette_first_open_ui_items / palette_reopen_ui_items: the app's main-thread items over
-    4 ms on a cold open and on a reopen after Escape (#1194/#1219: the reopen is served from the layout cache's retired generation)."""
+    4 ms on a cold open and on a reopen after Escape (#1194/#1219). A before/after comparison only: it does not prove the reopen is served from the
+    layout cache's retired generation, it shows whether the reopen got cheaper between builds."""
     ui_off = ctx.log_size()
     ctx.be.key(K(ctx, "palette"))
     time.sleep(0.8)

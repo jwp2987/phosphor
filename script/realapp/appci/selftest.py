@@ -531,6 +531,7 @@ def ctrl_c_segments_split_the_app_share():
     assert a["keydown->ctrl_c_keydown"]["p50"] == 0.5 and a["ctrl_c_received->ctrl_c_pty_write"]["p50"] == 0.75, a
     assert a["keydown_to_write"]["p50"] == 2.0, a
     assert cases.ctrl_c_segments("")["n"] == 0
+    assert cases.ctrl_c_segments(one(1000.0) + one(2000.0), skip=1)["n"] == 1    # warm-up presses dropped
 
 
 @check

@@ -781,11 +781,12 @@ fn test_elided_middle_noop_when_fully_laid_out() {
     assert_eq!(frame.lines().last().unwrap().end_index(), 4);
 }
 
-/// The two-generation cache keeps an entry that was fetched in the previous frame, drops one that
-/// was not, and answers a lookup through a borrowed key for an entry inserted by value.
+/// The two-generation cache keeps an entry that was fetched in the previous frame and answers a
+/// lookup through a borrowed key for an entry inserted by value. An entry that was not fetched for
+/// two frames is dropped by the plain two-generation cache (retired generation off); with the
+/// retired generation on (#1219, the default) that short text is retired instead and still served.
 #[test]
 fn text_cache_keeps_entries_fetched_within_two_frames() {
-    let cache: TextCache<u32> = TextCache::new();
     let key = |text: &str| CacheKeyValue {
         text: text.to_owned(),
         font_size: 12.0.into(),
@@ -798,15 +799,29 @@ fn text_cache_keeps_entries_fetched_within_two_frames() {
         first_line_head_indent: None,
         clip_config: None,
     };
-    cache.insert(key("kept"), Arc::new(1));
-    cache.insert(key("dropped"), Arc::new(2));
+    for retire in [false, true] {
+        let cache: TextCache<u32> = TextCache::with_retired_generation(retire);
+        cache.insert(key("kept"), Arc::new(1));
+        cache.insert(key("dropped"), Arc::new(2));
 
-    cache.finish_frame();
-    assert_eq!(cache.get(&key("kept") as &dyn CacheKey).as_deref(), Some(&1));
+        cache.finish_frame();
+        assert_eq!(
+            cache.get(&key("kept") as &dyn CacheKey).as_deref(),
+            Some(&1)
+        );
 
-    cache.finish_frame();
-    assert_eq!(cache.get(&key("kept") as &dyn CacheKey).as_deref(), Some(&1));
-    assert_eq!(cache.get(&key("dropped") as &dyn CacheKey), None);
+        cache.finish_frame();
+        assert_eq!(
+            cache.get(&key("kept") as &dyn CacheKey).as_deref(),
+            Some(&1)
+        );
+        let expected_dropped = if retire { Some(&2) } else { None };
+        assert_eq!(
+            cache.get(&key("dropped") as &dyn CacheKey).as_deref(),
+            expected_dropped,
+            "retire={retire}"
+        );
+    }
 }
 
 fn retired_test_key(text: &str) -> CacheKeyValue {

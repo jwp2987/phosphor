@@ -1284,11 +1284,11 @@ _CC_HOP_RE = re.compile(r"input_order hop=(ctrl_c_keydown|ctrl_c_to_event_loop|c
 _CC_STAGES = ("keydown", "ctrl_c_keydown", "ctrl_c_to_event_loop", "ctrl_c_received", "ctrl_c_pty_write")
 
 
-def ctrl_c_segments(txt):
+def ctrl_c_segments(txt, skip=0):
     """#1408: the APP's share of Ctrl-C, from its own input_order lines, per press: `keydown key=c ctrl=true` (presenter) -> hop=ctrl_c_keydown
     (TerminalView::ctrl_c) -> hop=ctrl_c_to_event_loop (PtyController) -> hop=ctrl_c_received (pty event loop) -> hop=ctrl_c_pty_write (write(2)
     returned). -> dict(n, <segment>: stats ms, keydown_to_write: stats ms). A press is closed by its pty write; a stage logged twice before the write
-    keeps the first stamp. Whatever the reference terminal gap is beyond keydown_to_write is outside the app (injector, X server, signal delivery)."""
+    keeps the first stamp; the first `skip` presses (warm-up) are dropped. Whatever the reference terminal gap is beyond keydown_to_write is outside the app (injector, X server, signal delivery)."""
     samples, cur = [], None
     for line in txt.splitlines():
         m = _CC_KD_RE.search(line)
@@ -1305,6 +1305,7 @@ def ctrl_c_segments(txt):
         if stage == "ctrl_c_pty_write":
             samples.append(cur)
             cur = None
+    samples = samples[skip:]                    # the warm-up presses the end-to-end latency (lat_ms[warm:]) drops too
     out = {"n": len(samples)}
     for a, b in zip(_CC_STAGES, _CC_STAGES[1:]):
         out["%s->%s" % (a, b)] = stats([x[b] - x[a] for x in samples if a in x and b in x])
@@ -1321,7 +1322,7 @@ def c_ctrl(ctx, r):
     lat_ms = lat_ms[warm:]
     r.metric("ctrl_c_ms", stats(lat_ms))
     if ctx.log_path and os.path.exists(ctx.log_path):
-        r.metric("ctrl_c_app_segments", ctrl_c_segments(ctx.log_since(cc_off)))     # #1408: where the app's share of each Ctrl-C goes
+        r.metric("ctrl_c_app_segments", ctrl_c_segments(ctx.log_since(cc_off), skip=warm))     # #1408: where the app's share of each Ctrl-C goes
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     # (the delivered-count verdict is below, after the reference ran, so it can say whether the reference lost any sample line)
     # Same measurement in the reference terminal, same session (#1486). Both numbers include the input tool's spawn and the timestamp
