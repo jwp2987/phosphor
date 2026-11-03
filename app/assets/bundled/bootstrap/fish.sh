@@ -430,20 +430,7 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
 
     if ! test -z $_WARP_GENERATOR_COMMAND
         set -e _WARP_GENERATOR_COMMAND
-        set -l escaped_json "{\"hook\": \"Precmd\", \"value\": {
-        \"exit_code\": $exit_code,
-        \"next_block_id\": \"$next_block_id\",
-        \"pwd\": \"\",
-        \"ps1\": \"\",
-        \"git_head\": \"\",
-        \"git_branch\": \"\",
-        \"virtual_env\": \"\",
-        \"conda_env\": \"\",
-        \"node_version\": \"\",
-        \"session_id\": $WARP_SESSION_ID,
-        \"seq\": $__warp_seq,
-        \"is_after_in_band_command\": true
-        }}"
+        set -l escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"\",\"ps1\": \"\",\"git_head\": \"\",\"git_branch\": \"\",\"virtual_env\": \"\",\"conda_env\": \"\",\"node_version\": \"\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq,\"is_after_in_band_command\": true}}"
         warp_send_json_message $escaped_json
         return 0
     end
@@ -599,38 +586,10 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     set -l escaped_json
     if test "$WARP_HONOR_PS1" = "1"
       # Don't send lprompt or rprompt in this case - we'll use prompt markers for both directly!
-      set escaped_json "{\"hook\": \"Precmd\", \"value\": {
-      \"exit_code\": $exit_code,
-      \"next_block_id\": \"$next_block_id\",
-      \"pwd\": \"$escaped_pwd\",
-      \"ignore_prompt_markers\": false,
-      \"ps1\": \"\",
-      \"rprompt\": \"\",
-      \"git_head\": \"$escaped_git_head\",
-      \"git_branch\": \"$escaped_git_branch\",
-      \"virtual_env\": \"$escaped_virtual_env\",
-      \"conda_env\": \"$escaped_conda_env\",
-      \"node_version\": \"$escaped_node_version\",
-      \"session_id\": $WARP_SESSION_ID,
-      \"seq\": $__warp_seq
-      }}"
+      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": false,\"ps1\": \"\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
     else
       # We send an lprompt to use for prompt preview purposes only (we still use prompt markers for active prompts).
-      set escaped_json "{\"hook\": \"Precmd\", \"value\": {
-      \"exit_code\": $exit_code,
-      \"next_block_id\": \"$next_block_id\",
-      \"pwd\": \"$escaped_pwd\",
-      \"ignore_prompt_markers\": true,
-      \"ps1\": \"$escaped_prompt\",
-      \"rprompt\": \"\",
-      \"git_head\": \"$escaped_git_head\",
-      \"git_branch\": \"$escaped_git_branch\",
-      \"virtual_env\": \"$escaped_virtual_env\",
-      \"conda_env\": \"$escaped_conda_env\",
-      \"node_version\": \"$escaped_node_version\",
-      \"session_id\": $WARP_SESSION_ID,
-      \"seq\": $__warp_seq
-      }}"
+      set escaped_json "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ignore_prompt_markers\": true,\"ps1\": \"$escaped_prompt\",\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
     end
     warp_send_json_message $escaped_json
 end

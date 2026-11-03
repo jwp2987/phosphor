@@ -430,20 +430,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
         precmd_functions=($_USER_PRECMD_FUNCTIONS)
 
         _WARP_GENERATOR_COMMAND=""
-        warp_send_json_message "{\"hook\": \"Precmd\", \"value\": {
-        \"exit_code\": $exit_code,
-        \"next_block_id\": \"$next_block_id\",
-        \"pwd\": \"\",
-        \"ps1\": \"\",
-        \"git_head\": \"\",
-        \"git_branch\": \"\",
-        \"virtual_env\": \"\",
-        \"conda_env\": \"\",
-        \"node_version\": \"\",
-        \"session_id\": $WARP_SESSION_ID,
-        \"seq\": $__warp_seq,
-        \"is_after_in_band_command\": true
-        }}"
+        warp_send_json_message "{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"\",\"ps1\": \"\",\"git_head\": \"\",\"git_branch\": \"\",\"virtual_env\": \"\",\"conda_env\": \"\",\"node_version\": \"\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq,\"is_after_in_band_command\": true}}"
         return 0
       fi
 
@@ -625,22 +612,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
         honor_ps1="false"
       fi
 
-      local escaped_json="{\"hook\": \"Precmd\", \"value\": {
-      \"exit_code\": $exit_code,
-      \"next_block_id\": \"$next_block_id\",
-      \"pwd\": \"$escaped_pwd\",
-      \"ps1\": \"\",
-      \"honor_ps1\": $honor_ps1,
-      \"rprompt\": \"\",
-      \"git_head\": \"$escaped_git_head\",
-      \"git_branch\": \"$escaped_git_branch\",
-      \"virtual_env\": \"$escaped_virtual_env\",
-      \"conda_env\": \"$escaped_conda_env\",
-      \"node_version\": \"$escaped_node_version\",
-      \"kube_config\": \"$escaped_kube_config\",
-      \"session_id\": $WARP_SESSION_ID,
-      \"seq\": $__warp_seq
-      }}"
+      local escaped_json="{\"hook\": \"Precmd\", \"value\": {\"exit_code\": $exit_code,\"next_block_id\": \"$next_block_id\",\"pwd\": \"$escaped_pwd\",\"ps1\": \"\",\"honor_ps1\": $honor_ps1,\"rprompt\": \"\",\"git_head\": \"$escaped_git_head\",\"git_branch\": \"$escaped_git_branch\",\"virtual_env\": \"$escaped_virtual_env\",\"conda_env\": \"$escaped_conda_env\",\"node_version\": \"$escaped_node_version\",\"kube_config\": \"$escaped_kube_config\",\"session_id\": $WARP_SESSION_ID,\"seq\": $__warp_seq}}"
       warp_send_json_message "$escaped_json"
   }
 
