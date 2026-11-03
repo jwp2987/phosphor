@@ -19677,10 +19677,28 @@ fn nested_ssh_with_late_readiness_runs_each_line_once_in_order_in_the_right_shel
                 warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
             }
             terminal.update(&mut app, |view, ctx| {
+                // Where did the `ssh fake` Enter go? (the state, since the input-order hops need
+                // RUST_LOG): the input type it was routed with, agent exchanges made, whether it
+                // ran as a command, and the unready-gate state.
+                let input = view.input.as_ref(ctx);
+                let agent_exchanges: usize = BlocklistAIHistoryModel::as_ref(ctx)
+                    .all_live_conversations_for_terminal_view(view.view_id)
+                    .map(|conversation| conversation.exchange_count())
+                    .sum();
+                let where_it_went = format!(
+                    "input_config={:?} agent_exchanges={agent_exchanges} executed={:?} \
+                     buffer={:?} held_unready_enter={} unready_gate_open={} \
+                     shell_unready_for_submit={}",
+                    input.ai_input_model().as_ref(ctx).input_config(),
+                    executed.borrow(),
+                    input.buffer_text(ctx),
+                    input.has_held_unready_enter(),
+                    input.unready_enter_gate_open(),
+                    input.shell_unready_for_submit(ctx),
+                );
                 assert!(
-                    view.input.as_ref(ctx).has_held_unready_enter()
-                        && view.input.as_ref(ctx).unready_enter_gate_open(),
-                    "{mode:?}: the refused Enter is held, as a gate"
+                    input.has_held_unready_enter() && input.unready_enter_gate_open(),
+                    "{mode:?}: the refused Enter is held, as a gate; where the Enter went: {where_it_went}"
                 );
                 // The next line and its Enter, before the readiness event.
                 editor_text(view, "echo T", ctx);
