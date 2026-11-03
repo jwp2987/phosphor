@@ -421,6 +421,10 @@ impl<T: EventLoopSender> PtyController<T> {
             // The shell ran what the chord inserted (or anything else): nothing to retype (#1581).
             ModelEvent::Handler(AnsiHandlerEvent::Preexec) => {
                 me.clear_file_insert();
+                // #1614: a Preexec parsed after a young hold opened ended it as typeahead (on the
+                // model thread); the view writes its keys now, on this event, not at the next key
+                // or the cap.
+                me.announce_young_hold_end(ctx);
             }
             ModelEvent::CommandFileFailed { session_id } => {
                 let active = me
@@ -870,11 +874,16 @@ impl<T: EventLoopSender> PtyController<T> {
                 Timer::after(wait).await;
             },
             move |me, _, ctx| {
-                let (did_reset, diverged) = {
+                let (did_reset, diverged, young_hold_live) = {
                     let mut model = me.terminal_model.lock();
                     let mut handoff = model.typeahead_handoff_mut();
                     let diverged = handoff.counts_diverged();
-                    (handoff.reset_stale_counts(activity_generation), diverged)
+                    let young_hold_live = handoff.young_hold_queued();
+                    (
+                        handoff.reset_stale_counts(activity_generation),
+                        diverged,
+                        young_hold_live,
+                    )
                 };
                 if seq_mode && did_reset && diverged {
                     // The give-up of the wait fired: nothing said the queued lines were answered
@@ -888,7 +897,10 @@ impl<T: EventLoopSender> PtyController<T> {
                 // Decide again whether or not a request was waiting: after a `DrainAndWait` the
                 // reset is what hands input back to the editor.
                 // (In the prompt-sequence path other events retry a wait that is not about the counts.)
-                if did_reset && (diverged || !seq_mode) {
+                // #1614: never while a young hold is live. The decision can end such a hold as
+                // typeahead (no binding, a committed delivery), and a timer must not write keys;
+                // the hold has its own event releases and the hand-back cap.
+                if did_reset && (diverged || !seq_mode) && !young_hold_live {
                     me.retry_typeahead_handoff_request(ctx);
                 }
             },

@@ -1671,7 +1671,7 @@ impl TerminalView {
                         "input queue: young hold {hold_id} is gone but its gate is open; handing \
                          its keys back to the editor"
                     );
-                    self.hand_back_young_hold_keys(hold_id, "young_hold_gone", ctx);
+                    self.hand_back_young_hold_keys(hold_id, "young_hold_gone", evidence, ctx);
                 }
             }
             // #1577: the cap is a give-up, and a timer never writes user bytes to the pty: the
@@ -1686,7 +1686,7 @@ impl TerminalView {
                     "typeahead young hold {hold_id} ({evidence:?}) ran to its cap with no release \
                      event; handing the keys back to the editor (young_hold_cap)"
                 );
-                self.hand_back_young_hold_keys(hold_id, "young_hold_cap", ctx);
+                self.hand_back_young_hold_keys(hold_id, "young_hold_cap", evidence, ctx);
             }
         }
     }
@@ -1697,12 +1697,11 @@ impl TerminalView {
         &mut self,
         hold_id: u64,
         why: &'static str,
+        evidence: Option<YoungHoldEvidence>,
         ctx: &mut ViewContext<Self>,
     ) {
-        let (evidence, command_interactive) = {
-            let handoff = self.handoff.read();
-            (handoff.young_hold_evidence(), handoff.command_interactive())
-        };
+        // `evidence` is the caller's, read before the expiry cleared the hold's record.
+        let command_interactive = self.handoff.read().command_interactive();
         warpui::input_order::log_hop("young_hold_handed_back", || {
             format!(
                 "hold_id={hold_id} why={why} evidence={evidence:?} \

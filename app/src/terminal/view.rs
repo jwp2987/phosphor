@@ -18680,6 +18680,9 @@ impl TerminalView {
             ModelEvent::Handler(AnsiHandlerEvent::Preexec)
                 if FeatureFlag::TypeaheadHandoff.is_enabled() =>
             {
+                // #1614: a young hold the Preexec ended (the shell started a command after it
+                // opened) is applied to the queue now: its keys are that command's typeahead.
+                self.drain_young_hold_ends(ctx);
                 self.focus_terminal_if_typeahead_handoff_wants_it(ctx);
             }
             ModelEvent::Handler(_) => {}

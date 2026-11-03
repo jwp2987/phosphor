@@ -3154,6 +3154,11 @@ impl TerminalModel {
         if !FeatureFlag::TypeaheadHandoff.is_enabled() {
             return;
         }
+        // A read first: this runs after every parsed slice, and a hold waiting on the barrier is
+        // rare; the write lock is taken only when there is one to decide.
+        if !self.typeahead_handoff.read().young_hold_waits_on_barrier() {
+            return;
+        }
         let outcome = self.typeahead_handoff.write().on_stream_applied();
         if outcome != StreamApplied::Nothing {
             self.event_proxy

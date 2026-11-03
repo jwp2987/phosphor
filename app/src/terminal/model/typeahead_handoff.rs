@@ -763,6 +763,13 @@ pub struct TypeaheadHandoff {
     /// Precmd and by the next command written. This is what replaced the #1609 `ssh` carve-out: an
     /// interactive `ssh`, `sudo -i`, inner `bash` or `vim` all latch, on every platform.
     command_interactive: bool,
+    /// #1614: the command the editor wrote has not had its own Preexec parsed yet (set by the
+    /// write, taken by the next Preexec, cleared by a Precmd). While it is pending, a Preexec is
+    /// the written command starting, not a command the shell started after a hold opened; and a
+    /// line editor sampled reading with the stream applied may still be the one that has not read
+    /// the written command (the input direction is not the barrier's), so the counts are not
+    /// proven stale by it.
+    own_preexec_pending: bool,
     /// User bytes were written to the pty while the editor owned input and nothing adopted them
     /// (an agent-requested command, a block from before the bootstrap precmd), so the shell's line
     /// may hold text the next legacy report puts in front of the editor's (#1089).
@@ -1533,15 +1540,21 @@ impl TypeaheadHandoff {
         self.reading_seq = None;
         self.line_editor_markers_live = false;
         self.last_parsed_hook = None;
+        // ... and the latch of the command that handed the pty over is the old session's.
+        self.command_interactive = false;
     }
 
     /// #1614: the block latch said the running command is interactive (main thread, from
     /// `CommandBecameInteractive`, for the block that is still the active executing one): a
-    /// program, a blocked builtin or a login hop reads the tty. The keys typed into it are its;
-    /// a young hold live now ends as typeahead ([`YoungHoldEnd::Typeahead`], the view applies it).
+    /// program, a blocked builtin or a login hop reads the tty. The keys typed into it are its.
+    /// Decisive only where the platform samples nothing (ConPTY): the latch fires 50 ms into
+    /// nearly any command and stays set until the command's Precmd is parsed, so after the command
+    /// exits it is stale for the length of the pipeline while the sample is current (#933 is
+    /// exactly that moment). Where there is a sample, the sample decides; here a young hold live
+    /// now ends as typeahead only on an unsampled platform ([`YoungHoldEnd::Typeahead`]).
     pub fn note_command_interactive(&mut self) {
         self.command_interactive = true;
-        if self.end_young_hold_as_typeahead() {
+        if !self.foreground_probe.samples_shell() && self.end_young_hold_as_typeahead() {
             warpui::input_order::log_hop("young_hold_end", || {
                 format!("why=command_interactive hold_id={}", self.young_hold_id)
             });
@@ -1560,6 +1573,12 @@ impl TypeaheadHandoff {
         self.young_hold_queued
             .then_some(self.young_hold_evidence)
             .flatten()
+    }
+
+    /// Whether a live young hold waits on the stream barrier ([`YoungHoldEvidence::PrecmdInFlight`]),
+    /// so the pty reader's publish has something to decide (a read, before the write lock).
+    pub fn young_hold_waits_on_barrier(&self) -> bool {
+        self.young_hold_evidence() == Some(YoungHoldEvidence::PrecmdInFlight)
     }
 
     /// Ends a live young hold whose keys are in the view's queue as typeahead for what owns the
@@ -1917,8 +1936,10 @@ impl TypeaheadHandoff {
         self.committed_delivery = false;
         self.interrupt_barrier = false;
         self.interrupt_awaiting_cycle = false;
-        // #1614: a new command runs; whether it is interactive is this block's latch to say.
+        // #1614: a new command runs; whether it is interactive is this block's latch to say, and
+        // its own Preexec is the next one.
         self.command_interactive = false;
+        self.own_preexec_pending = true;
         // An Enter held behind the request follows the command as typeahead (#933): the view
         // writes the keys of the hold once it is told (below); in every state but `PtyOwned` the
         // hold is void.
@@ -2064,8 +2085,10 @@ impl TypeaheadHandoff {
         self.enter_window_since = None;
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Precmd);
         self.interrupt_awaiting_cycle = false;
-        // #1614: the command that was interactive is over; the shell is back at its prompt.
+        // #1614: the command that was interactive is over; the shell is back at its prompt, and a
+        // Preexec it never sent (an empty line, a syntax error) is not pending any more.
         self.command_interactive = false;
+        self.own_preexec_pending = false;
         let consumed_by_program = mem::take(&mut self.interactive_command_finished);
         let seq_mode = self.prompt_seq_mode();
         // #1552: shows which of the two blocked the correction below on a Git Bash session.
@@ -2137,8 +2160,11 @@ impl TypeaheadHandoff {
         }
         // #1614: the shell started a command after the hold opened, so no prompt answers the held
         // Enter before that command has run; the Enter and the keys behind it are its typeahead,
-        // written now by this event (the documented closing event of the `PromptSeen` gate).
-        if self.end_young_hold_as_typeahead() {
+        // written now by this event (the documented closing event of the `PromptSeen` gate). Not
+        // when this Preexec is the written command's own (a line typed and Entered right after the
+        // submit, before its Preexec was parsed): that line is the next prompt's, held for it.
+        let own_preexec = mem::take(&mut self.own_preexec_pending);
+        if !own_preexec && self.end_young_hold_as_typeahead() {
             warpui::input_order::log_hop("young_hold_end", || {
                 format!("why=preexec hold_id={}", self.young_hold_id)
             });
@@ -2596,8 +2622,10 @@ impl TypeaheadHandoff {
         now: Instant,
     ) -> Option<YoungHoldEvidence> {
         // A command the block latch calls interactive reads the keys typed into it (a program, a
-        // blocked `read x`, an `ssh`, an inner shell): the Enter is its, on every platform.
-        if self.command_interactive {
+        // blocked `read x`, an `ssh`, an inner shell): the Enter is its -- where nothing can be
+        // sampled (ConPTY). With a sample, the sample decides: the latch outlives the command by
+        // the length of the pipeline (set until its Precmd is parsed), which is #933's moment.
+        if self.command_interactive && !self.foreground_probe.samples_shell() {
             return None;
         }
         let in_window = || {
@@ -2609,7 +2637,7 @@ impl TypeaheadHandoff {
         let window = || in_window().then_some(YoungHoldEvidence::TimingWindow);
         if !self.prompt_seq_mode() {
             return (in_window() && !self.foreground_probe.foreground_is_plain_program())
-                .then(|| YoungHoldEvidence::TimingWindow);
+                .then_some(YoungHoldEvidence::TimingWindow);
         }
         let counts_say_prompt = precmds_seen >= enters_written;
         match self.foreground_probe.prompt_fact() {
@@ -2633,6 +2661,10 @@ impl TypeaheadHandoff {
             ShellPromptFact::LineEditorReading => match self.foreground_probe.stream_drained() {
                 Some(false) => Some(YoungHoldEvidence::PrecmdInFlight),
                 Some(true) if self.raw_tty_is_a_running_commands_read() => None,
+                // The written command's Preexec has not been parsed: the editor sampled reading
+                // may be the one that has not read the command yet (the input direction is not
+                // the barrier's), so nothing is proven stale; the window, released by the Precmd.
+                Some(true) if self.own_preexec_pending => window(),
                 Some(true) => Some(YoungHoldEvidence::RequestDue),
                 None => window(),
             },
@@ -2834,9 +2866,11 @@ impl TypeaheadHandoff {
                 });
                 StreamApplied::RetryRequest
             }
-            // The barrier is installed (that is how the hold engaged), so the window is never the
-            // answer here; a changed probe is treated as a delivery, never as a timer.
-            None | Some(YoungHoldEvidence::TimingWindow) => {
+            // The written command's own Preexec is still to come (the editor read the typed line
+            // before the command, or the command's Preexec is late): the hold keeps waiting, for
+            // that Preexec (which does not end it) and the Precmd that makes the request due.
+            Some(YoungHoldEvidence::TimingWindow) => StreamApplied::Nothing,
+            None => {
                 self.end_young_hold_as_typeahead();
                 warpui::input_order::log_hop("young_hold_reevaluated", || {
                     format!("outcome=typeahead hold_id={}", self.young_hold_id)
@@ -2871,21 +2905,20 @@ impl TypeaheadHandoff {
     /// barrier is asked last, after the sample.
     fn counts_provably_stale(&self, enters_written: u32, precmds_seen: u32) -> bool {
         precmds_seen < enters_written
+            && !self.own_preexec_pending
             && self.foreground_probe.prompt_fact() == ShellPromptFact::LineEditorReading
             && !self.raw_tty_is_a_running_commands_read()
             && self.foreground_probe.stream_drained() == Some(true)
     }
 
     /// Whether, with the stream applied up to now, the last thing the shell's hooks said is that
-    /// a command started: the last hook parsed is a Preexec and no line-editor marker came after
-    /// it. A raw tty is then a builtin's read (`read -k`, #1392), not the line editor. A marker
-    /// after the Preexec (`LineEditorReading`, a continuation prompt) says the editor reads.
+    /// a command started: the last hook parsed is a Preexec, and no Precmd since (it would have
+    /// been applied). The block is running, so the raw tty is that command's read -- a builtin
+    /// `read -k` (#1392), or zle inside `vared`, which sends the line-editor marker too; either
+    /// way no request can be sent before the command ends (the lifecycle is not at a prompt), so
+    /// a marker after the Preexec does not make the editor the reader of a prompt line.
     fn raw_tty_is_a_running_commands_read(&self) -> bool {
         self.last_parsed_hook == Some(ParsedShellHook::Preexec)
-            && !matches!(
-                self.shell_activity,
-                ShellActivity::Reading | ShellActivity::Continuation
-            )
     }
 
     /// Routes the keys of an expired queued hold (one chunk per key event, in typed order) and
