@@ -345,6 +345,10 @@ def main():
                 k_start = len(be.calls) if getattr(be, "calls", None) is not None else None     # injector accounting (#1509)
                 log_off = ctx.log_size() if (ctx.log_path and not sim) else None      # job-log evidence: the app-side Enter destinations of THIS case
                 status = "pass"
+                try:       # r18e9: the app instance this case started on (a case that relaunches the app itself ends in a fresh TERMINAL session)
+                    pid_start = app.pid() if app is not None and hasattr(app, "pid") else None
+                except Exception:
+                    pid_start = None
                 # r18d8: soak runs APPCI_SOAK_MIN (60) minutes, longer than the 1500 s default: it hit CaseTimeout at 25 min. It gets its own length + 10 min.
                 disarm = arm_case_timeout(max(case_timeout, float(os.environ.get("APPCI_SOAK_MIN", "60")) * 60 + 600) if c["name"] == "soak" else case_timeout)
                 try:
@@ -427,6 +431,28 @@ def main():
                     # every agent-pass case must END in agent mode, or the cases after it measure a terminal session under the agent label
                     # (r18cx macOS: mode_proof's Escape left agent view; nothing noticed). Unreadable screen: no verdict, no row.
                     seen = ctx.mode_now("mode_after_" + c["name"])
+                    try:
+                        pid_now = app.pid() if app is not None and hasattr(app, "pid") else None
+                    except Exception:
+                        pid_now = None
+                    if seen == "terminal" and pid_start and pid_now and pid_now != pid_start:
+                        # r18e9 (macOS ui_startup_time, remote_session_ext): the CASE relaunched the app itself (pid %s -> %s) and a relaunch starts in a terminal session,
+                        # so "left agent mode" blamed the app for the case's own restart. Visible row, not a failure; the app is relaunched so the next cases run in agent mode.
+                        emit(dict(name="agent_view_not_restored_after_" + c["name"], mode=label, status="pass", seconds=0,
+                                  shots=[os.path.relpath(p, run) for p in [ctx.shot("left_agent_after_" + c["name"])] if p],
+                                  detail=["%s relaunched the app itself (pid %s -> %s); a relaunched app starts in a terminal session, so this is not an app finding. "
+                                          "The app is relaunched again (fresh agent session) so the cases after it run in agent mode." % (c["name"], pid_start, pid_now)]))
+                        keep_instance_log(run, label, prof, a.backend, ollama_url, instance, app)
+                        instance += 1
+                        app.stop()
+                        nb = prof.prompts()
+                        app.start()
+                        if await_shell(ctx, app, prof, win, a.startup_timeout, base=nb):
+                            time.sleep(4)
+                        if win:
+                            be.guard()
+                            proved = False
+                        continue
                     if seen == "terminal" and ctx.double_ctrlc_since(t0):
                         # r18d2: two Ctrl-C within the 1 s confirmation window of an empty agent conversation leave agent view BY DESIGN
                         # (view.rs should_ctrl_c_exit_agent_view -> exit_agent_view_with_required_confirmation). A visible row, not a failure; the app is
