@@ -29,6 +29,9 @@ fn pane_key_target_table() {
                 terminal_focused: bits & 4 != 0,
                 ssh_hold_active: bits & 8 != 0,
                 settled_ai_focus: bits & 16 != 0,
+                // #1552 (a): its rows are pinned in `pane_key_tests.rs`; the snapshot covers the
+                // five facts it always has.
+                input_gap_focus: false,
             };
             rows.push(format!(
                 "{class:?} text_field={} editor={} terminal={} ssh_hold={} settled_ai={} -> {:?}",

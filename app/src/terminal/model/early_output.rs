@@ -231,6 +231,23 @@ impl EarlyOutput {
         {
             return;
         }
+        // #1490/#1393: a report the editor already took is forgotten here, so the next report goes
+        // in FRONT of the editor's text (`replaced_prefix_chars=0`); a part of it not inserted yet
+        // is dropped. Either moves or loses typed keys if the editor still holds the inserted
+        // text. Logged (counts, text only with the opt-in) so a run can pair it with the next
+        // `handoff_insert`; nothing decides on it.
+        if !self.typeahead.is_empty() {
+            let chars = self.typeahead.chars().count();
+            let inserted = self.typeahead_chars_inserted.as_usize();
+            warpui::input_order::log_hop("early_typeahead_cleared_at_precmd", || {
+                format!(
+                    "mode={:?} chars={chars} inserted={inserted} uninserted={} text={}",
+                    self.mode,
+                    chars.saturating_sub(inserted),
+                    warpui::input_order::describe_text(&self.typeahead)
+                )
+            });
+        }
         // On precmd, clear accumulated typeahead for the previous command.
         safe_debug!(
             safe: ("Clearing accumulated typeahead"),

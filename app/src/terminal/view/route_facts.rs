@@ -161,7 +161,7 @@ impl TerminalView {
     }
 
     /// The same, from the window's current focus (no key context): for facts built outside a key.
-    fn live_focus_snap(&self, ctx: &mut ViewContext<Self>) -> FocusSnap {
+    pub(super) fn live_focus_snap(&self, ctx: &mut ViewContext<Self>) -> FocusSnap {
         if self.ssh_choice_card_holding_keys(ctx).is_some() {
             FocusSnap::SshChoiceCard
         } else if self.typed_on_approval_card(ctx) {

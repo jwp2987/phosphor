@@ -66,6 +66,11 @@ pub struct PaneFocusFacts {
     /// other pane child with focus (a pending approval card, an AI block awaiting confirmation,
     /// the ssh choice card, a question card) binds its own Enter/Tab/Escape and keeps them.
     pub settled_ai_focus: bool,
+    /// Focus is on the input view itself, or a view inside it, but not its editor, and no card or
+    /// other pane child holds it (#1552, owner decision (a)). The input's editor binds nothing
+    /// there, so a control key typed now follows the typed keys of the gap through the terminal's
+    /// routing, to the same destination as the line it ends.
+    pub input_gap_focus: bool,
 }
 
 /// What kind of key event is being routed.
@@ -112,7 +117,8 @@ pub fn key_target(class: KeyClass, facts: &PaneFocusFacts) -> KeyTarget {
         // typed while the terminal itself has focus is the terminal's (#1411): the sink translates
         // it into bytes from the published terminal modes and routes it like the typed keys, so
         // no element needs the model's lock to do it. In a focus gap only the ssh hold (#1332,
-        // #1394) or a settled AI target (#1552) takes it, to follow the typed keys of the gap
+        // #1394), a settled AI target (#1552) or focus on the input view outside its editor (#1552
+        // (a)) takes it, to follow the typed keys of the gap
         // through the terminal's routing (#1397) instead of leaving through the element tree to
         // the input's keybinding on an empty editor; any other pane child with focus binds its
         // own control keys. The terminal's table then decides: the pty, the editor's submit, or
@@ -120,7 +126,11 @@ pub fn key_target(class: KeyClass, facts: &PaneFocusFacts) -> KeyTarget {
         KeyClass::Control => {
             if facts.editor_focused {
                 KeyTarget::NotMine
-            } else if facts.terminal_focused || facts.ssh_hold_active || facts.settled_ai_focus {
+            } else if facts.terminal_focused
+                || facts.ssh_hold_active
+                || facts.settled_ai_focus
+                || facts.input_gap_focus
+            {
                 KeyTarget::Terminal
             } else {
                 KeyTarget::NotMine
@@ -137,6 +147,18 @@ pub fn key_target(class: KeyClass, facts: &PaneFocusFacts) -> KeyTarget {
             }
         }
     }
+}
+
+/// #1552 (b): whether the prompt after a long-running command hands focus back. Only when focus
+/// is inside the pane (`focus_inside_pane`) and in a gap there: not the editor, not the terminal
+/// view, not a card or AI block that keeps its own keys (those are named by `focus`). The
+/// redetermination that follows still never takes focus from the find bar, the block filter, an
+/// AI block the user navigates or a queued-prompt editor.
+pub fn hands_back_focus_at_prompt(
+    focus: crate::terminal::input_queue::FocusSnap,
+    focus_inside_pane: bool,
+) -> bool {
+    focus_inside_pane && focus == crate::terminal::input_queue::FocusSnap::Other
 }
 
 /// The questions the terminal destination's rows ask, in the order [`route_typed`] asks them.

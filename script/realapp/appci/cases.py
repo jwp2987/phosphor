@@ -456,6 +456,32 @@ class Ctx:
                 continue
         return enter_segments(lines, t0)
 
+    def app_pty_text(self, t0):
+        """#1490/#1393: the bytes the APP wrote to its pty since wall time t0, in write order (`input_order hop=pty_write_bytes ... bytes="..."`, Rust
+        `escape_ascii` form; needs WARP_INPUT_ORDER_LOG_TEXT=1), decoded, from the active log plus its rotated chunks. None when there is no such trace
+        (a log without opted-in text shows `<N bytes>` and is no trace)."""
+        import glob
+        src = self.log_path
+        if not src:
+            return None
+        parts = sorted(glob.glob(glob.escape(src) + ".in_session.*"), key=lambda f: int(f.rsplit(".", 1)[1]) if f.rsplit(".", 1)[1].isdigit() else -1, reverse=True) + [src]
+        out, seen = [], False
+        for f in parts:
+            try:
+                txt = open(f, errors="replace").read()
+            except OSError:
+                continue
+            for m in PTY_WRITE_BYTES_RE.finditer(txt):
+                seen = True
+                if float(m.group(2)) / 1000.0 >= t0 - 1:
+                    out.append(unescape_rust_ascii_bytes(m.group(1)))
+        # bytes first, decoded once: a UTF-8 character split over two writes is still one character
+        return b"".join(out).decode("utf-8", errors="replace") if seen else None
+
+    def app_pty_wrote_line(self, want, have, t0):
+        """#1490/#1393: which line the app's OWN pty writes since t0 carry; see pty_line_verdict."""
+        return pty_line_verdict(self.app_pty_text(t0), want, have)
+
     def app_saw_line(self, want, t0):
         """True: every character of `want` is in the app's own typed-character log, in order and contiguous (the key ARRIVED and was routed);
         False: the app's log has typed characters but not this line (the injector/OS never delivered it, or the log rotated it away); None: no trace."""
@@ -831,18 +857,90 @@ def classify_line(want, have):
     return "differs (%d typed, %d received characters)" % (len(want), len(have))
 
 
+PTY_WRITE_BYTES_RE = re.compile(r'input_order hop=pty_write_bytes\b[^\n]*? bytes="((?:[^"\\]|\\.)*)"[^\n]*? t=(\d+(?:\.\d+)?)')
+# What the app writes to the shell's line that is never line text: the typeahead report requests (bash/zsh `ESC i`, fish `ESC 1`) and the
+# bracketed-paste markers an editor command is wrapped in. Removed before the line is looked for, so a request written between two keys does not
+# split it. The kill-line bytes (^P, ^K^U, ESC 2) stay: text written before one is not the line the shell runs.
+PTY_NON_LINE_BYTES = ("\x1b[200~", "\x1b[201~", "\x1bi", "\x1b1")
+PTY_LINE_VERDICT_TEXT = {
+    "have": "the app's OWN pty writes (pty_write_bytes) carry the corrupted line: Phosphor wrote it that way (app-side: the hand-off / editor "
+            "path moved or dropped the keys before the pty)",
+    "want": "the app's own pty writes (pty_write_bytes) carry the line exactly as typed and not the corrupted one: it was changed after the "
+            "app's pty write (ConPTY / the shell's tty)",
+    "neither": "the app's own pty writes (pty_write_bytes) carry neither line contiguously (part of it went to the shell's line, part through "
+               "an editor command): read the case log's pty_write_bytes / handoff_insert / input_report hops for the split",
+    None: "no pty byte trace in the app log (pty_write_bytes with WARP_INPUT_ORDER_LOG_TEXT=1), so where it changed is not known",
+}
+
+
+def unescape_rust_ascii_bytes(s):
+    """the inverse of Rust's `<[u8]>::escape_ascii` (what the app's input_order log prints), as BYTES: \\t \\r \\n \\' \\" \\\\ and \\xNN, where
+    \\xNN is one byte (escape_ascii writes every non-ASCII byte that way, so a UTF-8 character is several of them)"""
+    out, i = bytearray(), 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            nxt = s[i + 1]
+            if nxt == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", s[i + 2:i + 4]):
+                out.append(int(s[i + 2:i + 4], 16))
+                i += 4
+                continue
+            out += {"t": b"\t", "r": b"\r", "n": b"\n", "0": b"\0"}.get(nxt, nxt.encode("utf-8"))
+            i += 2
+            continue
+        out += ch.encode("utf-8")
+        i += 1
+    return bytes(out)
+
+
+def unescape_rust_ascii(s):
+    """unescape_rust_ascii_bytes decoded as UTF-8 (invalid bytes replaced)"""
+    return unescape_rust_ascii_bytes(s).decode("utf-8", errors="replace")
+
+
+# Bytes that kill the shell's line: ^U, ^K, ^P (the bootstrap's kill-whole-line), PowerShell's ESC 2.
+PTY_KILL_BYTES = ("\x15", "\x0b", "\x10", "\x1b2")
+
+
+def pty_line_verdict(got, want, have):
+    """#1490/#1393: 'have' when the corrupted line `have` is in the app's pty bytes `got` (and is not just a piece of the typed line), 'want' when the
+    typed line is there instead and no kill byte (PTY_KILL_BYTES) follows it before its line ends (a line written and then killed did not reach
+    the shell as typed), 'neither' otherwise, None without a trace. Report requests and bracketed-paste markers are removed first
+    (PTY_NON_LINE_BYTES)."""
+    if got is None:
+        return None
+    for b in PTY_NON_LINE_BYTES:
+        got = got.replace(b, "")
+    if have and have not in want and have in got:
+        return "have"
+    at = got.rfind(want)
+    if at >= 0:
+        rest = got[at + len(want):]
+        ends = [i for i in (rest.find("\r"), rest.find("\n")) if i >= 0]
+        rest = rest[:min(ends)] if ends else rest
+        if not any(k in rest for k in PTY_KILL_BYTES):
+            return "want"
+    return "neither"
+
+
 def line_evidence(ctx, want, have, t0, ctrl=None):
     """one sentence of proof for a corrupted line: what changed, whether the APP's own typed-character log shows the line arriving intact and in
-    order (then it was lost/moved AFTER the app's pty write: app or the ConPTY it hosts, not the injector), and what the reference terminal did
-    with the same injection in this session (a reference that kept every line exactly makes this Phosphor-side)."""
+    order (then the injector delivered it), whether the app's own pty writes carry the corrupted line or the typed one (#1490/#1393: app-side
+    vs. after the pty write), and what the reference terminal did with the same injection in this session (a reference that kept every line
+    exactly makes this Phosphor-side)."""
     parts = ["%s: typed %r, shell received %r" % (classify_line(want, have), want[:90], have[:90])]
     saw = ctx.app_saw_line(want, t0)
     if saw is True:
-        parts.append("the app's log shows every character of the line arriving in order (typed_characters), so it was changed after the app's pty write")
+        # #1490/#1393: keys arriving in order say nothing about what the app WROTE: the hand-off moves keys between the shell's line and the editor
+        # (a report, an editor command). Where the line changed is read from the app's own pty writes below, never from typed_characters (r18ct
+        # said "changed after the app's pty write" from this line alone).
+        parts.append("the app's log shows every character of the line arriving in order (typed_characters)")
     elif saw is False:
         parts.append("the app's log does NOT show the line's characters in order (never delivered to the app, or the log rotated it away)")
     else:
         parts.append("no key trace in the app log")
+    wrote = ctx.app_pty_wrote_line(want, have, t0) if hasattr(ctx, "app_pty_wrote_line") else None
+    parts.append(PTY_LINE_VERDICT_TEXT[wrote])
     if ctrl:
         parts.append("reference %s with the same injection: %d/%d lines missing, %s received exactly" % (
             ctrl.get("ref"), ctrl.get("bad", 0), ctrl.get("n", 0), "all" if not ctrl.get("exact_bad") else "NOT all (%d inexact)" % ctrl["exact_bad"]))
