@@ -18,6 +18,7 @@ use warp_completer::completer::{
     GeneratorContext, PathCompletionContext, PathSeparators, TopLevelCommandCaseSensitivity,
 };
 use warp_completer::signatures::CommandRegistry;
+use warp_core::command::ExitCode;
 use warp_core::features::FeatureFlag;
 use warp_util::path::{EscapeChar, ShellDialect, ShellFamily};
 use warpui::{AppContext, SingletonEntity};
@@ -735,6 +736,62 @@ impl SessionContext {
     }
 }
 
+impl SessionContext {
+    /// #1342: answers `git config --get alias.<name>` from the one `--get-regexp '^alias.'`
+    /// listing (a single process, shared and kept per config stamp), so each distinct subcommand
+    /// the user types no longer costs its own git (on Windows, its own PowerShell). `None` when
+    /// the lookup is not a plain single-name one, the session is remote, or the listing cannot
+    /// answer; the caller then runs the real lookup.
+    async fn alias_lookup_from_listing(
+        &self,
+        handle: &tokio::runtime::Handle,
+        key: &generator_cache::GeneratorKey,
+        env_vars: &Option<HashMap<String, String>>,
+    ) -> Option<CommandOutput> {
+        if !self.session.is_local()
+            || std::env::var_os(generator_cache::ALIAS_CACHE_DISABLE_ENV).is_some()
+        {
+            return None;
+        }
+        let name = generator_cache::single_alias_lookup_name(&key.script)?;
+        let listing_key = generator_cache::GeneratorKey {
+            script: generator_cache::ALL_ALIASES_SCRIPT.to_owned(),
+            ..key.clone()
+        };
+        let mut result = self
+            .shared_generator_run(handle, &listing_key, env_vars)
+            .await;
+        if generator_cache::is_cancelled_run(&result) {
+            result = self
+                .shared_generator_run(handle, &listing_key, env_vars)
+                .await;
+        }
+        let listing = result.as_ref().as_ref().ok()?;
+        // `--get-regexp` exits 0 with matches and 1 with none; anything else is a real failure
+        // (not a repository with a broken config, git missing) the real lookup should report.
+        let code = listing.exit_code?;
+        if code != ExitCode::from(0) && code != ExitCode::from(1) {
+            return None;
+        }
+        let text = String::from_utf8(listing.stdout.clone()).ok()?;
+        let answer = generator_cache::alias_from_listing(&text, name)?;
+        Some(match answer {
+            Some(value) => CommandOutput {
+                stdout: format!("{value}\n").into_bytes(),
+                stderr: Vec::new(),
+                status: CommandExitStatus::Success,
+                exit_code: Some(ExitCode::from(0)),
+            },
+            None => CommandOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                status: CommandExitStatus::Failure,
+                exit_code: Some(ExitCode::from(1)),
+            },
+        })
+    }
+}
+
 #[async_trait]
 impl GeneratorContext for SessionContext {
     async fn execute_command_at_pwd(
@@ -771,6 +828,13 @@ impl GeneratorContext for SessionContext {
             pwd: self.pwd().to_string_lossy().into_owned(),
             script: shell_command.to_owned(),
         };
+
+        if let Some(answer) = self
+            .alias_lookup_from_listing(&handle, &key, &env_vars)
+            .await
+        {
+            return Ok(answer);
+        }
 
         let mut result = self.shared_generator_run(&handle, &key, &env_vars).await;
         if generator_cache::is_cancelled_run(&result) {

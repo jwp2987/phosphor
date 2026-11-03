@@ -106,6 +106,49 @@ pub(super) fn is_alias_lookup_script(script: &str) -> bool {
     script.starts_with("git ") && script.contains(" config ") && script.contains("alias")
 }
 
+/// The script that lists every configured alias at once (the signature's own alias generator).
+pub(super) const ALL_ALIASES_SCRIPT: &str = "git --no-optional-locks config --get-regexp '^alias.'";
+
+/// The alias name of a single-name lookup `git config --get alias.<name>`, if `script` is exactly
+/// that and the name is plain (letters, digits, `-`, `_`). Dotted or odd names are subsection
+/// keys whose matching rules differ, so they keep running git themselves.
+pub(super) fn single_alias_lookup_name(script: &str) -> Option<&str> {
+    let name = script.trim().strip_prefix("git config --get alias.")?;
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    .then_some(name)
+}
+
+/// Answers `git config --get alias.<name>` from the output of [`ALL_ALIASES_SCRIPT`] (one
+/// `alias.<name> <value>` line per definition; git lower-cases the key). `Some(Some(value))` is
+/// a definition (the last one wins, as for `--get`), `Some(None)` is "no such alias" (the lookup
+/// would exit 1 with no output). `None` means the listing cannot answer, such as a valueless
+/// definition, a multi-line value or an unreadable line, so the caller runs the real lookup.
+pub(super) fn alias_from_listing(listing: &str, name: &str) -> Option<Option<String>> {
+    let key = format!("alias.{}", name.to_ascii_lowercase());
+    let mut found = None;
+    for line in listing.lines() {
+        if !line.starts_with("alias.") {
+            // A continuation line of a multi-line value: the listing is not line-per-alias.
+            return None;
+        }
+        let (line_key, value) = match line.split_once(' ') {
+            Some((k, v)) => (k, Some(v)),
+            None => (line, None),
+        };
+        if !line_key.eq_ignore_ascii_case(&key) {
+            continue;
+        }
+        match value {
+            Some(v) if !v.trim().is_empty() => found = Some(v.to_owned()),
+            _ => return None,
+        }
+    }
+    Some(found)
+}
+
 /// How deep `[include]` chains are followed (git itself stops at 10).
 const CONFIG_INCLUDE_MAX_DEPTH: usize = 10;
 

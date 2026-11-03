@@ -26811,3 +26811,27 @@ mod group2_timer_tests;
 // Review follow-ups F6 / F10. Declared here for the same reason as group 1.
 #[path = "view/followup_tests.rs"]
 mod followup_tests;
+
+/// #1342: only a `git checkout <typo>` failure needs the branch list; everything else skips the
+/// `git branch` spawn.
+#[test]
+fn corrections_fetch_branches_only_for_a_checkout_pathspec_error() {
+    let err = "error: pathspec 'feat-xzy' did not match any file(s) known to git";
+    assert!(command_corrections_may_need_git_branches(
+        "git checkout feat-xzy",
+        err
+    ));
+    assert!(command_corrections_may_need_git_branches(
+        "git \"checkout\" feat-xzy",
+        &err.to_uppercase()
+    ));
+    assert!(!command_corrections_may_need_git_branches("echo hi", ""));
+    assert!(!command_corrections_may_need_git_branches(
+        "git status",
+        "clean"
+    ));
+    assert!(!command_corrections_may_need_git_branches(
+        "git checkout main",
+        "Switched to branch 'main'"
+    ));
+}
