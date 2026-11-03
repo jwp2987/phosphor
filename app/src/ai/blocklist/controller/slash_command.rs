@@ -12,7 +12,7 @@ use crate::{
         },
         blocklist::{
             agent_view::AgentViewEntryOrigin,
-            context_model::{context_and_files_for_attachments, PendingFile},
+            context_model::{context_and_files_from_read, PendingFile, ReadAttachment},
         },
     },
     search::slash_command_menu::static_commands::commands,
@@ -22,8 +22,59 @@ use crate::{
 
 use super::{
     add_pending_file_attachments, input_context_for_request, parse_context_attachments,
-    BlocklistAIController, BlocklistAIControllerEvent, RequestInput,
+    BlocklistAIController, BlocklistAIControllerEvent, QueuedSend, RequestInput,
 };
+
+/// A skill invocation waiting for its attached files to be read off the UI thread (#1314).
+/// Everything but the attachments' content is resolved when the skill is invoked.
+pub(super) struct SkillSend {
+    request: SlashCommandRequest,
+    is_queued_prompt: bool,
+    conversation_id: Option<AIConversationId>,
+    /// The request context without the attachments (they are appended last, as
+    /// `input_context_for_request` would).
+    base_context: Arc<[AIAgentContext]>,
+}
+
+impl SkillSend {
+    pub(super) fn conversation_id(&self) -> Option<AIConversationId> {
+        self.conversation_id
+    }
+
+    /// Sends the skill invocation with the attachments read for it.
+    pub(super) fn finish(
+        self,
+        controller: &mut BlocklistAIController,
+        read: Vec<ReadAttachment>,
+        ctx: &mut ModelContext<BlocklistAIController>,
+    ) {
+        let (attachment_context, file_attachments, failed) = context_and_files_from_read(read);
+        if !failed.is_empty() {
+            controller.notify_attachment_read_failures(&failed, ctx);
+        }
+        let context = with_attachment_context(&self.base_context, attachment_context);
+        self.request.finish_send(
+            controller,
+            self.is_queued_prompt,
+            self.conversation_id,
+            context,
+            file_attachments,
+            ctx,
+        );
+    }
+}
+
+/// `base` followed by `attachment_context`: the order `input_context_for_request` produces when
+/// it is handed the attachment context directly.
+fn with_attachment_context(
+    base: &[AIAgentContext],
+    attachment_context: Vec<AIAgentContext>,
+) -> Arc<[AIAgentContext]> {
+    if attachment_context.is_empty() {
+        return base.into();
+    }
+    base.iter().cloned().chain(attachment_context).collect()
+}
 
 pub enum SlashCommandRequest {
     CreateNewProject {
@@ -99,27 +150,57 @@ impl SlashCommandRequest {
         // text) so the skill's agent sees the same attachments a non-slash-command user query
         // would. Other slash commands continue to pass `false` to preserve existing behavior.
         let is_invoke_skill = matches!(self, Self::InvokeSkill { .. });
-        // Skill invocations aren't queue-aware (unlike `input_for_query`'s prompt attachments),
-        // so this always reads the live-staged attachments, matching prior behavior.
-        let (attachment_context, file_attachments) = if is_invoke_skill {
-            context_and_files_for_attachments(
-                controller
-                    .context_model
-                    .as_ref(ctx)
-                    .pending_attachments()
-                    .to_vec(),
-            )
-        } else {
-            (vec![], vec![])
-        };
         let context = input_context_for_request(
             is_invoke_skill,
             controller.context_model.as_ref(ctx),
             controller.active_session.as_ref(ctx),
             conversation_id,
-            attachment_context,
+            vec![],
             ctx,
         );
+        if is_invoke_skill {
+            // Skill invocations aren't queue-aware (unlike `input_for_query`'s prompt
+            // attachments), so this always reads the live-staged attachments. Their content is
+            // read off the UI thread, in order with every other submit (#1314).
+            let attachments = controller
+                .context_model
+                .as_ref(ctx)
+                .pending_attachments()
+                .to_vec();
+            controller.schedule_send(
+                QueuedSend::Skill(SkillSend {
+                    request: self,
+                    is_queued_prompt,
+                    conversation_id,
+                    base_context: context,
+                }),
+                attachments,
+                /*direct_staged*/ true,
+                ctx,
+            );
+            return;
+        }
+        self.finish_send(
+            controller,
+            is_queued_prompt,
+            conversation_id,
+            context,
+            vec![],
+            ctx,
+        );
+    }
+
+    /// The second half of `send_request`, once any attachment content has been read.
+    fn finish_send(
+        self,
+        controller: &mut BlocklistAIController,
+        is_queued_prompt: bool,
+        conversation_id: Option<AIConversationId>,
+        context: Arc<[AIAgentContext]>,
+        file_attachments: Vec<PendingFile>,
+        ctx: &mut ModelContext<BlocklistAIController>,
+    ) {
+        let is_invoke_skill = matches!(self, Self::InvokeSkill { .. });
         let entrypoint = self.entrypoint();
         let is_summarize = matches!(self, Self::Summarize { .. });
         let inputs = self.input(
@@ -300,5 +381,35 @@ impl SlashCommandRequest {
             | SlashCommandRequest::FetchReviewComments { .. }
             | SlashCommandRequest::InvokeSkill { .. } => EntrypointType::UserInitiated,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_attachment_context;
+    use crate::ai::agent::AIAgentContext;
+
+    /// A deferred skill send appends its attachment context after the base context, exactly
+    /// where `input_context_for_request` would have put it (#1314).
+    #[test]
+    fn attachment_context_is_appended_after_the_base_context() {
+        let base = vec![
+            AIAgentContext::SelectedText("base-1".to_owned()),
+            AIAgentContext::SelectedText("base-2".to_owned()),
+        ];
+        let attachments = vec![AIAgentContext::SelectedText("attached".to_owned())];
+        let merged = with_attachment_context(&base, attachments);
+        assert_eq!(
+            merged.as_ref(),
+            &[
+                AIAgentContext::SelectedText("base-1".to_owned()),
+                AIAgentContext::SelectedText("base-2".to_owned()),
+                AIAgentContext::SelectedText("attached".to_owned()),
+            ]
+        );
+        assert_eq!(
+            with_attachment_context(&base, vec![]).as_ref(),
+            base.as_slice()
+        );
     }
 }

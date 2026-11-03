@@ -332,22 +332,6 @@ fn read_pending_file_for_context(file: &PendingFile) -> Option<FileContext> {
     ))
 }
 
-/// Splits an explicitly-resolved attachment set into the `AIAgentContext` entries it produces
-/// (an `Image` per image, plus the `File` content read from disk for each file — see
-/// `read_pending_file_for_context`) and the plain `PendingFile` list callers use to also add
-/// `FilePathReference` entries to `referenced_attachments` (via `add_pending_file_attachments`).
-///
-/// Used by callers that resolve their own attachment set — a fired queued row's captured
-/// attachments, or the currently-staged attachments for a direct send — instead of reading
-/// `pending_attachments` directly, so the built request reflects what was actually staged when
-/// the prompt was queued (or sent), not whatever happens to be staged when the request is built.
-pub fn context_and_files_for_attachments(
-    attachments: Vec<PendingAttachment>,
-) -> (Vec<AIAgentContext>, Vec<PendingFile>) {
-    let (context, files, _failed) = context_and_files_from_read(read_attachments(attachments));
-    (context, files)
-}
-
 /// One attachment together with the file content read for it. `file_context` is `Some` only for
 /// a `File` whose content was read successfully.
 #[derive(Debug, Clone)]
@@ -1093,8 +1077,8 @@ impl BlocklistAIContextModel {
             // (a fired queued row's captured attachments, or live staging captured at send
             // time). Reading `self.pending_attachments` here would attach whatever happens to be
             // staged when the request is *built*, not what was staged when it was queued. See
-            // `context_and_files_for_attachments`, which callers use to build this context
-            // themselves from their resolved set.
+            // `read_attachments` + `context_and_files_from_read`, which callers use to build this
+            // context themselves from their resolved set.
         }
 
         context
