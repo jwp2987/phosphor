@@ -49,7 +49,10 @@ use crate::terminal::input_queue::{
     FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue,
     PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode, is_pty_entry, trace,
 };
-use crate::terminal::model::typeahead_handoff::{PromptHoldCap, YoungHoldEnd, YoungHoldExpiry};
+use crate::terminal::model::typeahead_handoff::{
+    CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldExpiry, forces_shell_submit,
+    text_for_editor,
+};
 use crate::terminal::paste_sequencer::PasteFailure;
 
 /// A warning line for a pane closed while it still held input (#1441): entries and bytes queued
@@ -114,6 +117,9 @@ pub(super) struct PasteQueueState {
     requeue_replacement: Option<EntryKind>,
     /// The stamp for keys queued behind a prompt hold (shared with the hand-off).
     pub(super) line_stamp: Option<crate::terminal::model::typeahead_handoff::QueuedLineBytesStamp>,
+    /// #1584: the prompt hold whose overdue keys were already announced (log + toast), so a
+    /// re-armed cap does not repeat it.
+    prompt_hold_waiting_told: Option<u64>,
 }
 
 /// What the stage tells the host when the hand-off holds the bytes of the entry it delivers.
@@ -174,6 +180,7 @@ impl PasteQueueState {
             requeue_request: None,
             requeue_replacement: None,
             line_stamp: None,
+            prompt_hold_waiting_told: None,
         }
     }
 
@@ -874,13 +881,28 @@ impl TerminalView {
                 self.rearm_prompt_hold_cap(token, after, ctx);
                 return;
             }
-            // The line editor never signalled (#1349), or the window's Enter was never acted on:
-            // the held keys are released anyway, in typed order through the counted release, the
-            // same path as the signal's (never a second copy, never ahead of a held key). Whether
-            // the hold stays on is the hand-off's decision (`expire_queued_prompt_hold`). The
-            // queue's own give-up would deliver them through the stages again; the hold has its
-            // own release instead.
-            self.release_queued_prompt_hold(key, PromptHoldEnd::GaveUp, ctx);
+            // #1584: the cap is a give-up, and a timer never writes to the pty. The line editor
+            // never signalled (#1349), or the window's Enter was never acted on:
+            // * keys with no Enter, at a prompt whose line holds nothing typed, go back to the
+            //   editor as shell-routed text (visible, logged with counts), and the editor takes
+            //   input over;
+            // * a segment with an Enter (or one that cannot go back in order) stays held: the cap
+            //   is armed again, a toast says input is waiting for the shell, and the events
+            //   release it (the signal, the precmd's wait, a command becoming interactive, a
+            //   continuation prompt, ^C or another signal key).
+            // The queue's own give-up would deliver them through the stages; the hold has its own
+            // ends instead.
+            if decision == PromptHoldCap::Gone {
+                self.hand_back_prompt_hold_keys(key, token, true, ctx);
+                return;
+            }
+            let can_hand_back = !self.prompt_hold_segment_has_enter(key)
+                && self.handoff.read().prompt_hold_can_hand_back(key);
+            if can_hand_back {
+                self.hand_back_prompt_hold_keys(key, token, false, ctx);
+            } else {
+                self.keep_overdue_prompt_hold(key, token, ctx);
+            }
             return;
         }
         if kind == Some(GateKind::PromptSeen) {
@@ -1510,6 +1532,138 @@ impl TerminalView {
             }
         }
         chunks
+    }
+
+    /// #1584: whether the keys held behind prompt hold gate `hold_id` include an Enter (a held
+    /// paste whose payload is not known counts as one). A busy queue answers yes: the caller then
+    /// keeps the hold, which is always safe.
+    fn prompt_hold_segment_has_enter(&self, hold_id: u64) -> bool {
+        let queue = self.paste_queue.queue.clone();
+        let Some(peek) = queue.try_peek() else {
+            return true;
+        };
+        let Some(barrier) = peek
+            .gates()
+            .iter()
+            .find(|gate| gate.kind == GateKind::LineEditorActive && gate.key == hold_id)
+            .map(|gate| gate.barrier)
+        else {
+            return false;
+        };
+        let upper = peek
+            .gates()
+            .iter()
+            .map(|gate| gate.barrier)
+            .filter(|other| *other > barrier)
+            .min();
+        let is_enter = |byte: &u8| matches!(byte, b'\r' | b'\n');
+        peek.entries()
+            .filter(|entry| entry.id >= barrier && upper.is_none_or(|upper| entry.id < upper))
+            .any(|entry| match &entry.kind {
+                EntryKind::PtyBytes { bytes, .. } => bytes.iter().any(is_enter),
+                EntryKind::Paste { paste_id, .. } => self
+                    .paste_queue
+                    .payloads
+                    .get(paste_id)
+                    .is_none_or(|payload| payload.iter().any(is_enter)),
+                _ => false,
+            })
+    }
+
+    /// #1584: the give-up of prompt hold `hold_id` with keys that may go back to the editor: the
+    /// gate is closed, the hand-off finishes the hold and hands input to the editor, and the keys
+    /// become editor text, routed to the shell on the next Enter. Nothing is written to the pty.
+    /// `gone`: the hand-off no longer knows the hold (a stale gate); its keys go to the editor as
+    /// text, newlines included, and nothing is submitted.
+    fn hand_back_prompt_hold_keys(
+        &mut self,
+        hold_id: u64,
+        token: GateToken,
+        gone: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queue = self.paste_queue.queue.clone();
+        let entries = {
+            let Some(mut guard) = queue.try_lock() else {
+                // Busy: decided again shortly, never written meanwhile.
+                self.rearm_prompt_hold_cap(token, Duration::from_millis(100), ctx);
+                return;
+            };
+            let mut host = PtyQueueHost::new(self, ctx);
+            guard.close_gate_taking(&mut host, GateKind::LineEditorActive, hold_id)
+        };
+        let chunks = self.bytes_of_taken_entries(entries, ctx);
+        let held: Vec<u8> = chunks.concat();
+        let committed = {
+            let mut handoff = self.handoff.write();
+            handoff.expire_queued_prompt_hold(hold_id);
+            handoff.finish_queued_prompt_hold(hold_id);
+            !gone && handoff.try_commit_at_prompt()
+        };
+        let text = text_for_editor(&held);
+        log::warn!(
+            "typeahead prompt hold {hold_id} gave up: {} chunk(s), {} byte(s) handed back to the \
+             editor as text (gone={gone}, committed={committed}); nothing written to the pty",
+            chunks.len(),
+            held.len()
+        );
+        warpui::input_order::log_hop("prompt_hold_handed_back", || {
+            format!(
+                "hold={hold_id} chunks={} bytes={} chars={} gone={gone} committed={committed}",
+                chunks.len(),
+                held.len(),
+                text.chars().count()
+            )
+        });
+        if committed {
+            self.handle_typeahead_handoff_changed(ctx);
+        }
+        if !text.is_empty() {
+            self.input.update(ctx, |input, ctx| {
+                input.system_insert(&text, ctx);
+                if !gone && forces_shell_submit(&text) {
+                    input.submit_next_enter_as_shell_command();
+                }
+            });
+        }
+        self.note_editor_took_over();
+        self.redetermine_terminal_focus(ctx);
+        ctx.emit(Event::RetryTypeaheadHandoffRequest);
+    }
+
+    /// #1584: the give-up of prompt hold `hold_id` whose keys must not go back to the editor (they
+    /// hold an Enter, or the shell's state is unknown): nothing is written and nothing is run on a
+    /// timer. The gate stays, the cap is armed again, and the first time a log line and a toast say
+    /// input is waiting for the shell. The events release the keys in order.
+    fn keep_overdue_prompt_hold(
+        &mut self,
+        hold_id: u64,
+        token: GateToken,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let live = self.handoff.write().keep_overdue_prompt_hold(hold_id);
+        if live && self.paste_queue.prompt_hold_waiting_told != Some(hold_id) {
+            self.paste_queue.prompt_hold_waiting_told = Some(hold_id);
+            let held = self.paste_queue.queue.try_peek().map_or(0, |queue| {
+                queue.held_behind_gate(GateKind::LineEditorActive, hold_id)
+            });
+            log::warn!(
+                "typeahead prompt hold {hold_id}: no line-editor ready event within the cap; \
+                 {held} held entr(ies) wait for the shell (an Enter among them is never sent by a \
+                 timer)"
+            );
+            warpui::input_order::log_hop("prompt_hold_kept_overdue", || {
+                format!("hold={hold_id} entries={held}")
+            });
+            if ctx.has_singleton_model::<crate::workspace::ToastStack>() {
+                self.show_ssh_typing_toast(
+                    "Your typed input is waiting for the shell to be ready; it is sent when the \
+                     prompt is ready (Ctrl-C discards it)",
+                    ctx,
+                );
+            }
+        }
+        self.rearm_prompt_hold_cap(token, CONPTY_PROMPT_HOLD_GIVE_UP, ctx);
     }
 
     /// Arms the give-up cap of prompt hold gate `token` again (#1573): the hand-off found the wait

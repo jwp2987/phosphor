@@ -749,6 +749,22 @@ not-my-text refusal remains, and a deferred Enter whose report it refused is giv
 | editor | `input_test.rs`: `a_handoff_report_into_an_ai_mode_input_is_kept_as_shell_text` | the report is inserted (never dropped) and the input is switched to shell, locked; a shell-mode input inserts as before |
 | real app | Windows Git Bash and PowerShell, terminal and agent mode: `sleep 3` + a line typed in its first second, then a fast line at the next prompt | the shell's `rec.log` has both lines once, in order; no `session_off=true` in the log for Git Bash; agent mode ssh with a slow bootstrap: after `stty sane` the delivered line stays on the remote (no `handoff_insert` of it, `handoff_request_skipped` logged), nothing typed is lost |
 
+### 2.13 The prompt hold's give-up never writes to the pty (#1584)
+
+The 1.5 s cap of the ConPTY prompt hold is a give-up, and a timer never writes to the pty. At a prompt whose line holds nothing typed
+(the precmd's wait), held keys with no Enter go back to the editor as shell-routed text (`system_insert` + the next Enter as a shell
+command), the editor takes input over, and the log says so with counts (`hop=prompt_hold_handed_back`). A segment with an Enter, or one
+that cannot go back in order (an enter window whose Enter the shell never acted on), stays held: the cap is armed again, a toast and one
+log line (`hop=prompt_hold_kept_overdue`) say input is waiting for the shell, and the events release it (the signal, a command becoming
+interactive, a continuation prompt, ^C or another signal key). A shell that has never signalled is not held for at later prompts (its
+keys go by the live path) until a signal shows it does.
+
+| layer | test | asserts |
+|---|---|---|
+| model | `typeahead_handoff_tests.rs`: `only_a_hold_at_a_clean_prompt_can_go_back_to_the_editor`, `an_overdue_hold_kept_for_the_events_is_still_released_by_the_signal` | hand-back only at a clean prompt; a kept hold keeps its wait and the signal releases it |
+| view, Legacy and Table | `view_test.rs`: `a_prompt_hold_past_its_cap_hands_its_keys_back_to_the_editor_and_writes_nothing`, `a_held_segment_with_an_enter_past_the_cap_stays_held_until_the_signal` | no signal past the cap: `ls -l` in the editor, editor owns input, zero pty writes; `ls\rx` past the cap (twice): still held, nothing written, then the signal writes it once, in order |
+| view | `view_test.rs`: `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off`, `a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys` | the give-up hands back to the editor (also from a busy queue), never writes; the never-signalling shell's next key goes by the live path |
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate

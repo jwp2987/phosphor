@@ -3432,3 +3432,45 @@ fn the_committed_delivery_mark_ends_when_its_line_cannot_hold_it() {
     assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
     assert!(!handoff.committed_delivery_pending());
 }
+
+// ---- #1584: a give-up never writes to the pty ----------------------------------------------------
+
+/// Keys held in the precmd's wait at a prompt whose line holds nothing typed may go back to the
+/// editor in order; keys held by an enter window (the shell's state unknown) may not.
+#[test]
+fn only_a_hold_at_a_clean_prompt_can_go_back_to_the_editor() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(handoff.prompt_hold_can_hand_back(id));
+    assert!(!handoff.prompt_hold_can_hand_back(id + 1));
+    assert!(handoff.expire_queued_prompt_hold(id));
+    handoff.finish_queued_prompt_hold(id);
+    assert!(
+        handoff.try_commit_at_prompt(),
+        "the editor takes input over"
+    );
+
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(!handoff.prompt_hold_can_hand_back(id));
+}
+
+/// A hold kept past its cap (an Enter among its keys) keeps its wait, so the line editor's signal
+/// still releases it; a shell that had never signalled is switched off meanwhile, and back on when
+/// the signal shows it does signal.
+#[test]
+fn an_overdue_hold_kept_for_the_events_is_still_released_by_the_signal() {
+    let mut handoff = conpty_awaiting_line_editor();
+    assert_eq!(handoff.on_user_bytes(b"ls"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    assert!(handoff.keep_overdue_prompt_hold(id));
+    assert!(handoff.prompt_hold_off_for_session());
+    assert!(handoff.awaiting_line_editor_signal());
+    assert!(handoff.has_prompt_hold());
+    assert_eq!(handoff.release_queued_prompt_hold_on_signal(), Some(id));
+    assert!(!handoff.prompt_hold_off_for_session());
+    assert!(!handoff.keep_overdue_prompt_hold(id + 1));
+}

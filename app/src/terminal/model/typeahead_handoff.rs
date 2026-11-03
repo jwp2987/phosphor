@@ -229,10 +229,11 @@ pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 /// ~6 ms before that start-up output vanished below the app).
 ///
 /// This is only the give-up safety net for a shell that was expected to signal and never did
-/// (for example readline with `enable-bracketed-paste off`): the keys are released anyway, in
-/// typed order through the same counted release as the signal's, and a warning is logged. It is
-/// deliberately long: a signal normally arrives within 10-60 ms, so reaching this means the signal
-/// is not coming.
+/// (for example readline with `enable-bracketed-paste off`). A timer never writes to the pty
+/// (#1584): keys with no Enter, at a prompt whose line holds nothing typed, go back to the editor
+/// as shell-routed text; a segment with an Enter (or one that cannot go back in order) stays held
+/// for the events, with a toast. A warning is logged either way. It is deliberately long: a signal
+/// normally arrives within 10-60 ms, so reaching this means the signal is not coming.
 ///
 /// It measures ONE wait, the precmd's (#1573): from the prompt's precmd (or from the hold's first
 /// key, if that came later) to the line editor's signal. The enter window ([`CONPTY_ENTER_HOLD_ENV`])
@@ -940,8 +941,10 @@ impl TypeaheadHandoff {
         if self.awaiting_line_editor_since.take().is_none() {
             return None;
         }
-        // #1573: this shell signals; a later give-up is one missed prompt.
+        // #1573: this shell signals; a later give-up is one missed prompt. #1584: a hold kept past
+        // its cap may have switched the hold off for a shell thought not to signal; it does.
         self.line_editor_signal_seen = true;
+        self.prompt_hold_gave_up = false;
         let waited_ms = self
             .last_precmd_at
             .map(|at| at.elapsed().as_secs_f64() * 1000.0);
@@ -1039,9 +1042,9 @@ impl TypeaheadHandoff {
     }
 
     /// The give-up of queued prompt hold `id` (#1349): [`Self::prompt_hold_cap_fired`] said
-    /// [`PromptHoldCap::GiveUp`], so the view releases its keys anyway, in typed order through the
-    /// counted release, exactly as the signal would. Returns whether that hold is live; `false`
-    /// when it is gone already.
+    /// [`PromptHoldCap::GiveUp`] and [`Self::prompt_hold_can_hand_back`] holds, so the view hands
+    /// its keys back to the editor as shell-routed text (#1584: a timer never writes them to the
+    /// pty). Returns whether that hold is live; `false` when it is gone already.
     ///
     /// #1573: the hold is switched off for the rest of the session only when the precmd's wait
     /// gave up and this session's shell has never signalled (it does not signal at all). Any other
@@ -1057,14 +1060,14 @@ impl TypeaheadHandoff {
             self.prompt_hold_gave_up = true;
             log::warn!(
                 "ConPTY prompt hold: no line-editor ready signal within {} ms after the prompt, \
-                 and this shell has never sent one; releasing the held keys and turning the hold \
-                 off for this session",
+                 and this shell has never sent one; the held keys go back to the editor and the \
+                 hold is off for this session",
                 CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
             );
         } else if precmd_wait {
             log::warn!(
                 "ConPTY prompt hold: no line-editor ready signal within {} ms after this prompt; \
-                 releasing the held keys (the hold stays on for the next prompt)",
+                 the held keys go back to the editor (the hold stays on for the next prompt)",
                 CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
             );
         } else if enter_window {
@@ -1085,6 +1088,50 @@ impl TypeaheadHandoff {
                 "precmd_wait={precmd_wait} enter_window={enter_window} session_off={session_off}"
             )
         });
+        true
+    }
+
+    /// #1584: whether the give-up of queued prompt hold `id` may hand its keys back to the editor
+    /// and keep them in order: the precmd's wait (the shell is at a prompt) and nothing the user
+    /// typed is in the shell's line, so the editor takes input over at once
+    /// ([`Self::try_commit_at_prompt`] succeeds once the hold is finished). Anywhere else (an enter
+    /// window whose Enter the shell never acted on, a line that already holds typed keys) the
+    /// shell's state is unknown and handing back would split the line, so the keys stay held for
+    /// the events.
+    pub fn prompt_hold_can_hand_back(&self, id: u64) -> bool {
+        id == self.prompt_hold_id
+            && self.prompt_hold_queued
+            && self.awaiting_line_editor_since.is_some()
+            && matches!(
+                self.owner(),
+                Owner::Pty {
+                    wrote_user_bytes: false,
+                    enters_written,
+                    precmds_seen,
+                } if precmds_seen >= enters_written
+            )
+    }
+
+    /// #1584: the give-up cap of queued prompt hold `id` ran out but its keys stay held (they hold
+    /// an Enter, or cannot be handed back in order): no timer writes them. The waits are kept, so
+    /// the events still release them. A shell that has never signalled is not waited for at the
+    /// next prompts (#1349's session-wide off): keys typed after this hold is released go by the
+    /// live path -- unless the signal that releases it shows the shell does signal after all.
+    /// Returns whether the hold is live.
+    pub fn keep_overdue_prompt_hold(&mut self, id: u64) -> bool {
+        if id != self.prompt_hold_id || !self.prompt_hold_queued {
+            return false;
+        }
+        if self.awaiting_line_editor_since.is_some()
+            && !self.line_editor_signal_seen
+            && !self.prompt_hold_gave_up
+        {
+            self.prompt_hold_gave_up = true;
+            log::warn!(
+                "ConPTY prompt hold: this shell has never sent a line-editor ready signal; later \
+                 prompts are not held (the keys held now wait for an event)"
+            );
+        }
         true
     }
 
