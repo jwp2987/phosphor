@@ -61,4 +61,4 @@
 - NEW failures (app): none
 - FIXED failures (app): none
 - Latency regressions > 5%: none
-- compared against: test-linux: build/r18e3 (3021603921); test-workspace-rest: build/r18e2 (3021361500)
+- compared against: test-linux: build/r18e4 (3021881600); test-workspace-rest: build/r18e4 (3021881600)
