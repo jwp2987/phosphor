@@ -25343,13 +25343,14 @@ fn table_mode_a_held_signal_reaches_the_remote_shell_once_at_the_handover() {
             view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             assert!(ssh_queue_is_idle(view));
             assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "echo hi");
-            let writes = pty_writes.borrow();
-            assert_eq!(
-                writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
-                1,
-                "the held ^C reached the pty exactly once: {writes:?}"
-            );
         });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+            1,
+            "the held ^C reached the pty exactly once: {writes:?}"
+        );
     });
 }
 
@@ -25924,13 +25925,14 @@ fn table_mode_a_ctrl_c_in_the_ssh_setup_window_is_held_and_reaches_the_remote_sh
             release_ssh_gate_for_test(view);
             view.deliver_ssh_typeahead_if_ready("precmd", ctx);
             assert!(ssh_queue_is_idle(view));
-            let writes = pty_writes.borrow();
-            assert_eq!(
-                writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
-                1,
-                "the held ^C reached the pty exactly once: {writes:?}"
-            );
         });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.iter().filter(|w| w.as_slice() == [0x03]).count(),
+            1,
+            "the held ^C reached the pty exactly once: {writes:?}"
+        );
     })
 }
 
@@ -26010,9 +26012,10 @@ fn table_mode_a_control_key_behind_a_gate_is_delivered_at_the_gates_event() {
             assert!(pty_writes.borrow().is_empty(), "{:?}", pty_writes.borrow());
             assert_eq!(view.paste_queue.queue.peek().queued_len(), 1);
             view.end_cli_submit_gate(ctx);
-            assert_eq!(*pty_writes.borrow(), vec![vec![0x7f]]);
             assert!(ssh_queue_is_idle(view));
         });
+        // The recorder sees events only after the update ends (`emit` queues them).
+        assert_eq!(*pty_writes.borrow(), vec![vec![0x7f]]);
     })
 }
 
