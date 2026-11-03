@@ -4182,13 +4182,33 @@ fn test_serialized_blocks_for_shell_restart_keeps_restored_and_run_commands() {
     advance_to_bootstrapped(&mut block_list, Default::default());
     insert_block(&mut block_list, "echo finished", "finished");
 
+    // `stylized_command` is serialized from the command grid, which styles every cell (each
+    // character comes wrapped in its own SGR pair), so the text is compared with the escape
+    // sequences removed.
+    let without_escapes = |stylized: &[u8]| {
+        let text = String::from_utf8_lossy(stylized);
+        let mut plain = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                plain.push(c);
+            }
+        }
+        plain
+    };
     let commands = |block_list: &BlockList| {
         block_list
             .serialized_blocks_for_shell_restart()
             .into_iter()
             .map(|item| match item {
                 SerializedBlockListItem::Command { block } => {
-                    String::from_utf8_lossy(&block.stylized_command).into_owned()
+                    without_escapes(&block.stylized_command)
                 }
             })
             .collect::<Vec<_>>()
