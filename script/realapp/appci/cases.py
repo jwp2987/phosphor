@@ -1664,7 +1664,7 @@ def stamp_line(ctx):
     return "date +%%s.%%N > lat_%d"
 
 
-def enter_to_start(ctx, n, budget_s=None):
+def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12):
     ds = []
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
@@ -1675,7 +1675,7 @@ def enter_to_start(ctx, n, budget_s=None):
             os.remove(f)
         stamp = stamp_line(ctx)
         ctx.be.guard_ref()
-        ctx.be.type(stamp % i, 12)
+        ctx.be.type(stamp % i, key_delay_ms)
         time.sleep(0.3)
         t0 = time.time()
         ctx.be.key("Return")
@@ -1731,6 +1731,21 @@ def c_lat_enter(ctx, r):
             time.sleep(2.5)
             rs = enter_to_start(ctx, n + warm, budget_s=max(60, (n + warm) * 2.5))[warm:]      # overall cap: a dead reference cannot hang the case
             ctx.reset()
+            if ctx.win and rs:
+                # #1583 W1: the SAME stamp line delivered to the reference as ONE burst (0 ms between characters), then Enter. Phosphor writes the whole
+                # line in one pty write; the per-key reference had the line echoed and parsed already. If the burst reference is much slower than the
+                # per-key one, the Windows gap is the shell ingesting a burst (conhost/PSReadLine/bash), not Phosphor's work.
+                nb = max(10, n // 2)
+                bs = enter_to_start(ctx, nb + warm, budget_s=max(45, (nb + warm) * 2.5), key_delay_ms=0)[warm:]
+                ctx.reset()
+                if bs:
+                    r.metric("reference_burst_enter_to_start_ms", stats(bs))
+                    mb, mk = statistics.median(bs), statistics.median(rs)
+                    r.metric("reference_burst_minus_per_key_ms", round(mb - mk, 2))
+                    if mb - mk > 5:
+                        r.note("W1: reference burst %.1f ms vs reference per-key %.1f ms (+%.1f ms): the gap is shell ingestion of a burst, not Phosphor-specific" % (mb, mk, mb - mk))
+                    else:
+                        r.note("W1: reference burst %.1f ms vs per-key %.1f ms (%+.1f ms): burst ingestion does not explain the gap" % (mb, mk, mb - mk))
         finally:
             ref.close()
         time.sleep(1.0)   # focus returns to Phosphor before any re-measure
