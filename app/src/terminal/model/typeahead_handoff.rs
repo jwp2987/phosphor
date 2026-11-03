@@ -728,6 +728,13 @@ pub struct TypeaheadHandoff {
     /// Whether the line the user is typing began within [`YOUNG_ENTER_WINDOW`] of the last
     /// activity, i.e. before the app could know the shell was at its prompt (#933).
     young_line: bool,
+    /// #1609: an `ssh` the user submitted owns the pty (from its submit until its block ends). The
+    /// bytes typed now go to the ssh process and the remote shell behind it, whose prompts the
+    /// local shell's Precmd counts say nothing about, so an Enter typed on that line is never a
+    /// "line the local shell may have already answered" and is not held as a young Enter: the hold
+    /// waits for a local prompt that does not come, and its give-up hands the line back to the
+    /// editor instead of sending it to the remote shell.
+    ssh_owns_tty: bool,
     /// User bytes were written to the pty while the editor owned input and nothing adopted them
     /// (an agent-requested command, a block from before the bootstrap precmd), so the shell's line
     /// may hold text the next legacy report puts in front of the editor's (#1089).
@@ -1452,6 +1459,18 @@ impl TypeaheadHandoff {
         self.reading_seq = None;
         self.line_editor_markers_live = false;
         self.last_parsed_hook = None;
+        // #1609: the new session's own prompts are counted from here.
+        self.ssh_owns_tty = false;
+    }
+
+    /// #1609: the view says an ssh command the user submitted now owns the pty (`true`), or that it
+    /// no longer does (`false`: its block ended, or another command was submitted).
+    pub fn set_ssh_owns_tty(&mut self, owns: bool) {
+        self.ssh_owns_tty = owns;
+    }
+
+    pub fn ssh_owns_tty(&self) -> bool {
+        self.ssh_owns_tty
     }
 
     /// Records one measured round trip through the shell and the pty pipeline, in the rolling
@@ -2279,10 +2298,25 @@ impl TypeaheadHandoff {
                 HandoffState::AwaitingReport => "awaiting_report",
                 HandoffState::EditorOwned => "editor_owned",
             };
+            let (wrote, enters, precmds) = match &self.state {
+                HandoffState::PtyOwned {
+                    wrote_user_bytes,
+                    enters_written,
+                    precmds_seen,
+                } => (*wrote_user_bytes, *enters_written, *precmds_seen),
+                _ => (false, 0, 0),
+            };
             format!(
-                "reason={reason} state={state} awaiting_ready={} in_flight={} bytes={}",
+                "reason={reason} state={state} awaiting_ready={} in_flight={} ssh_owns_tty={} \
+                 enters_written={enters} precmds_seen={precmds} young_line={} \
+                 wrote_user_bytes={wrote} prompt_seq_mode={} prompt_fact={:?} hold_id={} bytes={}",
                 self.awaiting_line_editor_since.is_some(),
                 self.writes_in_flight,
+                self.ssh_owns_tty,
+                self.young_line,
+                self.prompt_seq_mode(),
+                self.prompt_fact(),
+                self.young_hold_id,
                 warpui::input_order::describe_bytes_escaped(bytes)
             )
         });
@@ -2359,6 +2393,13 @@ impl TypeaheadHandoff {
         reaches_shell_line: bool,
         now: Instant,
     ) -> Option<bool> {
+        // #1609: the Enter is for the ssh session, not a line the local shell may have answered.
+        if self.ssh_owns_tty {
+            if matches!(bytes.first(), Some(b'\r' | b'\n')) {
+                self.log_route_decision("unheld_ssh_owns_tty", bytes);
+            }
+            return None;
+        }
         let HandoffState::PtyOwned {
             wrote_user_bytes: true,
             enters_written,

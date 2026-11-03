@@ -270,6 +270,7 @@ impl TerminalView {
 
     /// The connect gate was released: tells the machine, and logs a release that was a give-up.
     pub(super) fn note_ssh_gate_released(&mut self, how: SshRelease) {
+        warpui::input_order::log_hop("ssh_gate_released", || format!("how={}", how.name()));
         if how.is_give_up() {
             self.note_ssh_give_up(how.name());
         }

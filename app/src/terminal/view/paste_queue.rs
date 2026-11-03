@@ -1659,6 +1659,13 @@ impl TerminalView {
         why: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
+        warpui::input_order::log_hop("young_hold_handed_back", || {
+            format!(
+                "hold_id={hold_id} why={why} ssh_gate_armed={} ssh_holding={}",
+                self.ssh_connect_gate.is_some(),
+                self.ssh_typeahead_holding
+            )
+        });
         self.handoff.write().finish_young_hold_handed_back(hold_id);
         self.hand_back_gate_keys(GateKind::PromptSeen, hold_id, why, ctx);
         self.input
