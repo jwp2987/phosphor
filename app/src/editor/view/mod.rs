@@ -3193,6 +3193,44 @@ impl EditorView {
         }
     }
 
+    /// #1389: a key typed live, on an idle queue, that reads the soft-wrap layout (End, Up, Down)
+    /// while the last rendered layout predates an edit (a large paste just applied, no frame laid
+    /// out since) is offered to the queue instead of applied: its delivery opens the display-map
+    /// gate, which waits for a layout newer than the edit. Without this the key computed the
+    /// visual line from the old layout and the cursor landed in the wrong place. Returns whether
+    /// the key was taken. Only on the pane's shared queue (the display gate is on).
+    fn offer_layout_key_behind_stale_layout(
+        &mut self,
+        action: &EditorAction,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        use crate::terminal::input_queue::{EditorKeyPayload, EntryKind};
+        if !self.paste_hold.display_gate_enabled() || self.paste_hold.is_replaying() {
+            return false;
+        }
+        let Some(key) = paste_hold::held_form(action).filter(HeldPasteKey::reads_soft_wrap_layout)
+        else {
+            return false;
+        };
+        if !self.soft_wrap_state(ctx).is_stale() {
+            return false;
+        }
+        let queue = self.paste_hold.queue();
+        let kind = EntryKind::EditorKey(EditorKeyPayload::new(key));
+        match queue.try_lock_ordered() {
+            Some(mut guard) => {
+                let mut host = paste_hold::EditorQueueHost { editor: self, ctx };
+                guard.offer(&mut host, kind);
+            }
+            None => queue.defer(crate::terminal::input_queue::Deferred::Offer {
+                kind,
+                origin: crate::terminal::input_queue::Origin::Keyboard,
+                stamp: queue.stamp_now(),
+            }),
+        }
+        true
+    }
+
     /// The input-queue form of [`Self::hold_key_for_paste`] (#1353 phase 1). Idle (the common
     /// case) this is one borrow-flag read: no lock, no allocation. While the queue holds input
     /// the key is offered to it, which is the single entry point for keys behind a paste: it
@@ -3204,7 +3242,7 @@ impl EditorView {
     ) -> bool {
         use crate::terminal::input_queue::{EditorKeyPayload, EntryKind, SignalKind};
         if !self.paste_hold.queue_is_busy() {
-            return false;
+            return self.offer_layout_key_behind_stale_layout(action, ctx);
         }
         let queue = self.paste_hold.queue();
         if matches!(action, EditorAction::CtrlC) {
@@ -8325,6 +8363,9 @@ impl EditorView {
     ) {
         match event {
             EditorModelEvent::Edited { edit_origin } => {
+                // The last rendered layout describes the text before this edit (#1389): a key that
+                // reads it waits for the next frame.
+                self.soft_wrap_state(ctx).mark_stale();
                 // An edit invalidates a remembered accept (it was for the old buffer).
                 self.pending_autosuggestion_accept = None;
                 // Update the autosuggestion state after an edit.
@@ -8334,7 +8375,10 @@ impl EditorView {
                     .update(ctx, |view, ctx| view.close_menu(ctx));
                 ctx.emit(Event::Edited(*edit_origin))
             }
-            EditorModelEvent::BufferReplaced => ctx.emit(Event::BufferReplaced),
+            EditorModelEvent::BufferReplaced => {
+                self.soft_wrap_state(ctx).mark_stale();
+                ctx.emit(Event::BufferReplaced)
+            }
             EditorModelEvent::SelectionsChanged => {
                 self.vim_maybe_enforce_cursor_line_cap(ctx);
                 ctx.emit(Event::SelectionChanged);

@@ -15260,6 +15260,81 @@ fn pty_paste_with_keys_and_enter_behind_a_slow_read_delivers_in_typed_order() {
     });
 }
 
+/// #1389, pty / alt-screen destination: cursor keys (Left, End as escape sequences) and the text
+/// typed behind a LARGE paste that is still being read go to the pty after the whole paste, in
+/// typed order; nothing is written before the paste, lost or duplicated. Both destination modes.
+#[test]
+fn pty_cursor_keys_behind_a_large_pending_paste_follow_it_in_order() {
+    use crate::terminal::input_queue::DestinationMode;
+    use warpui::clipboard::{BackgroundTextRead, BackgroundTextReader};
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        for size in [100 * 1024usize, 1024 * 1024] {
+            App::test((), move |mut app| async move {
+                let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+                initialize_app_for_terminal_view(&mut app);
+                let terminal = add_window_with_terminal(&mut app, None);
+                let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+                let writes = pty_writes.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_view(&terminal, move |_, event, _| match event {
+                        Event::WriteBytesToPty { bytes }
+                        | Event::WriteHandoffUserBytesToPty { bytes } => {
+                            writes.borrow_mut().push(bytes.to_vec())
+                        }
+                        _ => {}
+                    });
+                });
+                let pasted = "p".repeat(size);
+                let content = pasted.clone();
+                let (release, parked) = std::sync::mpsc::channel::<()>();
+                let reader: BackgroundTextReader = Box::new(move || {
+                    let _ = parked.recv_timeout(Duration::from_secs(20));
+                    BackgroundTextRead::Content(ClipboardContent::plain_text(content))
+                });
+                terminal.update(&mut app, |view, ctx| {
+                    assert!(view.write_user_bytes_to_pty(b"a".to_vec(), ctx));
+                    view.start_background_paste_with_backstop(reader, None, false, None, ctx);
+                    assert!(view.paste_pending(), "the read is pending");
+                    for key in [
+                        &b"x"[..],
+                        b"y",
+                        b"\x1b[D",
+                        b"z",
+                        b"\x1b[F",
+                        b"!",
+                    ] {
+                        assert!(view.write_user_bytes_to_pty(key.to_vec(), ctx));
+                    }
+                });
+                let flat = |writes: &Rc<RefCell<Vec<Vec<u8>>>>| -> Vec<u8> {
+                    writes.borrow().iter().flatten().copied().collect()
+                };
+                assert_eq!(
+                    flat(&pty_writes),
+                    b"a".to_vec(),
+                    "{mode:?}: keys typed behind the pending paste are held"
+                );
+                release.send(()).unwrap();
+                for _ in 0..4000 {
+                    if !terminal.read(&app, |view, _| view.paste_pending()) {
+                        break;
+                    }
+                    warpui::r#async::Timer::after(Duration::from_millis(5)).await;
+                }
+                let mut expected = b"a".to_vec();
+                expected.extend_from_slice(pasted.as_bytes());
+                expected.extend_from_slice(b"xy\x1b[Dz\x1b[F!");
+                let written = flat(&pty_writes);
+                assert_eq!(written.len(), expected.len(), "{mode:?} size {size}");
+                assert!(
+                    written == expected,
+                    "{mode:?} size {size}: the pty saw the keys out of order"
+                );
+            });
+        }
+    }
+}
+
 /// #1353 phase 1: a read that fails writes no paste, keeps the typing, in order, on both paths.
 #[cfg(not(target_family = "wasm"))]
 #[test]

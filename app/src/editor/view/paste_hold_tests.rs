@@ -81,6 +81,22 @@ fn a_stored_layout_bumps_the_generation_and_wakes_the_waiter() {
     assert!(rx.try_recv().is_ok(), "the waiter is told a layout landed");
 }
 
+/// #1389: an edit makes the stored layout stale until the next layout is stored; before any layout
+/// there is nothing to be stale.
+#[test]
+fn an_edit_stales_the_stored_layout_until_the_next_one() {
+    use crate::editor::soft_wrap::{FrameLayouts, SoftWrapState};
+    let state = SoftWrapState::default();
+    state.mark_stale();
+    assert!(!state.is_stale(), "no layout yet: nothing to be wrong");
+    state.update(FrameLayouts::new(Vec::new(), 0, 0));
+    assert!(!state.is_stale());
+    state.mark_stale();
+    assert!(state.is_stale());
+    state.update(FrameLayouts::new(Vec::new(), 0, 0));
+    assert!(!state.is_stale(), "a layout stored after the edit is current");
+}
+
 /// The matrix class of an editor key is the legacy split: what submits or completes is not an
 /// editing key (#1423, #1424).
 #[test]

@@ -369,12 +369,30 @@ impl Host for EditorQueueHost<'_, '_> {
         &mut self,
         entry: &InputEntry,
         _dest: Destination,
-        _follow: &mut FollowUps,
+        follow: &mut FollowUps,
     ) -> DeliverOutcome {
         match &entry.kind {
             EntryKind::EditorKey(payload) => {
                 // Reached when a signal flushes the queue (the display map is not waited for) or
                 // on a queue the display gate is off for.
+                // A layout-reading key typed live behind a stale layout (#1389) waits for the
+                // display-map gate exactly as it does on the input's host; the replay step that
+                // closes it runs on the terminal input.
+                if payload.reads_soft_wrap_layout()
+                    && let DisplayMapStep::Wait(spec) = self
+                        .editor
+                        .paste_hold
+                        .display_map_step(payload, follow.flushing())
+                {
+                    let hold = &self.editor.paste_hold;
+                    hold.request_display_step();
+                    let soft = self.editor.soft_wrap_state(self.ctx);
+                    hold.set_layout_wait(
+                        (payload.reads_soft_wrap_layout() && soft.is_laid_out())
+                            .then(|| soft.generation()),
+                    );
+                    return DeliverOutcome::Requeue(spec);
+                }
                 if let Some(key) = payload.take() {
                     self.editor.apply_queued_key(key, self.ctx);
                 }
