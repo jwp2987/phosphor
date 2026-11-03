@@ -246,7 +246,7 @@ fn hand_back_into_a_busy_pane_is_kept_and_restored_at_block_end() {
                 assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
                 // The block ends: the text comes back, guarded.
                 view.input.update(ctx, |input, ctx| {
-                    input.deferred_remote_operations.latest_block_id = BlockId::new();
+                    input.set_deferred_ops_latest_block_for_test(BlockId::new());
                     input.handle_block_completed_event(
                         BlockCompletedEvent {
                             block_latency_data: None,

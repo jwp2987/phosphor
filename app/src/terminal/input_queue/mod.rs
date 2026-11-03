@@ -638,7 +638,6 @@ impl InputQueue {
         self.overflow_dropped
     }
 
-    #[cfg(any(test, feature = "dev-support"))]
     pub fn queued_len(&self) -> usize {
         self.entries.len()
     }

@@ -59,7 +59,7 @@ fn editor_paste_behind_an_enter_gate_follows_the_line_into_the_ssh_hold() {
                         assert_eq!(buffer, "");
                         assert!(view.ssh_typeahead_holding);
                     }
-                    DestinationMode::Legacy => {
+                    DestinationMode::Legacy | DestinationMode::Shadow => {
                         assert!(
                             buffer.contains('X'),
                             "legacy keeps the editor insert: {buffer:?}"

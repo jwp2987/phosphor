@@ -6690,6 +6690,12 @@ impl Input {
     }
 
     /// #1558: an Enter is held as the pending command because the shell was not ready for it.
+    /// Test hook: the block id the deferred remote operations are keyed to.
+    #[cfg(test)]
+    pub(crate) fn set_deferred_ops_latest_block_for_test(&mut self, block_id: BlockId) {
+        self.deferred_remote_operations.latest_block_id = block_id;
+    }
+
     pub(crate) fn has_held_unready_enter(&self) -> bool {
         self.held_unready_enter && self.has_pending_command
     }
