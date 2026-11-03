@@ -18,7 +18,7 @@
 //! key reaches the pty while the agent owns it, through the hand-off), `B14` (legacy put text for
 //! the editor past the gates that hold every other key; the table holds it, strict FIFO). (`B15`,
 //! a CLI-agent submit during a PowerShell setup, is gone: the owner decided #1601 for the legacy
-//! behaviour and the table's O-cli-submit row now holds it too.)
+//! behaviour and the table's O-cli-submit row now holds it too. #1601b: the row also states the unpaced submit's holds, so a CLI-agent submit behind an Enter verdict, a subshell setup or a paste being read is compared without a tag. Known gap, shared with typed keys: a subshell setup that is announced but whose gate the legacy writer has not opened yet reads as `Announced`, which no row holds.)
 //!
 //! The comparison is pure; the only state is two thread-locals (the leaf the legacy chain noted,
 //! and, in tests, the recorded lines).
