@@ -22628,6 +22628,16 @@ impl TerminalView {
         self.update_long_running_ssh_block_with_lock(|block| {
             block.unhide();
         });
+        // #1119: the tab now runs the shell raw; say so, held keys or not (the hand-back above
+        // shows no toast of its own for the ceiling, this notice covers the held keys too).
+        log::warn!(
+            "subshell bootstrap abandoned at the stall ceiling: continuing as a plain shell \
+             (#1014/#1119)"
+        );
+        self.show_error_toast(
+            paste_queue::SUBSHELL_BOOTSTRAP_ABANDONED_TOAST.to_string(),
+            ctx,
+        );
         ctx.notify();
     }
 
