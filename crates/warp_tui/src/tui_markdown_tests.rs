@@ -257,7 +257,8 @@ fn fenced_markdown_code_block_applies_syntax_colors_to_exact_cells() {
                 | FormattedTextLine::Image(_)
                 | FormattedTextLine::Embedded(_)
                 | FormattedTextLine::LineBreak
-                | FormattedTextLine::HorizontalRule => None,
+                | FormattedTextLine::HorizontalRule
+                | FormattedTextLine::BlockQuote { .. } => None,
             })
             .expect("fenced Markdown should contain a code block");
         let code_view = add_code_view(&mut app);
