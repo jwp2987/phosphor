@@ -156,7 +156,11 @@ impl TerminalView {
         let (class, text) = input.into_parts();
         trace::hold(trace::legacy::SSH, len);
         let kind = EntryKind::Held { class, text };
-        let Some(mut guard) = queue.try_lock() else {
+        // `try_lock_ordered`: an offer recorded in the mailbox earlier (a key held while the queue
+        // was busy) must not be overtaken by this one, so with anything deferred this key is
+        // deferred behind it. Not flushed here: a deferred hand-over could run first and a gate it
+        // opens would trap the key (review of #1394).
+        let Some(mut guard) = queue.try_lock_ordered() else {
             // Held in order by the next operation (never dropped, never written as typed).
             queue.defer(Deferred::Offer {
                 kind,
@@ -219,7 +223,8 @@ impl TerminalView {
             class: HELD_SIGNAL,
             text,
         };
-        let Some(mut guard) = queue.try_lock() else {
+        // In typed order behind any offer still in the mailbox (as `ssh_hold_push`).
+        let Some(mut guard) = queue.try_lock_ordered() else {
             // Held in order by the next operation (never dropped, never written as typed).
             queue.defer(Deferred::Offer {
                 kind,
