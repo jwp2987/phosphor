@@ -82,8 +82,9 @@ export APPCI_KEY_NEWTAB="cmd+t" APPCI_KEY_NEWWIN="cmd+n"
 # editor_memory_7mb: the palette is cmd+p on macOS. Phosphor's close-pane/tab shortcut on macOS is cmd-shift-W (app/src/util/bindings.rs CloseCurrentSession), which the
 # frontmost-app guard refuses by policy (every Cmd+W chord), so APPCI_KEY_CLOSE stays EMPTY here: cases that need a keyboard close SKIP with the reason (soak) or
 # note it (flood_typing_latency ends its throw-away tab with Ctrl-D); none may pass the empty value to be.key(). editor_memory_7mb (#1607/#1407) closes its code
-# pane through the command palette instead: cmd+shift+p, 'Close Current Session' (the same PaneGroupAction::RemoveActive the chord is bound to).
-export APPCI_KEY_PALETTE="cmd+p" APPCI_KEY_CLOSE="" APPCI_KEY_CMD_PALETTE="cmd+shift+p"
+# pane through the COMMAND palette instead: cmd+p (CustomAction::CommandPalette = cmd_or_ctrl_shift("p"); cmd+shift+p is the navigation palette), then
+# 'Close Current Session' (the same PaneGroupAction::RemoveActive the chord is bound to); the case proves it by the app's buffer_dropped log line.
+export APPCI_KEY_PALETTE="cmd+p" APPCI_KEY_CLOSE="" APPCI_KEY_CMD_PALETTE="cmd+p"
 # #1482: ktap observes every Return at the annotated session tap (which process macOS targets) and passes it through unchanged;
 # enter_route.py joins that with Phosphor's own mac_enter trace afterwards. Optional: a failure to start is reported, never fatal.
 "$TOOLS/ktap" "$OUT/ktap.log" > "$OUT/ktap.stdout" 2>&1 & KTAP=$!; echo "ktap $KTAP" >> "$OUT/pids"

@@ -810,6 +810,27 @@ def editor_memory_breakdown_close_and_cycles():
         assert cases.editor_cycle_growth([100.0, 104.0, 131.0]) == 31.0 and cases.editor_cycle_growth([5.0]) == 0.0
         if sys.platform != "darwin":
             assert cases.mac_footprint_kib(os.getpid()) is None
+        # owner 2026-11-03: macOS judges BOTH figures; either one over the budget fails
+        r2 = cases.Result("t", "terminal")
+        assert not cases.mem_judge(r2, {"rss": 150.0, "phys_footprint": 90.0}, {"rss": 0.0, "phys_footprint": 0.0}, 100, "cost %.0f MB of %s")
+        assert r2.fails == ["cost 150 MB of rss"], r2.fails
+        r3 = cases.Result("t", "terminal")
+        assert not cases.mem_judge(r3, {"rss": 50.0, "phys_footprint": 130.0}, {"rss": 0.0, "phys_footprint": 0.0}, 100, "cost %.0f MB of %s")
+        assert r3.fails == ["cost 130 MB of phys_footprint"], r3.fails
+        r4 = cases.Result("t", "terminal")
+        assert cases.mem_judge(r4, {"rss": 50.0}, {"rss": 0.0}, 100, "x %.0f %s") and not r4.fails
+        cases.mem_metrics(r4, "txt_rss_open", {"rss": 120.0, "phys_footprint": 80.0}, {"rss": 20.0, "phys_footprint": 10.0})
+        assert r4.metrics["txt_rss_open_mb"] == 120.0 and r4.metrics["txt_rss_open_delta_mb"] == 100.0, r4.metrics
+        assert r4.metrics["txt_rss_open_phys_footprint_mb"] == 80.0 and r4.metrics["txt_rss_open_phys_footprint_delta_mb"] == 70.0, r4.metrics
+        # hop=ui_item: the open window starts after the load's own (largest) frame; the close window is plain
+        t = 1000.0
+        logtxt = "".join("x input_order hop=ui_item what=%s ms=%.2f t=%.3f\n" % (w, ms, (t + dt) * 1000) for w, ms, dt in (
+            ("frame", 2.0, -1.0), ("frame", 250.0, 0.5), ("effects", 3.0, 1.0), ("frame", 6.5, 2.0), ("frame", 9.0, 8.0)))
+        items = cases.ui_items(logtxt)
+        assert len(items) == 5 and items[1][1] == 250.0 and items[1][2] == "frame", items
+        assert cases.ui_window_max(items, t, after_largest=True) == (6.5, 1, 250.0), cases.ui_window_max(items, t, after_largest=True)
+        assert cases.ui_window_max(items, t) == (250.0, 2, None), cases.ui_window_max(items, t)
+        assert cases.ui_window_max([], t) == (0.0, 0, None)
         sent = []
         be = types.SimpleNamespace(key=lambda k: sent.append(k), type=lambda *a, **k: sent.append(("type", a)))
         r = cases.Result("t", "terminal")
@@ -817,13 +838,13 @@ def editor_memory_breakdown_close_and_cycles():
         try:
             os.environ["APPCI_KEY_CLOSE"], os.environ["APPCI_KEY_CMD_PALETTE"] = "", ""
             assert cases.editor_close(types.SimpleNamespace(be=be), r) is None and sent == [], sent
-            os.environ["APPCI_KEY_CMD_PALETTE"] = "cmd+shift+p"
+            os.environ["APPCI_KEY_CMD_PALETTE"] = "cmd+p"
             orig_sleep, cases.time.sleep = cases.time.sleep, lambda s: None
             try:
                 how = cases.editor_close(types.SimpleNamespace(be=be), r)
             finally:
                 cases.time.sleep = orig_sleep
-            assert how and how.startswith("palette") and sent[0] == "cmd+shift+p" and sent[-1] == "Return", (how, sent)
+            assert how and how.startswith("palette") and sent[0] == "cmd+p" and sent[-1] == "Return", (how, sent)
             assert "" not in sent
         finally:
             for k, v in old.items():
