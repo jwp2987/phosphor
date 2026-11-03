@@ -111,6 +111,10 @@ class Backend:
     def guard(self):
         """raise RuntimeError when keys must not be sent now (wrong foreground app)"""
 
+    def refocus(self, verify=False):
+        """bring Phosphor back to the front (no keys sent); verify=True raises RuntimeError unless it demonstrably has the focus. No-op on
+        backends whose guard() already focuses Phosphor before every injection (X11)."""
+
     def guard_ref(self):
         """Linux only (#1500): while a reference terminal is the injection target, refuse (RuntimeError) unless IT has the focus. Called by the
         sampling loops BEFORE a timed burst, never inside one, so it adds nothing to either terminal's measurement. No-op elsewhere
@@ -256,6 +260,28 @@ class WaylandBackend(Backend):
         return p
 
     guard_override = None     # dict(pids=..., names=...) while a reference terminal is driven (#1500)
+    pid_fn = None             # set by run.py: the PID of the Phosphor instance under test (#1514: focusing it between interleaved latency blocks)
+
+    def refocus(self, verify=False):
+        """#1514: focus the Phosphor window (sway `[pid=N] focus`, no keys sent). verify=True waits up to 3 s for sway to report it focused."""
+        ph = self.pid_fn() if self.pid_fn else None
+        if not ph:
+            if verify:
+                raise RuntimeError("Phosphor PID unknown: cannot focus it")
+            return
+        try:
+            _run(["swaymsg", "[pid=%d] focus" % ph])
+        except OSError:
+            pass
+        if not verify:
+            return
+        got = None
+        for _ in range(30):
+            got = self._focused()
+            if got and got.get("pid") == ph:
+                return
+            time.sleep(0.1)
+        raise RuntimeError("Phosphor does not have focus (focused: %s): refusing to type, keys would reach the wrong window" % (got,))
 
     def _focused(self):
         """the focused leaf of sway's tree: dict(pid, app_id, class, name) or None"""
@@ -623,7 +649,7 @@ class MacBackend(Backend):
         if pid2 != ph:
             raise RuntimeError("frontmost is %r (pid %s), not Phosphor (pid %s): refusing to send keys" % (name2, pid2, ph))
 
-    def refocus(self):
+    def refocus(self, verify=False):
         """bring Phosphor back to the front after the reference window closed (System Events frontmost; no keys sent)"""
         ph = self.pid_fn() if self.pid_fn else None
         if ph:
@@ -1131,7 +1157,7 @@ class WindowsBackend(Backend):
             self.w.focus_window(h)
             time.sleep(0.4)
 
-    def refocus(self):
+    def refocus(self, verify=False):
         """bring Phosphor back to the front after the reference window closed (no keys sent)"""
         ph = self.pid_fn() if self.pid_fn else None
         if ph:

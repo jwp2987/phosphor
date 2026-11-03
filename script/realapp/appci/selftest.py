@@ -409,6 +409,47 @@ def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
 
 
 @check
+def interleaved_block_schedule_and_runner():
+    import lat
+    sch = lat.block_schedule(60, block=5, warm=3, lead=1)
+    assert [x[0] for x in sch] == ["phosphor", "reference"] * 12, [x[0] for x in sch]       # A/B/A/B by block, never per sample
+    for side in ("phosphor", "reference"):
+        rows = [x for x in sch if x[0] == side]
+        assert sum(c - d for _, c, d in rows) == 60, side                                  # exactly n kept samples per side
+        assert all(c - d <= 5 for _, c, d in rows), "a block is at most 5 kept samples"
+        assert rows[0][2] == 3 + 1 and all(d == 1 for _, _, d in rows[1:]), "warm-up only on a side's first block; 1 lead sample dropped after every switch"
+    short = lat.block_schedule(12, block=5, warm=0, lead=0)
+    assert [(s_, c) for s_, c, _ in short] == [("phosphor", 5), ("reference", 5), ("phosphor", 5), ("reference", 5), ("phosphor", 2), ("reference", 2)]
+    # the runner: a fake reference records each switch; the guard (switch) runs BEFORE every block, never inside one
+    events = []
+    ref = types.SimpleNamespace(switch=lambda side: events.append(("switch", side)))
+    ctx = types.SimpleNamespace(reset=lambda: events.append(("reset",)))
+    old_sleep, cases.time.sleep = cases.time.sleep, lambda s_: None
+    try:
+        def sampler(side, cnt):
+            events.append(("sample", side, cnt))
+            return [float(i) for i in range(cnt)]
+        ph, rf, blocks = cases.run_interleaved(ctx, ref, 12, 2, sampler, block=5, lead=1)
+        assert len(ph) == 12 and len(rf) == 12 and len(blocks) == 6
+        sw = [e for e in events if e[0] != "reset"]
+        assert all(sw[i][0] == "switch" and sw[i + 1][0] == "sample" and sw[i][1] == sw[i + 1][1] for i in range(0, len(sw), 2)), sw
+        def failing(side):
+            if side == "reference":
+                raise RuntimeError("reference terminal does not have focus")
+        ref.switch = failing
+        try:
+            cases.run_interleaved(ctx, ref, 12, 0, sampler, block=5, lead=0)
+            raise AssertionError("a focus failure must propagate so the caller can fall back to sequential")
+        except RuntimeError:
+            pass
+    finally:
+        cases.time.sleep = old_sleep
+    # the record says which mode ran; drift notes name it
+    rec = lat.evaluate("x", [1.0] * 30, [1.0] * 30, 2.0, "overhead", "linux", mode="interleaved")
+    assert rec["measurement_mode"] == "interleaved" and lat.evaluate("x", [1.0] * 30, [], 2.0, "overhead", "linux")["measurement_mode"] == "sequential"
+
+
+@check
 def idle_schedule_and_loss_bound():
     import lat
     sch = lat.idle_schedule([1.0, 2.0, 5.0], 30, 10, 3)

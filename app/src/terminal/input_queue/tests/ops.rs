@@ -60,6 +60,13 @@ pub enum Op {
         class: u8,
         origin: u8,
     },
+    /// Calls `table::decide` on the model's CURRENT destination facts and checks it against the
+    /// legacy `destination_for`, allowing only the differences listed in `table_equiv_tests`
+    /// (#1529). The equivalence space has no open gate and nothing queued, so it is checked only
+    /// at such points. Test builds only: the allow-list lives in a test module.
+    DecideEquiv {
+        kind: u8,
+    },
 }
 
 /// The input class a [`Op::Decide`] asks about.
@@ -349,6 +356,22 @@ pub fn run_ops(ops: &[Op]) {
                         );
                     }
                 }
+            }
+            Op::DecideEquiv { kind } => {
+                #[cfg(test)]
+                if m.gates.is_empty() && m.pending.is_empty() {
+                    if let Err(diff) =
+                        super::super::facts::table_enum_tests::equiv::check_live_facts(
+                            &w.facts, *kind,
+                        )
+                    {
+                        panic!(
+                            "table::decide and destination_for differ off the ALLOWED list: {diff}"
+                        );
+                    }
+                }
+                #[cfg(not(test))]
+                let _ = kind;
             }
             Op::RequeueNext { kind, key } => {
                 let kind = GateKind::ALL[usize::from(*kind) % GateKind::ALL.len()];

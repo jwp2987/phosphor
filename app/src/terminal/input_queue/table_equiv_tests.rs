@@ -378,35 +378,82 @@ const ALLOWED: &[Allowed] = &[
     },
 ];
 
+/// What the comparison made of one case.
+pub(in crate::terminal::input_queue) enum Verdict {
+    Same,
+    /// Differs, covered by these entries of [`ALLOWED`].
+    Allowed(Vec<usize>),
+    /// Differs and no entry covers it.
+    Unlisted(String),
+}
+
+fn compare(case: &Case) -> Verdict {
+    let legacy = destination_for(&entry_of(case.kind), &case.dest_facts());
+    let plan = decide(&case.intent(), &case.route_facts(), None);
+    let table = td_of(&plan.outcome);
+    assert_ne!(
+        table,
+        Td::Other,
+        "a hold or hint in a fact space with no gate, no queue and ssh idle: {case:?} -> {plan:?}"
+    );
+    if same(legacy, table) {
+        return Verdict::Same;
+    }
+    let covering: Vec<usize> = ALLOWED
+        .iter()
+        .enumerate()
+        .filter(|(_, allowed)| (allowed.covers)(case, legacy, table))
+        .map(|(index, _)| index)
+        .collect();
+    if covering.is_empty() {
+        Verdict::Unlisted(format!(
+            "{case:?}: legacy {legacy:?}, table {table:?} (row {})",
+            plan.row.name()
+        ))
+    } else {
+        Verdict::Allowed(covering)
+    }
+}
+
+/// The property model's `Decide` op (#1529): the same comparison on the model's CURRENT facts.
+/// Only meaningful with no open gate and nothing queued (the compared space); the caller checks
+/// that. `pick` selects the entry kind; a closed pty is outside the space and is skipped.
+pub(in crate::terminal::input_queue) fn check_live_facts(
+    facts: &DestFacts,
+    pick: u8,
+) -> Result<(), String> {
+    if !facts.pty_open {
+        return Ok(());
+    }
+    let case = Case {
+        kind: KINDS[usize::from(pick) % KINDS.len()],
+        ssh_dialog: facts.drop_reason == Some(DropReason::SshDialogOrPassword),
+        approval_card: facts.approval_card,
+        agent_owns_pty: facts.agent_owns_pty,
+        pty_takes_input: facts.pty_takes_input,
+        input_box_visible: facts.input_box_visible,
+        editor_focused: facts.editor_focused,
+    };
+    match compare(&case) {
+        Verdict::Unlisted(message) => Err(message),
+        _ => Ok(()),
+    }
+}
+
 /// Walks the space. Returns the differences no entry of [`ALLOWED`] covers, and how many
 /// differences each entry covered.
 fn walk() -> (Vec<String>, Vec<usize>) {
     let mut unlisted = Vec::new();
     let mut hits = vec![0usize; ALLOWED.len()];
     for case in all_cases() {
-        let legacy = destination_for(&entry_of(case.kind), &case.dest_facts());
-        let plan = decide(&case.intent(), &case.route_facts(), None);
-        let table = td_of(&plan.outcome);
-        assert_ne!(
-            table,
-            Td::Other,
-            "a hold or hint in a fact space with no gate, no queue and ssh idle: {case:?} -> {plan:?}"
-        );
-        if same(legacy, table) {
-            continue;
-        }
-        let mut covered = false;
-        for (index, allowed) in ALLOWED.iter().enumerate() {
-            if (allowed.covers)(&case, legacy, table) {
-                hits[index] += 1;
-                covered = true;
+        match compare(&case) {
+            Verdict::Same => {}
+            Verdict::Allowed(covering) => {
+                for index in covering {
+                    hits[index] += 1;
+                }
             }
-        }
-        if !covered {
-            unlisted.push(format!(
-                "{case:?}: legacy {legacy:?}, table {table:?} (row {})",
-                plan.row.name()
-            ));
+            Verdict::Unlisted(message) => unlisted.push(message),
         }
     }
     (unlisted, hits)
