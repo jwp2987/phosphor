@@ -2211,6 +2211,34 @@ fn a_key_typed_after_the_cap_into_a_running_command_is_still_held() {
     assert!(handoff.take_prompt_hold_started().is_some());
 }
 
+/// #1573: the cap firing after an event already ended both waits (its release in flight, e.g.
+/// deferred behind a busy queue) is not a give-up: it is checked again shortly. Bounded: a hold
+/// left queued with no wait and no release is released past twice the cap.
+#[test]
+fn a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up() {
+    let mut handoff = conpty_ready_with_enter_window();
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
+    assert_eq!(handoff.on_user_bytes(b"a"), UserBytesRoute::Held);
+    let id = handoff.take_prompt_hold_started().unwrap();
+    // The command became interactive: the window ended, the view has not released the keys yet.
+    assert_eq!(handoff.release_enter_window_for_program(), Some(id));
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::NotYet(PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK)
+    );
+    let started = handoff.prompt_hold_started_at.expect("a hold started");
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, started + CONPTY_PROMPT_HOLD_GIVE_UP * 2),
+        PromptHoldCap::GiveUp
+    );
+    assert!(handoff.route_released_chunk(b"a"));
+    handoff.finish_queued_prompt_hold(id);
+    assert_eq!(
+        handoff.prompt_hold_cap_fired(id, Instant::now()),
+        PromptHoldCap::Gone
+    );
+}
+
 /// #1573: a give-up in the precmd's wait by a shell that HAS signalled this session is one missed
 /// prompt (a loaded machine): its keys are released, and the next prompt is held for again. Only a
 /// shell that never signalled turns the hold off for the session (the #1349 reason, kept:
@@ -3351,34 +3379,31 @@ fn line_awaiting_a_request() -> TypeaheadHandoff {
     handoff
 }
 
-/// The report of a line this pane delivered to the shell as final (#1494's `stty sane` path) is
-/// unaccounted: the view does not insert it. It still answers the request (the state moves on), and
-/// the mark is used up by it.
+/// A line this pane delivered to the shell as final (#1494's `stty sane` path) stays in the shell:
+/// while the mark is set no report is asked for (a report clears the shell's line, so the text
+/// would leave the shell), the pty keeps input, and the mark is still set. Without the mark the
+/// same line is asked for as before.
 #[test]
-fn a_report_of_a_committed_delivery_is_unaccounted_once() {
+fn a_committed_delivery_is_never_asked_for_and_stays_in_the_shell() {
     let mut handoff = line_awaiting_a_request();
     handoff.note_committed_delivery();
     assert_eq!(
         handoff.on_line_editor_active(true, true),
-        ActiveDecision::SendRequest
+        ActiveDecision::Drain
     );
-    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
-    assert!(handoff.take_report_unaccounted());
-    assert!(!handoff.take_report_unaccounted(), "one-shot");
+    assert!(handoff.is_pty_owned());
+    assert!(handoff.committed_delivery_pending());
+    assert!(!handoff.try_commit_at_prompt(), "the line is not empty");
+    // The user's Enter submits the line where it is: the mark ends, nothing was reported.
+    assert_eq!(handoff.on_user_bytes(b"\r"), UserBytesRoute::WriteCounted);
     assert!(!handoff.committed_delivery_pending());
-    assert_eq!(handoff.state(), &HandoffState::EditorOwned);
-}
 
-/// A report the hand-off asked for, with no delivery in the line, is accounted (inserted).
-#[test]
-fn a_report_the_handoff_asked_for_is_accounted() {
+    // Control: without the mark the line is asked for.
     let mut handoff = line_awaiting_a_request();
     assert_eq!(
         handoff.on_line_editor_active(true, true),
         ActiveDecision::SendRequest
     );
-    assert_eq!(handoff.on_report(), ReportDisposition::Insert);
-    assert!(!handoff.take_report_unaccounted());
 }
 
 /// The mark ends as soon as the shell's line cannot hold the delivered bytes any more, so a later

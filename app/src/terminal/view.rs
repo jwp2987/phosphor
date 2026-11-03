@@ -13278,21 +13278,10 @@ impl TerminalView {
 
     /// Applies a shell typeahead report under the typeahead hand-off.
     fn handle_typeahead_report_with_handoff(&mut self, ctx: &mut ViewContext<Self>) {
-        let (disposition, unaccounted) = {
-            let mut handoff = self.handoff.write();
-            let disposition = handoff.on_report();
-            (disposition, handoff.take_report_unaccounted())
-        };
+        let disposition = self.handoff.write().on_report();
         // #1353 phase 5b: a young Enter held in the input queue is split here, before anything
         // else (the editor's own keys, #1016) is put in front of the keys held behind it.
         self.drain_young_hold_ends(ctx);
-        // #1574: a report of a line this pane delivered to the shell as final (the #1494 `stty
-        // sane` path) is that shell's, not the editor's: its text is consumed and refused, and no
-        // deferred Enter runs on it. The states move on as for any report.
-        if unaccounted {
-            self.refuse_unaccounted_report(disposition, ctx);
-            return;
-        }
         match disposition {
             ReportDisposition::InsertLegacy => {
                 self.handle_typeahead_event(ctx);
@@ -13319,10 +13308,10 @@ impl TerminalView {
             ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung => {
                 let young = disposition == ReportDisposition::InsertThenSubmitYoung;
                 if !self.insert_typeahead_from_handoff(ctx) {
-                    // #1574: the editor refused the report (an AI-mode input, or text that is not
-                    // the editor's own typeahead): the Enter must not run whatever the buffer holds
-                    // instead. It is given up like one that cannot run; the keys held behind it are
-                    // released as for any unsubmitted Enter.
+                    // #1569: the editor refused the report as another line's text (it does not
+                    // extend the editor's own typeahead): the Enter must not run the fragment the
+                    // buffer holds instead. It is given up like one that cannot run; the keys held
+                    // behind it are released as for any unsubmitted Enter.
                     self.keep_deferred_enter_text(ctx);
                     return;
                 }
@@ -13460,8 +13449,8 @@ impl TerminalView {
     }
 
     /// Inserts the stored typeahead at the front of the editor, ahead of anything the user typed
-    /// there since the request. Returns `false` only when the editor refused a report (#1569,
-    /// #1574); an empty report inserts nothing and is not a refusal.
+    /// there since the request. Returns `false` only when the editor refused a report as another
+    /// line's text (#1569); an empty report inserts nothing and is not a refusal.
     fn insert_typeahead_from_handoff(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         warpui::profiling::zone!("typeahead_handoff_insert");
         let typeahead = self
@@ -13481,57 +13470,6 @@ impl TerminalView {
         });
         ctx.notify();
         inserted
-    }
-
-    /// #1574: the report that just arrived carries a line this pane delivered to the shell as
-    /// final ([`TypeaheadHandoff::note_committed_delivery`]): the hand-off cannot account for it,
-    /// so it is not inserted anywhere. Its stored text is consumed (a later report must not be
-    /// appended to it), the refusal is logged with counts only, and the disposition's follow-ups
-    /// that do not depend on the text still run: the editor takes over, and a deferred Enter is
-    /// given up without running (it would have run the refused line).
-    fn refuse_unaccounted_report(
-        &mut self,
-        disposition: ReportDisposition,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let report_chars = self
-            .model
-            .lock()
-            .block_list_mut()
-            .early_output_mut()
-            .advance_typeahead()
-            .map_or(0, |(typeahead, inserted)| {
-                typeahead
-                    .chars()
-                    .count()
-                    .saturating_sub(inserted.as_usize())
-            });
-        log::warn!(
-            "typeahead hand-off: a report of a line delivered to the shell as final (#1494) was \
-             refused (report_chars={report_chars}, disposition={disposition:?})"
-        );
-        warpui::input_order::log_hop("handoff_insert_refused", || {
-            format!("reason=committed_delivery report_chars={report_chars}")
-        });
-        match disposition {
-            ReportDisposition::InsertLegacy => {
-                if self.handoff.read().drain_pending() {
-                    ctx.emit(Event::RetryTypeaheadHandoffRequest);
-                }
-            }
-            ReportDisposition::InsertKeepDeferred => {
-                self.arm_uncovered_deferral_timer(ctx);
-                ctx.emit(Event::RetryTypeaheadHandoffRequest);
-            }
-            ReportDisposition::Insert | ReportDisposition::InsertYoung => {
-                self.note_editor_took_over();
-                self.redetermine_terminal_focus(ctx);
-            }
-            ReportDisposition::InsertThenSubmit | ReportDisposition::InsertThenSubmitYoung => {
-                self.keep_deferred_enter_text(ctx);
-            }
-            ReportDisposition::Stash => {}
-        }
     }
 
     /// Runs the deferred Enter and, if it submitted no shell command, releases the keys held
@@ -22354,10 +22292,10 @@ impl TerminalView {
         self.clear_line_editor_and_write_to_pty(b" stty sane\r".to_vec(), ctx);
         self.ssh_remote_prompt_seen = true;
         self.finish_ssh_typeahead(ctx);
-        // #1574: the held text now belongs to the remote shell. If part of it is still in that
-        // shell's line when a report is asked for, the report is not inserted into the editor: the
-        // text was delivered, it is not the editor's to take back (the #1566 `4echo T93_r` that
-        // became an agent prompt).
+        // #1574: the held text now belongs to the remote shell, where the toast says it went. While
+        // part of it may be in that shell's line, no report is asked for: a report would clear it
+        // from the shell and move it into the editor (the #1566 `4echo T93_r` that became an agent
+        // prompt). The shell keeps the line and the pty keeps input.
         self.handoff.write().note_committed_delivery();
         self.show_ssh_typing_toast(
             "SSH setup didn't finish; your typed text was sent to the remote shell",

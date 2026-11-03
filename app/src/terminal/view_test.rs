@@ -22874,11 +22874,13 @@ fn lock_input_in_ai_mode(view: &TerminalView, ctx: &mut ViewContext<TerminalView
 }
 
 /// #1574 (#1566 agent-mode log: `handoff_insert after="4echo T93_r"` became an agent prompt): the
-/// #1494 path delivered the held text to the remote shell after `stty sane`; a report of that line
-/// is the remote's, not the editor's, and is not inserted (counts logged, no text). A report the
-/// hand-off asks for afterwards, for keys it owns, is inserted as before. Legacy and Table.
+/// #1494 path delivered the held text to the remote shell after `stty sane`. The text stays in that
+/// shell's line, where the toast said it went: no report is asked for (a report clears the shell's
+/// line), the pty keeps input, the editor stays empty, and the keys typed next reach the same line,
+/// so its Enter runs the whole line on the remote, once. The mark ends with that Enter, and the next
+/// line is reported as usual. Legacy and Table.
 #[test]
-fn a_report_of_a_line_delivered_to_the_shell_as_final_is_not_inserted() {
+fn a_line_delivered_to_the_shell_as_final_stays_in_the_shell() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -22886,49 +22888,61 @@ fn a_report_of_a_line_delivered_to_the_shell_as_final_is_not_inserted() {
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = collect_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
-                awaiting_typeahead_report(view);
-                // What `hand_held_ssh_typeahead_to_unbootstrapped_remote` records after delivering.
-                view.model
-                    .lock()
-                    .typeahead_handoff_mut()
-                    .note_committed_delivery();
-                store_shell_report(view, "4echo T93_r");
-                view.handle_typeahead_report_with_handoff(ctx);
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "",
-                    "{mode:?}: delivered text is never inserted locally"
+                {
+                    let mut model = view.model.lock();
+                    let mut handoff = model.typeahead_handoff_mut();
+                    // The delivered text (`4echo T9`, no Enter) is in the shell's line, counted.
+                    handoff.on_command_written();
+                    handoff.on_user_bytes(b"4echo T9");
+                    handoff.on_user_write_flushed();
+                    // What `hand_held_ssh_typeahead_to_unbootstrapped_remote` records.
+                    handoff.note_committed_delivery();
+                    handoff.on_precmd();
+                    assert_eq!(
+                        handoff.on_line_editor_active(true, true),
+                        ActiveDecision::Drain,
+                        "{mode:?}: no report is asked for"
+                    );
+                    assert!(handoff.is_pty_owned(), "{mode:?}");
+                    assert!(handoff.committed_delivery_pending(), "{mode:?}");
+                }
+                view.commit_typeahead_handoff_at_prompt(ctx);
+                assert!(
+                    view.model.lock().typeahead_handoff().is_pty_owned(),
+                    "{mode:?}: the shell keeps the line"
                 );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
+                // The user finishes the line where it is.
+                view.write_user_bytes_to_pty(b"3".to_vec(), ctx);
+                view.write_user_bytes_to_pty(b"\r".to_vec(), ctx);
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
                 assert!(
                     !view
                         .model
                         .lock()
-                        .block_list()
-                        .early_output()
-                        .has_uninserted_typeahead(),
-                    "{mode:?}: consumed, not stashed for a later insert"
-                );
-
-                // A legitimate report: keys the hand-off routed to the pty and still owns.
-                awaiting_typeahead_report(view);
-                store_shell_report(view, "echo hi");
-                view.handle_typeahead_report_with_handoff(ctx);
-                assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "echo hi",
-                    "{mode:?}: a report the hand-off accounts for is inserted"
+                        .typeahead_handoff()
+                        .committed_delivery_pending(),
+                    "{mode:?}: the Enter ended the mark"
                 );
             });
+            let written = pty_writes.borrow().concat();
+            assert_eq!(
+                written,
+                b"3\r".to_vec(),
+                "{mode:?}: once, to the shell's line"
+            );
         })
     }
 }
 
-/// #1574: an input in AI mode (locked: an agent conversation) never receives a shell report, with
-/// or without an Enter deferred behind it: the line would become an agent prompt. The deferred
-/// Enter is given up, never run on whatever the buffer holds. Legacy and Table.
+/// #1574: a shell report reaching an input locked in AI mode (an agent conversation) is kept: the
+/// shell already cleared it from its own line, so refusing it would lose it. It is inserted and the
+/// input is switched to shell, visibly, so it never becomes an agent prompt; an Enter deferred
+/// behind the report runs it as a shell command exactly once. Legacy and Table.
 #[test]
-fn an_ai_mode_input_never_receives_a_handoff_report() {
+fn a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once() {
     use crate::terminal::input_queue::DestinationMode;
     for mode in [DestinationMode::Legacy, DestinationMode::Table] {
         App::test((), move |mut app| async move {
@@ -22936,32 +22950,49 @@ fn an_ai_mode_input_never_receives_a_handoff_report() {
             initialize_app_for_terminal_view(&mut app);
             let _flag = FeatureFlag::TypeaheadHandoff.override_enabled(true);
             let terminal = add_window_with_terminal(&mut app, None);
-            let executed = count_executed_commands(&mut app, &terminal);
+            let executed: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink = executed.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::ExecuteCommand(e) = event {
+                        sink.borrow_mut().push(e.command.clone());
+                    }
+                });
+            });
             terminal.update(&mut app, |view, ctx| {
+                register_local_session_for_ssh_test(view, ctx);
+                first_precmd_processed_for_test(view, ctx);
                 lock_input_in_ai_mode(view, ctx);
-                // A report the hand-off asked for.
+                // A report the hand-off asked for: kept, as shell text.
                 awaiting_typeahead_report(view);
                 store_shell_report(view, "ls -la");
                 view.handle_typeahead_report_with_handoff(ctx);
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
                 assert_eq!(
-                    view.model.lock().typeahead_handoff().state(),
-                    &HandoffState::EditorOwned,
-                    "{mode:?}"
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "ls -la",
+                    "{mode:?}: never dropped"
                 );
+                assert_eq!(
+                    view.input.as_ref(ctx).input_type(ctx),
+                    InputType::Shell,
+                    "{mode:?}: visibly a shell line"
+                );
+                assert!(executed.borrow().is_empty(), "{mode:?}");
+                view.input.update(ctx, |input, ctx| {
+                    input.clear_buffer_and_reset_undo_stack(ctx)
+                });
 
-                // The same with the user's Enter deferred behind the report.
+                // With the user's Enter deferred behind the report: it runs as a shell command.
+                lock_input_in_ai_mode(view, ctx);
                 hold_after_deferred_enter(view);
-                store_shell_report(view, "rm -rf build");
+                store_shell_report(view, "echo T93");
                 view.handle_typeahead_report_with_handoff(ctx);
-                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "", "{mode:?}");
-                assert_eq!(
-                    view.model.lock().typeahead_handoff().state(),
-                    &HandoffState::EditorOwned,
-                    "{mode:?}: the deferred Enter was given up"
-                );
             });
-            assert_eq!(*executed.borrow(), 0, "{mode:?}: nothing ran");
+            assert_eq!(
+                *executed.borrow(),
+                vec!["echo T93".to_owned()],
+                "{mode:?}: the deferred Enter ran the reported line as a shell command, once"
+            );
         })
     }
 }

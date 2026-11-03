@@ -249,6 +249,11 @@ pub const CONPTY_MIDLINE_QUIET: Duration = Duration::from_millis(120);
 /// again, so the #1162 raw-write corruption does not come back for the rest of the session.
 pub const CONPTY_PROMPT_HOLD_GIVE_UP: Duration = Duration::from_millis(1500);
 
+/// #1573: when the prompt hold's cap fires after an event already ended both of its waits (the
+/// release is in flight, e.g. deferred behind a busy queue), it is checked again after this; it
+/// never gives up a hold whose release is under way.
+const PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK: Duration = Duration::from_millis(100);
+
 /// Environment variable that turns the ConPTY prompt hold off when set to `0` (#1162).
 pub const CONPTY_PROMPT_HOLD_ENV: &str = "PHOSPHOR_CONPTY_PROMPT_HOLD";
 
@@ -641,13 +646,11 @@ pub struct TypeaheadHandoff {
     /// is running from one whose Enter the shell never acted on (#1573).
     last_preexec_at: Option<Instant>,
     /// #1574: bytes the view delivered to the shell as a final delivery (the #1494 `stty sane`
-    /// path) may be in the shell's line. They belong to that shell; a report of them is not the
-    /// editor's to insert. Cleared by the first report after it, and by anything that shows the
-    /// shell's line no longer holds them (a commit to the editor, a command or a user Enter
-    /// written).
+    /// path) may be in the shell's line. They belong to that shell: no report is asked for while
+    /// this is set (a report clears the shell's line, so it would move them into the editor, or
+    /// lose them if the editor refused them). Cleared by anything that shows the shell's line no
+    /// longer holds them (a commit to the editor, a command or a user Enter written).
     committed_delivery: bool,
-    /// #1574: the last report arrived while [`Self::committed_delivery`] was set.
-    last_report_unaccounted: bool,
     /// A prompt hold was just created, so the view must put the key that started it behind a
     /// `LineEditorActive` gate keyed by the hold's id.
     prompt_hold_started: bool,
@@ -989,7 +992,9 @@ impl TypeaheadHandoff {
     ///   nothing is overdue -- the window ends by its events, and the precmd that follows starts
     ///   the wait above with a full cap. An Enter the shell answered with neither a preexec nor a
     ///   precmd within the cap (a continuation prompt with no marker, a lost Enter) is a give-up
-    ///   for this window's keys.
+    ///   for this window's keys;
+    /// * neither wait pending while the hold is still queued: an event ended it and its release is
+    ///   in flight. Not a give-up: checked again shortly.
     ///
     /// `NotYet` asks the view to arm the cap again; it writes nothing and runs nothing. `now` is
     /// given, never read.
@@ -1011,9 +1016,22 @@ impl TypeaheadHandoff {
                 _ => PromptHoldCap::GiveUp,
             };
         }
-        if let Some(opened_at) = self.enter_window_since
-            && self.last_preexec_at.is_some_and(|at| at >= opened_at)
-        {
+        let Some(opened_at) = self.enter_window_since else {
+            // Neither wait is pending but the hold is still queued: an event (the signal, the
+            // interactive latch, a continuation prompt) ended it and its release is in flight
+            // (possibly deferred behind a busy queue). Not a give-up: check again shortly. Bounded:
+            // a hold whose waits ended with no release (a preexec that cleared the wait) is not
+            // left holding keys forever; past twice the cap from its first key it is released.
+            let stale = self.prompt_hold_started_at.is_some_and(|started| {
+                now.saturating_duration_since(started) >= CONPTY_PROMPT_HOLD_GIVE_UP * 2
+            });
+            return if stale {
+                PromptHoldCap::GiveUp
+            } else {
+                PromptHoldCap::NotYet(PROMPT_HOLD_RELEASE_IN_FLIGHT_RECHECK)
+            };
+        };
+        if self.last_preexec_at.is_some_and(|at| at >= opened_at) {
             // The command is running: not overdue. The window's own events end it.
             return PromptHoldCap::NotYet(CONPTY_PROMPT_HOLD_GIVE_UP);
         }
@@ -1049,11 +1067,17 @@ impl TypeaheadHandoff {
                  releasing the held keys (the hold stays on for the next prompt)",
                 CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
             );
-        } else {
+        } else if enter_window {
             log::warn!(
                 "ConPTY enter window: the shell neither started a command nor prompted within {} \
                  ms of the Enter; releasing the held keys (the hold stays on)",
                 CONPTY_PROMPT_HOLD_GIVE_UP.as_millis()
+            );
+        } else {
+            // An event already ended both waits and no release followed within twice the cap (or a
+            // deferred release replayed as a give-up). Not a missed line-editor signal.
+            log::warn!(
+                "ConPTY prompt hold: no wait pending but the keys were still held; releasing them"
             );
         }
         warpui::input_order::log_hop("prompt_hold_expired", || {
@@ -1372,9 +1396,10 @@ impl TypeaheadHandoff {
 
     /// #1574: the view delivered bytes to the shell's line as a FINAL delivery (the #1494 path:
     /// held ssh typeahead written to an unbootstrapped remote after `stty sane`). They belong to
-    /// that shell; the next report, which would carry them back, is not inserted into the editor.
-    /// The mark ends with that report, or as soon as the line cannot hold them any more (a commit
-    /// to the editor, a command written, a user Enter written).
+    /// that shell, where the toast said they went: while the mark is set no report is asked for
+    /// (`on_line_editor_active` answers `Drain`), so the shell keeps the line and the pty keeps
+    /// input. The mark ends as soon as the line cannot hold them any more (a commit to the
+    /// editor, a command written, a user Enter written).
     pub fn note_committed_delivery(&mut self) {
         self.committed_delivery = true;
         warpui::input_order::log_hop("handoff_committed_delivery", String::new);
@@ -1384,12 +1409,6 @@ impl TypeaheadHandoff {
     #[cfg(test)]
     pub fn committed_delivery_pending(&self) -> bool {
         self.committed_delivery
-    }
-
-    /// Whether the report just received ([`Self::on_report`]) is one the hand-off cannot account
-    /// for: its text is a line delivered to the shell as final (#1574). One-shot.
-    pub fn take_report_unaccounted(&mut self) -> bool {
-        mem::take(&mut self.last_report_unaccounted)
     }
 
     /// `PtyController` wrote a legacy request (the editor owns input). Its report covers every
@@ -1960,6 +1979,13 @@ impl TypeaheadHandoff {
                     self.interrupt_barrier = false;
                     self.state = HandoffState::EditorOwned;
                     ActiveDecision::Committed
+                } else if self.committed_delivery {
+                    // #1574: the line holds text delivered to the shell as final. A report would
+                    // clear it from the shell; it stays there, and the pty keeps input.
+                    warpui::input_order::log_hop("handoff_request_skipped", || {
+                        "reason=committed_delivery".to_owned()
+                    });
+                    ActiveDecision::Drain
                 } else if self.typing_a_line_on_conpty(Instant::now()) {
                     // #1162: keys of a line are still arriving raw; the request waits for a
                     // pause (the quiet-period timer or the next flushed write decides again).
@@ -2463,10 +2489,6 @@ impl TypeaheadHandoff {
     /// The shell reported its line buffer.
     pub fn on_report(&mut self) -> ReportDisposition {
         self.interrupt_barrier = false;
-        // #1574: a report of a line the view delivered to the shell as final is not the editor's.
-        // It still answers the request (the states below move on as for any report); the view
-        // refuses to insert its text ([`Self::take_report_unaccounted`]).
-        self.last_report_unaccounted = mem::take(&mut self.committed_delivery);
         // #1089: a report for a request written before untracked bytes does not cover them.
         self.on_report_received();
         match self.owner() {

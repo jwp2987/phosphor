@@ -731,20 +731,23 @@ its own. A give-up releases the keys in typed order through the counted release 
 session only when the shell has never answered a precmd's wait with a signal (#1349's documented reason). `hop=prompt_hold_cap_not_due`,
 `hop=prompt_hold_expired precmd_wait=.. enter_window=.. session_off=..`, `hop=enter_window_continuation`.
 
-**#1574.** A shell report is inserted into the editor only when the hand-off can account for it: a report of a line this pane delivered
-to the shell as final (the #1494 `stty sane` path, `TypeaheadHandoff::note_committed_delivery`) is consumed and refused; an input whose
-mode is AI and stays AI for the text (locked, or no autodetection) never receives a report; a deferred Enter whose report was refused is
-given up, never run on the buffer. Refusals log `hop=handoff_insert_refused reason=..` with counts, never text. An unlocked AI input with
-autodetection on still takes the report: its typeahead provenance (#886) decides it, and a deferred Enter runs it as a shell command.
+**#1574.** The shell's report handler clears its own line (bash `READLINE_LINE=""`, zsh `BUFFER=""`), so a report must never be
+refused once asked for: refusing it loses the line. Instead: a line this pane delivered to the shell as final (the #1494 `stty sane`
+path, `TypeaheadHandoff::note_committed_delivery`) is never asked for -- `on_line_editor_active` answers `Drain`, the pty keeps input
+and the shell keeps the line where the toast said it went (`hop=handoff_request_skipped`); the mark ends with a user Enter, a written
+command or a commit to the editor. A report reaching an input whose mode is AI and stays AI (locked, or no autodetection) is inserted and
+the input is switched to shell, locked, visibly (`hop=handoff_insert_as_shell`, counts only); a deferred Enter runs it as a shell command
+exactly as before. An unlocked AI input with autodetection on keeps its mode: the typeahead provenance (#886) decides. Only the #1569
+not-my-text refusal remains, and a deferred Enter whose report it refused is given up, never run on the fragment.
 
 | layer | test | asserts |
 |---|---|---|
-| model | `typeahead_handoff_tests.rs`: `a_command_running_past_the_give_up_cap_keeps_its_keys_held_and_the_hold_on`, `a_key_typed_after_the_cap_into_a_running_command_is_still_held`, `the_enter_window_gives_up_for_its_own_keys_and_the_hold_stays_on`, `a_give_up_by_a_shell_that_signals_is_for_that_prompt_only`, `a_continuation_prompt_ends_the_enter_window_and_releases_its_keys` | Git Bash-like `sleep 3` with keys in its first second: the cap is `NotYet` while it runs and after its precmd, every key released once in order by the signal, the next prompt held again; no clock on the window; a give-up never switches off a shell that signals |
-| model | `typeahead_handoff_tests.rs`: `a_report_of_a_committed_delivery_is_unaccounted_once`, `a_report_the_handoff_asked_for_is_accounted`, `the_committed_delivery_mark_ends_when_its_line_cannot_hold_it` | the mark makes exactly the next report unaccounted and ends with a user Enter, a written command or a commit to the editor |
+| model | `typeahead_handoff_tests.rs`: `a_command_running_past_the_give_up_cap_keeps_its_keys_held_and_the_hold_on`, `a_key_typed_after_the_cap_into_a_running_command_is_still_held`, `the_enter_window_gives_up_for_its_own_keys_and_the_hold_stays_on`, `a_give_up_by_a_shell_that_signals_is_for_that_prompt_only`, `a_continuation_prompt_ends_the_enter_window_and_releases_its_keys`, `a_cap_firing_while_an_event_release_is_in_flight_is_not_a_give_up` | Git Bash-like `sleep 3` with keys in its first second: the cap is `NotYet` while it runs and after its precmd, every key released once in order by the signal, the next prompt held again; no clock on the window; a give-up never switches off a shell that signals |
+| model | `typeahead_handoff_tests.rs`: `a_committed_delivery_is_never_asked_for_and_stays_in_the_shell`, `the_committed_delivery_mark_ends_when_its_line_cannot_hold_it` | with the mark no request is decided (`Drain`), the pty keeps input; the mark ends with a user Enter, a written command or a commit to the editor |
 | view, Legacy and Table | `view_test.rs`: `a_command_running_past_the_prompt_hold_cap_keeps_its_keys_held_and_the_hold_on` | the cap firing mid-command and right after the precmd writes nothing; the signal writes `echo\r` once, one write per key; the next prompt opens a hold again |
-| view, Legacy and Table | `view_test.rs`: `a_report_of_a_line_delivered_to_the_shell_as_final_is_not_inserted`, `an_ai_mode_input_never_receives_a_handoff_report`, `the_ssh_bootstrap_failure_delivery_is_marked_final` | the #1566 `4echo T93_r` report is not inserted and not stashed; a legitimate report still inserts; a locked AI input stays empty with or without a deferred Enter, nothing runs; the #1494 path sets the mark |
-| editor | `input_test.rs`: `an_ai_mode_input_refuses_a_handoff_report` | `insert_handoff_typeahead_text` returns false and leaves an AI-mode buffer alone; in shell mode it inserts |
-| real app | Windows Git Bash and PowerShell, terminal and agent mode: `sleep 3` + a line typed in its first second, then a fast line at the next prompt | the shell's `rec.log` has both lines once, in order; no `session_off=true` in the log for Git Bash; agent mode ssh with a slow bootstrap: no `handoff_insert` into the agent editor after `stty sane` |
+| view, Legacy and Table | `view_test.rs`: `a_line_delivered_to_the_shell_as_final_stays_in_the_shell`, `a_report_into_an_ai_mode_input_is_kept_as_shell_text_and_runs_once`, `the_ssh_bootstrap_failure_delivery_is_marked_final` | the delivered line stays in the shell (no request, editor empty, the next keys and Enter reach the pty once); a report into a locked AI input is inserted as shell text, and a deferred Enter runs it as a shell command exactly once; the #1494 path sets the mark |
+| editor | `input_test.rs`: `a_handoff_report_into_an_ai_mode_input_is_kept_as_shell_text` | the report is inserted (never dropped) and the input is switched to shell, locked; a shell-mode input inserts as before |
+| real app | Windows Git Bash and PowerShell, terminal and agent mode: `sleep 3` + a line typed in its first second, then a fast line at the next prompt | the shell's `rec.log` has both lines once, in order; no `session_off=true` in the log for Git Bash; agent mode ssh with a slow bootstrap: after `stty sane` the delivered line stays on the remote (no `handoff_insert` of it, `handoff_request_skipped` logged), nothing typed is lost |
 
 ## 3. Real-app testing
 
