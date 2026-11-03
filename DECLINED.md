@@ -2723,3 +2723,12 @@ decision. The owner approved all four on 2026-11-02. None of them touches Agent 
 - **Notebook "Open on desktop" menu item and `NotebookAction::OpenLinkOnDesktop` are gone** (#1474).
   The handler was a no-op on native. The workflow and Drive "Open on Desktop" items are separate and
   untouched.
+
+## CLI-agent input pacing — timed writes accepted, 2026-11-03 (#1364)
+
+The owner rule is that a timer may hand text back but never write to a pty. One exception is accepted
+by the owner (2026-11-03, option a on #1364): `use_agent_footer` paces three writes into a CLI agent
+running in a terminal (Claude Code and similar) at 50, 300 and 300 ms
+(`app/src/terminal/view/use_agent_footer/mod.rs` ~97/101/106). Those programs expose no readiness
+signal Phosphor could wait on, so the pacing stays timer-driven. Scope: CLI-agent input only; it is not
+a precedent for any other pty write. Revisit if a CLI agent gains a readiness signal.
