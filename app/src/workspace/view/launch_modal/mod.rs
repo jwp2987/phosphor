@@ -27,6 +27,7 @@ use warpui::{
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn init<S: Slide>(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -57,11 +58,13 @@ pub fn init<S: Slide>(app: &mut AppContext) {
 }
 
 /// Configuration for an optional checkbox displayed in the modal's control panel.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct CheckboxConfig {
     pub label: &'static str,
     pub description: &'static str,
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub trait Slide:
     'static + Send + Sync + std::fmt::Debug + PartialEq + Eq + std::hash::Hash + Copy + Clone
 where
@@ -97,6 +100,7 @@ where
     fn on_close(&self, _ctx: &mut ViewContext<LaunchModal<Self>>) {}
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct StateHandles<S: Slide> {
     pub close_button: MouseStateHandle,
     pub slides: HashMap<S, SlideStateHandles>,
@@ -104,6 +108,7 @@ pub struct StateHandles<S: Slide> {
 }
 
 #[derive(Default)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct SlideStateHandles {
     mouse: MouseStateHandle,
     content_hyperlink: HighlightedHyperlink,
@@ -123,6 +128,7 @@ impl<S: Slide> Default for StateHandles<S> {
     }
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub struct LaunchModal<S: Slide> {
     slide: S,
     next_button: ViewHandle<ActionButton>,
@@ -130,6 +136,7 @@ pub struct LaunchModal<S: Slide> {
     state_handles: StateHandles<S>,
 }
 
+#[allow(dead_code)] // members used on other cfgs or tests
 impl<S: Slide> LaunchModal<S> {
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
         let next_button = ctx.add_view(|_| ActionButton::new("", PrimaryTheme));
@@ -465,14 +472,22 @@ impl<S: Slide> Entity for LaunchModal<S> {
 }
 
 // Modal dimension constants.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MAX_MODAL_WIDTH: f32 = 876.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MIN_MODAL_HEIGHT: f32 = 300.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MAX_MODAL_HEIGHT: f32 = 540.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MAX_CONTROL_PANEL_WIDTH: f32 = 333.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MIN_CONTROL_PANEL_WIDTH: f32 = 220.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MAX_SLIDE_WIDTH: f32 = 543.;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MAX_IMAGE_HEIGHT: f32 = 355.;
 /// Minimum width below which the modal is hidden.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const MIN_MODAL_WIDTH: f32 = 600.;
 
 impl<S: Slide> View for LaunchModal<S> {
@@ -669,11 +684,13 @@ impl<S: Slide> TypedActionView for LaunchModal<S> {
 }
 
 #[derive(Copy, Clone, Debug)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub enum LaunchModalEvent {
     Close,
 }
 
 #[derive(Copy, Clone, Debug)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub enum LaunchModalAction<S: Slide> {
     SelectSlide(S),
     NextSlide,

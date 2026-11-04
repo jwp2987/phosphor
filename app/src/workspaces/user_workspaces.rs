@@ -28,6 +28,7 @@ use crate::workspaces::workspace::{BillingMetadata, WorkspaceMember, WorkspaceSe
 use super::workspace::WorkspaceMemberUsageInfo;
 
 #[derive(Debug)]
+#[allow(dead_code)] // members used on other cfgs or tests
 pub enum UserWorkspacesEvent {
     AddDomainRestrictionsSuccess,
     AddDomainRestrictionsRejected(anyhow::Error),
@@ -58,11 +59,6 @@ pub enum UserWorkspacesEvent {
 pub struct UserWorkspaces {
     current_workspace_uid: Tracked<Option<WorkspaceUid>>,
     workspaces: Tracked<Vec<Workspace>>,
-}
-
-pub struct CreateTeamResponse {
-    pub workspace: Workspace,
-    pub team: Team,
 }
 
 impl UserWorkspaces {
@@ -96,13 +92,6 @@ impl UserWorkspaces {
 
     pub fn workspace_from_uid(&self, workspace_uid: WorkspaceUid) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.uid == workspace_uid)
-    }
-
-    pub fn workspace_from_uid_mut(
-        &mut self,
-        workspace_uid: WorkspaceUid,
-    ) -> Option<&mut Workspace> {
-        self.workspaces.iter_mut().find(|w| w.uid == workspace_uid)
     }
 
     pub fn is_at_tier_limit_for_object_type(
@@ -487,14 +476,17 @@ impl UserWorkspaces {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn has_teams(&self) -> bool {
         false
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn has_workspaces(&self) -> bool {
         !self.workspaces.is_empty()
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn update_workspaces(&mut self, workspaces: Vec<Workspace>, ctx: &mut ModelContext<Self>) {
         // Check if sunsetted_to_build_ts changed for any workspace
         let sunsetted_to_build_changed = self.has_sunsetted_to_build_data_changed(&workspaces);
@@ -508,6 +500,7 @@ impl UserWorkspaces {
     }
 
     /// Checks if any workspace's service agreement sunsetted_to_build_ts field has changed.
+    #[allow(dead_code)] // used only by tests
     fn has_sunsetted_to_build_data_changed(&self, new_workspaces: &[Workspace]) -> bool {
         for new_workspace in new_workspaces {
             // Find the corresponding old workspace

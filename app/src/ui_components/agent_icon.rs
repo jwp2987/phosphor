@@ -108,6 +108,7 @@ pub(crate) fn agent_icon_variant_from_terminal_inputs(
 /// [`IconWithStatusVariant`]. Falls back to the Oz variant for [`Harness::Oz`] and
 /// [`Harness::Unknown`], the latter so a future harness this client doesn't recognize doesn't
 /// render an unbranded gray circle.
+#[allow(dead_code)] // used only by tests
 pub(crate) fn agent_icon_variant_for_run(
     harness: Harness,
     status: ConversationStatus,

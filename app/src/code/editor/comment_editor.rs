@@ -100,6 +100,7 @@ impl CommentEditor {
     }
 
     #[cfg_attr(not(feature = "local_fs"), allow(unused))]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn comment_text(&self, app: &AppContext) -> String {
         self.editor.as_ref(app).model().as_ref(app).markdown(app)
     }

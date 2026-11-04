@@ -44,6 +44,7 @@ impl Ord for TeamMember {
 }
 
 #[derive(PartialEq, Eq, Clone)]
+#[allow(dead_code)] // persisted or derived enum
 pub enum TeamDeleteDisabledReason {
     ActivePaidSubscription,
     RemainingBonusCredits,
@@ -51,6 +52,7 @@ pub enum TeamDeleteDisabledReason {
 }
 
 impl TeamDeleteDisabledReason {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn user_facing_message(&self) -> &str {
         match self {
             TeamDeleteDisabledReason::ActivePaidSubscription => {

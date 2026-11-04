@@ -31,6 +31,7 @@ const MAX_TOOLTIP_LENGTH: usize = 80;
 const ICON_SPACING: f32 = 4.;
 
 /// Offset for the sharing dialog from the item row
+#[allow(dead_code)] // used by sibling unused code or shared name
 const DIALOG_OFFSET_PIXELS: f32 = -16.;
 
 /// Generate a position ID for a conversation list item

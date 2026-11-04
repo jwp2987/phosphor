@@ -27,6 +27,7 @@ const ERROR_ICON_PATH: &str = "bundled/svg/alert-circle.svg";
 pub enum AlertFlavor {
     #[default]
     Default,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Success,
     Error,
     Warning,
@@ -161,6 +162,7 @@ impl AlertConfig {
         Self::new(message, AlertFlavor::Error)
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn success(message: String) -> Self {
         Self::new(message, AlertFlavor::Success)
     }

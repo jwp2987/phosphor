@@ -331,6 +331,7 @@ pub struct CodeEditorModel {
     released: bool,
 }
 
+#[allow(dead_code)] // members used on other cfgs or tests
 impl CodeEditorModel {
     pub fn new(
         text_styles: RichTextStyles,
@@ -587,12 +588,14 @@ impl CodeEditorModel {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn primary_cursor_gap(&self, ctx: &impl ModelAsRef) -> CharOffset {
         *self.selection.as_ref(ctx).cursors(ctx).first()
     }
 
     /// The soft-wrapped visual row containing 0-based `cursor_offset`, as 0-based character
     /// offsets; `None` outside char-cell (TUI) mode.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn char_cell_visual_row_range(
         &self,
         cursor_offset: CharOffset,
@@ -603,6 +606,7 @@ impl CodeEditorModel {
     }
 
     /// Deletes `range` (1-indexed gap offsets) as a user edit, returning the deleted text.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn delete_range_returning_text(
         &mut self,
         range: Range<CharOffset>,
@@ -629,6 +633,7 @@ impl CodeEditorModel {
     }
 
     /// Kills from the cursor to the start of its char-cell visual row (Ctrl-U in the TUI input).
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn kill_to_char_cell_visual_row_start(
         &mut self,
         ctx: &mut ModelContext<Self>,
@@ -643,6 +648,7 @@ impl CodeEditorModel {
     }
 
     /// Kills from the cursor to the end of its char-cell visual row (Ctrl-K in the TUI input).
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn kill_to_char_cell_visual_row_end(
         &mut self,
         ctx: &mut ModelContext<Self>,
@@ -2315,6 +2321,7 @@ impl CodeEditorModel {
 
     /// Return the ranges represented by the current Vim visual tails and
     /// selection heads without consuming the tails.
+    #[allow(dead_code)] // used only by tests
     pub fn vim_visual_selection_ranges(
         &self,
         motion_type: MotionType,

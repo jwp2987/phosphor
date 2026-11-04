@@ -1668,6 +1668,7 @@ impl AIContextMenu {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn render_search_bar(&self) -> Box<dyn Element> {
         ChildView::new(&self.search_bar).finish()
     }

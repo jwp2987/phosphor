@@ -4,9 +4,11 @@ use std::rc::Rc;
 use warpui::ViewContext;
 
 /// A callback function for custom CTA button actions.
+#[allow(dead_code)] // used by sibling unused code or shared name
 type CustomCallback<S> = Rc<dyn Fn(&mut ViewContext<super::LaunchModal<S>>)>;
 
 #[derive(Clone)]
+#[allow(dead_code)] // persisted or derived enum
 pub struct CTAButton<S: Slide> {
     pub label: String,
     pub action: CTAButtonAction<S>,
@@ -16,6 +18,7 @@ pub struct CTAButton<S: Slide> {
 
 impl<S: Slide> CTAButton<S> {
     // Constructor methods
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn next_slide(next: S, label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -24,6 +27,7 @@ impl<S: Slide> CTAButton<S> {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn close(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -32,6 +36,7 @@ impl<S: Slide> CTAButton<S> {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn open_url(label: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -40,6 +45,7 @@ impl<S: Slide> CTAButton<S> {
         }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn custom<F>(label: impl Into<String>, callback: F) -> Self
     where
         F: Fn(&mut ViewContext<super::LaunchModal<S>>) + 'static,
@@ -52,6 +58,7 @@ impl<S: Slide> CTAButton<S> {
     }
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub enum CTAButtonAction<S: Slide> {
     NextSlide(S),
     Close,

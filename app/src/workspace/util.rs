@@ -30,11 +30,14 @@ pub(super) struct WorkspaceMouseStates {
     pub(super) banner_button: MouseStateHandle,
     pub(super) banner_secondary_button: MouseStateHandle,
     pub(super) more_info_banner_button: MouseStateHandle,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub(super) agent_management_view_button: MouseStateHandle,
     pub(super) left_panel_icon: MouseStateHandle,
     pub(super) settings_icon: MouseStateHandle,
     pub(super) dismiss_banner_button: MouseStateHandle,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub(super) sign_in_button: MouseStateHandle,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub(super) sign_up_button: MouseStateHandle,
     pub(super) offline_icon: MouseStateHandle,
     pub(super) avatar_icon: MouseStateHandle,

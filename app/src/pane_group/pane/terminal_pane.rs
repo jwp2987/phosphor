@@ -86,10 +86,6 @@ pub(in crate::pane_group) struct RestoredTerminalState {
     pub shell_launch_data: Option<ShellLaunchData>,
 }
 
-fn serialize_proto_to_base64<M: prost::Message>(message: &M) -> String {
-    BASE64_STANDARD.encode(message.encode_to_vec())
-}
-
 impl TerminalPane {
     pub(in crate::pane_group) fn new(
         uuid: Vec<u8>,

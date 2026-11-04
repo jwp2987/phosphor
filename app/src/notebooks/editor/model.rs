@@ -2290,6 +2290,7 @@ impl ChildModels {
     }
 
     /// Iterate over all child models of the given type.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn models<'a, T: Entity>(
         &'a self,
         ctx: &'a AppContext,

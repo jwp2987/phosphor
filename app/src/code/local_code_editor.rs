@@ -221,6 +221,7 @@ enum LoadedFileMetadata {
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
     RemoteFile {
         id: FileId,
+        #[allow(dead_code)] // field: set at construction or persisted
         remote_path: crate::code::buffer_location::RemotePath,
     },
 }

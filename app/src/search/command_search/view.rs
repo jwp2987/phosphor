@@ -117,6 +117,7 @@ pub struct CommandSearchView {
     zero_state_handle: ViewHandle<CommandSearchZeroStateView>,
     handle: WeakViewHandle<Self>,
     menu_positioning: MenuPositioning,
+    #[allow(dead_code)] // field: set at construction or persisted
     auth_state: Arc<AuthState>,
     state: CommandSearchViewState,
     visible_results_range_sender: Sender<Range<usize>>,

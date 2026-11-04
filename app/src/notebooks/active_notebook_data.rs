@@ -280,16 +280,21 @@ pub enum ActiveNotebookDataEvent {
     /// Another user stole the baton for the current object.
     ModeChangedFromServer,
     /// The editing baton for the current object was successfully grabbed server-side.
+    #[allow(dead_code)] // used only by tests
     SwitchedToEditMode,
     /// An edit to the current object was rejected.
+    #[allow(dead_code)] // used only by tests
     EditRejected,
     /// The notebook's breadcrumbs were updated.
     BreadcrumbsChanged,
     /// This notebook was created on the server.
+    #[allow(dead_code)] // used only by tests
     CreatedOnServer,
     /// This notebook was trashed or untrashed (used for refreshing pane overflow items)
+    #[allow(dead_code)] // used by sibling unused code or shared name
     TrashStatusChanged,
     // This notebook was moved to a shared space.
+    #[allow(dead_code)] // used only by tests
     MovedToSpace,
 }
 

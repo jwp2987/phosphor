@@ -1109,14 +1109,17 @@ impl CodeEditorView {
         });
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn goto_definition(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.emit(CodeEditorEvent::VimGotoDefinition);
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn find_references(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.emit(CodeEditorEvent::VimFindReferences);
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     fn show_hover(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.emit(CodeEditorEvent::VimShowHover);
     }

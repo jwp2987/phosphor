@@ -80,6 +80,7 @@ impl AgentToastStack {
     }
 
     /// Add a new agent toast to the stack
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn add_toast(&mut self, toast: AgentToast, ctx: &mut ViewContext<Self>) {
         let uuid = Uuid::new_v4();
         let abort_handle = ctx.spawn_abortable(
@@ -260,6 +261,7 @@ pub struct AgentToast {
 }
 
 impl AgentToast {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(
         task_name: String,
         icon: Icon,

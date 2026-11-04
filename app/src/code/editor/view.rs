@@ -157,8 +157,11 @@ pub enum CodeEditorEvent {
     DeleteComment {
         id: CommentId,
     },
+    #[allow(dead_code)] // used by sibling unused code or shared name
     VimGotoDefinition,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     VimFindReferences,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     VimShowHover,
 }
 

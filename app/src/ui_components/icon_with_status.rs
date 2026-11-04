@@ -113,6 +113,7 @@ pub(crate) enum IconWithStatusVariant {
         /// ambient-purple background, see `warp_agent_circle_colors`) but is carried on the
         /// variant so cross-surface callers (`ui_components::agent_icon`) have a single
         /// consistent shape to construct regardless of which branch of the icon they render.
+        #[allow(dead_code)] // field: set at construction or persisted
         is_ambient: bool,
     },
 }
@@ -315,13 +316,17 @@ fn render_with_optional_status_badge(
 /// Brand-circle diameter as a fraction of `total_size`. `pub(crate)` so
 /// callers that pre-render their own avatar (e.g. the pill bar) can size it
 /// consistently with [`render_custom_avatar_with_status_badge`].
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) const CIRCLE_RATIO: f32 = 0.76;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const DEFAULT_BADGE_RATIO: f32 = 0.57;
+#[allow(dead_code)] // used by sibling unused code or shared name
 const DEFAULT_BADGE_ICON_RATIO: f32 = 0.34;
 
 /// Status-badge geometry override. Pass [`StatusBadgeStyle::DEFAULT`] for the
 /// standard look.
 #[derive(Clone, Copy)]
+#[allow(dead_code)] // persisted or derived enum
 pub(crate) struct StatusBadgeStyle {
     /// Cutout-ring diameter as a fraction of `total_size`.
     pub ring_ratio: f32,
@@ -331,12 +336,17 @@ pub(crate) struct StatusBadgeStyle {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) enum BadgeInnerShape {
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     Circle,
-    RoundedSquare { radius_px: f32 },
+    RoundedSquare {
+        radius_px: f32,
+    },
 }
 
 impl StatusBadgeStyle {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) const DEFAULT: Self = Self {
         ring_ratio: DEFAULT_BADGE_RATIO,
         icon_ratio: DEFAULT_BADGE_ICON_RATIO,
@@ -354,20 +364,24 @@ impl StatusBadgeStyle {
 /// default overhang, so it does not want this ratio. Kept as the accessor for
 /// the default geometry, which `corner_overlay_offset` below still derives
 /// from `CIRCLE_RATIO`.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) fn circle_size(total: f32) -> f32 {
     total * CIRCLE_RATIO
 }
 
 /// Returns the diameter of the status badge's cutout ring, i.e. the badge's
 /// full painted footprint.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn badge_size(total: f32, style: StatusBadgeStyle) -> f32 {
     total * style.ring_ratio
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn badge_icon_size(total: f32, style: StatusBadgeStyle) -> f32 {
     total * style.icon_ratio
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn badge_padding(total: f32, style: StatusBadgeStyle) -> f32 {
     (badge_size(total, style) - badge_icon_size(total, style)) / 4.
 }
@@ -376,6 +390,7 @@ fn badge_padding(total: f32, style: StatusBadgeStyle) -> f32 {
 /// box's BR), as a fraction of `total_size`. Baked into
 /// `corner_overlay_offset` so most callers can just pass `0.0` for their
 /// `overlay_extra_overhang_ratio`.
+#[allow(dead_code)] // used by sibling unused code or shared name
 const DEFAULT_OVERLAY_OVERHANG_PAST_CIRCLE_EDGE: f32 = 0.19;
 
 /// Returns the pixel offset applied to the badge's `BottomRight -> BottomRight`
@@ -386,6 +401,7 @@ const DEFAULT_OVERLAY_OVERHANG_PAST_CIRCLE_EDGE: f32 = 0.19;
 /// `DEFAULT_OVERLAY_OVERHANG_PAST_CIRCLE_EDGE`: `0.0` for the default
 /// position most callers want; positive pushes the badge further toward the
 /// box's BR; negative pulls it inward toward the circle's center.
+#[allow(dead_code)] // used by sibling unused code or shared name
 fn corner_overlay_offset(total: f32, overlay_extra_overhang_ratio: f32) -> f32 {
     let total_overhang = DEFAULT_OVERLAY_OVERHANG_PAST_CIRCLE_EDGE + overlay_extra_overhang_ratio;
     -((1.0 - CIRCLE_RATIO) - total_overhang) * total
@@ -404,6 +420,7 @@ fn corner_overlay_offset(total: f32, overlay_extra_overhang_ratio: f32) -> f32 {
 /// `PillSpec` but is always effectively `false` in this fork -- see the
 /// module-level comment above this section.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(crate) fn render_custom_avatar_with_status_badge(
     avatar: Box<dyn Element>,
     status: Option<&ConversationStatus>,

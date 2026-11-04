@@ -323,6 +323,7 @@ impl NotebookManager {
     /// Reset the notebook manager state for logout.
     ///
     /// This _does not_ save any pending notebook changes.
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn reset(&mut self) {
         self.panes_by_hashed_id.clear();
         for (_, status) in self.raw_text_by_hashed_id.drain() {

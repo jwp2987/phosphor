@@ -32,6 +32,7 @@ impl CommandBindingDataSource {
         Self::new_fuzzy(binding_source, ctx)
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn new_full_text(
         binding_source: ModelHandle<BindingSource>,
         ctx: &mut ModelContext<Self>,
@@ -257,13 +258,16 @@ mod full_text_searcher {
 
     define_search_schema!(
         schema_name: ACTION_SEARCH_SCHEMA,
+        #[allow(dead_code)] // used by sibling unused code or shared name
         config_name: ActionSearchConfig,
+        #[allow(dead_code)] // used by sibling unused code or shared name
         search_doc: ActionDocument,
         identifying_doc: ActionIdDocument,
         search_fields: [action: 1.0],
         id_fields: [id: u64]
     );
 
+    #[allow(dead_code)] // persisted or derived enum
     pub(crate) struct FullTextActionSearcher {
         searcher: SimpleFullTextSearcher<ActionSearchConfig>,
         all_bindings: HashMap<BindingId, Arc<CommandBinding>>,
@@ -331,6 +335,7 @@ mod full_text_searcher {
     }
 
     impl FullTextActionSearcher {
+        #[allow(dead_code)] // used by sibling unused code or shared name
         pub(crate) fn new() -> Self {
             Self {
                 searcher: ACTION_SEARCH_SCHEMA.create_searcher(DEFAULT_MEMORY_BUDGET),
@@ -338,6 +343,7 @@ mod full_text_searcher {
             }
         }
 
+        #[allow(dead_code)] // used by sibling unused code or shared name
         fn rebuild_search_index(&mut self) -> Result<(), anyhow::Error> {
             self.clear_search_index();
             let documents = self.all_bindings.iter().map(|(id, binding)| {
@@ -354,6 +360,7 @@ mod full_text_searcher {
             self.searcher.build_index(documents)
         }
 
+        #[allow(dead_code)] // used by sibling unused code or shared name
         fn clear_search_index(&mut self) {
             if self.searcher.clear_search_index().is_err() {
                 // As a workaround, we can create a new index and replace the old one.

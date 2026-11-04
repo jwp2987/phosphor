@@ -2460,6 +2460,7 @@ impl PaneGroup {
         most_recent_state
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn open_share_session_denied_modal(
         &mut self,
         _terminal_pane_id: TerminalPaneId,
@@ -7295,28 +7296,6 @@ impl PaneGroup {
         ctx.emit(Event::AppStateChanged);
 
         self.start_agent_mode_in_new_pane(initial_query, zero_state_prompt_suggestion_type, ctx);
-    }
-
-    /// Creates an ambient agent pane with the given initial prompt.
-    fn create_ambient_agent_pane(&self, ctx: &mut ViewContext<Self>) -> TerminalPane {
-        let uuid = Uuid::new_v4();
-        let resources = TerminalViewResources {
-            tips_completed: self.tips_completed.clone(),
-            model_event_sender: self.model_event_sender.clone(),
-        };
-
-        let view_bounds = Self::estimated_view_bounds(ctx);
-
-        let (terminal_view, terminal_manager) =
-            Self::create_ambient_agent_terminal(resources, view_bounds.size(), ctx);
-
-        TerminalPane::new(
-            uuid.into_bytes().to_vec(),
-            terminal_manager,
-            terminal_view,
-            self.model_event_sender.clone(),
-            ctx,
-        )
     }
 
     /// Close overlays whose state is managed by this pane group or its terminal panes. Does not

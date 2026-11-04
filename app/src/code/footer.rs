@@ -1115,10 +1115,12 @@ pub enum CodeFooterViewEvent {
     },
     EnableLSP {
         path: PathBuf,
+        #[allow(dead_code)] // field: set at construction or persisted
         server_type: Option<LSPServerType>,
     },
     InstallAndEnableLSP {
         path: PathBuf,
+        #[allow(dead_code)] // field: set at construction or persisted
         server_type: Option<LSPServerType>,
     },
     OpenLogs {
