@@ -5,7 +5,23 @@ members = [
 ]
 resolver = "2"
 # Vendored crates that declare their own [workspace] (#864), and the dev-only cargo-fuzz crate.
-exclude = ["lib/cosmic-text", "lib/arboard", "fuzz"]
+exclude = [
+  "lib/cosmic-text",
+  "lib/arboard",
+  "lib/command-corrections",
+  "lib/core-foundation-rs",
+  "lib/command-signatures",
+  "lib/difflib",
+  "lib/dwrote-rs",
+  "lib/font-kit",
+  "lib/notify",
+  "lib/uneval",
+  "lib/vte",
+  "lib/winit",
+  "lib/workflows",
+  "lib/yaml-rust",
+  "fuzz",
+]
 
 # Include all members except integration (since it is only used for testing).
 default-members = [
@@ -114,7 +130,7 @@ block = "0.1.6"
 blocking = "1.6.2"
 bytemuck = { version = "1.13.1" }
 bytes = { version = "1.11.1", features = ["serde"] }
-command-corrections = { git = "https://github.com/warpdotdev/command-corrections.git", rev = "eae08c8c51d9bc9741fcb17eef2c21f696aebbeb" }
+command-corrections = { path = "lib/command-corrections" }
 core-foundation = "0.10.1"
 concat-idents = "1.1.4"
 cfg_aliases = "0.2.1"
@@ -133,7 +149,7 @@ enum-iterator = "1.1.3"
 env_logger = "0.10.0"
 event-listener = "5.4.0"
 float-cmp = "0.9.0"
-font-kit = { git = "https://github.com/warpdotdev/font-kit", rev = "a04b225ecb639bb850f21d05212cfdc7465000f3", default-features = false, features = [
+font-kit = { path = "lib/font-kit", default-features = false, features = [
   "source",
 ] }
 futures = { version = "0.3", features = ["executor", "thread-pool"] }
@@ -183,7 +199,7 @@ mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git
 mime_guess = "2.0"
 minimp4 = "0.1.2"
 nix = { version = "0.26.4", default-features = false, features = ["signal"] }
-notify-debouncer-full = { git = "https://github.com/warpdotdev/notify", rev = "91b719849bc04ef251bcb2cc61076b099204e970" }
+notify-debouncer-full = { path = "lib/notify/notify-debouncer-full" }
 nom = "7.1.1"
 num-traits = "0.2"
 # Default features off, and *no* "reqwest" feature: oauth2 5.0.0's optional
@@ -359,9 +375,9 @@ unicode-width = "0.1.12"
 uuid = { version = "1.1.2", features = ["v4", "serde", "js"] }
 vec1 = { version = "1.8.0", features = ["serde"] }
 version-compare = "0.1"
-vte = { git = "https://github.com/warpdotdev/vte.git", rev = "4b399c87b63ba88f45709edaa6383fc519f6c900", default-features = false }
+vte = { path = "lib/vte", default-features = false }
 walkdir = "2"
-warp-workflows = { git = "https://github.com/warpdotdev/workflows", rev = "4d483f3268651b54c3ec07542f0f35dca7e49ce8" }
+warp-workflows = { path = "lib/workflows/workflows" }
 wasm-bindgen = "0.2.89"
 wasm-bindgen-futures = "0.4.42"
 web-sys = { version = "0.3.69", features = [
@@ -405,8 +421,9 @@ rayon = "1.10.0"
 sha2 = "0.10"
 shell-escape = "0.1.5"
 shellexpand = "3.1.1"
-warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatures.git", rev = "48fd7aa5b7b4d99f5db57d1c5a25c47c05567fcf", default-features = false }
-# Fork of warpdotdev/winit@a4e0ecb5 (which upstream Warp pinned) carrying TWO
+warp-command-signatures = { path = "lib/command-signatures/command-signatures", default-features = false }
+# Vendored in lib/winit (CHANGES-PHOSPHOR.md) from jwp2987/winit@05e8c04d: a
+# fork of warpdotdev/winit@a4e0ecb5 (which upstream Warp pinned) carrying TWO
 # extra commits:
 # - 9a0788c3: rust-windowing/winit#4453, "fix(windows): use registry value to
 #   detect dark mode". That PR has been open and unreviewed since 2025-12-27, so
@@ -417,7 +434,7 @@ warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatu
 #   byte-identical to upstream's window.rs (#654).
 # Previously pointed at a third party's personal fork, which deny.toml's
 # allow-git did not permit and which could vanish without notice.
-winit = { git = "https://github.com/jwp2987/winit.git", rev = "05e8c04da47960d8a627b73cf729d38aac91f80d" }
+winit = { path = "lib/winit" }
 x11rb = "0.13.0"
 mockito = "1.7.0"
 sysinfo = { version = "0.37.0", default-features = false, features = [
@@ -608,16 +625,13 @@ opt-level = "s"
 # CoreText font-descriptor NSArray on every call. The fix is not yet in any
 # crates.io release; the latest published `core-text` (21.1.0) was cut from
 # a commit that predates the merge.
-core-foundation = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-core-graphics = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-objc = { git = "https://github.com/warpdotdev/rust-objc.git", rev = "5b656827fa9f863ef0eb22e444a3fedac009e78a" }
-pathfinder_simd = { git = "https://github.com/warpdotdev/pathfinder.git", rev = "34128a129ca6aee168fbc5060a4f21b4f7e486a9" }
-yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "0aed385b7f0f1c89b709ea054a90313312ed0afb" }
-
-tikv-jemallocator = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
-tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
+core-foundation = { path = "lib/core-foundation-rs/core-foundation" }
+core-foundation-sys = { path = "lib/core-foundation-rs/core-foundation-sys" }
+core-graphics = { path = "lib/core-foundation-rs/core-graphics" }
+core-text = { path = "lib/core-foundation-rs/core-text" }
+# Vendored (lib/yaml-rust/CHANGES-PHOSPHOR.md): accepts a tab after a block-scalar indent, which
+# serde_yaml 0.8 would otherwise reject in user files (keybindings, markdown front matter).
+yaml-rust = { path = "lib/yaml-rust" }
 
 # Zap local fork — unlocks top-level injection of DeepSeek thinking_mode
 # `reasoning_effort`.

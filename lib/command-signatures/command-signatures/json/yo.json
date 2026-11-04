@@ -1,0 +1,58 @@
+{
+    "name": "yo",
+    "description": "Yeoman generator",
+    "args": {
+        "name": "generator",
+        "generatorName": "completions",
+        "suggestions": [
+            {
+                "name": "doctor",
+                "description": "Running sanity checks on your system"
+            },
+            {
+                "name": "completion",
+                "description": "To enable shell completion for the yo command"
+            }
+        ],
+        "isCommand": true,
+        "isOptional": true
+    },
+    "options": [
+        {
+            "name": "--help",
+            "description": "Print info and generator's options and usage"
+        },
+        {
+            "name": [
+                "-f",
+                "--force"
+            ],
+            "description": "Overwrite files that already exist",
+            "isDangerous": true
+        },
+        {
+            "name": "--version",
+            "description": "Print version"
+        },
+        {
+            "name": "--no-color",
+            "description": "Disable color"
+        },
+        {
+            "name": "--insight",
+            "description": "Enable anonymous tracking"
+        },
+        {
+            "name": "--no-insight",
+            "description": "Disable anonymous tracking"
+        },
+        {
+            "name": "--generators",
+            "description": "Print available generators"
+        },
+        {
+            "name": "--local-only",
+            "description": "Disable lookup of globally-installed generators"
+        }
+    ]
+}

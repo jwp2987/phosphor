@@ -1,0 +1,10 @@
+use crate::rules::java::dot_java::DotJava;
+use crate::rules::Rule;
+
+use super::CommandGroup;
+
+mod dot_java;
+
+pub(crate) fn command_group() -> CommandGroup {
+    CommandGroup::new(&["java"], vec![DotJava.to_arc()])
+}

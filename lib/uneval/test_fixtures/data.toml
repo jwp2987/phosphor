@@ -1,0 +1,173 @@
+[simple]
+main_type = "Simple"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Simple {
+    pub integer: i32,
+    pub character: char,
+    pub float: f32,
+    pub string: String,
+    pub boolean: bool,
+}
+"""
+value = """
+definition::Simple {
+    integer: 123,
+    character: 'c',
+    float: std::f32::consts::PI,
+    string: "text string".into(),
+    boolean: false
+}
+"""
+
+[nested]
+main_type = "Nested"
+support_types = "Inner"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Nested {
+    pub inner: Inner,
+}
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Inner {
+    pub value: i32,
+}
+"""
+value = """
+definition::Nested {
+    inner: definition::Inner {
+        value: 123
+    }
+}
+"""
+
+[complex]
+main_type = "Complex"
+definition = """
+use std::collections::HashMap;
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Complex {
+    pub tuple: (i32, f32, String),
+    pub vector: Vec<i32>,
+    pub byte_arr: Vec<u8>,
+    pub map: HashMap<i128, String>,
+}
+"""
+value = """
+{
+    let mut map = std::collections::HashMap::new();
+    map.insert(0, "test".into());
+    map.insert(120, "test longer".into());
+    definition::Complex {
+        tuple: (1, 1.0, "tuple entry".into()),
+        vector: vec![1, 2, 3, 4, 5, -1, -2, -3, -4, -5],
+        byte_arr: b"asdfghj".to_vec(),
+        map
+    }
+}
+"""
+
+[floats]
+main_type = "Floats"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Floats(pub Vec<f32>);
+"""
+value = """
+definition::Floats(vec![
+    123456789e30,
+    123456789e-30,
+    12345.6789
+])
+"""
+
+[enums]
+main_type = "Container"
+support_types = "Enum,Unit"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Unit;
+#[derive(PartialEq, Debug, Serialize)]
+pub enum Enum {
+    Empty,
+    Unit(Unit),
+    Tuple(i32, String),
+    Struct{ key: i32, value: String },
+    EmptyTuple(),
+    EmptyStruct {},
+}
+
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Container(pub Vec<Enum>);
+"""
+value = """
+{
+    use definition::*;
+    Container(vec![
+        Enum::Unit(Unit),
+        Enum::Tuple(1, "test".into()),
+        Enum::Struct{ key: 1, value: "test".into() },
+        Enum::EmptyTuple(),
+        Enum::EmptyStruct{},
+        // this is intentionally last, to catch an error at previous step
+        Enum::Empty,
+    ])
+}
+"""
+
+[array]
+main_type = "Container"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Container(pub [u8; 2]);
+"""
+value = """
+definition::Container([1, 2])
+"""
+
+[empty_array]
+main_type = "ZeroSizeContainer"
+definition = """
+#[derive(PartialEq, Debug, Serialize)]
+pub struct ZeroSizeContainer(pub [u8; 0]);
+"""
+value = """
+definition::ZeroSizeContainer([])
+"""
+
+[empty_fields_issue_3]
+main_type = "Foo"
+support_types = "UnitType,UnitStruct,UnitTuple"
+definition = """
+use std::collections::HashMap;
+#[derive(PartialEq, Debug, Serialize)]
+pub struct UnitType;
+#[derive(PartialEq, Debug, Serialize)]
+pub struct UnitStruct {}
+#[derive(PartialEq, Debug, Serialize)]
+pub struct UnitTuple();
+#[derive(PartialEq, Debug, Serialize)]
+pub struct Foo {
+  pub vec: Vec<String>,
+  pub map: HashMap<String, String>,
+  pub unit: (),
+  pub unit_type: UnitType,
+  pub unit_struct: UnitStruct,
+  pub unit_tuple: UnitTuple,
+  pub last: String
+}
+"""
+value = """
+{
+    use definition::*;
+    Foo {
+        vec: vec![],
+        map: std::collections::HashMap::new(),
+        unit: (),
+        unit_type: UnitType,
+        unit_struct: UnitStruct {},
+        unit_tuple: UnitTuple(),
+        last: "".into()
+    }
+}
+"""

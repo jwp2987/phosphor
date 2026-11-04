@@ -1,0 +1,22 @@
+[workspace]
+# Keep this vendored fork out of the parent workspace (like lib/arboard).
+
+[package]
+name = "command-corrections"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+shlex = "1.1.0"
+lazy_static = "1.4.0"
+regex = "1.5.6"
+itertools = "0.10.3"
+difflib = "0.4.0"
+version-compare = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

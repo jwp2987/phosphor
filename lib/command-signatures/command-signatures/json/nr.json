@@ -1,0 +1,26 @@
+{
+    "name": "nr",
+    "description": "Use the right package manager - run",
+    "options": [
+        {
+            "name": [
+                "-h",
+                "--help"
+            ],
+            "description": "Output usage information"
+        }
+    ],
+    "args": {
+        "name": "script",
+        "description": "The script to run",
+        "generatorName": "until_package_json_do_cd"
+    },
+    "additionalSuggestions": [
+        {
+            "name": "-",
+            "insertValue": "-\n",
+            "description": "Run the last command",
+            "type": "shortcut"
+        }
+    ]
+}

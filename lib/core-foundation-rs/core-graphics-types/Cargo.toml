@@ -1,0 +1,24 @@
+[package]
+name = "core-graphics-types"
+description = "Bindings for some fundamental Core Graphics types"
+version = "0.2.0"
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[package.metadata.docs.rs]
+default-target = "x86_64-apple-darwin"
+
+[lints]
+workspace = true
+
+[dependencies]
+core-foundation.workspace = true
+
+[features]
+default = ["link"]
+# Disable to manually link. Enabled by default.
+link = ["core-foundation/link"]

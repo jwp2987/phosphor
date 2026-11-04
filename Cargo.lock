@@ -2960,7 +2960,6 @@ dependencies = [
 [[package]]
 name = "command-corrections"
 version = "0.0.0"
-source = "git+https://github.com/warpdotdev/command-corrections.git?rev=eae08c8c51d9bc9741fcb17eef2c21f696aebbeb#eae08c8c51d9bc9741fcb17eef2c21f696aebbeb"
 dependencies = [
  "difflib 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "itertools 0.10.5",
@@ -3175,7 +3174,6 @@ dependencies = [
 [[package]]
 name = "core-foundation"
 version = "0.10.1"
-source = "git+https://github.com/servo/core-foundation-rs?rev=5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434#5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -3184,7 +3182,6 @@ dependencies = [
 [[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
-source = "git+https://github.com/servo/core-foundation-rs?rev=5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434#5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434"
 
 [[package]]
 name = "core-graphics"
@@ -3215,11 +3212,10 @@ dependencies = [
 [[package]]
 name = "core-graphics"
 version = "0.25.0"
-source = "git+https://github.com/servo/core-foundation-rs?rev=5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434#5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434"
 dependencies = [
  "bitflags 2.13.2",
  "core-foundation 0.10.1",
- "core-graphics-types 0.2.0 (git+https://github.com/servo/core-foundation-rs?rev=5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434)",
+ "core-graphics-types 0.2.0",
  "foreign-types",
  "libc",
 ]
@@ -3238,6 +3234,13 @@ dependencies = [
 [[package]]
 name = "core-graphics-types"
 version = "0.2.0"
+dependencies = [
+ "core-foundation 0.10.1",
+]
+
+[[package]]
+name = "core-graphics-types"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
 dependencies = [
@@ -3247,23 +3250,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "core-graphics-types"
-version = "0.2.0"
-source = "git+https://github.com/servo/core-foundation-rs?rev=5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434#5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434"
-dependencies = [
- "core-foundation 0.10.1",
-]
-
-[[package]]
 name = "core-text"
-version = "21.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a593227b66cbd4007b2a050dfdd9e1d1318311409c8d600dc82ba1b15ca9c130"
+version = "21.1.0"
 dependencies = [
  "core-foundation 0.10.1",
- "core-graphics 0.24.0",
+ "core-graphics 0.25.0",
  "foreign-types",
- "libc",
 ]
 
 [[package]]
@@ -4141,16 +4133,15 @@ dependencies = [
 [[package]]
 name = "difflib"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
+dependencies = [
+ "rustc-hash 1.1.0",
+]
 
 [[package]]
 name = "difflib"
 version = "0.4.0"
-source = "git+https://github.com/warpdotdev/difflib.git?rev=114177e7d8e1f8017baca397f943e11644b14d63#114177e7d8e1f8017baca397f943e11644b14d63"
-dependencies = [
- "rustc-hash 1.1.0",
-]
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "digest"
@@ -4307,7 +4298,6 @@ checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/jwp2987/winit.git?rev=05e8c04da47960d8a627b73cf729d38aac91f80d#05e8c04da47960d8a627b73cf729d38aac91f80d"
 
 [[package]]
 name = "dsl_auto_type"
@@ -4332,7 +4322,6 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 [[package]]
 name = "dwrote"
 version = "0.11.5"
-source = "git+https://github.com/warpdotdev/dwrote-rs?rev=a71ce6c0136f7d0954a9a8b181b5b2d8ace5eb9c#a71ce6c0136f7d0954a9a8b181b5b2d8ace5eb9c"
 dependencies = [
  "lazy_static",
  "libc",
@@ -4436,14 +4425,6 @@ dependencies = [
  "sec1 0.8.1",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "email_address"
-version = "0.2.3"
-source = "git+https://github.com/warpdotdev/rust-email_address?branch=main#b3e5205b4efdc83832f230d8eb6894fd00a9ec32"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -4824,7 +4805,6 @@ dependencies = [
 [[package]]
 name = "file-id"
 version = "0.2.2"
-source = "git+https://github.com/warpdotdev/notify?rev=91b719849bc04ef251bcb2cc61076b099204e970#91b719849bc04ef251bcb2cc61076b099204e970"
 dependencies = [
  "windows-sys 0.59.0",
 ]
@@ -5018,7 +4998,6 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "font-kit"
 version = "0.12.0"
-source = "git+https://github.com/warpdotdev/font-kit?rev=a04b225ecb639bb850f21d05212cfdc7465000f3#a04b225ecb639bb850f21d05212cfdc7465000f3"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
@@ -7343,7 +7322,7 @@ dependencies = [
  "ahash",
  "bytecount",
  "data-encoding",
- "email_address 0.2.9",
+ "email_address",
  "fancy-regex 0.17.0",
  "fraction",
  "getrandom 0.3.4",
@@ -8576,7 +8555,6 @@ checksum = "0676bb32a98c1a483ce53e500a81ad9c3d5b3f7c920c28c24e9cb0980d0b5bc8"
 [[package]]
 name = "notify"
 version = "8.0.0"
-source = "git+https://github.com/warpdotdev/notify?rev=91b719849bc04ef251bcb2cc61076b099204e970#91b719849bc04ef251bcb2cc61076b099204e970"
 dependencies = [
  "bitflags 2.13.2",
  "filetime",
@@ -8594,7 +8572,6 @@ dependencies = [
 [[package]]
 name = "notify-debouncer-full"
 version = "0.5.0"
-source = "git+https://github.com/warpdotdev/notify?rev=91b719849bc04ef251bcb2cc61076b099204e970#91b719849bc04ef251bcb2cc61076b099204e970"
 dependencies = [
  "file-id",
  "log",
@@ -8620,7 +8597,6 @@ dependencies = [
 [[package]]
 name = "notify-types"
 version = "2.0.0"
-source = "git+https://github.com/warpdotdev/notify?rev=91b719849bc04ef251bcb2cc61076b099204e970#91b719849bc04ef251bcb2cc61076b099204e970"
 
 [[package]]
 name = "ntapi"
@@ -8806,7 +8782,8 @@ dependencies = [
 [[package]]
 name = "objc"
 version = "0.2.7"
-source = "git+https://github.com/warpdotdev/rust-objc.git?rev=5b656827fa9f863ef0eb22e444a3fedac009e78a#5b656827fa9f863ef0eb22e444a3fedac009e78a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
 dependencies = [
  "malloc_buf",
 ]
@@ -9708,8 +9685,9 @@ dependencies = [
 
 [[package]]
 name = "pathfinder_simd"
-version = "0.5.4"
-source = "git+https://github.com/warpdotdev/pathfinder.git?rev=34128a129ca6aee168fbc5060a4f21b4f7e486a9#34128a129ca6aee168fbc5060a4f21b4f7e486a9"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4500030c302e4af1d423f36f3b958d1aecb6c04184356ed5a833bf6b60435777"
 dependencies = [
  "rustc_version",
 ]
@@ -13572,8 +13550,9 @@ dependencies = [
 
 [[package]]
 name = "tikv-jemalloc-sys"
-version = "0.6.1+5.3.0-1-g0d7a26e9b6faa4ea33601ee605b5d86b68ff7790"
-source = "git+https://github.com/warpdotdev/jemallocator.git?rev=2ee30bfdf7059223b54810e4ea6c666f0a379e0b#2ee30bfdf7059223b54810e4ea6c666f0a379e0b"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
 dependencies = [
  "cc",
  "libc",
@@ -13582,7 +13561,8 @@ dependencies = [
 [[package]]
 name = "tikv-jemallocator"
 version = "0.6.1"
-source = "git+https://github.com/warpdotdev/jemallocator.git?rev=2ee30bfdf7059223b54810e4ea6c666f0a379e0b#2ee30bfdf7059223b54810e4ea6c666f0a379e0b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
 dependencies = [
  "libc",
  "tikv-jemalloc-sys",
@@ -14322,7 +14302,6 @@ checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 [[package]]
 name = "uneval"
 version = "0.2.3"
-source = "git+https://github.com/warpdotdev/uneval?rev=df4d9fad372aedc447e6f93ca0f930fabaf9dd1a#df4d9fad372aedc447e6f93ca0f930fabaf9dd1a"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -14605,7 +14584,6 @@ dependencies = [
 [[package]]
 name = "utf8parse"
 version = "0.2.1"
-source = "git+https://github.com/warpdotdev/vte.git?rev=4b399c87b63ba88f45709edaa6383fc519f6c900#4b399c87b63ba88f45709edaa6383fc519f6c900"
 
 [[package]]
 name = "utf8parse"
@@ -14803,7 +14781,6 @@ dependencies = [
 [[package]]
 name = "vte"
 version = "0.13.0"
-source = "git+https://github.com/warpdotdev/vte.git?rev=4b399c87b63ba88f45709edaa6383fc519f6c900#4b399c87b63ba88f45709edaa6383fc519f6c900"
 dependencies = [
  "utf8parse 0.2.1",
  "vte_generate_state_changes",
@@ -14812,7 +14789,6 @@ dependencies = [
 [[package]]
 name = "vte_generate_state_changes"
 version = "0.1.1"
-source = "git+https://github.com/warpdotdev/vte.git?rev=4b399c87b63ba88f45709edaa6383fc519f6c900#4b399c87b63ba88f45709edaa6383fc519f6c900"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14931,11 +14907,10 @@ dependencies = [
  "dhat",
  "diesel",
  "diesel_migrations",
- "difflib 0.4.0 (git+https://github.com/warpdotdev/difflib.git?rev=114177e7d8e1f8017baca397f943e11644b14d63)",
+ "difflib 0.4.0",
  "directories",
  "dirs",
  "dunce",
- "email_address 0.2.3",
  "embed-resource",
  "embed_plist",
  "enclose",
@@ -15155,7 +15130,6 @@ dependencies = [
 [[package]]
 name = "warp-command-signatures"
 version = "0.0.0"
-source = "git+https://github.com/warpdotdev/command-signatures.git?rev=48fd7aa5b7b4d99f5db57d1c5a25c47c05567fcf#48fd7aa5b7b4d99f5db57d1c5a25c47c05567fcf"
 dependencies = [
  "cfg-if",
  "itertools 0.10.5",
@@ -15173,7 +15147,6 @@ dependencies = [
 [[package]]
 name = "warp-completion-metadata"
 version = "0.0.0"
-source = "git+https://github.com/warpdotdev/command-signatures.git?rev=48fd7aa5b7b4d99f5db57d1c5a25c47c05567fcf#48fd7aa5b7b4d99f5db57d1c5a25c47c05567fcf"
 dependencies = [
  "html-escape",
  "itertools 0.10.5",
@@ -15186,7 +15159,6 @@ dependencies = [
 [[package]]
 name = "warp-workflows"
 version = "0.1.0"
-source = "git+https://github.com/warpdotdev/workflows?rev=4d483f3268651b54c3ec07542f0f35dca7e49ce8#4d483f3268651b54c3ec07542f0f35dca7e49ce8"
 dependencies = [
  "anyhow",
  "convert_case 0.11.0",
@@ -15200,7 +15172,6 @@ dependencies = [
 [[package]]
 name = "warp-workflows-types"
 version = "0.1.0"
-source = "git+https://github.com/warpdotdev/workflows?rev=4d483f3268651b54c3ec07542f0f35dca7e49ce8#4d483f3268651b54c3ec07542f0f35dca7e49ce8"
 dependencies = [
  "serde",
 ]
@@ -16963,7 +16934,6 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/jwp2987/winit.git?rev=05e8c04da47960d8a627b73cf729d38aac91f80d#05e8c04da47960d8a627b73cf729d38aac91f80d"
 dependencies = [
  "ahash",
  "android-activity",
@@ -17250,7 +17220,6 @@ checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 [[package]]
 name = "yaml-rust"
 version = "0.4.5"
-source = "git+https://github.com/warpdotdev/yaml-rust.git?rev=0aed385b7f0f1c89b709ea054a90313312ed0afb#0aed385b7f0f1c89b709ea054a90313312ed0afb"
 dependencies = [
  "linked-hash-map",
 ]
@@ -17606,8 +17575,3 @@ dependencies = [
  "syn 3.0.9",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "core-text"
-version = "22.0.0"
-source = "git+https://github.com/servo/core-foundation-rs?rev=5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434#5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434"

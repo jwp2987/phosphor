@@ -35,13 +35,9 @@ workarounds = [
     "rustls",
 ]
 
-# Warp's own crates, pulled in via git from the warpdotdev organization. They
-# are not workspace members.
-#
-# They ARE licensed -- the previous version of this comment said they "do not
-# have explicit licenses yet (they will be open-sourced soon)", which stopped
-# being true. Each one's declared `license` field, read from the checkout in
-# ~/.cargo/git at the pinned rev:
+# Warp-original crates, vendored under lib/ since 2026-11-03 (each has a
+# CHANGES-PHOSPHOR.md); mermaid_to_svg comes from our own GitLab fork. They are
+# not workspace members. Each one's declared `license` field:
 #
 #   - command-corrections        AGPL-3.0-only   (see the discrepancy note below)
 #   - warp-command-signatures    MIT             (workspace: command-signatures)

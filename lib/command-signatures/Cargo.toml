@@ -1,0 +1,11 @@
+[workspace]
+members = [
+  "completion-metadata",
+  "command-signatures",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["Warp Team <dev@warp.dev>"]
+license = "MIT"
+publish = false

@@ -94,11 +94,10 @@ deltae = "0.3.1"
 derivative.workspace = true
 dhat = { version = "0.3.2", optional = true }
 diesel.workspace = true
-difflib = { git = "https://github.com/warpdotdev/difflib.git", rev = "114177e7d8e1f8017baca397f943e11644b14d63" }
+difflib = { path = "../lib/difflib" }
 directories.workspace = true
 dirs.workspace = true
 dunce.workspace = true
-email_address = { git = "https://github.com/warpdotdev/rust-email_address", branch = "main" }
 embed_plist = "1.2"
 enclose = "1.1.8"
 enum-iterator.workspace = true

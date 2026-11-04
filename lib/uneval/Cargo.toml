@@ -1,0 +1,21 @@
+[workspace]
+# Keep this vendored fork out of the parent workspace (like lib/arboard).
+
+[package]
+name = "uneval"
+version = "0.2.3"
+authors = ["Cerber Ursi <dev+rust@cerbe.ru>"]
+edition = "2021"
+description = "Serde serializer to embed data as Rust code"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Cerber-Ursi/uneval"
+categories = ["development-tools::build-utils"]
+
+[dependencies]
+serde = "1.0"
+thiserror = "1.0"
+
+[dev_dependencies]
+batch_run = "1.2"
+toml = "0.5"

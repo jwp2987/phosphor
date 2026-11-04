@@ -97,12 +97,9 @@ wildcards = "deny"
 allow-wildcard-paths = true
 
 [sources]
-allow-git = [
-    # Our own fork of warpdotdev/winit, +2 commits (rust-windowing/winit#4453; upstream 14db95a6, #654).
-    "https://github.com/jwp2987/winit",
-    # Allow git reference to Core Foundation crates until they publish an updated
-    # version to crates.io.
-    "https://github.com/servo/core-foundation-rs",
-]
-# Allow git references to all GitHub repositories in the warpdotdev organization.
-allow-org = { github = ["warpdotdev"] }
+# Every git dependency is either vendored under lib/ (each with CHANGES-PHOSPHOR.md) or
+# lives in our own GitLab group. Nothing is fetched from Warp's GitHub any more: a new
+# git dependency outside winters-phosphor fails here and has to be a decision.
+unknown-git = "deny"
+allow-git = []
+allow-org = { gitlab = ["winters-phosphor"] }

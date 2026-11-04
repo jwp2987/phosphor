@@ -1,0 +1,93 @@
+{
+    "name": "create-react-native-app",
+    "description": "Creates a new React Native project",
+    "args": {
+        "template": "folders",
+        "name": "name"
+    },
+    "options": [
+        {
+            "name": "--template",
+            "description": "The name of a template from expo/examples or URL to a GitHub repo that contains an example",
+            "args": {
+                "name": "template"
+            },
+            "priority": 76
+        },
+        {
+            "name": "--template-path",
+            "description": "The path inside of a GitHub repo where the example lives",
+            "args": {
+                "name": "name"
+            },
+            "priority": 76
+        },
+        {
+            "name": "--yes",
+            "description": "Use the default options for creating a project",
+            "args": {
+                "name": "boolean",
+                "isOptional": true,
+                "suggestions": [
+                    {
+                        "name": "true"
+                    },
+                    {
+                        "name": "false"
+                    }
+                ]
+            },
+            "priority": 76
+        },
+        {
+            "name": "--no-install",
+            "description": "Skip installing npm packages or CocoaPods",
+            "args": {
+                "name": "boolean",
+                "isOptional": true,
+                "suggestions": [
+                    {
+                        "name": "true"
+                    },
+                    {
+                        "name": "false"
+                    }
+                ]
+            },
+            "priority": 76
+        },
+        {
+            "name": "--use-npm",
+            "description": "Use npm to install dependencies. (default when Yarn is not installed)",
+            "args": {
+                "name": "boolean",
+                "isOptional": true,
+                "suggestions": [
+                    {
+                        "name": "true"
+                    },
+                    {
+                        "name": "false"
+                    }
+                ]
+            },
+            "priority": 76
+        },
+        {
+            "name": [
+                "-h",
+                "--help"
+            ],
+            "description": "Output usage information",
+            "priority": 1
+        },
+        {
+            "name": [
+                "-V",
+                "--version"
+            ],
+            "description": "Output the version number",
+            "priority": 1
+        }
+    ]
+}

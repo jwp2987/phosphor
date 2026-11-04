@@ -1,0 +1,203 @@
+{
+    "name": "pmset",
+    "description": "Power management settings",
+    "subcommands": [
+        {
+            "name": "-g",
+            "description": "GETTING",
+            "args": [
+                {
+                    "isOptional": true,
+                    "default": "live",
+                    "suggestions": [
+                        {
+                            "name": "live",
+                            "description": "Display the settings currently in use. (default if no argument given)"
+                        },
+                        {
+                            "name": "custom",
+                            "description": "Display custom settings for all power sources"
+                        },
+                        {
+                            "name": "cap",
+                            "description": "Display which power management features the machine supports"
+                        },
+                        {
+                            "name": "sched",
+                            "description": "Display scheduled startup/wake and shutdown/sleep events"
+                        },
+                        {
+                            "name": "ups",
+                            "description": "Display UPS emergency thresholds"
+                        },
+                        {
+                            "name": [
+                                "ps",
+                                "batt"
+                            ],
+                            "description": "Display status of batteries and UPSs"
+                        },
+                        {
+                            "name": "pslog",
+                            "description": "Display an ongoing log of power source (battery and UPS)state"
+                        },
+                        {
+                            "name": "rawlog",
+                            "description": "Display an ongoing log of battery state as read directly from battery"
+                        },
+                        {
+                            "name": "profiles",
+                            "description": "Display the settings associated with each Energy Saver profile. 10.5+"
+                        },
+                        {
+                            "name": "thermlog",
+                            "description": "Show a log of thermal notifications that affect CPU speed. Not available on all platforms"
+                        },
+                        {
+                            "name": "assertions",
+                            "description": "Display a summary of power assertions. 10.6+"
+                        },
+                        {
+                            "name": "assertionslog",
+                            "description": "Show a log of assertion creations and releases. 10.6+"
+                        },
+                        {
+                            "name": "activity",
+                            "description": "Display a summary of power state of Display wrangler and Disk Queue Manager.10.6+"
+                        },
+                        {
+                            "name": "activitylog",
+                            "description": "Show a log of power state changes to Display Wrangler and Disk Queue Manager. 10.6+"
+                        },
+                        {
+                            "name": "sysload",
+                            "description": "Display the \"system load advisory\" 10.6+"
+                        },
+                        {
+                            "name": "sysloadlog",
+                            "description": "Display an ongoing log of lives changes to the system load advisory. 10.6+"
+                        },
+                        {
+                            "name": [
+                                "ac",
+                                "adapter"
+                            ],
+                            "description": "Display details about an attached AC power adapter"
+                        },
+                        {
+                            "name": "log",
+                            "description": "Display a history of sleeps, wakes, and other power management events"
+                        },
+                        {
+                            "name": "uuid",
+                            "description": "Display the currently active sleep/wake UUID"
+                        },
+                        {
+                            "name": "uuidlog",
+                            "description": "Display the currently active sleep/wake UUID, and prints a new UUID as they're set by the system"
+                        },
+                        {
+                            "name": "history",
+                            "description": "A debugging tool. Prints a timeline of system sleeplwake UUIDs"
+                        },
+                        {
+                            "name": "historydetailed",
+                            "description": "Prints driver-level timings for a sleep/wake. Pass a UUID as an argument"
+                        },
+                        {
+                            "name": "everything",
+                            "description": "Print output from every argument under the GETTING header 10.8+"
+                        }
+                    ]
+                },
+                {
+                    "name": "UUID",
+                    "description": "Used for historydetailed",
+                    "isOptional": true
+                }
+            ]
+        },
+        {
+            "name": "schedule",
+            "description": "For setting up one-time power events",
+            "options": [
+                {
+                    "name": "cancel"
+                }
+            ],
+            "args": [
+                {
+                    "name": "type",
+                    "suggestions": [
+                        "sleep",
+                        "wake",
+                        "poweron",
+                        "shutdown",
+                        "wakeorpoweron"
+                    ]
+                },
+                {
+                    "name": "date/time",
+                    "description": "\"MM/dd/yy HH:mm:ss\" (in 24 hour format; must be in quotes)"
+                }
+            ]
+        },
+        {
+            "name": "repeat",
+            "description": "For setting up daily/weekly power on and power off events",
+            "subcommands": [
+                {
+                    "name": "cancel"
+                }
+            ],
+            "args": [
+                {
+                    "name": "type",
+                    "suggestions": [
+                        "sleep",
+                        "wake",
+                        "poweron",
+                        "shutdown",
+                        "wakeorpoweron"
+                    ]
+                },
+                {
+                    "name": "weekdays",
+                    "description": "A subset of MTWRFSU (\"M\" and \"MTWRF\" are valid strings)"
+                },
+                {
+                    "name": "date/time",
+                    "description": "\"MM/dd/yy HH:mm:ss\" (in 24 hour format; must be in quotes)"
+                }
+            ]
+        }
+    ],
+    "args": {
+        "description": "Override settings and sleep now",
+        "isOptional": true,
+        "suggestions": [
+            "sleepnow",
+            "noidle",
+            "lock",
+            "touch"
+        ]
+    },
+    "options": [
+        {
+            "name": "-a",
+            "description": "Settings for all"
+        },
+        {
+            "name": "-b",
+            "description": "Settings for battery"
+        },
+        {
+            "name": "-c",
+            "description": "Settings for charger"
+        },
+        {
+            "name": "-u",
+            "description": "Settings for UPS"
+        }
+    ]
+}

@@ -1,0 +1,71 @@
+[workspace]
+# Keep this vendored fork out of the parent workspace (like lib/arboard).
+
+[package]
+name = "font-kit"
+version = "0.12.0"
+authors = ["Patrick Walton <pcwalton@mimiga.net>"]
+description = "A cross-platform font loading library"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/servo/font-kit"
+homepage = "https://github.com/servo/font-kit"
+exclude = ["resources/**"]
+edition = "2018"
+
+[features]
+default = ["source"]
+loader-freetype = ["freetype"]
+loader-freetype-default = ["loader-freetype"]
+source-fontconfig = ["yeslogic-fontconfig-sys"]
+source-fontconfig-dlopen = ["yeslogic-fontconfig-sys/dlopen"]
+source-fontconfig-default = ["source-fontconfig"]
+source = []
+
+[dependencies]
+bitflags = "2.4"
+byteorder = "1.2"
+float-ord = "0.3"
+lazy_static = "1.1"
+libc = "0.2"
+log = "0.4.4"
+pathfinder_geometry = "0.5"
+pathfinder_simd = "0.5.1"
+
+[dependencies.freetype]
+version = "0.7"
+optional = true
+
+[dependencies.yeslogic-fontconfig-sys]
+version = "5.0"
+optional = true
+
+[dev-dependencies]
+clap = "4"
+colored = "2"
+pbr = "1.0"
+prettytable-rs = "0.10"
+
+[target.'cfg(target_family = "windows")'.dependencies]
+dwrote = { path = "../dwrote-rs", default-features = false }
+
+[target.'cfg(target_family = "windows")'.dependencies.winapi]
+version = "0.3"
+features = ["dwrite", "minwindef", "sysinfoapi", "winbase", "winnt"]
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+core-foundation = "0.10.0"
+core-graphics = "0.25.0"
+core-text = "21.0.0"
+
+[target.'cfg(not(any(target_family = "windows", target_os = "macos", target_os = "ios")))'.dependencies]
+freetype = "0.7"
+
+[target.'cfg(not(any(target_family = "windows", target_os = "macos", target_os = "ios", target_arch = "wasm32")))'.dependencies]
+yeslogic-fontconfig-sys = "5.0"
+
+[target.'cfg(not(any(target_arch = "wasm32", target_family = "windows", target_os = "android")))'.dependencies]
+dirs-next = "2.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+walkdir = "2.1"

@@ -31,15 +31,11 @@ members = ["."]
 # the root's patches do not apply here, and `warpui` needs the vendored arboard's API (r18d8: the
 # fuzz build failed on arboard::ClipboardFormats). Keep the two tables identical.
 [patch.crates-io]
-core-foundation = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-core-graphics = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-core-text = { git = "https://github.com/servo/core-foundation-rs", rev = "5eb228da0e6268cfafd9f9c49fc3ac2dc7c5d434" }
-objc = { git = "https://github.com/warpdotdev/rust-objc.git", rev = "5b656827fa9f863ef0eb22e444a3fedac009e78a" }
-pathfinder_simd = { git = "https://github.com/warpdotdev/pathfinder.git", rev = "34128a129ca6aee168fbc5060a4f21b4f7e486a9" }
-yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "0aed385b7f0f1c89b709ea054a90313312ed0afb" }
-tikv-jemallocator = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
-tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
+core-foundation = { path = "../lib/core-foundation-rs/core-foundation" }
+core-foundation-sys = { path = "../lib/core-foundation-rs/core-foundation-sys" }
+core-graphics = { path = "../lib/core-foundation-rs/core-graphics" }
+core-text = { path = "../lib/core-foundation-rs/core-text" }
+yaml-rust = { path = "../lib/yaml-rust" }
 genai = { path = "../lib/rust-genai" }
 arboard = { path = "../lib/arboard" }
 

@@ -1,0 +1,81 @@
+{
+    "name": "create-react-app",
+    "description": "Creates a new React project",
+    "args": {
+        "template": "folders",
+        "name": "name"
+    },
+    "options": [
+        {
+            "name": "--template",
+            "description": "Specify a template for the created project (a custom template on npm (search for \"cra-template-*\"), a relative path, or an archive (.tgz or .tar.gz))",
+            "args": {
+                "name": "name or url"
+            },
+            "priority": 76
+        },
+        {
+            "name": "--use-npm",
+            "description": "Use npm to install dependencies (default when Yarn is not installed)",
+            "args": {
+                "name": "boolean",
+                "isOptional": true,
+                "suggestions": [
+                    {
+                        "name": "true"
+                    },
+                    {
+                        "name": "false"
+                    }
+                ]
+            },
+            "priority": 75
+        },
+        {
+            "name": "--use-pnp",
+            "description": "Use Yarn Plug'n'Play to create the app",
+            "args": {
+                "name": "boolean",
+                "isOptional": true,
+                "suggestions": [
+                    {
+                        "name": "true"
+                    },
+                    {
+                        "name": "false"
+                    }
+                ]
+            },
+            "priority": 75
+        },
+        {
+            "name": "--scripts-version",
+            "description": "Use a non-standard version of react-scripts (a specific npm version or npm tag, a custom fork published on npm, a relative path, or an archive (.tgz or .tar.gz))",
+            "args": {
+                "name": "alternative package"
+            },
+            "priority": 74
+        },
+        {
+            "name": "--verbose",
+            "description": "Print additional logs",
+            "priority": 1
+        },
+        {
+            "name": [
+                "-h",
+                "--help"
+            ],
+            "description": "Output usage information",
+            "priority": 1
+        },
+        {
+            "name": [
+                "-V",
+                "--version"
+            ],
+            "description": "Output the version number",
+            "priority": 1
+        }
+    ]
+}

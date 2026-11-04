@@ -1,0 +1,73 @@
+use super::{fig_token, output_parsers};
+use lazy_static::lazy_static;
+use regex::Regex;
+use warp_completion_metadata::{
+    CommandBuilder, CommandSignatureGenerators, Generator, GeneratorResultsCollector, Suggestion,
+};
+
+pub fn generator() -> CommandSignatureGenerators {
+    CommandSignatureGenerators::new("gh")
+        .add_generator(
+            "list_pr",
+            Generator::script(CommandBuilder::single_command("gh pr list"), |output| {
+                output
+                    .split('\n')
+                    .filter_map(|line| {
+                        let capture = RE.captures(line);
+                        if let Some(capture) = capture {
+                            let captured = (
+                                capture.name("id"),
+                                capture.name("name"),
+                                capture.name("branch"),
+                            );
+                            if let (Some(id), Some(name), Some(branch)) = captured {
+                                return Some(Suggestion::with_description(
+                                    id.as_str(),
+                                    format!("#{} | {}", name.as_str(), branch.as_str()),
+                                ));
+                            }
+                        }
+                        None
+                    })
+                    .collect_unordered_results()
+            }),
+        )
+        .add_generator(
+            "list_alias",
+            Generator::script(CommandBuilder::single_command("gh alias list"), |output| {
+                output
+                    .split('\n')
+                    .filter_map(|line| {
+                        let split: Vec<&str> = line.split(':').collect();
+                        (split.len() >= 2)
+                            .then(|| Suggestion::with_description(split[0].trim(), split[1].trim()))
+                    })
+                    .collect_unordered_results()
+            }),
+        )
+
+        .add_generator(
+            "api_graphql_string_viewer",
+            Generator::script(
+                CommandBuilder::single_command("gh api graphql --paginate -f query='query($endCursor: String) { viewer { repositories(first: 100, after: $endCursor) { nodes { isPrivate, nameWithOwner, description } pageInfo { hasNextPage endCursor }}}}' --jq '.data.viewer.repositories.nodes[]'"),
+                output_parsers::json_string_array,
+            ),
+        )
+        .add_generator(
+            "git_branch",
+            Generator::script(
+                CommandBuilder::single_command("git --no-optional-locks branch -r --no-color --sort=-committerdate"),
+                crate::generators::git::post_process_branches,
+            ),
+        )
+        .add_generator(
+            "repo_list_owner",
+            Generator::command_from_tokens(fig_token::gh_repo_list_for_owner, output_parsers::gh_repo_list_json),
+        )
+}
+
+lazy_static! {
+    static ref RE: Regex =
+        Regex::new(r"^(?P<id>[\d]+)\t(?P<name>.+)\t(?P<branch>.*)\t(?P<status>OPEN|DRAFT)$")
+            .unwrap();
+}

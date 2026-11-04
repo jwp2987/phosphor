@@ -1,0 +1,29 @@
+{
+    "name": "rushx",
+    "description": "Run arbitrary package scripts for rush project. analogous to npm run",
+    "args": {
+        "name": "Scripts",
+        "description": "Script to run from your package.json",
+        "generatorName": "until_package_json_do_cd",
+        "parserDirectives": {
+            "alias": "_NuFrRa_(e,n)=>h(void 0,null,function*(){var o;let a=yield n(\"cat $(npm prefix)/package.json\"),t=(o=JSON.parse(a).scripts)==null?void 0:o[e];if(!t)throw new Error(`Script not found: '${e}'`);return t})"
+        },
+        "isCommand": true
+    },
+    "options": [
+        {
+            "name": [
+                "-h",
+                "--help"
+            ],
+            "description": "Show this help message and exit"
+        },
+        {
+            "name": [
+                "-q",
+                "--quiet"
+            ],
+            "description": "Hide rushx startup information"
+        }
+    ]
+}
