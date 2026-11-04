@@ -19785,8 +19785,14 @@ fn managed_ssh_plain_fallback_releases_the_held_keys_at_ownership() {
 }
 
 /// #1641: the connect ends (the master login failed: no verdict is ever printed) with keys held
-/// under the wrapper: the #1292 hand-back returns them to the editor as text, unexecuted, and
-/// nothing reaches the pty. Legacy and Table.
+/// under the wrapper: the #1292 hand-back returns them as text, unexecuted, once, and nothing
+/// reaches the pty. Here the model's ssh block is still the running one (the helper made it long
+/// running and only the gate is told the block ended), so the hand-back keeps the text for the
+/// input until that block completes (`Input::stash_handed_back_text`, the #1596 kept-text banner),
+/// exactly as `ssh_bootstrap_failure_hands_held_typeahead_back_without_stty_sane` sees it; the
+/// block's completion puts it into the editor (`Input::restore_handed_back_text`). r18u16 read the
+/// editor too early: the log showed "12 handed-back char(s) kept until the running block ends".
+/// Legacy and Table.
 #[test]
 fn managed_ssh_block_end_without_a_verdict_hands_the_keys_back_as_text() {
     use crate::terminal::input_queue::DestinationMode;
@@ -19806,10 +19812,18 @@ fn managed_ssh_block_end_without_a_verdict_hands_the_keys_back_as_text() {
                 );
                 view.deliver_ssh_typeahead_if_ready("test", ctx);
                 assert!(!view.ssh_typeahead_holding, "{mode:?}");
+                assert!(view.ssh_held_is_empty(), "{mode:?}: nothing left held");
+                assert!(view.is_long_running(), "{mode:?}: the ssh block still runs");
+                let input = view.input.as_ref(ctx);
                 assert_eq!(
-                    view.input.as_ref(ctx).buffer_text(ctx),
-                    "echo T258_ok",
-                    "{mode:?}: the held text is back in the editor"
+                    input.handed_back_text_for_test(),
+                    Some("echo T258_ok"),
+                    "{mode:?}: the held text is kept for the input, once, in typed order"
+                );
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "",
+                    "{mode:?}: not also in the editor (it comes back there when the block ends)"
                 );
             });
             assert!(
