@@ -1038,6 +1038,12 @@ the held keys. A setup with no marker token (`PHOSPHOR_BOOTSTRAP_TIMED=1`, or ma
 | view, Legacy and Table | `group2_timer_tests.rs`: `powershell_abort_settle_without_a_marker_hands_the_held_keys_back` | no token: the held `ls` is in the editor with the Enter guard armed, nothing written; a stale generation does nothing |
 | view | `view_test.rs`: `powershell_abort_settle_ends_on_the_read_marker_not_the_clock` (existing) | the marker after the Ctrl-C writes the held keys; time and line markers do not |
 
+**#1391 (PS2 continued line).** bash and zsh send `ContinuationPrompt` (PS2 head / zle `CONTEXT=cont`) and the hand-off re-baselines
+its counts on it; on Unix a stale count is also corrected from the sampled line-editor state (#1614). fish and PowerShell continue a
+line inside their editor with no hook, so on ConPTY the 5 s logged give-up is still what resolves it. Evidence to look for in a log:
+`hop=handoff_stale_counts_reset by=give_up shell_activity=.. markers_live=..` -- `Reading` with `markers_live=true` is a line continued
+inside the editor (pwsh on ConPTY); `Unknown` is a bootstrap without markers.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate

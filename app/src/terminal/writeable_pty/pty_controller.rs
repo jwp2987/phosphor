@@ -954,25 +954,37 @@ impl<T: EventLoopSender> PtyController<T> {
                 Timer::after(wait).await;
             },
             move |me, _, ctx| {
-                let (did_reset, diverged, young_hold_live) = {
+                let (did_reset, diverged, young_hold_live, activity, markers_live) = {
                     let mut model = me.terminal_model.lock();
                     let mut handoff = model.typeahead_handoff_mut();
                     let diverged = handoff.counts_diverged();
                     let young_hold_live = handoff.young_hold_queued();
+                    let activity = handoff.shell_activity();
+                    let markers_live = handoff.line_editor_markers_live();
                     (
                         handoff.reset_stale_counts(activity_generation),
                         diverged,
                         young_hold_live,
+                        activity,
+                        markers_live,
                     )
                 };
                 if seq_mode && did_reset && diverged {
                     // The give-up of the wait fired: nothing said the queued lines were answered
-                    // or consumed. Counts and the wait only, never bytes.
+                    // or consumed. Counts and the wait only, never bytes. The shell's last
+                    // line-editor marker says which case it was (#1391): `Reading` with live
+                    // markers is a line continued inside the editor with no continuation event
+                    // (PowerShell on ConPTY), `Unknown` a bootstrap that sends no markers.
                     log::warn!(
                         "typeahead hand-off: no prompt, command start or terminal-owner change \
                          within {} s for lines the counts consider queued; treating them as consumed",
                         TYPEAHEAD_HANDOFF_STALE_COUNT_GIVE_UP.as_secs()
                     );
+                    warpui::input_order::log_hop("handoff_stale_counts_reset", || {
+                        format!(
+                            "by=give_up shell_activity={activity:?} markers_live={markers_live}"
+                        )
+                    });
                 }
                 // Decide again whether or not a request was waiting: after a `DrainAndWait` the
                 // reset is what hands input back to the editor.
