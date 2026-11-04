@@ -1096,10 +1096,13 @@ fn on_shell_determined<S: TerminalSurface>(
         }));
         // #1641: the managed-ssh hold passes an echoing answer (a host-key yes/no, a 2FA prompt)
         // to ssh while ssh is blocked reading the tty. Sampled at events and per key, only while
-        // that hold waits for the wrapper's verdict.
-        model.lock().set_tty_read_probe(Arc::new(move || {
-            super::terminal_attributes::foreground_reads_tty(fd)
-        }));
+        // that hold waits for the wrapper's verdict. Installed only where it works (Linux with a
+        // readable /proc): its presence is what lets that hold go without a silence ceiling.
+        if super::terminal_attributes::tty_read_probe_works() {
+            model.lock().set_tty_read_probe(Arc::new(move || {
+                super::terminal_attributes::foreground_reads_tty(fd)
+            }));
+        }
         manager.pty_controller.update(ctx, |controller, _| {
             controller.set_foreground_sigint(Arc::new(move || {
                 super::terminal_attributes::sigint_foreground_group(fd)

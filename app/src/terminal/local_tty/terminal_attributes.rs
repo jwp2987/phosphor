@@ -317,6 +317,20 @@ pub fn foreground_reads_tty(fd: RawFd) -> bool {
     process_reads_tty(pgid)
 }
 
+/// #1641: whether [`foreground_reads_tty`] can answer here: Linux with a readable `/proc` and a
+/// known `read` syscall number. Elsewhere it is not installed, and the managed-ssh hold keeps its
+/// silence ceiling.
+pub fn tty_read_probe_works() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        READ_SYSCALL.is_some() && std::fs::metadata("/proc/self/stat").is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn process_reads_tty(pid: libc::pid_t) -> bool {
     let base = format!("/proc/{pid}");

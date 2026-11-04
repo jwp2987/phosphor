@@ -20226,6 +20226,11 @@ fn managed_ssh_verdict_after_the_old_ceiling_still_delivers_once() {
             let terminal = add_window_with_terminal(&mut app, None);
             let pty_writes = record_pty_writes(&mut app, &terminal);
             terminal.update(&mut app, |view, ctx| {
+                // A pty whose tty-read probe works (Linux): the case without one is
+                // `managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back`.
+                view.model
+                    .lock()
+                    .set_tty_read_probe(std::sync::Arc::new(|| false));
                 let armed = managed_ssh_held_through_the_master_login_for_test(view, ctx);
                 let gate = view.ssh_connect_gate.as_mut().unwrap();
                 gate.armed_at =
@@ -20246,6 +20251,57 @@ fn managed_ssh_verdict_after_the_old_ceiling_still_delivers_once() {
                 written, b"echo T258_ok\r",
                 "{mode:?}: once, after the bootstrap"
             );
+        })
+    }
+}
+
+/// #1641: without a tty-read probe (macOS, others) an echoing answer during the master login
+/// would be held while ssh waits for it, so the wait for the verdict keeps the 15 s silence
+/// ceiling. Its give-up hands the held keys back as text (kept over the running ssh block), never
+/// writes them, and releases the window: the next key reaches ssh once, as in a plain terminal.
+/// Legacy and Table.
+#[test]
+fn managed_ssh_without_a_tty_read_probe_keeps_the_ceiling_and_hands_back() {
+    use crate::terminal::input_queue::DestinationMode;
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let pty_writes = record_pty_writes(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                managed_ssh_held_through_the_master_login_for_test(view, ctx);
+                let gate = view.ssh_connect_gate.as_mut().unwrap();
+                assert_eq!(gate.wrapper, SshWrapperHold::AwaitingVerdict, "{mode:?}");
+                assert!(!gate.tty_read_detectable, "{mode:?}: no probe installed");
+                gate.armed_at =
+                    Instant::now() - SSH_CONNECT_SILENCE_CEILING - Duration::from_secs(1);
+                assert!(
+                    gate.give_up_deadline(false).is_some(),
+                    "{mode:?}: the ceiling's give-up is armed"
+                );
+                // The give-up timer fires.
+                view.ssh_give_up_fired(ctx);
+                assert!(
+                    view.ssh_connect_gate.is_none(),
+                    "{mode:?}: the window is released"
+                );
+                assert!(!view.ssh_typeahead_holding, "{mode:?}");
+                assert!(view.ssh_held_is_empty(), "{mode:?}");
+                assert_eq!(
+                    view.input
+                        .as_ref(ctx)
+                        .kept_handed_back_text()
+                        .map(str::trim_end),
+                    Some("echo T258_ok"),
+                    "{mode:?}: handed back as text, kept over the running ssh block"
+                );
+                assert!(pty_writes.borrow().is_empty(), "{mode:?}: nothing written");
+                view.typed_characters_on_terminal("y", ctx);
+            });
+            let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+            assert_eq!(written, b"y", "{mode:?}: the next key reaches ssh once");
         })
     }
 }

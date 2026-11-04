@@ -2824,11 +2824,15 @@ window waits for the verdict and the OS says ssh, the foreground group's leader,
 READING THE TTY (Linux: `/proc/<pid>/wchan` `n_tty_read`, or state `S` with `/proc/<pid>/syscall`
 a `read` on a tty fd; `terminal_attributes::foreground_reads_tty`), what is held is discarded
 (ssh's `readpassphrase` flushes) and the keys go to ssh; when it stops reading, keys are held
-again. macOS has no such probe yet (`libc` has no `kinfo_proc`, and the kernel does not report a
-wait message): there an echoing question's answer is held until the block ends, then handed back.
-The wait for the verdict has NO silence ceiling and no give-up timer (a slow password or a Duo
-push may take minutes): it ends at the verdict, the block's end, or a Ctrl-C (SIGINT to ssh, the
-hold flushed as the tty would). The managed verdict restarts the 15 s clock for the bootstrap, and
+again. Where that probe works (Linux with a readable `/proc`) the wait for the verdict has NO
+silence ceiling and no give-up timer (a slow password or a Duo push may take minutes): it ends at
+the verdict, the block's end, or a Ctrl-C (SIGINT to ssh, the hold flushed as the tty would).
+macOS (and any platform without the probe: `libc` has no `kinfo_proc`, and the kernel reports no
+wait message) keeps the 15 s silence ceiling for that wait, because an echoing answer (Duo, an
+OTP) would otherwise be held while ssh waits for it: the give-up hands the held keys back as text
+(never written to the pty) and releases the window, and typing then reaches ssh as in a plain
+terminal. Passwords and passphrases (the termios guard) and host keys (the strict-master retry)
+are covered there as before. The managed verdict restarts the 15 s clock for the bootstrap, and
 one arriving with no window for the announced, still-running ssh re-arms a window. Only the first
 verdict, from the announcing shell's session, counts. An announcement seen before the window arms
 is remembered for its block and applied when it arms; one handled after the ownership event takes

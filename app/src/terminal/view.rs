@@ -11435,17 +11435,21 @@ impl TerminalView {
         let Some(announcement) = self.ssh_wrapper_announced.clone() else {
             return;
         };
+        let applies = self.ssh_connect_gate.as_ref().is_some_and(|gate| {
+            gate.wrapper == SshWrapperHold::Off
+                && (any_block || gate.block_id.as_ref() == Some(&announcement.block_id))
+                && (!gate.tty_owned || gate.tty_owned_by_event)
+        });
+        if !applies {
+            return;
+        }
+        let tty_read_detectable = self.model.lock().tty_read_probe().is_some();
         let Some(gate) = self.ssh_connect_gate.as_mut() else {
             return;
         };
-        if gate.wrapper != SshWrapperHold::Off
-            || (!any_block && gate.block_id.as_ref() != Some(&announcement.block_id))
-            || (gate.tty_owned && !gate.tty_owned_by_event)
-        {
-            return;
-        }
         gate.wrapper = SshWrapperHold::AwaitingVerdict;
         gate.wrapper_session = announcement.session;
+        gate.tty_read_detectable = tty_read_detectable;
         let reclaimed = gate.tty_owned;
         if reclaimed {
             gate.tty_owned = false;
@@ -38708,6 +38712,10 @@ struct SshConnectGate {
     /// #1641: the session of the shell whose wrapper announced itself; a verdict from another
     /// session is ignored.
     wrapper_session: Option<SessionId>,
+    /// #1641: the pty has a working tty-read probe (Linux with `/proc`), so an echoing question
+    /// during the master login reaches ssh and the wait for the verdict needs no clock. Without one
+    /// (macOS, others) the silence ceiling stays: such an answer would otherwise wait forever.
+    tty_read_detectable: bool,
 }
 
 /// #1641: a `PreInteractiveSSHSession` seen for a block, remembered so a connect window that arms
@@ -38759,6 +38767,7 @@ impl SshConnectGate {
             tty_owned_deferred: false,
             tty_owned_by_event: false,
             wrapper_session: None,
+            tty_read_detectable: false,
         }
     }
 
@@ -38819,8 +38828,9 @@ impl SshConnectGate {
     /// give-up timer. `pending` is whether a remote session is announced now. Mirrors the time
     /// conditions of [`Self::should_release`]; a condition that needs an event has no deadline.
     fn give_up_deadline(&self, pending: bool) -> Option<Instant> {
-        // #1641: the wrapper's master login has no clock (see `past_ceiling`).
-        if self.wrapper == SshWrapperHold::AwaitingVerdict {
+        // #1641: the wrapper's master login has no clock where a tty read is detectable (see
+        // `past_ceiling`).
+        if self.awaits_verdict_without_clock() {
             return None;
         }
         let ceiling = self.armed_at + SSH_CONNECT_SILENCE_CEILING;
@@ -38839,12 +38849,20 @@ impl SshConnectGate {
     }
 
     /// The silence ceiling passed. #1641: never while the wrapper's master login runs
-    /// (`AwaitingVerdict`): a slow password, a Duo push or a host-key question can take longer than
-    /// any ceiling, and only events end that hold (the verdict, the block's end, a Ctrl-C ending
-    /// the block). The managed verdict restarts the clock for the bootstrap (`armed_at`).
+    /// (`AwaitingVerdict`) on a pty whose tty-read probe works: a slow password or a Duo push can
+    /// take longer than any ceiling, ssh's questions reach it while it reads, and only events end
+    /// that hold (the verdict, the block's end, a Ctrl-C ending the block). Without that probe
+    /// (macOS, others) an echoing answer is held, and ssh waits for it, so the old ceiling stays:
+    /// its give-up hands the held keys back as text and releases the window, after which typing
+    /// reaches ssh as in a plain terminal. The managed verdict restarts the clock (`armed_at`).
     fn past_ceiling(&self, now: Instant) -> bool {
-        self.wrapper != SshWrapperHold::AwaitingVerdict
+        !self.awaits_verdict_without_clock()
             && now.saturating_duration_since(self.armed_at) >= SSH_CONNECT_SILENCE_CEILING
+    }
+
+    /// #1641: waiting for the wrapper's verdict where a tty read is detectable (no clock).
+    fn awaits_verdict_without_clock(&self) -> bool {
+        self.wrapper == SshWrapperHold::AwaitingVerdict && self.tty_read_detectable
     }
 
     /// The no-session half: hold keys until ssh owns the tty, for the whole post-block bootstrap
