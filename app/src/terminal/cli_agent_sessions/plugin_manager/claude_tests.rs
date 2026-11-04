@@ -421,7 +421,7 @@ fn not_registered_from_warp_when_marketplace_unknown() {
 }
 
 #[test]
-fn current_plugin_from_warp_source_needs_update() {
+fn current_plugin_from_warp_source_needs_a_move_not_an_update() {
     let dir = tempfile::tempdir().unwrap();
     write_installed_plugin_version(dir.path(), "2.4.0");
     write_known_marketplace_source(
@@ -430,7 +430,8 @@ fn current_plugin_from_warp_source_needs_update() {
     );
 
     assert!(plugin_needs_source_migration(dir.path()));
-    // Current version: it is the source alone that makes `needs_update` true.
+    // Current version: nothing for `needs_update` (version-only); the move
+    // chip alone offers the source change.
     assert!(!plugin_is_outdated(dir.path()));
 }
 
@@ -551,7 +552,24 @@ fn drive(dir: &Path, runner: &Arc<FakeRunner>, operation: Operation) -> (Result<
     (result.map_err(|err| err.message), needs_move)
 }
 
-/// A hook that does what `claude plugin install` does to the version record.
+const PLUGIN_UPDATE: &str = "claude plugin update warp@claude-code-warp";
+const MARKETPLACE_UPDATE: &str = "claude plugin marketplace update claude-code-warp";
+
+/// A hook that does what `claude plugin update` does to the version record.
+/// Only `plugin update` changes the version: `plugin install` on an installed
+/// plugin is a no-op, so an in-place update that used it would fail the
+/// post-update version check here, as it would for real.
+fn updates_version(dir: &Path, version: &'static str) -> impl Fn(&str) + Send + Sync + 'static {
+    let dir = dir.to_owned();
+    move |command| {
+        if command == PLUGIN_UPDATE {
+            write_installed_plugin_version(&dir, version);
+        }
+    }
+}
+
+/// A hook that does what `claude plugin install` does to the version record
+/// after `marketplace remove` unlinked the plugin.
 fn installs_version(dir: &Path, version: &'static str) -> impl Fn(&str) + Send + Sync + 'static {
     let dir = dir.to_owned();
     move |command| {
@@ -721,20 +739,98 @@ fn concurrent_moves_run_one_at_a_time_and_the_second_finds_nothing_to_move() {
 fn update_never_moves_a_warp_registered_marketplace() {
     // The background launch paths call update(); it must refresh in place.
     let dir = warp_registered_claude_dir("1.5.0");
-    let runner = Arc::new(FakeRunner::new().with_hook(installs_version(dir.path(), "2.4.0")));
+    let runner = Arc::new(FakeRunner::new().with_hook(updates_version(dir.path(), "2.4.0")));
 
     let (result, needs_move) = drive(dir.path(), &runner, Operation::Update);
 
     assert_eq!(result, Ok(()));
     assert_eq!(
         runner.calls(),
-        vec![
-            "claude plugin marketplace update claude-code-warp".to_owned(),
-            INSTALL.to_owned(),
-        ]
+        vec![MARKETPLACE_UPDATE.to_owned(), PLUGIN_UPDATE.to_owned()]
     );
     assert!(marketplace_registered_from_warp(dir.path()));
     assert!(needs_move, "still offered on the move chip");
+}
+
+/// A corporate mirror or fork is neither Warp's nor Phosphor's: the
+/// background update must never swap it for GitLab.
+#[test]
+#[serial_test::serial]
+fn update_keeps_a_mirror_source_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_plugin_version(dir.path(), "1.5.0");
+    write_known_marketplace_source(
+        dir.path(),
+        serde_json::json!({
+            "source": "git",
+            "url": "https://git.corp.example/mirrors/claude-code-warp.git"
+        }),
+    );
+    let known = fs::read_to_string(dir.path().join("plugins/known_marketplaces.json")).unwrap();
+    let runner = Arc::new(FakeRunner::new().with_hook(updates_version(dir.path(), "2.4.0")));
+
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        runner.calls(),
+        vec![MARKETPLACE_UPDATE.to_owned(), PLUGIN_UPDATE.to_owned()]
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("plugins/known_marketplaces.json")).unwrap(),
+        known
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn update_without_a_marketplace_record_updates_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_plugin_version(dir.path(), "1.5.0");
+    let runner = Arc::new(FakeRunner::new().with_hook(updates_version(dir.path(), "2.4.0")));
+
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        runner.calls(),
+        vec![MARKETPLACE_UPDATE.to_owned(), PLUGIN_UPDATE.to_owned()]
+    );
+}
+
+/// The no-op the review caught: had the in-place branch used `plugin install`
+/// on an installed plugin, the version would not change and the update would
+/// report "did not take effect".
+#[test]
+#[serial_test::serial]
+fn an_in_place_update_that_changes_no_version_is_reported() {
+    let dir = warp_registered_claude_dir("1.5.0");
+    // `plugin update` that installs nothing new.
+    let runner = Arc::new(FakeRunner::new());
+
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(result, Err("Plugin update did not take effect".to_owned()));
+}
+
+#[test]
+fn phosphor_source_spellings_are_recognised() {
+    for source in [
+        serde_json::json!({"source": "git", "url": MARKETPLACE_URL}),
+        serde_json::json!({"source": "git", "url": "https://gitlab.com/winters-phosphor/claude-code-warp"}),
+        serde_json::json!({"source": "git", "url": "https://GitLab.com/winters-phosphor/claude-code-warp.git#main"}),
+        serde_json::json!(MARKETPLACE_URL),
+    ] {
+        assert!(super::marketplace_source_is_phosphor(&source), "{source}");
+    }
+    for source in [
+        serde_json::json!({"source": "github", "repo": "warpdotdev/claude-code-warp"}),
+        serde_json::json!({"source": "git", "url": "https://git.corp.example/mirrors/claude-code-warp.git"}),
+        serde_json::json!({"source": "git", "url": "https://gitlab.com/winters-phosphor/claude-code-warp-internal.git"}),
+        serde_json::json!({"source": "directory", "path": "/home/dev/claude-code-warp"}),
+    ] {
+        assert!(!super::marketplace_source_is_phosphor(&source), "{source}");
+    }
 }
 
 #[test]
@@ -771,6 +867,27 @@ fn update_readds_phosphors_marketplace_after_the_preflight() {
             add_command(MARKETPLACE_URL),
             INSTALL.to_owned(),
         ]
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn update_of_phosphors_marketplace_waits_for_the_preflight() {
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_plugin_version(dir.path(), "1.5.0");
+    write_known_marketplace_source(
+        dir.path(),
+        serde_json::json!({"source": "git", "url": MARKETPLACE_URL}),
+    );
+    let runner = Arc::new(FakeRunner::new().failing("git "));
+
+    let (result, _) = drive(dir.path(), &runner, Operation::Update);
+
+    assert_eq!(runner.calls(), vec![preflight_command(MARKETPLACE_URL)]);
+    let message = result.unwrap_err();
+    assert!(
+        super::super::source_unreachable_error(String::new()).message == message,
+        "{message}"
     );
 }
 

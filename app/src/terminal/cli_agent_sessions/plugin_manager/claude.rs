@@ -220,37 +220,42 @@ impl CliAgentPluginManager for ClaudeCodePluginManager {
                 log,
             });
         }
-        if claude_dir
+        let original = claude_dir
             .as_deref()
-            .is_some_and(marketplace_registered_from_warp)
+            .and_then(registered_marketplace_source);
+        if original
+            .as_ref()
+            .is_some_and(marketplace_source_is_phosphor)
         {
-            // Not the update's to move. Refresh the plugin from the registered
-            // (Warp) marketplace instead, without removing it.
-            log.push_str(
-                "The marketplace is registered from the warpdotdev source; updating in place \
-                 (use the move chip to move it to Phosphor's source)\n",
-            );
-            self.run_logged(
-                &["plugin", "marketplace", "update", MARKETPLACE_NAME],
-                &mut log,
-            )
-            .await?;
-            self.run_logged(&["plugin", "install", PLUGIN_KEY], &mut log)
-                .await?;
-        } else {
             // Remove/re-add the marketplace to ensure the local clone is fresh,
             // then reinstall the plugin. We use `plugin install` (not `plugin
             // update`) because `marketplace remove` unlinks the plugin, so
             // `plugin update` would fail with "Plugin is not installed".
             // The remove is destructive, so it waits for the pre-flight, and
             // the previous source is restored if the add or install fails.
+            // Only for Phosphor's own URL: re-adding it changes no source.
             if !plugin_source_reachable(&*self.runner, MARKETPLACE_URL, &mut log).await {
                 return Err(source_unreachable_error(log));
             }
-            let original = claude_dir
-                .as_deref()
-                .and_then(registered_marketplace_source);
             self.readd_marketplace(original.as_ref(), &mut log).await?;
+        } else {
+            // Any other registration -- Warp's GitHub, a mirror or fork, or a
+            // missing/unreadable record -- is updated in place from the source
+            // it already has. An update never changes where the plugin comes
+            // from (the background launch paths run it unattended); moving
+            // off Warp's source is the move chip's job.
+            log.push_str(
+                "The marketplace is not registered from Phosphor's source; updating it in place\n",
+            );
+            self.run_logged(
+                &["plugin", "marketplace", "update", MARKETPLACE_NAME],
+                &mut log,
+            )
+            .await?;
+            // `plugin update` (Claude Code: "Update a plugin to the latest
+            // version"): `plugin install` on an installed plugin is a no-op.
+            self.run_logged(&["plugin", "update", PLUGIN_KEY], &mut log)
+                .await?;
         }
 
         // Sanity check: verify the on-disk version actually changed.
@@ -509,6 +514,24 @@ fn marketplace_add_argument(source: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Whether a recorded marketplace source is Phosphor's GitLab URL
+/// (`{"source": "git", "url": ...}`, or a bare string), with or without
+/// `.git`, a trailing `/` or a `#ref`, in any letter case.
+fn marketplace_source_is_phosphor(source: &Value) -> bool {
+    let location = match source {
+        Value::Object(source) => source.get("url").and_then(Value::as_str),
+        Value::String(source) => Some(source.as_str()),
+        _ => None,
+    };
+    let normalize = |location: &str| {
+        let location = location.trim().to_ascii_lowercase();
+        let location = location.split('#').next().unwrap_or_default().to_owned();
+        let location = location.trim_end_matches('/');
+        location.strip_suffix(".git").unwrap_or(location).to_owned()
+    };
+    location.is_some_and(|location| normalize(location) == normalize(MARKETPLACE_URL))
 }
 
 fn marketplace_source_is_warp(source: &Value) -> bool {

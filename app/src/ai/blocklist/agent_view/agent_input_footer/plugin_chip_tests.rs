@@ -1,4 +1,9 @@
-use super::{PluginChipKind, installed_plugin_chip, plugin_source_move_chip_key};
+use super::{
+    PluginChipKind, failure_turns_chip_manual, installed_plugin_chip, plugin_source_move_chip_key,
+};
+use crate::terminal::cli_agent_sessions::plugin_manager::{
+    PluginInstallError, source_unreachable_error,
+};
 
 #[test]
 fn a_due_version_update_takes_the_chip() {
@@ -64,4 +69,24 @@ fn the_move_dismissal_key_is_separate_from_the_version_key() {
         "claude@host#source-move"
     );
     assert_ne!(plugin_source_move_chip_key("claude"), "claude");
+}
+
+/// A pre-flight that found Phosphor's source unreachable changed nothing, so
+/// it must not switch the chip to manual instructions for the session: those
+/// run remove + add with no pre-flight.
+#[test]
+fn an_unreachable_source_does_not_turn_the_chip_manual() {
+    let unreachable = source_unreachable_error("Pre-flight failed\n".to_owned());
+    assert!(unreachable.left_install_unchanged());
+    assert!(!failure_turns_chip_manual(&unreachable));
+}
+
+#[test]
+fn a_real_failure_turns_the_chip_manual() {
+    let failed = PluginInstallError {
+        message: "'claude plugin marketplace add https://gitlab.com/winters-phosphor/claude-code-warp.git' failed".to_owned(),
+        log: String::new(),
+    };
+    assert!(!failed.left_install_unchanged());
+    assert!(failure_turns_chip_manual(&failed));
 }

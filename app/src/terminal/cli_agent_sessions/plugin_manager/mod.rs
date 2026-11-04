@@ -74,6 +74,17 @@ impl fmt::Display for PluginInstallError {
     }
 }
 
+impl PluginInstallError {
+    /// Whether the operation stopped before changing anything because
+    /// Phosphor's source did not answer the pre-flight. Such a failure is not
+    /// a reason to switch the chip to manual instructions: those run the same
+    /// commands without a pre-flight, and the chip works again once the
+    /// source answers.
+    pub(crate) fn left_install_unchanged(&self) -> bool {
+        self.message == SOURCE_UNREACHABLE_MESSAGE
+    }
+}
+
 impl From<io::Error> for PluginInstallError {
     fn from(err: io::Error) -> Self {
         let msg = err.to_string();
@@ -330,11 +341,16 @@ pub(crate) async fn plugin_source_reachable(
     }
 }
 
-/// The error a manager returns when the pre-flight fails.
+/// The message of [`source_unreachable_error`].
+const SOURCE_UNREACHABLE_MESSAGE: &str =
+    "Phosphor's plugin source is unreachable; the installed plugin was left as it is";
+
+/// The error a manager returns when the pre-flight fails. Nothing was
+/// changed, so the caller may offer the same operation again
+/// ([`PluginInstallError::left_install_unchanged`]).
 pub(crate) fn source_unreachable_error(log: String) -> PluginInstallError {
     PluginInstallError {
-        message: "Phosphor's plugin source is unreachable; the installed plugin was left as it is"
-            .to_owned(),
+        message: SOURCE_UNREACHABLE_MESSAGE.to_owned(),
         log,
     }
 }

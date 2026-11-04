@@ -177,6 +177,15 @@ fn plugin_source_move_chip_key(chip_key: &str) -> String {
 /// Value recorded under [`plugin_source_move_chip_key`] when dismissed.
 const PLUGIN_SOURCE_MOVE_DISMISSED: &str = "gitlab";
 
+/// Whether a failed chip operation switches this session's chip to the
+/// manual instructions. Not when the pre-flight found Phosphor's source
+/// unreachable and nothing changed: the manual steps would run the same
+/// remove + add with no pre-flight, and the chip works again once the source
+/// answers.
+fn failure_turns_chip_manual(err: &PluginInstallError) -> bool {
+    !err.left_install_unchanged()
+}
+
 /// The chip for an installed plugin: a due version update first (its own
 /// dismissal), else the move off Warp's source (its own dismissal). The two
 /// dismissals are independent: a dismissed move never hides a version update,
@@ -1173,12 +1182,14 @@ impl AgentInputFooter {
                     let toast = match result {
                         Ok(()) => DismissibleToast::success(success_toast.clone()),
                         Err((err, log_path)) => {
-                            let remote_host = CLIAgentSessionsModel::as_ref(ctx)
-                                .session(me.terminal_view_id)
-                                .and_then(|s| s.remote_host.clone());
-                            CLIAgentSessionsModel::handle(ctx).update(ctx, |model, _| {
-                                model.record_plugin_auto_failure(agent, remote_host);
-                            });
+                            if failure_turns_chip_manual(&err) {
+                                let remote_host = CLIAgentSessionsModel::as_ref(ctx)
+                                    .session(me.terminal_view_id)
+                                    .and_then(|s| s.remote_host.clone());
+                                CLIAgentSessionsModel::handle(ctx).update(ctx, |model, _| {
+                                    model.record_plugin_auto_failure(agent, remote_host);
+                                });
+                            }
                             log::error!(
                                 "Failed plugin operation for {agent:?}: {err}\n{log}",
                                 log = err.log,

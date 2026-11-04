@@ -300,7 +300,7 @@ fn not_installed_from_warp_without_install_metadata() {
 }
 
 #[test]
-fn current_extension_from_warp_needs_update() {
+fn current_extension_from_warp_needs_a_move_not_an_update() {
     let dir = tempfile::tempdir().unwrap();
     write_extension(dir.path(), MINIMUM_PLUGIN_VERSION);
     write_install_metadata(
@@ -310,7 +310,8 @@ fn current_extension_from_warp_needs_update() {
     );
 
     assert!(plugin_needs_source_migration(dir.path()));
-    // Current version: it is the source alone that makes `needs_update` true.
+    // Current version: nothing for `needs_update` (version-only); the move
+    // chip alone offers the source change.
     assert!(!plugin_is_outdated(dir.path()));
 }
 
