@@ -11455,7 +11455,11 @@ impl Workspace {
             .as_ref(ctx)
             .terminal_views(ctx)
             .iter()
-            .any(|view| view.as_ref(ctx).has_pending_agent_action(ctx))
+            // Only a log line: `try_as_ref`, so a view mid-update can never make it panic.
+            .any(|view| {
+                view.try_as_ref(ctx)
+                    .is_some_and(|view| view.has_pending_agent_action(ctx))
+            })
         {
             log::warn!(
                 "Removing tab {index} (add_to_undo_stack={add_to_undo_stack}) while an agent \

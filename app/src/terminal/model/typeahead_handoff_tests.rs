@@ -4232,6 +4232,14 @@ fn an_enter_delivered_past_an_unsampled_group_is_followed_through_the_next_hooks
     next.on_command_written();
     assert!(!next.follows_unsampled_enter());
 
+    // ... and a new session (the remote shell of the ssh the Enter was typed into).
+    let mut session = seq_after_submit(ShellPromptFact::Unknown);
+    type_and_flush(&mut session, b"y");
+    type_and_flush(&mut session, b"\r");
+    assert!(session.follows_unsampled_enter());
+    session.on_new_session();
+    assert!(!session.follows_unsampled_enter());
+
     // Not followed: an Enter on an empty line, a hold the sample decides (the shell's own line
     // editor reads), and a platform that samples nothing (its window hold decides).
     let mut empty = seq_after_submit(ShellPromptFact::Unknown);

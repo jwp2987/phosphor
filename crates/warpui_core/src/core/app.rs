@@ -2415,7 +2415,7 @@ impl AppContext {
         keystroke: &Keystroke,
         is_composing: bool,
     ) -> Result<bool> {
-        bump_key_dispatch_seq();
+        let dispatch_seq = bump_key_dispatch_seq();
         // #1482: an Enter that dies somewhere in the keystroke matcher leaves no `keydown` line, so
         // every step of its walk is logged.
         let is_enter = matches!(keystroke.key.as_str(), "enter" | "numpadenter");
@@ -2492,8 +2492,8 @@ impl AppContext {
                         let action_type_name = action_ref.type_name();
                         crate::input_order::log_hop("keydown_keybound", || {
                             format!(
-                                "key={} ctrl={} alt={} shift={} cmd={} step={i} \
-                                 action_type={action_type_name}",
+                                "dispatch_seq={dispatch_seq} key={} ctrl={} alt={} shift={} \
+                                 cmd={} step={i} action_type={action_type_name}",
                                 crate::input_order::describe_key(&keystroke.key),
                                 keystroke.ctrl,
                                 keystroke.alt,
@@ -2524,7 +2524,8 @@ impl AppContext {
             // never reaches the `keydown` line either.
             crate::input_order::log_hop("keydown_keybound", || {
                 format!(
-                    "key={} ctrl={} alt={} shift={} cmd={} pending_chord=true",
+                    "dispatch_seq={dispatch_seq} key={} ctrl={} alt={} shift={} cmd={} \
+                     pending_chord=true",
                     crate::input_order::describe_key(&keystroke.key),
                     keystroke.ctrl,
                     keystroke.alt,

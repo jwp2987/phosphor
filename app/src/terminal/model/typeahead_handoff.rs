@@ -1580,7 +1580,7 @@ impl TypeaheadHandoff {
         self.last_parsed_hook = None;
         // ... and the latch of the command that handed the pty over is the old session's.
         self.command_interactive = false;
-        self.unsampled_enter_delivery = None;
+        self.settle_unsampled_enter("new_session");
     }
 
     /// #1614: the block latch said the running command is interactive (main thread, from
@@ -1980,7 +1980,7 @@ impl TypeaheadHandoff {
         self.command_interactive = false;
         self.own_preexec_pending = true;
         // #1615: the editor wrote the next command, so a delivered Enter's line is settled.
-        self.unsampled_enter_delivery = None;
+        self.settle_unsampled_enter("editor_command");
         // An Enter held behind the request follows the command as typeahead (#933): the view
         // writes the keys of the hold once it is told (below); in every state but `PtyOwned` the
         // hold is void.
@@ -2485,9 +2485,9 @@ impl TypeaheadHandoff {
             self.log_route_decision("held_prompt_hold_started", bytes);
             return UserBytesRoute::Held;
         }
-        if let Some(evidence) =
-            self.should_hold_young_enter(bytes, reaches_shell_line, Instant::now())
-        {
+        let (young_evidence, sampled_fact) =
+            self.should_hold_young_enter_sampled(bytes, reaches_shell_line, Instant::now());
+        if let Some(evidence) = young_evidence {
             self.young_hold_evidence = Some(evidence);
             self.young_hold_id = self.young_hold_id.wrapping_add(1);
             self.young_hold_started = true;
@@ -2504,7 +2504,7 @@ impl TypeaheadHandoff {
             self.log_route_decision("held_young_enter_started", bytes);
             return UserBytesRoute::Held;
         }
-        if self.enter_delivered_past_an_unsampled_group(bytes, reaches_shell_line) {
+        if self.enter_delivered_past_an_unsampled_group(bytes, reaches_shell_line, sampled_fact) {
             self.note_unsampled_enter_delivered();
         }
         self.log_route_decision("unheld", bytes);
@@ -2514,11 +2514,14 @@ impl TypeaheadHandoff {
     /// #1615: whether `bytes` are an Enter, typed with a line unanswered and user bytes in the
     /// shell's line, that is delivered only because the process group in front is not the sampled
     /// shell (`Unknown` from an installed probe, prompt-sequence path): the case a remote
-    /// Precmd/Preexec-driven hold would decide. Read before the write is counted.
+    /// Precmd/Preexec-driven hold would decide. Read before the write is counted. `sampled_fact` is
+    /// the fact the hold decision sampled for this Enter; the probe is never run again here, so the
+    /// log names the fact the decision used.
     fn enter_delivered_past_an_unsampled_group(
         &self,
         bytes: &[u8],
         reaches_shell_line: bool,
+        sampled_fact: Option<ShellPromptFact>,
     ) -> bool {
         let HandoffState::PtyOwned {
             wrote_user_bytes: true,
@@ -2534,7 +2537,7 @@ impl TypeaheadHandoff {
             && enters_written <= precmds_seen.saturating_add(1)
             && self.prompt_seq_mode()
             && self.foreground_probe.samples_shell()
-            && self.foreground_probe.prompt_fact() == ShellPromptFact::Unknown
+            && sampled_fact == Some(ShellPromptFact::Unknown)
     }
 
     /// #1615: records and logs an Enter delivered past an unsampled group (see
@@ -2611,6 +2614,24 @@ impl TypeaheadHandoff {
                 },
                 self.rtt_p90()
                     .map_or_else(|| "none".to_string(), |p90| p90.as_millis().to_string()),
+            )
+        });
+    }
+
+    /// #1615: drops the follow of a delivered Enter, logging why (`editor_command`: the editor
+    /// wrote the next command; `new_session`: a new shell took the pty over). Nothing when none
+    /// is followed.
+    fn settle_unsampled_enter(&mut self, outcome: &'static str) {
+        let Some(delivery) = self.unsampled_enter_delivery.take() else {
+            return;
+        };
+        let since_ms = Instant::now()
+            .saturating_duration_since(delivery.at)
+            .as_millis();
+        warpui::input_order::log_hop("unsampled_enter_settled", || {
+            format!(
+                "outcome={outcome} precmd_seen={} delivered_ms_ago={since_ms}",
+                delivery.precmd_after.is_some()
             )
         });
     }
@@ -2727,13 +2748,25 @@ impl TypeaheadHandoff {
         reaches_shell_line: bool,
         now: Instant,
     ) -> Option<YoungHoldEvidence> {
+        self.should_hold_young_enter_sampled(bytes, reaches_shell_line, now)
+            .0
+    }
+
+    /// [`Self::should_hold_young_enter`], also returning the [`ShellPromptFact`] the decision
+    /// sampled (`None` when it decided without sampling).
+    fn should_hold_young_enter_sampled(
+        &self,
+        bytes: &[u8],
+        reaches_shell_line: bool,
+        now: Instant,
+    ) -> (Option<YoungHoldEvidence>, Option<ShellPromptFact>) {
         let HandoffState::PtyOwned {
             wrote_user_bytes: true,
             enters_written,
             precmds_seen,
         } = self.state
         else {
-            return None;
+            return (None, None);
         };
         // No line queued behind the one just written: the shell is running it, or is back at its
         // prompt (`precmds_seen` caught up) with the line still waiting for the request that
@@ -2742,9 +2775,9 @@ impl TypeaheadHandoff {
             && enters_written <= precmds_seen.saturating_add(1)
             && matches!(bytes.first(), Some(b'\r' | b'\n')))
         {
-            return None;
+            return (None, None);
         }
-        self.young_evidence(enters_written, precmds_seen, now)
+        self.young_evidence_sampled(enters_written, precmds_seen, now)
     }
 
     /// The evidence a young hold would stand on right now (#1614), from the facts in the order
@@ -2780,12 +2813,25 @@ impl TypeaheadHandoff {
         precmds_seen: u32,
         now: Instant,
     ) -> Option<YoungHoldEvidence> {
+        self.young_evidence_sampled(enters_written, precmds_seen, now)
+            .0
+    }
+
+    /// [`Self::young_evidence`], also returning the [`ShellPromptFact`] it sampled (`None` when it
+    /// decided before sampling), so a caller that logs about the same Enter (#1615) reads the very
+    /// fact the decision used instead of running the probe a second time.
+    fn young_evidence_sampled(
+        &self,
+        enters_written: u32,
+        precmds_seen: u32,
+        now: Instant,
+    ) -> (Option<YoungHoldEvidence>, Option<ShellPromptFact>) {
         // A command the block latch calls interactive reads the keys typed into it (a program, a
         // blocked `read x`, an `ssh`, an inner shell): the Enter is its -- where nothing can be
         // sampled (ConPTY). With a sample, the sample decides: the latch outlives the command by
         // the length of the pipeline (set until its Precmd is parsed), which is #933's moment.
         if self.command_interactive && !self.foreground_probe.samples_shell() {
-            return None;
+            return (None, None);
         }
         let in_window = || {
             self.young_line
@@ -2795,11 +2841,15 @@ impl TypeaheadHandoff {
         };
         let window = || in_window().then_some(YoungHoldEvidence::TimingWindow);
         if !self.prompt_seq_mode() {
-            return (in_window() && !self.foreground_probe.foreground_is_plain_program())
-                .then_some(YoungHoldEvidence::TimingWindow);
+            return (
+                (in_window() && !self.foreground_probe.foreground_is_plain_program())
+                    .then_some(YoungHoldEvidence::TimingWindow),
+                None,
+            );
         }
         let counts_say_prompt = precmds_seen >= enters_written;
-        match self.foreground_probe.prompt_fact() {
+        let fact = self.foreground_probe.prompt_fact();
+        let evidence = match fact {
             // A plain program in the foreground means the shell is waiting on it, not at a
             // prompt: the Enter is for that program, not a line the app has yet to notice.
             ShellPromptFact::NotAtPrompt => None,
@@ -2876,7 +2926,8 @@ impl TypeaheadHandoff {
             // (`unsampled_enter_*` hops, #1615).
             ShellPromptFact::Unknown if self.foreground_probe.samples_shell() => None,
             ShellPromptFact::Unknown => window(),
-        }
+        };
+        (evidence, Some(fact))
     }
 
     /// Whether the shell's line editor shows a continuation prompt inside a running command: the
