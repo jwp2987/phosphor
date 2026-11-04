@@ -54,6 +54,77 @@ def need_linux_app(ctx, why):
         raise cases.Skip("needs the Linux App launcher (not the sim backend)")
 
 
+def need_relaunch_app(ctx, why):
+    """#1540/#1541: the cases that need only a KILL (or hard stop) and a relaunch on the same profile run on Linux, macOS and Windows: every App
+    handle has stop()/start(), and the profile's settings.toml is (re)installed by start() (macOS: ~/.phosphor, Windows: %LOCALAPPDATA%). Only the sim
+    backend (no app process) skips."""
+    if ctx.app is None or not (hasattr(ctx.app, "start") and hasattr(ctx.app, "stop")):
+        raise cases.Skip("%s (needs an app handle with stop()/start(), not the sim backend)" % why)
+
+
+def data_roots(ctx):
+    """directories that hold the app's own state on this platform: the scratch home (Linux, macOS: the app derives every path from HOME) or, on
+    Windows, the known folders %LOCALAPPDATA%\\phosphor and %APPDATA%\\phosphor (not HOME-relative; WindowsApp.prepare wipes them per pass)"""
+    if ctx.win:
+        return [os.path.join(os.environ[v], "phosphor") for v in ("LOCALAPPDATA", "APPDATA") if os.environ.get(v)]
+    return [ctx.prof.home]
+
+
+def norm_path(p):
+    """a cwd as the case compares it: the real path on POSIX; on Windows the drive-letter form (`pwd -W` prints C:/Users/..., Python's realpath may
+    resolve a junction, so both sides go through os.path.normcase(normpath) only)"""
+    return os.path.normcase(os.path.normpath(p)) if os.name == "nt" else os.path.realpath(p)
+
+
+def PWD(ctx):
+    """the shell command that prints the pane's cwd in a form norm_path() reads: Git Bash `pwd -W` (Windows drive path), else `pwd`"""
+    return "pwd -W" if ctx.win else "pwd"
+
+
+def tab_key(ctx, n):
+    """activate tab n (9 = the last tab): cmdorctrl-N (app/src/workspace/mod.rs), so Cmd on macOS"""
+    return "%s+%d" % ("cmd" if ctx.be.name == "mac" else "ctrl", n)
+
+
+def fwd(path):
+    """a path typed into a pane: forward slashes (Git Bash eats backslashes; PowerShell and cmd take both)"""
+    return path.replace("\\", "/")
+
+
+def hard_kill(ctx, r, label):
+    """The app dies with no quit path and no flush: SIGKILL of the exact app pid (Linux, macOS), taskkill /PID <pid> /T /F (Windows: the exact pid
+    the harness started, plus its tree so no orphaned shell keeps the profile's files open). True once it is gone within 8 s."""
+    pid = ctx.app.pid()
+    r.check(bool(pid), "%s: no app pid" % label)
+    if not pid:
+        return False
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30)
+    else:
+        import signal
+        os.kill(pid, signal.SIGKILL)
+    ok = wait_exit(ctx, 8)
+    r.check(ok, "%s: the app is still alive 8 s after the kill" % label)
+    keep_log(ctx, label)
+    ctx.app.stop()                         # reaps the launcher / any orphaned shells of the dead app, and clears the handle
+    return ok
+
+
+def stop_for_restart(ctx, r, bound, label):
+    """Take the app down so its settings can be edited and it can be relaunched on the same profile. Linux: through the app's own quit key (the
+    session writer runs, as for a user). macOS / Windows have no usable quit key for the harness (Cmd-Q is refused by the frontmost-app guard; the
+    Windows close is a confirm dialog), so the app is stopped by pid (SIGTERM then SIGKILL / taskkill) and the result says so: a restore case on
+    those platforms proves the restore of a HARD stop, not of a quit. Returns the quit_app-shaped dict."""
+    if not (ctx.be.name == "mac" or ctx.win):
+        return quit_app(ctx, r, bound, label)
+    t0 = time.time()
+    ctx.app.stop()
+    ok = wait_exit(ctx, bound)
+    res = dict(exited=ok, confirm_to_exit_s=0.0, total_s=round(time.time() - t0, 2), dialog=False, attempt=0, how="stop-by-pid")
+    r.metric("%s_quit" % label, res)
+    return res
+
+
 # ------------------------------------------------------------------ app lifecycle helpers (Linux)
 def settings_file(ctx):
     return os.path.join(ctx.prof.home, ".config", "phosphor", "settings.toml")
@@ -117,10 +188,25 @@ def quit_app(ctx, r, bound, label):
 
 
 def start_app(ctx, r, label, restored_min=1, timeout=90):
-    """(re)launch the app on the same profile; returns (new prompts, ok). Waits until the prompt count stops growing."""
+    """(re)launch the app on the same profile; returns (new prompts, ok). Waits until the prompt count stops growing. Windows: the main window,
+    then the prompt (Git Bash pane) or a fixed settle (PowerShell pane: no rc hook), then the key proof and pane state again (run.py's `reprove`),
+    exactly what run.py does after a relaunch."""
+    ctx.snapshot_log()                                  # the next launch overwrites phosphor.log; the injector accounting spans it
     ctx.app.stop()
     base = ctx.prompts()
     ctx.app.start()
+    if ctx.win:
+        up = ctx.app.wait_window(60) and (ctx.until(lambda: ctx.prompts() >= base + restored_min, timeout, step=0.5) if ctx.prof.local_prompts else (time.sleep(12) or ctx.app.alive()))
+        if not up:
+            r.check(False, "%s: no window / shell after the relaunch within %d s (alive %s)" % (label, timeout, ctx.app.alive()))
+            return 0, False
+        time.sleep(4)
+        ctx.be.guard()
+        bad = ctx.reprove() if getattr(ctx, "reprove", None) else None
+        if bad:
+            r.check(False, "%s: after the relaunch %s" % (label, bad))
+            return 0, False
+        return ctx.prompts() - base, True
     if not ctx.until(lambda: ctx.prompts() >= base + restored_min and ctx.app.alive(), timeout, step=0.5):
         r.check(False, "%s: no shell prompt within %d s after the relaunch (prompts %d -> %d, alive %s)" % (label, timeout, base, ctx.prompts(), ctx.app.alive()))
         return 0, False
@@ -138,7 +224,7 @@ def fresh_app(ctx, r, label):
     """leave a clean single-tab app with restore_session=false for the cases that follow"""
     try:
         if ctx.app.alive():
-            q = quit_app(ctx, r, 20, label + "_cleanup")
+            q = stop_for_restart(ctx, r, 20, label + "_cleanup")
             if not q["exited"]:
                 r.note("%s: cleanup quit did not exit; falling back to the harness stop (SIGTERM to the app's own process group)" % label)
         keep_log(ctx, label + "_end")
@@ -165,12 +251,12 @@ def descendants_cwd_under(prefix):
 def c_session_restore(ctx, r):
     """N tabs (cwd per tab, one command run in each), quit with the app's quit key, relaunch on the same profile: the N tabs come
     back in order with their cwds and NOTHING re-runs (effect file unchanged, rec.log has no command from the restore)."""
-    need_linux_app(ctx, SKIP_QUIT_WHY % "session_restore")
+    need_relaunch_app(ctx, "session_restore")
     n = int(os.environ.get("APPCI_SR_TABS", "5"))
     bound = float(os.environ.get("APPCI_QUIT_BOUND_S", "10"))
     try:
         # 1. restart with restore_session=true (the profile default is false so the other cases start clean)
-        q = quit_app(ctx, r, 20, "sr_setup")
+        q = stop_for_restart(ctx, r, 20, "sr_setup")
         r.check(q["exited"], "sr_setup: the app did not exit through the quit key within 20 s (%r)" % q)
         if not q["exited"]:
             return
@@ -186,19 +272,20 @@ def c_session_restore(ctx, r):
             ctx.rm(f)
         dirs, expect_cmds = [], []
         for i in range(n):
-            d = os.path.join(ctx.W, "sr_dir_%d" % i)
+            d = fwd(os.path.join(ctx.W, "sr_dir_%d" % i))
             os.makedirs(d, exist_ok=True)
-            dirs.append(os.path.realpath(d))
+            dirs.append(norm_path(d))
             if i:
                 ctx.be.key(NEWTAB)
                 time.sleep(0.8)
                 ctx.be.guard()
             tok = ctx.tok(6).lower()
-            cmd = "cd %s && echo SR%d_%s >> %s" % (d, i, tok, eff)
+            cmd = "cd %s && echo SR%d_%s >> %s" % (d, i, tok, fwd(eff))
             expect_cmds.append(cmd)
             ctx.be.type(cmd, ctx.rng.randint(10, 25), enter=True)
             ctx.until(lambda: len(ctx.lines("sr_eff.txt")) >= i + 1, 10)
             time.sleep(0.4)
+        time.sleep(3.0)                     # the session writer runs at least once before a stop-by-pid (a quit flushes it itself)
         eff_before = ctx.lines("sr_eff.txt")
         r.check(len(eff_before) == n, "setup: effect file has %d/%d lines before the quit" % (len(eff_before), n))
         have = ctx.prof.commands()[-n:]
@@ -206,7 +293,9 @@ def c_session_restore(ctx, r):
         ctx.shot("sr_tabs_before_quit")
         # 3. quit with the app's own path, then relaunch on the same profile
         keep_off = ctx.log_size()
-        q = quit_app(ctx, r, bound, "sr")
+        q = stop_for_restart(ctx, r, bound, "sr")
+        if q.get("how"):
+            r.note("sr: the app was stopped by pid (%s), not through a quit key: this proves the restore of a hard stop after the session writer ran (3 s settle), not of a quit" % q["how"])
         r.check(q["exited"], "quit: the app was still alive %.1f s after the last quit key (bound %.0f s): %r" % (bound, bound, q))
         slice_ = ctx.log_since(keep_off)
         r.check("Failed to send Shutdown" not in slice_, "quit: 'Failed to send Shutdown' in the app log (#1410)")
@@ -230,22 +319,22 @@ def c_session_restore(ctx, r):
         got = []
         for i in range(n):
             ctx.be.guard()
-            ctx.be.key("ctrl+%d" % (i + 1))
+            ctx.be.key(tab_key(ctx, i + 1))
             time.sleep(0.8)
-            ctx.be.type("pwd >> %s/sr_pwd_%d.txt" % (ctx.W, i), ctx.rng.randint(10, 25), enter=True)
+            ctx.be.type("%s >> %s/sr_pwd_%d.txt" % (PWD(ctx), fwd(ctx.W), i), ctx.rng.randint(10, 25), enter=True)
             ctx.until(lambda: ctx.lines("sr_pwd_%d.txt" % i), 8)
             got.append((ctx.lines("sr_pwd_%d.txt" % i) or ["<none>"])[0])
-        got_r = [os.path.realpath(g) if g != "<none>" else g for g in got]
+        got_r = [norm_path(g) if g != "<none>" else g for g in got]
         r.check(got_r == dirs, "tabs/cwds not restored as they were: expected %r got %r" % (dirs, got_r))
         ctx.be.guard()
-        ctx.be.key("ctrl+9")
+        ctx.be.key(tab_key(ctx, 9))
         time.sleep(0.8)
         ctx.rm("sr_pwd_last.txt")
-        ctx.be.type("pwd >> %s/sr_pwd_last.txt" % ctx.W, 12, enter=True)
+        ctx.be.type("%s >> %s/sr_pwd_last.txt" % (PWD(ctx), fwd(ctx.W)), 12, enter=True)
         ctx.until(lambda: ctx.lines("sr_pwd_last.txt"), 8)
         last = (ctx.lines("sr_pwd_last.txt") or ["<none>"])[0]
-        r.check(os.path.realpath(last) == dirs[-1] if last != "<none>" else False,
-                "the last tab (ctrl+9) is %r, expected %r: a tab was added or dropped by the restore" % (last, dirs[-1]))
+        r.check(norm_path(last) == dirs[-1] if last != "<none>" else False,
+                "the last tab (last tab key) is %r, expected %r: a tab was added or dropped by the restore" % (last, dirs[-1]))
         ctx.shot("sr_after_verify")
         r.check(ctx.lines("sr_eff.txt") == eff_before, "RE-RUN: effect file changed while verifying: %r" % ctx.lines("sr_eff.txt"))
     finally:

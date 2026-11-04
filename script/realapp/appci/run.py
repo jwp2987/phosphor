@@ -285,6 +285,8 @@ def main():
                 if a.backend in ("mac", "windows", "wayland"):
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
             ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane)
+            if win:       # #1540/#1541: a case that relaunches the app by itself re-proves the keys and re-sets the pane state exactly as the relaunch branch below does
+                ctx.reprove = lambda: prove_keys(ctx, be, pane, label)
             tier_names = None
             if win and not explicit_cases:       # the Windows fix tier is a table (winmap.FIX_TIER); an explicit --cases list always wins, the full tier is untouched
                 tier_names, ctx.opts = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE)

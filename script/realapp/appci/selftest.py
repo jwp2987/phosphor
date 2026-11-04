@@ -1102,6 +1102,32 @@ def coverage_b_pure_helpers():
     assert reg["cb_agent_pickers"]["modes"] == ("agent",) and "cb_agent_pickers" not in cases.SMOKE
 
 
+@check
+def g11_relaunch_cases_run_on_every_platform():
+    """#1540/#1541: crash_kill9_restore / crash_corrupt_db are classified for Windows (no longer NOT_WINDOWS), session_restore is Git Bash only there; the
+    helpers that make the cases platform-neutral behave"""
+    import cases_robust as cr
+    import cases_coverage_a as cov_a
+    for n in ("crash_kill9_restore", "crash_corrupt_db"):
+        assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None, n
+    assert winmap.skip_reason("session_restore", "gitbash") is None and winmap.skip_reason("session_restore", "powershell")
+    mac = types.SimpleNamespace(be=types.SimpleNamespace(name="mac"), win=False)
+    lin = types.SimpleNamespace(be=types.SimpleNamespace(name="wayland"), win=False)
+    assert cr.tab_key(mac, 3) == "cmd+3" and cr.tab_key(lin, 9) == "ctrl+9"
+    assert cr.fwd("C:\\Users\\x\\w") == "C:/Users/x/w"
+    ps = types.SimpleNamespace(pane="powershell")
+    bash = types.SimpleNamespace(pane="gitbash")
+    assert cov_a.cd_and_append(ps, "C:\\d", "T1", "C:\\f.txt") == "Set-Location -LiteralPath 'C:/d'; Add-Content -LiteralPath 'C:/f.txt' T1"
+    assert cov_a.cd_and_append(bash, "/d", "T1", "/f.txt") == "cd /d && echo T1 >> /f.txt"
+    assert cr.PWD(types.SimpleNamespace(win=True)) == "pwd -W" and cr.PWD(lin) == "pwd"
+    try:
+        cr.need_relaunch_app(types.SimpleNamespace(app=None), "x")
+        raise AssertionError("the sim backend must skip")
+    except cases.Skip:
+        pass
+    cr.need_relaunch_app(types.SimpleNamespace(app=types.SimpleNamespace(start=1, stop=1)), "x")
+
+
 def main():
     failed = 0
     for f in CHECKS:

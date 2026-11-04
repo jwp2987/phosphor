@@ -417,6 +417,7 @@ class Ctx:
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
+        self.reprove = None           # Windows (run.py): callable() -> None | reason; re-proves key delivery + the PowerShell pane state after a case relaunched the app
         self.opts = {}                # tier options of this pass (winmap.tier_plan): ref, ft_gaps, cc_short; empty = the full tier
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
