@@ -101,8 +101,9 @@ def plat():
     return os.environ.get("APPCI_PLATFORM", "linux")
 
 
-def lat_checks(r, rec, label):
-    """turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
+def lat_checks(r, rec, label, known_key=None):
+    """known_key: an ACCEPTED_FOR_RELEASE key; while it is accepted (and the platform is one it names) an over-budget OVERHEAD verdict is KNOWN (numbers printed), never a FAIL.
+    turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
     conhost_ref = str(rec.get("reference_name") or "").lower().startswith("conhost") and rec["budget_kind"] == "overhead"
     if conhost_ref and rec["budget_verdict"] == "fail":
         # r18u8 (U1): the pane runs through ConPTY and a bare conhost window does not, so the gap measured against conhost mixes the ConPTY layer (pty_write -> first
@@ -112,7 +113,11 @@ def lat_checks(r, rec, label):
                        "Install Windows Terminal for a ConPTY reference (owner decision); the overhead budget was NOT judged" % (
                            label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
     elif rec["budget_verdict"] == "fail":
-        if rec["budget_kind"] == "overhead":
+        acc = accepted_for_release(known_key) if known_key and rec["budget_kind"] == "overhead" else None
+        if acc and any(plat().startswith(p_) for p_ in acc.get("platforms", ("",))):
+            r.known("%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget [ACCEPTED_FOR_RELEASE #%d v%s: %s]" % (
+                label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"], acc["issue"], acc["release"], acc["why"]))
+        elif rec["budget_kind"] == "overhead":
             r.check(False, "%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget (overhead - 2 SE > budget)" % (label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
         else:
             r.check(False, "%s: %.2f ms over the harness floor exceeds the %.0f ms budget" % (label, rec["overhead_ms"], rec["budget_ms"]))
@@ -1788,7 +1793,7 @@ def ctrlc_flood(ctx, r, n, warm):
                                   ("reference interleaved with Phosphor in blocks of %d (A/B/A/B, same session)" % lat.interleave_block() if mode == "interleaved"
                                    else "NOREF: the reference was not interleaved (%s), so no overhead is judged" % fallback)])
         r.metrics.setdefault("lat", {})["ctrl_c_flood"] = rec
-        lat_checks(r, rec, "Ctrl-C under flood")
+        lat_checks(r, rec, "Ctrl-C under flood", known_key="ctrl_c_flood")
     r.check(okf and bool(fl), "Ctrl-C under flood: fewer than %d samples stopped `yes` and ran the trap" % (n + warm))
 
 
@@ -3399,7 +3404,7 @@ def c_lat_enter(ctx, r):
                                    else "reference measured after Phosphor (sequential, same session)" + ("; " + fallback if fallback else "")) +
                                   "; Linux headless-GPU numbers compare builds, not absolute vs hand-measured baselines"])
         r.metrics.setdefault("lat", {})["enter_to_start"] = rec
-        lat_checks(r, rec, "Enter to command start")
+        lat_checks(r, rec, "Enter to command start", known_key="latency_enter_overhead")
         if not rs and ds:
             r.check(statistics.median(ds) <= 80, "Enter to command start median %.1f ms > 80 ms CI sanity bound" % statistics.median(ds))
     ctx.reset()
@@ -4142,7 +4147,14 @@ def editor_open(ctx, palette, path):
 # what must hold is that the memory is given back after close (that check is unchanged). While the app version under test (app/Cargo.toml)
 # is at or below `release`, the open-cost budget is reported as KNOWN with its numbers instead of failing. Past it the budget FAILS again, and
 # the offline self-test fails as soon as app/Cargo.toml moves past `release`, so the acceptance cannot silently become permanent: re-decide it.
-ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17", "why": "owner 2026-11-04: open cost accepted, release after close required"}}
+# Also (owner 2026-11-04, v0.1.17 only): the Enter-to-command-start OVERHEAD budget of latency_enter on macOS and Linux (#1606, both modes) and the Ctrl-C-under-flood
+# OVERHEAD budget of ctrl_c_d (#1653 / #1606, both modes; judged at CTRLC_FLOOD_RELEASE_MS) are KNOWN. Every other check in those cases still fails (lost keys, sample counts,
+# the plain-sleep ctrl_c control at 20 ms, the 80 ms sanity bound, regressions vs the previous/baseline build); only lat_checks' overhead-over-budget verdict changes.
+ACCEPTED_FOR_RELEASE = {"editor_open_cost": {"issue": 1607, "release": "0.1.17", "why": "owner 2026-11-04: open cost accepted, release after close required"},
+                        "latency_enter_overhead": {"issue": 1606, "release": "0.1.17", "platforms": ("macos", "linux"),
+                                                   "why": "owner 2026-11-04: Enter-to-command-start overhead accepted for this release"},
+                        "ctrl_c_flood": {"issue": 1653, "release": "0.1.17", "platforms": ("macos", "linux", "windows"),
+                                         "why": "owner 2026-11-04: Ctrl-C under flood over %s ms accepted for this release (#1653 / #1606)" % CTRLC_FLOOD_RELEASE_MS}}
 _REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 
 
