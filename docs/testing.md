@@ -584,7 +584,7 @@ SKIP on macOS/Windows (Cmd-Q is forbidden by the Mac safety rules; the editor op
   no latency verdict against one is made.
 - `flood_scrollback_find` (62): a random uppercase marker is the first output line of a flood of at least 300k lines AND 3 s (r18e4: a fast macOS finished 300k lines before the screen scrolled); control: it is NOT on screen after
   the flood; `ctrl+shift+f` + the marker + Enter must bring it on screen (OCR). SKIPs without tesseract (package `tesseract-ocr`).
-- `editor_edit_save` (70): opens a file in the code editor (`<bin> file://PATH` forwarded over the app's D-Bus session; the opener has no
+- `editor_edit_save` (70; also Windows, #1544: `phosphor.exe file:///C:/...` is forwarded to the running instance over its single-instance named pipe, `cases.open_file_in_windows_app`; the second process is killed by exact pid after 30 s if it does not hand over): opens a file in the code editor (`<bin> file://PATH` forwarded over the app's D-Bus session; the opener has no
   display in its env and is killed after 30 s), types an edit at 10-25 ms/key, `ctrl+s`, byte-exact on disk; undo xN + save = original, redo
   xN + save = edited; closes the pane, changes the file outside, reopens, edits again: the disk must hold the second edit on top of the
   external content (a stale reopened buffer fails); nothing may reach the shell.
@@ -990,7 +990,7 @@ Full tier only (none is in `SMOKE`). Same rules as 3.1: exact bytes from `rec.lo
 
 Pure helpers (`legacy_settings`, `corrupt_settings`, `startup_log_problems`, `autoupdate_lines`, `picker_verdict`) are covered by `selftest.py` (`coverage_b_pure_helpers`).
 
-**Already covered, so not duplicated here.** #1460 (markdown/mermaid): sections 2.10 (parser corpus + snapshots, mermaid corpus, bench, fuzz targets) and the `md_viewer*` cases. #1463: `agent_stream_cancel`, `agent_approval`, `routing_table`, `agent_input_exact`, `agent_mode_switch` in `cases_caseagent.py`. #1543 is the same gap as #1460 (pixel-level diagram rendering stays the documented gap in 2.10). #1544 Linux: `editor_edit_save`, `editor_paste`, `editor_memory_7mb`; Windows has no verified file hand-over.
+**Already covered, so not duplicated here.** #1460 (markdown/mermaid): sections 2.10 (parser corpus + snapshots, mermaid corpus, bench, fuzz targets) and the `md_viewer*` cases. #1463: `agent_stream_cancel`, `agent_approval`, `routing_table`, `agent_input_exact`, `agent_mode_switch` in `cases_caseagent.py`. #1543 is the same gap as #1460 (pixel-level diagram rendering stays the documented gap in 2.10). #1544 Linux and Windows: `editor_edit_save`, `editor_paste`, `editor_memory_7mb` (Windows hand-over: the app's named-pipe single-instance forward); macOS: `cb_editor_mac`.
 
 **Recorded gaps (need an owner decision or a fixture, not code):** upgrade over a previous install, uninstall, a `phosphor://` URL end to end (#1546): needs a previous build's installer/data directory as a fixture on each platform and a clean-VM step, today manual (5.4). Auto-update against a real release (#1547): the GUI updater is off by decision; its `SHA256SUMS` verification is unit-tested in `app/src/autoupdate/gitlab_tests.rs` and cannot meet a real release until the release pipeline has run end to end. Key-to-paint on Linux/Windows and the 4 ms UI-work line (#1548): no read-back tool exists there and the app log floor is 8 ms; a log-floor change is an app change, not a test.
 

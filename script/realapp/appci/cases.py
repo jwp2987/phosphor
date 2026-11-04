@@ -4101,6 +4101,32 @@ def _squash(txt):
     return "".join((txt or "").lower().split())
 
 
+def windows_file_url(path):
+    """file:///C:/Users/x/a%20b.txt for a Windows path (what the shell's file-open hands the app as a startup URL)"""
+    import pathlib
+    return pathlib.PureWindowsPath(path).as_uri()
+
+
+def open_file_in_windows_app(ctx, path):
+    """#1544: Windows hand-over. `phosphor.exe <file:// url>` is the same startup-args path the OS file association uses: the second process takes the
+    per-session single-instance mutex check (app_services/windows/single_instance_manager.rs, `Local\\Zap<Channel>_SingleInstance`), finds the
+    sole running instance, sends the URLs over its named pipe (`pass_startup_args_to_existing_instance`, app_services/windows/mod.rs) and exits. The test
+    build is the SAME channel and executable as the app under test, so it is that instance. If the hand-over does not happen the second process would
+    be a second app on the same data dir: it is killed after 30 s (exact pid, tree) and reported. Returns a failure string or None."""
+    env = dict(ctx.app.env()) if hasattr(ctx.app, "env") else dict(os.environ)
+    p = subprocess.Popen([ctx.app.bin, windows_file_url(path)], env=env, cwd=os.path.dirname(ctx.app.bin), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(os.path.join(ctx.run, "pids"), "a") as f:
+        f.write("file-open %d\n" % p.pid)
+    try:
+        p.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, timeout=30)
+        return "the forwarding invocation did not exit within 30 s (killed): the build did not hand the file to the running instance, or a second app started"
+    if not ctx.app.alive():
+        return "the app under test is gone after the file hand-over (exit %s)" % getattr(ctx.app.proc, "returncode", None)
+    return None
+
+
 def open_file_in_app(ctx, path):
     """Hand a local file to the RUNNING app the way the OS would (file:// URL -> uri::open_file -> markdown viewer pane
     when code.editor.prefer_markdown_viewer, default true). Linux: a second invocation of the same binary inside the app's own
@@ -4110,7 +4136,7 @@ def open_file_in_app(ctx, path):
         r = subprocess.run(["open", "-a", ctx.app.bundle, path], capture_output=True, timeout=30)
         return None if r.returncode == 0 else "open -a failed: %s" % r.stderr.decode(errors="replace")[:200]
     if ctx.win:
-        raise Skip("no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows")
+        return open_file_in_windows_app(ctx, path)
     pid = ctx.app.pid()
     try:
         raw = open("/proc/%d/environ" % pid, "rb").read().split(b"\0")

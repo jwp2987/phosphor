@@ -31,8 +31,8 @@ NOW = lambda ctx: "now" if ctx.be.name == "mac" else "date +%s.%N"     # BSD dat
 SKIP_QUIT_WHY = ("%s needs a quit + relaunch on the same profile: the Linux flow sends the quit key (ctrl+shift+q) and App.proc waits on the child; "
                  "on macOS Cmd-Q is refused by the frontmost-app guard and MacBackend has no quit/relaunch (an osascript 'tell application to quit' path and a "
                  "relaunch through the LaunchServices PID are not implemented); Windows has a separate flow")
-SKIP_EDITOR_WHY = ("the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux only); "
-                   "macOS (open -a / an Apple Event open-document handler) and Windows have no verified equivalent, and the editor key set differs "
+SKIP_EDITOR_WHY = ("the file is opened by a second `phosphor <path>` process that the running instance receives over the D-Bus URL forward (Linux) or the "
+                   "Windows named pipe (#1544, runs there); macOS (open -a / an Apple Event open-document handler) has cb_editor_mac, and the editor key set differs "
                    "(Cmd-S/Cmd-V on macOS, close = cmd-shift-W which the guard refuses)")
 
 
@@ -537,6 +537,10 @@ def open_in_app(ctx, path):
     """open `path` in the code editor the way a desktop file-open does: `<bin> file://<path>` on the app's own D-Bus session, which
     the running instance receives (release builds forward startup args). The display is removed from the opener's env so that, if
     the build did not forward, a second instance cannot open a window; it is killed after 30 s (exact pid) and reported."""
+    if ctx.win:             # #1544: the Windows named-pipe hand-over (cases.open_file_in_windows_app)
+        err = cases.open_file_in_windows_app(ctx, path)
+        time.sleep(2.0)
+        return err is None, err or "windows hand-over: phosphor.exe %s" % cases.windows_file_url(path)
     pid = ctx.app.pid()
     env = {}
     for kv in open("/proc/%d/environ" % pid, "rb").read().split(b"\0"):
@@ -562,7 +566,11 @@ EDIT_ORIG = "alpha line one\nsecond line éü café\n\ttabbed third\nlast line w
 
 
 def editor_prepare(ctx, r, name):
-    need_linux_app(ctx, SKIP_EDITOR_WHY)
+    if ctx.be.name == "mac" or plat().startswith("macos"):
+        ctx.skip_reason = SKIP_EDITOR_WHY
+        raise cases.Skip("%s (this platform: %s; cb_editor_mac covers the macOS editor)" % (SKIP_EDITOR_WHY, plat()))
+    if not ctx.win:
+        need_linux_app(ctx, SKIP_EDITOR_WHY)
     d = os.path.join(ctx.W, "ed")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, name)

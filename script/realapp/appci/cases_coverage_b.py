@@ -373,7 +373,7 @@ def c_editor_mac(ctx, r):
     is refused by the frontmost-app guard), so the pane is left open: this case runs last and run.py relaunches the app if the pane is not the
     shell afterwards. Linux has editor_edit_save; Windows has no verified file hand-over."""
     if ctx.be.name != "mac":
-        r.skip("Linux: editor_edit_save/editor_paste/editor_memory_7mb cover the editor; Windows: no verified file hand-over to the running instance")
+        r.skip("Linux: editor_edit_save/editor_paste/editor_memory_7mb cover the editor; Windows: editor_edit_save and editor_paste hand the file over the named pipe (#1544)")
     d = os.path.join(ctx.W, "ed")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, "mac_edit_%s.txt" % ctx.mode)

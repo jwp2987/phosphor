@@ -1147,6 +1147,14 @@ def g11_password_prompt_host_and_variants():
         assert "FAKE_PASSWORD" in src and "FAKE_PW_USER" in src, f
 
 
+@check
+def g11_windows_editor_handover_and_classification():
+    """#1544: the Windows editor hand-over builds a proper file URL and the editor cases are classified for both panes"""
+    assert cases.windows_file_url("C:\\Users\\a b\\x.txt") == "file:///C:/Users/a%20b/x.txt", cases.windows_file_url("C:\\Users\\a b\\x.txt")
+    for n in ("editor_edit_save", "editor_paste"):
+        assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None, n
+
+
 def main():
     failed = 0
     for f in CHECKS:

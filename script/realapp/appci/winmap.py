@@ -13,6 +13,7 @@ BOTH = {
     "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "tabs_two_windows", "tabs_streaming",
     "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
     "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
+    "editor_edit_save", "editor_paste",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
     "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
@@ -71,8 +72,6 @@ NOT_WINDOWS = {
     "flood_typed_line": "not yet ported: POSIX `seq`/`yes` floods and /proc sampling",
     "flood_typing_latency": "not yet ported: POSIX flood and pty arrival reader",
     "flood_scrollback_find": "needs OCR (tesseract) and the Linux find flow",
-    "editor_edit_save": "not yet ported: Linux D-Bus URL forward opens the file",
-    "editor_paste": "not yet ported: Linux D-Bus URL forward opens the file",
     "soak": "not yet ported: samples /proc",
     "alt_screen_mouse_reporting": "no pointer synthesis in the Windows backend yet, and the receiving program needs python3 termios (#1537)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536)",
@@ -81,7 +80,7 @@ NOT_WINDOWS = {
     "cb_settings_migration": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle); the Windows relaunch is the separate runner flow",
     "cb_state_relaunch": "needs the App stop/start handle on a profile with state; Windows has a separate flow",
     "cb_ui_action_latency": "needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend",
-    "cb_editor_mac": "macOS-only case (Linux has editor_edit_save); Windows has no verified file hand-over to the running instance",
+    "cb_editor_mac": "macOS-only case (Linux and Windows have editor_edit_save / editor_paste)",
 }
 
 
