@@ -2072,12 +2072,25 @@ impl LockDeadline {
         self.remaining().is_zero()
     }
 
-    /// Makes SQLite's own busy handler wait at most what is left of the budget.
+    /// Makes SQLite's own busy handler wait at most one [`BUSY_WAIT_SLICE`] (or what is left of
+    /// the budget, if less). The caller retries in wall-clock time until the deadline
+    /// ([`retry_while_locked`]), so the budget holds even where SQLite's wait runs long.
     fn apply_busy_timeout(self, conn: &mut SqliteConnection) -> std::result::Result<(), Error> {
-        let ms = self.remaining().as_millis().max(1);
+        let ms = self.remaining().min(BUSY_WAIT_SLICE).as_millis().max(1);
         conn.batch_execute(&format!("PRAGMA busy_timeout = {ms};"))
     }
 }
+
+/// The longest single busy wait handed to SQLite during setup (#1650).
+///
+/// `busy_timeout` is not a wall-clock bound: SQLite's busy handler sums the sleeps it asked for,
+/// and on Windows each short `Sleep` lasts at least a scheduler tick, so the wait runs long.
+/// Measured on the Windows VM (SQLite 3.49, another connection holding `BEGIN EXCLUSIVE`, the
+/// WAL switch): `busy_timeout = 3000` gave up after 4.6-4.8 s, `1000` after 1.8 s, `100` after
+/// 0.5 s, `25` after 0.29 s. One 3 s wait therefore broke the 3 s setup budget on its own (the
+/// test saw 4.7-4.8 s). Retrying 25 ms slices against the [`LockDeadline`]'s `Instant` ended the
+/// same wait at 3.18 s there (100 ms slices: 3.29 s); on Linux a slice is a slice.
+const BUSY_WAIT_SLICE: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Runs `op`, retrying while `is_locked` says it failed on a lock, until `deadline`. Each
 /// attempt's busy timeout is the time left, so the total wait never exceeds the budget.
@@ -2096,8 +2109,11 @@ fn retry_while_locked<T, E>(
         match &result {
             Err(err) if is_locked(err) && !deadline.expired() => {
                 attempt += 1;
+                // Capped at one slice, so a lock released during the pause is noticed promptly.
                 std::thread::sleep(
-                    std::time::Duration::from_millis(50 * attempt).min(deadline.remaining()),
+                    std::time::Duration::from_millis(50 * attempt)
+                        .min(BUSY_WAIT_SLICE)
+                        .min(deadline.remaining()),
                 );
             }
             _ => return result,
@@ -2151,14 +2167,22 @@ fn run_migrations_single_writer(conn: &mut SqliteConnection, deadline: LockDeadl
     }
     let mut result = Ok(());
     for attempt in 0..=MIGRATION_RACE_RETRIES {
-        let _ = deadline.apply_busy_timeout(conn);
-        result = conn
-            .immediate_transaction(|conn| {
-                conn.run_pending_migrations(persistence::MIGRATIONS)
-                    .map(|_| ())
-                    .map_err(|e| anyhow!(e))
-            })
-            .context("Failed to perform migrations");
+        // A lock that outlasts one busy slice is waited out here, until the deadline (#1650).
+        // Retrying is safe: a failed `BEGIN IMMEDIATE` ran nothing, and a failure inside the
+        // transaction rolled it back.
+        result = retry_while_locked(
+            deadline,
+            conn,
+            |conn| {
+                conn.immediate_transaction(|conn| {
+                    conn.run_pending_migrations(persistence::MIGRATIONS)
+                        .map(|_| ())
+                        .map_err(|e| anyhow!(e))
+                })
+            },
+            |err: &anyhow::Error| underlying_error_message(err).contains("database is locked"),
+        )
+        .context("Failed to perform migrations");
         let raced = result
             .as_ref()
             .err()

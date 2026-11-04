@@ -2499,6 +2499,16 @@ mod is_unsafe_watch_root_tests {
             home.display()
         );
 
+        // The root of home's own filesystem: `/` on unix, the drive root (`C:\`) on
+        // Windows, where a bare `/` has no drive prefix and is not an ancestor of
+        // `C:\Users\...` as a path.
+        let root = home.ancestors().last().expect("a path has at least itself");
+        assert!(
+            is_unsafe_watch_root(root),
+            "filesystem root ({}) must be rejected",
+            root.display(),
+        );
+        #[cfg(unix)]
         assert!(
             is_unsafe_watch_root(Path::new("/")),
             "filesystem root must be rejected",

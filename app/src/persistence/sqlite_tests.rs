@@ -2320,6 +2320,54 @@ fn setup_gives_up_within_the_budget_when_another_connection_holds_the_lock() {
     setup_database_or_quarantine(&database_path).expect("setup works once the lock is gone");
 }
 
+/// #1650: SQLite's `busy_timeout` is not a wall-clock bound (on Windows a 3 s timeout returned
+/// after 4.6 s), so setup hands it one short slice at a time and keeps the budget itself.
+#[test]
+fn setup_busy_waits_are_short_slices_of_the_budget() {
+    use diesel::{Connection, RunQueryDsl, SqliteConnection};
+    #[derive(diesel::QueryableByName)]
+    struct BusyTimeout {
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        timeout: i32,
+    }
+    let mut conn = SqliteConnection::establish(":memory:").expect("in-memory sqlite");
+    super::LockDeadline::new()
+        .apply_busy_timeout(&mut conn)
+        .expect("set busy_timeout");
+    let timeout = diesel::sql_query("PRAGMA busy_timeout")
+        .get_result::<BusyTimeout>(&mut conn)
+        .expect("read busy_timeout")
+        .timeout;
+    assert!(
+        (1..=i32::try_from(super::BUSY_WAIT_SLICE.as_millis()).unwrap()).contains(&timeout),
+        "busy_timeout {timeout} ms must be one slice at most"
+    );
+}
+
+/// #1650: with one slice per SQLite wait, a lock held for longer than a slice but released
+/// inside the budget is still waited out: setup succeeds, it does not give up early.
+#[test]
+// Test-only: releases the lock from another thread after a delay.
+#[allow(clippy::disallowed_types)]
+fn setup_waits_out_a_lock_released_inside_the_budget() {
+    use diesel::{Connection, SqliteConnection, connection::SimpleConnection};
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut holder = SqliteConnection::establish(database_path.to_str().unwrap()).expect("open");
+    holder
+        .batch_execute("PRAGMA journal_mode=DELETE; CREATE TABLE held (x); BEGIN EXCLUSIVE;")
+        .expect("take the exclusive lock");
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        holder.batch_execute("ROLLBACK;").expect("release");
+        drop(holder);
+    });
+
+    let result = setup_database_or_quarantine(&database_path);
+    releaser.join().unwrap();
+    result.expect("setup waits for a lock released well inside the budget");
+}
+
 // ---------------------------------------------------------------------------
 // #936: the commands-table trim must hold the cap even when the table is already over it.
 // Nothing references `commands.id` (no foreign key, no other table stores a command id), so

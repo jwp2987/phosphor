@@ -807,11 +807,14 @@ pub fn test_nu_path_completions_spell_the_home_directory_when_quoting_is_needed(
         );
     let mut got = nu_path_replacements(&ctx, "~/", &["my dir/", "a b.txt", "src/"]);
     got.sort();
+    // Inside nushell double quotes `\` is an escape (`"C:\Users\test"` holds a tab, and `\U`
+    // does not parse), so the Windows home directory's backslashes are written doubled.
+    let home = TEST_HOME_DIR.replace('\\', "\\\\");
     assert_eq!(
         got,
         vec![
-            ("a b.txt".to_owned(), format!("\"{TEST_HOME_DIR}/a b.txt\"")),
-            ("my dir/".to_owned(), format!("\"{TEST_HOME_DIR}/my dir/")),
+            ("a b.txt".to_owned(), format!("\"{home}/a b.txt\"")),
+            ("my dir/".to_owned(), format!("\"{home}/my dir/")),
             // No quoting needed: the bare word keeps its `~`.
             ("src/".to_owned(), "~/src/".to_owned()),
         ]

@@ -210,15 +210,16 @@ fn test_find_git_repo_with_worktree() {
 
 #[test]
 fn remote_repo_root_registration_and_lookup() {
-    use std::path::Path;
     use warp_util::host_id::HostId;
     use warp_util::local_or_remote_path::LocalOrRemotePath;
     use warp_util::remote_path::RemotePath;
 
     let mut repos = DetectedRepositories::default();
     let host = HostId::new("host-1".to_string());
-    let root = StandardizedPath::from_local_absolute_unchecked(Path::new("/home/u/proj"));
-    let nested = StandardizedPath::from_local_absolute_unchecked(Path::new("/home/u/proj/src/x"));
+    // Remote (unix) paths, parsed in their own encoding: `/home/u/proj` is not a local
+    // absolute path on Windows.
+    let root = StandardizedPath::try_new("/home/u/proj").expect("absolute unix path");
+    let nested = StandardizedPath::try_new("/home/u/proj/src/x").expect("absolute unix path");
 
     let remote = |h: &HostId, p: &StandardizedPath| {
         LocalOrRemotePath::Remote(RemotePath::new(h.clone(), p.clone()))
