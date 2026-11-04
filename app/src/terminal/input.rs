@@ -6957,20 +6957,53 @@ impl Input {
         !wrapped
     }
 
-    /// The user chose to run the waiting multi-line buffer line by line.
+    /// The user chose to run the waiting multi-line buffer line by line. The keys typed while the
+    /// dialog was open go to the editor after the run is queued, so they land in the next line
+    /// (#1652).
     pub(crate) fn confirm_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
+        // Closed before the submit, so nothing the submit does to the editor is held.
+        let held = self.editor.as_ref(ctx).paste_hold().end_modal_hold();
         if !std::mem::take(&mut self.awaiting_multiline_submit_confirmation) {
+            self.deliver_multiline_dialog_held_keys(held, ctx);
             return;
         }
         self.multiline_submit_confirmed = true;
         self.input_enter_as_shell_command(ctx);
         self.multiline_submit_confirmed = false;
+        self.deliver_multiline_dialog_held_keys(held, ctx);
     }
 
-    /// The user declined: the text stays in the input exactly as it was.
+    /// The user declined: the text stays in the input exactly as it was, and the keys typed while
+    /// the dialog was open follow it in typed order (#1652).
     pub(crate) fn cancel_multiline_submit(&mut self, ctx: &mut ViewContext<Self>) {
         self.awaiting_multiline_submit_confirmation = false;
+        let held = self.editor.as_ref(ctx).paste_hold().end_modal_hold();
         ctx.focus(&self.editor);
+        self.deliver_multiline_dialog_held_keys(held, ctx);
+    }
+
+    /// #1652: the keys held while the multi-line submit dialog was open, to the editor, in typed
+    /// order, exactly once. Event-driven: only the dialog's answer calls this.
+    fn deliver_multiline_dialog_held_keys(
+        &mut self,
+        held: Vec<crate::editor::HeldPasteKey>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if held.is_empty() {
+            return;
+        }
+        self.editor.update(ctx, |editor, ctx| {
+            editor.deliver_modal_held_keys(held, ctx);
+        });
+    }
+
+    /// #1652: the hold the multi-line submit dialog's key sink pushes the keys it takes into (the
+    /// same one the editor holds into, so the order is one order).
+    pub(crate) fn multiline_dialog_key_hold(
+        &self,
+        ctx: &AppContext,
+    ) -> Rc<crate::editor::EditorPasteHold> {
+        self.editor.as_ref(ctx).paste_hold()
     }
 
     pub fn try_execute_command(&mut self, command: &str, ctx: &mut ViewContext<Self>) -> bool {
@@ -14109,9 +14142,13 @@ impl Input {
             {
                 // Nothing is written and the text stays in the editor until the user answers.
                 self.awaiting_multiline_submit_confirmation = true;
+                // #1652: keys typed while the dialog is open are held, then delivered after the
+                // answer (`deliver_multiline_dialog_held_keys`).
+                self.editor.as_ref(ctx).paste_hold().begin_modal_hold();
                 ctx.dispatch_typed_action(
                     &WorkspaceAction::ShowMultilineSubmitConfirmationDialog {
                         line_count: submitted_line_count(&command),
+                        input: ctx.handle(),
                     },
                 );
                 return;

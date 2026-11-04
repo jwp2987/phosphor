@@ -10890,11 +10890,19 @@ impl Workspace {
     ) {
         self.current_workspace_state
             .is_multiline_submit_confirmation_dialog_open = false;
-        let input = self
-            .active_tab_pane_group()
-            .as_ref(ctx)
-            .focused_session_view(ctx)
-            .map(|terminal_view| terminal_view.as_ref(ctx).input().clone());
+        // #1652: the answer goes to the input that asked (it holds the keys typed meanwhile), not
+        // to whichever session is focused now; the focused one only if that input is gone.
+        let asking = self
+            .multiline_submit_confirmation_dialog
+            .update(ctx, |view, _| view.set_asking_input(None));
+        let input = match asking.and_then(|input| input.upgrade(ctx)) {
+            Some(input) => Some(input),
+            None => self
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .focused_session_view(ctx)
+                .map(|terminal_view| terminal_view.as_ref(ctx).input().clone()),
+        };
         if let Some(input) = input {
             input.update(ctx, |input, ctx| match event {
                 MultilineSubmitConfirmationEvent::Confirm => input.confirm_multiline_submit(ctx),
@@ -17691,10 +17699,16 @@ impl Workspace {
     pub fn show_multiline_submit_confirmation_dialog(
         &mut self,
         line_count: usize,
+        input: WeakViewHandle<Input>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // The asking input is still mid-update here (the action comes from inside it): it is only
+        // remembered, never read (#1652).
         self.multiline_submit_confirmation_dialog
-            .update(ctx, |view, ctx| view.set_line_count(line_count, ctx));
+            .update(ctx, |view, ctx| {
+                view.set_line_count(line_count, ctx);
+                view.set_asking_input(Some(input));
+            });
         self.current_workspace_state
             .is_multiline_submit_confirmation_dialog_open = true;
         ctx.focus(&self.multiline_submit_confirmation_dialog);
@@ -23567,8 +23581,8 @@ impl TypedActionView for Workspace {
                     );
                 }
             }
-            ShowMultilineSubmitConfirmationDialog { line_count } => {
-                self.show_multiline_submit_confirmation_dialog(*line_count, ctx);
+            ShowMultilineSubmitConfirmationDialog { line_count, input } => {
+                self.show_multiline_submit_confirmation_dialog(*line_count, input.clone(), ctx);
             }
             ShowRewindConfirmationDialog {
                 ai_block_view_id,

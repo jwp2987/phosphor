@@ -1736,3 +1736,17 @@ Harness changes plus two small app changes. `run.py --self-test` covers the harn
 - **`key_loss_control`**: the macOS reference is ready when its own shell has drawn a prompt (`refctl/prompt.log`, up to 30 s), not when
   Terminal.app is frontmost: Terminal.app had restored windows from an earlier session, so it was frontmost at once and the keys went to a
   restored window while the `.command` shell was still starting.
+
+## #1652: keys typed while the multi-line submit dialog is open
+
+The `Run N lines one at a time?` dialog (`MultilineSubmitConfirmationDialog`) took focus and dropped every key its own bindings did not
+take (`kh_editor_elem_typed ... live_focus=no accepted=false`); the next Enter then answered it. The owner's decision is hold, deliver
+after: the dialog is now a pane key sink and holds typed text and the editor's fixed editing keys (Backspace, Delete, arrows, Tab,
+Shift-Tab) in the asking input's editor hold (`EditorPasteHold::begin_modal_hold`, opened when the input asks); a key that reaches the
+editor while the dialog is open (focus is there instead) joins the same hold, an Enter included, so it neither confirms the dialog nor
+submits the waiting buffer. The answer goes to the input that asked (not to whichever session is focused then); Cancel delivers the held
+keys behind the buffer, Confirm after the run is submitted (the text newer than the submission, #934). No timer is involved: only the
+answer delivers. Log hops: `kh_multiline_dialog_hold`, `modal_hold_key`, `modal_hold_deliver`. Tests (`terminal/input_test.rs`; the three
+key tests run in both `DestinationMode`s): `multiline_dialog_holds_text_and_editing_keys_only`,
+`keys_typed_while_the_multiline_dialog_is_open_follow_a_cancel`, `keys_typed_while_the_multiline_dialog_is_open_follow_the_confirmed_run`,
+`an_enter_outside_the_multiline_dialog_does_not_confirm_it`, `multiline_dialog_enter_confirms_and_escape_cancels`.
