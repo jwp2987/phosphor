@@ -44,6 +44,32 @@ PROMPT_COMMAND="__pa_rec${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 if [ -n "$APPCI_W" ]; then cd "$APPCI_W"; elif [ "$PWD" = "$HOME" ]; then cd "$HOME/w" 2>/dev/null; fi
 true
 '''
+BOOTSTRAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "app", "assets", "bundled", "bootstrap")
+
+
+def compose_bash_bootstrap(conpty, session_id=1, bootdir=None):
+    """#1583 G2: Phosphor's bash bootstrap as ONE sourceable script: bash.sh with its `#include bundled/bootstrap/bash_body.sh` line replaced by the
+    body (what the app's `load_and_escape_script`/include step does), @@WARP_SESSION_ID@@ and @@USING_CON_PTY_BOOLEAN@@ filled in like
+    terminal/bootstrap.rs does (`conpty` is true for a Windows ConPTY pane). None when the assets are not in this checkout (a harness copied out of the repo)."""
+    d = bootdir or BOOTSTRAP_DIR
+    try:
+        head = open(os.path.join(d, "bash.sh"), encoding="utf-8").read()
+        body = open(os.path.join(d, "bash_body.sh"), encoding="utf-8").read()
+    except OSError:
+        return None
+    inc = "#include bundled/bootstrap/bash_body.sh"
+    if inc not in head:
+        return None
+    text = head.replace(inc, body.rstrip("\n"))
+    return text.replace("@@WARP_SESSION_ID@@", str(session_id)).replace("@@USING_CON_PTY_BOOLEAN@@", "true" if conpty else "false")
+
+
+def ref_boot_rc_text(ref_rc, boot_sh, conpty):
+    """the reference bash's rc for G2: the normal reference rc (prompt/command logging), then the same variables the InitShell script sets in the app,
+    then the bootstrap. The reference terminal's shell then carries the hooks Phosphor's pane has (bash-preexec DEBUG trap, precmd/preexec messages, title)."""
+    return '. "%s"\nWARP_SESSION_ID=1; WARP_USING_WINDOWS_CON_PTY=%s\n. "%s"\n' % (ref_rc, "true" if conpty else "false", boot_sh)
+
+
 BASH_PROFILE = '[ -f ~/.bashrc ] && . ~/.bashrc\n'
 ZSHRC = r'''# appci scratch rc (zsh): same log format as the bash rc
 zmodload zsh/datetime
@@ -98,6 +124,7 @@ def history_lines(n=2200, seed=1):
 class Profile:
     def __init__(self, run, shell_home_name="home", pane=None):
         self.win = os.name == "nt"
+        self.variant = None     # #1534: "pwsh7" | "cmd" for a startup_shell_override pass (run.py sets it together with pane = its family), else None
         self.pane = pane or ("powershell" if self.win else None)   # Windows pane shell: powershell | gitbash (docs/testing.md 2.8); None = POSIX bash/zsh
         self.run = run
         self.home = os.path.join(run, shell_home_name)
@@ -105,6 +132,7 @@ class Profile:
         self.rctl = os.path.join(run, "rctl")          # the ssh "remote" side logs here
         self.refctl = os.path.join(run, "refctl")      # the Linux reference terminal logs here, never into ctl (#1500)
         self.ref_rc = os.path.join(self.home, ".refrc")
+        self.ref_boot_rc = os.path.join(self.home, ".refrc_boot")      # #1583 G2: ref_rc, then Phosphor's own bash bootstrap sourced (the shell hooks the pane has)
         self.ref_active = False                        # True while the reference terminal is the target: commands()/read() then read refctl
         self.rhome = os.path.join(run, "rhome")
         self.shots = os.path.join(run, "shots")
@@ -113,13 +141,13 @@ class Profile:
     def local_prompts(self):
         """False when the pane's shell cannot run the rc hook that writes prompt.log / rec.log: the app starts PowerShell with -NoProfile, so a
         PowerShell pane has neither (cases fall back to effect files and fixed waits and say so)"""
-        return not (self.win and self.pane == "powershell")
+        return not (self.win and self.pane in ("powershell", "cmd"))        # cmd.exe and pwsh 7 (family "powershell") have no rc hook either
 
     def _c(self, p):
         """a path as it goes INTO a shell rc file: C:/forward/slashes on Windows, unchanged elsewhere"""
         return _fwd(p) if self.win else p
 
-    def build(self, mode, ollama_url=None, ollama_model="gpt-oss:20b", ssh_port=None, ssh_ident=None):
+    def build(self, mode, ollama_url=None, ollama_model="gpt-oss:20b", ssh_port=None, ssh_ident=None, ssh_pw=None):
         for d in (self.home, self.ctl, self.rctl, self.refctl, self.rhome, self.shots):
             shutil.rmtree(d, ignore_errors=True) if d in (self.home, self.ctl, self.rctl, self.refctl, self.rhome) else None
             os.makedirs(d, exist_ok=True)
@@ -145,6 +173,12 @@ class Profile:
         _wr(h + "/.bashrc", BASHRC % {"ctl": self._c(self.ctl)})
         _wr(h + "/.bash_profile", BASH_PROFILE)
         _wr(self.ref_rc, BASHRC % {"ctl": self._c(self.refctl)})
+        boot = compose_bash_bootstrap(self.win)
+        if boot:
+            _wr(os.path.join(h, ".refboot.sh"), boot)
+            _wr(self.ref_boot_rc, ref_boot_rc_text(self._c(self.ref_rc), self._c(os.path.join(h, ".refboot.sh")), self.win))
+        elif os.path.exists(self.ref_boot_rc):
+            os.remove(self.ref_boot_rc)
         _wr(h + "/.zshrc", ZSHRC % {"ctl": self._c(self.ctl)})
         self.ref_zdot = os.path.join(h, ".refzdot")       # macOS reference zsh: its own ZDOTDIR so its hook writes refctl (#1550)
         _wr(os.path.join(self.ref_zdot, ".zshrc"), ZSHRC % {"ctl": self._c(self.refctl)})
@@ -171,7 +205,7 @@ class Profile:
         open(t + "/zzcompl_alpha_unique.txt", "w").close()
         self.write_settings(mode, ollama_url, ollama_model)
         if ssh_port and self.win:
-            self.write_ssh_windows(ssh_port, ssh_ident)
+            self.write_ssh_windows(ssh_port, ssh_ident, ssh_pw)
         elif ssh_port:
             os.makedirs(h + "/.ssh", mode=0o700, exist_ok=True)
             _wr(h + "/.ssh/config", 
@@ -184,6 +218,8 @@ class Profile:
                     "\nHost fakepw\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n"
                     "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode no\n  NumberOfPasswordPrompts 1\n  LogLevel ERROR\n"
                     % (ssh_port, os.environ.get("USER", "runner"), pw, h))
+            if ssh_pw:
+                open(h + "/.ssh/config", "a").write("\n" + self.password_host_block(ssh_pw, h))
             self.write_ssh_wrappers()
             # the remote side (rhome, same machine) needs the same host entries and wrappers, or a NESTED `ssh fake` typed in the
             # remote shell cannot resolve (ssh_nested_typeahead, r18ck 2026-11-02)
@@ -193,10 +229,18 @@ class Profile:
             self.write_ssh_wrappers(self.rhome)
         return h
 
+    @staticmethod
+    def password_host_block(pw, home):
+        """ssh config for `ssh fakepass` (#1535): the harness fake sshd's one password user, password auth only, one attempt: ssh stops at its own
+        `pwuser@127.0.0.1's password:` prompt on the tty"""
+        return ("Host fakepass\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  PreferredAuthentications password\n  PubkeyAuthentication no\n"
+                "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode no\n  NumberOfPasswordPrompts 1\n  LogLevel ERROR\n"
+                % (pw["port"], pw["user"], _fwd(home)))
+
     TOOLS = ("ssh", "scp", "sftp")
     WIN_OPENSSH = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH")
 
-    def write_ssh_windows(self, port, ident):
+    def write_ssh_windows(self, port, ident, pwhost=None):
         """Windows: the PowerShell pane's client is the built-in Win32-OpenSSH (System32\\OpenSSH\\ssh.exe), which reads the user config from the PROFILE
         directory, not %HOME%; the Git Bash pane's is Git for Windows' own ssh (win_client). Either way `ssh fake` is resolved through wrappers in
         <home>/bin (first on the app's PATH) that pass `-F <home>/.ssh/config`:
@@ -208,6 +252,8 @@ class Profile:
         cfg = h + "/.ssh/config"
         blocks = ["Host fake\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n"
                   "  StrictHostKeyChecking no\n  UserKnownHostsFile %s/.ssh/known_hosts\n  BatchMode yes\n  LogLevel ERROR\n" % (port, user, _fwd(ident), _fwd(h))]
+        if pwhost:
+            blocks.append(self.password_host_block(pwhost, h))
         _wr(cfg, "\n".join(blocks))
         for f in (cfg, ident):
             subprocess.run(["icacls", f, "/inheritance:r", "/grant:r", "%s:F" % user], capture_output=True)
@@ -321,15 +367,27 @@ class Profile:
         return os.environ.get("APPCI_OWNER_SETTINGS") or self.OWNER_SEED
 
     def gitbash_toml(self, new_session=False):
-        """TOML value of Git for Windows' bash.exe for a Windows Git Bash pane, else None. startup_shell_override is a plain string (StartupShell: a custom
-        path); new_session_shell_override is an enum, so its TOML is the inline table `{ executable = "<path>" }` (r18co: a bare string made the app show
-        'Invalid value for new_session_shell_override' and use the default for new tabs)."""
-        if not (self.win and self.pane == "gitbash"):
+        """TOML value of the shell a Windows pane is started with through session.startup_shell_override, else None: Git for Windows' bash.exe for the Git
+        Bash pane, and for a #1534 startup_shell_override pass PowerShell 7's pwsh.exe (variant "pwsh7") or cmd.exe (variant "cmd"). startup_shell_override
+        is a plain string (StartupShell: a custom path); new_session_shell_override is an enum, so its TOML is the inline table `{ executable = "<path>" }`
+        (r18co: a bare string made the app show 'Invalid value for new_session_shell_override' and use the default for new tabs)."""
+        if not self.win:
             return None
         import winapi
-        b = winapi.git_bash()
-        if not b:
-            raise RuntimeError("Git for Windows (bash.exe) not found: the Git Bash pane cannot start")
+        if self.variant == "pwsh7":
+            b = winapi.pwsh7()
+            if not b:
+                raise RuntimeError("PowerShell 7 (pwsh.exe) not found: the pwsh7 pane cannot start")
+        elif self.variant == "cmd":
+            b = winapi.cmd_exe()
+            if not b:
+                raise RuntimeError("cmd.exe not found: the cmd pane cannot start")
+        elif self.pane == "gitbash":
+            b = winapi.git_bash()
+            if not b:
+                raise RuntimeError("Git for Windows (bash.exe) not found: the Git Bash pane cannot start")
+        else:
+            return None
         return '{ executable = "%s" }' % _fwd(b) if new_session else '"%s"' % _fwd(b)
 
     def write_settings(self, mode, ollama_url=None, ollama_model="gpt-oss:20b"):

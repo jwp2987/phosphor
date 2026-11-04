@@ -405,18 +405,20 @@ def age_stats(ages):
 
 
 class Ctx:
-    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None):
+    def __init__(self, be, prof, app, run, mode, seed=1, ssh=None, ollama=False, log_path=None, ssh_why=None, pane=None, variant=None):
         self.be, self.prof, self.app, self.run, self.mode = be, prof, app, run, mode
-        self.pane = pane                      # Windows only: the shell of the app's pane, 'powershell' | 'gitbash' (None = the POSIX bash/zsh harness)
+        self.pane = pane                      # Windows only: the shell of the app's pane, 'powershell' | 'gitbash' | 'cmd' (None = the POSIX bash/zsh harness)
+        self.variant = variant                # #1534: 'pwsh7' | 'cmd' in a startup_shell_override pass (pane is then its family: pwsh 7 is 'powershell', cmd.exe 'cmd'), else None
         self.win = pane is not None
         # label = the mode column of results.json / junit and the id prefix of latency records: 'terminal' everywhere except a non-default
         # Windows pane ('terminal@gitbash'), so the two panes' numbers and previous-build comparisons never mix
-        self.label = mode if pane in (None, "powershell") else "%s@%s" % (mode, pane)
+        self.label = mode if (pane in (None, "powershell") and not variant) else "%s@%s" % (mode, variant or pane)
         self.t_case0 = time.time()
         self.rng = random.Random(seed)
         self.ssh, self.ollama, self.log_path = ssh, ollama, log_path
         self.ssh_why = ssh_why     # why there is no usable ssh test host (sshd missing, or the setup probe `ssh fake true` failed); None when ctx.ssh is set
         self.W = prof.home + "/w"
+        self.reprove = None           # Windows (run.py): callable() -> None | reason; re-proves key delivery + the PowerShell pane state after a case relaunched the app
         self.opts = {}                # tier options of this pass (winmap.tier_plan): ref, ft_gaps, cc_short; empty = the full tier
         self.enter_control = None     # cached result of run_enter_control (#1482)
         self.cc_integrity = {}        # ctrlc_samples: per output file, how many typed sample lines the shell received exactly
@@ -480,11 +482,13 @@ class Ctx:
             return '"%s\\n" | save --append %s' % (tok, fname)     # nu's save --append adds no newline: give each line one
         if shell == "pwsh":      # PowerShell: `>>` would write UTF-16 in 5.1; Add-Content writes ASCII lines
             return "Add-Content %s %s" % (fname, tok)
+        if shell == "cmd":       # cmd.exe: no space before `>>` (it would end up in the line); #1534
+            return "echo %s>>%s" % (tok, fname)
         return "echo %s >> %s" % (tok, fname)
 
     def pane_shell(self):
-        """the shell name append_cmd() takes for the app's own pane: 'pwsh' in a Windows PowerShell pane, else 'bash'"""
-        return "pwsh" if self.pane == "powershell" else "bash"
+        """the shell name append_cmd() takes for the app's own pane: 'pwsh' in a Windows PowerShell pane (and pwsh 7), 'cmd' in a cmd.exe pane, else 'bash'"""
+        return "pwsh" if self.pane == "powershell" else ("cmd" if self.pane == "cmd" else "bash")
 
     def which(self, name):
         """shutil.which, on Windows against the PATH the app gets (Git for Windows' bin + usr/bin appended; never WSL's System32 bash.exe)"""
@@ -961,7 +965,7 @@ class Ctx:
         if not (self.mode == "agent" and recent):
             self.be.key("ctrl+c")
         time.sleep(0.25)
-        self.be.key("ctrl+u")
+        self.be.key("Escape" if getattr(self, "pane", None) == "cmd" else "ctrl+u")      # cmd.exe's line editor has no Ctrl-U; Escape clears its line
         time.sleep(0.15)
 
     def shot(self, tag):
@@ -2247,10 +2251,11 @@ def ref_note(ctx, r):
         r.note(n)
 
 
-def ref_terminal_windows(ctx):
+def ref_terminal_windows(ctx, rcfile=None):
     """Windows: the SAME shell as the pane in a plain console window (conhost: `powershell.exe -NoLogo -NoProfile`, as the pane, or Git Bash `--rcfile` for the Git Bash
     pane), driven through the same SendInput path under a guard that accepts only THAT window (its PID or its hwnd), never the job's own console.
-    APPCI_WIN_REF=wt uses Windows Terminal (wt.exe, when present) instead of conhost. None (with ctx.ref_reason) when the window cannot be identified."""
+    APPCI_WIN_REF=wt uses Windows Terminal (wt.exe, when present) instead of conhost. None (with ctx.ref_reason) when the window cannot be identified.
+    rcfile: the Git Bash reference's rc instead of the pane's ~/.bashrc (#1583 G2: prof.ref_boot_rc, Phosphor's bash bootstrap sourced)."""
     import winapi
     ctx.ref_reason = None
     want_wt = os.environ.get("APPCI_WIN_REF", "conhost").lower() == "wt"
@@ -2259,7 +2264,7 @@ def ref_terminal_windows(ctx):
     env["HOME"] = home
     env.pop("PHOSPHOR_PWSH_HOOK_TIMING", None)          # the app's pane only (#1401)
     if ctx.pane == "gitbash":
-        sh, shname = [winapi.git_bash(), "--rcfile", home + "/.bashrc", "-i"], "bash"
+        sh, shname = [winapi.git_bash(), "--rcfile", rcfile or (home + "/.bashrc"), "-i"], "bash"
     else:
         # r18e9: the reference conhost PowerShell shared PSReadLine's ConsoleHost_history.txt with the app's pane, so its own `exit` (+ a leading Ctrl-U) landed in
         # the pane's history slice and took the first slot of fast_typing. Give the reference its OWN HistorySavePath (and SaveNothing where that cannot be set).
@@ -2840,6 +2845,80 @@ def gitbash_fork_ms(n=40):
     return round(statistics.median(runs), 2)
 
 
+def reference_with_bootstrap(ctx, r, n, warm, rs):
+    """#1583 G2 (Windows, Git Bash pane): a SECOND reference console whose bash sources Phosphor's own bash bootstrap (the bash-preexec DEBUG trap, the
+    precmd/preexec hooks that fork, the title hook) after the plain reference rc, measured with the same stamp line and cadence. The difference to the
+    plain reference is what the shell hooks alone cost; what is left between this reference and the pane is the app + ConPTY. Metrics
+    `reference_bootstrap_enter_to_start_ms` and `reference_bootstrap_minus_plain_ms`, one note; never a verdict input (the verdict stays against the plain
+    reference, which is the owner's definition of overhead). A note, not a failure, when the bootstrap cannot be composed or the window will not open."""
+    if not os.path.exists(ctx.prof.ref_boot_rc):
+        r.note("G2: reference with the bootstrap sourced not run: app/assets/bundled/bootstrap/bash.sh + bash_body.sh were not found next to the harness")
+        return
+    saved = getattr(ctx, "ref_shell", None)
+    ref2 = None
+    try:
+        ref2 = ref_terminal_windows(ctx, rcfile=ctx.prof.ref_boot_rc.replace("\\", "/"))
+        if not ref2:
+            r.note("G2: reference with the bootstrap sourced not run: %s" % getattr(ctx, "ref_reason", "no window"))
+            return
+        time.sleep(2.5)
+        nb = max(10, n // 2)
+        bs = enter_to_start(ctx, nb + warm, budget_s=max(60, (nb + warm) * 2.5))[warm:]
+        ctx.reset()
+        if not bs:
+            r.note("G2: the bootstrap-sourced reference captured no Enter timing (its rc may have failed: see the screenshot)")
+            return
+        r.metric("reference_bootstrap_enter_to_start_ms", stats(bs))
+        mb, mp = statistics.median(bs), statistics.median(rs)
+        r.metric("reference_bootstrap_minus_plain_ms", round(mb - mp, 2))
+        r.note("G2: reference bash with Phosphor's bootstrap sourced %.1f ms vs the plain reference %.1f ms (%+.1f ms): that is what the shell hooks cost on this host, outside the app" % (mb, mp, mb - mp))
+    finally:
+        if ref2:
+            ref2.close()
+        ctx.ref_shell = saved
+        time.sleep(1.0)
+
+
+M3_UNSET = "unset zle_bracketed_paste; echo M3_$((${+zle_bracketed_paste})) >> m3_state.txt"
+M3_RESTORE = "zle_bracketed_paste=( $'\\e[?2004h' $'\\e[?2004l' ); echo M3_$((${#zle_bracketed_paste})) >> m3_state.txt"
+
+
+def unset_bracketed_paste_batch(ctx, r, n, warm, ds):
+    """#1583 M3 (macOS zsh pane, terminal mode): size the cost of the paste wrap. zsh's line editor turns bracketed paste on (zle_bracketed_paste), so
+    Phosphor writes Enter's line wrapped in ESC[200~ ... ESC[201~ and zle runs its bracketed-paste widget on it. `unset zle_bracketed_paste` makes zle
+    leave the mode off from the next prompt on; a second batch of the same stamp line is then measured and compared with the first. Metrics
+    `unset_bracketed_paste_enter_to_start_ms` and `unset_bracketed_paste_minus_default_ms`, one note. The parameter is put back afterwards."""
+    sh = pane_shell_id(ctx)
+    if lat.shell_base(sh) != "zsh":
+        r.note("M3: not run: the pane shell is %s, not zsh (zle_bracketed_paste is a zsh parameter)" % sh)
+        return
+    ctx.rm("m3_state.txt")
+    ctx.be.type(M3_UNSET, 12, enter=True)
+    ctx.until(lambda: ctx.lines("m3_state.txt"), 6)
+    if "M3_0" not in ctx.lines("m3_state.txt"):
+        r.note("M3: not run: `unset zle_bracketed_paste` did not take effect in the pane (state file %r)" % ctx.lines("m3_state.txt"))
+        return
+    time.sleep(1.0)
+    try:
+        nb = max(10, n // 2)
+        bs = enter_to_start(ctx, nb + warm, budget_s=max(60, (nb + warm) * 2.5))[warm:]
+    finally:
+        ctx.rm("m3_state.txt")
+        ctx.be.type(M3_RESTORE, 12, enter=True)
+        ctx.until(lambda: ctx.lines("m3_state.txt"), 6)
+        if "M3_2" not in ctx.lines("m3_state.txt"):
+            r.note("M3: could not confirm that zle_bracketed_paste was restored (state %r): the next cases may run without bracketed paste in this pane" % ctx.lines("m3_state.txt"))
+        time.sleep(0.5)
+        ctx.reset()
+    if not bs:
+        r.note("M3: no Enter timing captured with bracketed paste off")
+        return
+    r.metric("unset_bracketed_paste_enter_to_start_ms", stats(bs))
+    mb, md = statistics.median(bs), statistics.median(ds)
+    r.metric("unset_bracketed_paste_minus_default_ms", round(mb - md, 2))
+    r.note("M3: Enter -> start with zle_bracketed_paste unset %.1f ms vs default %.1f ms (%+.1f ms): that is the cost of the paste wrap in zle (a negative or ~0 value means the wrap is not the gap)" % (mb, md, mb - md))
+
+
 def record_enter_split(r, splits, segs):
     """#1606: the per-hop split of Enter -> command start for both sides, as the metric `enter_split_ms` {phosphor, reference, delta} and one
     note. The SAME shell clock (the rc's zle-line-finish / last-preexec times, enter_split_summary) on both sides, so a gap in post_to_lf
@@ -2953,6 +3032,8 @@ def c_lat_enter(ctx, r):
     r.metric("harness_floor_ms", ctx.be.key_floor_ms)
     r.check(len(ds) >= n * 0.8, "only %d/%d Enter timings captured" % (len(ds), n))      # hard floor; a PASS verdict needs 90 % (lat.evaluate expected=)
     ctx.reset()
+    if ctx.be.name == "mac" and ctx.mode == "terminal" and ds:
+        unset_bracketed_paste_batch(ctx, r, n, warm, ds)           # #1583 M3
     if ref is None and not tried:
         ref = ref_terminal(ctx)
     if ref:
@@ -2983,6 +3064,8 @@ def c_lat_enter(ctx, r):
         finally:
             close_ref(ref) if mode == "interleaved" or fallback else ref.close()
         time.sleep(1.0)   # focus returns to Phosphor before any re-measure
+        if ctx.win and ctx.pane == "gitbash" and rs:
+            reference_with_bootstrap(ctx, r, n, warm, rs)          # #1583 G2
         r.metric("reference_enter_to_start_ms", stats(rs))
         r.metric("reference", ref.name)
         r.metric("reference_shell", getattr(ctx, "ref_shell", None) or "unknown")
@@ -3070,7 +3153,9 @@ def c_lat_key(ctx, r):
         run_keys.counts = cnt
         return ds[warm:], [(m.group(1), int(m.group(2))) for m in SLOW.finditer(txt)]
 
+    ui_off = ctx.log_size()          # the UI-work window: the typed keys of the first run (the `cat` start is a handful of items; the 5 % allowance covers it)
     ds, slow = run_keys(n + warm)
+    ui_txt = ctx.log_since(ui_off)       # the window ends here: lat.evaluate's remeasure below types more keys
     r.metric("key_to_frame_ms", stats(ds))
     if len(ds) < n * 0.5:
         cnt = getattr(run_keys, "counts", {})
@@ -3087,15 +3172,28 @@ def c_lat_key(ctx, r):
                        remeasure=lambda: run_keys(n + warm)[0], notes=["Phosphor-side keydown to first frame; no same-method reference exists"])
     r.metrics.setdefault("lat", {})["key_to_frame"] = rec
     lat_checks(r, rec, "key to frame")
-    # UI work: the app's slow-operation log (#1146) only emits >= 8 ms, so 'pass' means "nothing >= 8 ms"; >= 16 ms is a dropped frame (WARN)
-    worst_ms = max([m for _, m in slow], default=0)
+    # UI work (#1548): the app's `hop=ui_item` line (input_order::log_ui_item_if_over_budget, main thread, an event/action/frame at or over the 4 ms
+    # budget) is the real ≤4 ms line; the older slow-operation log (#1146) only emits >= 8 ms and stays as a second source. Judged over the typed keys of
+    # the FIRST run. `event` / `action` items are UI logic: more than max(2, 5 % of the keys) over 4 ms FAIL. `frame` items include rasterisation, which
+    # llvmpipe/Xvfb and a VM's software GL put over 4 ms by themselves (ui_item_metrics says so): they are WARN and a metric, never a failure.
+    items = ui_items(ui_txt)
+    logic = [ms for _, ms, k in items if k != "frame"]
+    frames = [ms for _, ms, k in items if k == "frame"]
+    worst_ms = max([m for _, m in slow] + [ms for _, ms, _ in items], default=0)
     r.metric("ui_slow_ops", dict(count=len(slow), worst_ms=worst_ms, ops=sorted({w for w, _ in slow})[:8]))
-    uiv = "warn" if worst_ms >= 16 else "pass"
-    r.metrics["lat"]["ui_work"] = dict(phosphor=dict(n=len(slow), p50=None, p95=None, max=float(worst_ms)), reference=None, budget_ms=4, budget_kind="slow-log",
+    allowed = max(2, int(0.05 * (n + warm)))
+    uiv = "fail" if len(logic) > allowed else ("warn" if items or worst_ms >= 16 else "pass")
+    r.metric("ui_items_over_4ms", dict(logic_count=len(logic), logic_max_ms=max(logic, default=0.0), frame_count=len(frames), frame_max_ms=max(frames, default=0.0),
+                                       allowed=allowed, source="hop=ui_item" if items else "none logged (nothing over 4 ms, or a build older than #1191)"))
+    r.metrics["lat"]["ui_work"] = dict(phosphor=dict(n=len(items), p50=None, p95=None, max=float(worst_ms)), reference=None, budget_ms=4, budget_kind="ui-item-log",
                                        overhead_ms=None, prev=None, baseline={"status": "n/a"}, budget_verdict=uiv, verdict=uiv,
-                                       notes=["slow-op logger floor is 8 ms: verdict pass = no UI work item >= 8 ms during typing; warn = >= 16 ms"])
+                                       notes=["hop=ui_item logs every main-thread item >= 4 ms: pass = none while typing; warn = frame items (raster-bound on software GL) or a few logic items; "
+                                              "fail = more than max(2, 5 %% of the keys) event/action items; >= 16 ms is a dropped frame"])
+    r.check(uiv != "fail", "UI work: %d event/action item(s) >= 4 ms during %d typed keys (allowed %d, worst %.1f ms)" % (len(logic), n + warm, allowed, max(logic, default=0.0)))
+    if frames:
+        r.note("UI work: %d frame item(s) >= 4 ms while typing (max %.1f ms); frame items include rasterisation, so this is a WARN on software GL" % (len(frames), max(frames)))
     if worst_ms >= 16:
-        r.note("WARN UI work: slow op(s) up to %d ms during typing: %s" % (worst_ms, ", ".join(sorted({w for w, _ in slow})[:5])))
+        r.note("WARN UI work: item(s) up to %.1f ms during typing (>= 16 ms drops a frame): %s" % (worst_ms, ", ".join(sorted({w for w, _ in slow})[:5]) or "see hop=ui_item lines"))
     p50, p99 = statistics.median(ds), pct(ds, 0.99)
     r.check(p50 <= 20, "key->frame p50 %.1f ms > 20 ms CI bound (owner target: next refresh, own work <= 2 ms; software GL here)" % p50)
     r.check(p99 <= 60, "key->frame p99 %.1f ms > 60 ms CI bound" % p99)
@@ -4100,6 +4198,32 @@ def _squash(txt):
     return "".join((txt or "").lower().split())
 
 
+def windows_file_url(path):
+    """file:///C:/Users/x/a%20b.txt for a Windows path (what the shell's file-open hands the app as a startup URL)"""
+    import pathlib
+    return pathlib.PureWindowsPath(path).as_uri()
+
+
+def open_file_in_windows_app(ctx, path):
+    """#1544: Windows hand-over. `phosphor.exe <file:// url>` is the same startup-args path the OS file association uses: the second process takes the
+    per-session single-instance mutex check (app_services/windows/single_instance_manager.rs, `Local\\Zap<Channel>_SingleInstance`), finds the
+    sole running instance, sends the URLs over its named pipe (`pass_startup_args_to_existing_instance`, app_services/windows/mod.rs) and exits. The test
+    build is the SAME channel and executable as the app under test, so it is that instance. If the hand-over does not happen the second process would
+    be a second app on the same data dir: it is killed after 30 s (exact pid, tree) and reported. Returns a failure string or None."""
+    env = dict(ctx.app.env()) if hasattr(ctx.app, "env") else dict(os.environ)
+    p = subprocess.Popen([ctx.app.bin, windows_file_url(path)], env=env, cwd=os.path.dirname(ctx.app.bin), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(os.path.join(ctx.run, "pids"), "a") as f:
+        f.write("file-open %d\n" % p.pid)
+    try:
+        p.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, timeout=30)
+        return "the forwarding invocation did not exit within 30 s (killed): the build did not hand the file to the running instance, or a second app started"
+    if not ctx.app.alive():
+        return "the app under test is gone after the file hand-over (exit %s)" % getattr(ctx.app.proc, "returncode", None)
+    return None
+
+
 def open_file_in_app(ctx, path):
     """Hand a local file to the RUNNING app the way the OS would (file:// URL -> uri::open_file -> markdown viewer pane
     when code.editor.prefer_markdown_viewer, default true). Linux: a second invocation of the same binary inside the app's own
@@ -4109,7 +4233,7 @@ def open_file_in_app(ctx, path):
         r = subprocess.run(["open", "-a", ctx.app.bundle, path], capture_output=True, timeout=30)
         return None if r.returncode == 0 else "open -a failed: %s" % r.stderr.decode(errors="replace")[:200]
     if ctx.win:
-        raise Skip("no verified way to hand a file:// URL to the RUNNING Windows instance (a second invocation may start a second app instance on the same data dir); not covered on Windows")
+        return open_file_in_windows_app(ctx, path)
     pid = ctx.app.pid()
     try:
         raw = open("/proc/%d/environ" % pid, "rb").read().split(b"\0")
@@ -4233,3 +4357,4 @@ import cases_caseremote  # noqa: E402,F401  (issue #1464: remote work over ssh +
 import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
 import cases_coverage_a  # noqa: E402,F401  (#1535-#1541: paste, alt-screen programs, sudo/su, ssh drop+reconnect, kill -9 + corrupt-db restore)
 import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)
+import cases_shells  # noqa: E402,F401  (#1534: startup_shell_override passes: cmd.exe and pwsh 7 as the pane shell)

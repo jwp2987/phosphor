@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# script/ci/remote_server_before_after: #1157 part 2. Builds the ssh remote-server binary (`phosphor-oss`, the cli tarball's executable) twice for the
+# static musl target the tarball ships as, and measures both with script/ci/remote_server_bench.py:
+#   before  profile release-cli    (opt-level "s"), features release_bundle,standalone            -> musl's malloc: how the tarball was built until #1157
+#   after   profile release-remote (opt-level 3),   features release_bundle,standalone,mimalloc   -> what script/linux/bundle builds now (--artifact cli)
+# Output: <OUT>/{before,after}/phosphor-oss + phosphor-cli.tar.gz and <OUT>/remote-bench.json (sizes, startup, round-trip p50/p95/p99, list, burst, deltas).
+# Installs NOTHING: it needs the musl rust target, zig and cargo-zigbuild that the cli-linux release job leaves on the runner user's home; a missing one
+# fails with the one-line reason. Heavy (two LTO builds, hours): run it only through the manual `bench-remote-server` job.
+# usage: script/ci/remote_server_before_after [OUT_DIR]
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+OUT="${1:-bench-out}"
+TARGET=x86_64-unknown-linux-musl
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$HOME/.local/bin:$PATH"
+for z in "$HOME"/.local/zig-*; do [ -x "$z/zig" ] && export PATH="$z:$PATH"; done
+command -v cargo-zigbuild >/dev/null || { echo "ERROR cargo-zigbuild is missing for this user (the cli-linux job installs it into the runner's home; nothing is installed here)" >&2; exit 1; }
+command -v zig >/dev/null || { echo "ERROR zig is missing for this user (the cli-linux job installs it into \$HOME/.local/zig-*; nothing is installed here)" >&2; exit 1; }
+rustup target list --installed | grep -qx "$TARGET" || { echo "ERROR the $TARGET rust target is not installed (rustup target add, once, by the toolchain owner)" >&2; exit 1; }
+# same pkg-config isolation as cli-linux: the box's glibc dev libs must not leak into the musl link
+mkdir -p "$PWD/.musl-pkgconfig-empty"
+export PKG_CONFIG_LIBDIR_x86_64_unknown_linux_musl="$PWD/.musl-pkgconfig-empty" PKG_CONFIG_PATH_x86_64_unknown_linux_musl="" PKG_CONFIG_ALLOW_CROSS=1
+
+build() {   # label profile features
+  local label="$1" profile="$2" feats="$3"
+  echo "== build $label: --profile $profile --features $feats"
+  cargo zigbuild -p warp --profile "$profile" --bin phosphor-oss --features "$feats" --target "$TARGET"
+  mkdir -p "$OUT/$label"
+  cp "${CARGO_TARGET_DIR:-target}/$TARGET/$profile/phosphor-oss" "$OUT/$label/phosphor-oss"
+  tar czf "$OUT/$label/phosphor-cli.tar.gz" -C "$OUT/$label" phosphor-oss
+  ls -l "$OUT/$label"
+}
+build before release-cli    "release_bundle,standalone"
+build after  release-remote "release_bundle,standalone,mimalloc"
+python3 script/ci/remote_server_bench.py \
+  --bin "before=$OUT/before/phosphor-oss" --bin "after=$OUT/after/phosphor-oss" \
+  --tarball "before=$OUT/before/phosphor-cli.tar.gz" --tarball "after=$OUT/after/phosphor-cli.tar.gz" \
+  --n "${REMOTE_BENCH_N:-300}" --dir-entries "${REMOTE_BENCH_DIR_ENTRIES:-3000}" --out "$OUT/remote-bench.json"

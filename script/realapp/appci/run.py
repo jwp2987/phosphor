@@ -234,8 +234,20 @@ def main():
 
     for mode, pane in passes:
         # per-mode fresh profile + app: settings differ (default_session_mode). Windows: once per pane shell too (label = terminal | terminal@gitbash)
-        label = mode if pane in (None, "powershell") else "%s@%s" % (mode, pane)
+        # #1534: "pwsh7" / "cmd" are startup_shell_override passes: `variant` names the pass (label, settings, case list), `pane` is the shell FAMILY every
+        # pane-aware helper below keys on (pwsh 7 = powershell, cmd.exe = cmd)
+        variant = pane if pane in winmap.VARIANT_FAMILY else None
+        pane = winmap.VARIANT_FAMILY.get(pane, pane)
+        label = mode if (pane in (None, "powershell") and not variant) else "%s@%s" % (mode, variant or pane)
         prof.pane = pane or prof.pane
+        prof.variant = variant
+        if variant:
+            import winapi
+            exe = winapi.pwsh7() if variant == "pwsh7" else winapi.cmd_exe()
+            if not exe:
+                emit(dict(name="startup_shell_pass", mode=label, status="skip", seconds=0, metrics={}, shots=[],
+                          detail=["%s is not installed on this machine: the startup_shell_override pass for it cannot run (install it by hand; the harness installs nothing)" % ("PowerShell 7 (pwsh.exe)" if variant == "pwsh7" else "cmd.exe")]))
+                continue
         ssh_info = None
         ssh_why = None       # why the ssh cases skip when there is no usable ssh test host
         app = None
@@ -259,7 +271,7 @@ def main():
                 ssh_why = sshd.WHY
                 print("no ssh test host on Windows, ssh cases will skip: %s" % ssh_why, flush=True)
             if ssh_info:
-                prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b', ssh_port=ssh_info["port"], ssh_ident=ssh_info["ident"])
+                prof.build(mode, ollama_url, ollama_model or 'gpt-oss:20b', ssh_port=ssh_info["port"], ssh_ident=ssh_info["ident"], ssh_pw=ssh_info.get("pwhost"))
                 ssh_why = prof.ssh_probe()
                 if ssh_why:
                     print("ssh probe failed, ssh cases will skip: %s" % ssh_why, flush=True)
@@ -284,10 +296,14 @@ def main():
                 app.start()
                 if a.backend in ("mac", "windows", "wayland"):
                     be.pid_fn = app.pid           # the guard compares the frontmost PID with THIS pid before every injection
-            ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane)
+            ctx = cases.Ctx(be, prof, app, run, mode, a.seed, ssh_info, bool(ollama_url), log_path, ssh_why, pane=pane, variant=variant)
+            if win:       # #1540/#1541: a case that relaunches the app by itself re-proves the keys and re-sets the pane state exactly as the relaunch branch below does
+                ctx.reprove = lambda: prove_keys(ctx, be, pane, label)
             tier_names = None
             if win and not explicit_cases:       # the Windows fix tier is a table (winmap.FIX_TIER); an explicit --cases list always wins, the full tier is untouched
                 tier_names, ctx.opts = winmap.tier_plan("windows", os.environ.get("APPCI_TIER"), mode, pane, cases.SMOKE)
+            if variant:       # #1534: a startup_shell_override pass runs only its own list (winmap.VARIANT_CASES); an explicit --cases list narrows it further
+                tier_names = list(winmap.variant_cases(variant))
             if not sim:
                 up = await_shell(ctx, app, prof, win, a.startup_timeout)
                 if not up:
@@ -326,7 +342,7 @@ def main():
                     emit(dict(name=c["name"], mode=label, status="skip", seconds=0, detail=[why_t], metrics={}, shots=[]))
                     continue
                 if win:
-                    why = winmap.skip_reason(c["name"], pane)
+                    why = None if variant else winmap.skip_reason(c["name"], pane)
                     if why:          # explicit, per pane: never a silent omission
                         emit(dict(name=c["name"], mode=label, status="skip", seconds=0, detail=[why], metrics={}, shots=[]))
                         continue
@@ -755,10 +771,13 @@ def set_ps_pane_state(ctx, be):
         for _ in range(attempt + 1):
             be.key("ctrl+c")
             time.sleep(0.8)
-        be.key("ctrl+u")
+        be.key("Escape" if ctx.pane == "cmd" else "ctrl+u")
         tok = ctx.tok(8).lower()
         fn = ("; " + ctx.prof.ps_ssh_function()) if (ctx.ssh and ctx.prof.ps_ssh_function()) else ""
-        be.type("Set-Location -LiteralPath '%s'%s; Add-Content cwd_%s.txt %s" % (wd, fn, tok, tok), 8, enter=True)
+        if ctx.pane == "cmd":       # cmd.exe: `cd /d` (also changes drive), no function for ssh (the ssh.cmd wrapper in <home>\\bin is found as `ssh`)
+            be.type('cd /d "%s" && echo %s>>cwd_%s.txt' % (wd, tok, tok), 8, enter=True)
+        else:
+            be.type("Set-Location -LiteralPath '%s'%s; Add-Content cwd_%s.txt %s" % (wd, fn, tok, tok), 8, enter=True)
         if ctx.until(lambda: tok in ctx.lines("cwd_%s.txt" % tok), 10 + 5 * attempt):
             time.sleep(0.8)
             return None
@@ -784,13 +803,16 @@ def prove_keys(ctx, be, pane, label):
             be.guard()
             be.key("ctrl+c")
             time.sleep(0.3)
-            be.key("ctrl+u")
-            be.type(("Add-Content -LiteralPath '%s' %s" if pane == "powershell" else "echo %s >> '%s'") % ((fp, tok) if pane == "powershell" else (tok, fp)), 8, enter=True)
+            be.key("Escape" if pane == "cmd" else "ctrl+u")
+            if pane == "cmd":       # cmd.exe: no single quotes, no space before `>>`
+                be.type('echo %s>>"%s"' % (tok, fp), 8, enter=True)
+            else:
+                be.type(("Add-Content -LiteralPath '%s' %s" if pane == "powershell" else "echo %s >> '%s'") % ((fp, tok) if pane == "powershell" else (tok, fp)), 8, enter=True)
         except Exception as e:
             log.append("%s threw: %s" % (method, e))
             continue
         if ctx.until(lambda: tok in ctx.lines(os.path.basename(f)), 8):
-            if pane == "powershell":
+            if pane in ("powershell", "cmd"):
                 bad = set_ps_pane_state(ctx, be)
                 if bad:
                     return bad

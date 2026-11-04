@@ -201,3 +201,24 @@ def set_ctrl_c_ignored(ignored):
         return bool(kernel32.SetConsoleCtrlHandler(None, bool(ignored)))
     except (OSError, AttributeError, NameError):
         return False
+
+
+def pwsh7():
+    """path of PowerShell 7's pwsh.exe (PATH, then Program Files\\PowerShell\\7), or None. Windows PowerShell 5.1 (powershell.exe) is never returned."""
+    import shutil
+    p = shutil.which("pwsh")
+    if p:
+        return p
+    for var in ("ProgramFiles", "ProgramW6432"):
+        base = os.environ.get(var)
+        if base:
+            c = os.path.join(base, "PowerShell", "7", "pwsh.exe")
+            if os.path.isfile(c):
+                return c
+    return None
+
+
+def cmd_exe():
+    """path of cmd.exe (%ComSpec%, else System32\\cmd.exe), or None"""
+    c = os.environ.get("ComSpec") or os.path.join(os.environ.get("SystemRoot", r"C:\\Windows"), "System32", "cmd.exe")
+    return c if os.path.isfile(c) else None

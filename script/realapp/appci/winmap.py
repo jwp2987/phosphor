@@ -13,6 +13,10 @@ BOTH = {
     "idle_cpu", "enter_loss_control", "latency_enter", "latency_paint", "tabs_two_windows", "tabs_streaming",
     "paste_multiline_prompt", "intl_wide_type", "intl_wide_paste", "intl_wide_edit", "intl_altgr_bash", "intl_altgr_ps",
     "cb_no_autoupdate", "approval_card_pause", "md_viewer", "md_viewer_big", "md_viewer_ai_answer", "agent_code_recycle", "editor_memory_7mb", "gitbash_subshell",
+    "editor_edit_save", "editor_paste",         # #1544: phosphor.exe <file URL> reaches the running instance over its named pipe (cases.open_file_in_windows_app)
+    "upgrade_over_previous",                 # #1546: skips itself without APPCI_PREV_FIXTURE / APPCI_PREV_BIN
+    "startup_shell_pane",                    # #1534: itself skips outside a startup_shell_override pass
+    "crash_kill9_restore", "crash_corrupt_db",       # #1541: taskkill /F /T + relaunch on the same profile (cases_robust.hard_kill; state under %LOCALAPPDATA%\\phosphor)
 }
 # POSIX syntax / rec.log / readline-style editing in the case: Git Bash pane only. Reason shown for the PowerShell pane.
 GITBASH_ONLY = {
@@ -29,7 +33,7 @@ GITBASH_ONLY = {
     "remote_heredoc_paste": "POSIX here-doc / printf commands in the remote bash (#1129): runs in the Git Bash pane",
     "ssh_hanging_host_not_local": "Ctrl-C while ssh.cmd (a batch file) runs would ask 'Terminate batch job (Y/N)?': runs in the Git Bash pane",
     "latency_enter_ssh": "the plain-ssh control is the conhost reference running the pane's shell; a PowerShell reference's `ssh fake` path (ssh.cmd) differs from the pane's: runs in the Git Bash pane (#1532)",
-    "ssh_password_prompt": "needs the system sshd's passphrase-key prompt (fakesshd cannot prompt); skips itself with that reason",
+    "ssh_password_prompt": "`ssh fakepass` against fakesshd_win.py's password user (#1535) plus rec.log/prompt.log of the local shell: runs in the Git Bash pane (the passphrase half needs the system sshd and is noted as not run)",
     "paste_bracketed_off": "`cat > file` + Ctrl-D and the bracketed-paste printf: runs in the Git Bash pane (#1538)",
     "paste_agent_input": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane (#1538)",
     "alt_screen_programs": "vim/less/htop/tmux with bash effect lines and rec.log: runs in the Git Bash pane; a program that is not installed makes the case unverifiable (#1537)",
@@ -47,6 +51,7 @@ GITBASH_ONLY = {
     "agent_mode_switch": "asserts the exact shell line from rec.log after each view switch: runs in the Git Bash pane",
     "cb_agent_pickers": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
     "cb_agent_file_mention": "reads the agent input from the app log and uses rec.log to prove nothing reached the shell: runs in the Git Bash pane",
+    "session_restore": "the app is stopped by pid and relaunched (#1540); bash `cd && echo` lines and `pwd -W` per tab, rec.log proves nothing re-ran: runs in the Git Bash pane",
     "agent_approval": "uses rec.log and effect files in bash syntax: runs in the Git Bash pane (needs the CI model)",
 }
 # PowerShell-only: the same idea as a case that already exists for the other pane
@@ -65,25 +70,36 @@ NOT_WINDOWS = {
     "ui_split_panes": "needs OCR word boxes + pointer synthesis; neither exists in the Windows backend yet",
     "ui_startup_time": "not yet ported: reads the Linux log format / paths",
     "ui_settings_live": "not yet ported: rewrites the Linux settings path while the app runs",
-    "session_restore": "not yet ported: needs the Linux quit key + /proc to prove nothing re-runs",
     "quit_24_tabs": "not yet ported: Linux quit key and log check",
     "flood_typed_line": "not yet ported: POSIX `seq`/`yes` floods and /proc sampling",
     "flood_typing_latency": "not yet ported: POSIX flood and pty arrival reader",
     "flood_scrollback_find": "needs OCR (tesseract) and the Linux find flow",
-    "editor_edit_save": "not yet ported: Linux D-Bus URL forward opens the file",
-    "editor_paste": "not yet ported: Linux D-Bus URL forward opens the file",
     "soak": "not yet ported: samples /proc",
     "alt_screen_mouse_reporting": "no pointer synthesis in the Windows backend yet, and the receiving program needs python3 termios (#1537)",
     "sudo_su_real_shell": "sudo/su/ksu do not exist in a Windows pane (#1536)",
     "ssh_drop_reconnect": "not yet ported: the `~.` escape and `kill -9 $$` need verifying against the msys/Win32 ssh clients (#1535)",
-    "crash_kill9_restore": "not yet ported: needs the Linux quit key + SIGKILL of the app pid (#1541)",
-    "crash_corrupt_db": "not yet ported: needs the Linux quit key and the scratch-home warp.sqlite path (#1541)",
     "cb_settings_ui_open": "the Windows backend has no verified Ctrl-, chord and the page is not OCR-able there",
     "cb_settings_migration": "needs a relaunch of the app on a rewritten settings file (the Linux/macOS App handle); the Windows relaunch is the separate runner flow",
     "cb_state_relaunch": "needs the App stop/start handle on a profile with state; Windows has a separate flow",
     "cb_ui_action_latency": "needs Pillow screenshot diffs of new-tab/switch chords not mapped in the Windows backend",
-    "cb_editor_mac": "macOS-only case (Linux has editor_edit_save); Windows has no verified file hand-over to the running instance",
+    "cb_editor_mac": "macOS-only case (Linux and Windows have editor_edit_save / editor_paste)",
 }
+
+
+# #1534: the startup_shell_override passes (APPCI_WIN_SHELLS="pwsh7,cmd", never in the default list: cmd.exe and pwsh 7 are not installed on every VM).
+# The pane's shell is chosen through the app's `session.startup_shell_override` (a custom shell path, profile.Profile.gitbash_toml), not by the harness. Only the
+# cases below run in a variant pass, each with the reason it is safe in that shell; a pass lists NO skip rows for the other cases (they are the PowerShell/Git Bash
+# panes' job). pwsh 7 is the PowerShell family (Add-Content, PSReadLine, `;`), cmd.exe has its own effect-file syntax (Ctx.append_cmd 'cmd').
+VARIANT_FAMILY = {"pwsh7": "powershell", "cmd": "cmd"}
+VARIANT_CASES = {
+    "pwsh7": ("mode_proof", "startup_shell_pane", "fast_typing", "paste_instant_enter", "tab_enter", "ctrl_c_d"),
+    "cmd": ("mode_proof", "startup_shell_pane"),
+}
+
+
+def variant_cases(variant):
+    """case names that run in the startup_shell_override pass `variant`, in SMOKE-independent registry order (run.py sorts by case order)"""
+    return VARIANT_CASES[variant]
 
 
 def skip_reason(name, pane):

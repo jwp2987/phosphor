@@ -1110,6 +1110,164 @@ def coverage_b_pure_helpers():
     assert reg["cb_agent_pickers"]["modes"] == ("agent",) and "cb_agent_pickers" not in cases.SMOKE
 
 
+@check
+def g11_relaunch_cases_run_on_every_platform():
+    """#1540/#1541: crash_kill9_restore / crash_corrupt_db are classified for Windows (no longer NOT_WINDOWS), session_restore is Git Bash only there; the
+    helpers that make the cases platform-neutral behave"""
+    import cases_robust as cr
+    import cases_coverage_a as cov_a
+    for n in ("crash_kill9_restore", "crash_corrupt_db"):
+        assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None, n
+    assert winmap.skip_reason("session_restore", "gitbash") is None and winmap.skip_reason("session_restore", "powershell")
+    mac = types.SimpleNamespace(be=types.SimpleNamespace(name="mac"), win=False)
+    lin = types.SimpleNamespace(be=types.SimpleNamespace(name="wayland"), win=False)
+    assert cr.tab_key(mac, 3) == "cmd+3" and cr.tab_key(lin, 9) == "ctrl+9"
+    assert cr.fwd("C:\\Users\\x\\w") == "C:/Users/x/w"
+    ps = types.SimpleNamespace(pane="powershell")
+    bash = types.SimpleNamespace(pane="gitbash")
+    assert cov_a.cd_and_append(ps, "C:\\d", "T1", "C:\\f.txt") == "Set-Location -LiteralPath 'C:/d'; Add-Content -LiteralPath 'C:/f.txt' T1"
+    assert cov_a.cd_and_append(bash, "/d", "T1", "/f.txt") == "cd /d && echo T1 >> /f.txt"
+    assert cr.PWD(types.SimpleNamespace(win=True)) == "pwd -W" and cr.PWD(lin) == "pwd"
+    try:
+        cr.need_relaunch_app(types.SimpleNamespace(app=None), "x")
+        raise AssertionError("the sim backend must skip")
+    except cases.Skip:
+        pass
+    cr.need_relaunch_app(types.SimpleNamespace(app=types.SimpleNamespace(start=1, stop=1)), "x")
+
+
+@check
+def g11_password_prompt_host_and_variants():
+    """#1535: the real-password ssh host is in the ssh config of both the POSIX and the Windows profile, and the case lists both secret prompts"""
+    import cases_caseremote as cr_
+    import sshd
+    pw = {"port": 2201, "user": sshd.PW_USER, "password": sshd.PW_PASSWORD}
+    blk = profile.Profile.password_host_block(pw, "/h")
+    assert "Host fakepass" in blk and "Port 2201" in blk and "User pwuser" in blk and "PreferredAuthentications password" in blk and "PubkeyAuthentication no" in blk, blk
+    assert "NumberOfPasswordPrompts 1" in blk and "BatchMode no" in blk and "known_hosts" in blk
+    both = types.SimpleNamespace(ssh={"pwident": "k", "passphrase": "pp", "pwhost": pw})
+    assert [v[0] for v in cr_.password_variants(both)] == ["fakepw", "fakepass"]
+    only_pw = types.SimpleNamespace(ssh={"pwhost": pw})
+    assert cr_.password_variants(only_pw) == [("fakepass", sshd.PW_PASSWORD, "password", "password")]
+    assert cr_.password_variants(types.SimpleNamespace(ssh={})) == []
+    for f in ("linux/bin/fakesshd.py", "appci/fakesshd_win.py"):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", f.replace("appci/", ""))).read() if f.startswith("linux") else open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakesshd_win.py")).read()
+        assert "FAKE_PASSWORD" in src and "FAKE_PW_USER" in src, f
+
+
+@check
+def g11_windows_editor_handover_and_classification():
+    """#1544: the Windows editor hand-over builds a proper file URL and the editor cases are classified for both panes"""
+    assert cases.windows_file_url("C:\\Users\\a b\\x.txt") == "file:///C:/Users/a%20b/x.txt", cases.windows_file_url("C:\\Users\\a b\\x.txt")
+    for n in ("editor_edit_save", "editor_paste"):
+        assert winmap.skip_reason(n, "powershell") is None and winmap.skip_reason(n, "gitbash") is None, n
+
+
+@check
+def g11_bootstrap_reference_and_bracketed_paste_pieces():
+    """#1583 G2 / M3: Phosphor's bash bootstrap composes into one sourceable script with no placeholder left, the reference rc sources it after the plain rc,
+    and the M3 zsh commands are the ones whose state file the case reads back"""
+    boot = profile.compose_bash_bootstrap(True)
+    assert boot and "#include" not in boot and "@@" not in boot and "install_bashpreexec" in boot and "WARP_USING_WINDOWS_CON_PTY=true" in boot, (boot or "")[:200]
+    assert "WARP_USING_WINDOWS_CON_PTY=false" in profile.compose_bash_bootstrap(False)
+    assert profile.compose_bash_bootstrap(True, bootdir="/nonexistent") is None
+    rc = profile.ref_boot_rc_text("C:/h/.refrc", "C:/h/.refboot.sh", True)
+    assert rc.index('. "C:/h/.refrc"') < rc.index("WARP_SESSION_ID=1") < rc.index('. "C:/h/.refboot.sh"'), rc
+    assert "unset zle_bracketed_paste" in cases.M3_UNSET and "M3_$((${+zle_bracketed_paste}))" in cases.M3_UNSET
+    assert "2004h" in cases.M3_RESTORE and "${#zle_bracketed_paste}" in cases.M3_RESTORE
+
+
+@check
+def g11_startup_shell_passes():
+    """#1534: the cmd / pwsh7 passes: settings TOML names the shell, the family drives the helpers, the case list and effect syntax are right"""
+    import cases_shells
+    assert winmap.VARIANT_FAMILY == {"pwsh7": "powershell", "cmd": "cmd"}
+    for v, names in winmap.VARIANT_CASES.items():
+        assert "startup_shell_pane" in names and "mode_proof" in names, v
+        reg = {c["name"] for c in cases.CASES}
+        assert set(names) <= reg, (v, set(names) - reg)
+        for n in names:
+            assert winmap.skip_reason(n, winmap.VARIANT_FAMILY[v]) is None or n in ("fast_typing",), (v, n)
+    cx = types.SimpleNamespace(pane="cmd")
+    assert cases.Ctx.append_cmd(cx, "cmd", "tok1", "f.txt") == "echo tok1>>f.txt"
+    assert cases.Ctx.pane_shell(cx) == "cmd" and cases.Ctx.pane_shell(types.SimpleNamespace(pane="powershell")) == "pwsh"
+    assert cases_shells.identity_ok("pwsh7", ["PS7_Core"]) and not cases_shells.identity_ok("pwsh7", ["PS5_Desktop"])
+    assert cases_shells.identity_ok("cmd", ["CMDOK_CMD.EXE"]) and not cases_shells.identity_ok("cmd", ["CMDOK_%COMSPEC:~-7%"])
+    pr = profile.Profile(tempfile.mkdtemp(), pane="cmd")
+    pr.win, pr.variant = True, "cmd"
+    assert pr.local_prompts is False
+    pr.pane, pr.variant = "powershell", "pwsh7"
+    assert pr.local_prompts is False
+    pr.win, pr.pane, pr.variant = False, None, None
+    assert pr.gitbash_toml() is None
+
+
+@check
+def g11_upgrade_fixture_pack_unpack_and_migration_count():
+    """#1546: the previous build's state packs and unpacks (home-relative, state dirs only), a hostile archive is refused, and applied migrations are counted"""
+    import cases_coverage_b as cb
+    import sqlite3
+    import tarfile
+    src, dst = tempfile.mkdtemp(), tempfile.mkdtemp()
+    os.makedirs(os.path.join(src, ".local/share/phosphor"))
+    db = os.path.join(src, ".local/share/phosphor/warp.sqlite")
+    con = sqlite3.connect(db)
+    con.execute("create table __diesel_schema_migrations (version text)")
+    con.executemany("insert into __diesel_schema_migrations values (?)", [("1",), ("2",), ("3",)])
+    con.commit()
+    con.close()
+    open(os.path.join(src, "not_state.txt"), "w").write("x")
+    tarf = os.path.join(tempfile.mkdtemp(), "f.tar.gz")
+    assert cb.pack_state(src, tarf) == 1
+    assert cb.unpack_state(tarf, dst) == 1 and not os.path.exists(os.path.join(dst, "not_state.txt"))
+    assert cb.db_migrations(os.path.join(dst, ".local/share/phosphor/warp.sqlite")) == 3
+    assert cb.db_migrations(os.path.join(dst, "missing.sqlite")) is None
+    evil = os.path.join(tempfile.mkdtemp(), "evil.tar")
+    with tarfile.open(evil, "w") as t:
+        ti = tarfile.TarInfo("../escape.txt")
+        ti.size = 0
+        t.addfile(ti)
+    try:
+        cb.unpack_state(evil, dst)
+        raise AssertionError("a ../ member must be refused")
+    except ValueError:
+        pass
+    reg = {c["name"]: c for c in cases.CASES}
+    assert "upgrade_over_previous" in reg and "upgrade_over_previous" not in cases.SMOKE
+    assert winmap.skip_reason("upgrade_over_previous", "gitbash") is None
+
+
+@check
+def g11_remote_server_bench_encoding_and_loop():
+    """#1157 part 2: the hand-encoded requests, the request_id decode, and the whole measurement loop against a fake proxy that speaks the frame protocol"""
+    ci = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ci")
+    sys.path.insert(0, ci)
+    try:
+        import remote_server_bench as rb
+    finally:
+        sys.path.remove(ci)
+    assert rb.varint(300) == b"\xac\x02" and rb.varint(1) == b"\x01"
+    assert rb.msg_resolve_path("r1", "/tmp").hex() == "0a02723112086a060a042f746d70"
+    assert rb.request_id_of(rb.msg_list_directory("abc", "/x")) == "abc" and rb.request_id_of(rb.field(2, b"x")) == ""
+    fake = os.path.join(tempfile.mkdtemp(), "fake-phosphor")
+    open(fake, "w").write("#!/usr/bin/env python3\nimport struct, sys\n"
+                          "assert sys.argv[1] == 'remote-server-proxy' and sys.argv[2] == '--identity-key'\n"
+                          "sys.path.insert(0, %r)\nimport remote_server_bench as rb\n"
+                          "i, o = sys.stdin.buffer, sys.stdout.buffer\n"
+                          "while True:\n"
+                          "    h = i.read(4)\n"
+                          "    if len(h) < 4: break\n"
+                          "    b = i.read(struct.unpack('<I', h)[0])\n"
+                          "    o.write(rb.frame(rb.field(1, rb.request_id_of(b)) + rb.field(2, b'ok'))); o.flush()\n" % ci)
+    os.chmod(fake, 0o755)
+    res = rb.measure(fake, 12, 30)
+    assert res["rtt_ms"]["n"] == 12 and res["list_ms"]["n"] >= 20 and res["startup_ms"] > 0 and res["burst_ms_per_request"] >= 0, res
+    sz = rb.sizes(fake, {})
+    assert sz["binary_bytes"] > 0 and sz["gzip9_bytes"] > 0
+    d = rb.delta(dict(size=dict(gzip9_bytes=100), rtt_ms=dict(p50=2.0, p95=3.0, p99=4.0)), dict(size=dict(gzip9_bytes=125), rtt_ms=dict(p50=1.5, p95=2.0, p99=5.0)))
+    assert d["gzip9_bytes_ratio"] == 1.25 and d["rtt_ms_p50_delta"] == -0.5 and d["rtt_ms_p99_delta"] == 1.0, d
+
+
 def main():
     failed = 0
     for f in CHECKS:

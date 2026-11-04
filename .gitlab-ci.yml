@@ -385,6 +385,41 @@ check-windows:
     - .\script\windows\bundle.ps1 -CHANNEL oss -CHECK_ONLY
     - if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
+# nextest on Windows (#1534): the warp + warp_tui lib tests on the Windows runner, which already has cargo, MSVC, perl, cmake and protoc (it builds the
+# app). MANUAL and tier-driven, never automatic on a push: a debug build of the whole `warp` test binary is as heavy as the installer build. Scope by play-time
+# variable: WIN_TEST_FILTER = a nextest filter expression (default: the Windows-only code, ConPTY / pwsh / windows-named tests, which no other job runs);
+# WIN_TEST_FULL=1 = the whole -p warp -p warp_tui --lib suite. allow_failure: the suite has never run on Windows, so a red result is information, not a
+# gate (the log and the junit are artifacts); the job installs nothing: a missing cargo-nextest fails with the one-line install command for the owner.
+test-windows:
+  extends: .windows_job
+  stage: test
+  when: manual
+  allow_failure: true
+  timeout: 5h
+  interruptible: true
+  variables:
+    CARGO_BUILD_JOBS: "8"
+    WIN_TEST_FILTER: "test(conpty) or test(windows) or test(pwsh) or test(powershell)"
+    WIN_TEST_FULL: "0"
+  script:
+    - foreach ($t in "cargo","rustc","perl","cmake","cargo-nextest") { if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { Write-Error "$t is missing on this runner; install it by hand (cargo-nextest: cargo install cargo-nextest --locked); not done automatically"; exit 1 } }
+    - if (-not (Test-Path "$env:PROTOC")) { Write-Error "PROTOC is not set to an existing protoc.exe on this runner"; exit 1 }
+    - |
+      $filter = @(); if ($env:WIN_TEST_FULL -ne "1" -and $env:WIN_TEST_FILTER) { $filter = @("-E", $env:WIN_TEST_FILTER) }
+      "nextest on Windows: filter=[$($filter -join ' ')] full=$env:WIN_TEST_FULL"
+      cargo nextest run --profile ci -p warp -p warp_tui --lib --features warp/gui --no-fail-fast @filter 2>&1 | Tee-Object -FilePath nextest-windows.log
+      $rc = $LASTEXITCODE
+      exit $rc
+  artifacts:
+    name: nextest-windows
+    when: always
+    expire_in: 14 days
+    paths:
+      - nextest-windows.log
+      - target/nextest/ci/junit.xml
+    reports:
+      junit: target/nextest/ci/junit.xml
+
 # Windows x86_64 installer (Inno Setup), unsigned. Like the other build jobs this is
 # NOT the release pipeline: no CLI tarballs or digest pins, nothing published; the
 # output is a job artifact.
@@ -1230,6 +1265,30 @@ release-meta:
       dotenv: meta.env
     paths: [release-body.md]
     expire_in: 7 days
+
+# #1157 part 2: size and request latency of the ssh remote-server binary, release-cli (opt-level "s", musl malloc) against release-remote (opt-level 3,
+# mimalloc), measured by script/ci/remote_server_bench.py. MANUAL only (two LTO builds), on the build box; it installs nothing (zig, cargo-zigbuild and the musl
+# target are what the cli-linux job leaves in the runner's home). The numbers are the artifact `bench-out/remote-bench.json`.
+bench-remote-server:
+  extends: .box_job
+  needs: []
+  rules:
+    - when: manual
+      allow_failure: true
+  timeout: 5h
+  variables:
+    CARGO_BUILD_JOBS: "8"
+    REMOTE_BENCH_N: "300"
+  script:
+    - ./script/ci/remote_server_before_after bench-out
+  artifacts:
+    name: remote-server-bench
+    when: always
+    expire_in: 30 days
+    paths:
+      - bench-out/remote-bench.json
+      - bench-out/before/phosphor-cli.tar.gz
+      - bench-out/after/phosphor-cli.tar.gz
 
 # CLI + remote-server + TUI tarballs for Linux x86_64: a static musl build through
 # zig, so the artifact has no glibc floor and runs on any Linux x86_64 host (CentOS 7,

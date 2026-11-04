@@ -387,16 +387,16 @@ def c_ssh_drop(ctx, r):
 
 # ------------------------------------------------------------------ #1540 / #1541 crash + restore
 def sigkill_app(ctx, r, label):
-    pid = ctx.app.pid()
-    r.check(bool(pid), "%s: no app pid" % label)
-    if not pid:
-        return False
-    os.kill(pid, signal.SIGKILL)
-    ok = R.wait_exit(ctx, 8)
-    r.check(ok, "%s: the app is still alive 8 s after SIGKILL" % label)
-    R.keep_log(ctx, label)
-    ctx.app.stop()                         # reaps the launcher and any orphaned shells of the dead app's group
-    return ok
+    """the app dies with no quit path (R.hard_kill: SIGKILL on Linux/macOS, taskkill /F /T on Windows)"""
+    return R.hard_kill(ctx, r, label)
+
+
+def cd_and_append(ctx, d, tok, f):
+    """one line for the pane: cd into `d`, then append `tok` to the absolute effect file `f` (PowerShell 5.1 has no `&&`: `;`)"""
+    d, f = R.fwd(d), R.fwd(f)
+    if ctx.pane == "powershell":
+        return "Set-Location -LiteralPath '%s'; Add-Content -LiteralPath '%s' %s" % (d, f, tok)
+    return "cd %s && echo %s >> %s" % (d, tok, f)
 
 
 @case("crash_kill9_restore", modes=("terminal",), order=87, gui=True)
@@ -404,10 +404,10 @@ def c_crash_kill9(ctx, r):
     """The app is SIGKILLed (no quit path, no flush) with restore_session on; the relaunch must come up with a shell, must not re-run anything the
     old shells ran (effect file unchanged, rec.log has no command before the first key), and the pane must be usable and exact. How many tabs came
     back is a metric: a hard kill may lose the last debounce of the session state, but must never replay a command."""
-    R.need_linux_app(ctx, R.SKIP_QUIT_WHY % "crash_kill9_restore")
+    R.need_relaunch_app(ctx, "crash_kill9_restore")
     n = int(os.environ.get("APPCI_SR_TABS", "3"))
     try:
-        q = R.quit_app(ctx, r, 20, "ck_setup")
+        q = R.stop_for_restart(ctx, r, 20, "ck_setup")
         r.check(q["exited"], "ck_setup: the app did not exit through the quit key within 20 s (%r)" % q)
         if not q["exited"]:
             return
@@ -423,7 +423,7 @@ def c_crash_kill9(ctx, r):
                 ctx.be.key(R.NEWTAB)
                 time.sleep(0.8)
                 ctx.be.guard()
-            ctx.be.type("cd %s && echo CK%d_%s >> %s" % (d, i, ctx.tok(5).lower(), os.path.join(ctx.W, "ck_eff.txt")), ctx.rng.randint(10, 25), enter=True)
+            ctx.be.type(cd_and_append(ctx, d, "CK%d_%s" % (i, ctx.tok(5).lower()), os.path.join(ctx.W, "ck_eff.txt")), ctx.rng.randint(10, 25), enter=True)
             ctx.until(lambda: len(ctx.lines("ck_eff.txt")) >= i + 1, 10)
             time.sleep(0.4)
         eff = ctx.lines("ck_eff.txt")
@@ -441,6 +441,8 @@ def c_crash_kill9(ctx, r):
         r.check(ctx.lines("ck_eff.txt") == eff, "RE-RUN: the effect file changed across the crash restore: %r -> %r" % (eff, ctx.lines("ck_eff.txt")))
         ran = ctx.cmds_since(mark)
         r.check(not ran, "RE-RUN: rec.log shows %d command(s) before any key was sent: %r" % (len(ran), ran[:5]))
+        if not ctx.prof.commands():
+            r.note("no rec.log in this pane (PowerShell): the re-run check rests on the effect file alone")
         r.check(newp >= 1, "no shell started after the crash (prompts +%d)" % newp)
         local_cmd_exact(ctx, r, "ck_after")
     finally:
@@ -448,10 +450,12 @@ def c_crash_kill9(ctx, r):
 
 
 def find_db(ctx):
+    """every warp.sqlite under the app's state directories: the scratch home (Linux, macOS) or the Windows known folders (R.data_roots)"""
     hits = []
-    for root, _dirs, files in os.walk(ctx.prof.home):
-        if "warp.sqlite" in files:
-            hits.append(os.path.join(root, "warp.sqlite"))
+    for base in R.data_roots(ctx):
+        for root, _dirs, files in os.walk(base):
+            if "warp.sqlite" in files:
+                hits.append(os.path.join(root, "warp.sqlite"))
     return hits
 
 
@@ -459,15 +463,15 @@ def find_db(ctx):
 def c_crash_corrupt_db(ctx, r):
     """warp.sqlite replaced by garbage while the app is down (a torn write, a full disk): the next launch must come up with a working shell, move the
     file aside as warp.sqlite.corrupt-<secs> (#860) instead of looping or crashing, and the pane must be exact. (The in-app notice is a screenshot.)"""
-    R.need_linux_app(ctx, R.SKIP_QUIT_WHY % "crash_corrupt_db")
+    R.need_relaunch_app(ctx, "crash_corrupt_db")
     try:
-        q = R.quit_app(ctx, r, 20, "cd_setup")
+        q = R.stop_for_restart(ctx, r, 20, "cd_setup")
         r.check(q["exited"], "cd_setup: the app did not exit through the quit key within 20 s (%r)" % q)
         if not q["exited"]:
             return
         dbs = find_db(ctx)
         if not dbs:
-            r.skip("no warp.sqlite under the scratch home %s: nothing to corrupt (the app keeps its state elsewhere on this build)" % ctx.prof.home)
+            r.skip("no warp.sqlite under %s: nothing to corrupt (the app keeps its state elsewhere on this build)" % R.data_roots(ctx))
         for db in dbs:
             for suffix in ("-wal", "-shm"):
                 try:
