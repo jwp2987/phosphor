@@ -187,6 +187,14 @@ def routing_classification():
     assert ca.classify_dest(False, [], []) == "unproven"
     m = ca.ROUTE_RE.search('enter: Agent by prose rule (AgentConversation, head "please", 12 bytes)')
     assert m and m.group(1) == "Agent" and m.group(3) == "AgentConversation" and m.group(5) == "12"
+    # #1593: the A5 verdict give-up lines (editor, deferred young Enter, Enter gate) count; other give-ups do not
+    gu = ("input_order hop=enter_verdict_give_up seq=4 editor verdict_cap t=1\n"
+          "input_order hop=kh_enter_gate_give_up seq=4 by=verdict_cap behind=0 submitted=false t=2\n"
+          "input_order hop=enter_verdict_give_up seq=9 young_verdict_cap held_bytes=3 chars=2 t=3\n")
+    assert ca.verdict_give_ups(gu) == 3
+    assert ca.verdict_give_ups("input_order hop=enter_verdict_give_up seq=5 uncovered_report held_bytes=0 chars=0 t=4\n"
+                               "input_order hop=kh_enter_gate_give_up seq=6 by=route_wait behind=1 submitted=true t=5") == 0
+    assert ca.verdict_give_ups("") == 0
 
 
 @check

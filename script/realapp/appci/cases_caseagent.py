@@ -303,6 +303,19 @@ def enter_begin_types(text):
     return [m.group(1) for m in ENTER_BEGIN_RE.finditer(text)]
 
 
+# #1593 (F5/A5): an Enter whose shell-or-chat verdict missed its budget is not submitted by the clock; the line stays in the editor
+# with "Couldn't tell shell from chat in time; press Enter again" (`enter_verdict_give_up ... verdict_cap` /
+# `young_verdict_cap`, or the Enter gate's `kh_enter_gate_give_up by=verdict_cap`). Correct per the owner's rule; counted so the
+# agent-mode round can see whether the toast is frequent (then the budget, not the rule, is wrong).
+VERDICT_GIVE_UP_RE = re.compile(r'hop=(?:enter_verdict_give_up\b[^\n]*?\b(?:young_)?verdict_cap\b|kh_enter_gate_give_up\b[^\n]*?\bby=verdict_cap\b)')
+
+
+def verdict_give_ups(text):
+    """How many verdict give-ups (#1593 A5 toast) an app-log excerpt shows. One Enter can log both the editor's
+    `enter_verdict_give_up` and its gate's `kh_enter_gate_give_up`; each line counts, so use it as 'any' per typed line."""
+    return len(VERDICT_GIVE_UP_RE.findall(text))
+
+
 def classify_dest(reached_shell, route_rows, begin_types):
     """Where a typed line went, PROVEN from the app log (#1511). 'shell' = the shell's rec.log has the line; 'BOTH' = it did and the
     routing decision also says Agent; 'agent' = the shell received nothing AND the app logged the Enter as routed to the agent (the
@@ -351,13 +364,18 @@ def c_routing_table(ctx, r):
         if enter and enter["route"] == "Shell" and not reached_shell:
             ctx.until(lambda: any(c == line for c in ctx.cmds_since(mark)), 3)
             reached_shell = any(c == line for c in ctx.cmds_since(mark))
-        dest = classify_dest(reached_shell, rows, enter_begin_types(ctx.log_since(off)))
+        excerpt = ctx.log_since(off)
+        dest = classify_dest(reached_shell, rows, enter_begin_types(excerpt))
+        gave_up = verdict_give_ups(excerpt) > 0                 # #1593: the A5 toast fired for this line
         surface = enter["surface"] if enter else None
         if kind == "ambiguous":
             want = ambiguous_want(line, surface, enter["rule"] if enter else None)
         ok = want is None or dest == want
-        results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=enter["rule"] if enter else None))
-        if dest == "lost" or (dest == "unproven" and want != "shell"):
+        results.append(dict(line=line, kind=kind, want=want, got=dest, surface=surface, rule=enter["rule"] if enter else None, verdict_give_up=gave_up))
+        if gave_up and dest in ("lost", "unproven"):
+            r.check(False, "%r (%s) was not sent: its shell-or-chat verdict missed the budget and the line stayed in the editor with the "
+                    "'press Enter again' toast (#1593 A5; dest %s, surface %s)" % (line, kind, dest, surface))
+        elif dest == "lost" or (dest == "unproven" and want != "shell"):
             r.check(False, "%r (%s) was LOST or unproven: the shell received nothing and the app log shows no agent-routed Enter (dest %s, surface %s)" % (line, kind, dest, surface))
         elif want is None:
             r.note("ambiguous %r: went to %s (no routing log line, so no rule to check)" % (line, dest))
@@ -369,6 +387,7 @@ def c_routing_table(ctx, r):
     ctx.shot("routing_table_end")
     r.metric("routing_rows", results)
     r.metric("misroutes", len([x for x in results if x["want"] and x["want"] != x["got"]]))
+    r.metric("verdict_give_ups", len([x for x in results if x["verdict_give_up"]]))     # #1593: lines kept by the A5 toast
     ctx.reset()
 
 
