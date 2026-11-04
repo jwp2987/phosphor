@@ -5447,6 +5447,60 @@ fn test_legacy_keys_typed_during_a_pending_paste_apply_after_it_in_order() {
     })
 }
 
+// #1631: a closing quote typed while a paste is read overtypes the auto-inserted closer AFTER the
+// pasted text, as if typed once the paste landed. Applied in the same update as the paste, it
+// moved the cursor through the pre-paste display map and the rest of the line landed inside the
+// paste ("'abc'" + "'x" became "'axbc'"). Queue path.
+#[test]
+fn test_queue_closing_quote_typed_during_a_paste_overtypes_after_it() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let view = autopair_test_editor(&mut app);
+        // The opening quote pairs: `'|'`.
+        view.update(&mut app, |view, ctx| view.user_insert("'", ctx));
+        view.read(&app, |view, ctx| assert_eq!(view.buffer_text(ctx), "''"));
+        view.update(&mut app, |view, ctx| {
+            let id = start_queued_paste(view, ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("'")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "''", "typed keys wait for the paste");
+            view.user_initiated_insert("abc", PlainTextEditorViewAction::Paste, ctx);
+            finish_queued_paste(view, ctx, id, Ok(Vec::new()));
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.buffer_text(ctx), "'abc'x");
+            assert!(!view.paste_hold().replay_pending());
+        });
+    })
+}
+
+// #1631, `PasteSequencer` path (plain editors): the twin of the test above.
+#[test]
+fn test_legacy_closing_quote_typed_during_a_paste_overtypes_after_it() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let view = autopair_test_editor(&mut app);
+        view.update(&mut app, |view, ctx| view.user_insert("'", ctx));
+        view.read(&app, |view, ctx| assert_eq!(view.buffer_text(ctx), "''"));
+        view.update(&mut app, |view, ctx| {
+            let hold = view.paste_hold();
+            let id = hold.begin();
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("'")), ctx);
+            view.handle_action(&EditorAction::UserInsert(UserInput::new("x")), ctx);
+            assert_eq!(view.buffer_text(ctx), "''", "typed keys wait for the paste");
+            let held = hold.complete(id).expect("paste still pending");
+            view.user_initiated_insert("abc", PlainTextEditorViewAction::Paste, ctx);
+            for key in held {
+                view.apply_held_paste_key(key, ctx);
+            }
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(view.buffer_text(ctx), "'abc'x");
+            assert!(!view.paste_hold().replay_pending());
+        });
+    })
+}
+
 // #1353 phase 1: a failed read applies the held keys in order and pastes nothing.
 #[test]
 fn test_queue_failed_read_applies_the_held_keys() {

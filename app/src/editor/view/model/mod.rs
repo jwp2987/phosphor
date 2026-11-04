@@ -77,6 +77,13 @@ lazy_static! {
         AUTOCOMPLETE_SYMBOLS.values().cloned().collect();
 }
 
+/// Whether inserting `text` as typed may overtype an auto-inserted closer: that path
+/// ([`EditorModel::insert_and_maybe_autocomplete_symbols`]) moves the cursor through the display
+/// map, so the map must already reflect every edit before the key (#1631).
+pub(super) fn typed_text_may_overtype_closer(text: &str) -> bool {
+    CLOSING_SYMBOLS.contains(text)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum QuoteState {
     None,

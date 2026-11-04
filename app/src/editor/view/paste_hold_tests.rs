@@ -129,3 +129,22 @@ fn the_matrix_class_of_an_editor_key_is_the_legacy_submit_or_complete_split() {
     assert_eq!(editor_key_class(&EditorAction::Enter), Class::Enter);
     assert_eq!(editor_key_class(&EditorAction::Tab), Class::Control);
 }
+
+/// #1631: a typed closing quote or bracket may overtype an auto-inserted closer, which moves the
+/// cursor through the display map, so it waits for the map like a cursor key; other typed text
+/// (an opening bracket included) reads only the buffer and applies at once.
+#[test]
+fn a_typed_closer_waits_for_the_display_map_and_other_text_does_not() {
+    for closer in ["'", "\"", ")", "]", "}"] {
+        assert!(
+            HeldPasteKey::Text(closer.into()).needs_fresh_display_map(),
+            "{closer:?} may overtype"
+        );
+    }
+    for text in ["x", "(", "[", "{", "ab", "''", "é"] {
+        assert!(
+            !HeldPasteKey::Text(text.into()).needs_fresh_display_map(),
+            "{text:?} applies at once"
+        );
+    }
+}
