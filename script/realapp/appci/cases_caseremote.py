@@ -128,8 +128,13 @@ def remote_session(ctx, r, variant):
     r.check(ctx.cmds_since(lmark) == [], "[%s] the LOCAL shell received commands while the remote shell was in front: %r" % (variant, ctx.cmds_since(lmark)))
     # ---- 3. nested subshells (sudo/su/ksu stand-ins), proven by pid
     subs = (("bash", "bash", 1.5), ("bash-no-wait", "bash", 0.0), ("sh", "sh", 1.5),
-            ("clean-env bash (ksu/su stand-in)", "env -i HOME=$HOME PATH=$PATH TERM=$TERM bash --noprofile --norc -i", 2.0))
+            ("clean-env bash (ksu/su stand-in)", 'env -i HOME="$HOME" PATH="$PATH" TERM="$TERM" bash --noprofile --norc -i', 2.0))      # r18u8: quoted, a PATH with spaces split the words
     for i, (label, cmd, gap) in enumerate(subs):
+        if getattr(ctx, "win", False) and cmd.startswith("env -i"):
+            # r18u8 Windows (H6): the remote side is the harness's fake sshd running msys bash; `env -i` there drops the vars the msys runtime needs and the fake
+            # session ends, taking the rest of the case with it. Not a verdict on the app: recorded as a note, never as a pass of the step.
+            r.no_reference("[%s] clean-env subshell step NOT RUN on Windows: `env -i` under msys ends the fake sshd session (harness limitation, H6); the bash/sh subshell steps ran" % variant)
+            continue
         f = "%s_sub.txt" % tag
         rm_remote(ctx, f)
         tok = ctx.tok(8).lower()
@@ -282,11 +287,36 @@ def _wait_remote_file(ctx, name, want_len, timeout):
     return _remote_bytes(ctx, name)
 
 
+def confirm_unbracketed_paste(ctx, r, label, wait_s=6.0):
+    """r18u8 (Mac): the remote /bin/bash 3.2 has no bracketed paste, so the app asks `Run N lines one at a time?` (Cancel / Run) before it runs a multi-line paste, and
+    every payload sat behind that dialog until the case timed out (`got no file`). The dialog is the app's designed answer for a shell that cannot take a bracketed
+    paste, so the case answers it with Run (Return, the dialog's default) and says so; it is looked for by OCR only (the screenshot is the evidence). No OCR engine:
+    nothing is pressed (a blind Return could land in the shell) and the note says why a timeout may follow."""
+    t_end = time.time() + wait_s
+    seen_ocr = False
+    while time.time() < t_end:
+        txt = ctx.ocr("heredoc_dialog_probe")
+        if txt is None:
+            r.note("%s: no OCR engine, so a `Run N lines one at a time?` dialog cannot be answered; a timeout below may be that dialog" % label)
+            return False
+        seen_ocr = True
+        low = " ".join(txt.lower().split())
+        if "one at a time" in low:
+            ctx.shot("heredoc_dialog")
+            ctx.be.key("Return")
+            r.note("%s: answered the app's `Run N lines one at a time?` dialog (the remote shell has no bracketed paste) with Run" % label)
+            time.sleep(0.5)
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def _send_and_check(ctx, r, label, name, command, expected, timeout):
     rm_remote(ctx, name)
     t0 = time.time()
     ctx.be.clip_set(command)
     ctx.be.paste(enter=True)
+    confirm_unbracketed_paste(ctx, r, label)
     got = _wait_remote_file(ctx, name, len(expected), timeout)
     secs = round(time.time() - t0, 2)
     r.metric("%s_s" % name.replace(".", "_"), secs)
@@ -459,7 +489,8 @@ def c_lat_enter_ssh(ctx, r):
 @case("ssh_hanging_host_not_local", order=62, gui=True)
 def c_ssh_hang(ctx, r):
     """`ssh` to (a) a port that refuses and (b) a TCP listener that accepts and never speaks (a hanging host): the line typed right behind the
-    ssh Enter must never run in the LOCAL shell (the Enter-was-held-back notice), and the local shell must stay usable afterwards."""
+    ssh Enter behaves as in a plain terminal / iTerm2 (owner decision 2026-11-04, DECLINED.md): it runs in the LOCAL shell exactly once, as typed, after the
+    ssh exited; the local shell must stay usable afterwards."""
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(5)
@@ -515,31 +546,28 @@ def c_ssh_hang(ctx, r):
                 label, ("+%.2f s" % (alive_ts[0] - t_ssh)) if alive_ts else "never (exited before the first 50 ms poll or never started)",
                 ("+%.2f s" % (t_exit - t_ssh)) if t_exit else "not observed", t_first - t_ssh, t_last - t_ssh, len(gate)))
             exited_before_key = (t_exit is not None and t_exit < t_first) or not alive_ts
+            # Plain-terminal ssh pass-through (DECLINED.md, "A FAILING ssh behaves like a plain terminal too"): keys typed after ssh owns the tty sit in ssh's tty
+            # queue; when ssh exits the local shell reads them and the line runs LOCALLY exactly once, as typed, and only after the ssh exited. If the ssh had already
+            # exited before the first key the line is simply a local command: it must also run exactly once.
+            got = ctx.lines(f)
             if exited_before_key:
-                unverifiable = True
-                # the ssh was already gone when the first key was typed: running locally is correct, so the 'held' property was not exercised
-                r.no_reference("UNVERIFIABLE [%s host]: the ssh client had %s before the first MUSTNOT key, so a local run of the line is correct and says nothing about the hold" % (
+                r.note("[%s host] the ssh client had %s before the first MUSTNOT key: the line is an ordinary local command (still must run exactly once)" % (
                     label, "already exited" if alive_ts else "not been seen"))
-            else:
-                unverifiable = False
-                r.check(not ctx.lines(f), "[%s host] the line typed behind ssh ran LOCALLY: %r (ssh alive at the first key; exit %s)" % (
-                    label, ctx.lines(f), ("+%.2f s" % (t_exit - t_ssh)) if t_exit else "not observed"))
-                r.check(not any("MUSTNOT_" + tok in c for c in ctx.cmds_since(lmark)),
-                        "[%s host] the LOCAL shell received the line typed behind ssh: %r" % (label, ctx.cmds_since(lmark)))
-                if not gate:
-                    r.no_reference("UNVERIFIABLE [%s host]: no kh_hold_*/ssh hold line in the app log after the first MUSTNOT key (key trace off or rotated: %s); the line not running locally is not proven to be the app's hold" % (
-                        label, "input_order lines present" if ctx.app_hop_lines(re.compile(r"input_order "), t_first - 0.5) else "NO input_order lines at all"))
+            r.check(got == ["MUSTNOT_" + tok], "[%s host] a plain terminal runs the line typed behind ssh locally exactly once after ssh exits; got %r (ssh alive at the first key: %s; exit %s)" % (
+                label, got, not exited_before_key, ("+%.2f s" % (t_exit - t_ssh)) if t_exit else "not observed"))
+            if got and t_exit is not None and not exited_before_key:
+                try:
+                    ran_at = os.path.getmtime(os.path.join(ctx.W, f))
+                    r.check(ran_at >= t_exit - 1.0, "[%s host] the line ran locally %.2f s BEFORE the ssh exited: it must reach the local shell only after ssh exits" % (label, t_exit - ran_at))
+                except OSError:
+                    pass
+            r.check(sum(1 for c in ctx.cmds_since(lmark) if "MUSTNOT_" + tok in c) == 1,
+                    "[%s host] the LOCAL shell must receive the line typed behind ssh exactly once; got %r" % (label, [c for c in ctx.cmds_since(lmark) if "MUSTNOT_" + tok in c]))
             ctx.reset()
             tok2 = ctx.tok(6).lower()
             ctx.be.type("echo %s >> %s" % (tok2, f), 12, enter=True)
-            ctx.until(lambda: ctx.lines(f), 8)
-            if unverifiable:
-                # r18e4: the ssh had already exited, so the MUSTNOT line correctly ran locally (a refused port exits in milliseconds, before the first key):
-                # it may be in the file; only the usability probe is judged, and it must be there exactly once
-                exact(r, "[%s host] the local shell is usable afterwards (ssh had already exited: the earlier line running locally is correct and ignored)" % label,
-                      [tok2], [l for l in ctx.lines(f) if l != "MUSTNOT_" + tok])
-            else:
-                exact(r, "[%s host] the local shell is usable afterwards (and has none of the held line)" % label, [tok2], ctx.lines(f))
+            ctx.until(lambda: len(ctx.lines(f)) >= 2, 8)
+            exact(r, "[%s host] the local shell is usable afterwards (the typed-behind line ran once, then this one)" % label, ["MUSTNOT_" + tok, tok2], ctx.lines(f))
     finally:
         stop.set()
         th.join(2)
@@ -551,6 +579,15 @@ def c_ssh_hang(ctx, r):
 
 def ps_has_port(port):
     """is an ssh client for 127.0.0.1 -p <port> running (matched on the args)"""
+    if os.name == "nt":
+        # H5 (r18u8 Windows): POSIX `ps` does not exist in the Windows harness PATH, so the poll never saw the ssh and the case reported "ssh never seen". The
+        # command lines come from CIM (Win32_Process), as in ps_has below; the msys ssh and ssh.exe are both matched.
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"Name='ssh.exe'\" | ForEach-Object { $_.CommandLine }"],
+                                 capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return any(re.search(r"\bssh(\.exe)?\"?\s.*-p\s*%d\b" % port, l) for l in out.splitlines())
     try:
         out = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.TimeoutExpired):
@@ -605,25 +642,43 @@ def c_ssh_password(ctx, r):
         secret_prompt(ctx, r, host, secret, word, label)
 
 
+def wait_secret_prompt(ctx, r, label, word):
+    """wait until ssh's secret prompt is on screen before ANYTHING is typed (r18u8: under pass-through a key typed earlier is ssh's, and ssh.exe takes it as a
+    password attempt). OCR (when an engine is installed) is polled for the prompt word up to 20 s; with no OCR the case waits a fixed 3 s and says so."""
+    shot = "pw_%s_prompt" % label
+    deadline = time.time() + 20
+    txt = None
+    probe = ctx.ocr(shot + "_ocr")
+    if probe is None:
+        time.sleep(3.0)
+        r.note("[%s] no OCR here: the `%s` prompt was not seen, a fixed 3 s wait stood in (nothing was typed before it)" % (label, word))
+        ctx.shot(shot)
+        return
+    while time.time() < deadline:
+        txt = ctx.ocr(shot + "_ocr") or ""
+        if word in txt.lower():
+            break
+        time.sleep(0.5)
+    ctx.shot(shot)
+    r.check(word in (txt or "").lower(), "[%s] OCR does not show the `%s` prompt within 20 s: ssh may have failed before prompting" % (label, word))
+    time.sleep(0.3)
+
+
 def secret_prompt(ctx, r, host, pw, word, label):
     f = "pw_%s.txt" % label
     rm_remote(ctx, f)
     ctx.rm(f)
     lm, rm_ = ctx.cmd_mark(), len(ctx.prof.commands(remote=True))
-    junk = "JUNKpre" + ctx.tok(5)
     before = rprompts(ctx)
     ctx.be.type("ssh %s" % host, 12, enter=True)
-    time.sleep(0.1)
-    ctx.be.type(junk, 15, enter=True)                  # impatient typing before the prompt exists
-    ctx.until(lambda: ps_has(host), 5, step=0.05)
-    time.sleep(2.0)                                    # the prompt is up
-    ctx.shot("pw_%s_prompt" % label)
-    txt = ctx.ocr("pw_%s_prompt_ocr" % label)
-    if txt is not None:
-        r.check(word in txt.lower(), "[%s] OCR does not show the `%s` prompt before the post-prompt keys are typed: ssh may have failed before prompting" % (label, word))
+    # r18u8 (Mac + Windows): under the plain-terminal ssh pass-through, keys typed before the prompt exists reach ssh like any terminal (ssh.exe on Windows
+    # consumes them as a password attempt, and NumberOfPasswordPrompts is 1). The case therefore types NOTHING until the prompt is up, then the secret,
+    # and types local commands only after ssh exited.
+    ctx.until(lambda: ps_has(host), 8, step=0.05)
+    wait_secret_prompt(ctx, r, label, word)
     ctx.be.type(pw, 15, enter=True)                    # after the prompt: must reach it
     ok = ctx.until(lambda: rprompts(ctx) > before, 30, step=0.1)
-    r.check(bool(ok), "[%s] keys typed AFTER the prompt did not reach it: no remote shell after typing the %s (junk typed before may have consumed the single attempt)" % (label, word))
+    r.check(bool(ok), "[%s] keys typed AFTER the prompt did not reach it: no remote shell after typing the %s " % (label, word))
     ctx.shot("pw_%s_after" % label)
     if ok:
         tok = ctx.tok(8).lower()
@@ -633,19 +688,19 @@ def secret_prompt(ctx, r, host, pw, word, label):
         exact(r, "[%s] remote command after the %s login" % (label, word), [tok], ctx.lines(f, remote=True))
         leave(ctx)
     allcmds = [c for _, c in ctx.prof.commands()[lm:]] + [c for _, c in ctx.prof.commands(remote=True)[rm_:]]
-    r.check(not any(junk in c for c in allcmds), "[%s] the key burst typed BEFORE the prompt reached a shell instead of being discarded: %r" % (label, [c for c in allcmds if junk in c]))
     r.check(not any(pw in c for c in allcmds), "[%s] the %s ended up in a shell's command history (it was typed into a shell, not the prompt)" % (label, word))
-    if txt is not None:
-        after = ctx.ocr("pw_%s_after_ocr" % label) or ""
+    after = ctx.ocr("pw_%s_after_ocr" % label)
+    if after is not None:
         r.check(pw not in after, "[%s] the %s is visible on screen (echoed)" % (label, word))
     # wrong secret: ssh ends, the LOCAL shell is back and the next line runs locally
     ctx.reset()
     lm = ctx.cmd_mark()
     ctx.be.type("ssh %s" % host, 12, enter=True)
-    ctx.until(lambda: ps_has(host), 5, step=0.05)
-    time.sleep(2.0)
+    ctx.until(lambda: ps_has(host), 8, step=0.05)
+    wait_secret_prompt(ctx, r, label + "-wrong", word)
     ctx.be.type("wrong-" + ctx.tok(4), 15, enter=True)
-    ctx.until(lambda: not ps_has(host), 15, step=0.2)
+    gone = ctx.until(lambda: not ps_has(host), 20, step=0.2)
+    r.check(bool(gone), "[%s] the ssh client was still running 20 s after a wrong %s (NumberOfPasswordPrompts 1): local commands are not typed until it exits" % (label, word))
     time.sleep(1.5)
     tok = ctx.tok(8).lower()
     ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, f), 12, enter=True)

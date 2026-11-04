@@ -619,6 +619,7 @@ def main():
                     open(os.path.join(logs, dst), "w").write(t)
                     if dst == "phosphor.log":
                         dest_log = t
+                        save_old_rotations(src, logs, "phosphor", ollama_url)
             if dest == "shadow" and dest_log is not None:
                 # #1528: the shadow comparison's consumer in the real app: every untagged kh_dest_disagree line is a regression
                 total, untagged = cases.dest_disagreements(dest_log)
@@ -713,6 +714,29 @@ def save_case_log(run, label, case, t0, prof, ctx, app, ollama_url=None, cap=12_
         print(("save_case_log: %r" % (e,)).encode("ascii", "backslashreplace").decode("ascii"), flush=True)
 
 
+def save_old_rotations(src, logs, stem, ollama_url):
+    """r18u8: keep EVERY rotation of the app log in the saved artifacts. app_log_text() already folds the `.in_session.N` chunks into phosphor.log, but the
+    launch-time rotations (`<log>.old.N`, plain or .gz) were left behind and a relaunch's earlier launches vanished. Each is written next to the log as
+    `<stem>.old.N.log` (decompressed and redacted: the endpoint never reaches an artifact). Never raises."""
+    import glob, gzip, ci_env
+    if not src:
+        return []
+    saved = []
+    for f in sorted(glob.glob(glob.escape(src) + ".old.*")):
+        try:
+            raw = open(f, "rb").read()
+            if f.endswith(".gz"):
+                raw = gzip.decompress(raw)
+            name = os.path.basename(f)[:-3] if f.endswith(".gz") else os.path.basename(f)
+            dst = os.path.join(logs, "%s.old.%s.log" % (stem, name.split(".old.", 1)[1]))
+            with open(dst, "w", encoding="utf-8", errors="replace") as fh:
+                fh.write(ci_env.redact(raw.decode("utf-8", errors="replace"), ollama_url))
+            saved.append(dst)
+        except Exception as e:
+            print(("save_old_rotations %s: %r" % (f, e)).encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+    return saved
+
+
 def app_log_text(src):
     """The whole session's app log: the app rotates it at 10 MB into <log>.in_session.N (#1187, N=0 newest), so the rotated chunks come
     first, oldest first, then the active file. Copying only the active file lost the first part of long modes (#1482 analysis)."""
@@ -770,7 +794,7 @@ def set_ps_pane_state(ctx, be):
         time.sleep(1.5 + attempt)
         for _ in range(attempt + 1):
             be.key("ctrl+c")
-            time.sleep(0.8)
+            time.sleep(ctx.EXIT_WINDOW_S + 0.4 if ctx.mode == "agent" else 0.8)      # r18u8 (H16): two Ctrl-C < 1 s apart exit an empty agent view
         be.key("Escape" if ctx.pane == "cmd" else "ctrl+u")
         tok = ctx.tok(8).lower()
         fn = ("; " + ctx.prof.ps_ssh_function()) if (ctx.ssh and ctx.prof.ps_ssh_function()) else ""
@@ -834,6 +858,7 @@ def keep_instance_log(run, mode, prof, backend_name, ollama_url, n, app=None):
     os.makedirs(logs, exist_ok=True)
     t = ci_env.redact(app_log_text(src), ollama_url)
     open(os.path.join(logs, "phosphor.%d.log" % n), "w").write(t)
+    save_old_rotations(src, logs, "phosphor.%d" % n, ollama_url)
 
 
 def row_log_line(row):

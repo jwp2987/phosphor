@@ -52,6 +52,23 @@ def exact_burst(ctx, r, tag, n=6):
     return C.effect_run(ctx, r, tag, n, 0.0)
 
 
+PILLOW_MSG = "Pillow not installed on this runner (owner: install?)"
+
+
+def have_pillow():
+    try:
+        import PIL.Image, PIL.ImageChops  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def need_pillow(r):
+    """r18u8 (Mac): a case whose verdict is a screenshot diff must SKIP, not pass on a note, when Pillow is missing"""
+    if not have_pillow():
+        r.skip(PILLOW_MSG)
+
+
 def img_diff(a, b):
     """fraction of pixels that differ noticeably between two screenshots; None without Pillow (python3-pil)"""
     try:

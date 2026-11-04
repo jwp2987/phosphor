@@ -778,7 +778,8 @@ class MacBackend(Backend):
         """Keep htype2's K-lines (it overwrites its outfile every call) in self.calls and <run>/inject.log. Typed characters are logged as a COUNT
         and first/last time only (never their code points: typed text can be a password); ENTER/KEY/BS/TAB/RIGHT lines are logged in full."""
         rec = dict(n=len(self.calls), wall0=t0, wall1=t1, enters_want=sum(1 for o in ops if o.split(":")[0] == "e"),
-                   enter_wall=[], post_wall=[], chars=0, special=[], err=err, out=False)
+                   enter_wall=[], post_wall=[], chars=0, special=[], err=err, out=False,
+                   ref=bool(self.guard_override))      # r18u8: keys aimed at the reference terminal (interleaved latency) are not Phosphor's; injacct.join skips ref calls
         try:
             lines = open(self.outf, errors="replace").read().splitlines()
         except OSError:
@@ -1063,7 +1064,8 @@ class WindowsBackend(Backend):
     # ------------------------------------------------------------ the injector record (#1482)
     def _begin(self, kind, enters_want=0):
         self._cur = dict(n=len(self.calls), kind=kind, wall0=time.time(), wall1=None, enters_want=enters_want, enter_wall=[], enters_posted=0,
-                         chars=0, special=[], err=None, out=True, events=0, accepted=0, t_chars=[])
+                         chars=0, special=[], err=None, out=True, events=0, accepted=0, t_chars=[],
+                         ref=bool(self.guard_override))      # r18u8: reference-console keys (interleaved latency) are not Phosphor's; injacct.join skips ref calls
         return self._cur
 
     def _end(self):
