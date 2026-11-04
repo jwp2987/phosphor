@@ -24411,6 +24411,11 @@ fn pastes_held_for_the_prompt_in(
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
+            // A shell that shows a prompt and signals its line editor has bootstrapped: its
+            // session exists, as it does in the app. Without one, `legacy` sends typed text to
+            // the input editor (nothing may reach the pty before the bootstrap script echoed),
+            // which no prompt hold ever meets.
+            register_local_session_for_ssh_test(view, ctx);
             if cap_first {
                 // A shell that has signalled before: its cap keeps a segment with an Enter.
                 conpty_signalling_prompt_hold_setup(view);
@@ -24492,6 +24497,14 @@ fn pastes_held_for_the_prompt_in(
             String::from_utf8_lossy(expected),
             "{mode:?}: each key once, in order"
         );
+        // Every key went to the pty: none of them is also (or instead) in the input editor.
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input.as_ref(ctx).buffer_text(ctx),
+                "",
+                "{mode:?}: no key in the editor"
+            );
+        });
     })
 }
 
