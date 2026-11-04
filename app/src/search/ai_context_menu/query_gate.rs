@@ -16,12 +16,23 @@ pub(super) struct QueryGate {
     select_waiting: bool,
     /// Bumped whenever a wait begins or is cancelled, so a give-up timer only cancels its own wait.
     wait_id: u64,
+    /// The newest query requested (outstanding or applied since); `None` after a reset.
+    latest: Option<String>,
 }
 
 impl QueryGate {
     /// A new query was typed. Any Enter waiting on an older query is cancelled: the user kept
     /// typing, so that Enter no longer refers to what is on screen.
+    ///
+    /// The same query again is not typing: the editor re-reports the filter on every edit event,
+    /// and an edit's event can be handled after an Enter that followed it (a replayed key, #1633).
+    /// That request changes nothing, so it neither cancels the waiting Enter (which would lose it)
+    /// nor marks the shown results stale.
     pub(super) fn request(&mut self, query: String) {
+        if self.latest.as_deref() == Some(query.as_str()) {
+            return;
+        }
+        self.latest = Some(query.clone());
         self.requested = Some(query);
         self.cancel_select();
     }
@@ -88,6 +99,7 @@ impl QueryGate {
     /// Forget everything (menu closed or reset).
     pub(super) fn reset(&mut self) {
         self.requested = None;
+        self.latest = None;
         self.awaiting_results = false;
         self.cancel_select();
     }
