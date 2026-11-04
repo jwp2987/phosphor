@@ -24,10 +24,14 @@ except Exception:
 
 PROJECT = "88085499"
 WARN_BYTES = 5 * 1024 * 1024
-UNIT_JOBS = ("test-linux", "test-warpui-core", "test-workspace-rest", "integration-linux", "test-shuttle-loom")
-NUMBERS_JOBS = ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core")
+# Every box suite also runs on the Mac and Windows runners (<suite>-macos / <suite>-windows; test-macos / test-windows is the lib suite):
+# archived exactly like the box job (unit/<job>.json), judged per platform in the history.
+PLATS = ("macos", "windows")
+UNIT_JOBS = ("test-linux", "test-warpui-core", "test-workspace-rest", "integration-linux", "test-shuttle-loom") + \
+    tuple("%s-%s" % (n, p) for p in PLATS for n in ("test", "test-warpui-core", "test-workspace-rest", "test-shuttle-loom"))
+NUMBERS_JOBS = ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("bench", "fuzz-smoke", "mutants", "mutants-warpui-core"))
 GUARD_JOBS = ("guards", "advisories", "licenses")
-RELEASE_JOBS = ("test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core")
+RELEASE_JOBS = ("test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core") + tuple("%s-%s" % (n, p) for p in PLATS for n in ("test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"))
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 PREFIX = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z \d\d[OE]\+? ?")
 FIN = ("success", "failed")

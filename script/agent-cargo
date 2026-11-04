@@ -78,7 +78,11 @@ shift
 # `./target`, which CI's build cache is keyed on; redirecting it to an unshared path
 # would make every run compile cold.
 GOVERNOR=1
-if ! mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR" 2>/dev/null; then
+# PHOSPHOR_GOVERNOR=0: no slot arbitration at all, for single-purpose runners (the Mac and Windows CI machines run one job at a
+# time; the slot logic needs /proc/meminfo and flock, which exist on Linux only). The job/thread caps below still apply.
+if [[ "${PHOSPHOR_GOVERNOR:-1}" == 0 ]]; then
+  GOVERNOR=0
+elif ! mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR" 2>/dev/null; then
   GOVERNOR=0
   echo "[agent-cargo] scratch base unavailable (tried $TARGET_ROOT); slot limiting OFF" >&2
   echo "[agent-cargo] set PHOSPHOR_TARGET_ROOT/PHOSPHOR_LOCK_DIR/PHOSPHOR_LOG_DIR to restore it." >&2
@@ -105,7 +109,7 @@ export CARGO_BUILD_JOBS="$JOBS"
 # threads to the same budget as compile jobs.
 export NEXTEST_TEST_THREADS="$JOBS"
 export RUST_TEST_THREADS="$JOBS"
-ulimit -n 8192
+ulimit -n 8192 2>/dev/null || true   # a hard limit below 8192 (macOS, Git Bash) must not abort the run
 
 # ---------------------------------------------------------------- toolchain
 # Every build on this host goes through this script, so this is the one place

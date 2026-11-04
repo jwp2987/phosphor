@@ -11,8 +11,14 @@
 #                      app-affecting paths (APP_NONAFFECTING below, inverted) equal those of the newest earlier build/*
 #                      pipeline with a SUCCESSFUL, unexpired build job REUSES that build (app-test-*-reuse, job id passed as
 #                      APPCI_BUILD_JOB_ID) instead of building. --no-reuse forces builds. candidate/release ALWAYS build.
-#   candidate (~3 h)   check-linux; all three test suites unfiltered; all three builds; the FULL app matrix everywhere.
-#   release   (~8 h)   candidate + test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core.
+#   candidate (~6 h)   check-linux; all three box test suites unfiltered; all three builds; the FULL app matrix everywhere; and on the
+#                      Mac and Windows runners the same three unit suites (test-<plat>, test-warpui-core-<plat>,
+#                      test-workspace-rest-<plat>), played AFTER that platform's app tests (each runner is one machine).
+#   release   (~16 h)  candidate + on the box test-shuttle-loom, fuzz-smoke, bench, mutants, mutants-warpui-core, and on EACH of
+#                      macOS and Windows the same heavy set (-macos / -windows suffix), after that platform's unit suites. Every
+#                      suite runs on Linux, macOS and Windows ("the tests need to be the same on all boxes"); the one exception
+#                      is fuzz-smoke-windows (cargo-fuzz is Unix-only): it is never played, it is reported "unsupported" (neutral).
+#                      Times are estimates: the Mac/Windows suites have never run; the first release run records them.
 #
 # After the run it prints the collect+commit command, or with --collect runs script/ci/collect_results.py itself (test-results/ archive).
 # Prereqs: glab authenticated (run 'glab api user' first). Never re-plays a job that already ran. Heavy jobs: ask the owner.
@@ -25,6 +31,23 @@ PROJECT = "88085499"
 LINUX, MAC, WIN = "linux", "macos", "windows"
 BUILD = {LINUX: "build-linux-x86_64", MAC: "build-macos-arm64", WIN: "build-windows-x86_64"}
 APP = {LINUX: ["app-test-linux-wayland", "app-test-linux-x11"], MAC: ["app-test-macos"], WIN: ["app-test-windows"]}
+UNIT_SUFFIX = ["test", "test-warpui-core", "test-workspace-rest"]
+HEAVY_SUFFIX = ["test-shuttle-loom", "fuzz-smoke", "bench", "mutants", "mutants-warpui-core"]
+PLAT_SUFFIX = {MAC: "macos", WIN: "windows"}
+# suites that cannot exist on a platform, with the reason: reported, never played (a job that is built to fail is not a test)
+UNSUPPORTED = {"fuzz-smoke-windows": "cargo-fuzz works only on Unix-like systems (no Windows/MSVC)"}
+
+
+def plat_suites(p, heavy):
+    """The unit (and, in the release tier, heavy) suite job names of the Mac/Windows platform p: test-macos, test-warpui-core-macos, ..."""
+    sfx = PLAT_SUFFIX[p]
+    # the plain unit suite is test-macos / test-windows; the others are <suite>-<platform>
+    names = ["test-" + sfx] + ["%s-%s" % (n, sfx) for n in UNIT_SUFFIX[1:]]
+    if heavy:
+        names += ["%s-%s" % (n, sfx) for n in HEAVY_SUFFIX if n != "test-shuttle-loom"] + ["test-shuttle-loom-" + sfx]
+    return names
+
+
 APP_CORE_FILES = re.compile(r"^(app/|crates/|Cargo\.(toml|lock)|\.cargo/|script/ci/|\.gitlab-ci\.yml|\.config/)")
 WIN_ONLY = re.compile(r"(^|/)(windows|win)(/|_|\.)|_windows\.rs$|^script/realapp/windows/|^script/windows/|\.ps1$|^wix/|^installer/windows")
 MAC_ONLY = re.compile(r"(^|/)(macos|mac)(/|_|\.)|_macos\.rs$|^script/realapp/mac/|^script/mac/|^app/macos|\.plist$|\.entitlements$")
@@ -33,7 +56,7 @@ LINUX_ONLY = re.compile(r"(^|/)linux(/|_|\.)|_linux\.rs$|^script/realapp/linux/|
 # top-level directory or script fails safe (rebuild). Also compared: the build-X job block and its templates in .gitlab-ci.yml.
 APP_NONAFFECTING = ["docs", ".gitlab", ".gitlab-ci.yml", "specs", "fuzz", ".agents", ".zed", ".mcp.json", "issues.md", "stale-r13.pids",
                     "script/ci", "script/realapp", "script/precheck", "script/presubmit", "script/state", "script/keylat", "script/lint_powershell",
-                    "script/_cloud_boundary_scan.py", "script/cloud_boundary_allowlist.txt", "script/known_test_failures.txt",
+                    "script/_cloud_boundary_scan.py", "script/cloud_boundary_allowlist.txt", "script/known_test_failures.txt", "script/known_test_failures_macos.txt", "script/known_test_failures_windows.txt",
                     "script/large_deletion_allowlist.txt", "script/extract_sweep_ledger.py", "script/repro_subshell_relay_deadlock.py",
                     "script/test-fixtures", "deny.toml", "test-results", "script/agent-cargo", "script/agent-worktree", "script/setup-merge-drivers.sh"]
 APP_NONAFFECTING_GLOBS = ["**/*.md", "script/check_*", "script/test_*"]
@@ -652,6 +675,32 @@ def main():
     watchers = [threading.Thread(target=after_build, args=(b,), daemon=True) for b in builds]
     for t in watchers:
         t.start()
+    watch_of = {b: t for b, t in zip(builds, watchers)}
+
+    def plat_unit_suites(p):
+        """candidate/release: this platform's suite jobs, one after the other, once its app tests have finished (one machine per platform)."""
+        if BUILD[p] in watch_of:
+            watch_of[BUILD[p]].join()                       # the app tests have been played (or the build failed) after this
+        for n in APP[p]:
+            with lock:
+                mine = n in started
+            if mine:
+                print(n, wait(n), flush=True)               # do not overlap the app tests on the same machine
+        for n in plat_suites(p, tier == "release"):
+            if n in SKIP or n not in jobs():
+                continue
+            if n in UNSUPPORTED:
+                print("%s: not played, unsupported on this platform: %s" % (n, UNSUPPORTED[n]), flush=True)
+                timeline[n] = (PLATFORM_UNSUPPORTED, None); continue
+            if play(n):
+                print("%s: started %s" % (time.strftime("%H:%M"), n), flush=True)
+            if jobs().get(n, {}).get("status") not in (None, "manual"):
+                print(n, wait(n), flush=True)
+    suite_threads = []
+    if tier != "fix":
+        suite_threads = [threading.Thread(target=plat_unit_suites, args=(p,), daemon=True) for p in plats if p in PLAT_SUFFIX]
+        for t in suite_threads:
+            t.start()
     if tier == "fix":
         box = [(n, v) for n, k, v in (("test-linux", "linux", fvars), ("test-warpui-core", "core", None), ("test-workspace-rest", "rest", None)) if k in suites]
     else:
@@ -664,6 +713,8 @@ def main():
             if n not in SKIP: play(n)
     for t in watchers:
         t.join()
+    for t in suite_threads:
+        t.join()                                            # the Mac/Windows suites are counted in the verdict like every other job
     for n in builds:
         print(n, timeline.get(n, ("?",))[0], flush=True)
     for n in started + reuse_started: print(n, wait(n), flush=True)
@@ -704,6 +755,7 @@ def collect_hint(pid, auto):
 
 
 TIER_SKIP = "skipped by tier"
+PLATFORM_UNSUPPORTED = "unsupported on platform"
 RUNNER_OFFLINE = "RUNNER-OFFLINE"
 RUNNING_DEADLINE = "RUNNING-DEADLINE"
 RUNNING_FACTOR = [2.0]             # set from --running-factor
@@ -759,7 +811,7 @@ def verdict(name, status):
     """Per-job verdict. Every job in the timeline counts, app tests included (they are allow_failure in GitLab, so the
     pipeline is green regardless; this verdict is the one that is not). Only an explicit tier skip is neutral; bench,
     mutants and fuzz are informational (not gating) and keep their status. Anything else that is not success fails."""
-    if status == TIER_SKIP:
+    if status in (TIER_SKIP, PLATFORM_UNSUPPORTED):
         return "SKIPPED"
     if status == "success":
         return "PASS"
