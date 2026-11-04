@@ -3,7 +3,7 @@
 # script/check_pwsh_parse parses the same files with pwsh 7 on Linux/macOS (script/precheck), but the VM runs 5.1, and an
 # after_script that does not parse fails SILENTLY: GitLab never fails a job on its after_script, and `if ($LASTEXITCODE)`
 # after a script that failed to parse is a no-op. So this runs the VM's own parser:
-#   1. every *.ps1 under app\assets\bundled, script\realapp\windows, script\windows and script\ci (top level), with the
+#   1. every *.ps1 under app\assets\bundled, script\realapp\windows, script\windows, script\ci\nodes and script\ci (top level), with the
 #      same placeholder substitution as check_pwsh_parse (@@TOKEN@@ -> 0, @TOKEN@ -> PLACEHOLDER) in a temp copy;
 #   2. the after_script helpers with -Check (parse + parameter binding, no side effects): after_job.ps1 and restore.ps1.
 # Exit 1 on any failure or when nothing was found (stale paths); 0 otherwise. Used by the guards-windows job and as the
@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Force $tmp | Out-Null
 $fail = 0; $n = 0
 try {
   $files = @()
-  foreach ($d in @("app\assets\bundled", "script\realapp\windows", "script\windows")) {
+  foreach ($d in @("app\assets\bundled", "script\realapp\windows", "script\windows", "script\ci\nodes")) {
     $p = Join-Path $Root $d
     if (Test-Path $p) { $files += @(Get-ChildItem $p -Recurse -File -Filter *.ps1) }
   }
