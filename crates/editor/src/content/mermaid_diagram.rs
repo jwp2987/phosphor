@@ -149,8 +149,9 @@ fn check_render_limits(source: &str) -> Result<(), anyhow::Error> {
 /// even in separate blocks) makes a parent cycle, and its layout walks the parent links without a
 /// visited set: unbounded recursion that overflows any stack, however large, and aborts the app
 /// (the real cause of #1493; nesting depth alone was never the problem). Mirrors the renderer's
-/// parsing: the id of `subgraph id`, `subgraph id[title]`; a multi-word title gets a unique id; a
-/// line that is exactly `end` closes a block, and an unmatched `end` stops the renderer's parse.
+/// parsing: the id of `subgraph id`, `subgraph id[title]`; a multi-word title or a title-only
+/// `subgraph [title]` gets a unique id; a line that is exactly `end` closes a block, and an
+/// unmatched `end` stops the renderer's parse.
 fn subgraph_cycle(source: &str) -> Option<String> {
     use std::collections::HashMap;
     let mut open: Vec<String> = Vec::new();
@@ -164,11 +165,16 @@ fn subgraph_cycle(source: &str) -> Option<String> {
             let id = match after.find('[') {
                 Some(bracket) if after.ends_with(']') => after[..bracket].trim().to_string(),
                 Some(_) => after.to_string(),
-                None if after.split_whitespace().count() > 1 => {
-                    anonymous += 1;
-                    format!("\0anonymous{anonymous}")
-                }
+                None if after.split_whitespace().count() > 1 => String::new(),
                 None => after.to_string(),
+            };
+            // A multi-word title, or a title with no id (`subgraph [Title]`, #1639), gets a
+            // unique id from the renderer.
+            let id = if id.is_empty() {
+                anonymous += 1;
+                format!("\0anonymous{anonymous}")
+            } else {
+                id
             };
             indegree.entry(id.clone()).or_insert(0);
             if let Some(parent) = open.last() {
@@ -664,6 +670,9 @@ mod render_limit_tests {
         assert!(subgraph_cycle("graph TD\nsubgraph a\nend\nsubgraph a\nend\n").is_none());
         let titles = "graph TD\nsubgraph One two\nsubgraph One two\nend\nend\n";
         assert!(subgraph_cycle(titles).is_none());
+        // #1639: a title with no id is a fresh subgraph each time, as in the renderer.
+        let title_only = "graph TD\nsubgraph [API Gateway]\nsubgraph [API Gateway]\nend\nend\n";
+        assert!(subgraph_cycle(title_only).is_none());
     }
 
     /// #1493: `\0` is the graph library's root sentinel; a node with that id recurses forever in

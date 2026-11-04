@@ -284,6 +284,10 @@ fn hostile_sources() -> Vec<String> {
         // A > B > A reuse (overflowed the renderer's stack).
         "flowchart LR\n".to_string() + &"subgraph Backend\n  N --> B\n".repeat(48),
         "flowchart LR\n".to_string() + &"subgraph A\n  X\nsubgraph B\n  Y\n".repeat(12),
+        // #1639: title-only `subgraph [Title]` blocks, each around a subgraph (the empty id made
+        // the renderer's subgraph walk recurse into itself until the stack overflowed).
+        "flowchart LR\n".to_string()
+            + &"subgraph [API Gateway]\n  subgraph Backend\n    x --> y\n  end\nend\n".repeat(24),
         "sequenceDiagram\n".to_string() + &"A->>B: m\n".repeat(2000),
         "pie\n".to_string() + &"\"k\" : 1\n".repeat(2000),
         "\0\0\0".to_string(),
@@ -431,4 +435,36 @@ fn issue_1622_unclosed_subgraph_reuse_renders_quickly() {
         err.contains("nests subgraph `Backend` inside itself"),
         "the error names the self-nested subgraph: {err}"
     );
+}
+
+/// #1639: `subgraph [API Gateway]` has a title but no id. The renderer gave it the id `""`, which
+/// its bottom-up subgraph walk also used as the "no parent" key, so the subgraph listed itself as
+/// its own child and the walk recursed until the stack overflowed: an abort of the whole app that
+/// the app's pre-checks (NUL, nesting depth, subgraph cycles) did not catch. Found by the
+/// mermaid_render fuzz target (seed `fuzz/corpus/mermaid_render/ref_issue_1639`); the fixture
+/// keeps its literal 0x04 byte. The fork now gives a title-only subgraph a generated id and walks
+/// the subgraph tree iteratively, so the diagram renders, quickly.
+#[test]
+fn issue_1639_title_only_subgraph_renders_quickly() {
+    let src = fixture("issue_1639_title_only_subgraph.mmd");
+    assert!(
+        src.contains('\u{4}'),
+        "the fixture keeps the fuzz input's 0x04 byte"
+    );
+    let start = Instant::now();
+    let result = app_render(&src);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "#1639 flowchart took {elapsed:?}"
+    );
+    let svg = result.expect("the #1639 flowchart renders");
+    assert!(is_nonblank_svg(&svg));
+    let labels = text_labels(&svg);
+    for want in ["API Gateway", "Backend", "Auth"] {
+        assert!(
+            labels.iter().any(|l| l == want),
+            "label {want} missing: {labels:?}"
+        );
+    }
 }

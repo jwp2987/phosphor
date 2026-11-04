@@ -22,7 +22,7 @@ warp = { path = "../app", features = ["dev-support"] }
 # Renamed so the extern crate name does not collide with the `markdown_parser` fuzz binary.
 md = { package = "markdown_parser", path = "../crates/markdown_parser" }
 # Same pin as the root workspace (Cargo.toml `mermaid_to_svg`).
-mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git", rev = "68cd096e01daffff547ca06340063f0cc004124e" }
+mermaid_to_svg = { git = "https://gitlab.com/winters-phosphor/mermaid-to-svg.git", rev = "4ecd190aadae0fff9a8476d76a599518ba550886" }
 
 [workspace]
 members = ["."]
