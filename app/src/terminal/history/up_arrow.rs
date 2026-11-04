@@ -285,6 +285,7 @@ impl UpArrowSnapshot {
 
     /// Same result as [`History::up_arrow_suggestions_with_command_prefix`] over the state this
     /// snapshot was captured from. Safe to call from any thread.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(crate) fn suggestions<'a>(
         &'a self,
         command_prefix: Option<&str>,
@@ -347,6 +348,7 @@ impl UpArrowSnapshot {
 /// Returns the AI-query prompt history for a terminal view, most-recent first,
 /// with ignored and empty prompts filtered out. Used by the `warp_tui`
 /// prompt-history menu (which lists only prior prompts, not shell commands).
+#[allow(dead_code)] // used only by tests
 pub fn prompt_history_for_terminal_view(
     terminal_view_id: EntityId,
     app: &AppContext,

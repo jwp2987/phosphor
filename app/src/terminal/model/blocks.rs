@@ -502,6 +502,7 @@ fn lazy_restore_min_bytes_from_env() -> Option<usize> {
 /// Safe because `BlockListElement::layout` reflows stale blocks in and around the viewport
 /// before measuring or drawing, user-facing jumps flush everything, and the view's frame driver
 /// drains the rest in small chunks ([`BlockList::reflow_stale_blocks_within`]).
+#[allow(dead_code)] // used only by tests
 fn lazy_reflow_enabled() -> bool {
     std::env::var("PHOSPHOR_LAZY_REFLOW").map_or(true, |value| value.trim() != "0")
 }

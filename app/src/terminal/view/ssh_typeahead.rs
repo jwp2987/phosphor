@@ -157,6 +157,7 @@ impl SshTypeahead {
 
     #[cfg(test)]
     /// Gives up the whole buffer as if it had grown past its bound (the editor's own queue did).
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub(super) fn overflow(&mut self) -> SshTypeaheadPush {
         if self.overflowed {
             return SshTypeaheadPush::Ignored;

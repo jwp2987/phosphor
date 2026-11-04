@@ -9,12 +9,10 @@
 /// Names of the legacy buffers, as in the design's inventory table.
 pub mod legacy {
     pub const PASTE_PTY: &str = "Q4_paste_sequencer";
-    pub const PASTE_EDITOR: &str = "Q4b_paste_hold";
     pub const SUBSHELL_BOOTSTRAP: &str = "Q6b_bootstrap_in_flight";
     pub const SUBSHELL_SETUP: &str = "Q6a_setup_held";
     pub const HANDOFF: &str = "Q3_handoff_hold";
     pub const SSH: &str = "Q7_ssh_typeahead";
-    pub const AFTER_ENTER: &str = "Q2_after_enter_replay";
 }
 
 /// A key's bytes were held by `queue`.

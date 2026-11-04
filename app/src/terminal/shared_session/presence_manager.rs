@@ -232,6 +232,7 @@ pub struct PresenceManager {
     // Map from block ID to the shared session participant IDs that have it selected.
     block_id_to_participants_selected: HashMap<BlockId, Vec<ParticipantId>>,
 
+    #[allow(dead_code)] // field: set at construction or persisted
     role_requests: HashMap<ParticipantId, RoleRequestId>,
 }
 
@@ -663,6 +664,7 @@ impl PresenceManager {
         )
     }
 
+    #[allow(dead_code)] // used only by tests
     fn single_distinct_uid<'a>(mut uids: impl Iterator<Item = &'a str>) -> Option<&'a str> {
         let uid = uids.next()?;
         uids.all(|other_uid| other_uid == uid).then_some(uid)

@@ -611,6 +611,7 @@ pub(crate) const CMD_PIPE_PLACEHOLDER: &str = "@@WARP_CMD_PIPE@@";
 /// macOS, 4096 on Linux -- and a longer one is silently truncated, which leaves the shell
 /// at a continuation prompt with the tail of the script lost (#962). Every line stays well under
 /// the smaller limit.
+#[allow(dead_code)] // used only by tests
 pub(crate) const MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES: usize = 900;
 
 /// Size of one write when the full bootstrap script is typed into a subshell (#960). Well under
@@ -657,6 +658,7 @@ const SUBSHELL_CHUNK_PAYLOAD_BYTES: usize = 700;
 /// single string whose lines are separated by CR.
 ///
 /// See [`init_subshell_command_lines`], which the app uses so it can pace the writes.
+#[allow(dead_code)] // used only by tests
 pub fn init_subshell_command(
     shell_type: Option<ShellType>,
     vars: &[EnvVar],
@@ -677,6 +679,7 @@ pub fn init_subshell_command(
 /// accumulated in a shell variable over several short lines and evaluated by the last one. Every
 /// line is below [`MAX_SUBSHELL_BOOTSTRAP_LINE_BYTES`], starts with a space (so histignorespace
 /// and fish skip it) and none of them ever deletes a history entry (#967).
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn init_subshell_command_lines(
     shell_type: Option<ShellType>,
     vars: &[EnvVar],
@@ -882,6 +885,7 @@ pub fn set_ssh_bootstrap_giveup_delivers_for_test(on: bool) -> GiveUpDeliversGua
 }
 
 /// Splits `raw_script` into lines that rebuild it in `$_wbs` and then evaluate it.
+#[allow(dead_code)] // used only by tests
 fn chunked_eval_lines(shell_type: ShellType, raw_script: &str) -> Vec<String> {
     chunked_eval_lines_with_markers(shell_type, raw_script, None)
 }

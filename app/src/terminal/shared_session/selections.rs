@@ -8,6 +8,7 @@ fn point_from_session_sharing(point: SessionSharingPoint) -> Point {
     }
 }
 
+#[allow(dead_code)] // used only by tests
 pub(crate) fn point_to_session_sharing(point: Point) -> SessionSharingPoint {
     SessionSharingPoint {
         row: point.row,

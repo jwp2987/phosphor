@@ -19,6 +19,7 @@ use event::{CLIAgentEvent, CLIAgentEventSource, CLIAgentEventType};
 /// resolves the cancel sooner, see `update_from_event`). How long to wait, after observing a synthesized Ctrl-C write to a working
 /// CLI agent session's PTY, for further plugin activity before concluding the
 /// interrupt silently cancelled the session. See `observe_ctrl_c_write`.
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub const CTRL_C_CANCEL_WINDOW: Duration = Duration::from_secs(2);
 
 /// Status of a tracked CLI agent session.
@@ -404,6 +405,7 @@ pub struct CLIAgentSessionsModel {
     ctrl_c_cancel_state: HashMap<EntityId, CtrlCCancelState>,
     /// Source of `CtrlCCancelState::armed_token` values. Monotonically increasing;
     /// never reused, so a stale callback can never alias a newer window.
+    #[allow(dead_code)] // field: set at construction or persisted
     next_ctrl_c_token: u64,
 }
 
@@ -600,6 +602,7 @@ impl CLIAgentSessionsModel {
     /// except `IdlePrompt`, which is evidence of idleness rather than
     /// aliveness; see `update_from_event`). A second Ctrl-C while a window
     /// is already armed reuses it rather than resetting the clock.
+    #[allow(dead_code)] // used only by tests
     pub fn observe_ctrl_c_write(
         &mut self,
         terminal_view_id: EntityId,
@@ -608,6 +611,7 @@ impl CLIAgentSessionsModel {
         self.observe_ctrl_c_write_with_window(terminal_view_id, CTRL_C_CANCEL_WINDOW, ctx);
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn observe_ctrl_c_write_with_window(
         &mut self,
         terminal_view_id: EntityId,
@@ -657,6 +661,7 @@ impl CLIAgentSessionsModel {
     /// callback was already queued (post `Timer::after` completion, pre-poll)
     /// when the window was disarmed, replaced, or removed, and
     /// `SpawnedFutureHandle::abort` did not take effect in time to stop it.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn resolve_pending_cancel(
         &mut self,
         terminal_view_id: EntityId,

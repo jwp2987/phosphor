@@ -109,6 +109,7 @@ impl TombstoneDisplayData {
     }
 
     /// Enriches the displayed info using data from AmbientAgentTask.
+    #[allow(dead_code)] // used only by tests
     fn enrich_from_task(&mut self, task: AmbientAgentTask) {
         // Use task title if we don't have a conversation title.
         if self.title.is_none() {

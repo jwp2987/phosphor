@@ -1384,6 +1384,7 @@ impl TerminalModel {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // used only by tests
     fn new_for_shared_session_viewer_internal(
         sizes: BlockSize,
         colors: color::List,

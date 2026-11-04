@@ -1513,6 +1513,7 @@ impl SizeUpdateBuilder {
         }
     }
 
+    #[allow(dead_code)] // used only by tests
     fn for_shared_session_update(last_size: SizeInfo, num_rows: usize, num_cols: usize) -> Self {
         // Shared session updates don't change the actual pane / content sizes.
         Self {
@@ -1523,6 +1524,7 @@ impl SizeUpdateBuilder {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(dead_code)] // used only by tests
     fn for_viewer_size_report(last_size: SizeInfo, num_rows: usize, num_cols: usize) -> Self {
         // Viewer size reports don't change the sharer's actual pane size.
         Self {
@@ -2665,6 +2667,7 @@ struct TerminalViewMouseStates {
 
     // Mouse state for the pane header ambient agent indicator tooltip.
     ambient_agent_indicator_mouse_handle: MouseStateHandle,
+    #[allow(dead_code)] // field: set at construction or persisted
     parent_conversation_header_link: MouseStateHandle,
 }
 
@@ -9395,57 +9398,6 @@ impl TerminalView {
         }
 
         true
-    }
-
-    /// Give the agent control of the active long running command
-    /// (which was started outside of a conversation).
-    fn tag_agent_in(&mut self, ctx: &mut ViewContext<Self>) {
-        self.model
-            .lock()
-            .block_list_mut()
-            .active_block_mut()
-            .set_is_agent_tagged_in(true);
-
-        if !self.model.lock().is_alt_screen_active() {
-            self.suppress_use_agent_footer(ctx);
-        }
-
-        self.input.update(ctx, |input, ctx| {
-            input.set_input_mode_agent(true, ctx);
-            input.clear_buffer_and_reset_undo_stack(ctx);
-        });
-        ctx.notify();
-    }
-
-    // Take control back from the agent for the active long running command
-    // (which was started outside of a conversation).
-    fn tag_agent_out(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self
-            .model
-            .lock()
-            .block_list()
-            .active_block()
-            .is_agent_tagged_in()
-        {
-            return;
-        }
-
-        self.model
-            .lock()
-            .block_list_mut()
-            .active_block_mut()
-            .set_is_agent_tagged_in(false);
-
-        if !self.model.lock().is_alt_screen_active() {
-            self.refresh_use_agent_footer(ctx);
-        }
-
-        self.input.update(ctx, |input, ctx| {
-            input.set_input_mode_terminal(false, ctx);
-        });
-        self.redetermine_terminal_focus(ctx);
-
-        ctx.notify();
     }
 
     fn emit_long_running_command_agent_interaction_state_changed(

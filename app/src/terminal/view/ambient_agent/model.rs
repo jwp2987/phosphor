@@ -56,6 +56,7 @@ pub struct AmbientAgentViewModel {
     request: Option<SpawnAgentRequest>,
 
     /// The terminal view this model is part of.
+    #[allow(dead_code)] // field: set at construction or persisted
     terminal_view_id: EntityId,
 
     /// Whether this ambient agent view has a parent terminal view to return to.
@@ -124,6 +125,7 @@ impl AmbientAgentViewModel {
     }
 
     /// Whether the harness CLI has started running. Only meaningful for non-oz runs.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(super) fn harness_command_started(&self) -> bool {
         self.harness_command_started
     }

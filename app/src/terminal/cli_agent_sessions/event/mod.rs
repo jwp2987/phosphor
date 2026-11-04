@@ -57,6 +57,7 @@ pub enum CLIAgentEventSource {
 pub struct CLIAgentEventPayload {
     pub query: Option<String>,
     pub response: Option<String>,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub transcript_path: Option<String>,
     pub summary: Option<String>,
     pub tool_name: Option<String>,
@@ -72,6 +73,7 @@ pub struct CLIAgentEventPayload {
 /// A parsed event from a CLI agent plugin.
 #[derive(Debug, Clone)]
 pub struct CLIAgentEvent {
+    #[allow(dead_code)] // field: set at construction or persisted
     pub v: u32,
     pub agent: CLIAgent,
     pub event: CLIAgentEventType,

@@ -47,6 +47,7 @@ struct MockHost {
 enum ScriptedFollow {
     Offer(EntryKind),
     GateEvent(GateKind, u64),
+    #[allow(dead_code)] // used by sibling unused code or shared name
     OpenGate(GateSpec),
 }
 

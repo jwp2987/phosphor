@@ -92,7 +92,9 @@ pub struct Adapter {
     viewers: HashMap<ParticipantId, Participant>,
     reconnecting_banner: ViewHandle<Banner<TerminalAction>>,
     is_reconnecting_banner_open: bool,
+    #[allow(dead_code)] // field: set at construction or persisted
     session_id: SessionId,
+    #[allow(dead_code)] // field: set at construction or persisted
     started_at: DateTime<Local>,
     source_type: SessionSourceType,
 }
@@ -189,6 +191,7 @@ impl Adapter {
         )
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn started_at(&self) -> &DateTime<Local> {
         &self.started_at
     }
@@ -220,6 +223,7 @@ impl Adapter {
             .insert(participant_id, Participant::new(avatar));
     }
 
+    #[allow(dead_code)] // used only by tests
     pub fn update_participant_role(
         &mut self,
         participant_id: &ParticipantId,
@@ -229,6 +233,7 @@ impl Adapter {
         self.update_participant_role_internal(participant_id, role, ctx);
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     fn update_participant_role_internal(
         &mut self,
         participant_id: &ParticipantId,
@@ -336,6 +341,7 @@ impl Adapter {
         avatars
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }

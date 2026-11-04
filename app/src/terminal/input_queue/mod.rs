@@ -454,6 +454,7 @@ pub struct FollowUps {
 enum Follow {
     Offer(EntryKind),
     OpenGate(GateSpec),
+    #[allow(dead_code)] // used by sibling unused code or shared name
     GateEvent(GateKind, u64),
 }
 

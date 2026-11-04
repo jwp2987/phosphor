@@ -350,16 +350,19 @@ pub enum Row {
     H1,
     H2,
     H3,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     H3b,
     H4,
     H5,
     H6,
     H7,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     H7b,
     H8,
     H8Queue,
     H10,
     P1a,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     P1b,
     P1c,
     P1d,
@@ -371,6 +374,7 @@ pub enum Row {
     D2,
     D2b,
     D3,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     D4,
     D5,
     D6,

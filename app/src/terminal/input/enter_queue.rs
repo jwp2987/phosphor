@@ -798,12 +798,6 @@ impl Input {
         typed_behind
     }
 
-    /// Test seam for [`Self::void_enter_gate`].
-    #[cfg(test)]
-    pub(crate) fn void_enter_gate_for_test(&mut self, ctx: &mut ViewContext<Self>) -> String {
-        self.void_enter_gate(ctx)
-    }
-
     /// The Enter has run. With nothing typed behind it the gate closes now; otherwise it is kept
     /// until the view has seen the route settle and asks for the release
     /// ([`Self::release_enter_gate`]). Returns whether the view has a release to do.

@@ -97,6 +97,7 @@ impl LineEditorStatus {
 
     /// Makes a precmd's fallback activation wait `wait` for the shell's ready signal (see
     /// `signal_wait`), or restores the default fallback delay.
+    #[allow(dead_code)] // used only by tests
     pub(super) fn set_signal_wait(&mut self, wait: Option<Duration>) {
         self.signal_wait = wait;
     }

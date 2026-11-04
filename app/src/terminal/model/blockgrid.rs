@@ -356,6 +356,7 @@ impl BlockGrid {
         self.grid_handler.set_obfuscate_secrets(obfuscate_secrets);
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub(super) fn scan_full_grid_for_secrets(&mut self) {
         self.grid_handler.scan_full_grid_for_secrets();
     }
@@ -862,6 +863,7 @@ impl BlockGrid {
         )
     }
 
+    #[allow(dead_code)] // used only by tests
     fn range_text_snapshot(&self, start: Point, end: Point) -> GridTextSnapshot {
         if self.is_empty() {
             GridTextSnapshot::empty()
