@@ -165,7 +165,9 @@ fn code_review_scroll_anchor_builder(
 
             fs::write(repo_dir.join(TEST_FILE_NAME), initial_committed_contents())
                 .expect("should write initial committed contents");
-            run_git(&repo_dir, &["init", "-b", "main"]);
+            run_git(&repo_dir, &["init"]);
+            // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+            run_git(&repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
             run_git(&repo_dir, &["config", "user.email", "test@example.com"]);
             run_git(&repo_dir, &["config", "user.name", "Zap Integration Test"]);
             run_git(&repo_dir, &["add", TEST_FILE_NAME]);
@@ -323,7 +325,9 @@ pub fn test_code_review_scroll_preserved_deleted_range() -> Builder {
 
             fs::write(repo_dir.join(TEST_FILE_NAME), initial_committed_contents())
                 .expect("should write initial committed contents");
-            run_git(&repo_dir, &["init", "-b", "main"]);
+            run_git(&repo_dir, &["init"]);
+            // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+            run_git(&repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
             run_git(&repo_dir, &["config", "user.email", "test@example.com"]);
             run_git(&repo_dir, &["config", "user.name", "Zap Integration Test"]);
             run_git(&repo_dir, &["add", TEST_FILE_NAME]);
@@ -406,7 +410,9 @@ pub fn test_code_review_scroll_preserved_header_range() -> Builder {
 
             fs::write(repo_dir.join(TEST_FILE_NAME), initial_committed_contents())
                 .expect("should write initial committed contents");
-            run_git(&repo_dir, &["init", "-b", "main"]);
+            run_git(&repo_dir, &["init"]);
+            // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+            run_git(&repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
             run_git(&repo_dir, &["config", "user.email", "test@example.com"]);
             run_git(&repo_dir, &["config", "user.name", "Zap Integration Test"]);
             run_git(&repo_dir, &["add", TEST_FILE_NAME]);
@@ -499,7 +505,9 @@ pub fn test_code_review_scroll_preserved_footer_range() -> Builder {
             )
             .expect("should write second file committed contents");
 
-            run_git(&repo_dir, &["init", "-b", "main"]);
+            run_git(&repo_dir, &["init"]);
+            // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+            run_git(&repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
             run_git(&repo_dir, &["config", "user.email", "test@example.com"]);
             run_git(&repo_dir, &["config", "user.name", "Zap Integration Test"]);
             run_git(&repo_dir, &["add", FIRST_FILE_NAME, SECOND_FILE_NAME]);
@@ -593,7 +601,9 @@ pub fn test_code_review_scroll_preserved_second_file() -> Builder {
             )
             .expect("should write second file committed contents");
 
-            run_git(&repo_dir, &["init", "-b", "main"]);
+            run_git(&repo_dir, &["init"]);
+            // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+            run_git(&repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
             run_git(&repo_dir, &["config", "user.email", "test@example.com"]);
             run_git(&repo_dir, &["config", "user.name", "Zap Integration Test"]);
             run_git(&repo_dir, &["add", FIRST_FILE_NAME, SECOND_FILE_NAME]);
@@ -688,7 +698,9 @@ pub fn test_code_review_double_click_fully_expands_hidden_section() -> Builder {
 
             fs::write(repo_dir.join(TEST_FILE_NAME), initial_committed_contents())
                 .expect("should write initial committed contents");
-            run_git(&repo_dir, &["init", "-b", "main"]);
+            run_git(&repo_dir, &["init"]);
+            // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+            run_git(&repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
             run_git(&repo_dir, &["config", "user.email", "test@example.com"]);
             run_git(&repo_dir, &["config", "user.name", "Zap Integration Test"]);
             run_git(&repo_dir, &["add", TEST_FILE_NAME]);

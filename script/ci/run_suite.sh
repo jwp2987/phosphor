@@ -93,8 +93,25 @@ case "$suite" in
     export RUSTC_BOOTSTRAP=1
     need_tool cargo-fuzz cargo-fuzz
     cp Cargo.lock fuzz/Cargo.lock
+    # cargo-fuzz defaults --target to the triple IT was built for. On macOS only an x86_64 cargo-fuzz release exists, so on an
+    # arm64 Mac it runs under Rosetta and builds for x86_64-apple-darwin ("can't find crate for std"). Pass the rustc host.
+    fuzz_target_args=()
+    if [[ "$plat" == macos ]]; then
+      fuzz_host="$(rustc -vV | sed -n 's/^host: //p')"
+      [[ -n "$fuzz_host" ]] || { echo "ERROR fuzz-smoke: cannot read the rustc host triple" >&2; exit 1; }
+      if [[ "$fuzz_host" == x86_64-apple-darwin && "$(uname -m)" == arm64 ]]; then
+        echo "WARNING: this arm64 Mac's rustc host is x86_64-apple-darwin: the whole Rust toolchain runs under Rosetta." >&2
+        echo "         Install the native toolchain (rustup default stable-aarch64-apple-darwin) so tests and builds are not emulated." >&2
+        if ! rustup target list --installed 2>/dev/null | grep -qx aarch64-apple-darwin; then
+          echo "ERROR fuzz-smoke: aarch64-apple-darwin std is not installed (rustup target add aarch64-apple-darwin); not falling back to x86_64." >&2
+          exit 1
+        fi
+        fuzz_host=aarch64-apple-darwin
+      fi
+      fuzz_target_args=(--target "$fuzz_host")
+    fi
     for target in ansi_parser hook_parsers input_queue key_facts_cell markdown_parser mermaid_render route_decide typeahead_handoff; do
-      CARGO_TARGET_DIR="target/ci-fuzz" ./script/agent-cargo ci-fuzz fuzz run --fuzz-dir fuzz "$target" -- -max_total_time="${FUZZ_SECONDS:-180}" -timeout=20
+      CARGO_TARGET_DIR="target/ci-fuzz" ./script/agent-cargo ci-fuzz fuzz run ${fuzz_target_args[@]+"${fuzz_target_args[@]}"} --fuzz-dir fuzz "$target" -- -max_total_time="${FUZZ_SECONDS:-180}" -timeout=20
     done
     ;;
   bench)

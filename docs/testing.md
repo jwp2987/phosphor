@@ -27,6 +27,12 @@ Hard rules:
   (`AGENTS.md` 5.6); a test carried over from Warp that fails after a port means suspect the code first.
 - Do not run a Mac CI job while a Mac latency/GUI measurement is running (the runner user `gitrunner`
   compiles in parallel and contaminates the numbers).
+- Unit tests must run on the Mac runner's older git and macOS userland (first Mac unit run, 24 of 10,956 failed, none a
+  product bug but one probe line): create fixture repos with `git init` + `git symbolic-ref HEAD refs/heads/<branch>`, never
+  `git init -b` (needs git 2.28); a test that spawns a real shell must pin what macOS's `/etc/zshrc` and fish's `path_helper`
+  override (HISTFILE, PATH); an Option-as-Meta key is `meta-<key>` on macOS, `alt-<key>` elsewhere. The shell-agnostic probe
+  (`unknown_init_subshell.sh`) prints ESC as `\033`, because macOS `/bin/dash` printf does not know `\e`.
+  `fuzz-smoke` on macOS passes `--target <rustc host>` to cargo-fuzz (its macOS release is x86_64 and would default to that).
 
 **Before pushing:**
 

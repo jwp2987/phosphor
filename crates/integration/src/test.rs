@@ -5604,7 +5604,7 @@ pub fn test_git_prompt() -> Builder {
         )
         .with_step(execute_command_for_single_terminal_in_tab(
             0,
-            "git init -b main; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\"".into(),
+            "git init; git symbolic-ref HEAD refs/heads/main; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\"".into(),
             ExpectedExitStatus::Success,
             (),
         ))

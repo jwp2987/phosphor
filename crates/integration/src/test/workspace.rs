@@ -1355,7 +1355,7 @@ fn add_tab_context_metadata_setup_steps(builder: Builder) -> Builder {
         .with_step(execute_command_for_single_terminal_in_tab(
             0,
             format!(
-                "git init -b {METADATA_BRANCH}; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\""
+                "git init; git symbolic-ref HEAD refs/heads/{METADATA_BRANCH}; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\""
             ),
             ExpectedExitStatus::Success,
             (),
@@ -1386,7 +1386,7 @@ fn add_active_pane_context_metadata_setup_steps(builder: Builder) -> Builder {
             0,
             1,
             format!(
-                "mkdir {METADATA_PANE_DIRECTORY}; cd {METADATA_PANE_DIRECTORY}; git init -b {METADATA_PANE_BRANCH}; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\"; touch file"
+                "mkdir {METADATA_PANE_DIRECTORY}; cd {METADATA_PANE_DIRECTORY}; git init; git symbolic-ref HEAD refs/heads/{METADATA_PANE_BRANCH}; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\"; touch file"
             ),
             ExpectedExitStatus::Success,
             (),

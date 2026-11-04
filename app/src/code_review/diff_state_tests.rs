@@ -298,9 +298,13 @@ async fn init_repo_for_staging(contents: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp repo dir");
     let repo_path = dir.path().to_path_buf();
 
-    run_git_command(&repo_path, &["init", "-b", "main"])
+    run_git_command(&repo_path, &["init"])
         .await
         .expect("git init");
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    run_git_command(&repo_path, &["symbolic-ref", "HEAD", "refs/heads/main"])
+        .await
+        .expect("git symbolic-ref");
     run_git_command(&repo_path, &["config", "user.email", "test@test.com"])
         .await
         .expect("git config email");
@@ -376,9 +380,13 @@ async fn stage_paths_unstages_a_new_file_before_the_first_commit() {
     // makes "unstage" mean anything at all.
     let dir = tempfile::tempdir().expect("create temp repo dir");
     let repo_path = dir.path().to_path_buf();
-    run_git_command(&repo_path, &["init", "-b", "main"])
+    run_git_command(&repo_path, &["init"])
         .await
         .expect("git init");
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    run_git_command(&repo_path, &["symbolic-ref", "HEAD", "refs/heads/main"])
+        .await
+        .expect("git symbolic-ref");
     std::fs::write(repo_path.join("new.txt"), "hello\n").expect("write new.txt");
     run_git_command(&repo_path, &["add", "new.txt"])
         .await
@@ -469,7 +477,9 @@ async fn init_test_repo() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let path = dir.path().to_path_buf();
 
-    run_git(&path, &["init", "-b", "main"]).await;
+    run_git(&path, &["init"]).await;
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    run_git(&path, &["symbolic-ref", "HEAD", "refs/heads/main"]).await;
     run_git(&path, &["config", "user.email", "test@test.com"]).await;
     run_git(&path, &["config", "user.name", "Test"]).await;
     run_git(&path, &["commit", "--allow-empty", "-m", "initial"]).await;
@@ -539,7 +549,9 @@ async fn init_repo_with_branches() -> (TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let path = dir.path().to_path_buf();
 
-    git(&path, &["init", "-b", "main"]).await;
+    git(&path, &["init"]).await;
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    git(&path, &["symbolic-ref", "HEAD", "refs/heads/main"]).await;
     git(&path, &["config", "user.email", "test@test.com"]).await;
     git(&path, &["config", "user.name", "Test"]).await;
     git(&path, &["commit", "--allow-empty", "-m", "initial"]).await;
@@ -792,9 +804,13 @@ async fn renamed_file_content_at_head_reads_old_path() {
 
     // Set up a real git repo with one committed file, then rename it in the working tree
     // (without committing the rename) so HEAD only knows about the old path.
-    run_git_command(repo_path, &["init", "-b", "main"])
+    run_git_command(repo_path, &["init"])
         .await
         .expect("git init");
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    run_git_command(repo_path, &["symbolic-ref", "HEAD", "refs/heads/main"])
+        .await
+        .expect("git symbolic-ref");
     run_git_command(repo_path, &["config", "user.email", "test@test.com"])
         .await
         .expect("git config email");
@@ -833,9 +849,13 @@ async fn staged_rename_and_modify_produces_non_empty_diff() {
     let repo_dir = tempfile::tempdir().expect("create temp repo dir");
     let repo_path = repo_dir.path();
 
-    run_git_command(repo_path, &["init", "-b", "main"])
+    run_git_command(repo_path, &["init"])
         .await
         .expect("git init");
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    run_git_command(repo_path, &["symbolic-ref", "HEAD", "refs/heads/main"])
+        .await
+        .expect("git symbolic-ref");
     run_git_command(repo_path, &["config", "user.email", "test@test.com"])
         .await
         .expect("git config email");
@@ -1219,9 +1239,11 @@ fn sum_numstat_z_counts_renames_and_skips_binary() {
 async fn chip_stats_report_deletions_and_ignore_untracked_lines() {
     let dir = tempfile::tempdir().expect("temp dir");
     let repo = dir.path().to_path_buf();
-    run_git_command(&repo, &["init", "-b", "main"])
+    run_git_command(&repo, &["init"]).await.unwrap();
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    run_git_command(&repo, &["symbolic-ref", "HEAD", "refs/heads/main"])
         .await
-        .unwrap();
+        .expect("git symbolic-ref");
     run_git_command(&repo, &["config", "user.email", "t@t.com"])
         .await
         .unwrap();

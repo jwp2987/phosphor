@@ -161,6 +161,17 @@ fn assert_fish_init_shell_from_args(
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    // On macOS fish's login config runs `/usr/libexec/path_helper`, which puts /usr/bin ahead of the
+    // PATH we pass in, so the real `whoami`/`hostname` would shadow the hostile fakes above. The
+    // user's config.fish runs after that and before `--init-command`: put the fakes back in front.
+    let fish_config_dir = dir.path().join(".config").join("fish");
+    std::fs::create_dir_all(&fish_config_dir).unwrap();
+    std::fs::write(
+        fish_config_dir.join("config.fish"),
+        format!("set -gx PATH '{}' $PATH\n", dir.path().display()),
+    )
+    .unwrap();
+
     let args = args_for(fish);
     let path = format!(
         "{}:{}",
@@ -171,6 +182,7 @@ fn assert_fish_init_shell_from_args(
         .args(&args)
         .env("PATH", path)
         .env("HOME", dir.path())
+        .env("XDG_CONFIG_HOME", dir.path().join(".config"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
