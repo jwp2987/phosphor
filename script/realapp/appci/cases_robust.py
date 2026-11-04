@@ -288,7 +288,7 @@ def c_session_restore(ctx, r):
         time.sleep(3.0)                     # the session writer runs at least once before a stop-by-pid (a quit flushes it itself)
         eff_before = ctx.lines("sr_eff.txt")
         r.check(len(eff_before) == n, "setup: effect file has %d/%d lines before the quit" % (len(eff_before), n))
-        have = ctx.prof.commands()[-n:]
+        have = [(t, c) for t, c in ctx.prof.commands() if not ctx.APP_BOOTSTRAP_RE.search(c)][-n:]      # r18u8: not the app's own bootstrap lines
         r.check([c for _, c in have] == expect_cmds, "setup: shell received %r, expected %r" % ([c for _, c in have], expect_cmds))
         ctx.shot("sr_tabs_before_quit")
         # 3. quit with the app's own path, then relaunch on the same profile
@@ -314,7 +314,10 @@ def c_session_restore(ctx, r):
         r.check(eff_after == eff_before == eff_after_quit, "RE-RUN: effect file changed across the restore: before %r after %r" % (eff_before, eff_after))
         ran = ctx.cmds_since(mark)
         r.check(not ran, "RE-RUN: rec.log shows %d command(s) received by the restored shells before any key was sent: %r" % (len(ran), ran[:5]))
-        r.check(newp >= 1, "no restored shell started (prompts +%d)" % newp)
+        if ctx.win and not ctx.prof.local_prompts:
+            r.note("no prompt hook in this pane (PowerShell): `a restored shell started` rests on the window, the key proof and the cwd answers below, not on a prompt count (H10)")
+        else:
+            r.check(newp >= 1, "no restored shell started (prompts +%d)" % newp)
         # 5. the tabs and their cwds: ctrl+1..n, then ctrl+9 (last tab). Each answers with its own pwd.
         got = []
         for i in range(n):
@@ -509,7 +512,11 @@ def c_flood_find(ctx, r):
     ctx.rm("ff_end.txt", "ff_stop.txt")
     touch(ctx, "ff_stop.txt")       # the producer runs until n lines AND 3 s have passed (a fast machine used to finish 300k lines before the screen had scrolled)
     mark = ctx.cmd_mark()
-    ctx.be.type("echo %s; %s; %s >> ff_end.txt" % (marker, endless_flood("seq", "ff_stop.txt", n, 3), now), 12, enter=True)
+    # r18u8 (Mac): Phosphor keeps the running command's text as the block header, so a marker typed in the command line stays visible however far the output
+    # scrolls and the control "marker not on screen" could never hold. The marker is typed split by an empty string (`ABC""DEF`): the shell prints it joined, the
+    # command text (and its header) never contains the joined marker, so only the OUTPUT line can match the Find.
+    split_marker = marker[:7] + '""' + marker[7:]
+    ctx.be.type("echo %s; %s; %s >> ff_end.txt" % (split_marker, endless_flood("seq", "ff_stop.txt", n, 3), now), 12, enter=True)
     ctx.until(lambda: os.path.exists(os.path.join(ctx.W, "ff_end.txt")), 200, step=0.5)
     time.sleep(1.0)
     r.check(os.path.exists(os.path.join(ctx.W, "ff_end.txt")), "the flood did not finish")
@@ -518,7 +525,8 @@ def c_flood_find(ctx, r):
     r.metric("marker_visible_before_find", on_screen_before)
     r.check(not on_screen_before, "control: the marker is already visible before the Find (the flood did not scroll it away; the producer runs >= n lines and >= 3 s)")
     ctx.be.guard()
-    ctx.be.key("ctrl+shift+f")
+    # r18u8 (Mac): the Find shortcut is Cmd-Shift-F there (bindings.rs CustomAction::Find = cmd_or_ctrl_shift("f")); ctrl+shift+f did nothing and the marker + Enter were typed into the shell
+    ctx.be.key(os.environ.get("APPCI_KEY_FIND", "cmd+shift+f" if ctx.be.name == "mac" else "ctrl+shift+f"))
     time.sleep(0.8)
     ctx.be.type(marker, 20, enter=True)
     time.sleep(1.5)
@@ -579,8 +587,17 @@ def editor_prepare(ctx, r, name):
     return path
 
 
-def disk(path):
-    return open(path, "rb").read().decode(errors="replace")
+def disk(path, tries=40):
+    """the file's current text. r18u8 (Windows H15): reading while the editor is mid-save raised PermissionError (the editor holds the file for the write) and the
+    uncaught exception ended editor_edit_save with the editor pane still open, wedging the pane for the cases after it. A sharing violation is retried for ~2 s;
+    only a lasting one propagates."""
+    for i in range(tries):
+        try:
+            return open(path, "rb").read().decode(errors="replace")
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.05)
 
 
 def editor_open(ctx, r, path, tag):
@@ -596,6 +613,22 @@ def editor_open(ctx, r, path, tag):
 
 @case("editor_edit_save", order=70, gui=True)
 def c_editor_edit(ctx, r):
+    try:
+        return _editor_edit_save(ctx, r)
+    except cases.Skip:
+        raise
+    except Exception:
+        # r18u8 (H15): a harness exception must not leave the editor pane open in front of the shell (every later case then typed into the editor: pane_wedged_after_*)
+        try:
+            ctx.be.guard()
+            ctx.be.key(CLOSE_PANE or "ctrl+shift+w")
+            time.sleep(1.0)
+        except Exception:
+            pass
+        raise
+
+
+def _editor_edit_save(ctx, r):
     """open a file in the code editor, type an edit at 10-25 ms/key, save (Ctrl-S), verify the file on disk byte-exact; undo x N + save =
     original, redo x N + save = edited; close the pane, change the file externally, reopen: the editor shows the CURRENT content (a second
     edit lands on top of it, verified on disk). Nothing may reach the shell (no Enter typed; rec.log unchanged)."""

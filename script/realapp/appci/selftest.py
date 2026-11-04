@@ -545,6 +545,49 @@ def r18d2_routing_expectation_ocr_fuzz_and_ctrlc_window():
 
 
 @check
+def r18u8_harness_fixes_pure_pieces():
+    import types as _t
+    # Mac injector records of keys aimed at the reference carry ref=True, so the accounting does not expect Phosphor to have seen them
+    import injacct
+    calls = [dict(chars=10, special=[], enters_posted=0, ref=False, wall0=1.0, wall1=2.0, pastes=0),
+             dict(chars=90, special=["ENTER@3.0"], enters_posted=1, ref=True, wall0=2.0, wall1=3.0, pastes=0)]
+    j = injacct.join(calls, [(1.5, 1, None)] * 10)
+    assert j["sent"] == 10 and j["enters_sent"] == 0 and j["lost"] == 0, j
+    # a blinking caret is not a streaming reply: identical frames settle; with no Pillow, 3 distinct hashes are still "changing"
+    import tempfile as _tf
+    d = _tf.mkdtemp()
+    try:
+        ps = []
+        for i, b in enumerate((b"a", b"a", b"a")):
+            q = os.path.join(d, "f%d.png" % i)
+            open(q, "wb").write(b)
+            ps.append(q)
+        assert ca.frames_settled(ps)[0] is True
+        ps2 = []
+        for i, b in enumerate((b"a", b"b", b"c")):
+            q = os.path.join(d, "g%d.png" % i)
+            open(q, "wb").write(b)
+            ps2.append(q)
+        import cases_ui as _U
+        if not _U.have_pillow():
+            assert ca.frames_settled(ps2)[0] is False
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # a failed overhead budget against a conhost reference is NOREF (NO-CONPTY-REFERENCE), never a FAIL; against a ConPTY reference it still fails
+    rec = dict(budget_verdict="fail", budget_kind="overhead", overhead_ms=40.0, overhead_se_ms=1.0, reference_name="conhost (bash)", budget_ms=2, verdict="fail", notes=[])
+    r = cases.Result("x", "terminal")
+    cases.lat_checks(r, dict(rec), "Enter")
+    assert not r.fails and any("NO-CONPTY-REFERENCE" in n for n in r.notes), (r.fails, r.notes)
+    r = cases.Result("x", "terminal")
+    cases.lat_checks(r, dict(rec, reference_name="Windows Terminal (bash)"), "Enter")
+    assert r.fails, "a Windows Terminal reference keeps the budget verdict"
+    # PATH with spaces: the clean-env subshell command quotes its variables
+    import cases_caseremote as _cr
+    import inspect
+    assert 'PATH="$PATH"' in inspect.getsource(_cr.remote_session)
+
+
+@check
 def interleaved_block_schedule_and_runner():
     import lat
     sch = lat.block_schedule(60, block=5, warm=3, lead=1)
@@ -1139,6 +1182,9 @@ def coverage_b_pure_helpers():
     assert len(p) == 2 and "panicked" in p[0] and "migration 0042" in p[1], p
     assert cb.startup_log_problems("INFO all fine\n") == []
     assert cb.autoupdate_lines("INFO a\nWARN Checking for updates now\nDEBUG GET https://x/releases/latest\n") != [] and cb.autoupdate_lines("INFO nothing\n") == []
+    # r18u8: the startup line's `autoupdate_configured: false` is the updater OFF, not the updater doing something; `: true` still counts
+    assert cb.autoupdate_lines("INFO Starting warp with channel state ChannelState { channel: Oss, autoupdate_configured: false, mcp_static_configured: false }\n") == []
+    assert cb.autoupdate_lines("INFO ChannelState { autoupdate_configured: true }\n") != []
     assert cb.picker_verdict(0.05, 0.001)[0] is True
     assert cb.picker_verdict(0.0005, 0.0)[0] is False and cb.picker_verdict(0.05, 0.04)[0] is False and cb.picker_verdict(None, 0.0)[0] is None
     reg = {c["name"]: c for c in cases.CASES}

@@ -21,6 +21,26 @@ def need_provider(ctx, r):
         r.skip("no app log at %s: the request markers cannot be read" % ctx.log_path)
 
 
+def fresh_conversation(ctx, r):
+    """r18u8 (Mac agent_approval): the agent pass is ONE conversation, so the model saw the earlier cases' prompts (approval_card_pause's `echo APPROVAL_TOKEN >> ap.txt`,
+    the routing prose) and proposed the STALE command instead of the one the case asked for. A case that needs the model to do exactly what it is told starts a new
+    conversation: Escape (leaves the agent view for the terminal session, shown as `ESC for terminal`), then `/agent` (the terminal hint `new /agent conversation`).
+    The result is proven by the app's hop=view_mode line; if the new conversation cannot be proven the case SKIPS (it is never run on the stale one)."""
+    if not ctx.log_path:
+        return
+    ctx.reset()
+    time.sleep(0.4)
+    ctx.be.key("Escape")
+    if not ctx.until(lambda: ctx.log_view_mode() == "terminal", 6):
+        r.skip("fresh conversation: Escape did not leave the agent view (hop=view_mode still %s), so a new conversation could not be started" % ctx.log_view_mode())
+    time.sleep(0.5)
+    ctx.be.type("/agent", 12, enter=True)
+    if not ctx.until(lambda: ctx.log_view_mode() == "agent", 10):
+        r.skip("fresh conversation: `/agent` did not open a new agent conversation within 10 s (hop=view_mode says %s)" % ctx.log_view_mode())
+    time.sleep(1.0)
+    r.note("a fresh agent conversation was started (Escape, /agent) so earlier cases' prompts are not in the model's context")
+
+
 def type_fast(ctx, text, enter=True):
     ctx.be.type(text, ctx.rng.randint(10, 25), enter=enter)
 
@@ -40,16 +60,52 @@ def shot_hash(ctx, tag):
         return None
 
 
+CARET_DIFF = 0.0008      # fraction of pixels: a blinking caret is ~0.00002 of a screen, streaming text moves orders of magnitude more
+
+
+def frame_paths(ctx, tag, n, step):
+    """n screenshots `step` s apart, each kept under its own name so consecutive ones can be compared; returns the paths (a failed shot is skipped)"""
+    d = os.path.join(ctx.prof.shots, "_tmp")
+    os.makedirs(d, exist_ok=True)
+    out = []
+    for i in range(n):
+        p = os.path.join(d, "%s_%d.png" % (tag, i))
+        try:
+            ctx.be.shot(p)
+            out.append(p)
+        except Exception:
+            pass
+        if i < n - 1:
+            time.sleep(step)
+    return out
+
+
+def frames_settled(paths):
+    """(settled, distinct): is the screen still? r18u8 (Windows H18): a blinking caret produced 3 distinct md5s in 5 frames and the old `<= 2 distinct` rule called a
+    stopped stream 'still changing'. With Pillow the frames are compared by changed-pixel fraction (a caret is ~0.00002, a streaming reply far above CARET_DIFF);
+    without it the rule is unchanged (<= 2 distinct hashes), never looser."""
+    import cases_ui as U
+    hs = []
+    for p in paths:
+        try:
+            hs.append(hashlib.md5(open(p, "rb").read()).hexdigest())
+        except OSError:
+            pass
+    distinct = len(set(hs))
+    if U.have_pillow() and len(paths) >= 2:
+        diffs = [U.img_diff(a, b) for a, b in zip(paths, paths[1:])]
+        if all(d is not None for d in diffs):
+            return max(diffs) <= CARET_DIFF, distinct
+    return distinct <= 2, distinct
+
+
 def settled(ctx, tag, quiet=5, step=1.5, timeout=90):
-    """True once the screen stops changing: at most 2 distinct frames (cursor blink) among the last `quiet` shots"""
-    hs, t0 = [], time.time()
+    """True once the screen stops changing (frames_settled over the last `quiet` shots: a blinking caret does not count as change)"""
+    t0 = time.time()
     while time.time() - t0 < timeout:
-        h = shot_hash(ctx, tag)
-        if h:
-            hs.append(h)
-        if len(hs) >= quiet and len(set(hs[-quiet:])) <= 2:
+        ok, _ = frames_settled(frame_paths(ctx, tag, quiet, step))
+        if ok:
             return True
-        time.sleep(step)
     return False
 
 
@@ -121,6 +177,7 @@ def c_agent_stream_cancel(ctx, r):
     """A real prompt streams a reply; keys typed while it streams land in the input (no steering = no new request, nothing
     reaches the shell); Ctrl-C (terminal:cancel_command) stops the stream (the screen stops changing). First-token latency is a metric."""
     need_provider(ctx, r)
+    fresh_conversation(ctx, r)
     try:
         off = ctx.log_size()
         mark = ctx.cmd_mark()
@@ -158,26 +215,27 @@ def c_agent_stream_cancel(ctx, r):
             r.check(seen, "text typed at 10-25 ms/key while the reply streamed is not visible in the input (%r)" % typed)
         r.check(count_in_log(ctx, off, "[byop] opening stream") == before_req, "typing during the reply started a new model request (steering)")
         r.check(not [c for c in ctx.cmds_since(mark) if typed in c], "text typed during the reply reached the shell")
-        # cancel. Two presses, by the app's design (terminal/view.rs handle_ctrl_c_input_event): with text in the input the first Ctrl-C only CLEARS the input
-        # (cleared_buffer_len > 0 returns before any cancel); the second, on the empty input of an in-progress conversation, stops the stream. r18d2 Mac sent one
-        # Ctrl-C and judged the stream still running because it had only cleared (or never cleared) the text.
-        ctx.be.key("ctrl+c")
-        time.sleep(1.2)
-        ctx.shot("after_clear")
-        still = ocr_has(ctx, "after_clear_ocr", typed)
-        if still is True:
-            r.check(False, "the first Ctrl-C did not clear the text typed while the reply streamed (%r still visible): the key did not reach the input" % typed)
-        ctx.be.key("ctrl+c")
-        time.sleep(2.5)
-        ctx.shot("after_cancel")
-        hs2 = []
-        for _ in range(5):
-            h = shot_hash(ctx, "post_cancel")
-            if h:
-                hs2.append(h)
-            time.sleep(1.2)
-        r.metric("distinct_frames_after_cancel", len(set(hs2)))
-        r.check(len(set(hs2)) <= 2, "the screen kept changing %d s after the Ctrl-C that follows the input clear (%d distinct frames in 5): the stream did not stop" % (6, len(set(hs2))))
+        # cancel. r18u8 (Mac): the screenshot after the FIRST Ctrl-C shows the stream already stopped and the typed text still in the input, so while a reply streams the
+        # first Ctrl-C CANCELS the stream and the second clears the input; the old comment ("first only clears") had the order backwards. The case does not
+        # assume an order: after each press it measures both facts (stream stopped = the screen settles; typed text visible by OCR), allows at most 2 presses,
+        # and requires the end state: stream stopped AND typed text gone, nothing at the shell.
+        def screen_settled(tag):
+            return frames_settled(frame_paths(ctx, tag, 5, 1.2))
+        stopped, nframes, cleared = False, -1, None
+        for press in (1, 2):
+            ctx.be.key("ctrl+c")
+            time.sleep(1.5)
+            ctx.shot("after_ctrl_c_%d" % press)
+            cleared = ocr_has(ctx, "after_ctrl_c_%d_ocr" % press, typed)
+            stopped, nframes = screen_settled("post_cancel_%d" % press)
+            r.note("Ctrl-C #%d: stream %s (%d distinct frames in 5), typed text %s" % (
+                press, "stopped" if stopped else "still changing", nframes, "not checkable (no OCR)" if cleared is None else ("still in the input" if cleared else "gone")))
+            if stopped and cleared is not True:
+                break
+        r.metric("distinct_frames_after_cancel", nframes)
+        r.check(stopped, "the screen kept changing after two Ctrl-C presses (%d distinct frames in 5): the stream did not stop" % nframes)
+        if cleared is True:
+            r.check(False, "the typed text (%r) is still in the input after two Ctrl-C presses: the second press did not clear it" % typed)
         r.check(not [c for c in ctx.cmds_since(mark) if "bicycle" in c or typed in c], "agent text or the typed text reached the shell")
     finally:
         cleanup_tmp(ctx)
@@ -200,6 +258,7 @@ def c_agent_approval(ctx, r):
     Enter on the empty input only focuses the card (#1195/#1350); nothing ran before the approval. Then a follow-up question in the
     SAME conversation opens a new model request. Reject once: the rejected command never reaches the shell."""
     need_provider(ctx, r)
+    fresh_conversation(ctx, r)
     try:
         off = ctx.log_size()
         mark = ctx.cmd_mark()
@@ -662,6 +721,17 @@ def c_agent_code_recycle(ctx, r):
     finally:
         try:
             ctx.be.key("escape")
+        except Exception:
+            pass
+        # r18u8 (Mac + Windows left_agent_mode_after_agent_code_recycle): THIS case's own Escape (it clears the block selection) leaves an empty agent view, which the
+        # runner then reported as an app finding. The case owns that exit, so it re-enters the agent view itself (`/agent`, proven by hop=view_mode) and says so.
+        try:
+            if ctx.mode == "agent":
+                time.sleep(0.8)
+                if ctx.log_view_mode() == "terminal":
+                    ctx.be.type("/agent", 12, enter=True)
+                    ok = ctx.until(lambda: ctx.log_view_mode() == "agent", 10)
+                    r.note("the case's own Escape left the agent view; it re-entered with /agent (%s)" % ("agent view again" if ok else "NOT proven: the runner will relaunch"))
         except Exception:
             pass
         cleanup_tmp(ctx)

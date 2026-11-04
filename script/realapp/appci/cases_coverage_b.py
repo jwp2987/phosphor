@@ -44,10 +44,15 @@ def startup_log_problems(text):
 AUTOUPDATE_RE = re.compile(r"(?i)(auto[-_ ]?update|check(?:ing)? for updates?|update available|downloading update|releases/latest|SHA256SUMS)")
 
 
+AUTOUPDATE_OFF_RE = re.compile(r"autoupdate_configured:\s*false")
+
+
 def autoupdate_lines(text):
     """app-log lines that show the updater doing something. Phosphor ships WITHOUT the GUI auto-updater (DECLINED.md, script/check_no_autoupdate):
     a release build must log none of these."""
-    return [l.strip()[:200] for l in text.splitlines() if AUTOUPDATE_RE.search(l)]
+    # r18u8: the startup line `ChannelState { ..., autoupdate_configured: false, ... }` names the field and says the updater is OFF; only that exact `: false` form is
+    # blanked before matching (`autoupdate_configured: true` still matches).
+    return [l.strip()[:200] for l in text.splitlines() if AUTOUPDATE_RE.search(AUTOUPDATE_OFF_RE.sub("", l))]
 
 
 def picker_verdict(open_diff, closed_diff, min_open=0.004):
@@ -87,6 +92,7 @@ def c_agent_pickers(ctx, r):
         r.skip("no app log at %s: the agent input at Enter cannot be read" % ctx.log_path)
     if ctx.log_view_mode() != "agent":
         r.skip("the app log does not say hop=view_mode mode=agent (older build, or not in the agent view)")
+    U.need_pillow(r)
     mark = ctx.cmd_mark()
     for trig, name in (("/", "slash"), ("@", "at")):
         ctx.reset()
@@ -171,6 +177,7 @@ def c_settings_ui_open(ctx, r):
     the page, none swallowed by it). Terminal and agent mode."""
     if ctx.win:
         r.skip("Windows: the settings shortcut is not mapped in the Windows backend (Ctrl-, via SendKeys is not verified); covered by the live-reload case on Linux/macOS")
+    U.need_pillow(r)
     key = SETTINGS_KEY["mac" if ctx.be.name == "mac" else "linux"]
     ctx.reset()
     time.sleep(0.3)
@@ -190,11 +197,27 @@ def c_settings_ui_open(ctx, r):
     ctx.be.key("Escape")
     time.sleep(0.8)
     closed = ctx.shot("cb_settings_closed")
+    # r18u8 (Mac): Escape does not close the settings tab, and the old close ran only on a screenshot diff and only with a chord key (empty on macOS), so the shell
+    # pane behind stayed hidden and the 4 follow-up lines went to the settings page. Prove the shell is in front with a probe line; if not, close the settings tab
+    # with the platform's close (chord, else the command palette's 'Close Current Session') and probe again.
     cd = U.img_diff(before, closed) if before and closed else None
-    if cd is not None and cd > 0.02 and R.CLOSE_PANE:
-        r.note("Escape left the settings page open (%.3f of the screen differs); closing it with the pane-close key" % cd)
-        ctx.be.key(R.CLOSE_PANE)
-        time.sleep(0.8)
+    probe_f = "cb_settings_probe.txt"
+    ctx.rm(probe_f)
+
+    def shell_in_front(n):
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), "probe%d" % n, probe_f), 12, enter=True)
+        return bool(ctx.until(lambda: len(ctx.lines(probe_f)) >= n, 3))
+    # agent mode: a probe line would be submitted as an agent request, so there the screen diff decides (closing only a page that is visibly still open)
+    still_open = (cd is not None and cd > 0.02) if ctx.mode == "agent" else not shell_in_front(1)
+    if still_open:
+        how = C.editor_close(ctx, r)
+        r.note("Escape left the settings page open (screen differs %s; the shell did not take the probe line); closed it with %s" % ("n/a" if cd is None else "%.3f" % cd, how))
+        if how is None:
+            r.check(False, "the settings page stayed open after Escape and this platform has no close key or command-palette close: %s" % R.NO_CLOSE_WHY)
+        else:
+            time.sleep(0.8)
+            if ctx.mode != "agent":
+                r.check(shell_in_front(2), "the shell pane did not take typing after the settings page was closed with %s" % how)
     ctx.reset()
     if ctx.mode == "agent":
         CA.submit_prose(ctx, r, "cb_settings_prose", "please explain why the settings %s test is odd, it's fine" % ctx.tok(5), "prose after the settings page")
@@ -506,6 +529,7 @@ def c_ui_action_latency(ctx, r):
     """#1548: new tab, tab switch and the Tab completion menu are observed from screenshots (each costs 50-300 ms of its own, so the numbers are an
     UPPER bound on the app's time, not a ≤4 ms proof: the app log cannot see UI work under 8 ms, see docs/testing.md 3.6). Bounds are generous first
     guesses (APPCI_UI_ACTION_MAX_S, default 1.5 s each); the numbers are metrics for trend. The key->paint 2 ms budget stays in latency_paint (macOS)."""
+    U.need_pillow(r)
     limit = float(os.environ.get("APPCI_UI_ACTION_MAX_S", "1.5"))
     newtab = os.environ.get("APPCI_KEY_NEWTAB", "ctrl+shift+t")
     nexttab = "cmd+shift+]" if ctx.be.name == "mac" else "ctrl+Next"      # ActivateNextTab (app/src/util/bindings.rs)

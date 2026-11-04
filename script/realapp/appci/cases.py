@@ -96,7 +96,15 @@ def plat():
 
 def lat_checks(r, rec, label):
     """turn a latency record's verdicts into case failures (FAIL); WARN stays a note; no-reference makes the case status 'noref' (not a pass, #1499)"""
-    if rec["budget_verdict"] == "fail":
+    conhost_ref = str(rec.get("reference_name") or "").lower().startswith("conhost") and rec["budget_kind"] == "overhead"
+    if conhost_ref and rec["budget_verdict"] == "fail":
+        # r18u8 (U1): the pane runs through ConPTY and a bare conhost window does not, so the gap measured against conhost mixes the ConPTY layer (pty_write -> first
+        # pty_read is 30-60 ms on this VM in Git Bash, outside the app) with Phosphor's own cost. It is not a budget verdict: reported NO-CONPTY-REFERENCE (status
+        # noref, never a pass), with the measured numbers kept. Installing Windows Terminal (wt.exe) gives the like-for-like reference; APPCI_WIN_REF=wt forces it.
+        r.no_reference("NO-CONPTY-REFERENCE: %s: Phosphor overhead %.2f +/- %s ms (SE) over %s (a console with no ConPTY) against the %.0f ms budget; the app's own share is in the notes. "
+                       "Install Windows Terminal for a ConPTY reference (owner decision); the overhead budget was NOT judged" % (
+                           label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
+    elif rec["budget_verdict"] == "fail":
         if rec["budget_kind"] == "overhead":
             r.check(False, "%s: Phosphor overhead %.2f +/- %s ms (SE) over %s exceeds the %.0f ms budget (overhead - 2 SE > budget)" % (label, rec["overhead_ms"], rec.get("overhead_se_ms"), rec["reference_name"], rec["budget_ms"]))
         else:
@@ -605,12 +613,22 @@ class Ctx:
         # #1481 follow-up (r18ck): `tok` proves a remote shell was in front at SOME point, not that one still is (a nested ssh that failed
         # left one level, and the second `exit` closed the last LOCAL pane, quitting the app). Prove it again, now, before EVERY exit:
         # a fresh token must land in the REMOTE home, never the local one.
-        probe = "w" + self.tok(8)
-        self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
         local_where = self.local_where      # `~` in the LOCAL shell is the scratch home (PowerShell: the real home), not the work dir that lines() reads
-        self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout)
+        # r18u8 (Windows ssh_nested_typeahead, outer level): after the inner `exit` the OUTER remote shell on Windows (msys sshd session over ConPTY) took longer than
+        # `timeout` to come back, so the first probe ran in "no shell" and the case refused to type the outer `exit`. A probe that went nowhere is retried (fresh
+        # token, longer wait, up to 3 tries); only a probe that lands in the LOCAL home stops at once. Never a pass without the proof: no proof, no `exit`.
+        probe, where = None, "no shell"
+        for attempt in range(3):
+            probe = "w" + self.tok(8)
+            self.be.type("echo %s >> ~/.appci_where" % probe, 12, enter=True)
+            self.until(lambda: probe in self.lines(".appci_where", remote=True) or probe in local_where(), timeout + 8 * attempt)
+            if probe in self.lines(".appci_where", remote=True):
+                break
+            if probe in local_where():
+                where = "the LOCAL shell"
+                break
+            time.sleep(2.0)
         if probe not in self.lines(".appci_where", remote=True):
-            where = "the LOCAL shell" if probe in local_where() else "no shell"
             r.check(False, "%s: before `exit`, a fresh probe ran in %s, not the remote one: `exit` NOT typed; stopping" % (label, where))
             self.reset()
             return False
@@ -641,7 +659,8 @@ class Ctx:
                 if tries:
                     for _ in range(3):
                         self.be.key("ctrl+c")
-                        time.sleep(0.8)
+                        # r18u8 (H16): in agent mode two Ctrl-C within the 1 s confirmation window EXIT an empty agent conversation; 0.8 s apart did exactly that
+                        time.sleep(self.EXIT_WINDOW_S + 0.4 if self.mode == "agent" else 0.8)
                 else:
                     self.be.key("ctrl+c")
                     time.sleep(0.3)
@@ -977,11 +996,15 @@ class Ctx:
         return p
 
     HARNESS_MARKER_RE = re.compile(r"(?:alive|proof)_[\w@.-]*\.txt")
+    # r18u8 (Mac session_restore / crash_kill9_restore): a RESTORED zsh pane gets Phosphor's own bootstrap line typed into it, which the harness's history hook logs
+    # as a "command received before any key was sent". That is the app initialising the shell, not a replayed user command, so it is not one of the lines the
+    # RE-RUN check is about. Matched on the exact start of the app's init line only.
+    APP_BOOTSTRAP_RE = re.compile(r"^command -p stty -echo; WARP_BOOTSTRAP_VAR=")
 
     def cmds_since(self, mark):
         """what the shell logged after `mark`, minus the harness's OWN marker lines (the key-proof and wedge-probe `echo tok >> proof_*/alive_*.txt`): rec.log can
         log one of those late, after a case took its mark (r18d2 agent@gitbash fast_typing: 31 commands for 30 typed, every line shifted by that one)"""
-        return [c for _, c in self.prof.commands()[mark:] if not self.HARNESS_MARKER_RE.search(c)]
+        return [c for _, c in self.prof.commands()[mark:] if not self.HARNESS_MARKER_RE.search(c) and not self.APP_BOOTSTRAP_RE.search(c)]
 
     def cmd_mark(self):
         return len(self.prof.commands())
@@ -1511,8 +1534,63 @@ def c_big(ctx, r):
     r.metric("bytes_expected", len(data) + 1)
     r.metric("bytes_got", len(got))
     ui_item_metrics(ctx, r, ui_off, "big_paste")    # #1191: which main-thread items broke the 4 ms budget while the paste streamed
-    r.check(got == (data + "\n").encode(), "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
+    want = (data + "\n").encode()
+    if got != want and ctx.win:
+        # r18u8 (U2): under ConPTY `cat` in msys receives ~1 line of a 1 MB paste (100 of 1000001 bytes) and Ctrl-D does not look like EOF there. Whether that is the app or
+        # the platform is decided by a CONTROL: the same paste into the same program in a conhost Git Bash window. If conhost also falls short, the case is NOREF
+        # (reason stated), never a pass and never an app failure; if conhost gets every byte, the failure stands. No control possible -> NOREF with the reason.
+        kind, why = big_paste_control(ctx, data, want)
+        if kind == "same-shortfall":
+            r.no_reference("big_paste: Phosphor's pane got %d of %d bytes and the CONTROL did too (%s): the platform's ConPTY/msys path does not deliver a 1 MB paste to `cat`, not shown to be the app" % (len(got), len(want), why))
+        elif kind == "none":
+            r.no_reference("big_paste: Phosphor's pane got %d of %d bytes and no conhost control could run (%s): a ConPTY limit and an app defect cannot be told apart here" % (len(got), len(want), why))
+        else:
+            r.check(False, "%.0f MB paste not byte-exact (expected %d bytes, got %d); the conhost control received every byte (%s), so this is not the platform" % (mb, len(want), len(got), why))
+    else:
+        r.check(got == want, "%.0f MB paste not byte-exact (expected %d bytes, got %d)" % (mb, len(data) + 1, len(got)))
     ctx.reset()
+
+
+def big_paste_control(ctx, data, want):
+    """U2: the same `cat > file` + paste in a conhost Git Bash window. -> ("same-shortfall" | "exact" | "none", why). Never raises: a failed control is "none"."""
+    ref = None
+    try:
+        ref = ref_terminal(ctx)
+        if ref is None:
+            return "none", "reference console not available: %s" % (getattr(ctx, "ref_reason", None) or "unknown")
+        out = os.path.join(ctx.W, "big_ref.out")
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        ctx.be.type("cat > big_ref.out", 12, enter=True)
+        time.sleep(1.0)
+        ctx.be.clip_set(data)
+        ctx.be.paste()
+
+        def stable():
+            a = os.path.getsize(out) if os.path.exists(out) else -1
+            time.sleep(1.5)
+            return a > 0 and a == (os.path.getsize(out) if os.path.exists(out) else -2)
+        ctx.until(stable, 60, step=0.1)
+        ctx.be.key("Return")
+        time.sleep(0.5)
+        ctx.be.key("ctrl+d")
+        time.sleep(2)
+        got = open(out, "rb").read() if os.path.exists(out) else b""
+        if got == want:
+            return "exact", "conhost Git Bash received %d bytes" % len(got)
+        if not got:
+            return "none", "the conhost control received nothing at all (the paste chord may not work in a console window), so it proves nothing"
+        return "same-shortfall", "conhost Git Bash received %d of %d bytes" % (len(got), len(want))
+    except Exception as e:
+        return "none", "control failed: %s: %s" % (type(e).__name__, str(e)[:120])
+    finally:
+        if ref is not None:
+            try:
+                ref.close()
+            except Exception:
+                pass
 
 
 @case("tab_enter", order=16)
@@ -1914,7 +1992,8 @@ def c_sub(ctx, r):
         time.sleep(gap)
         ctx.be.type(ctx.append_cmd(sh, tok, f), 12, enter=True)
         time.sleep(0.8)
-        ctx.be.type("sh -c 'ps -o comm= -p $PPID' >> " + f, 12, enter=True)
+        # r18u8 (Mac nu): `>>` is not nushell redirection (it is a parse error there); nu appends external output with `| save --append`
+        ctx.be.type(("^sh -c 'ps -o comm= -p $PPID' | save --append " + f) if sh == "nu" else ("sh -c 'ps -o comm= -p $PPID' >> " + f), 12, enter=True)
         ctx.until(lambda: len(ctx.lines(f)) >= 2, 6)
         ctx.be.type("exit", 12, enter=True)
         time.sleep(2.0)
@@ -2263,7 +2342,10 @@ def ref_terminal_windows(ctx, rcfile=None):
     rcfile: the Git Bash reference's rc instead of the pane's ~/.bashrc (#1583 G2: prof.ref_boot_rc, Phosphor's bash bootstrap sourced)."""
     import winapi
     ctx.ref_reason = None
-    want_wt = os.environ.get("APPCI_WIN_REF", "conhost").lower() == "wt"
+    # r18u8 (U1): the pane is hosted through ConPTY, so the like-for-like reference is Windows Terminal (its own ConPTY + OpenConsole), not a bare conhost window.
+    # Default "auto": Windows Terminal when wt.exe is installed, else conhost (whose overhead verdict is then NO-CONPTY-REFERENCE, see lat_checks). APPCI_WIN_REF=conhost|wt forces.
+    pref = os.environ.get("APPCI_WIN_REF", "auto").lower()
+    want_wt = pref == "wt" or (pref == "auto" and bool(shutil.which("wt.exe") or shutil.which("wt")))
     home = ctx.prof.home
     env = dict(ctx.app.env()) if hasattr(ctx.app, "env") else dict(os.environ)
     env["HOME"] = home
@@ -4182,6 +4264,13 @@ def c_gitbash_subshell(ctx, r):
     r.check(rl("gb_back.txt") == [tok], "after exiting Git Bash the pane's PowerShell did not run the next command: %s" % rl("gb_back.txt"))
 
 
+def abs_effect(ctx, name):
+    """r18u8 (Windows H9): a NEW tab does not necessarily start in the case dir (agent-mode new tabs start in ~, so the relative effect file landed outside
+    ctx.W and the case read an empty file: 0/16 and 0/10 lines). Cases that open tabs/windows name their effect file by ABSOLUTE path (forward slashes, quoted),
+    which the case's own lines() reads back from ctx.W."""
+    return "'%s'" % os.path.join(ctx.W, name).replace("\\", "/")
+
+
 def stream_cmd(ctx, i):
     """a command that prints a line every ~20 ms until Ctrl-C, for the pane's own shell"""
     if ctx.pane == "powershell":
@@ -4207,7 +4296,7 @@ def c_tabs_streaming(ctx, r):
     for _ in range(ctx.count(10)):
         tok = ctx.tok(8).lower()
         exp.append(tok)
-        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, "tw_s.txt"), ctx.rng.randint(10, 25), enter=True)
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, abs_effect(ctx, "tw_s.txt")), ctx.rng.randint(10, 25), enter=True)
     ctx.until(lambda: len(ctx.lines("tw_s.txt")) >= len(exp), 40)
     time.sleep(0.5)
     ctx.shot("tabs_streaming")
@@ -4242,8 +4331,8 @@ def c_tabs(ctx, r):
     for i in range(ctx.count(15)):
         tok = ctx.tok(8).lower()
         exp.append(tok)
-        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, "tw.txt"), ctx.rng.randint(10, 25), enter=True)
-    ctx.be.clip_set(ctx.append_cmd(ctx.pane_shell(), "PASTED_ok", "tw.txt"))
+        ctx.be.type(ctx.append_cmd(ctx.pane_shell(), tok, abs_effect(ctx, "tw.txt")), ctx.rng.randint(10, 25), enter=True)
+    ctx.be.clip_set(ctx.append_cmd(ctx.pane_shell(), "PASTED_ok", abs_effect(ctx, "tw.txt")))
     ctx.be.paste(enter=True)
     exp.append("PASTED_ok")
     ctx.until(lambda: len(ctx.lines("tw.txt")) >= len(exp), 30)

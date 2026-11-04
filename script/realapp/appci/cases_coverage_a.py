@@ -137,6 +137,16 @@ def missing(r, prog, why):
     r.unverifiable("%s is not installed (%s): that part of the alt-screen coverage did not run" % (prog, why))
 
 
+def wait_program_exited(ctx, prompts_before, timeout=10):
+    """r18u8 (H14, Windows Git Bash): the file vim writes exists BEFORE vim has left the alt screen, and the next typed line lost its first character to the still-running
+    vim (`204_80p7y4 >> ...` for `echo t204_...`). Wait for the shell's prompt to come back (its hook logs it); a pane with no prompt hook gets a fixed settle."""
+    if ctx.prof.local_prompts:
+        ctx.until(lambda: ctx.prompts() > prompts_before, timeout, step=0.1)
+        time.sleep(0.3)
+    else:
+        time.sleep(2.0)
+
+
 @case("alt_screen_programs", order=22, gui=True)
 def c_alt_programs(ctx, r):
     """Each full-screen program gets keys typed at 10-25 ms and proves it received them; afterwards the shell is back and a typed line is exact.
@@ -146,6 +156,7 @@ def c_alt_programs(ctx, r):
     if ctx.which("vim"):
         ctx.rm("ap_vim.txt")
         tok = ctx.tok(6).lower()
+        p0 = ctx.prompts()
         ctx.be.type("vim -u NONE -N ap_vim.txt", ctx.rng.randint(10, 25), enter=True)
         time.sleep(1.5)
         ctx.be.type("i" + tok, ctx.rng.randint(10, 25))
@@ -154,6 +165,7 @@ def c_alt_programs(ctx, r):
         ctx.be.type(":wq", ctx.rng.randint(10, 25), enter=True)
         ctx.until(lambda: ctx.lines("ap_vim.txt"), 8)
         exact_lines(r, "vim received the typed text", [tok], ctx.lines("ap_vim.txt"))
+        wait_program_exited(ctx, p0)
         local_cmd_exact(ctx, r, "ap_after_vim")
     else:
         missing(r, "vim", "package vim")
@@ -161,6 +173,7 @@ def c_alt_programs(ctx, r):
     if ctx.which("less"):
         ctx.rm("ap_less.txt")
         tok = ctx.tok(6).lower()
+        p1 = ctx.prompts()
         ctx.be.type("seq 1 400 | less", ctx.rng.randint(10, 25), enter=True)
         time.sleep(1.2)
         ctx.be.type("G", 20)
@@ -171,7 +184,7 @@ def c_alt_programs(ctx, r):
         ctx.be.key("Return")           # less waits for a key after a ! command
         ctx.until(lambda: ctx.lines("ap_less.txt"), 8)
         ctx.be.type("q", 20)
-        time.sleep(0.6)
+        wait_program_exited(ctx, p1)
         exact_lines(r, "less ran the shell line typed inside it", [tok], ctx.lines("ap_less.txt"))
         local_cmd_exact(ctx, r, "ap_after_less")
     else:
@@ -352,6 +365,13 @@ def c_ssh_drop(ctx, r):
     if ctx.win:
         r.skip("not yet ported to the Windows panes: the `~.` escape and kill -9 $$ need the msys ssh client (unverified there)")
     for variant in ("escape", "kill"):
+        if variant == "escape" and not os.environ.get("APPCI_SSH_ESCAPE_THROUGH"):
+            # r18u8 (Mac): in a managed (warpified) remote session the input editor owns the keys, so `<Enter>~.` is taken as an editor line, not ssh's escape, and the
+            # connection never drops (UNCLEAR in the triage: whether the owner wants the ssh escape passed through the editor is an OWNER DECISION, not decided
+            # here). Running the variant would only fail on that undecided question and leave the pane remote, so it is reported UNVERIFIABLE (status noref, never a
+            # pass) with the reason, and runs again with APPCI_SSH_ESCAPE_THROUGH=1 once the owner decides.
+            r.unverifiable("ssh_drop_reconnect [escape]: the `<Enter>~.` ssh escape is not delivered to ssh by a managed session's input editor; whether it should be is an owner decision (set APPCI_SSH_ESCAPE_THROUGH=1 to run it)")
+            continue
         secs = CR.connect(ctx, "fake", 90)
         r.check(secs is not None, "[%s] no remote prompt after `ssh fake`. Test host: %s" % (variant, ctx.ssh_diag() if secs is None else ""))
         if secs is None:
@@ -443,7 +463,11 @@ def c_crash_kill9(ctx, r):
         r.check(not ran, "RE-RUN: rec.log shows %d command(s) before any key was sent: %r" % (len(ran), ran[:5]))
         if not ctx.prof.commands():
             r.note("no rec.log in this pane (PowerShell): the re-run check rests on the effect file alone")
-        r.check(newp >= 1, "no shell started after the crash (prompts +%d)" % newp)
+        if ctx.win and not ctx.prof.local_prompts:
+            # r18u8 (H10): the PowerShell pane has no prompt hook, so prompts() never moves there; start_app already proved the shell by the window + fixed settle + key proof
+            r.note("no prompt hook in this pane (PowerShell): `a shell started` rests on the window, the key proof and the exact typing below, not on a prompt count")
+        else:
+            r.check(newp >= 1, "no shell started after the crash (prompts +%d)" % newp)
         local_cmd_exact(ctx, r, "ck_after")
     finally:
         R.fresh_app(ctx, r, "ck")

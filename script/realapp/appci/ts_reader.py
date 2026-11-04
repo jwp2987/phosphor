@@ -4,6 +4,16 @@
 # (10-25 ms/key) is measured at the pty and written to OUTFILE as "ord t" lines. Used by the cadence case.
 import sys, time, os
 out, n = sys.argv[1], int(sys.argv[2])
+
+
+def write_rows(rows):
+    """r18u8 (H13): written to a temp name and renamed, so the file appears complete. `open(out, "w").write(...)` creates the file EMPTY first, and the cadence case
+    (which polls for the file) read it in that window on Windows: "only 0 of 60 characters arrived"."""
+    tmp = out + ".part"
+    with open(tmp, "w") as f:
+        f.write("".join("%d %.6f\n" % r for r in rows))
+    os.replace(tmp, out)
+
 if os.name == "nt":
     # Windows: console input through the ConPTY the app hosts us in. perf_counter, not time.time(): CPython 3.12 on Windows ticks at ~15.6 ms,
     # and only the GAPS between keys matter here
@@ -13,7 +23,7 @@ if os.name == "nt":
     while len(rows) < n:
         c = msvcrt.getwch()
         rows.append((ord(c), time.perf_counter()))
-    open(out, "w").write("".join("%d %.6f\n" % r for r in rows))
+    write_rows(rows)
     sys.exit(0)
 import tty, termios
 fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
@@ -28,4 +38,4 @@ try:
         rows.append((c[0], time.time()))
 finally:
     termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    open(out, "w").write("".join("%d %.6f\n" % r for r in rows))
+    write_rows(rows)

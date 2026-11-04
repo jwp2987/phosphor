@@ -1548,3 +1548,56 @@ directory user names, and token/key patterns, so collect on a machine that has t
   (NOREF) in that case and no longer fails the "usable afterwards" check because the line correctly ran locally. The hanging-host arm is the real hold test.
 - **`routing_table`**: `what is 5 > 3` carries shell syntax (`>`; `what` is an installed head on macOS), so it runs in the shell (#1183 / #1560). It moved from the
   prose list to the ambiguous list (judged by the logged rule); a syntax-free prose line (`is five bigger than three`) took its place.
+
+## r18u8 harness fixes (macOS and Windows live runs, 443965c77)
+
+Every item below is a harness change; none touches app code. Anything not listed was judged an APP finding in the two triage files.
+
+- **ssh pass-through expectations** (owner 2026-11-04, DECLINED.md): `ssh_hanging_host_not_local` now asserts what `ssh_failing_not_local` asserts: the line typed behind a
+  connecting ssh runs LOCALLY exactly once, exactly as typed, and only after the ssh exited (file mtime >= the exit the poller saw); the local shell receives it once;
+  the next probe line then runs once. The refused arm (ssh already gone before the first key) is an ordinary local command and must also run exactly once; it is no
+  longer UNVERIFIABLE. `ps_has_port` reads Windows command lines through CIM (there is no POSIX `ps` in the Windows harness PATH).
+- **`ssh_password_prompt`** types NOTHING before ssh's prompt is on screen (OCR polled for the prompt word up to 20 s; with no OCR a fixed 3 s wait, said in a note), then
+  the secret; the wrong-secret arm waits for the ssh client to exit (a check, 20 s) before any local command is typed. The "junk typed before the prompt is discarded"
+  check is gone: under the plain-terminal pass-through that junk is ssh's (ssh.exe takes it as the one password attempt).
+- **Pillow**: `cb_agent_pickers`, `cb_settings_ui_open` and `cb_ui_action_latency` SKIP with "Pillow not installed on this runner (owner: install?)" instead of passing on a note
+  (`cases_ui.need_pillow`).
+- **Agent cases**: `agent_stream_cancel` no longer assumes the first Ctrl-C clears typed text (while a reply streams it cancels the stream; the second clears the input): it
+  presses at most twice, measures both facts after each press and requires the end state (stream stopped, typed text gone). `agent_stream_cancel` and `agent_approval` start a
+  FRESH agent conversation (`cases_caseagent.fresh_conversation`: Escape, `/agent`, proven by `hop=view_mode`; a skip if it cannot be proven): the model had seen earlier
+  cases' prompts and proposed the stale `echo APPROVAL_TOKEN >> ap.txt`. `agent_code_recycle` owns its own Escape: it re-enters the agent view with `/agent` instead of
+  being reported as `left_agent_mode_after_agent_code_recycle`. Frame stability (`frames_settled`) compares screenshots by changed-pixel fraction when Pillow is there
+  (a blinking caret is ~0.00002 of a screen, a streaming reply far more; threshold 0.0008) and by the old "<= 2 distinct hashes" otherwise (never looser).
+- **Ctrl-C spacing in agent mode** (H16): `pane_responsive` and `run.set_ps_pane_state` space their Ctrl-C presses `EXIT_WINDOW_S + 0.4` s apart in agent mode (0.8 s apart
+  exited an empty agent conversation).
+- **`cb_settings_ui_open`**: the settings tab is closed with the platform's close (chord, else the command palette's `Close Current Session`) when a probe line shows the
+  shell is not in front (terminal mode), instead of only on a screenshot diff and only with a chord that is empty on macOS. **`cb_no_autoupdate`**: the startup line's
+  `autoupdate_configured: false` is blanked before matching (`: true` still matches). `cb_agent_file_mention`: the Mac failure is an APP finding (the `@` picker is open in
+  the screenshot, Enter submits); not changed.
+- **`subshells`**: nu appends with `| save --append` (`>>` is a nushell parse error). **`remote_session_*`**: the clean-env subshell quotes `PATH="$PATH"` (a Mac PATH with
+  spaces split the words); on Windows that step is NOT RUN (noref): `env -i` under msys ends the fake sshd session (H6).
+- **`flood_scrollback_find`**: Find is Cmd-Shift-F on macOS (`bindings.rs CustomAction::Find`); the marker is typed split by an empty string (`ABC""DEF`) because Phosphor
+  keeps the running command's text as the block header, which kept the control "marker not on screen" from ever holding.
+- **`remote_heredoc_paste`**: a remote shell without bracketed paste makes the app ask `Run N lines one at a time?`; the case answers it with Run (OCR-detected, noted).
+  Without OCR nothing is pressed and the note says a timeout may be that dialog.
+- **`session_restore` / `crash_kill9_restore`**: the app's own bootstrap line (`command -p stty -echo; WARP_BOOTSTRAP_VAR=...`) that a restored zsh pane logs to rec.log is not a
+  replayed user command (`Ctx.APP_BOOTSTRAP_RE`, excluded from `cmds_since` and the setup comparison). The restored-cwd mismatch (all tabs `~`) is NOT changed here. On the
+  PowerShell pane (no prompt hook) the "a shell started" prompt-count check is replaced by a note (H10).
+- **`ssh_drop_reconnect`**: the `<Enter>~.` escape variant is UNVERIFIABLE (noref) until the owner decides whether a managed session's editor should pass the ssh escape through
+  (`APPCI_SSH_ESCAPE_THROUGH=1` runs it); the `kill -9 $$` variant runs.
+- **Logs**: `run.save_old_rotations` also saves every `<log>.old.N` (plain or .gz, redacted, decompressed) next to `phosphor.log` / `phosphor.<n>.log`; the `.in_session.N` chunks were
+  already folded in.
+- **Injector accounting**: the macOS and Windows injector records carry `ref=True` for keys aimed at the reference terminal (as Linux did), so interleaved latency cases stop
+  reporting "sent 16008, saw 6450 / Enter sent 3, saw 75".
+- **Windows**: `leave_remote` retries a probe that went nowhere up to 3 times with a longer wait before refusing to type `exit` (ssh_nested_typeahead outer level, H3);
+  `tabs_streaming` / `tabs_two_windows` name their effect file by absolute path (agent-mode new tabs start in `~`, H9); `intl_wide_edit` uses a bareword PowerShell command (no quote in
+  the edited region, H11) and a per-edit lead word so the End key finds no autosuggestion to accept (H12); `ts_reader.py` writes its file by rename (the cadence case read it while it
+  was still empty, H13); `alt_screen_programs` waits for vim/less to leave before typing (H14); `editor_edit_save` retries a sharing violation and closes the editor on a harness
+  exception (H15).
+- **Latency against ConPTY (U1)**: the Windows reference defaults to Windows Terminal when `wt.exe` is installed (`APPCI_WIN_REF=auto|wt|conhost`). A failed overhead budget against
+  a bare conhost window is reported `NO-CONPTY-REFERENCE` (status noref, numbers kept), because the pane runs through ConPTY and conhost does not: the gap mixes the ConPTY layer with
+  Phosphor's cost. Against Windows Terminal the budget verdict is unchanged.
+- **`big_paste` under ConPTY (U2)**: when the Windows pane gets less than the whole paste, the same paste into `cat` in a conhost Git Bash window is the control. Same shortfall
+  -> noref (platform, with the byte counts); conhost gets every byte -> the failure stands; no usable control (no reference window, or it received nothing) -> noref with the reason.
+- **Not changed, by design**: H7 (fake sshd ConPTY heredoc stall) and H8 (Git Bash pass opens PowerShell tabs/restored tabs) need run evidence the artifacts do not contain;
+  `profile.gitbash_toml` already writes `startup_shell_override` and `new_session_shell_override` for that pass.

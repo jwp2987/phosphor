@@ -37,6 +37,16 @@ def wide_parts(ctx, fname):
     return "echo ", " >> " + fname
 
 
+def wide_parts_edit(ctx, fname):
+    """intl_wide_edit's prefix/suffix (r18u8 H11). The editor auto-pairs quotes, and wide_parts() opens a quote in the PREFIX and closes it in the suffix, which is
+    fine when the cursor never moves but not when Left/BackSpace run in between: the pair state is lost and a second quote pair lands in the command
+    (`file bytes None` in every PowerShell edit). Here the edited text is a bareword (`Write-Output <text>`) with no quote in the edited region, and every quote/brace
+    of the file-writing pipeline is typed in one go after End, balanced."""
+    if ctx.pane == "powershell":
+        return ("Write-Output ", " | ForEach-Object { [IO.File]::AppendAllText('%s', $_ + \"`n\", (New-Object Text.UTF8Encoding $false)) }" % os.path.join(ctx.W, fname))
+    return "echo ", " >> " + fname
+
+
 def fbytes(ctx, name):
     try:
         return open(os.path.join(ctx.W, name), "rb").read()
@@ -142,7 +152,12 @@ def c_wide_edit(ctx, r):
         f = "ie_%d.txt" % i
         ctx.rm(f)
         mark = ctx.cmd_mark()
-        pre, post = wide_parts(ctx, f)
+        pre, post = wide_parts_edit(ctx, f)
+        # r18u8 (H12, Git Bash): End at the end of the line ACCEPTS the autosuggestion, and the previous case's command (`echo A日本Z語 >> ie_0.txt`) is a prefix match for
+        # `echo A日本` -> the shell got `echo A日本Z語 >> ie_0.txt >> ie_1.txt`. A per-edit unique lead word makes no history line a prefix of the line being edited, so
+        # no suggestion exists to be accepted; it is part of the expected text on both sides.
+        lead = "k%d%s" % (i, ctx.tok(4).lower())
+        head, want = "echo " + lead + head[len("echo "):], lead + want
         ctx.be.type(pre + head[len("echo "):], 12)
         ctx.be.keys(keys, delay_ms=20)
         if tail:
