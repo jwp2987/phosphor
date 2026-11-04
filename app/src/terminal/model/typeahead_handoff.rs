@@ -822,6 +822,27 @@ pub struct TypeaheadHandoff {
     /// The evidence the live young hold stands on (#1614), `None` while no hold is live. It names
     /// the event that releases the hold and decides the cap ([`Self::young_hold_wait`]).
     young_hold_evidence: Option<YoungHoldEvidence>,
+    /// #1615 measurement, no decision: the last Enter delivered to the pty while an unsampled
+    /// process group (a warpified ssh's remote shell, an inner shell) was in front and a line was
+    /// unanswered, followed through the hooks that come after it (see
+    /// [`UnsampledEnterDelivery`]).
+    unsampled_enter_delivery: Option<UnsampledEnterDelivery>,
+}
+
+/// #1615: an Enter the hand-off delivered to the pty although a line was unanswered, because the
+/// shell in front is not the one the platform samples (`Unknown` from an installed probe: a
+/// warpified ssh's remote shell, an inner shell). The remote #933 race -- a line typed and Entered
+/// at a remote prompt whose Precmd is still on its way over the network -- looks exactly like an
+/// Enter typed into the remote command that is still running, so it is delivered as plain ssh
+/// would (owner decision 2026-11-03). Only logged: the Precmd that follows and the Preexec after it
+/// say, by their order and timing, whether the delivered line then ran as a shell command at the
+/// next prompt (the race, unclassified) or was the running command's.
+#[derive(Clone, Copy, Debug)]
+struct UnsampledEnterDelivery {
+    /// When the Enter was delivered.
+    at: Instant,
+    /// When the first Precmd after it was parsed.
+    precmd_after: Option<Instant>,
 }
 
 /// Why a young Enter is held (#1614): the positive evidence the hold stands on, each kind with the
@@ -1559,6 +1580,7 @@ impl TypeaheadHandoff {
         self.last_parsed_hook = None;
         // ... and the latch of the command that handed the pty over is the old session's.
         self.command_interactive = false;
+        self.unsampled_enter_delivery = None;
     }
 
     /// #1614: the block latch said the running command is interactive (main thread, from
@@ -1957,6 +1979,8 @@ impl TypeaheadHandoff {
         // its own Preexec is the next one.
         self.command_interactive = false;
         self.own_preexec_pending = true;
+        // #1615: the editor wrote the next command, so a delivered Enter's line is settled.
+        self.unsampled_enter_delivery = None;
         // An Enter held behind the request follows the command as typeahead (#933): the view
         // writes the keys of the hold once it is told (below); in every state but `PtyOwned` the
         // hold is void.
@@ -2100,6 +2124,7 @@ impl TypeaheadHandoff {
         }
         // The command's prompt: the wait above holds the keys from here (#1490).
         self.enter_window_since = None;
+        self.follow_unsampled_enter_on_precmd(now);
         warpui::input_order::note_shell_signal(warpui::input_order::ShellSignal::Precmd);
         self.interrupt_awaiting_cycle = false;
         // #1614: the command that was interactive is over; the shell is back at its prompt, and a
@@ -2167,6 +2192,7 @@ impl TypeaheadHandoff {
         self.last_activity_at = Some(now);
         // #1573: an enter window whose command started is not overdue while it runs.
         self.last_preexec_at = Some(now);
+        self.follow_unsampled_enter_on_preexec(shell_started, now);
         // The editor's command reached the shell: one write-to-preexec loop measured. A line the
         // shell started itself ran ahead of that command, so its preexec is not the command's and
         // the command's own would include the line's run: the sample is dropped.
@@ -2478,8 +2504,121 @@ impl TypeaheadHandoff {
             self.log_route_decision("held_young_enter_started", bytes);
             return UserBytesRoute::Held;
         }
+        if self.enter_delivered_past_an_unsampled_group(bytes, reaches_shell_line) {
+            self.note_unsampled_enter_delivered();
+        }
         self.log_route_decision("unheld", bytes);
         self.route_user_bytes_unheld(bytes, reaches_shell_line)
+    }
+
+    /// #1615: whether `bytes` are an Enter, typed with a line unanswered and user bytes in the
+    /// shell's line, that is delivered only because the process group in front is not the sampled
+    /// shell (`Unknown` from an installed probe, prompt-sequence path): the case a remote
+    /// Precmd/Preexec-driven hold would decide. Read before the write is counted.
+    fn enter_delivered_past_an_unsampled_group(
+        &self,
+        bytes: &[u8],
+        reaches_shell_line: bool,
+    ) -> bool {
+        let HandoffState::PtyOwned {
+            wrote_user_bytes: true,
+            enters_written,
+            precmds_seen,
+        } = self.state
+        else {
+            return false;
+        };
+        reaches_shell_line
+            && matches!(bytes.first(), Some(b'\r' | b'\n'))
+            && precmds_seen < enters_written
+            && enters_written <= precmds_seen.saturating_add(1)
+            && self.prompt_seq_mode()
+            && self.foreground_probe.samples_shell()
+            && self.foreground_probe.prompt_fact() == ShellPromptFact::Unknown
+    }
+
+    /// #1615: records and logs an Enter delivered past an unsampled group (see
+    /// [`UnsampledEnterDelivery`]), with what the ordered stream said at that moment.
+    fn note_unsampled_enter_delivered(&mut self) {
+        let now = Instant::now();
+        warpui::input_order::log_hop("unsampled_enter_delivered", || {
+            format!(
+                "shell_activity={:?} last_hook={:?} markers_live={} command_interactive={} \
+                 since_activity_ms={} rtt_p90_ms={}",
+                self.shell_activity,
+                self.last_parsed_hook,
+                self.line_editor_markers_live,
+                self.command_interactive,
+                self.last_activity_at.map_or_else(
+                    || "none".to_string(),
+                    |at| now.saturating_duration_since(at).as_millis().to_string()
+                ),
+                self.rtt_p90()
+                    .map_or_else(|| "none".to_string(), |p90| p90.as_millis().to_string()),
+            )
+        });
+        self.unsampled_enter_delivery = Some(UnsampledEnterDelivery {
+            at: now,
+            precmd_after: None,
+        });
+    }
+
+    /// #1615: a Precmd was parsed; follows an Enter delivered past an unsampled group (model
+    /// thread, from [`Self::on_precmd`]). The first Precmd after it is noted; a second one with no
+    /// Preexec between means the delivered line never ran as a shell command.
+    fn follow_unsampled_enter_on_precmd(&mut self, now: Instant) {
+        let Some(delivery) = self.unsampled_enter_delivery.as_mut() else {
+            return;
+        };
+        let delivered_ms = now.saturating_duration_since(delivery.at).as_millis();
+        if delivery.precmd_after.is_none() {
+            delivery.precmd_after = Some(now);
+            warpui::input_order::log_hop("unsampled_enter_then_precmd", || {
+                format!("delivered_to_precmd_ms={delivered_ms}")
+            });
+            return;
+        }
+        self.unsampled_enter_delivery = None;
+        warpui::input_order::log_hop("unsampled_enter_settled", || {
+            format!("outcome=no_command delivered_to_precmd_ms={delivered_ms}")
+        });
+    }
+
+    /// #1615: a Preexec was parsed (model thread, from [`Self::on_preexec`]). After the Precmd
+    /// that followed a delivered Enter, it is the next prompt's first command: with
+    /// `shell_started` the shell read that line from the tty itself, i.e. the delivered line ran
+    /// as a shell command, unclassified (the remote #933 race when `delivered_to_precmd_ms` is
+    /// within a round trip; plain typeahead for the next prompt when it is long).
+    fn follow_unsampled_enter_on_preexec(&mut self, shell_started: bool, now: Instant) {
+        let Some(delivery) = self
+            .unsampled_enter_delivery
+            .take_if(|delivery| delivery.precmd_after.is_some())
+        else {
+            return;
+        };
+        let to_precmd_ms = delivery.precmd_after.map_or(0, |at| {
+            at.saturating_duration_since(delivery.at).as_millis()
+        });
+        let to_preexec_ms = now.saturating_duration_since(delivery.at).as_millis();
+        warpui::input_order::log_hop("unsampled_enter_settled", || {
+            format!(
+                "outcome={} delivered_to_precmd_ms={to_precmd_ms} \
+                 delivered_to_preexec_ms={to_preexec_ms} rtt_p90_ms={}",
+                if shell_started {
+                    "ran_as_shell_command"
+                } else {
+                    "app_command"
+                },
+                self.rtt_p90()
+                    .map_or_else(|| "none".to_string(), |p90| p90.as_millis().to_string()),
+            )
+        });
+    }
+
+    /// #1615: whether an Enter delivered past an unsampled group is being followed, for tests.
+    #[cfg(test)]
+    pub(crate) fn follows_unsampled_enter(&self) -> bool {
+        self.unsampled_enter_delivery.is_some()
     }
 
     /// Logs why a user write was held or let through (#1490): the reason, the hand-off state and
@@ -2732,7 +2871,9 @@ impl TypeaheadHandoff {
             // `sudo -i`) or an inner shell. No prompt of the hooked local shell is in flight; a
             // plain terminal delivers. A warpified remote session's own Precmd/Preexec stream
             // could drive a hold here; accepted as delivered for now (owner decision 2026-11-03;
-            // #1614 follow-up: remote Precmd/Preexec-driven hold).
+            // #1614 follow-up: remote Precmd/Preexec-driven hold). Until it is decided the
+            // delivery is measured: `route_user_bytes` follows it through the next hooks
+            // (`unsampled_enter_*` hops, #1615).
             ShellPromptFact::Unknown if self.foreground_probe.samples_shell() => None,
             ShellPromptFact::Unknown => window(),
         }
