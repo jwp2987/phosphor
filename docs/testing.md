@@ -1036,6 +1036,7 @@ the held keys. A setup with no marker token (`PHOSPHOR_BOOTSTRAP_TIMED=1`, or ma
 | layer | test | asserts |
 |---|---|---|
 | view, Legacy and Table | `group2_timer_tests.rs`: `powershell_abort_settle_without_a_marker_hands_the_held_keys_back` | no token: the held `ls` is in the editor with the Enter guard armed, nothing written; a stale generation does nothing |
+| view, Legacy and Table | `group2_timer_tests.rs`: `ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_the_settle` | the real path: `ls`, Ctrl-C, `x`, the spawned 500 ms timer: the editor holds `lsx`, the pty got only `\x03` |
 | view | `view_test.rs`: `powershell_abort_settle_ends_on_the_read_marker_not_the_clock` (existing) | the marker after the Ctrl-C writes the held keys; time and line markers do not |
 
 **#1391 (PS2 continued line).** bash and zsh send `ContinuationPrompt` (PS2 head / zle `CONTEXT=cont`) and the hand-off re-baselines

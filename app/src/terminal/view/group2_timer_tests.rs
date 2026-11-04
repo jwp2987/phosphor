@@ -469,6 +469,60 @@ fn powershell_abort_settle_without_a_marker_hands_the_held_keys_back() {
     }
 }
 
+/// #1438 (review): the same through the real path. Ctrl-C skips a stalled timed PowerShell setup
+/// with `ls` held and `x` typed after the ^C; the settle timer fires and both come back to the
+/// editor as `lsx`, in order. Only the ^C ever reaches the pty.
+#[test]
+fn ctrl_c_on_a_timed_powershell_setup_hands_the_held_and_later_keys_back_after_the_settle() {
+    for mode in [DestinationMode::Legacy, DestinationMode::Table] {
+        App::test((), move |mut app| async move {
+            let _mode = crate::terminal::input_queue::facts::set_destination_mode_for_test(mode);
+            initialize_app_for_terminal_view(&mut app);
+            app.add_singleton_model(|_| crate::workspace::ToastStack);
+            let terminal = add_window_with_terminal(&mut app, None);
+            let delivered = collect_delivered_input(&mut app, &terminal);
+            terminal.update(&mut app, |view, ctx| {
+                announce_powershell_setup(view);
+                stall_powershell_setup(view);
+                assert!(
+                    view.powershell_setup_marker_token.is_none(),
+                    "a timed setup"
+                );
+                view.typed_characters_on_terminal("ls", ctx);
+                view.ctrl_c(ctx);
+                view.typed_characters_on_terminal("x", ctx);
+                assert!(
+                    matches!(
+                        view.powershell_setup_hold,
+                        PowerShellSetupHold::AfterAbort { .. }
+                    ),
+                    "{mode:?}: waiting after the abort"
+                );
+            });
+            assert_eq!(
+                *delivered.borrow(),
+                b"\x03".to_vec(),
+                "{mode:?}: only the ^C"
+            );
+            warpui::r#async::Timer::after(POWERSHELL_ABORT_SETTLE + Duration::from_millis(300))
+                .await;
+            terminal.read(&app, |view, ctx| {
+                assert_eq!(
+                    view.powershell_setup_hold,
+                    PowerShellSetupHold::Off,
+                    "{mode:?}"
+                );
+                assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "lsx", "{mode:?}");
+            });
+            assert_eq!(
+                *delivered.borrow(),
+                b"\x03".to_vec(),
+                "{mode:?}: the give-up wrote nothing"
+            );
+        });
+    }
+}
+
 /// A10 (#1577): the stall ceiling (a subshell setup that never finishes) hands the keys held
 /// through it back to the editor as text, resets the setup state and the waiting notice, and
 /// writes nothing into the abandoned shell. (The Precmd event of a setup that does finish still
