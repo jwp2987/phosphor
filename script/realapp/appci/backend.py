@@ -778,7 +778,7 @@ class MacBackend(Backend):
         """Keep htype2's K-lines (it overwrites its outfile every call) in self.calls and <run>/inject.log. Typed characters are logged as a COUNT
         and first/last time only (never their code points: typed text can be a password); ENTER/KEY/BS/TAB/RIGHT lines are logged in full."""
         rec = dict(n=len(self.calls), wall0=t0, wall1=t1, enters_want=sum(1 for o in ops if o.split(":")[0] == "e"),
-                   enter_wall=[], post_wall=[], chars=0, special=[], err=err, out=False,
+                   enter_wall=[], post_wall=[], post_mach_ms=[], clock=None, chars=0, special=[], err=err, out=False,
                    ref=bool(self.guard_override))      # r18u8: keys aimed at the reference terminal (interleaved latency) are not Phosphor's; injacct.join skips ref calls
         try:
             lines = open(self.outf, errors="replace").read().splitlines()
@@ -792,6 +792,7 @@ class MacBackend(Backend):
                 try:
                     mach = float(w[1].split("=")[1]); epoch = float(w[2].split("=")[1])
                     rec["out"] = True
+                    rec["clock"] = (mach, epoch)      # #1606 rediag: one (uptime ms, epoch s) pair, to put the OS's event timestamps on the wall clock
                 except (ValueError, IndexError):
                     pass
             elif w[:1] == ["K"] and len(w) >= 4:
@@ -808,6 +809,7 @@ class MacBackend(Backend):
                     rec["special"].append("%s@%s" % (w[1], ("%.3f" % wall) if wall else "?"))
                     if wall is not None:
                         rec["post_wall"].append(wall)      # #1606: the injector's own post time of each named key (latency split)
+                    rec["post_mach_ms"].append(ms)         # #1606 rediag: the same post on the OS uptime clock (the CGEvent / NSEvent timestamp clock)
                     if w[1] == "ENTER":
                         rec["enter_wall"].append(wall)
         rec["enters_posted"] = len(rec["enter_wall"])

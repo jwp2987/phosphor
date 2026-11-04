@@ -2870,8 +2870,11 @@ def stamp_line(ctx):
 def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, split=None):
     """stamp/d (#1532 latency_enter_ssh): the stamp line and the directory its lat_<i> files land in, when they are not the local pane's
     (stamp_line(ctx), ctx.W): over ssh the REMOTE shell writes them into the remote home.
-    split (#1606): a list that receives one dict per captured sample, epoch seconds: t0 (harness, before the injector starts), post (the
-    injector's own post time of the Return, macOS htype2 only), stamp, and from the zsh rc lf (zle-line-finish) and px (last preexec hook)."""
+    split (#1606): a list that receives one dict per captured sample, epoch seconds: t0 (harness, before the injector starts), inj (after the
+    backend's frontmost-window guard, when the injector process is spawned; macOS), post (the injector's own post time of the Return, macOS htype2
+    only), stamp, and from the zsh rc lf (zle-line-finish) and px (last preexec hook); post_mach_ms/clock (macOS) for enter_os_split.
+    #1606 rediag: on macOS a sample starts at `inj`, not t0 (enter_sample_start): the guard runs `ps` on the Phosphor PID only, never for the
+    reference, so t0 put ~3-6 ms of harness work on Phosphor's side alone. APPCI_ENTER_T0=harness restores the old start."""
     ds = []
     t_end = time.time() + budget_s if budget_s else None
     for i in range(n):
@@ -2895,11 +2898,14 @@ def enter_to_start(ctx, n, budget_s=None, key_delay_ms=12, stamp=None, d=None, s
         try:
             fields = _read_fields(f)
             v = float(fields[0])
-            ds.append(((v / 1000.0 if v > 1e11 else v) - t0) * 1000)       # PowerShell stamps UTC milliseconds
+            inj = injector_start_wall(ctx, t0)
+            ds.append(((v / 1000.0 if v > 1e11 else v) - enter_sample_start(t0, inj)) * 1000)       # PowerShell stamps UTC milliseconds
             if split is not None:
                 # zsh (macOS): stamp px lf; bash/zsh stamp_line (#1492): stamp lf
                 px, lf = (None, _float_or_none(fields, 1)) if len(fields) == 2 else (_float_or_none(fields, 1), _float_or_none(fields, 2))
-                split.append(dict(t0=t0, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_epoch_s(px), lf=_epoch_s(lf)))
+                pm, clock = injector_post_mach(ctx)
+                split.append(dict(t0=t0, inj=inj, stamp=v / 1000.0 if v > 1e11 else v, post=injector_post_wall(ctx), px=_epoch_s(px), lf=_epoch_s(lf),
+                                  post_mach_ms=pm, clock=clock))
         except Exception:
             pass
         if i == 2 and not ds:
@@ -2945,6 +2951,88 @@ def injector_post_wall(ctx):
     return w[-1] if w else None
 
 
+def injector_start_wall(ctx, t0):
+    """#1606 rediag: wall time (epoch s) at which the backend spawned the injector for its last call, AFTER its frontmost-window guard (macOS
+    MacBackend._ht records it as wall0), or None (another backend, no record, or a record older than t0: not this call's)"""
+    calls = getattr(ctx.be, "calls", None)
+    if not calls:
+        return None
+    w = calls[-1].get("wall0")
+    return w if w is not None and w >= t0 else None
+
+
+def enter_sample_start(t0, inj):
+    """#1606 rediag: where an Enter -> command start sample begins. On macOS the backend's guard runs inside key() and costs Phosphor's side
+    more than the reference's (App.pid() verifies the PID with a `ps` spawn; the reference guard compares the front app's name only), so the
+    sample starts when the injector is spawned (inj), after the guard, on BOTH sides. APPCI_ENTER_T0=harness (kill switch) starts it at t0, as
+    before; so does any backend that records no spawn time (Linux and Windows run their guard before t0 already)."""
+    if inj is None or os.environ.get("APPCI_ENTER_T0", "") == "harness":
+        return t0
+    return inj
+
+
+def injector_post_mach(ctx):
+    """#1606 rediag: (uptime ms of the injector's post of the last special key of its last call, (uptime ms, epoch s) clock pair) from the macOS
+    htype2 record, or (None, None)"""
+    calls = getattr(ctx.be, "calls", None)
+    if not calls:
+        return None, None
+    pm = calls[-1].get("post_mach_ms") or []
+    return (pm[-1] if pm else None), calls[-1].get("clock")
+
+
+_KTAP_RET = re.compile(r"E down keycode=(?:36|76) ts_ns=(\d+) target_pid=(-?\d+) source_pid=-?\d+ wall=([\d.]+)")
+_APP_SEND = re.compile(r"hop=mac_enter stage=app_send_event keycode=(?:36|76) ts=([\d.]+) age_ms=([\d.]+)")
+
+
+def enter_os_split(samples, ktap_lines, app_lines=()):
+    """#1606 rediag (macOS): where the time between the injector's post of Return and the line editor's zle-line-finish goes, per sample, on ONE
+    clock (the OS uptime clock the CGEvent/NSEvent timestamps use; the htype2 clock pair puts the wall-clock times on it):
+      post_to_evts   the post -> the OS's timestamp on the event, as the run's ktap (annotated session tap) saw it: the window server taking the
+                     injected event in. Nothing a terminal does can be in here except through load on the machine
+      evts_to_tap    that timestamp -> ktap's callback (the event in the tap chain, before it is routed to the target)
+      evts_to_app    that timestamp -> the app dequeuing it (Phosphor's own `app_send_event ... age_ms=`; none for the reference)
+      evts_to_lf     that timestamp -> zle-line-finish: everything the terminal and the shell do with the Return
+    samples: enter_to_start split dicts (post_mach_ms, clock, lf). ktap_lines: lines of the run's ktap.log. A sample is matched with the first
+    Return key-down whose OS timestamp is in [post - 1 ms, post + 1 s]. -> {n, n_matched, <key>_ms medians}."""
+    taps = []
+    for l in ktap_lines:
+        m = _KTAP_RET.search(l)
+        if m:
+            taps.append((int(m.group(1)) / 1e6, int(m.group(2)), float(m.group(3))))
+    taps.sort()
+    app = {}
+    for l in app_lines:
+        m = _APP_SEND.search(l)
+        if m:
+            app[round(float(m.group(1)) * 1000.0, 1)] = float(m.group(2))
+    vals = {"post_to_evts_ms": [], "evts_to_tap_ms": [], "evts_to_app_ms": [], "evts_to_lf_ms": []}
+    matched = 0
+    for x in samples:
+        pm, clock = x.get("post_mach_ms"), x.get("clock")
+        if pm is None or not clock:
+            continue
+        hit = next((t for t in taps if pm - 1.0 <= t[0] <= pm + 1000.0), None)
+        if not hit:
+            continue
+        matched += 1
+        ts, _pid, wall = hit
+        off_ms = clock[1] * 1000.0 - clock[0]          # epoch ms - uptime ms
+        vals["post_to_evts_ms"].append(ts - pm)
+        vals["evts_to_tap_ms"].append(wall * 1000.0 - off_ms - ts)
+        age = next((a for k, a in app.items() if abs(k - ts) <= 0.5), None)
+        if age is not None:
+            vals["evts_to_app_ms"].append(age)
+        if x.get("lf"):
+            vals["evts_to_lf_ms"].append(x["lf"] * 1000.0 - off_ms - ts)
+    out = {"n": len(samples), "n_matched": matched}
+    for k, v in vals.items():
+        mv = _med(v)
+        if mv is not None:
+            out[k] = mv
+    return out
+
+
 def _med(xs):
     xs = [x for x in xs if x is not None]
     return round(statistics.median(xs), 2) if xs else None
@@ -2952,7 +3040,10 @@ def _med(xs):
 
 def enter_split_summary(samples):
     """#1606: one side's enter_to_start split dicts -> medians in ms (+ n) of
-      t0_to_post        harness start -> the injector's post of Return (the input-tool spawn: the same for both sides; sanity only)
+      t0_to_inj         (#1606 rediag, macOS) harness start -> the injector spawn: the backend's frontmost-window guard. NOT the same for both
+                        sides (Phosphor's guard verifies its PID with a `ps` spawn), which is why a sample starts at inj (enter_sample_start)
+      inj_to_post       the injector spawn -> its post of Return (process start + the key gap: the same for both sides)
+      t0_to_post        harness start -> the injector's post of Return (the two above)
       post_to_lf        the post -> zle-line-finish: key delivery, the terminal's own work, the pty write and the line editor reading and
                         accepting the line (Phosphor writes the whole line at Enter; a plain terminal's shell already has it)
       lf_to_px          zle-line-finish -> the rc's preexec hook: the preexec hooks that run before it (Phosphor's warp_preexec, which
@@ -2967,7 +3058,7 @@ def enter_split_summary(samples):
     def d(a, b):
         return [(x[b] - x[a]) * 1000.0 for x in samples if x.get(a) is not None and x.get(b) is not None and 0 <= x[b] - x[a] < 1]
     out = {"n": len(samples)}
-    for k, a, b in (("t0_to_post_ms", "t0", "post"), ("post_to_lf_ms", "post", "lf"), ("lf_to_px_ms", "lf", "px"), ("px_to_stamp_ms", "px", "stamp"),
+    for k, a, b in (("t0_to_inj_ms", "t0", "inj"), ("inj_to_post_ms", "inj", "post"), ("t0_to_post_ms", "t0", "post"), ("post_to_lf_ms", "post", "lf"), ("lf_to_px_ms", "lf", "px"), ("px_to_stamp_ms", "px", "stamp"),
                     ("post_to_stamp_ms", "post", "stamp"), ("post_to_px_ms", "post", "px"), ("t0_to_lf_ms", "t0", "lf"), ("lf_to_stamp_ms", "lf", "stamp")):
         v = _med(d(a, b))
         if v is not None:
@@ -3057,7 +3148,12 @@ def unset_bracketed_paste_batch(ctx, r, n, warm, ds):
     if lat.shell_base(sh) != "zsh":
         r.note("M3: not run: the pane shell is %s, not zsh (zle_bracketed_paste is a zsh parameter)" % sh)
         return
+    if getattr(ctx.be, "guard_override", None):
+        # #1606 rediag: the keys would go to the reference terminal, not to Phosphor (r18u8/r18u13 measured Terminal.app here)
+        r.note("M3: not run: the injector is aimed at the reference terminal (%r), not Phosphor" % (ctx.be.guard_override,))
+        return
     ctx.rm("m3_state.txt")
+    t_m3 = time.time()
     ctx.be.type(M3_UNSET, 12, enter=True)
     ctx.until(lambda: ctx.lines("m3_state.txt"), 6)
     if "M3_0" not in ctx.lines("m3_state.txt"):
@@ -3078,10 +3174,37 @@ def unset_bracketed_paste_batch(ctx, r, n, warm, ds):
     if not bs:
         r.note("M3: no Enter timing captured with bracketed paste off")
         return
+    seen = m3_app_enters(ctx.app_log_lines(), t_m3)
+    r.metric("unset_bracketed_paste_app_enters", seen)
+    if m3_void(seen, len(bs)):
+        # #1606 rediag: a batch the app did not see is another terminal's numbers; never report it as Phosphor's
+        r.metric("unset_bracketed_paste_void", True)
+        r.note("M3 VOID: Phosphor's log shows %d submitted Enter(s) for the %d samples of the batch: the keys went elsewhere, so its %.1f ms is not "
+               "Phosphor's and no difference is reported" % (seen, len(bs), statistics.median(bs)))
+        return
     r.metric("unset_bracketed_paste_enter_to_start_ms", stats(bs))
     mb, md = statistics.median(bs), statistics.median(ds)
     r.metric("unset_bracketed_paste_minus_default_ms", round(mb - md, 2))
-    r.note("M3: Enter -> start with zle_bracketed_paste unset %.1f ms vs default %.1f ms (%+.1f ms): that is the cost of the paste wrap in zle (a negative or ~0 value means the wrap is not the gap)" % (mb, md, mb - md))
+    r.note("M3: Enter -> start with zle_bracketed_paste unset %.1f ms vs default %.1f ms (%+.1f ms; %d app Enters): what zle's bracketed-paste mode "
+           "costs as a whole (the mode switches around each prompt and, for a wrapped line, the paste widget; ~0 means the mode is not the gap)"
+           % (mb, md, mb - md, seen))
+
+
+def m3_app_enters(lines, t0):
+    """#1606 rediag: how many shell submits Phosphor logged (`hop=enter_begin`) since wall time t0"""
+    n = 0
+    for l in lines:
+        if "hop=enter_begin" not in l:
+            continue
+        m = re.search(r" t=(\d+(?:\.\d+)?)", l)
+        if m and float(m.group(1)) / 1000.0 >= t0:
+            n += 1
+    return n
+
+
+def m3_void(app_enters, samples):
+    """#1606 rediag: the M3 batch is void when Phosphor saw fewer submits than samples were captured (each sample is one Enter in the pane)"""
+    return samples > 0 and app_enters < samples
 
 
 def record_enter_split(r, splits, segs):
@@ -3106,6 +3229,28 @@ def record_enter_split(r, splits, segs):
                ("; Phosphor app: " + ", ".join("%s %.2f" % (k[:-3], v) for k, v in app.items()) if app else ""))
 
 
+def record_enter_os_split(ctx, r, splits):
+    """#1606 rediag (macOS): enter_os_split for both sides from the run's ktap.log (app_test.sh starts ktap next to the run dir), as the metric
+    `enter_os_split_ms` {phosphor, reference, delta} and one note. Says so when there is no ktap log or nothing matched."""
+    if not any(x.get("post_mach_ms") is not None for v in splits.values() for x in v):
+        return
+    kp = os.path.join(os.path.dirname(os.path.abspath(ctx.run)), "ktap.log")
+    time.sleep(0.3)                    # ktap flushes every 0.2 s
+    try:
+        kl = open(kp, errors="replace").read().splitlines()
+    except OSError:
+        r.note("OS split (#1606): no ktap log at %s, the injector -> OS -> app split is not available" % kp)
+        return
+    app_lines = ctx.app_log_lines()
+    sp = {side: enter_os_split(v, kl, app_lines if side == "phosphor" else ()) for side, v in splits.items() if v}
+    if "phosphor" in sp and "reference" in sp:
+        sp["delta"] = {k: round(sp["phosphor"][k] - sp["reference"][k], 2) for k in sp["phosphor"]
+                       if k.endswith("_ms") and k in sp["reference"]}
+    r.metric("enter_os_split_ms", sp)
+    r.note("OS split (#1606, medians ms on the OS event clock): " + "; ".join(
+        "%s %s" % (side, ", ".join("%s %s" % (k[:-3], v) for k, v in d.items() if k.endswith("_ms") or k.startswith("n"))) for side, d in sp.items()))
+
+
 @case("latency_enter", order=41, gui=True)
 def c_lat_enter(ctx, r):
     """Enter -> command start, Phosphor vs a reference terminal in the SAME session with the SAME keys/cadence/timestamp command.
@@ -3115,6 +3260,8 @@ def c_lat_enter(ctx, r):
     pane_sh = pane_shell_id(ctx)        # asked once, before the first sample (Linux/macOS), so the stamp line below is chosen for the right shell
     r.metric("pane_shell", pane_sh or "unknown")
     r.metric("stamp_line", stamp_line(ctx))       # #1492: which stamp line ran (APPCI_ENTER_SPLIT=1 opts into the split line)
+    # #1606 rediag: where a sample starts (enter_sample_start): the injector spawn after the guard on macOS, t0 elsewhere or with the kill switch
+    r.metric("enter_sample_start", "t0" if ctx.be.name != "mac" or os.environ.get("APPCI_ENTER_T0", "") == "harness" else "injector_spawn")
     ctx.lf_missing = 0
     r.metric("host_load", host_load())          # #1583 W4
     if ctx.win and ctx.pane == "gitbash":
@@ -3140,7 +3287,10 @@ def c_lat_enter(ctx, r):
                 fallback = "interleaving failed, fell back to sequential: %s" % str(e)[:160]
         elif ref:
             fallback = "this backend cannot keep both windows"
-        if ds is None and ref and ref.switch:
+        if ref and ref.switch:
+            # #1606 rediag: also after a SUCCESSFUL interleave. Its last block is the reference's, so without this the keys that follow (ctx.reset,
+            # the M3 batch) went to Terminal.app: in r18u8/r18u13 every M3 Return was a ktap "elsewhere" tap (111 = 75 reference + 35 M3 + exit),
+            # and M3's "-15.8 ms" was the reference's own median against Phosphor's
             try:
                 ref.switch("phosphor")
             except RuntimeError:
@@ -3248,6 +3398,7 @@ def c_lat_enter(ctx, r):
     if "__pa_lf>>" in stamp_line(ctx):
         r.metric("lf_missing", getattr(ctx, "lf_missing", 0))     # #1492: split-line samples (both sides) whose line-accepted time never arrived
     record_enter_split(r, splits, segs)
+    record_enter_os_split(ctx, r, splits)
     if ds:
         rec = lat.evaluate("%s/latency_enter/enter_to_start" % ctx.label, ds, rs, float(os.environ.get("APPCI_ENTER_BUDGET_MS", "2")), "overhead", plat(),
                            remeasure=lambda: enter_to_start(ctx, n + warm)[warm:], ref_name=ref.name if ref else None, floor=ctx.be.key_floor_ms,

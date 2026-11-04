@@ -703,7 +703,23 @@ budget, previous build, baseline, verdict, n).
   `reference_bootstrap_minus_plain_ms`): the cost of the pane's shell hooks alone, outside the app. Never a verdict input; a note when the assets are not next to the harness.
 - **Bracketed-paste cost (macOS zsh pane, terminal mode, #1583 M3).** After the Phosphor samples the case types `unset zle_bracketed_paste` (confirmed by a state
   file), measures a second batch of the same stamp line (`unset_bracketed_paste_enter_to_start_ms`, `unset_bracketed_paste_minus_default_ms`) and puts the parameter back
-  (`zle_bracketed_paste=( $'\e[?2004h' $'\e[?2004l' )`, confirmed). Not a verdict input.
+  (`zle_bracketed_paste=( $'\e[?2004h' $'\e[?2004l' )`, confirmed). Not a verdict input. **#1606 rediag:** until this fix the interleaved
+  run ended on a reference block and left the injector aimed at Terminal.app, so every M3 key went to the reference (r18u8/r18u13: ktap
+  counted 111 "elsewhere" Returns = 75 reference + 35 M3 + `exit`), and the reported "-15.8 ms" was the reference's own median. The case now
+  switches back to Phosphor after interleaving, refuses to run M3 while the guard is aimed at the reference, and counts Phosphor's
+  `hop=enter_begin` lines during the batch (`unset_bracketed_paste_app_enters`); fewer than the samples marks it `unset_bracketed_paste_void`
+  and no difference is reported.
+- **Where a macOS sample starts (#1606 rediag).** The Mac backend runs its frontmost-window guard inside `key()`, and for Phosphor the guard
+  verifies the PID with a `ps` spawn that the reference's guard (a name compare) never pays: ~3-6 ms of harness work inside Phosphor's samples
+  only (`enter_split_ms.*.t0_to_inj_ms` shows it per side). A sample now starts when the injector is spawned, after the guard, on both sides
+  (`metrics.enter_sample_start` = `injector_spawn`); `APPCI_ENTER_T0=harness` restores the old start (`t0`). Absolute Mac numbers drop by the
+  guard time on both sides, so a build-to-build compare across this change moves for that reason alone. Linux and Windows are unchanged.
+- **OS split of the Return (#1606 rediag, macOS).** Every Mac sample keeps the injector's post time on the OS uptime clock (htype2's K line)
+  and its clock pair; `latency_enter` joins it with the run's `ktap.log` Return (the OS event timestamp and the tap's callback time) and, for
+  Phosphor, its `app_send_event` dequeue, as `metrics.enter_os_split_ms` {phosphor, reference, delta}: `post_to_evts` (injector post to the
+  OS's event timestamp: the window server taking the event in), `evts_to_tap`, `evts_to_app` (Phosphor only) and `evts_to_lf` (event to
+  zle-line-finish: all the terminal and the shell do). r18u8-r18u16 showed ~50 ms post -> zle-line-finish on BOTH sides and a Phosphor
+  excess the app's own log cannot see; this says whether it is before or after the OS stamps the event. Self-test `g11_enter_rediag_1606`.
 - **Enter submit path (#1606).** Since #1606 a plain one-line command (printable ASCII, no `!`, no leading `^`, at most 1000 bytes) to a
   zsh whose line editor vouched for literal typing (`typed_text_literal` on its `LineEditorReading` marker: builtin `self-insert`, no
   binding a printable byte reaches) is written raw, `^P` + text + Enter, without the bracketed-paste wrapper; every other line keeps it.
