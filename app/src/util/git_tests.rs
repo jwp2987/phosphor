@@ -28,7 +28,9 @@ async fn init_repo() -> (TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let path = dir.path().to_path_buf();
 
-    git(&path, &["init", "-b", "main"]).await;
+    git(&path, &["init"]).await;
+    // `git init -b` needs git 2.28; init + symbolic-ref works on every git.
+    git(&path, &["symbolic-ref", "HEAD", "refs/heads/main"]).await;
     git(&path, &["config", "user.email", "test@test.com"]).await;
     git(&path, &["config", "user.name", "Test"]).await;
     git(&path, &["commit", "--allow-empty", "-m", "initial"]).await;
@@ -102,9 +104,11 @@ async fn add_bare_origin(repo: &Path) -> TempDir {
     // files. A "second contributor" fixture built on that clone then commits
     // onto an unborn master and its push never reaches origin/main -- which
     // silently turns any pull test into a no-op.
+    // (Spelled init + symbolic-ref, not `init -b`, which needs git 2.28.)
+    git(&bare.path().to_path_buf(), &["init", "--bare"]).await;
     git(
         &bare.path().to_path_buf(),
-        &["init", "--bare", "-b", "main"],
+        &["symbolic-ref", "HEAD", "refs/heads/main"],
     )
     .await;
     let bare_url = bare.path().to_string_lossy().to_string();

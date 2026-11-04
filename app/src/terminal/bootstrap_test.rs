@@ -1143,9 +1143,16 @@ fn test_probe_and_known_stage_leave_at_most_the_prelude_in_history() {
                 std::fs::create_dir_all(&dir).unwrap();
                 let histfile = dir.join("history");
                 std::fs::write(&histfile, "keep1\nkeep2\n").unwrap();
+                // macOS's /etc/zshrc forces `HISTFILE=$ZDOTDIR/.zsh_history` AFTER the environment is
+                // read, so the env var alone leaves the history in a file this test never reads
+                // ("lost echo user1"). Setting it again in the user's .zshrc (which runs after
+                // /etc/zshrc) pins it on every OS.
                 std::fs::write(
                     dir.join(".zshrc"),
-                    format!("HISTSIZE=1000\nSAVEHIST=1000\n{setting}\n"),
+                    format!(
+                        "HISTFILE='{}'\nHISTSIZE=1000\nSAVEHIST=1000\n{setting}\n",
+                        histfile.display()
+                    ),
                 )
                 .unwrap();
                 let mut command = Command::new(&path);

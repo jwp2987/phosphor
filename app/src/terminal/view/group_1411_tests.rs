@@ -275,7 +275,17 @@ fn tab_escape_f1_and_alt_letter_are_translated_by_the_sink() {
                 ("tab", "\t"),
                 ("escape", "\u{1b}"),
                 ("f1", ""),
-                ("alt-b", "b"),
+                // The escape-prefix key is `meta` on macOS (the Option-as-Meta setting; a bare
+                // Option composes a character there) and `alt` everywhere else
+                // (`meta_keystroke_to_escape_sequence`).
+                (
+                    if cfg!(target_os = "macos") {
+                        "meta-b"
+                    } else {
+                        "alt-b"
+                    },
+                    "b",
+                ),
             ] {
                 assert_eq!(
                     pane_key_down(view, keystroke, chars, ctx),
