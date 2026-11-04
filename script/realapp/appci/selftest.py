@@ -1247,6 +1247,42 @@ def editor_memory_close_trim_and_accepted_open_cost():
 
 
 @check
+def latency_known_v0117_enter_and_flood():
+    """v0.1.17 (#1606, #1653): an over-budget latency_enter overhead (macOS / Linux) or Ctrl-C-under-flood overhead is KNOWN at 0.1.17 and FAIL at 0.1.18;
+    other verdicts (regression vs baseline) and other platforms still fail."""
+    rec = {"budget_verdict": "fail", "budget_kind": "overhead", "verdict": "fail", "overhead_ms": 9.5, "overhead_se_ms": 0.4, "reference_name": "xterm",
+           "budget_ms": 2, "phosphor": {"p50": 12.0}}
+    flood = dict(rec, budget_ms=45)
+    orig_v, orig_p = cases.app_version, cases.plat
+    try:
+        for plat_, key, rc, issue, ok in (("macos", "latency_enter_overhead", rec, 1606, True), ("linux-wayland", "latency_enter_overhead", rec, 1606, True),
+                                          ("linux-x11", "latency_enter_overhead", rec, 1606, True), ("windows", "latency_enter_overhead", rec, 1606, False),
+                                          ("macos", "ctrl_c_flood", flood, 1653, True), ("linux-x11", "ctrl_c_flood", flood, 1653, True)):
+            cases.plat = lambda p=plat_: p
+            cases.app_version = lambda repo=None: "0.1.17"
+            r = cases.Result("t", "terminal")
+            cases.lat_checks(r, rc, "L", known_key=key)
+            if ok:
+                assert not r.fails and len(r.notes) == 1 and r.notes[0].startswith("KNOWN: L: Phosphor overhead 9.50") and ("ACCEPTED_FOR_RELEASE #%d v0.1.17" % issue) in r.notes[0], (plat_, key, r.fails, r.notes)
+            else:
+                assert len(r.fails) == 1 and not r.notes, (plat_, key, r.fails, r.notes)
+            cases.app_version = lambda repo=None: "0.1.18"
+            r = cases.Result("t", "terminal")
+            cases.lat_checks(r, rc, "L", known_key=key)
+            assert len(r.fails) == 1 and not r.notes, (plat_, key, r.fails, r.notes)
+        # a case that names no key never gets the exception
+        cases.plat, cases.app_version = (lambda: "linux-x11"), (lambda repo=None: "0.1.17")
+        r = cases.Result("t", "terminal")
+        cases.lat_checks(r, rec, "L")
+        assert len(r.fails) == 1, r.fails
+        for k in ("latency_enter_overhead", "ctrl_c_flood"):
+            assert cases.accepted_for_release(k, "0.1.17") and cases.accepted_for_release(k, "0.1.18") is None
+        assert cases.CTRLC_FLOOD_RELEASE_MS == "45"
+    finally:
+        cases.app_version, cases.plat = orig_v, orig_p
+
+
+@check
 def pty_bytes_decide_where_a_line_changed():
     """#1490/#1393: line_evidence says app-side vs. after-the-pty-write from the app's own pty_write_bytes, never from typed_characters alone"""
     assert cases.unescape_rust_ascii('a\\x1b[200~b\\r\\n\\"q\\\\\\x10') == 'a\x1b[200~b\r\n"q\\\x10'
