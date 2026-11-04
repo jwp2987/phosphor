@@ -4217,3 +4217,4 @@ import cases_ui  # noqa: E402,F401  (#1462: completions/history, mouse/panes/res
 import cases_robust  # noqa: E402,F401  (#1468: session restore, quit with 24 tabs, floods, soak, code editor)
 import cases_caseremote  # noqa: E402,F401  (issue #1464: remote work over ssh + per-shell variants)
 import cases_caseintl  # noqa: E402,F401  (group 8: international input, #1466)
+import cases_coverage_b  # noqa: E402,F401  (g10: CI-review coverage gaps #1542-#1548: agent pickers, settings UI/migration, state relaunch, no-autoupdate, UI-action budgets, mac editor)

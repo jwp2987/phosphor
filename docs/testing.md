@@ -955,6 +955,27 @@ an enter window, released by the latch.
 | view, Legacy and Table | `view_test.rs`: `an_interrupt_voids_a_kept_overdue_segment_and_only_the_signal_reaches_the_pty`, `a_hand_back_keeps_typed_order_across_editor_and_pty_entries`, `a_stale_prompt_hold_gate_hands_back_shell_routed_text`, `a_never_signalling_shell_hands_back_a_segment_with_an_enter`, `a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch`; model `a_preexec_turns_a_waiting_prompt_hold_into_an_enter_window` | ^C on a kept `ls\r`: the pty gets only `\x03`; `l`,`s`,editor `x`,` -a` → `lsx -a`; a stale gate's `ls` is shell-submitted; a never-signalling shell's `ls\rx` → editor `ls\nx`, nothing written; a preexec-cleared hold is released by the latch, once, in order |
 | view | `view_test.rs`: `a_signal_takes_the_keys_held_for_the_prompt_in_front_of_it` (^C voids, ^D follows), `the_queued_prompt_hold_gives_up_in_order_and_switches_itself_off`, `a_prompt_hold_cap_that_fires_while_the_queue_is_busy_still_releases_the_keys` | the give-up hands back to the editor (also from a busy queue), never writes; the never-signalling shell's next key goes by the live path |
 
+### 2.14 Coverage-gap cases (`appci/cases_coverage_b.py`, #1542-#1548, #1460, #1463)
+
+Full tier only (none is in `SMOKE`). Same rules as 3.1: exact bytes from `rec.log` / the app log's `hop=enter_begin` line, 10-25 ms/key, instant Enter, a screenshot per step.
+
+| case | gap | what it proves |
+|---|---|---|
+| `cb_agent_pickers` (agent) | #1542 slash/@ pickers | `/` and `@` change the screen (Pillow diff), Escape closes them, nothing reaches the shell, a prose line afterwards arrives in the agent input byte for byte |
+| `cb_agent_file_mention` (agent) | #1542 attachments | `@<file prefix>` lists a real file (OCR when present); Enter accepts the row without submitting to the agent or the shell; the next prose line is exact |
+| `cb_settings_ui_open` (both) | #1545 settings UI | Ctrl-, / Cmd-, opens the page (screen change, OCR), Escape closes it, typing in the pane behind is exact. Windows: not mapped |
+| `cb_settings_migration` (both) | #1545 migration | a settings.toml with unknown comment/key/table, then a truncated unparsable one: the app starts, types exactly, logs no panic and no migration/settings ERROR; `legacy_entries_kept` is a metric. The original file is restored |
+| `cb_state_relaunch` (terminal) | #1546 DB migration path | three relaunches on the same state dirs: prompt, exact typing, no migration/database ERROR in the app log, database files neither vanish nor halve |
+| `cb_no_autoupdate` (terminal) | #1547 | the whole run's app log has no updater line (the GUI updater is declined: DECLINED.md `FeatureFlag::Autoupdate`, `script/check_no_autoupdate`) |
+| `cb_ui_action_latency` (terminal) | #1548 | new tab and tab switch seen from screenshots: bound `APPCI_UI_ACTION_MAX_S` (1.5 s, first guess), numbers as metrics. An UPPER bound on the app's time (each screenshot costs 50-300 ms), not a 4 ms proof |
+| `cb_editor_mac` (mac) | #1544 | edit, Cmd-S, undo, Cmd-S on a file handed over by `open -a`; disk byte-exact; nothing at the shell. Runs last (no keyboard pane-close on macOS; run.py relaunches if the pane is not the shell) |
+
+Pure helpers (`legacy_settings`, `corrupt_settings`, `startup_log_problems`, `autoupdate_lines`, `picker_verdict`) are covered by `selftest.py` (`coverage_b_pure_helpers`).
+
+**Already covered, so not duplicated here.** #1460 (markdown/mermaid): sections 2.10 (parser corpus + snapshots, mermaid corpus, bench, fuzz targets) and the `md_viewer*` cases. #1463: `agent_stream_cancel`, `agent_approval`, `routing_table`, `agent_input_exact`, `agent_mode_switch` in `cases_caseagent.py`. #1543 is the same gap as #1460 (pixel-level diagram rendering stays the documented gap in 2.10). #1544 Linux: `editor_edit_save`, `editor_paste`, `editor_memory_7mb`; Windows has no verified file hand-over.
+
+**Recorded gaps (need an owner decision or a fixture, not code):** upgrade over a previous install, uninstall, a `phosphor://` URL end to end (#1546): needs a previous build's installer/data directory as a fixture on each platform and a clean-VM step, today manual (5.4). Auto-update against a real release (#1547): the GUI updater is off by decision; its `SHA256SUMS` verification is unit-tested in `app/src/autoupdate/gitlab_tests.rs` and cannot meet a real release until the release pipeline has run end to end. Key-to-paint on Linux/Windows and the 4 ms UI-work line (#1548): no read-back tool exists there and the app log floor is 8 ms; a log-floor change is an app change, not a test.
+
 ## 3. Real-app testing
 
 Automated tests do not catch lag, lost keys or broken flows; the owner feels those. Every release candidate
