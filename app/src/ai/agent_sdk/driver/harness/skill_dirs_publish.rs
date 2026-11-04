@@ -266,7 +266,9 @@ fn skill_root_is_safe_to_publish_into(skill_root: &Path, working_dir: &Path) -> 
         );
         return false;
     }
-    if dirs::home_dir()
+    // `home_dir_for_claude_config` is `dirs::home_dir`, except that a test
+    // build honours `HOME` (which `dirs` ignores on Windows).
+    if super::claude_transcript::home_dir_for_claude_config()
         .and_then(|home| home.canonicalize().ok())
         .is_some_and(|home| home == canonical_working_dir)
     {
@@ -556,9 +558,118 @@ fn create_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(source, target)
 }
 
+/// A directory symlink, or — when Windows refuses one — a directory junction.
+///
+/// Creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`, which
+/// an ordinary user only has with Developer Mode on; without it
+/// `symlink_dir` fails with `ERROR_PRIVILEGE_NOT_HELD` and no skill would
+/// ever be published. A junction needs no privilege, and is what the
+/// classification above already understands: `symlink_metadata` reports it
+/// as a symlink (it is a name-surrogate reparse point), `read_link` returns
+/// its destination and `canonicalize` resolves through it, so the ownership
+/// and safety checks treat a junction exactly like a symlink.
 #[cfg(windows)]
 fn create_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(source, target)
+    /// `ERROR_PRIVILEGE_NOT_HELD`.
+    const ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+    match std::os::windows::fs::symlink_dir(source, target) {
+        Err(err) if err.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD) => {
+            create_junction(source, target)
+        }
+        result => result,
+    }
+}
+
+/// Create a directory junction at `target` pointing at `source`.
+///
+/// A junction always stores an absolute local path, so a relative `source`
+/// is resolved against `target`'s own directory first, as a symlink's
+/// relative destination would be. A UNC destination cannot be a junction and
+/// is refused.
+#[cfg(windows)]
+fn create_junction(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+
+    const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
+    const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let joined;
+    let source: &Path = if source.is_absolute() {
+        source
+    } else {
+        joined = target.parent().unwrap_or(Path::new("")).join(source);
+        &joined
+    };
+    let absolute = std::path::absolute(source)?;
+    let destination = dunce::simplified(&absolute);
+    let print_name: Vec<u16> = destination.as_os_str().encode_wide().collect();
+    if print_name.starts_with(&[u16::from(b'\\'), u16::from(b'\\')]) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("a junction cannot point at {}", destination.display()),
+        ));
+    }
+    let mut substitute_name: Vec<u16> = r"\??\".encode_utf16().collect();
+    substitute_name.extend_from_slice(&print_name);
+
+    // REPARSE_DATA_BUFFER, MountPointReparseBuffer variant: tag, data length,
+    // reserved, then the substitute/print name offsets and lengths (in
+    // bytes, without the terminating NUL), then both NUL-terminated names.
+    let too_long = || Error::new(ErrorKind::InvalidInput, "junction destination is too long");
+    let substitute_bytes = u16::try_from(substitute_name.len() * 2).map_err(|_| too_long())?;
+    let print_bytes = u16::try_from(print_name.len() * 2).map_err(|_| too_long())?;
+    let data_length = u16::try_from(8 + (substitute_name.len() + print_name.len() + 2) * 2)
+        .map_err(|_| too_long())?;
+    let mut buffer: Vec<u16> = vec![
+        (IO_REPARSE_TAG_MOUNT_POINT & 0xFFFF) as u16,
+        (IO_REPARSE_TAG_MOUNT_POINT >> 16) as u16,
+        data_length,
+        0,
+        0,
+        substitute_bytes,
+        substitute_bytes + 2,
+        print_bytes,
+    ];
+    buffer.extend_from_slice(&substitute_name);
+    buffer.push(0);
+    buffer.extend_from_slice(&print_name);
+    buffer.push(0);
+    let buffer_bytes = u32::try_from(buffer.len() * 2).map_err(|_| too_long())?;
+
+    fs::create_dir(target)?;
+    let set_reparse_point = || -> std::io::Result<()> {
+        let dir = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(target)?;
+        // SAFETY: `dir` is an open handle for the duration of the call, and
+        // `buffer` is a fully initialised REPARSE_DATA_BUFFER of
+        // `buffer_bytes` bytes; no output buffer or OVERLAPPED is passed.
+        unsafe {
+            windows::Win32::System::IO::DeviceIoControl(
+                windows::Win32::Foundation::HANDLE(dir.as_raw_handle()),
+                FSCTL_SET_REPARSE_POINT,
+                Some(buffer.as_ptr().cast()),
+                buffer_bytes,
+                None,
+                0,
+                None,
+                None,
+            )
+        }
+        .map_err(|err| Error::from_raw_os_error(err.code().0 & 0xFFFF))
+    };
+    if let Err(err) = set_reparse_point() {
+        // Remove the empty directory this call created; never anything else.
+        let _ = fs::remove_dir(target);
+        return Err(err);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
