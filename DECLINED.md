@@ -2809,10 +2809,17 @@ off): the window becomes an unmanaged one and an ownership seen meanwhile applie
 keys back as text (#1292). Password and passphrase reads keep the termios guard: while ssh owns the
 tty and it is canonical with echo off, what is held is discarded and the keys typed go to ssh
 (`ssh_wrapper_secret_pass_through`, a `tcgetattr` fact, never screen text); afterwards keys are held
-again. Known limit, not screen-guessed: an echo-ON question during the master login (the host-key
-`yes/no` of a first connection, an echoing OTP) is not a secret read, so its answer stays held until
-the window's 15 s give-up returns it to the editor as text; then typing reaches ssh. Unmanaged ssh
-(no announcement) and Windows (`TTY_OWNED_AT_ARM`) are unchanged.
+again. The host-key `yes/no` of a first connection is an echo-ON question, not a secret read, so
+its answer would stay held; the owner chose "master in strict host-key mode, retry" (2026-11-04):
+when the wrapper's one `ssh -G` reports the default `stricthostkeychecking ask`, the master runs
+with `StrictHostKeyChecking=yes` (not `BatchMode`: password and passphrase prompts still happen
+there; a user's `no` / `accept-new` / `yes` is left alone). If that master fails with 255 and the
+host is not in the known_hosts files `ssh -G` names (`ssh-keygen -F` under its HostKeyAlias or
+HostName, `[host]:port` off port 22; never ssh's message), the wrapper prints `PlainSSHFallback`
+and runs the user's plain ssh ONCE, where the question is asked and keys pass through as in plain
+ssh; a known host (auth failure, network) returns the status as before and never prompts again
+(#1626). An echoing OTP during the master login is still held until the 15 s give-up returns it as
+text. Unmanaged ssh (no announcement) and Windows (`TTY_OWNED_AT_ARM`) are unchanged.
 
 **Windows: ssh.exe does not flush typeahead before a password prompt; accepted (owner,
 2026-11-04: "Accept, note it").** Under the same plain-terminal rule, text typed on Windows before

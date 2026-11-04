@@ -41,6 +41,16 @@ ssh call are recorded in one ordered log:
     -> `PlainSSHFallback` immediately before each plain ssh, never `ManagedSSHSessionStarting`;
   * auth failure / Ctrl-C          -> no hook at all (the block's end hands the keys back).
 
+#1641 host-key retry (owner: "master in strict host-key mode, retry"): when `ssh -G` reports the
+default `stricthostkeychecking ask`, the master runs with StrictHostKeyChecking=yes, so a host-key
+yes/no never happens while the app holds the keys:
+
+  * unknown host (not in the known_hosts files `ssh -G` names)  -> the master fails, then ONE
+    plain ssh with exactly the user's arguments, `PlainSSHFallback` right before it;
+  * known host + auth failure                                   -> exactly one ssh call, no hook;
+  * the user's config says accept-new                           -> no strict override, one call;
+  * login succeeds under `ask`                                  -> the master carries the override.
+
 Needs python3 and at least one of bash/zsh/fish (missing shells are SKIPPED). No cargo.
 Usage: script/test_ssh_auth_once
 """
@@ -65,6 +75,8 @@ case " $* " in
   *" -G "*) printf 'user u\nhostname h\nport 22\n'
             [ -n "$p" ] && printf 'controlpath %s\n' "$p"
             [ "$MASTER" = remotecommand ] && printf 'remotecommand uptime\n'
+            [ -n "$STRICT" ] && printf 'stricthostkeychecking %s\n' "$STRICT"
+            [ -n "$KH" ] && printf 'userknownhostsfile %s\nglobalknownhostsfile /nonexistent/known_hosts\n' "$KH"
             exit 0;;
 esac
 printf '%s\n' "$*" >> "$CALLS"
@@ -76,6 +88,7 @@ case " $* " in
   *" -N "*)
     case "$MASTER" in
       authfail) echo "user@host: Permission denied (publickey,password)." >&2; exit 255;;
+      hostunknown) echo "Host key verification failed." >&2; exit 255;;
       interrupt) exit 130;;
       muxfail) python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$p"
                echo "Failed to connect to new control master" >&2; exit 255;;
@@ -107,6 +120,16 @@ CASES = [
     ("remotecommand", False, 0, 1, "", "fallback"),
     ("nonposix", False, 0, None, "", "fallback"),
     ("msys2", False, 0, 1, "", "fallback"),
+]
+
+# #1641 host-key retry: (master behaviour, ssh -G stricthostkeychecking, host in known_hosts,
+# expected status, expected connecting ssh calls (None: `owns_master`), expected stderr, verdict,
+# whether the master must carry StrictHostKeyChecking=yes)
+HOSTKEY_CASES = [
+    ("hostunknown", "ask", False, 0, 2, "Host key verification failed.\n", "fallback", True),
+    ("authfail", "ask", True, 255, 1, "user@host: Permission denied (publickey,password).\n", None, True),
+    ("authfail", "accept-new", False, 255, 1, "user@host: Permission denied (publickey,password).\n", None, False),
+    ("ok", "ask", True, 0, None, "", "managed", True),
 ]
 
 MANAGED = "ManagedSSHSessionStarting"
@@ -165,7 +188,7 @@ def owns_master(made):
     return problems
 
 
-def run(shell, function, master, isolated):
+def run(shell, function, master, isolated, strict="", known_line=None):
     d = tempfile.mkdtemp(prefix="ssh_auth_once_")
     try:
         ssh = os.path.join(d, "ssh")
@@ -204,6 +227,12 @@ def run(shell, function, master, isolated):
         env["CALLS"] = calls
         env["EVENTS"] = events
         env["MASTER"] = master
+        env["STRICT"] = strict
+        env["KH"] = ""
+        if known_line is not None:
+            kh = os.path.join(d, "known_hosts")
+            open(kh, "w").write(known_line)
+            env["KH"] = kh
         r = subprocess.run(argv + [script], env=env, capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, timeout=60)
         made = open(calls).read().splitlines() if os.path.exists(calls) else []
@@ -248,6 +277,44 @@ def main():
             if err != want_err or out:
                 problems.append("output changed: stdout %r stderr %r" % (out, err))
             label = master + (" ($HOME is not the passwd home)" if isolated else "")
+            print("%s %s: %s" % ("FAIL" if problems else "ok  ", shell, label))
+            for p in problems:
+                print("     " + p)
+            failures += bool(problems)
+        # #1641 host-key retry. A real known_hosts line needs ssh-keygen (the wrapper's own lookup).
+        if not shutil.which("ssh-keygen"):
+            print("SKIPPED %s host-key cases (ssh-keygen not installed)" % shell)
+            continue
+        k = tempfile.mkdtemp(prefix="ssh_auth_once_key_")
+        try:
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", os.path.join(k, "id")],
+                           check=True, capture_output=True, timeout=60)
+            pub = open(os.path.join(k, "id.pub")).read().split()
+        finally:
+            shutil.rmtree(k)
+        for master, strict, known, want_rc, want_calls, want_err, verdict, overridden in HOSTKEY_CASES:
+            ran += 1
+            line = "%s %s %s\n" % ("h" if known else "other-host", pub[0], pub[1])
+            rc, made, logged, out, err = run(shell, function, master, False, strict, line)
+            problems = []
+            if rc != want_rc:
+                problems.append("status %d, want %d" % (rc, want_rc))
+            if want_calls is None:
+                problems += owns_master(made)
+            elif len(made) != want_calls:
+                problems.append("%d connecting ssh calls, want %d: %r" % (len(made), want_calls, [c[:90] for c in made]))
+            elif want_calls == 2 and made[1] != "-p 22 user@host":
+                problems.append("the retry must be the user's plain ssh, exactly their arguments: %r" % made[1])
+            if not made or " -N " not in " %s " % made[0]:
+                problems.append("first call is not the master: %r" % made[:1])
+            elif ("StrictHostKeyChecking=yes" in made[0]) != overridden:
+                problems.append("master %s carry StrictHostKeyChecking=yes: %r" % ("must" if overridden else "must NOT", made[0][:120]))
+            if any("StrictHostKeyChecking" in c for c in made[1:]):
+                problems.append("only the master may carry the strict override: %r" % made[1:])
+            if err != want_err or out:
+                problems.append("output changed: stdout %r stderr %r" % (out, err))
+            problems += verdict_problems(master, verdict, logged)
+            label = "host key: %s, %s, %s" % (master, strict, "known" if known else "unknown")
             print("%s %s: %s" % ("FAIL" if problems else "ok  ", shell, label))
             for p in problems:
                 print("     " + p)

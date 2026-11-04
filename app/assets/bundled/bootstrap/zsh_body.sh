@@ -1369,6 +1369,19 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
           if [[ "${WARP_SSH_OBSCURE_KEYSTROKE_TIMING:-1}" == "0" && $'\n'"$warp_ssh_g"$'\n' == *$'\nobscurekeystroketiming yes\n'* ]]; then
               warp_ipqos_args+=(-o ObscureKeystrokeTiming=no)
           fi
+          # #1641 (owner: "master in strict host-key mode, retry"): a host-key yes/no during the
+          # master login is not a secret read, so its answer would stay held. The master therefore runs
+          # with StrictHostKeyChecking=yes, ONLY when this one `ssh -G` reports ssh's default `ask` (a user's
+          # no / accept-new / yes, in config or on the command line, always wins). Not BatchMode: password
+          # and passphrase prompts still happen in the master. An unknown host makes it fail, and the plain
+          # ssh below asks the question instead.
+          local -a warp_master_args
+          warp_master_args=()
+          local warp_strict_added=0
+          if [[ $'\n'"$warp_ssh_g"$'\n' == *$'\nstricthostkeychecking ask\n'* ]]; then
+              warp_master_args=(-o StrictHostKeyChecking=yes)
+              warp_strict_added=1
+          fi
 
           # #1035: decide AFTER connecting, with ONE authentication. The bootstrap below is a POSIX
           # shell script, which a Windows OpenSSH server (default shell cmd.exe or PowerShell)
@@ -1404,7 +1417,7 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
                       return
                   fi
               fi
-              command ssh "${warp_ipqos_args[@]}" -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f "${@:1}"
+              command ssh "${warp_ipqos_args[@]}" "${warp_master_args[@]}" -o ControlMaster=yes -o ControlPath="$control_path" -o ControlPersist=10 -o ClearAllForwardings=yes -N -f "${@:1}"
               local warp_master_rc=$?
               if [[ $warp_master_rc -ne 0 ]]; then
                   # #1626: plain ssh asks for credentials ONCE. The master step was the user's one
@@ -1415,6 +1428,14 @@ if [[ -z ${WARP_BOOTSTRAPPED-} ]]; then
                   # the user's plain ssh runs. -N: no remote command ever ran, none runs twice.
                   if [[ -e "${control_path/#\~/$HOME}" || -L "${control_path/#\~/$HOME}" ]]; then
                       # #1641: the plain ssh runs, not the managed session: the app releases held keys when it owns the tty.
+                      warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
+                      command ssh "${@:1}"
+                      return
+                  fi
+                  # #1641: the master refused an UNKNOWN host (strict mode was ours): run the user's plain ssh
+                  # ONCE, where the yes/no is asked and the keys pass through. Decided from known_hosts
+                  # (`ssh-keygen -F`), never from ssh's message. A known host (auth failure, network) returns.
+                  if [[ $warp_strict_added -eq 1 && $warp_master_rc -eq 255 ]] && ! warp_ssh_host_is_known "$warp_ssh_g"; then
                       warp_send_json_message "{\"hook\": \"PlainSSHFallback\", \"value\": {\"session_id\": $WARP_SESSION_ID}}"
                       command ssh "${@:1}"
                       return
@@ -1643,6 +1664,35 @@ esac
       }
 
       # Ends the Phosphor-owned master at "$1".
+      # #1641: 0 when the destination of the `ssh -G` output "$1" is in a known_hosts file it names
+      # (userknownhostsfile, globalknownhostsfile), under its HostKeyAlias or HostName, as
+      # `[name]:port` off port 22: what ssh itself looks up. Hashed files work (`ssh-keygen -F`).
+      # Without ssh-keygen or a name the answer is "known", so nothing is retried.
+      function warp_ssh_host_is_known() {
+          command -v ssh-keygen >/dev/null 2>&1 || return 0
+          local -a lines files
+          lines=("${(@f)1}")
+          local name port
+          # Unquoted: in double quotes the array would be joined before the :# filter.
+          name=${${(M)lines:#hostkeyalias *}#hostkeyalias }
+          if [[ -z "$name" || "$name" == none ]]; then
+              name=${${(M)lines:#hostname *}#hostname }
+          fi
+          [[ -n "$name" ]] || return 0
+          port=${${(M)lines:#port *}#port }
+          if [[ -n "$port" && "$port" != 22 ]]; then
+              name="[$name]:$port"
+          fi
+          files=(${=${(M)lines:#(user|global)knownhostsfile *}#*knownhostsfile })
+          local f
+          for f in "${files[@]}"; do
+              f="${f/#\~/$HOME}"
+              [[ -r "$f" ]] || continue
+              command ssh-keygen -F "$name" -f "$f" >/dev/null 2>&1 && return 0
+          done
+          return 1
+      }
+
       function warp_ssh_stop_master() {
           warp_ssh_mux_command exit "$1" || :
           return 0
