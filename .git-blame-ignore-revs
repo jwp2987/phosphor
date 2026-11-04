@@ -1,0 +1,4 @@
+# Formatting-only commits. `git config blame.ignoreRevsFile .git-blame-ignore-revs`
+# makes `git blame` skip them (GitLab honours this file automatically).
+# style: rustfmt the whole tree (formatting only, no code change)
+7e9d0d6064e9d2cc7af87d86600237eb89e7c48b

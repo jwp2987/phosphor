@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Guard: every tracked .rs file is rustfmt-clean under the pinned .rustfmt.toml.
+#
+# The tree was made rustfmt-clean in one formatting-only commit (listed in
+# .git-blame-ignore-revs) alongside the Rust 1.99 upgrade. Before that the repo
+# had never been clean, so precheck could only check that changed files parsed
+# and every edit risked dragging in unrelated reformatting. This keeps it clean.
+#
+# Excluded, and why:
+#   lib/                                  vendored upstream code (rust-genai has its own rustfmt.toml)
+#   crates/*/test_data/, */tests/data/    input data for tests, not code
+#
+# ALWAYS --config-path, never --edition, so .rustfmt.toml stays the one source of truth.
+# Fix a failure with: rustfmt --config-path .rustfmt.toml <file>
+#
+# Exit 0: clean. Exit 1: lists each file that is not formatted or does not parse.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+command -v rustfmt >/dev/null || { echo "ERROR rustfmt missing; it is a component of the pinned toolchain" >&2; exit 1; }
+
+mapfile -t files < <(git ls-files '*.rs' | grep -vE '^lib/|^crates/[^/]+/test_data/|^crates/[^/]+/tests/data/')
+((${#files[@]} > 0)) || { echo "ERROR no .rs files found; the guard is not looking where it thinks" >&2; exit 1; }
+
+# -l lists files whose formatting differs; parse errors go to stderr as `error...`.
+out="$(printf '%s\0' "${files[@]}" | xargs -0 -n 50 -P 4 rustfmt --check -l --config-path .rustfmt.toml 2>&1)"
+bad="$(grep -vE '^\s*$' <<<"$out" | sort -u)"
+if [[ -n "$bad" ]]; then
+    echo "rustfmt: these files are not formatted (or do not parse):"
+    sed 's/^/  /' <<<"$bad"
+    echo "fix: rustfmt --config-path .rustfmt.toml <file>"
+    exit 1
+fi
+echo "rustfmt: ${#files[@]} files clean"
