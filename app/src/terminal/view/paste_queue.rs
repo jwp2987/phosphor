@@ -47,9 +47,9 @@ use crate::terminal::input_queue::shadow::{DestClass, note_leaf as note_shadow_l
 use crate::terminal::input_queue::table::{Class, Outcome};
 use crate::terminal::input_queue::{
     Deferred, DeliverOutcome, DestFacts, Destination, DestinationMode, DiscardReason, EntryKind,
-    FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, Host, InputEntry, Origin, PaneQueue,
-    PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode, is_editor_paste_id,
-    is_pty_entry, trace,
+    FollowUps, GateKeysThen, GateKind, GateSpec, GateToken, HELD_KEY, HELD_SEQ, Host, InputEntry,
+    Origin, PaneQueue, PasteOwner, PowershellKeysThen, SignalKind, Stamp, destination_mode,
+    is_editor_paste_id, is_pty_entry, trace,
 };
 use crate::terminal::model::typeahead_handoff::{
     CONPTY_PROMPT_HOLD_GIVE_UP, PromptHoldCap, YoungHoldEnd, YoungHoldEvidence, YoungHoldExpiry,
@@ -1807,9 +1807,16 @@ impl TerminalView {
         entry: InputEntry,
         ctx: &mut ViewContext<Self>,
     ) -> Option<Vec<u8>> {
+        // #1628 review: the same for a key or control sequence the table held behind the paste
+        // (`offer_arrival_to_queue`: Backspace, arrows, ...), which `legacy` holds as pty bytes.
+        // The ssh connect hold's typed text, pastes and signals keep their own path below.
         match &entry.kind {
             EntryKind::Enter => return Some(b"\r".to_vec()),
             EntryKind::Text(text) => return Some(text.clone().into_bytes()),
+            EntryKind::Held {
+                class: HELD_KEY | HELD_SEQ,
+                text,
+            } => return Some(text.clone().into_bytes()),
             _ => {}
         }
         if !is_pty_entry(&entry.kind) {
@@ -1930,6 +1937,15 @@ impl TerminalView {
                     .payloads
                     .get(paste_id)
                     .is_none_or(|payload| payload.iter().any(is_enter)),
+                // #1628 review: the table's forms of the same keys (an Enter held behind a paste
+                // read, text and keys swept in with it) count as `legacy`'s pty bytes do, so the
+                // cap decides the same in both modes.
+                EntryKind::Enter => true,
+                EntryKind::Text(text) => text.bytes().any(|byte| is_enter(&byte)),
+                EntryKind::Held {
+                    class: HELD_KEY | HELD_SEQ,
+                    text,
+                } => text.bytes().any(|byte| is_enter(&byte)),
                 _ => false,
             })
     }

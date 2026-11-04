@@ -14888,12 +14888,23 @@ fn typeahead_handoff_not_engaged_releases_the_keys_waiting_for_the_route() {
     })
 }
 
+/// What follows the Enter's own replay request in a #1630 scenario.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterRunEnter {
+    /// The controller takes the command (its event, simulated): the keys follow it.
+    CommandTaken,
+    /// No event: the deferred settle alone releases the keys (the facts say the pty takes them).
+    NoEvent,
+    /// No event and the pty does not take keys: the 300 ms cap hands them back to the editor.
+    PtyNotReady,
+}
+
 /// #1630: the Enter's own replay request arrives in the flush that carries its command to the pty
 /// controller, ahead of it. Even when the pane's facts already say the pty takes keys (here a
 /// block that is running; at a PowerShell start it was the bootstrap's), that request does not
-/// release the keys typed behind the Enter: they are routed once the controller has taken the
-/// command (its event, simulated here), so they reach the pty after the command, in order.
-fn keys_behind_a_run_enter_follow_its_command_in(mode: DestMode) {
+/// release the keys typed behind the Enter in that flush: they are routed after it, so they reach
+/// the pty after the command, in order.
+fn keys_behind_a_run_enter_in(mode: DestMode, after: AfterRunEnter) {
     App::test((), move |mut app| async move {
         let _mode = force_dest_mode(mode);
         initialize_app_for_terminal_view(&mut app);
@@ -14901,19 +14912,20 @@ fn keys_behind_a_run_enter_follow_its_command_in(mode: DestMode) {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
-            register_local_session_for_ssh_test(view, ctx);
-            view.model
-                .lock()
-                .simulate_long_running_block("sleep 100", "");
+            if after != AfterRunEnter::PtyNotReady {
+                register_local_session_for_ssh_test(view, ctx);
+                view.model
+                    .lock()
+                    .simulate_long_running_block("sleep 100", "");
+            }
             view.input.update(ctx, |input, ctx| {
-                input.open_submitted_enter_gate_for_test(
-                    vec![
-                        AfterEnterInput::Text("ls".to_string()),
-                        AfterEnterInput::Enter,
-                    ],
-                    true,
-                    ctx,
-                )
+                input.clear_buffer_and_reset_undo_stack(ctx);
+                // With no pty to take it, only text: the give-up hands it back as it was typed.
+                let mut queued = vec![AfterEnterInput::Text("ls".to_string())];
+                if after != AfterRunEnter::PtyNotReady {
+                    queued.push(AfterEnterInput::Enter);
+                }
+                input.open_submitted_enter_gate_for_test(queued, true, ctx)
             });
             // The Enter has run: its replay request, in the flush its command is still in.
             view.replay_after_deferred_enter(ctx);
@@ -14921,49 +14933,85 @@ fn keys_behind_a_run_enter_follow_its_command_in(mode: DestMode) {
         terminal.read(&app, |view, ctx| {
             assert!(
                 view.input.as_ref(ctx).enter_queue_awaits_pty(),
-                "{mode:?}: the Enter's own request does not release the keys behind it"
+                "{mode:?} {after:?}: the Enter's own request does not release the keys in its flush"
             );
         });
         assert!(
             pty_writes.borrow().is_empty(),
-            "{mode:?}: nothing ahead of the command: {:?}",
+            "{mode:?} {after:?}: nothing ahead of the command: {:?}",
             pty_writes.borrow()
         );
-        // The controller takes the command (written, or parked behind the line editor): its event.
-        terminal.update(&mut app, |view, ctx| {
-            pty_writes.borrow_mut().push(b"<command>".to_vec());
-            view.settle_enter_queue(ctx);
-        });
-        for _ in 0..200 {
+        if after == AfterRunEnter::CommandTaken {
+            // The controller takes the command (written, or parked behind the line editor).
+            terminal.update(&mut app, |view, ctx| {
+                pty_writes.borrow_mut().push(b"<command>".to_vec());
+                view.settle_enter_queue(ctx);
+            });
+        }
+        for _ in 0..400 {
+            let done = terminal.read(&app, |view, ctx| {
+                !view.input.as_ref(ctx).enter_queue_holds_keys(ctx)
+            });
             let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
-            if written.ends_with(b"\r") {
+            if done && (after == AfterRunEnter::PtyNotReady || written.ends_with(b"\r")) {
                 break;
             }
             warpui::r#async::Timer::after(std::time::Duration::from_millis(5)).await;
         }
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
+        let expected = match after {
+            AfterRunEnter::CommandTaken => "<command>ls\r",
+            AfterRunEnter::NoEvent => "ls\r",
+            AfterRunEnter::PtyNotReady => "",
+        };
         assert_eq!(
             String::from_utf8_lossy(&written),
-            "<command>ls\r",
-            "{mode:?}: the command first, then the keys typed behind its Enter, once, in order"
+            expected,
+            "{mode:?} {after:?}: once, in order, after the command; a give-up writes nothing"
         );
         terminal.read(&app, |view, ctx| {
+            let input = view.input.as_ref(ctx);
             assert!(
-                !view.input.as_ref(ctx).enter_queue_holds_keys(ctx),
-                "{mode:?}: released"
+                !input.enter_queue_holds_keys(ctx),
+                "{mode:?} {after:?}: released"
             );
+            if after == AfterRunEnter::PtyNotReady {
+                assert_eq!(
+                    input.buffer_text(ctx),
+                    "ls",
+                    "{mode:?}: the cap handed the keys back to the editor"
+                );
+            }
         });
     })
 }
 
 #[test]
 fn keys_behind_a_run_enter_follow_its_command_legacy() {
-    keys_behind_a_run_enter_follow_its_command_in(DestMode::Legacy);
+    keys_behind_a_run_enter_in(DestMode::Legacy, AfterRunEnter::CommandTaken);
 }
 
 #[test]
 fn keys_behind_a_run_enter_follow_its_command_table() {
-    keys_behind_a_run_enter_follow_its_command_in(DestMode::Table);
+    keys_behind_a_run_enter_in(DestMode::Table, AfterRunEnter::CommandTaken);
+}
+
+/// #1630 review: with no event at all, the deferred settle alone releases the keys when the pty
+/// takes them.
+#[test]
+fn keys_behind_a_run_enter_are_released_by_the_deferred_settle_alone_in_both_modes() {
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        keys_behind_a_run_enter_in(mode, AfterRunEnter::NoEvent);
+    }
+}
+
+/// #1630 review: the pty never takes the command and no event comes: the 300 ms cap hands the keys
+/// back to the editor and nothing reaches the pty.
+#[test]
+fn keys_behind_a_run_enter_go_back_to_the_editor_at_the_cap_in_both_modes() {
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        keys_behind_a_run_enter_in(mode, AfterRunEnter::PtyNotReady);
+    }
 }
 
 /// Ctrl-D at the prompt with nothing typed would exit the shell; it is not written.
@@ -24164,14 +24212,34 @@ fn a_hold_whose_wait_a_preexec_cleared_is_released_by_the_latch() {
     }
 }
 
-/// #1628: a pasted command, an Enter pressed while the clipboard was still being read, then a
-/// second paste and Enter, all held for the prompt (ConPTY). The Enter behind the first paste is
-/// queued in the destination mode's own form (the table offers an `Enter` entry, the legacy chain
-/// pty bytes) and is swept under the prompt hold's gate with the paste in front of it; at the
-/// line editor's signal it goes out once, in its place: two commands, never one merged line.
-/// `direct` offers the table's `Enter` entry itself, so the release is covered whatever the
-/// table decided for the keydown.
-fn paste_enter_during_read_then_paste_enter_in(mode: DestMode, direct: bool) {
+/// A key pressed while a terminal paste is still being read (#1628).
+#[derive(Clone, Copy, Debug)]
+enum KeyDuringRead {
+    /// Enter on the terminal, in the destination mode's own form (the table offers an `Enter`
+    /// entry, the legacy chain pty bytes).
+    Enter,
+    /// The table's `Enter` entry offered directly, whatever the table decided for the keydown.
+    EnterEntry,
+    /// Backspace on the terminal (the table holds it as a `Held` key).
+    Backspace,
+    /// Text typed on the terminal.
+    Typed(&'static str),
+}
+
+/// A pasted text and the keys pressed while its read was in flight.
+type PasteWithKeys = (&'static str, &'static [KeyDuringRead]);
+
+/// #1628: pastes, each with keys pressed while the clipboard was still being read, all held for
+/// the prompt (ConPTY). The keys behind the first paste are swept with it under the prompt hold's
+/// gate; at the line editor's signal everything goes out once, in its place, as `expected`. With
+/// `cap_first` the hold's cap fires (twice) before the signal: a segment with an Enter stays held
+/// in both modes and nothing reaches the pty or the editor until the signal.
+fn pastes_held_for_the_prompt_in(
+    mode: DestMode,
+    pastes: &'static [PasteWithKeys],
+    cap_first: bool,
+    expected: &'static [u8],
+) {
     App::test((), move |mut app| async move {
         let _mode = force_dest_mode(mode);
         initialize_app_for_terminal_view(&mut app);
@@ -24179,8 +24247,13 @@ fn paste_enter_during_read_then_paste_enter_in(mode: DestMode, direct: bool) {
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes = collect_pty_writes(&mut app, &terminal);
         terminal.update(&mut app, |view, ctx| {
-            conpty_prompt_hold_setup(view);
-            for line in ["echo a", "echo b"] {
+            if cap_first {
+                // A shell that has signalled before: its cap keeps a segment with an Enter.
+                conpty_signalling_prompt_hold_setup(view);
+            } else {
+                conpty_prompt_hold_setup(view);
+            }
+            for &(line, keys) in pastes {
                 let id = view.paste_queue.next_paste_id();
                 let queue = view.paste_queue.queue.clone();
                 {
@@ -24198,52 +24271,127 @@ fn paste_enter_during_read_then_paste_enter_in(mode: DestMode, direct: bool) {
                         .with_cap(None),
                     );
                 }
-                // The Enter arrives while the clipboard is being read.
-                if direct {
-                    let mut host = paste_queue::PtyQueueHost::new(view, ctx);
-                    queue
-                        .borrow_mut()
-                        .offer(&mut host, crate::terminal::input_queue::EntryKind::Enter);
-                } else {
-                    view.keydown_on_terminal("\r", ctx);
+                for key in keys {
+                    match *key {
+                        KeyDuringRead::Enter => view.keydown_on_terminal("\r", ctx),
+                        KeyDuringRead::EnterEntry => {
+                            let mut host = paste_queue::PtyQueueHost::new(view, ctx);
+                            queue
+                                .borrow_mut()
+                                .offer(&mut host, crate::terminal::input_queue::EntryKind::Enter);
+                        }
+                        KeyDuringRead::Backspace => view.keydown_on_terminal("\u{7f}", ctx),
+                        KeyDuringRead::Typed(text) => view.typed_characters_on_terminal(text, ctx),
+                    }
                 }
                 view.finish_queued_background_paste(id, Ok(line.as_bytes().to_vec()), ctx);
             }
-            assert!(
-                pty_writes.borrow().is_empty(),
-                "{mode:?} direct={direct}: held for the prompt: {:?}",
-                pty_writes.borrow()
-            );
-            assert!(prompt_gate_open(view), "{mode:?} direct={direct}");
+            assert!(prompt_gate_open(view), "{mode:?}: held for the prompt");
+            if cap_first {
+                let token = view
+                    .paste_queue
+                    .queue
+                    .borrow()
+                    .gates()
+                    .iter()
+                    .find(|gate| {
+                        gate.kind == crate::terminal::input_queue::GateKind::LineEditorActive
+                    })
+                    .map(|gate| gate.token)
+                    .expect("the prompt hold's gate");
+                // The cap fires, and fires again after its re-arm: nothing moves.
+                view.on_paste_queue_give_up(token, ctx);
+                view.on_paste_queue_give_up(token, ctx);
+                assert!(prompt_gate_open(view), "{mode:?}: kept past the cap");
+                assert_eq!(
+                    view.input.as_ref(ctx).buffer_text(ctx),
+                    "",
+                    "{mode:?}: nothing handed back to the editor"
+                );
+            }
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "{mode:?}: nothing written before the signal: {:?}",
+            pty_writes.borrow()
+        );
+        terminal.update(&mut app, |view, ctx| {
             line_editor_signal(view, ctx);
             assert!(
                 view.paste_queue.queue.borrow().is_idle(),
-                "{mode:?} direct={direct}: everything released"
+                "{mode:?}: everything released"
             );
         });
         let written: Vec<u8> = pty_writes.borrow().iter().flatten().copied().collect();
         assert_eq!(
             String::from_utf8_lossy(&written),
-            "echo a\recho b\r",
-            "{mode:?} direct={direct}: each command once, in order"
+            String::from_utf8_lossy(expected),
+            "{mode:?}: each key once, in order"
         );
     })
 }
 
+const PASTE_ENTER_PASTE_ENTER: &[PasteWithKeys] = &[
+    ("echo a", &[KeyDuringRead::Enter]),
+    ("echo b", &[KeyDuringRead::Enter]),
+];
+
 #[test]
 fn an_enter_held_behind_a_paste_read_is_released_with_the_prompt_hold_legacy() {
-    paste_enter_during_read_then_paste_enter_in(DestMode::Legacy, false);
+    pastes_held_for_the_prompt_in(
+        DestMode::Legacy,
+        PASTE_ENTER_PASTE_ENTER,
+        false,
+        b"echo a\recho b\r",
+    );
 }
 
 #[test]
 fn an_enter_held_behind_a_paste_read_is_released_with_the_prompt_hold_table() {
-    paste_enter_during_read_then_paste_enter_in(DestMode::Table, false);
+    pastes_held_for_the_prompt_in(
+        DestMode::Table,
+        PASTE_ENTER_PASTE_ENTER,
+        false,
+        b"echo a\recho b\r",
+    );
 }
 
 #[test]
 fn an_enter_entry_in_a_prompt_hold_is_released_as_its_byte_in_both_modes() {
+    const PASTES: &[PasteWithKeys] = &[
+        ("echo a", &[KeyDuringRead::EnterEntry]),
+        ("echo b", &[KeyDuringRead::EnterEntry]),
+    ];
     for mode in [DestMode::Legacy, DestMode::Table] {
-        paste_enter_during_read_then_paste_enter_in(mode, true);
+        pastes_held_for_the_prompt_in(mode, PASTES, false, b"echo a\recho b\r");
+    }
+}
+
+/// #1628 review F1: the cap decides the same in both modes. A segment whose Enter is the table's
+/// `Enter` entry counts as one with an Enter, as `legacy`'s `\r` bytes do: it stays held past the
+/// cap and the signal releases it, the same bytes in both modes.
+#[test]
+fn a_swept_enter_keeps_the_prompt_hold_past_its_cap_in_both_modes() {
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        pastes_held_for_the_prompt_in(mode, PASTE_ENTER_PASTE_ENTER, true, b"echo a\recho b\r");
+    }
+}
+
+/// #1628 review F2: keys the table holds as `Held` entries behind a paste read (Backspace) are
+/// released in their place with the prompt hold, as `legacy`'s pty bytes are: never lost.
+#[test]
+fn held_keys_behind_a_paste_read_are_released_in_place_in_both_modes() {
+    const PASTES: &[PasteWithKeys] = &[(
+        "git statsu",
+        &[
+            KeyDuringRead::Backspace,
+            KeyDuringRead::Backspace,
+            KeyDuringRead::Typed("us"),
+            KeyDuringRead::Enter,
+        ],
+    )];
+    for mode in [DestMode::Legacy, DestMode::Table] {
+        pastes_held_for_the_prompt_in(mode, PASTES, false, b"git statsu\x7f\x7fus\r");
     }
 }
 

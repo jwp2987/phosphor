@@ -14,7 +14,11 @@
 //!   the pty has taken the command. The signal for that is an event the view already receives:
 //!   the pty controller's `TypeaheadHandoffChanged` (it fires when the hand-off engages) and the
 //!   block-started event. Nothing is polled. The 300 ms the old 5 ms poll gave up after is now
-//!   one logged give-up timer, armed once ([`TerminalView::settle_enter_queue`]).
+//!   one logged give-up timer, armed once ([`TerminalView::settle_enter_queue`]). The Enter's own
+//!   `ReplayAfterDeferredEnter` is handled in the flush that carries the command to the pty
+//!   controller, ahead of it, so for such a gate the view settles it only after that flush (an
+//!   executor hop, not a timer, and only that gate): by then the controller has taken the command
+//!   and its event has usually settled the gate, so the keys follow the command (#1630).
 //! * otherwise the view's `ReplayAfterDeferredEnter` handler closes the gate at once.
 //!
 //! Closing the gate drains it, in order. A drain driven from here stops at the first `Text` /
@@ -254,6 +258,11 @@ impl Input {
     /// The Enter has run and its gate is open: the keys behind it wait for the route to settle.
     pub(crate) fn enter_queue_awaits_route(&self, ctx: &AppContext) -> bool {
         self.enter_gate.is_some_and(|gate| gate.submitted) && self.enter_queue_holds_keys(ctx)
+    }
+
+    /// The key of the Enter gate this input has open (#1630: a deferred settle names its gate).
+    pub(crate) fn enter_gate_key(&self) -> Option<u64> {
+        self.enter_gate.map(|gate| gate.key)
     }
 
     /// The submitted Enter's command must be taken by the pty before the keys behind it route.

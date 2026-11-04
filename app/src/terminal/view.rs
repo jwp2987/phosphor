@@ -12752,9 +12752,14 @@ impl TerminalView {
             // parked (the PowerShell pipe path waits for the line editor). Decided after that
             // flush, the controller has taken the command: its `TypeaheadHandoffChanged` settles
             // the gate first and the keys follow it (`handoff_bytes_after_command`). Not a timer:
-            // the same decision, after the effects queued before it. A gate already settled by
-            // then finds nothing to do.
-            ctx.spawn(async {}, |me, _, ctx| me.settle_enter_queue(ctx));
+            // the same decision, after the effects queued before it. Only this gate: one settled
+            // (or replaced by a later Enter's) by then is left alone.
+            let gate_key = self.input.as_ref(ctx).enter_gate_key();
+            ctx.spawn(async {}, move |me, _, ctx| {
+                if me.input.as_ref(ctx).enter_gate_key() == gate_key {
+                    me.settle_enter_queue(ctx);
+                }
+            });
             return;
         }
         self.settle_enter_queue(ctx);
