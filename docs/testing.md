@@ -799,7 +799,8 @@ adds the note `injector died: ... (key loss in this case is the INJECTOR's, not 
 
 **`ssh_failing_not_local` (r18d8; expectation changed 2026-11-04).** Since the plain-terminal ssh pass-through (DECLINED.md, "A FAILING ssh behaves like a plain terminal too") the case asserts the iTerm2 / plain-terminal result: `MUSTNOT` typed behind the failing ssh runs locally EXACTLY ONCE, exactly as typed, and only after the ssh failed (file mtime >= the failure); no hold hop is expected. Before, it asserted the line never ran locally. The target is a local TCP listener that accepts and never speaks (`cases.HangingTcpServer`), so the ssh is provably still
 CONNECTING (TCP accepted, connection open; ConnectTimeout 6 s) when `MUSTNOT` is typed and fails only afterwards (`Connection timed out during banner
-exchange`). The old `.invalid` host could fail in tens of ms, before the first typed key, when running the line locally is correct. The case fails as a HARNESS
+exchange`). r18u13: the listener READS (and drops) what ssh sends; it used to `MSG_PEEK`, which kept seeing ssh's unread banner after ssh had closed the
+connection, so the failure time was the wait's 14 s timeout and a line that ran after ssh exited was reported as running ~9 s BEFORE it. The old `.invalid` host could fail in tens of ms, before the first typed key, when running the line locally is correct. The case fails as a HARNESS
 problem if the ssh was not connecting at that moment, and notes the app's `kh_hold_entry` line for the first MUSTNOT key (`holding=...`, `gate_drops=...`), the
 first `kh_hold_exit` / `kh_iq_release Q7_ssh_typeahead` after it and the time the ssh failed. The enforced claim: text typed while an ssh connects and then
 fails is NEVER run locally (handed back unexecuted, #983/#1292).
