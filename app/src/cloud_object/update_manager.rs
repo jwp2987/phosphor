@@ -32,7 +32,7 @@ use crate::{
     },
     workspaces::user_workspaces::UserWorkspaces,
 };
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::channel::oneshot::{self, Receiver};
 use itertools::Itertools;
 use lazy_static::lazy_static;
@@ -51,24 +51,33 @@ lazy_static! {
 #[derive(Debug, PartialEq)]
 pub enum OperationSuccessType {
     Success,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Failure,
     Rejection,
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     Denied(String),
+    #[allow(dead_code)] // used only by tests
     FeatureNotAvailable,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum ObjectOperation {
-    Create { initiated_by: InitiatedBy },
+    #[allow(dead_code)] // used by sibling unused code or shared name
+    Create {
+        initiated_by: InitiatedBy,
+    },
     Update,
     MoveToFolder,
     MoveToDrive,
     Trash,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     TakeEditAccess,
     Untrash,
-    Delete { initiated_by: InitiatedBy },
+    Delete {
+        initiated_by: InitiatedBy,
+    },
     EmptyTrash,
-    UpdatePermissions,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Leave,
 }
 
@@ -84,7 +93,6 @@ pub struct ObjectOperationResult {
 #[derive(Debug)]
 pub enum UpdateManagerEvent {
     ObjectOperationComplete { result: ObjectOperationResult },
-    AmbientTaskUpdated { timestamp: DateTime<Utc> },
 }
 
 /// An enum for choosing the behavior of the fetch_single_cloud_object function.
@@ -94,9 +102,6 @@ pub enum FetchSingleObjectOption {
     /// Perform the normal upsert behavior, but additionally force overwrite the
     /// in-memory object to whatever the server object is.
     ForceOverwrite,
-    /// Only perform the normal upsert behavior if the object doesn't already
-    /// exist in-memory.
-    IgnoreIfExists,
 }
 
 /// An enum that defines whether the action was initiated by the user or the system.
@@ -114,6 +119,7 @@ pub enum InitiatedBy {
 /// - interact with the SyncQueue by enqueueing an event
 pub struct UpdateManager {
     model_event_sender: Option<SyncSender<ModelEvent>>,
+    #[allow(dead_code)] // field: set at construction or persisted
     spawned_futures: Vec<FutureId>,
 }
 
@@ -134,6 +140,7 @@ impl UpdateManager {
     }
 
     #[cfg(any(test, feature = "integration_tests"))]
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn spawned_futures(&self) -> &[FutureId] {
         &self.spawned_futures
     }

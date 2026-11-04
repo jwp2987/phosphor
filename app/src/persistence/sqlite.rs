@@ -419,6 +419,7 @@ const COMMANDS_COUNT_LIMIT: i64 = 10000;
 use crate::persistence::cloud_objects::{StoredObjectId, upsert_stored_object};
 
 const WARP_SQLITE_FILE_NAME: &str = "warp.sqlite";
+#[allow(dead_code)] // used on other platforms
 const ZAP_APP_GROUP_SQLITE_MIGRATION_MARKER: &str = ".zap-app-group-sqlite-migrated";
 #[cfg(target_os = "macos")]
 const WARP_APP_GROUP_ID: &str = "2BBY89MBSN.dev.warp";
@@ -2189,6 +2190,7 @@ pub fn database_file_path() -> PathBuf {
         .join(WARP_SQLITE_FILE_NAME)
 }
 
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub(super) fn remove(sender: SyncSender<ModelEvent>) {
     // Instruct the writer thread to remove the database and pause processing
     // events.
@@ -2202,6 +2204,7 @@ pub(super) fn remove(sender: SyncSender<ModelEvent>) {
     );
 }
 
+#[allow(dead_code)] // used only by tests
 pub(super) fn reconstruct(sender: SyncSender<ModelEvent>) {
     report_if_error!(
         sender
@@ -5347,6 +5350,7 @@ fn read_node(conn: &mut SqliteConnection, node: model::PaneNode) -> Result<PaneN
 /// happen is the user won't have session restoration.
 ///
 /// In the future, the awkwardness of the transaction interface is resolved in diesel 2.0.0.
+#[allow(dead_code)] // used only by tests
 fn read_sqlite_data(
     conn: &mut SqliteConnection,
     current_user_id: Option<UserUid>,

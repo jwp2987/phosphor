@@ -152,6 +152,7 @@ pub fn prewarm_db_in_background() {
 // Remove sqlite database as part of Logout v0.
 // TODO: Implement per user scoping of sqlite.
 #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
+#[allow(dead_code)] // used by sibling unused code or shared name
 pub fn remove(sender: &Option<SyncSender<ModelEvent>>) {
     cfg_if::cfg_if! {
         if #[cfg(feature = "local_fs")] {
@@ -166,6 +167,7 @@ pub fn remove(sender: &Option<SyncSender<ModelEvent>>) {
 
 // Reconstruct sqlite database as part of Logout v0.
 #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
+#[allow(dead_code)] // used only by tests
 pub fn reconstruct(sender: &Option<SyncSender<ModelEvent>>) {
     cfg_if::cfg_if! {
         if #[cfg(feature = "local_fs")] {

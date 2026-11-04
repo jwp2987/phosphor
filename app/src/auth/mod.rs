@@ -171,11 +171,17 @@ pub struct User {
     pub local_id: UserUid,
     pub metadata: UserMetadata,
     pub is_onboarded: bool,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub needs_sso_link: bool,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub anonymous_user_type: Option<AnonymousUserType>,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub is_on_work_domain: bool,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub linked_at: Option<ServerTimestamp>,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub personal_object_limits: Option<PersonalObjectLimits>,
+    #[allow(dead_code)] // field: set at construction or persisted
     pub principal_type: PrincipalType,
 }
 
@@ -213,18 +219,22 @@ impl User {
     }
 
     /// Whether the user is anonymous. Zap always returns `false`.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn is_user_anonymous(&self) -> bool {
         false
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn anonymous_user_type(&self) -> Option<AnonymousUserType> {
         self.anonymous_user_type
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn personal_object_limits(&self) -> Option<PersonalObjectLimits> {
         self.personal_object_limits
     }
 
+    #[allow(dead_code)] // used by warp_tui (tui feature)
     pub fn linked_at(&self) -> Option<ServerTimestamp> {
         self.linked_at
     }
@@ -423,6 +433,7 @@ impl AuthStateProvider {
         Self { auth_state }
     }
 
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new_for_test() -> Self {
         Self {
             auth_state: Arc::new(AuthState::new_for_test()),
@@ -456,14 +467,6 @@ impl SingletonEntity for AuthStateProvider {}
 /// (originally an `&'static str`).
 pub type LoginGatedFeature = &'static str;
 
-/// URL-constructing callback for
-/// `AuthManager::open_url_maybe_with_anonymous_token`.
-///
-/// In the original UI, this callback would receive an anonymous user token and
-/// then assemble a URL that "opens a browser with identity attached". Under
-/// Zap, anonymous identity no longer exists, so the callback is discarded.
-pub type AnonymousTokenUrlBuilder = Box<dyn FnOnce(Option<&str>) -> String>;
-
 /// AuthView variant facade. Zap has physically deleted the AuthView UI; every
 /// dispatch site in the stub only produces a log, but the enum surface is kept
 /// so old `match` arms keep compiling.
@@ -471,7 +474,6 @@ pub type AnonymousTokenUrlBuilder = Box<dyn FnOnce(Option<&str>) -> String>;
 pub enum AuthViewVariant {
     Initial,
     RequireLoginCloseable,
-    ShareRequirementCloseable,
 }
 
 // ---------- UI view facade (placeholder for the physically-removed UI) ----------
@@ -505,6 +507,7 @@ impl AuthView {
     }
 
     /// Returns the current variant. Not used on the Zap path.
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn variant(&self) -> AuthViewVariant {
         self.variant
     }
@@ -531,6 +534,7 @@ impl warpui::TypedActionView for AuthView {
 
 #[derive(Debug)]
 pub enum AuthViewEvent {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Close,
 }
 
@@ -564,7 +568,9 @@ impl warpui::TypedActionView for AuthOverrideWarningModal {
 
 #[derive(Debug)]
 pub enum AuthOverrideWarningModalEvent {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Close,
+    #[allow(dead_code)] // used on other platforms
     BulkExport,
 }
 
@@ -611,9 +617,11 @@ impl warpui::TypedActionView for NeedsSsoLinkView {
 }
 
 /// WebHandoffView facade (wasm-only re-login entry point).
+#[allow(dead_code)] // used on other platforms
 pub struct WebHandoffView;
 
 impl WebHandoffView {
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new(_ctx: &mut ViewContext<Self>) -> Self {
         Self
     }
@@ -634,6 +642,7 @@ impl View for WebHandoffView {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // used only by tests
 pub enum WebHandoffEvent {
     Unsupported,
 }
@@ -644,14 +653,16 @@ pub enum WebHandoffEvent {
 #[derive(Debug)]
 pub enum AuthManagerEvent {
     AuthComplete,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     AuthFailed(UserAuthenticationError),
+    #[allow(dead_code)] // used by sibling unused code or shared name
     SkippedLogin,
+    #[allow(dead_code)] // used by sibling unused code or shared name
     NeedsReauth,
+    #[allow(dead_code)] // used only by tests
     AttemptedLoginGatedFeature {
         auth_view_variant: AuthViewVariant,
     },
-    /// Low-frequency failure: same as above.
-    CreateAnonymousUserFailed,
 }
 
 /// User authentication error facade. A handful of subscribers still match on
@@ -660,23 +671,20 @@ pub enum AuthManagerEvent {
 #[derive(Debug, thiserror::Error)]
 pub enum UserAuthenticationError {
     #[error("Access token denied")]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     DeniedAccessToken,
     #[error("User account disabled")]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     UserAccountDisabled,
     #[error("Invalid state parameter")]
+    #[allow(dead_code)] // used on other platforms
     InvalidStateParameter,
     #[error("Missing state parameter")]
+    #[allow(dead_code)] // used on other platforms
     MissingStateParameter,
     #[error("Unexpected error: {0}")]
+    #[allow(dead_code)] // used by sibling unused code or shared name
     Unexpected(anyhow::Error),
-}
-
-/// Server-persisted user privacy settings facade, still consumed by
-/// `settings/privacy.rs`.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct SyncedUserSettings {
-    pub is_crash_reporting_enabled: bool,
-    pub is_telemetry_enabled: bool,
 }
 
 /// Current user info persisted in the SQLite `current_user_information` table.
@@ -705,6 +713,7 @@ impl AuthManager {
     }
 
     /// Constructs for test scenarios, equivalent to [`Self::new`].
+    #[allow(dead_code)] // used by sibling unused code or shared name
     pub fn new_for_test(ctx: &mut ModelContext<Self>) -> Self {
         Self::new(ctx)
     }
@@ -714,24 +723,12 @@ impl AuthManager {
     /// Zap no longer enters a "logged out in the cloud" state; this simply
     /// resets the local identity snapshot back to the default placeholder user,
     /// for reuse by settings-reset / session-cleanup call sites, etc.
+    #[allow(dead_code)] // used on other platforms
     pub(crate) fn log_out(&mut self, _ctx: &mut ModelContext<Self>) {
         self.auth_state.reset_local_defaults();
         log::debug!(
             "AuthManager::log_out performed a local reset: switched to the local placeholder user state"
         );
-    }
-
-    /// Marks that reauthentication is needed. Localized: no-op.
-    pub fn set_needs_reauth(&mut self, _new_value: bool, _ctx: &mut ModelContext<Self>) {}
-
-    /// Creates an anonymous user. Localized: no-op — directly emits
-    /// `AuthComplete` so the onboarding flow can proceed.
-    pub fn create_anonymous_user(
-        &mut self,
-        _referral_code: Option<String>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        ctx.emit(AuthManagerEvent::AuthComplete);
     }
 
     /// Dispatches "an anonymous user attempted to touch a login-gated feature".
@@ -760,15 +757,6 @@ impl AuthManager {
     // legacy sign-in prompt links; Zap no longer opens the Zap cloud sign-in page.
     // There are no callers left after the physical UI removal, but the
     // enum/trait may still be consumed reflectively, so the stub is kept.
-
-    /// Opens a URL in the browser, optionally attaching an anonymous token.
-    /// Localized: no-op.
-    pub fn open_url_maybe_with_anonymous_token(
-        &mut self,
-        _ctx: &mut ModelContext<Self>,
-        _url_constructor: AnonymousTokenUrlBuilder,
-    ) {
-    }
 }
 
 impl Entity for AuthManager {
