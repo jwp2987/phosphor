@@ -21,16 +21,15 @@ fn write_skill(dir: &Path, name: &str) -> PathBuf {
 /// them without Developer Mode (`SeCreateSymbolicLinkPrivilege`), and
 /// `create_symlink` then makes a junction, which always stores an absolute
 /// destination.
+#[cfg(unix)]
 fn real_symlinks_available() -> bool {
-    #[cfg(unix)]
-    {
-        true
-    }
-    #[cfg(windows)]
-    {
-        let dir = TempDir::new().unwrap();
-        std::os::windows::fs::symlink_dir(dir.path(), dir.path().join("probe")).is_ok()
-    }
+    true
+}
+
+#[cfg(windows)]
+fn real_symlinks_available() -> bool {
+    let dir = TempDir::new().unwrap();
+    std::os::windows::fs::symlink_dir(dir.path(), dir.path().join("probe")).is_ok()
 }
 
 #[test]
